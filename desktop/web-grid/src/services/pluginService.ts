@@ -32,7 +32,12 @@ export interface PluginService {
   upgrade(plugin: PluginSnapshot, plan: PluginInstallPlan): Promise<PluginSnapshot>;
   rollback(plugin: PluginSnapshot): Promise<PluginSnapshot>;
   uninstall(plugin: PluginSnapshot, cleanupPrivateSettings: boolean): Promise<PluginUninstallResult>;
-  describeAction(pluginId: string, actionId: string, context: PluginCommandContext): Promise<PluginActionAvailability>;
+  describeAction(
+    pluginId: string,
+    actionId: string,
+    context: PluginCommandContext,
+    openPanel?: boolean,
+  ): Promise<PluginActionAvailability>;
   startAction(pluginId: string, actionId: string, input: Readonly<Record<string, unknown>>, context: PluginCommandContext): Promise<PluginTaskViewSnapshot>;
   resolveInteraction(task: PluginTaskViewSnapshot, decision: "approved" | "rejected"): Promise<PluginTaskViewSnapshot>;
   cancelTask(taskId: string): Promise<PluginTaskViewSnapshot>;
@@ -212,6 +217,7 @@ export function usePluginService(): PluginService {
     pluginId: string,
     actionId: string,
     context: PluginCommandContext,
+    openPanel = true,
   ): Promise<PluginActionAvailability> {
     const availability = await call<"plugin.action.describe", PluginActionAvailability>(
       "plugin.action.describe",
@@ -221,7 +227,7 @@ export function usePluginService(): PluginService {
     const plugin = store.plugins.find((item) => item.pluginId === pluginId);
     const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
     if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
-    store.beginAction(projectAction(plugin, action, context.locale), context);
+    store.beginAction(projectAction(plugin, action, context.locale), context, openPanel);
     return availability;
   }
 

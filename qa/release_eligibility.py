@@ -23,6 +23,7 @@ REQUIRED_STAGES = (
     "go-fmt",
     "go-vet",
     "go-test",
+    "go-coverage",
     "go-race",
     "go-build",
     "sidecar-smoke",
@@ -36,6 +37,7 @@ REQUIRED_STAGES = (
     "web-build",
     "fault-injection",
     "product-e2e",
+    "workbench-qualification",
     "smoke",
 )
 RACE_LANES = ("race-a", "race-b")
@@ -45,6 +47,7 @@ LANE_STAGES = {
         "go-fmt",
         "go-vet",
         "go-test",
+        "go-coverage",
         "go-build",
         "sidecar-smoke",
         "upgrade-smoke",
@@ -59,7 +62,7 @@ LANE_STAGES = {
     ),
     "race-a": ("go-race",),
     "race-b": ("go-race",),
-    "resilience": ("fault-injection", "product-e2e"),
+    "resilience": ("fault-injection", "product-e2e", "workbench-qualification"),
     "release": ("package",),
 }
 PARALLEL_LANES = ("core", *RACE_LANES, "resilience")

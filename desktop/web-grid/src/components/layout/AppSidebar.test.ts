@@ -26,10 +26,10 @@ describe("AppSidebar", () => {
     workspace.setOpened([
       { collection: "users", metadata: {} },
       { collection: "orders", metadata: {} },
-    ]);
+    ], { users: "Users", orders: "Orders" });
     const wrapper = mountSidebar();
     const names = wrapper.findAll('[data-testid="sidebar-table-name"]').map((n) => n.text());
-    expect(names).toEqual(["users", "orders"]);
+    expect(names).toEqual(["Users", "Orders"]);
   });
 
   it("renders no table rows when collections is empty", () => {
@@ -39,7 +39,7 @@ describe("AppSidebar", () => {
 
   it("marks the current table row as active", () => {
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "users", metadata: {} }]);
+    workspace.setOpened([{ collection: "users", metadata: {} }], { users: "Users" });
     workspace.selectTable("users");
     const wrapper = mountSidebar();
     // The active class is applied via :class on the rendered NListItem child.
@@ -61,8 +61,8 @@ describe("AppSidebar", () => {
   it("renders display names but emits the physical collection key", async () => {
     const workspace = useWorkspaceStore();
     workspace.setOpened([
-      { collection: "vt_t_01abc", metadata: { displayName: "客户清单" } },
-    ]);
+      { collection: "vt_t_01abc", metadata: {} },
+    ], { vt_t_01abc: "客户清单" });
     const wrapper = mountSidebar();
     expect(wrapper.get('[data-testid="sidebar-table-name"]').text()).toBe("客户清单");
     await wrapper.get('[data-testid="sidebar-table-name"]').trigger("click");
@@ -71,7 +71,7 @@ describe("AppSidebar", () => {
 
   it("emits select with the collection name when a row is clicked", async () => {
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "users", metadata: {} }]);
+    workspace.setOpened([{ collection: "users", metadata: {} }], { users: "Users" });
     const wrapper = mountSidebar();
     await wrapper.find('[data-testid="sidebar-table-name"]').trigger("click");
     expect(wrapper.emitted("select")).toBeTruthy();
@@ -80,7 +80,7 @@ describe("AppSidebar", () => {
 
   it("uses sibling buttons and emits delete without selecting the row", async () => {
     const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "users", metadata: {} }]);
+    workspace.setOpened([{ collection: "users", metadata: {} }], { users: "Users" });
     const wrapper = mountSidebar();
     await wrapper.find('[data-testid="sidebar-request-delete"]').trigger("click");
     expect(wrapper.find("button button").exists()).toBe(false);

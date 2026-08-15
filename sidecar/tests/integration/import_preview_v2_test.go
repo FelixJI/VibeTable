@@ -7,24 +7,16 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/importvalue"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
 func TestAuthoritativeRawPreviewDistinguishesInsertAndUpdate(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	table, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"tbl_raw_preview", "t_raw_preview", []schema.FieldDefinition{},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	table := createV2IntegrationTable(
+		t, ctx, app, "Raw preview", "op_raw_preview_table",
+	)
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(

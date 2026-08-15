@@ -5,60 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 
-RelationKind = Literal["m2o", "o2m", "m2m", "m2a"]
+RelationKind = Literal["m2o", "o2m", "m2m"]
 RelationPreset = Literal["standard", "file", "files", "translations"]
 RelationState = Literal["valid", "readonly", "invalid"]
 RelationDeletePolicy = Literal["nullify", "restrict", "cascade"]
 
 
-class JunctionProfile(BaseModel):
-    """Physical junction shape for M2M/M2A relations."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    collection: str
-    source_field: str
-    target_field: str
-    collection_field: str | None = None
-    sort_field: str | None = None
-    context_fields: list[str] = Field(default_factory=list, max_length=64)
-
-    @field_validator(
-        "collection",
-        "source_field",
-        "target_field",
-        "collection_field",
-        "sort_field",
-    )
-    @classmethod
-    def validate_optional_identifier(cls, value: str | None) -> str | None:
-        if value is not None and not _IDENTIFIER.fullmatch(value):
-            raise ValueError("product identifier is invalid")
-        return value
-
-    @field_validator("context_fields")
-    @classmethod
-    def validate_context_fields(cls, values: list[str]) -> list[str]:
-        if len(values) != len(set(values)):
-            raise ValueError("junction context fields must be unique")
-        if any(not _IDENTIFIER.fullmatch(value) for value in values):
-            raise ValueError("product identifier is invalid")
-        return values
-
-
 class RelationProfile(BaseModel):
     """Normalized relation capability.
 
-    The accepted input remains backwards compatible with v1 manifests where
-    ``kind='file'`` was treated as a cardinality.  It is normalized to an M2O
-    relation with the ``file`` preset before validation.
+    Only direct PocketBase relation fields are part of the product contract.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -67,10 +29,8 @@ class RelationProfile(BaseModel):
     field: str
     kind: RelationKind
     related_collection: str | None = None
-    allowed_collections: list[str] = Field(default_factory=list, max_length=64)
     many_field: str | None = None
     one_field: str | None = None
-    junction: JunctionProfile | None = None
     unique: bool = False
     nullable: bool = True
     on_delete: RelationDeletePolicy = "nullify"
@@ -79,16 +39,6 @@ class RelationProfile(BaseModel):
     display_fields: list[str] = Field(default_factory=list, max_length=8)
     state: RelationState = "valid"
     diagnostics: list[str] = Field(default_factory=list, max_length=32)
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy_file_kind(cls, value: Any) -> Any:
-        if isinstance(value, Mapping) and value.get("kind") == "file":
-            normalized = dict(value)
-            normalized["kind"] = "m2o"
-            normalized.setdefault("preset", "file")
-            return normalized
-        return value
 
     @field_validator(
         "relation_id",
@@ -103,7 +53,7 @@ class RelationProfile(BaseModel):
             raise ValueError("product identifier is invalid")
         return value
 
-    @field_validator("allowed_collections", "display_fields")
+    @field_validator("display_fields")
     @classmethod
     def validate_identifier_list(cls, values: list[str]) -> list[str]:
         if len(values) != len(set(values)):
@@ -114,16 +64,8 @@ class RelationProfile(BaseModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> RelationProfile:
-        if self.kind == "m2a":
-            if self.junction is None or self.junction.collection_field is None:
-                raise ValueError("m2a relations require a polymorphic junction")
-            if not self.allowed_collections:
-                raise ValueError("m2a relations require allowed collections")
-        elif self.related_collection is None:
+        if self.related_collection is None:
             raise ValueError(f"{self.kind} relations require a related collection")
-        # Legacy collection profiles described M2M fields without physical
-        # junction metadata. Keep accepting them for history/file projection;
-        # authoritative schema discovery validates the live junction shape.
         if self.unique and self.kind != "m2o":
             raise ValueError("only m2o relations can enforce one-to-one uniqueness")
         if not self.nullable and self.on_delete == "nullify":
@@ -220,7 +162,7 @@ class CollectionProfile(BaseModel):
 def collection_profile_from_definition(
     definition: dict[str, Any],
 ) -> CollectionProfile:
-    """Project a normalized product table definition into a capability profile."""
+    """Project an authoritative Schema V2 snapshot into a capability profile."""
 
     collection = _required_definition_text(definition, "tableId")
     schema_revision = _required_definition_text(definition, "schemaRevision")
@@ -233,27 +175,37 @@ def collection_profile_from_definition(
     relations: list[RelationProfile] = []
     field_schemas: dict[str, dict[str, Any]] = {}
     for field in raw:
-        field_id = _required_definition_text(field, "fieldId")
-        name = _required_definition_text(field, "physicalName")
+        identity = field.get("identity")
+        if not isinstance(identity, dict):
+            raise ValueError("product schema field identity is invalid")
+        field_id = _required_definition_text(identity, "fieldId")
+        name = _required_definition_text(identity, "physicalName")
         if name in names:
             raise ValueError("product schema contains duplicate fields")
         names.append(name)
         by_id[field_id] = name
         field_schemas[name] = {
             "fieldId": field_id,
-            "dataType": field.get("dataType"),
-            "nullable": field.get("nullable"),
-            "constraints": field.get("constraints", []),
+            "dataType": field.get("logicalType"),
+            "nullable": not bool((field.get("value") or {}).get("required")),
+            "constraints": field.get("constraints", {}),
         }
-        kind = field.get("kind")
-        if field.get("readOnly") is not True and kind not in {
-            "formula",
-            "lookup",
-            "system",
-        }:
+        logical_type = field.get("logicalType")
+        lifecycle = field.get("lifecycle")
+        active = isinstance(lifecycle, dict) and lifecycle.get("state") == "active"
+        if (
+            definition.get("kind") == "base"
+            and active
+            and logical_type
+            not in {
+                "formula",
+                "lookup",
+                "autoDate",
+            }
+        ):
             writable.append(name)
         relation = field.get("relation")
-        if kind == "relation" and isinstance(relation, dict):
+        if logical_type == "relation" and isinstance(relation, dict):
             target = relation.get("targetTableId")
             if isinstance(target, str) and target:
                 delete_policy = cast(
@@ -264,7 +216,8 @@ def collection_profile_from_definition(
                         "setNull": "nullify",
                     }.get(str(relation.get("deletePolicy")), "restrict"),
                 )
-                nullable = field.get("nullable") is not False
+                value = field.get("value")
+                nullable = not (isinstance(value, dict) and value.get("required") is True)
                 if not nullable and delete_policy == "nullify":
                     delete_policy = "restrict"
                 relations.append(
@@ -314,7 +267,6 @@ def _required_definition_text(value: dict[str, Any], key: str) -> str:
 
 __all__ = [
     "CollectionProfile",
-    "JunctionProfile",
     "RelationDeletePolicy",
     "RelationKind",
     "RelationPreset",

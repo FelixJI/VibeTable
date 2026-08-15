@@ -267,7 +267,7 @@ DashboardUuid = Annotated[
 ]
 
 DashboardAggregate = Literal["count", "countDistinct", "sum", "avg", "min", "max"]
-DashboardTimeUnit = Literal["minute", "hour", "day", "week", "month", "quarter", "year"]
+DashboardTimeUnit = Literal["day", "week", "month"]
 
 
 class DashboardMeasure(CamelModel):

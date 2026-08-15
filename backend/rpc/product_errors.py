@@ -2,7 +2,7 @@
 
 from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.rpc.dispatcher import CODE_PRODUCT_DATA, register_rpc_error
+from backend.rpc.error_registry import CODE_PRODUCT_DATA, register_rpc_error
 
 
 def register_product_rpc_errors() -> None:

@@ -44,7 +44,7 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	createdAt := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	parentRevisionID := "77777777-7777-4777-8777-777777777777"
 	historyPayload, err := json.Marshal(map[string]any{
-		"formatVersion": 2,
+		"formatVersion": 3,
 		"workspaceId":   workspaceID,
 		"documents": []map[string]any{{
 			"contractVersion":     "2.0",
@@ -669,7 +669,7 @@ func writeMirroredManifest(
 	}
 	raw, err := json.Marshal(contractsv2.WorkspaceManifest{
 		ContractVersion: "2.0",
-		FormatVersion:   1,
+		FormatVersion:   2,
 		WorkspaceID:     workspaceID,
 		DisplayName:     "Replica",
 		CreatedAt: time.Date(

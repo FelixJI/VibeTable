@@ -15,14 +15,14 @@ func TestCurrentContainsPinnedDependencies(t *testing.T) {
 	if info.CELVersion != "0.29.0" {
 		t.Fatalf("CEL version = %q", info.CELVersion)
 	}
-	if info.SchemaVersion != "7" {
+	if info.SchemaVersion != "10" {
 		t.Fatalf("schema version = %q", info.SchemaVersion)
 	}
 	if info.MigrationHash != "abc123" {
 		t.Fatalf("migration hash = %q", info.MigrationHash)
 	}
 	if info.ProtocolV2Version != "2.0" ||
-		info.WorkspaceFormat != "1" ||
+		info.WorkspaceFormat != "2" ||
 		info.RepositoryFormat != "kopia-v3" ||
 		info.SnapshotFormat != "2" ||
 		info.PackageFormat != "2" ||

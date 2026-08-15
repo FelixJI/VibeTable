@@ -219,7 +219,7 @@ func typedWorkspaceDependencyEdges(
 		rights []string
 	}{
 		{"vibetable_relations", "source_table_id",
-			[]string{"target_table_id", "junction_table_id"}},
+			[]string{"target_table_id"}},
 		{"vibetable_formula_dependencies", "source_table_id",
 			[]string{"target_table_id"}},
 	} {
@@ -238,9 +238,6 @@ func typedWorkspaceDependencyEdges(
 			}
 			for _, field := range spec.rights {
 				right := stringValue(row[field])
-				if right == "" && field == "junction_table_id" {
-					continue
-				}
 				if err := addPair(left, right); err != nil {
 					return nil, err
 				}
@@ -261,12 +258,6 @@ func typedWorkspaceDependencyEdges(
 		{"vibetable_lookups", "table_id",
 			[]string{"path_json"}},
 		{"vibetable_jobs", "source_table_id", nil},
-		{"vibetable_panels", "",
-			[]string{"query_json"}},
-		{"vibetable_presets", "table_id",
-			[]string{"projection_json"}},
-		{"vibetable_shared_settings", "",
-			[]string{"value_json"}},
 	} {
 		collection, ok := byName[spec.name]
 		if !ok {
@@ -307,6 +298,52 @@ func typedWorkspaceDependencyEdges(
 				)
 				edges[tableID] = mergeSQLiteDependencies(
 					edges[tableID], []string{node},
+				)
+			}
+		}
+	}
+	for _, name := range []string{
+		"vibetable_shared_settings",
+		"vibetable_dashboards",
+		"vibetable_panels",
+		"vibetable_presets",
+		"vibetable_content_versions",
+		"vibetable_interfaces",
+		"vibetable_content_profiles",
+		"vibetable_record_document_links",
+	} {
+		collection, ok := byName[name]
+		if !ok {
+			continue
+		}
+		for _, raw := range collection.Records {
+			row, err := decodeCanonicalRecord(raw)
+			if err != nil || stringValue(row["logical_id"]) == "" {
+				return nil, ErrDependencyIncomplete
+			}
+			payload, exists := row["payload_json"]
+			if !exists {
+				return nil, ErrDependencyIncomplete
+			}
+			references, err := typedJSONTableReferences(
+				payload, collectionIDs,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if edges[collection.ID] == nil {
+				edges[collection.ID] = []string{}
+			}
+			for _, reference := range references {
+				tableID := collectionIDs[reference]
+				if tableID == "" {
+					return nil, ErrDependencyIncomplete
+				}
+				edges[collection.ID] = mergeSQLiteDependencies(
+					edges[collection.ID], []string{tableID},
+				)
+				edges[tableID] = mergeSQLiteDependencies(
+					edges[tableID], []string{collection.ID},
 				)
 			}
 		}

@@ -23,8 +23,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/launch"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -140,126 +139,9 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		}
 		drainAndClose(t, response.Body)
 	}
+	created, titleFieldID := createProcessTableWithTitle(t, client, baseURL, secret)
 
-	applyBody := `{
-		"definition": {
-			"contractVersion": "2.0",
-			"tableId": "process-test-table",
-			"physicalName": "process_test_table",
-			"displayName": "Process test table",
-			"kind": "base",
-			"schemaRevision": "schema_0000",
-			"archivePolicy": {
-				"mode": "none",
-				"fieldId": null,
-				"archivedValue": null
-			},
-			"fields": [{
-				"fieldId": "title",
-				"physicalName": "title",
-				"displayName": "Title",
-				"kind": "scalar",
-				"dataType": "shortText",
-				"storageType": "",
-				"nullable": true,
-				"defaultValue": null,
-				"constraints": [],
-				"editor": {"kind": "text", "config": {}},
-				"readOnly": false,
-				"formula": null,
-				"relation": null,
-				"lookup": null,
-				"attachmentPolicy": null
-			}],
-			"indexes": []
-		},
-		"expectedRevision": 0
-	}`
-	response = requestJSON(
-		t,
-		client,
-		http.MethodPost,
-		baseURL+"/api/vibetable/v1/schema/apply",
-		secret,
-		applyBody,
-	)
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		response.Body.Close()
-		t.Fatalf("schema apply status = %d body=%s", response.StatusCode, body)
-	}
-	var applied struct {
-		TableID        string `json:"tableId"`
-		SchemaRevision string `json:"schemaRevision"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&applied); err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if applied.TableID != "process-test-table" || applied.SchemaRevision != "schema_0001" {
-		t.Fatalf("unexpected applied schema: %#v", applied)
-	}
-
-	response = request(
-		t,
-		client,
-		http.MethodGet,
-		baseURL+"/api/vibetable/v1/schema/tables/process-test-table",
-		secret,
-	)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("schema describe status = %d, want 200", response.StatusCode)
-	}
-	var described schema.TableDefinition
-	if err := json.NewDecoder(response.Body).Decode(&described); err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-
-	formulaPreviewBody, err := json.Marshal(map[string]any{
-		"definition":      described,
-		"row":             map[string]any{"title": "draft"},
-		"changedFieldIds": []string{"title"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	response = requestJSON(
-		t, client, http.MethodPost,
-		baseURL+"/api/vibetable/v1/formulas/preview",
-		secret, string(formulaPreviewBody),
-	)
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		response.Body.Close()
-		t.Fatalf("formula preview status = %d body=%s", response.StatusCode, body)
-	}
-	drainAndClose(t, response.Body)
-
-	response = request(
-		t,
-		client,
-		http.MethodGet,
-		baseURL+"/api/vibetable/v1/schema/tables",
-		secret,
-	)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("schema list status = %d, want 200", response.StatusCode)
-	}
-	var listed struct {
-		Tables []struct {
-			TableID string `json:"tableId"`
-		} `json:"tables"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&listed); err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if len(listed.Tables) != 1 || listed.Tables[0].TableID != "process-test-table" {
-		t.Fatalf("unexpected schema list: %#v", listed)
-	}
-
-	mutationBody := `{
+	mutationBody := strings.ReplaceAll(`{
 		"contractVersion":"2.0",
 		"requestId":"process-request-1",
 		"idempotencyKey":"process-idempotency-1",
@@ -273,7 +155,13 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		"actor":{"type":"user","id":"process-user","displayName":null},
 		"expectedRevision":null,
 		"expectedDigest":null
-	}`
+	}`, "process-test-table", created.TableID)
+	mutationBody = strings.ReplaceAll(
+		mutationBody, "schema_0001", created.SchemaRevision,
+	)
+	mutationBody = strings.ReplaceAll(
+		mutationBody, strconv.Quote("title"), strconv.Quote(titleFieldID),
+	)
 	response = requestJSON(
 		t, client, http.MethodPost,
 		baseURL+"/api/vibetable/v1/mutations/apply",
@@ -314,7 +202,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		t.Fatalf("unexpected replay receipt: %#v", replayed)
 	}
 	conflictingMutation := strings.Replace(
-		mutationBody, `"title":"persisted"`, `"title":"different"`, 1,
+		mutationBody, `"persisted"`, `"different"`, 1,
 	)
 	response = requestJSON(
 		t, client, http.MethodPost,
@@ -351,7 +239,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 	}
 	drainAndClose(t, response.Body)
 
-	emptyUpdate := `{
+	emptyUpdate := strings.ReplaceAll(`{
 		"contractVersion":"2.0",
 		"requestId":"process-empty-update",
 		"idempotencyKey":"process-empty-update",
@@ -365,7 +253,13 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		"actor":{"type":"user","id":"process-user","displayName":null},
 		"expectedRevision":null,
 		"expectedDigest":null
-	}`
+	}`, "process-test-table", created.TableID)
+	emptyUpdate = strings.ReplaceAll(
+		emptyUpdate, "schema_0001", created.SchemaRevision,
+	)
+	emptyUpdate = strings.ReplaceAll(
+		emptyUpdate, strconv.Quote("title"), strconv.Quote(titleFieldID),
+	)
 	response = requestJSON(
 		t, client, http.MethodPost,
 		baseURL+"/api/vibetable/v1/mutations/apply",
@@ -395,7 +289,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		http.MethodPost,
 		baseURL+"/api/vibetable/v1/query",
 		secret,
-		`{"operation":"page","tableId":"process-test-table","query":{"offset":0,"limit":10}}`,
+		`{"operation":"page","tableId":`+strconv.Quote(created.TableID)+`,"query":{"offset":0,"limit":10}}`,
 	)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
@@ -409,7 +303,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 	response.Body.Close()
 	if len(page.Rows) != 1 ||
 		page.TotalRows != 1 ||
-		page.Snapshot.SchemaRevision != "schema_0001" ||
+		page.Snapshot.SchemaRevision != created.SchemaRevision ||
 		page.Snapshot.DataRevision != 1 ||
 		len(page.Snapshot.Digest) != 64 {
 		t.Fatalf("unexpected query page: %#v", page)
@@ -439,7 +333,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 	}
 	response.Body.Close()
 	if !validation.Valid ||
-		validation.CurrentSchemaRevision != "schema_0001" ||
+		validation.CurrentSchemaRevision != created.SchemaRevision ||
 		validation.CurrentDataRevision != 1 {
 		t.Fatalf("unexpected snapshot validation: %#v", validation)
 	}
@@ -452,8 +346,8 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		secret,
 		`{"definition":{},"expectedRevision":0,"unknown":true}`,
 	)
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("invalid schema request status = %d, want 400", response.StatusCode)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed schema write status = %d, want 404", response.StatusCode)
 	}
 	drainAndClose(t, response.Body)
 
@@ -485,7 +379,7 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		connection.Close()
 		t.Fatalf("listener %s remained reachable after process exit", ready.Address)
 	}
-	if logs := stderr.String(); !strings.Contains(logs, "sidecar graceful shutdown") {
+	if logs := stderr.String(); !strings.Contains(logs, "sidecar.graceful_shutdown") {
 		t.Fatalf("graceful shutdown log missing: %s", logs)
 	}
 	removeDirectoryEventually(t, dataDir)
@@ -537,22 +431,32 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 
-	formulaSchemaBody := workspaceV2FormulaSchemaBody(t)
+	tableCreateBody := `{
+		"displayName":"Read purity",
+		"operationId":"process-read-purity-create",
+		"actor":{"id":"process-test","kind":"test"}
+	}`
 	response = requestJSON(
 		t,
 		client,
 		http.MethodPost,
-		baseURL+"/api/vibetable/v1/schema/apply",
+		baseURL+"/api/vibetable/v2/schema/tables",
 		secret,
-		formulaSchemaBody,
+		tableCreateBody,
 	)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
 		response.Body.Close()
-		t.Fatalf("formula schema apply status=%d body=%s", response.StatusCode, body)
+		t.Fatalf("table create status=%d body=%s", response.StatusCode, body)
 	}
-	drainAndClose(t, response.Body)
-	waitForFormulaJobsSettled(t, dataDir)
+	var created v2.TableCreateReceipt
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if created.TableID == "" || created.SchemaRevision != "schema_0001" {
+		t.Fatalf("table create receipt = %#v", created)
+	}
 	coordinatorPath := filepath.Join(
 		root,
 		".vibetable",
@@ -571,31 +475,30 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		t,
 		dataDir,
 		map[string]int{
-			"schema.apply":             1,
-			"formula.backfill.enqueue": 1,
+			"schema.table.create": 1,
 		},
 	)
 	response = requestJSON(
 		t,
 		client,
 		http.MethodPost,
-		baseURL+"/api/vibetable/v1/schema/apply",
+		baseURL+"/api/vibetable/v2/schema/tables",
 		secret,
-		formulaSchemaBody,
+		tableCreateBody,
 	)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
 		response.Body.Close()
-		t.Fatalf("formula schema replay status=%d body=%s", response.StatusCode, body)
+		t.Fatalf("table create replay status=%d body=%s", response.StatusCode, body)
 	}
-	var replayed schema.TableDefinition
+	var replayed v2.TableCreateReceipt
 	if err := json.NewDecoder(response.Body).Decode(&replayed); err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if replayed.TableID != "formula-read-purity" ||
+	if replayed.TableID != created.TableID ||
 		replayed.SchemaRevision != "schema_0001" {
-		t.Fatalf("formula schema replay = %#v", replayed)
+		t.Fatalf("table create replay = %#v", replayed)
 	}
 	revisionAfterReplay, err := writecoordinator.ReadPersistentMutationRevision(
 		context.Background(),
@@ -612,21 +515,19 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 			revisionAfterReplay,
 		)
 	}
-	projectionBefore := readFormulaReadProjection(t, dataDir)
 	response = request(
 		t,
 		client,
 		http.MethodGet,
-		baseURL+"/api/vibetable/v1/schema/tables/formula-read-purity",
+		baseURL+"/api/vibetable/v2/schema/tables/"+created.TableID,
 		secret,
 	)
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
 		response.Body.Close()
-		t.Fatalf("formula schema describe status=%d body=%s", response.StatusCode, body)
+		t.Fatalf("schema describe status=%d body=%s", response.StatusCode, body)
 	}
 	drainAndClose(t, response.Body)
-	waitForFormulaJobsSettled(t, dataDir)
 	revisionAfter, err := writecoordinator.ReadPersistentMutationRevision(
 		context.Background(),
 		coordinatorPath,
@@ -635,19 +536,11 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectionAfter := readFormulaReadProjection(t, dataDir)
 	if revisionAfter != revisionBefore {
 		t.Fatalf(
 			"schema GET mutation revision changed from %d to %d",
 			revisionBefore,
 			revisionAfter,
-		)
-	}
-	if projectionAfter != projectionBefore {
-		t.Fatalf(
-			"schema GET changed jobs/business projection: before=%#v after=%#v",
-			projectionBefore,
-			projectionAfter,
 		)
 	}
 
@@ -932,7 +825,7 @@ func createV2Workspace(t *testing.T, root string) string {
 	}
 	raw := `{
 		"contractVersion":"2.0",
-		"formatVersion":1,
+		"formatVersion":2,
 		"workspaceId":"11111111-1111-4111-8111-111111111111",
 		"displayName":"HTTP test workspace",
 		"createdAt":"2026-07-28T08:00:00Z",
@@ -973,73 +866,99 @@ func workspaceV2Request(
 		`},"params":` + params + `}`
 }
 
-func workspaceV2FormulaSchemaBody(t *testing.T) string {
+func createProcessTableWithTitle(
+	t *testing.T,
+	client *http.Client,
+	baseURL string,
+	secret string,
+) (v2.TableCreateReceipt, string) {
 	t.Helper()
-	change := schemaapi.Change{
-		Definition: schema.TableDefinition{
-			ContractVersion: "2.0",
-			TableID:         "formula-read-purity",
-			PhysicalName:    "formula_read_purity",
-			DisplayName:     "Formula read purity",
-			Kind:            schema.TableKindBase,
-			SchemaRevision:  "schema_0000",
-			ArchivePolicy: schema.ArchivePolicy{
-				Mode: schema.ArchiveModeNone,
-			},
-			Fields: []schema.FieldDefinition{
-				{
-					FieldID:      "quantity",
-					PhysicalName: "quantity",
-					DisplayName:  "Quantity",
-					Kind:         schema.FieldKindScalar,
-					DataType:     schema.DataTypeInteger,
-					StorageType:  schema.StorageNumber,
-					Nullable:     true,
-					Constraints:  []schema.FieldConstraint{},
-					Editor: schema.EditorDefinition{
-						Kind: "number", Config: map[string]any{},
-					},
-				},
-				{
-					FieldID:      "total",
-					PhysicalName: "total",
-					DisplayName:  "Total",
-					Kind:         schema.FieldKindFormula,
-					DataType:     schema.DataTypeFormula,
-					StorageType:  schema.StorageNumber,
-					Nullable:     false,
-					Constraints:  []schema.FieldConstraint{},
-					Editor: schema.EditorDefinition{
-						Kind: "readonly", Config: map[string]any{},
-					},
-					ReadOnly: true,
-					Formula: &schema.FormulaSpec{
-						Language:   "cel-v1",
-						Source:     "quantity * 2",
-						ResultType: schema.DataTypeInteger,
-						Version:    1,
-						Status:     "ready",
-					},
-				},
-			},
-			Indexes: []schema.IndexDefinition{},
-		},
-		ExpectedRevision: 0,
-		OperationID:      "formula-read-purity-create",
-	}
-	raw, err := json.Marshal(change)
+	createRaw, err := json.Marshal(v2.TableCreateIntent{
+		DisplayName: "Process test table",
+		OperationID: "process-test-table-create",
+		Actor:       v2.Actor{ID: "process-test", Kind: "test"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(raw)
-}
+	response := requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/schema/tables",
+		secret, string(createRaw),
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("table create status=%d body=%s", response.StatusCode, body)
+	}
+	var created v2.TableCreateReceipt
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
 
-type formulaReadProjection struct {
-	Jobs         int
-	JobStates    string
-	FormulaState string
-	TableState   string
-	BusinessRows int
+	recommended, err := v2.RecommendedDefaults(v2.LogicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planRaw, err := json.Marshal(v2.FieldChangeIntent{
+		Action:            v2.ActionCreate,
+		TableID:           created.TableID,
+		ExpectedSchemaRev: created.SchemaRevision,
+		Draft: &v2.FieldDraft{
+			DisplayName: "Title",
+			LogicalType: v2.LogicalText,
+			Value:       recommended.Value,
+			Constraints: recommended.Constraints,
+			Storage:     recommended.Storage,
+			Display:     recommended.Display,
+		},
+		Actor: v2.Actor{ID: "process-test", Kind: "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/field-change/plan",
+		secret, string(planRaw),
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("field plan status=%d body=%s", response.StatusCode, body)
+	}
+	var plan v2.FieldChangePlan
+	if err := json.NewDecoder(response.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	applyRaw, err := json.Marshal(v2.ApplyRequest{
+		PlanID: plan.PlanID, PlanHash: plan.PlanHash,
+		OperationID:   "process-test-title-create",
+		Actor:         v2.Actor{ID: "process-test", Kind: "test"},
+		Confirmations: append([]string(nil), plan.Confirmations...),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/field-change/apply",
+		secret, string(applyRaw),
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("field apply status=%d body=%s", response.StatusCode, body)
+	}
+	var applied v2.ApplyReceipt
+	if err := json.NewDecoder(response.Body).Decode(&applied); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	created.SchemaRevision = applied.SchemaRevision
+	return created, applied.FieldID
 }
 
 func assertBusinessReceiptKindCount(
@@ -1065,80 +984,6 @@ func assertBusinessReceiptKindCount(
 		if count != want {
 			t.Fatalf("receipt kind %q count=%d want=%d", kind, count, want)
 		}
-	}
-}
-
-func readFormulaReadProjection(t *testing.T, dataDir string) formulaReadProjection {
-	t.Helper()
-	database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	if _, err := database.Exec("PRAGMA query_only=ON"); err != nil {
-		t.Fatal(err)
-	}
-	result := formulaReadProjection{}
-	queries := []struct {
-		query  string
-		target any
-	}{
-		{
-			"SELECT COUNT(*) FROM vibetable_jobs",
-			&result.Jobs,
-		},
-		{
-			`SELECT COALESCE(GROUP_CONCAT(
-				id || ':' || state || ':' || CAST(progress_json AS TEXT), '|'
-			), '') FROM vibetable_jobs`,
-			&result.JobStates,
-		},
-		{
-			`SELECT COALESCE(GROUP_CONCAT(
-				field_id || ':' || status || ':' || version, '|'
-			), '') FROM vibetable_formulas`,
-			&result.FormulaState,
-		},
-		{
-			`SELECT COALESCE(GROUP_CONCAT(
-				table_id || ':' || schema_revision || ':' ||
-				CAST(definition_json AS TEXT), '|'
-			), '') FROM vibetable_tables`,
-			&result.TableState,
-		},
-		{
-			"SELECT COUNT(*) FROM formula_read_purity",
-			&result.BusinessRows,
-		},
-	}
-	for _, item := range queries {
-		if err := database.QueryRow(item.query).Scan(item.target); err != nil {
-			t.Fatalf("read formula GET projection: %v", err)
-		}
-	}
-	return result
-}
-
-func waitForFormulaJobsSettled(t *testing.T, dataDir string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		database, err := sql.Open("sqlite", filepath.Join(dataDir, "data.db"))
-		if err == nil {
-			var pending int
-			queryErr := database.QueryRow(
-				"SELECT COUNT(*) FROM vibetable_jobs " +
-					"WHERE state='queued' OR state='running'",
-			).Scan(&pending)
-			_ = database.Close()
-			if queryErr == nil && pending == 0 {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("formula jobs did not settle")
-		}
-		time.Sleep(25 * time.Millisecond)
 	}
 }
 

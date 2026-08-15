@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the twelve real WPF/WebView2 PocketBase product scenarios."""
+"""Run capability-selected real WPF/WebView2 PocketBase product scenarios."""
 
 from __future__ import annotations
 

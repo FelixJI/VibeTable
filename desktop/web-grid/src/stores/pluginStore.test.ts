@@ -64,6 +64,34 @@ describe("pluginStore", () => {
     expect(store.actionOpen).toBe(false);
   });
 
+  it("retains an embedded action description without opening the global panel", () => {
+    const store = usePluginStore();
+    const description = {
+      pluginId: "com.acme.clean",
+      actionId: "normalize",
+      title: "Normalize",
+      risk: "write" as const,
+      inputSchema: { type: "object" },
+    };
+    const context = {
+      contract: "vibetable.command-context.v1" as const,
+      projectKey: "local:default",
+      collection: "orders",
+      selectedKeys: [],
+      querySnapshot: null,
+      locale: "zh-CN",
+      theme: "light" as const,
+      density: "compact",
+      user: {},
+      hostVersion: "1.0.0",
+    };
+
+    store.beginAction(description, context, false);
+
+    expect(store.describedAction).toEqual(description);
+    expect(store.actionOpen).toBe(false);
+  });
+
   it("replays an interaction notification that arrives before the task snapshot", () => {
     const store = usePluginStore();
     const interaction: PluginInteractionSnapshot = {

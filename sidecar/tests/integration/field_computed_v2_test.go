@@ -2,57 +2,136 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/computed"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	formulapkg "github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/jobs"
+	lookuppkg "github.com/vibetable/vibetable/sidecar/internal/lookup"
+	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
-func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
+type atomicFormulaScheduler struct {
+	enqueued []string
+	started  []string
+	fail     bool
+}
+
+type failingComputationInvalidator struct{}
+
+func (failingComputationInvalidator) EnqueueInvalidations(
+	context.Context,
+	core.App,
+	mutation.DataChangedEvent,
+) ([]string, error) {
+	return nil, errors.New("recalculation queue unavailable")
+}
+
+func (scheduler *atomicFormulaScheduler) EnqueueFormulaBackfill(
+	_ context.Context,
+	_ core.App,
+	tableID string,
+	schemaRevision string,
+) (string, error) {
+	scheduler.enqueued = append(scheduler.enqueued, tableID+":"+schemaRevision)
+	if scheduler.fail {
+		return "", errors.New("formula enqueue failed")
+	}
+	return fmt.Sprintf("formula-job-%d", len(scheduler.enqueued)), nil
+}
+
+func (scheduler *atomicFormulaScheduler) Start(jobID string) bool {
+	scheduler.started = append(scheduler.started, jobID)
+	return true
+}
+
+func TestFormulaPlanAcceptsFreshNumberPhysicalNameTimesFloatLiteral(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	region, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"tbl_v2_computed_region", "t_v2_computed_region",
-			[]schema.FieldDefinition{},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"tbl_v2_computed_target", "t_v2_computed_target",
-			[]schema.FieldDefinition{},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"tbl_v2_computed_source", "t_v2_computed_source",
-			[]schema.FieldDefinition{},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	table := createV2IntegrationTable(
+		t, ctx, app, "Fresh number formula", "op_v2_fresh_number_formula_table",
+	)
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(
 		catalog, catalog, store, v2.NewIdentityAllocator(nil),
 	)
 	executor := fieldchange.NewExecutor(app, store)
+	actor := v2.Actor{ID: "local-user", Kind: "user"}
+	numberDraft := fieldDraftForIntegration(t, v2.LogicalNumber, "Value")
+	numberDraft.Storage.Options.OnlyInt = true
+	numberDraft.Display.DisplayScale = 0
+	number := applyCreatedField(
+		t, ctx, catalog, planner, executor, table.TableID,
+		numberDraft,
+		actor, "op_v2_fresh_number_formula_value",
+	)
+	if number.Definition == nil {
+		t.Fatal("number field receipt omitted its Schema V2 definition")
+	}
+	formulaDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Doubled")
+	formulaDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1",
+		Source:   number.Definition.Identity.PhysicalName + " * 2.0",
+	}
+	revisions, err := catalog.Revisions(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: table.TableID,
+		ExpectedSchemaRev: revisions.Schema, Draft: &formulaDraft, Actor: actor,
+	})
+	if err != nil {
+		t.Fatalf("plan fresh number formula: %#v", err)
+	}
+	if plan.After == nil || plan.After.Formula == nil {
+		t.Fatalf("formula plan omitted its normalized definition: %#v", plan)
+	}
+	if plan.After.Formula.Source != formulaDraft.Formula.Source ||
+		plan.After.Formula.ResultType != v2.LogicalNumber ||
+		plan.After.Storage.Options.OnlyInt {
+		t.Fatalf("normalized formula definition = %#v", plan.After)
+	}
+}
+
+func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	region := createV2IntegrationTable(
+		t, ctx, app, "Computed regions", "op_v2_computed_region",
+	)
+	target := createV2IntegrationTable(
+		t, ctx, app, "Computed targets", "op_v2_computed_target",
+	)
+	source := createV2IntegrationTable(
+		t, ctx, app, "Computed sources", "op_v2_computed_source",
+	)
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(
+		catalog, catalog, store, v2.NewIdentityAllocator(nil),
+	)
+	formulaScheduler := &atomicFormulaScheduler{}
+	executor := fieldchange.NewExecutor(
+		app,
+		store,
+		fieldchange.WithFormulaBackfillScheduler(formulaScheduler),
+	)
 	actor := v2.Actor{ID: "local-user", Kind: "user"}
 
 	regionName := applyCreatedField(
@@ -153,23 +232,24 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 		lookup.Definition == nil || lookup.Definition.Lookup == nil {
 		t.Fatalf("computed v2 receipts were incomplete: %#v / %#v", formula, lookup)
 	}
-	legacy, err := schemaapi.New(app).Describe(ctx, source.TableID)
+	execution, err := schemaapi.New(app).Describe(ctx, source.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	formulaLegacy := integrationFieldByID(legacy, formula.FieldID)
-	lookupLegacy := integrationFieldByID(legacy, lookup.FieldID)
-	if formulaLegacy == nil || formulaLegacy.Formula == nil ||
-		lookupLegacy == nil || lookupLegacy.Lookup == nil {
-		t.Fatalf("legacy projections omitted computed specs: %#v", legacy.Fields)
+	formulaExecution := integrationFieldByID(execution, formula.FieldID)
+	lookupExecution := integrationFieldByID(execution, lookup.FieldID)
+	if formulaExecution == nil || formulaExecution.Formula == nil ||
+		lookupExecution == nil || lookupExecution.Lookup == nil {
+		t.Fatalf("execution snapshot omitted computed specs: %#v", execution.Snapshot.Fields)
 	}
+	formulaRuntime := execution.FormulaRuntime[formula.FieldID]
 	if formula.Definition.Formula.ResultType != v2.LogicalNumber ||
 		formula.Definition.Formula.Source == formulaDraft.Formula.Source ||
-		formulaLegacy.Formula.ResultType != schema.DataTypeFloat ||
-		formulaLegacy.Formula.Status != "backfilling" ||
-		formulaLegacy.Formula.Source != "relationSum("+relation.Definition.Identity.PhysicalName+
+		formulaExecution.Formula.ResultType != v2.LogicalNumber ||
+		formulaRuntime.Status != "backfilling" ||
+		formulaExecution.Formula.Source != "relationSum("+relation.Definition.Identity.PhysicalName+
 			", \""+balance.Definition.Identity.PhysicalName+"\") + 1.0" {
-		t.Fatalf("formula was not canonicalized and inferred: %#v / %#v", formula, formulaLegacy)
+		t.Fatalf("formula was not canonicalized and inferred: %#v / %#v", formula, formulaExecution)
 	}
 	dependencies, err := app.FindRecordsByFilter(
 		"vibetable_formula_dependencies",
@@ -189,6 +269,224 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	)
 	if err != nil || lookupMetadata.GetString("target_field_id") != regionName.FieldID {
 		t.Fatalf("v2 Lookup metadata = %#v, err=%v", lookupMetadata, err)
+	}
+
+	regionCollection, err := app.FindCollectionByNameOrId(region.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regionRecord := core.NewRecord(regionCollection)
+	regionRecord.Set("id", "regionnorth0000")
+	regionRecord.Set(regionName.Definition.Identity.PhysicalName, "North")
+	if err := app.Save(regionRecord); err != nil {
+		t.Fatal(err)
+	}
+	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRecord := core.NewRecord(targetCollection)
+	targetRecord.Set("id", "customerone0001")
+	targetRecord.Set(title.Definition.Identity.PhysicalName, "Customer one")
+	targetRecord.Set(balance.Definition.Identity.PhysicalName, 41.0)
+	targetRecord.Set(regionRelation.Definition.Identity.PhysicalName, regionRecord.Id)
+	if err := app.Save(targetRecord); err != nil {
+		t.Fatal(err)
+	}
+	calculator := computed.New(
+		lookuppkg.NewCalculator(),
+		formulapkg.NewCalculator(formulapkg.NewCompiler(formulapkg.DefaultLimits())),
+	)
+	kernel := mutation.New(
+		app,
+		mutation.MetadataSchemaSource{},
+		mutation.WithFormulaCalculator(calculator),
+	)
+	computedRecordID := "sourceversion01"
+	computedReceipt, err := kernel.Apply(ctx, mutation.Request{
+		ContractVersion: mutation.ContractVersion,
+		RequestID:       "request-computed-versioned", IdempotencyKey: "idem-computed-versioned",
+		TableID: source.TableID, SchemaRevision: execution.Snapshot.SchemaRevision,
+		Operations: []mutation.Operation{{
+			Kind: mutation.OperationInsert, RecordID: &computedRecordID,
+			Values: map[string]any{
+				name.Definition.Identity.PhysicalName:     "Versioned order",
+				relation.Definition.Identity.PhysicalName: targetRecord.Id,
+			},
+		}},
+		Actor: mutation.Actor{Type: "user", ID: "local-user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := computedReceipt.ComputedFields[computedRecordID][formula.Definition.Identity.PhysicalName]; got != 42.0 {
+		t.Fatalf("formula receipt value = %#v", got)
+	}
+	if got := computedReceipt.ComputedFields[computedRecordID][lookup.Definition.Identity.PhysicalName]; got != "North" {
+		t.Fatalf("lookup receipt value = %#v", got)
+	}
+	sourceCollection, err := app.FindCollectionByNameOrId(source.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedComputed, err := app.FindRecordById(sourceCollection, computedRecordID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []v2.ApplyReceipt{formula, lookup} {
+		envelope, ok := relatedcomputation.Decode(
+			storedComputed.GetRaw(field.Definition.Identity.PhysicalName),
+		)
+		if !ok || envelope.State != "ready" ||
+			envelope.Version.SourceDataRevision != 1 {
+			t.Fatalf("stored computed envelope for %s = %#v", field.FieldID, envelope)
+		}
+	}
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := querySource.DescribeQueryTable(ctx, app, source.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupFilter := query.TableQuery{
+		Filters: []query.FilterExpression{{
+			Field:    lookup.Definition.Identity.PhysicalName,
+			Operator: query.OperatorContains, Value: "North",
+		}},
+		Limit: 50,
+	}
+	compiled, err := query.Compile(descriptor, lookupFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var freshCount int
+	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&freshCount); err != nil {
+		t.Fatal(err)
+	}
+	if freshCount != 1 {
+		envelope, _ := relatedcomputation.Decode(
+			storedComputed.GetRaw(lookup.Definition.Identity.PhysicalName),
+		)
+		t.Fatalf(
+			"fresh lookup filter count = %d; rowRevision=%#v envelope=%#v descriptor=%#v sql=%s params=%#v",
+			freshCount,
+			storedComputed.GetRaw(relatedcomputation.RowRevisionField),
+			envelope,
+			descriptor.Fields[lookup.Definition.Identity.PhysicalName],
+			compiled.CountSQL,
+			compiled.Params,
+		)
+	}
+	targetDefinition, err := schemaapi.New(app).Describe(ctx, target.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobService := jobs.New(app, nil)
+	defer jobService.Shutdown()
+	targetReceipt, err := mutation.New(
+		app,
+		mutation.MetadataSchemaSource{},
+		mutation.WithComputationInvalidator(jobService),
+	).Apply(
+		ctx,
+		mutation.Request{
+			ContractVersion: mutation.ContractVersion,
+			RequestID:       "request-target-change", IdempotencyKey: "idem-target-change",
+			TableID: target.TableID, SchemaRevision: targetDefinition.Snapshot.SchemaRevision,
+			Operations: []mutation.Operation{{
+				Kind: mutation.OperationUpdate, RecordID: &targetRecord.Id,
+				Values: map[string]any{balance.Definition.Identity.PhysicalName: 42.0},
+			}},
+			Actor: mutation.Actor{Type: "user", ID: "local-user"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targetReceipt.EmittedEvents) != 1 {
+		t.Fatalf("target mutation events = %#v", targetReceipt.EmittedEvents)
+	}
+	queued, err := app.FindFirstRecordByFilter(
+		"vibetable_jobs",
+		"job_type='formula_fanout' && source_event_id={:event}",
+		dbx.Params{"event": targetReceipt.EmittedEvents[0]},
+	)
+	if err != nil || queued.GetString("state") != "queued" {
+		t.Fatalf("transactional recalculation job = %#v, err=%v", queued, err)
+	}
+	failedRequestID := "request-target-change-rollback"
+	_, applyErr := mutation.New(
+		app,
+		mutation.MetadataSchemaSource{},
+		mutation.WithComputationInvalidator(failingComputationInvalidator{}),
+	).Apply(ctx, mutation.Request{
+		ContractVersion: mutation.ContractVersion,
+		RequestID:       failedRequestID, IdempotencyKey: "idem-target-change-rollback",
+		TableID: target.TableID, SchemaRevision: targetDefinition.Snapshot.SchemaRevision,
+		Operations: []mutation.Operation{{
+			Kind: mutation.OperationUpdate, RecordID: &targetRecord.Id,
+			Values: map[string]any{balance.Definition.Identity.PhysicalName: 43.0},
+		}},
+		Actor: mutation.Actor{Type: "user", ID: "local-user"},
+	})
+	if applyErr == nil {
+		t.Fatal("target mutation committed without its durable recalculation job")
+	}
+	reloadedTarget, err := app.FindRecordById(targetCollection, targetRecord.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloadedTarget.GetFloat(balance.Definition.Identity.PhysicalName) != 42.0 {
+		t.Fatalf(
+			"failed invalidation enqueue changed target balance: %#v",
+			reloadedTarget.GetRaw(balance.Definition.Identity.PhysicalName),
+		)
+	}
+	descriptor, err = querySource.DescribeQueryTable(ctx, app, source.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err = query.Compile(descriptor, lookupFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleCount int
+	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&staleCount); err != nil {
+		t.Fatal(err)
+	}
+	if staleCount != 0 {
+		t.Fatalf("stale lookup participated in filtering: count=%d", staleCount)
+	}
+	regionDefinition, err := schemaapi.New(app).Describe(ctx, region.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regionReceipt, err := mutation.New(
+		app,
+		mutation.MetadataSchemaSource{},
+		mutation.WithComputationInvalidator(jobService),
+	).Apply(ctx, mutation.Request{
+		ContractVersion: mutation.ContractVersion,
+		RequestID:       "request-lookup-only-change", IdempotencyKey: "idem-lookup-only-change",
+		TableID: region.TableID, SchemaRevision: regionDefinition.Snapshot.SchemaRevision,
+		Operations: []mutation.Operation{{
+			Kind: mutation.OperationUpdate, RecordID: &regionRecord.Id,
+			Values: map[string]any{regionName.Definition.Identity.PhysicalName: "North updated"},
+		}},
+		Actor: mutation.Actor{Type: "user", ID: "local-user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupOnlyJob, err := app.FindFirstRecordByFilter(
+		"vibetable_jobs",
+		"job_type='formula_fanout' && source_event_id={:event}",
+		dbx.Params{"event": regionReceipt.EmittedEvents[0]},
+	)
+	if err != nil || lookupOnlyJob.GetString("state") != "queued" {
+		t.Fatalf("lookup-only invalidation job = %#v, err=%v", lookupOnlyJob, err)
 	}
 
 	collection, err := app.FindCollectionByNameOrId(source.PhysicalName)
@@ -228,6 +526,21 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 		updatePlan.Classes[0] != v2.ClassSchema {
 		t.Fatalf("formula source update plan = %#v", updatePlan)
 	}
+	formulaScheduler.fail = true
+	if _, applyErr := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: updatePlan.PlanID, PlanHash: updatePlan.PlanHash,
+		OperationID: "op_v2_formula_update_failed", Actor: actor,
+	}); applyErr == nil {
+		t.Fatal("formula schema committed without its durable backfill job")
+	}
+	rolledBack, err := catalog.Field(ctx, source.TableID, formula.FieldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.Formula.Source != formula.Definition.Formula.Source {
+		t.Fatalf("failed enqueue changed formula authority: %#v", rolledBack.Formula)
+	}
+	formulaScheduler.fail = false
 	updatedFormula, err := executor.Apply(ctx, v2.ApplyRequest{
 		PlanID: updatePlan.PlanID, PlanHash: updatePlan.PlanHash,
 		OperationID: "op_v2_formula_update", Actor: actor,
@@ -235,16 +548,21 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updatedLegacy, err := schemaapi.New(app).Describe(ctx, source.TableID)
+	updatedExecution, err := schemaapi.New(app).Describe(ctx, source.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updatedLegacyField := integrationFieldByID(updatedLegacy, formula.FieldID)
-	if updatedLegacyField == nil || updatedLegacyField.Formula == nil ||
-		updatedLegacyField.Formula.Status != "backfilling" ||
-		updatedLegacyField.Formula.Version != 2 ||
+	updatedExecutionField := integrationFieldByID(updatedExecution, formula.FieldID)
+	updatedRuntime := updatedExecution.FormulaRuntime[formula.FieldID]
+	if updatedExecutionField == nil || updatedExecutionField.Formula == nil ||
+		updatedRuntime.Status != "backfilling" ||
+		updatedRuntime.Version != 2 ||
 		updatedFormula.Definition.Formula.ResultType != v2.LogicalNumber {
-		t.Fatalf("updated formula lifecycle = %#v / %#v", updatedFormula, updatedLegacyField)
+		t.Fatalf(
+			"updated formula lifecycle: status=%q version=%d resultType=%q field=%#v",
+			updatedRuntime.Status, updatedRuntime.Version, updatedFormula.Definition.Formula.ResultType,
+			updatedExecutionField,
+		)
 	}
 	var cleared int
 	query := fmt.Sprintf(
@@ -257,18 +575,106 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	if cleared != 1 {
 		t.Fatal("formula source update left a stale materialized value")
 	}
+	if len(formulaScheduler.enqueued) != 3 || len(formulaScheduler.started) != 2 {
+		t.Fatalf(
+			"formula job lifecycle = enqueued %#v, started %#v",
+			formulaScheduler.enqueued,
+			formulaScheduler.started,
+		)
+	}
 }
 
 func integrationFieldByID(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	fieldID string,
-) *schema.FieldDefinition {
-	for index := range definition.Fields {
-		if definition.Fields[index].FieldID == fieldID {
-			return &definition.Fields[index]
+) *v2.FieldDefinition {
+	for index := range definition.Snapshot.Fields {
+		if definition.Snapshot.Fields[index].Identity.FieldID == fieldID {
+			return &definition.Snapshot.Fields[index]
 		}
 	}
 	return nil
+}
+
+type v2IntegrationTable struct {
+	TableID        string
+	PhysicalName   string
+	SchemaRevision string
+}
+
+func createV2IntegrationTable(
+	t *testing.T,
+	ctx context.Context,
+	app core.App,
+	displayName string,
+	operationID string,
+) v2IntegrationTable {
+	t.Helper()
+	lifecycle, err := schemacore.NewTableLifecycle(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := lifecycle.Create(ctx, v2.TableCreateIntent{
+		DisplayName: displayName,
+		OperationID: operationID,
+		Actor:       v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := app.FindFirstRecordByFilter(
+		"vibetable_tables", "table_id={:table}", dbx.Params{"table": receipt.TableID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v2IntegrationTable{
+		TableID: receipt.TableID, PhysicalName: metadata.GetString("physical_name"),
+		SchemaRevision: receipt.SchemaRevision,
+	}
+}
+
+func createV2IntegrationTableWithField(
+	t *testing.T,
+	ctx context.Context,
+	app core.App,
+	tableDisplayName string,
+	fieldDisplayName string,
+	operationPrefix string,
+) (v2IntegrationTable, v2.ApplyReceipt) {
+	t.Helper()
+	table := createV2IntegrationTable(
+		t, ctx, app, tableDisplayName, operationPrefix+"_table",
+	)
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(app, store)
+	field := applyCreatedField(
+		t, ctx, catalog, planner, executor, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, fieldDisplayName),
+		v2.Actor{ID: "local-user", Kind: "user"}, operationPrefix+"_field",
+	)
+	return table, field
+}
+
+func createV2IntegrationField(
+	t *testing.T,
+	ctx context.Context,
+	app core.App,
+	tableID string,
+	draft v2.FieldDraft,
+	operationID string,
+) v2.ApplyReceipt {
+	t.Helper()
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(app, store)
+	return applyCreatedField(
+		t, ctx, catalog, planner, executor, tableID, draft,
+		v2.Actor{ID: "local-user", Kind: "user"}, operationID,
+	)
 }
 
 func applyCreatedField(

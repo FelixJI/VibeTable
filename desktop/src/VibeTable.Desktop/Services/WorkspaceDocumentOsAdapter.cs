@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using VibeTable.Contracts;
 using VibeTable.Workspace.Diff;
 
@@ -8,11 +9,11 @@ namespace VibeTable.Desktop.Services;
 /// <summary>
 /// Native file-system adapter for documents owned by the active workspace-v2
 /// Sidecar. It keeps no document topology: every UUID/path pair is obtained
-/// from fileHistory.listDocuments and wrapped in an expiring session handle.
+/// from fileHistory.queryDocuments and wrapped in an expiring session handle.
 /// </summary>
-public sealed class WorkspaceDocumentOsAdapter : IDisposable
+public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDisposable
 {
-    public const string ListDocumentsMethod = "fileHistory.listDocuments";
+    public const string QueryDocumentsMethod = "fileHistory.queryDocuments";
     public const string ImportDocumentMethod = "fileHistory.import";
     public const string RelinkDocumentMethod = "fileHistory.relink";
     public const string MaterializeDiffPairMethod =
@@ -85,17 +86,25 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
     }
 
     public async Task<DocumentListPayload> ListGlobalAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DocumentQueryInput? query = null)
     {
         WorkspaceDocumentBinding binding = RequireBinding();
-        FileDocumentV2[] documents = await ReadDocumentsAsync(
+        DocumentQueryPage documents = await ReadDocumentsAsync(
             binding,
+            query ?? DocumentQueryInput.Default,
             cancellationToken).ConfigureAwait(false);
-        _capabilities.RevokeAll();
-        DocumentBridgeEntry[] entries = documents
+        if (query?.Cursor is null)
+            _capabilities.RevokeAll();
+        DocumentBridgeEntry[] entries = documents.Documents
             .Select(document => CreateEntry(binding, document))
             .ToArray();
-        return new DocumentListPayload(null, null, entries);
+        return new DocumentListPayload(
+            null,
+            null,
+            entries,
+            documents.NextCursor,
+            documents.TopologyRevision);
     }
 
     public Task<DocumentListPayload> ListRecordAsync(
@@ -109,7 +118,7 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
         // v2 owns file topology but has no record-link model. Returning no
         // entries is the only non-authoritative representation.
         return Task.FromResult(
-            new DocumentListPayload(collection, itemId, []));
+            new DocumentListPayload(collection, itemId, [], null, 0));
     }
 
     public void Open(string handle)
@@ -214,6 +223,16 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
 
     public void RotateCapabilityEpoch() => _capabilities.RotateEpoch();
 
+    internal bool MatchesScope(WorkspaceWireScope? scope)
+    {
+        if (_disposed || scope is null || scope.Scope != "workspace")
+            return false;
+        WorkspaceDocumentBinding? binding = _bindingProvider();
+        return binding is not null
+            && binding.WorkspaceId == scope.WorkspaceId
+            && binding.SessionEpoch == scope.SessionEpoch;
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -223,12 +242,13 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
         _preview.Dispose();
     }
 
-    private async Task<FileDocumentV2[]> ReadDocumentsAsync(
+    private async Task<DocumentQueryPage> ReadDocumentsAsync(
         WorkspaceDocumentBinding binding,
+        DocumentQueryInput query,
         CancellationToken cancellationToken)
     {
         if (!binding.RpcMethods.Contains(
-                ListDocumentsMethod,
+                QueryDocumentsMethod,
                 StringComparer.Ordinal))
             throw new DocumentFileOperationException(
                 "当前 Sidecar 未提供文档列表能力。",
@@ -243,11 +263,10 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
             lease,
             cancellationToken);
         JsonElement wire = CreateWire(binding, operationId, lease);
-        JsonElement parameters = JsonSerializer.SerializeToElement(
-            new { includeDeleted = false });
+        JsonElement parameters = JsonSerializer.SerializeToElement(query);
         WorkspaceV2ForwardResult response = await binding.Gateway.ForwardAsync(
             requestId,
-            ListDocumentsMethod,
+            QueryDocumentsMethod,
             wire,
             parameters,
             pathGrant: null,
@@ -259,46 +278,51 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
                 response.Error.Code);
         JsonElement result = response.Result
             ?? throw InvalidList();
-        RequireExactProperties(result, "documents");
+        RequireExactProperties(result, "documents", "nextCursor", "topologyRevision");
         JsonElement source = result.GetProperty("documents");
-        if (source.ValueKind != JsonValueKind.Array ||
-            source.GetArrayLength() > 10_000)
+        if (source.ValueKind != JsonValueKind.Array || source.GetArrayLength() > 500 ||
+            result.GetProperty("topologyRevision").ValueKind != JsonValueKind.Number ||
+            !result.GetProperty("topologyRevision").TryGetUInt64(out ulong topologyRevision))
             throw InvalidList();
 
-        var documents = new List<FileDocumentV2>(source.GetArrayLength());
+        var documents = new List<FileDocumentSummaryV2>(source.GetArrayLength());
         foreach (JsonElement item in source.EnumerateArray())
         {
-            FileDocumentV2 document;
+            FileDocumentSummaryV2 document;
             try
             {
-                document = WorkspaceV2Json.DeserializeStrict<FileDocumentV2>(
+                document = WorkspaceV2Json.DeserializeStrict<FileDocumentSummaryV2>(
                     item.GetRawText());
             }
             catch (JsonException)
             {
                 throw InvalidList();
             }
-            if (document.WorkspaceId != binding.WorkspaceId ||
-                document.Status != FileDocumentStatus.Active)
-                throw InvalidList();
             _ = ResolveWorkspacePath(binding.Root, document.RelativePath);
             documents.Add(document);
         }
-        return documents.ToArray();
+        JsonElement cursorValue = result.GetProperty("nextCursor");
+        string? nextCursor = cursorValue.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.String => cursorValue.GetString(),
+            _ => throw InvalidList(),
+        };
+        return new DocumentQueryPage(documents, nextCursor, topologyRevision);
     }
 
     private DocumentBridgeEntry CreateEntry(
         WorkspaceDocumentBinding binding,
-        FileDocumentV2 document)
+        FileDocumentSummaryV2 document)
     {
         string fullPath = ResolveWorkspacePath(
             binding.Root,
             document.RelativePath);
-        bool available = File.Exists(fullPath) &&
+        bool active = document.Status == FileDocumentStatus.Active;
+        bool available = active && File.Exists(fullPath) &&
             IsSafeMaterializedPath(binding.Root, fullPath);
         var granted = new List<string> { "history" };
-        if (_diffCoordinator is not null &&
-            document.EffectiveRevisionId is not null &&
+        if (active && _diffCoordinator is not null &&
             binding.RpcMethods.Contains(
                 MaterializeDiffPairMethod,
                 StringComparer.Ordinal) &&
@@ -312,8 +336,7 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
         if (available)
         {
             granted.AddRange(["open", "reveal", "dragOut"]);
-            if (binding.Writable &&
-                document.EffectiveRevisionId is not null)
+            if (binding.Writable)
                 granted.Add("unlink");
             if (_preview.CanPreview(fullPath))
             {
@@ -321,7 +344,7 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
                 previewKind = "system";
             }
         }
-        else if (binding.Writable)
+        else if (active && binding.Writable)
         {
             granted.Add("relink");
         }
@@ -332,20 +355,24 @@ public sealed class WorkspaceDocumentOsAdapter : IDisposable
             document.RelativePath,
             document.EffectiveRevisionId,
             granted);
-        string? currentRevision =
-            document.EffectiveRevisionId is not null &&
-            document.NextFormalVersion > 1
-                ? $"V{document.NextFormalVersion - 1}"
-                : null;
+        string? currentRevision = document.FormalVersion is null
+            ? null
+            : $"V{document.FormalVersion}";
         return new DocumentBridgeEntry(
             document.DocumentId.ToString("D"),
             handle,
-            Path.GetFileName(document.RelativePath),
-            MimeTypeFor(document.RelativePath),
+            document.RelativePath,
+            document.DisplayName,
+            document.Extension,
+            document.MimeType,
+            document.SizeBytes,
+            document.EffectiveRevisionCreatedAt,
+            document.FormalVersion,
+            document.Status.ToString().ToLowerInvariant(),
             available ? "available" : "missing",
             previewKind,
             currentRevision,
-            document.EffectiveRevisionId?.ToString("D"),
+            document.EffectiveRevisionId.ToString("D"),
             "workspace",
             granted);
     }
@@ -684,8 +711,14 @@ public sealed record WorkspaceDocumentRelinkResult(
 public sealed record DocumentBridgeEntry(
     string DocumentId,
     string EntryHandle,
+    string RelativePath,
     string DisplayName,
-    string? MimeType,
+    string Extension,
+    string MimeType,
+    ulong SizeBytes,
+    DateTimeOffset EffectiveRevisionCreatedAt,
+    ulong? FormalVersion,
+    string Status,
     string Availability,
     string PreviewKind,
     string? CurrentRevision,
@@ -696,7 +729,80 @@ public sealed record DocumentBridgeEntry(
 public sealed record DocumentListPayload(
     string? Collection,
     string? ItemId,
-    IReadOnlyList<DocumentBridgeEntry> Entries);
+    IReadOnlyList<DocumentBridgeEntry> Entries,
+    string? NextCursor,
+    ulong TopologyRevision);
+
+internal sealed record DocumentQueryPage(
+    IReadOnlyList<FileDocumentSummaryV2> Documents,
+    string? NextCursor,
+    ulong TopologyRevision);
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record DocumentFilterInput
+{
+    [JsonPropertyName("field")]
+    public required string Field { get; init; }
+
+    [JsonPropertyName("operator")]
+    public required string Operator { get; init; }
+
+    [JsonPropertyName("value")]
+    public required JsonElement Value { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record DocumentSortInput
+{
+    [JsonPropertyName("field")]
+    public required string Field { get; init; }
+
+    [JsonPropertyName("direction")]
+    public required string Direction { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record DocumentQueryInput
+{
+    public static DocumentQueryInput Default { get; } = new()
+    {
+        Logic = "and",
+        Filters =
+        [
+            new DocumentFilterInput
+            {
+                Field = "status",
+                Operator = "eq",
+                Value = JsonSerializer.SerializeToElement("active"),
+            },
+        ],
+        Sort =
+        [
+            new DocumentSortInput
+            {
+                Field = "effectiveRevisionCreatedAt",
+                Direction = "desc",
+            },
+        ],
+        Limit = 100,
+        Cursor = null,
+    };
+
+    [JsonPropertyName("logic")]
+    public required string Logic { get; init; }
+
+    [JsonPropertyName("filters")]
+    public required IReadOnlyList<DocumentFilterInput> Filters { get; init; }
+
+    [JsonPropertyName("sort")]
+    public required IReadOnlyList<DocumentSortInput> Sort { get; init; }
+
+    [JsonPropertyName("limit")]
+    public required int Limit { get; init; }
+
+    [JsonPropertyName("cursor")]
+    public required string? Cursor { get; init; }
+}
 
 public sealed record DocumentDiffPayload(
     string EntryHandle,

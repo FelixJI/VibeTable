@@ -5,14 +5,14 @@ import (
 	"fmt"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type Calculator interface {
 	Calculate(
 		context.Context,
 		core.App,
-		schema.TableDefinition,
+		schemaexecution.Table,
 		*core.Record,
 	) (map[string]any, error)
 }
@@ -34,7 +34,7 @@ func New(calculators ...Calculator) *Composite {
 func (composite *Composite) Calculate(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) (map[string]any, error) {
 	result := map[string]any{}

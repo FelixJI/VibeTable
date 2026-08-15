@@ -6,7 +6,8 @@ from backend.__main__ import _register_pocketbase_product_methods
 from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
-from backend.rpc.dispatcher import CODE_INVALID_PARAMS, CODE_PRODUCT_DATA, RpcDispatcher
+from backend.rpc.dispatcher import CODE_INVALID_PARAMS, RpcDispatcher
+from backend.rpc.error_registry import CODE_PRODUCT_DATA
 
 RETIRED_PROVIDER = "".join(["di", "rectus"])
 
@@ -41,13 +42,13 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "formula.draft.validate",
         "formula.validate",
         "lookup.list",
-        "lookup.validate",
-        "lookup.preview",
         "lookup.query",
         "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
         "query.page",
+        "query.cursorOpen",
+        "query.cursorFetch",
         "query.view",
         "query.readRows",
         "query.validateSnapshot",
@@ -56,12 +57,11 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "relation.previewDelta",
         "relation.searchTargets",
         "relation.updateSingle",
-        "schema.apply",
+        "schema.table.create",
         "schema.delete",
         "schema.describe",
         "schema.getTable",
         "schema.list",
-        "schema.validate",
         "history.applyRestore",
         "history.previewRestore",
         "history.read",

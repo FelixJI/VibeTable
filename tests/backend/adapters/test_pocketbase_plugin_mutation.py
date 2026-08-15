@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
 
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.contracts.plugin import MutationPlan
+from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
 class FakeClient:
@@ -14,8 +16,8 @@ class FakeClient:
         self.definitions: list[dict[str, Any]] = []
         self.receipt_status = "applied"
 
-    async def apply_mutation(self, request: dict[str, Any]) -> dict[str, Any]:
-        self.requests.append(request)
+    async def apply_mutation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        self.requests.append(dict(request))
         return {"status": self.receipt_status, "affectedRows": [{"recordId": "1"}]}
 
     async def describe_table(self, table_id: str) -> dict[str, Any]:
@@ -114,42 +116,8 @@ async def test_plugin_plan_accepts_idempotent_replay_receipt() -> None:
 async def test_dynamic_plugin_grant_refreshes_schema_before_every_plan() -> None:
     client = FakeClient()
     client.definitions = [
-        {
-            "tableId": "orders",
-            "schemaRevision": "schema-7",
-            "fields": [
-                {
-                    "fieldId": "fld_status",
-                    "physicalName": "status",
-                    "kind": "text",
-                    "dataType": "text",
-                    "nullable": True,
-                    "constraints": [],
-                },
-            ],
-        },
-        {
-            "tableId": "orders",
-            "schemaRevision": "schema-8",
-            "fields": [
-                {
-                    "fieldId": "fld_status",
-                    "physicalName": "status",
-                    "kind": "text",
-                    "dataType": "text",
-                    "nullable": True,
-                    "constraints": [],
-                },
-                {
-                    "fieldId": "fld_note",
-                    "physicalName": "note",
-                    "kind": "text",
-                    "dataType": "text",
-                    "nullable": True,
-                    "constraints": [],
-                },
-            ],
-        },
+        snapshot_v2("orders", [field_v2("status")], revision="schema-7"),
+        snapshot_v2("orders", [field_v2("status"), field_v2("note")], revision="schema-8"),
     ]
     adapter = PocketBasePluginMutationAdapter(
         client=client,
@@ -157,8 +125,8 @@ async def test_dynamic_plugin_grant_refreshes_schema_before_every_plan() -> None
         writable_fields={},
     )
 
-    await adapter.apply(_plan())
-    await adapter.apply(_plan(values={"note": "fresh schema"}))
+    await adapter.apply(_plan(values={"f_status00": "done"}))
+    await adapter.apply(_plan(values={"f_note0000": "fresh schema"}))
 
     assert [request["schemaRevision"] for request in client.requests] == [
         "schema-7",

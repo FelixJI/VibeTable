@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
@@ -10,19 +11,16 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PocketBaseTableGatewayTests
 {
     [TestMethod]
-    public async Task CatalogAndQueryPageUseOnlyClosedProductMethods()
+    public async Task CatalogAndQueryViewUseOnlyClosedProductMethods()
     {
         var transport = new ProductTransport();
         transport.Respond(
             "schema.list",
             """{"tables":[""" + Schema("orders") + "]}");
-        transport.Respond(
-            "identifier.reconcile",
-            """{"mappings":[]}""");
         transport.Respond("schema.getTable", Schema("orders"));
         transport.Respond(
-            "query.page",
-            """
+            "query.view",
+            ViewResponse("""
             {"rows":[{"id":"row-1","title":"Hello",
              "__vibetableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
              "offset":0,"limit":100,
@@ -30,18 +28,17 @@ public sealed class PocketBaseTableGatewayTests
              "snapshot":{"snapshotId":"00000000000000000000000000000000","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
              "databaseId":"local","table":"orders","schemaRevision":"schema_0001",
              "dataRevision":1,"normalizedQuery":{"keyword":"","filters":[],"sorts":[],"offset":0,"limit":100}}}
-            """);
+            """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
             new JsonRpcProductDataGateway(client),
             new JsonRpcWorkspaceSupportGateway(client));
 
         var opened = await gateway.OpenDatabaseAsync("ignored", CancellationToken.None);
-        var page = await gateway.ReadTablePageAsync(
-            "orders", 0, 100, CancellationToken.None);
+        var page = await QueryViewAsync(gateway, "orders", 0, 100);
 
         CollectionAssert.AreEqual(new[] { "orders" }, opened.Tables.ToArray());
-        Assert.AreEqual("Orders", opened.DisplayNames!["orders"]);
+        Assert.AreEqual("Orders", opened.DisplayNames["orders"]);
         Assert.AreEqual("row-1", page.Rows[0]["rowKey"]);
         Assert.AreEqual("title", page.Columns[1].Name);
         Assert.AreEqual("text", page.Columns[1].DataType);
@@ -49,37 +46,11 @@ public sealed class PocketBaseTableGatewayTests
             new[] { "eq", "is_null" },
             page.Columns[1].FilterOperators!.ToArray());
         CollectionAssert.AreEqual(
-            new[] { "identifier.reconcile", "schema.list", "schema.getTable", "query.page" },
+            new[] { "schema.list", "schema.getTable", "query.view" },
             transport.Methods);
         Assert.IsFalse(transport.Serialized.Contains(
             "local",
             StringComparison.OrdinalIgnoreCase));
-    }
-
-    [TestMethod]
-    public async Task RestoredWorkspaceListsSchemaWhenLegacyAliasWriteIsBlocked()
-    {
-        var transport = new ProductTransport();
-        transport.RespondError(
-            "identifier.reconcile",
-            -32120,
-            "Product data error",
-            """{"kind":"product_data_error","code":"workspace.v1_write_disabled"}""");
-        transport.Respond(
-            "schema.list",
-            """{"tables":[""" + Schema("orders") + "]}");
-        await using var client = new JsonRpcClient(transport);
-        using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
-
-        var opened = await gateway.OpenDatabaseAsync("ignored", CancellationToken.None);
-
-        CollectionAssert.AreEqual(new[] { "orders" }, opened.Tables.ToArray());
-        Assert.AreEqual("Orders", opened.DisplayNames!["orders"]);
-        CollectionAssert.AreEqual(
-            new[] { "identifier.reconcile", "schema.list" },
-            transport.Methods);
     }
 
     [TestMethod]
@@ -88,104 +59,27 @@ public sealed class PocketBaseTableGatewayTests
         var transport = new ProductTransport();
         transport.Respond("schema.getTable", RelationalSchema("orders"));
         transport.Respond(
-            "query.page",
-            """
+            "query.view",
+            ViewResponse("""
             {"rows":[],"offset":0,"limit":100,"filteredRows":0,"totalRows":0,
              "snapshot":{"snapshotId":"00000000000000000000000000000000",
              "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
              "databaseId":"local","table":"orders","schemaRevision":"schema_0001",
              "dataRevision":1,"normalizedQuery":{"offset":0,"limit":100}}}
-            """);
+            """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
             new JsonRpcProductDataGateway(client),
             new JsonRpcWorkspaceSupportGateway(client));
 
-        var page = await gateway.ReadTablePageAsync(
-            "orders", 0, 100, CancellationToken.None);
+        var page = await QueryViewAsync(gateway, "orders", 0, 100);
 
         Assert.AreEqual(
-            "orders.customer",
-            page.Columns.Single(column => column.Name == "customer").RelationId);
+            "orders.fld_customer",
+            page.Columns.Single(column => column.Name == "f_customer").RelationId);
         Assert.AreEqual(
-            "orders.customer_name",
-            page.Columns.Single(column => column.Name == "customer_name").LookupId);
-    }
-
-    [TestMethod]
-    public async Task LaterPageRefreshesSchemaAndRetriesOnceBeforeProjectingRows()
-    {
-        var transport = new ProductTransport();
-        transport.Respond("schema.getTable", Schema("orders"));
-        transport.Respond("query.page", PageResponse("schema_0001", 0, "title"));
-        transport.Respond(
-            "schema.getTable",
-            Schema("orders")
-                .Replace("schema_0001", "schema_0002", StringComparison.Ordinal)
-                .Replace("title", "summary", StringComparison.Ordinal)
-                .Replace("Title", "Summary", StringComparison.Ordinal));
-        transport.Respond("query.page", PageResponse("schema_0002", 100, "summary"));
-        transport.Respond("query.page", PageResponse("schema_0002", 100, "summary"));
-        await using var client = new JsonRpcClient(transport);
-        using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
-
-        await gateway.ReadTablePageAsync("orders", 0, 100, CancellationToken.None);
-        var page = await gateway.ReadTablePageAsync(
-            "orders", 100, 100, CancellationToken.None);
-
-        Assert.AreEqual("schema_0002", page.QuerySnapshot!.SchemaRevision);
-        Assert.AreEqual("schema_0002", page.Revision!.SchemaRevision);
-        Assert.AreEqual("summary", page.Columns[1].Name);
-        Assert.AreEqual("value", page.Rows[0]["summary"]);
-        CollectionAssert.AreEqual(
-            new[]
-            {
-                "schema.getTable",
-                "query.page",
-                "query.page",
-                "schema.getTable",
-                "query.page",
-            },
-            transport.Methods);
-    }
-
-    [TestMethod]
-    public async Task ContinuingSchemaChangesFailAfterOneRetry()
-    {
-        var transport = new ProductTransport();
-        transport.Respond("schema.getTable", Schema("orders"));
-        transport.Respond("query.page", PageResponse("schema_0001", 0, "title"));
-        transport.Respond(
-            "schema.getTable",
-            Schema("orders").Replace(
-                "schema_0001",
-                "schema_0002",
-                StringComparison.Ordinal));
-        transport.Respond("query.page", PageResponse("schema_0002", 100, "title"));
-        transport.Respond("query.page", PageResponse("schema_0003", 100, "title"));
-        await using var client = new JsonRpcClient(transport);
-        using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
-
-        await gateway.ReadTablePageAsync("orders", 0, 100, CancellationToken.None);
-        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-            gateway.ReadTablePageAsync(
-                "orders", 100, 100, CancellationToken.None));
-
-        StringAssert.Contains(exception.Message, "schema changed");
-        CollectionAssert.AreEqual(
-            new[]
-            {
-                "schema.getTable",
-                "query.page",
-                "query.page",
-                "schema.getTable",
-                "query.page",
-            },
-            transport.Methods);
+            "orders.fld_customer_name",
+            page.Columns.Single(column => column.Name == "f_customer_name").LookupId);
     }
 
     [TestMethod]
@@ -454,32 +348,46 @@ public sealed class PocketBaseTableGatewayTests
     public async Task EditSchemaNormalizesJsonAndMultiSelectEditors()
     {
         var transport = new ProductTransport();
-        transport.Respond("schema.getTable",
-            """
-            {
-              "contractVersion":"2.0","tableId":"items","physicalName":"items",
-              "displayName":"Items","kind":"base","schemaRevision":"schema_0001",
-              "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
-              "fields":[
-                {"fieldId":"metadata","physicalName":"metadata","displayName":"Metadata",
-                 "kind":"scalar","dataType":"json","storageType":"json","nullable":true,
-                 "defaultValue":null,
-                 "constraints":[{"kind":"jsonSchema","schema":{"type":"object"}}],
-                 "editor":{"kind":"json","config":{}},"readOnly":false,
-                 "filterOperators":["contains","is_null","is_not_null"],
-                 "formula":null,"relation":null,"lookup":null,"attachmentPolicy":null},
-                {"fieldId":"tags","physicalName":"tags","displayName":"Tags",
-                 "kind":"scalar","dataType":"multiSelect","storageType":"select","nullable":true,
-                 "defaultValue":null,
-                 "constraints":[{"kind":"enum","multiple":true,"minSelected":0,
-                   "maxSelected":null,"options":[{"value":"a","displayName":"A"},
-                   {"value":"b","displayName":"B"}]}],
-                 "editor":{"kind":"multiSelect","config":{}},"readOnly":false,
-                 "filterOperators":["eq","ne","in","is_null","is_not_null"],
-                 "formula":null,"relation":null,"lookup":null,"attachmentPolicy":null}
-              ],"indexes":[]
-            }
-            """);
+        JsonObject metadata = V2Field("metadata", "metadata", "Metadata", "json");
+        metadata["json"] = new JsonObject
+        {
+            ["rootType"] = "object",
+            ["maxSize"] = 1024,
+            ["schema"] = new JsonObject { ["type"] = "object" },
+        };
+        JsonObject tagsField = V2Field("tags0000", "tags0000", "Tags", "multiSelect");
+        tagsField["select"] = new JsonObject
+        {
+            ["options"] = new JsonArray(
+                new JsonObject
+                {
+                    ["optionId"] = "opt_aaaaaaaa",
+                    ["label"] = "A",
+                    ["color"] = "red",
+                    ["order"] = 0,
+                    ["state"] = "active",
+                },
+                new JsonObject
+                {
+                    ["optionId"] = "opt_bbbbbbbb",
+                    ["label"] = "B",
+                    ["color"] = "blue",
+                    ["order"] = 1,
+                    ["state"] = "active",
+                }),
+        };
+        string itemSchema = SchemaWithFields("items", metadata, tagsField);
+        transport.Respond("schema.getTable", itemSchema);
+        transport.Respond("schema.getTable", itemSchema);
+        transport.Respond(
+            "query.view",
+            ViewResponse("""
+            {"rows":[],"offset":0,"limit":10,"filteredRows":0,"totalRows":0,
+             "snapshot":{"snapshotId":"00000000000000000000000000000000",
+             "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+             "databaseId":"local","table":"items","schemaRevision":"schema_0001",
+             "dataRevision":1,"normalizedQuery":{"offset":0,"limit":10}}}
+            """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
             new JsonRpcProductDataGateway(client),
@@ -487,61 +395,82 @@ public sealed class PocketBaseTableGatewayTests
 
         var schema = await gateway.GetEditSchemaAsync(
             "items", CancellationToken.None);
-        var json = schema.Columns.Single(column => column.Name == "metadata");
-        var tags = schema.Columns.Single(column => column.Name == "tags");
+        var json = schema.Columns.Single(column => column.Name == "f_metadata");
+        var tags = schema.Columns.Single(column => column.Name == "f_tags0000");
 
         Assert.AreEqual("json", json.DataType);
         Assert.AreEqual("json", json.Editor["kind"]);
         Assert.IsNotNull(json.Editor["schema"]);
         Assert.AreEqual("multi_select", tags.Editor["kind"]);
         CollectionAssert.AreEqual(
-            new object?[] { "a", "b" },
+            new object?[] { "opt_aaaaaaaa", "opt_bbbbbbbb" },
             (object?[])tags.Editor["options"]!);
+        var page = await QueryViewAsync(gateway, "items", 1, 10);
+        var tagsColumn = page.Columns.Single(column => column.Name == "f_tags0000");
+        Assert.AreEqual("multiSelect", tagsColumn.FilterInput);
+        CollectionAssert.AreEqual(
+            new[] { "opt_aaaaaaaa", "opt_bbbbbbbb" },
+            tagsColumn.FilterOptions!.Select(option => option.Value).ToArray());
+    }
+
+    [TestMethod]
+    public async Task EditSchemaAcceptsGeoPointWithNullJsonSpecification()
+    {
+        var transport = new ProductTransport();
+        JsonObject title = V2Field("title000", "title000", "Title", "text");
+        JsonObject location = V2Field("location0", "location0", "Location", "geoPoint");
+        location["json"] = null;
+        transport.Respond(
+            "schema.getTable",
+            SchemaWithFields("items", title, location));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+
+        EditSchemaResult schema = await gateway.GetEditSchemaAsync(
+            "items", CancellationToken.None);
+
+        ColumnEditSchema text = schema.Columns.Single(column => column.Name == "f_title000");
+        ColumnEditSchema geoPoint = schema.Columns.Single(column => column.Name == "f_location0");
+        Assert.IsTrue(text.Editable);
+        Assert.AreEqual("json", geoPoint.Editor["kind"]);
+        Assert.IsNull(geoPoint.Editor["schema"]);
     }
 
     [TestMethod]
     public async Task FormulaColumnUsesDeclaredResultTypeInsteadOfNumberStorage()
     {
         var transport = new ProductTransport();
+        JsonObject doubled = V2Field("doubled0", "doubled0", "Doubled", "formula");
+        doubled["formula"] = new JsonObject
+        {
+            ["language"] = "cel-v1",
+            ["source"] = "quantity * 2",
+            ["resultType"] = "number",
+        };
+        doubled["storage"]!["kind"] = "computed";
+        doubled["storage"]!["options"]!["onlyInt"] = true;
+        doubled["display"]!["kind"] = "readonly";
+        transport.Respond("schema.getTable", SchemaWithFields("items", doubled));
         transport.Respond(
-            "schema.getTable",
-            """
-            {
-              "contractVersion":"2.0","tableId":"items","physicalName":"items",
-              "displayName":"Items","kind":"base","schemaRevision":"schema_0001",
-              "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
-              "fields":[
-                {"fieldId":"doubled","physicalName":"doubled","displayName":"Doubled",
-                 "kind":"formula","dataType":"formula","storageType":"number",
-                 "nullable":true,"defaultValue":null,"constraints":[],
-                 "editor":{"kind":"formula","config":{}},"readOnly":true,
-                 "filterOperators":["eq","ne","gt","gte","lt","lte","between","in","is_null","is_not_null"],
-                 "formula":{"language":"cel-v1","source":"quantity * 2",
-                   "resultType":"integer","dependencies":["quantity"],
-                   "state":"valid","diagnostics":[]},
-                 "relation":null,"lookup":null,"attachmentPolicy":null}
-              ],"indexes":[]
-            }
-            """);
-        transport.Respond(
-            "query.page",
-            """
+            "query.view",
+            ViewResponse("""
             {"rows":[{"id":"row-1","doubled":10}],
              "offset":0,"limit":100,"filteredRows":1,"totalRows":1,
              "snapshot":{"snapshotId":"00000000000000000000000000000000",
              "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
              "databaseId":"local","table":"items","schemaRevision":"schema_0001",
              "dataRevision":1,"normalizedQuery":{"offset":0,"limit":100}}}
-            """);
+            """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
             new JsonRpcProductDataGateway(client),
             new JsonRpcWorkspaceSupportGateway(client));
 
-        var page = await gateway.ReadTablePageAsync(
-            "items", 0, 100, CancellationToken.None);
+        var page = await QueryViewAsync(gateway, "items", 0, 100);
 
-        var formula = page.Columns.Single(column => column.Name == "doubled");
+        var formula = page.Columns.Single(column => column.Name == "f_doubled0");
         Assert.AreEqual("integer", formula.DataType);
         Assert.IsFalse(formula.Editable);
     }
@@ -571,14 +500,20 @@ public sealed class PocketBaseTableGatewayTests
             new JsonRpcProductDataGateway(client),
             new JsonRpcWorkspaceSupportGateway(client));
 
-        var page = await gateway.QueryTableViewAsync(
+        var page = await gateway.QueryTableViewRawAsync(
             "orders",
-            0,
-            1,
-            new TableQuery(
-                Limit: 1,
-                Groups: new[] { new GroupCondition("title") },
-                Summaries: new[] { new SummaryCondition("amount", "sum") }),
+            JsonSerializer.SerializeToElement(new
+            {
+                keyword = "",
+                filters = Array.Empty<object>(),
+                sorts = Array.Empty<object>(),
+                offset = 0,
+                limit = 1,
+                groups = new[] { new { field = "title" } },
+                summaries = new[] { new { field = "amount", function = "sum" } },
+                groupOffset = 0,
+                groupLimit = 100,
+            }),
             CancellationToken.None);
 
         Assert.AreEqual(12500, page.FilteredRows);
@@ -594,50 +529,238 @@ public sealed class PocketBaseTableGatewayTests
         StringAssert.Contains(transport.Serialized, "\"summaries\"");
     }
 
-    private static string Schema(string table) =>
-        """
-        {
-        "contractVersion":"2.0","tableId":"__TABLE__","physicalName":"__TABLE__",
-        "displayName":"Orders","kind":"base","schemaRevision":"schema_0001",
-        "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
-        "fields":[
-          {"fieldId":"title","physicalName":"title","displayName":"Title","kind":"scalar",
-           "dataType":"shortText","storageType":"text","nullable":false,"defaultValue":null,
-           "constraints":[],"editor":{"kind":"text","config":{}},"readOnly":false,
-           "filterOperators":["eq","is_null"],
-           "formula":null,"relation":null,"lookup":null,"attachmentPolicy":null}
-        ],"indexes":[]
-        }
-        """.Replace("__TABLE__", table, StringComparison.Ordinal);
+    [TestMethod]
+    public async Task RawViewQueryPreservesUnknownAstValuesForSidecarValidation()
+    {
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond(
+            "query.view",
+            """
+            {
+              "page":{"rows":[],"offset":0,"limit":50,"filteredRows":0,"totalRows":0,
+                "snapshot":{"snapshotId":"00000000000000000000000000000000",
+                  "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "databaseId":"local","table":"orders","schemaRevision":"schema_0001",
+                  "dataRevision":1,"normalizedQuery":{"offset":0,"limit":50}}},
+              "groupRows":[],"groupOffset":0,"groupLimit":100,"hasMoreGroups":false
+            }
+            """);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+        using var query = JsonDocument.Parse(
+            """{"filters":[{"field":"title","operator":"raw_sql","value":{"x":1}}],"sorts":[],"offset":0,"limit":50,"groups":[],"summaries":[],"groupOffset":0,"groupLimit":100}""");
 
-    private static string RelationalSchema(string table) =>
-        """
+        await gateway.QueryTableViewRawAsync(
+            "orders", query.RootElement, CancellationToken.None);
+
+        StringAssert.Contains(transport.Serialized, "\"operator\":\"raw_sql\"");
+        StringAssert.Contains(transport.Serialized, "\"value\":{\"x\":1}");
+    }
+
+    [TestMethod]
+    public async Task CursorWindowsPreserveOpaqueAstAndContinueWithOpaqueToken()
+    {
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond("query.cursorOpen", CursorWindow("row-1", "opaque-2", true));
+        transport.Respond("query.cursorFetch", CursorWindow("row-2", null, false));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+        using var query = JsonDocument.Parse(
+            """{"filters":[{"field":"title","operator":"raw_sql","value":{"x":1}}],"sorts":[],"limit":500,"groups":[{"field":"title"}],"summaries":[]}""");
+
+        TablePage first = await gateway.OpenTableCursorRawAsync(
+            "orders", query.RootElement, CancellationToken.None);
+        TablePage second = await gateway.FetchTableCursorAsync(
+            first.NextCursor!, CancellationToken.None);
+
+        Assert.AreEqual("opaque-2", first.NextCursor);
+        Assert.IsTrue(first.HasMore);
+        Assert.AreEqual("row-2", second.Rows[0]["rowKey"]);
+        Assert.IsFalse(second.HasMore);
+        CollectionAssert.AreEqual(
+            new[] { "schema.getTable", "query.cursorOpen", "query.cursorFetch" },
+            transport.Methods);
+        StringAssert.Contains(transport.Serialized, "\"operator\":\"raw_sql\"");
+        StringAssert.Contains(transport.Serialized, "\"cursor\":\"opaque-2\"");
+        Assert.IsFalse(transport.Serialized.Contains("\"groups\"", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task CursorStaleProductCodeSurvivesTheDesktopErrorMapper()
+    {
+        var transport = new ProductTransport();
+        transport.RespondError(
+            "query.cursorFetch",
+            -32150,
+            "Product data error",
+            """{"kind":"product_data_error","message":"cursor changed","code":"query.cursor_stale","path":"cursor","details":{},"retryable":false}""");
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+
+        RpcRemoteException exception = await Assert.ThrowsExactlyAsync<RpcRemoteException>(
+            () => gateway.FetchTableCursorAsync("opaque", CancellationToken.None));
+        MutationError mapped = MutationErrorMapper.Map(exception);
+
+        Assert.AreEqual("query.cursor_stale", mapped.Code);
+        Assert.AreEqual("cursor changed", mapped.Message);
+    }
+
+    private static string CursorWindow(string rowId, string? nextCursor, bool hasMore)
+        => JsonSerializer.Serialize(new
         {
-        "contractVersion":"2.0","tableId":"__TABLE__","physicalName":"__TABLE__",
-        "displayName":"Orders","kind":"base","schemaRevision":"schema_0001",
-        "archivePolicy":{"mode":"none","fieldId":null,"archivedValue":null},
-        "fields":[
-          {"fieldId":"customer","physicalName":"customer","displayName":"Customer",
-           "kind":"relation","dataType":"relation","storageType":"relation",
-           "nullable":true,"defaultValue":null,"constraints":[],
-           "editor":{"kind":"relation","config":{}},"readOnly":false,
-           "filterOperators":["eq","ne","in","is_null","is_not_null"],
-           "formula":null,
-           "relation":{"targetTableId":"customers","cardinality":"one",
-             "deletePolicy":"setNull","junctionTableId":null},
-           "lookup":null,"attachmentPolicy":null},
-          {"fieldId":"customer_name","physicalName":"customer_name",
-           "displayName":"Customer name","kind":"lookup","dataType":"lookup",
-           "storageType":"text","nullable":true,"defaultValue":null,
-           "constraints":[],"editor":{"kind":"lookup","config":{}},
-           "readOnly":true,
-           "filterOperators":["eq","ne","contains","starts_with","ends_with","in","is_null","is_not_null"],
-           "formula":null,"relation":null,
-           "lookup":{"relationFieldId":"customer","targetFieldId":"name",
-             "aggregate":"first"},"attachmentPolicy":null}
-        ],"indexes":[]
+            rows = new[] { new { id = rowId, title = "Hello" } },
+            filteredRows = 50_000,
+            totalRows = 50_000,
+            querySnapshot = new
+            {
+                snapshotId = "00000000000000000000000000000000",
+                digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                databaseId = "local",
+                table = "orders",
+                schemaRevision = "schema_0001",
+                dataRevision = 1,
+                normalizedQuery = new { offset = 0, limit = 500 },
+            },
+            nextCursor,
+            hasMore,
+        });
+
+    private static Task<TablePage> QueryViewAsync(
+        PocketBaseTableGateway gateway,
+        string table,
+        int offset,
+        int limit)
+        => gateway.QueryTableViewRawAsync(
+            table,
+            JsonSerializer.SerializeToElement(new
+            {
+                keyword = "",
+                filters = Array.Empty<object>(),
+                sorts = Array.Empty<object>(),
+                offset,
+                limit,
+                groups = Array.Empty<object>(),
+                summaries = Array.Empty<object>(),
+                groupOffset = 0,
+                groupLimit = 100,
+            }),
+            CancellationToken.None);
+
+    private static string ViewResponse(string page)
+        => $"{{\"page\":{page},\"groupRows\":[],\"groupOffset\":0," +
+            "\"groupLimit\":100,\"hasMoreGroups\":false}";
+
+    private static string Schema(string table)
+    {
+        string fixture = File.ReadAllText(ProductCatalogFixturePath());
+        JsonObject catalog = JsonNode.Parse(fixture)!.AsObject();
+        JsonObject rpcCase = catalog["rpcCases"]!.AsArray()
+            .Select(item => item!.AsObject())
+            .Single(item => item["method"]!.GetValue<string>() == "schema.getTable");
+        JsonObject schema = rpcCase["success"]!["result"]!.DeepClone().AsObject();
+        schema["tableId"] = table;
+        schema["displayName"] = "Orders";
+        schema["schemaRevision"] = "schema_0001";
+        JsonObject field = schema["fields"]!.AsArray()[0]!.AsObject();
+        JsonObject identity = field["identity"]!.AsObject();
+        identity["fieldId"] = "fld_title001";
+        identity["physicalName"] = "title";
+        identity["providerFieldId"] = "pb_title001";
+        field["displayName"] = "Title";
+        field["logicalType"] = "text";
+        schema["capabilities"]!.AsArray()[0]!["filterOperators"] =
+            new JsonArray("eq", "is_null");
+        return schema.ToJsonString();
+    }
+
+    private static JsonObject V2Field(
+        string fieldId,
+        string physicalName,
+        string displayName,
+        string logicalType)
+    {
+        JsonObject schema = JsonNode.Parse(Schema("fixture"))!.AsObject();
+        JsonObject field = schema["fields"]!.AsArray()[0]!.DeepClone().AsObject();
+        JsonObject identity = field["identity"]!.AsObject();
+        identity["fieldId"] = $"fld_{fieldId}";
+        identity["physicalName"] = $"f_{physicalName}";
+        identity["providerFieldId"] = $"pb_{fieldId}";
+        field["displayName"] = displayName;
+        field["logicalType"] = logicalType;
+        return field;
+    }
+
+    private static string SchemaWithFields(string table, params JsonObject[] fields)
+    {
+        JsonObject schema = JsonNode.Parse(Schema(table))!.AsObject();
+        schema["fields"] = new JsonArray(
+            fields.Select(field => field.DeepClone()).ToArray());
+        JsonObject capabilityTemplate = schema["capabilities"]!.AsArray()[0]!.AsObject();
+        schema["capabilities"] = new JsonArray(fields
+            .Select(field =>
+            {
+                JsonObject capability = capabilityTemplate.DeepClone().AsObject();
+                capability["logicalType"] = field["logicalType"]!.GetValue<string>();
+                capability["filterOperators"] = new JsonArray("eq", "is_null");
+                return (JsonNode)capability;
+            })
+            .ToArray());
+        return schema.ToJsonString();
+    }
+
+    private static string ProductCatalogFixturePath()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            string candidate = Path.Combine(
+                directory.FullName,
+                "contracts",
+                "v2",
+                "fixtures",
+                "product-rpc-catalog.json");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            directory = directory.Parent;
         }
-        """.Replace("__TABLE__", table, StringComparison.Ordinal);
+
+        throw new FileNotFoundException(
+            "Could not locate contracts/v2/fixtures/product-rpc-catalog.json.");
+    }
+
+    private static string RelationalSchema(string table)
+    {
+        JsonObject relation = V2Field(
+            "customer", "customer", "Customer", "relation");
+        relation["relation"] = new JsonObject
+        {
+            ["targetTableId"] = "customers",
+            ["cardinality"] = "one",
+            ["deletePolicy"] = "setNull",
+            ["displayFieldId"] = "fld_name0001",
+        };
+        JsonObject lookup = V2Field(
+            "customer_name", "customer_name", "Customer name", "lookup");
+        lookup["lookup"] = new JsonObject
+        {
+            ["path"] = new JsonArray(new JsonObject
+            {
+                ["relationFieldId"] = "fld_customer",
+            }),
+            ["targetFieldId"] = "fld_name0001",
+        };
+        return SchemaWithFields(table, relation, lookup);
+    }
 
     private static string PageResponse(
         string schemaRevision,

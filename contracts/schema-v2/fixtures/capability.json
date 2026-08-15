@@ -58,5 +58,13 @@
   "conversionTargets": ["text"],
   "conversionRules": ["round", "floor", "ceil", "truncate", "block"],
   "compileStrategy": "pocketbase-number",
-  "userCreatable": true
+  "userCreatable": true,
+  "filterOperators": ["eq", "ne", "isEmpty", "isNotEmpty", "gt", "gte", "lt", "lte"],
+  "groupable": true,
+  "summaryOperations": ["count", "countDistinct", "sum", "avg", "min", "max"],
+  "relationCardinalities": [],
+  "relationDeletePolicies": [],
+  "lookupMaxDepth": 0,
+  "formulaResultTypeInferred": false,
+  "formulaRelationAggregates": []
 }

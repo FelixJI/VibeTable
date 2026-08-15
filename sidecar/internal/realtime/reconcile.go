@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 var dataRevisionPattern = regexp.MustCompile(`^data_([0-9]{4,})$`)
@@ -41,7 +41,7 @@ func Reconcile(
 			Message: "tableId and revision source are required",
 		}
 	}
-	clientSchema, err := schema.ParseSchemaRevision(
+	clientSchema, err := v2.ParseSchemaRevision(
 		request.SchemaRevision,
 	)
 	if err != nil {
@@ -83,7 +83,7 @@ func Reconcile(
 		TableID:               request.TableID,
 		ClientSchemaRevision:  request.SchemaRevision,
 		ClientDataRevision:    request.DataRevision,
-		CurrentSchemaRevision: schema.FormatSchemaRevision(currentSchema),
+		CurrentSchemaRevision: v2.FormatSchemaRevision(currentSchema),
 		CurrentDataRevision:   formatDataRevision(currentData),
 		Action:                action,
 	}, nil

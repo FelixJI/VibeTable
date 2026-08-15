@@ -54,7 +54,7 @@ describe("ViewQueryControls", () => {
   it("offers single Relation grouping and a numeric interval control", async () => {
     const relation = {
       relationId: "orders.customer", fieldRef: "customer", sourceCollection: "orders",
-      kind: "m2o", relatedCollection: "customers", allowedCollections: ["customers"],
+      kind: "m2o", relatedCollection: "customers",
       unique: false, nullable: true, onDelete: "nullify", selfRelation: false,
       managed: true, state: "valid", diagnostics: [],
     } satisfies NormalizedRelationDescriptor;

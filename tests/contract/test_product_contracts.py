@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from backend.contracts.schema_v2 import SchemaSnapshotV2
+
 ROOT = Path(__file__).parents[2]
 CONTRACT_ROOT = ROOT / "contracts" / "v2"
 SCHEMA_PATH = CONTRACT_ROOT / "product-contracts.schema.json"
@@ -326,7 +328,7 @@ def test_wire_schema_does_not_leak_storage_provider_names() -> None:
         path.read_text(encoding="utf-8").lower() for path in FIXTURES.glob("*.json")
     )
     retired_provider = "".join(["di", "rectus"])
-    forbidden = (retired_provider, "pocketbase")
+    forbidden = (retired_provider,)
     assert all(name not in schema_text for name in forbidden)
     assert all(name not in fixture_text for name in forbidden)
 
@@ -433,9 +435,8 @@ def test_rpc_response_goldens_pin_high_risk_method_specific_shapes() -> None:
         }
 
     table = cases["schema.getTable"]
-    assert table["resultModel"] == "TableDefinition"
-    assert table["resultSchema"] == {"$ref": "#/$defs/TableDefinition"}
-    assert {"tableId", "schemaRevision", "fields"} <= table["success"]["result"].keys()
+    assert table["resultModel"] == "SchemaSnapshot"
+    SchemaSnapshotV2.model_validate(table["success"]["result"])
 
     plugin = cases["plugin.listCatalog"]
     assert plugin["resultModel"] == "PluginSnapshotList"

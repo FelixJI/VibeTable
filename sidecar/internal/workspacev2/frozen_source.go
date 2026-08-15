@@ -15,9 +15,12 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
+	contracts "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
+	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacesearch"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -37,6 +40,8 @@ type frozenSource struct {
 	fileAuditOutbox auditledger.OutboxStore
 	repository      objectrepo.Repository
 	history         *filehistory.Service
+	search          *workspacesearch.Engine
+	searchStatus    func() contracts.SearchStatus
 	state           *stateStore
 }
 
@@ -79,6 +84,11 @@ func (source *frozenSource) Freeze(
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
 	settings, err := source.workspaceSettings(ctx)
+	if err != nil {
+		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
+	}
+	dataRevision, computationWatermark, pendingWork, searchGeneration, err :=
+		source.snapshotDerivedState(ctx, fileRevision)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
@@ -135,6 +145,11 @@ func (source *frozenSource) Freeze(
 	view := snapshot.BarrierView{
 		SchemaRevision:        source.manifest.TopologySchemaVersion,
 		BusinessSchemaVersion: source.manifest.BusinessSchemaVersion,
+		DataRevision:          dataRevision,
+		ComputationWatermark:  computationWatermark,
+		JobSchemaVersion:      jobs.DurableSchemaVersion,
+		PendingWork:           pendingWork,
+		SearchGeneration:      searchGeneration,
 		FileRevision:          fileRevision,
 		AuditRevision:         anchor.LedgerSequence,
 		AuditAnchor:           anchor.Hash,
@@ -154,6 +169,116 @@ func (source *frozenSource) Freeze(
 		FileRoot:     fileRoot,
 		AuditAnchor:  anchor.Hash,
 	}, nil
+}
+
+func (source *frozenSource) snapshotDerivedState(
+	ctx context.Context,
+	fileRevision uint64,
+) (uint64, uint64, snapshot.PendingWork, int64, error) {
+	var dataRevision uint64
+	if _, collectionErr := source.app.FindCollectionByNameOrId("vibetable_tables"); collectionErr == nil {
+		if err := source.app.DB().NewQuery(
+			"SELECT COALESCE(MAX(data_revision), 0) FROM vibetable_tables",
+		).WithContext(ctx).Row(&dataRevision); err != nil {
+			return 0, 0, snapshot.PendingWork{}, 0, err
+		}
+	} else if !errors.Is(collectionErr, sql.ErrNoRows) {
+		return 0, 0, snapshot.PendingWork{}, 0, collectionErr
+	}
+	var jobs uint64
+	if _, collectionErr := source.app.FindCollectionByNameOrId("vibetable_jobs"); collectionErr == nil {
+		if err := source.app.DB().NewQuery(
+			"SELECT COUNT(*) FROM vibetable_jobs WHERE state IN ('queued','running')",
+		).WithContext(ctx).Row(&jobs); err != nil {
+			return 0, 0, snapshot.PendingWork{}, 0, err
+		}
+	} else if !errors.Is(collectionErr, sql.ErrNoRows) {
+		return 0, 0, snapshot.PendingWork{}, 0, collectionErr
+	}
+	var outbox uint64
+	if _, collectionErr := source.app.FindCollectionByNameOrId("vibetable_outbox"); collectionErr == nil {
+		if err := source.app.DB().NewQuery(
+			"SELECT COUNT(*) FROM vibetable_outbox WHERE status='pending'",
+		).WithContext(ctx).Row(&outbox); err != nil {
+			return 0, 0, snapshot.PendingWork{}, 0, err
+		}
+	} else if !errors.Is(collectionErr, sql.ErrNoRows) {
+		return 0, 0, snapshot.PendingWork{}, 0, collectionErr
+	}
+	searchStatus := contracts.SearchStatus{State: "idle"}
+	if source.search != nil {
+		current, statusErr := source.search.Status(ctx)
+		if statusErr != nil {
+			return 0, 0, snapshot.PendingWork{}, 0, statusErr
+		}
+		searchStatus = current
+	}
+	if source.searchStatus != nil {
+		taskStatus := source.searchStatus()
+		if taskStatus.State == "building" || taskStatus.State == "degraded" ||
+			taskStatus.State == "failed" {
+			searchStatus = taskStatus
+		}
+	}
+	var searchCheckpoint workspacesearch.ProjectionCheckpoint
+	if source.search != nil {
+		var checkpointErr error
+		searchCheckpoint, checkpointErr = source.search.ProjectionCheckpoint(ctx)
+		if checkpointErr != nil {
+			return 0, 0, snapshot.PendingWork{}, 0, checkpointErr
+		}
+	}
+	var businessTail int64
+	if _, collectionErr := source.app.FindCollectionByNameOrId("vibetable_outbox"); collectionErr == nil {
+		if err := source.app.DB().NewQuery(`
+			SELECT COALESCE(MAX(rowid), 0) FROM vibetable_outbox
+			WHERE topic='data.changed'
+		`).WithContext(ctx).Row(&businessTail); err != nil {
+			return 0, 0, snapshot.PendingWork{}, 0, err
+		}
+	} else if !errors.Is(collectionErr, sql.ErrNoRows) {
+		return 0, 0, snapshot.PendingWork{}, 0, collectionErr
+	}
+	checkpoint := ""
+	if searchStatus.Checkpoint != nil {
+		checkpoint = *searchStatus.Checkpoint
+	}
+	searchPending := searchProjectionPending(
+		searchStatus, searchCheckpoint, businessTail, fileRevision,
+	)
+	if searchPending && checkpoint == "" {
+		checkpoint = fmt.Sprintf(
+			"durable:business=%d/%d,file=%d/%d",
+			searchCheckpoint.BusinessOutboxRowID,
+			businessTail,
+			searchCheckpoint.FileHeadRevision,
+			fileRevision,
+		)
+	}
+	pending := snapshot.PendingWork{
+		Jobs: jobs, BusinessOutbox: outbox,
+		SearchRebuild:    searchPending,
+		SearchCheckpoint: checkpoint,
+	}
+	return dataRevision, computationWatermark(dataRevision, jobs), pending, searchStatus.Generation, nil
+}
+
+func computationWatermark(dataRevision, pendingJobs uint64) uint64 {
+	if pendingJobs != 0 {
+		return 0
+	}
+	return dataRevision
+}
+
+func searchProjectionPending(
+	status contracts.SearchStatus,
+	checkpoint workspacesearch.ProjectionCheckpoint,
+	businessTail int64,
+	fileRevision uint64,
+) bool {
+	return status.State == "building" || status.State == "degraded" ||
+		status.State == "failed" || checkpoint.BusinessOutboxRowID != businessTail ||
+		checkpoint.FileHeadRevision != fileRevision
 }
 
 func (source *frozenSource) snapshotAttachments(

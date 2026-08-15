@@ -31,6 +31,7 @@ export function useErrorRouter(): { init: () => void } {
 
   function init(): void {
     bridge.on("operation.failed", (payload: OperationFailedPayload) => {
+      if (payload.code === "query.cursor_stale") return;
       if (admin.phase === "submitting" || admin.phase === "deleting") {
         admin.fail(payload.message);
       } else if (paste.phase === "applying") {

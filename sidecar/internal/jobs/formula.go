@@ -16,8 +16,8 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -254,11 +254,11 @@ func (service *Service) StartFormulaBackfill(
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
-	definition, err := schemaapi.New(service.app).Describe(ctx, tableID)
+	definition, err := schemaexecution.Describe(ctx, service.app, tableID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if definition.SchemaRevision != schemaRevision {
+	if definition.Snapshot.SchemaRevision != schemaRevision {
 		return Snapshot{}, jobError(
 			"job.schema_revision_conflict",
 			"formula backfill schema revision does not match",
@@ -266,8 +266,8 @@ func (service *Service) StartFormulaBackfill(
 		)
 	}
 	hasFormula := false
-	for _, field := range definition.Fields {
-		if field.Kind == schema.FieldKindFormula {
+	for _, field := range definition.Snapshot.Fields {
+		if field.LogicalType == v2.LogicalFormula {
 			hasFormula = true
 			break
 		}
@@ -288,7 +288,7 @@ func (service *Service) StartFormulaBackfill(
 	if err != nil {
 		return Snapshot{}, err
 	}
-	revision, _ := schema.ParseSchemaRevision(definition.SchemaRevision)
+	revision, _ := v2.ParseSchemaRevision(definition.Snapshot.SchemaRevision)
 	var recordID string
 	err = service.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
 		defer func() {
@@ -344,6 +344,80 @@ func (service *Service) StartFormulaBackfill(
 	return snapshot, err
 }
 
+// EnqueueFormulaBackfill persists a formula job in the caller's authoritative
+// PocketBase transaction. Dispatch deliberately happens only after commit.
+func (service *Service) EnqueueFormulaBackfill(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+	schemaRevision string,
+) (string, error) {
+	if app == nil || tableID == "" || schemaRevision == "" {
+		return "", jobError(
+			"job.request.invalid",
+			"transaction app, tableId and schemaRevision are required",
+			false,
+		)
+	}
+	definition, err := schemaexecution.Describe(ctx, app, tableID)
+	if err != nil {
+		return "", err
+	}
+	if definition.Snapshot.SchemaRevision != schemaRevision {
+		return "", jobError(
+			"job.schema_revision_conflict",
+			"formula backfill schema revision does not match",
+			false,
+		)
+	}
+	hasFormula := false
+	for _, field := range definition.Snapshot.Fields {
+		if field.LogicalType == v2.LogicalFormula {
+			hasFormula = true
+			break
+		}
+	}
+	if !hasFormula {
+		return "", jobError(
+			"job.formula.none",
+			"table has no formula fields to recalculate",
+			false,
+		)
+	}
+	total, err := recordCountWithApp(app, definition)
+	if err != nil {
+		return "", err
+	}
+	revision, err := v2.ParseSchemaRevision(definition.Snapshot.SchemaRevision)
+	if err != nil {
+		return "", err
+	}
+	collection, err := app.FindCollectionByNameOrId("vibetable_jobs")
+	if err != nil {
+		return "", err
+	}
+	record := core.NewRecord(collection)
+	record.Set("job_type", formulaBackfillType)
+	record.Set("state", "queued")
+	record.Set("schema_revision", revision)
+	record.Set("source_event_id", "formula_backfill_"+security.RandomString(15))
+	record.Set("source_table_id", tableID)
+	record.Set("relation_field_id", formulaBackfillType)
+	progressRaw, _ := json.Marshal(Progress{Completed: 0, Total: total})
+	record.Set("progress_json", types.JSONRaw(progressRaw))
+	record.Set("error_json", nil)
+	cursorMeta, _ := json.Marshal(map[string]any{
+		"tableId": tableID, "lastRecordId": "",
+	})
+	record.Set("cursor_json", types.JSONRaw(cursorMeta))
+	if err := app.Save(record); err != nil {
+		return "", jobError(
+			"job.storage_failed", "formula backfill job could not be created", true,
+		)
+	}
+	return record.Id, nil
+}
+
 func (service *Service) Run(
 	ctx context.Context,
 	jobID string,
@@ -381,15 +455,15 @@ func (service *Service) Run(
 		if service.cancelRequested(jobID) {
 			return service.finishCancellation(ctx, record)
 		}
-		definition, err := schemaapi.New(service.app).Describe(
-			ctx, snapshot.TableID,
+		definition, err := schemaexecution.Describe(
+			ctx, service.app, snapshot.TableID,
 		)
 		if err != nil {
 			return service.failUnlessContextInterrupted(
 				ctx, record, snapshot.TableID, err,
 			)
 		}
-		if definition.SchemaRevision != snapshot.SchemaRevision {
+		if definition.Snapshot.SchemaRevision != snapshot.SchemaRevision {
 			return service.fail(
 				record,
 				snapshot.TableID,
@@ -869,7 +943,7 @@ func snapshotFromRecord(record *core.Record) (Snapshot, error) {
 		Type:           record.GetString("job_type"),
 		State:          record.GetString("state"),
 		TableID:        cursorEnvelope.TableID,
-		SchemaRevision: schema.FormatSchemaRevision(revision),
+		SchemaRevision: v2.FormatSchemaRevision(revision),
 		Cursor:         Cursor{LastRecordID: cursorEnvelope.LastRecordID},
 		Progress:       progress,
 		Error:          storedError,
@@ -881,7 +955,7 @@ func (service *Service) findExistingFormulaJob(
 	tableID string,
 	schemaRevision string,
 ) (Snapshot, bool) {
-	revision, err := schema.ParseSchemaRevision(schemaRevision)
+	revision, err := v2.ParseSchemaRevision(schemaRevision)
 	if err != nil {
 		return Snapshot{}, false
 	}
@@ -934,16 +1008,14 @@ func (service *Service) ensureMissingFormulaBackfills(ctx context.Context) error
 		}
 	}
 	for tableID := range tableIDs {
-		definition, describeErr := schemaapi.New(service.app).Describe(
-			ctx, tableID,
-		)
+		definition, describeErr := schemaexecution.Describe(ctx, service.app, tableID)
 		if describeErr != nil {
 			return describeErr
 		}
 		snapshot, startErr := service.startRecoveredFormulaBackfill(
 			ctx,
 			tableID,
-			definition.SchemaRevision,
+			definition.Snapshot.SchemaRevision,
 		)
 		if startErr != nil {
 			return startErr
@@ -1114,49 +1186,30 @@ func markFormulaStatusInApp(app core.App, tableID string, status string) error {
 			return err
 		}
 	}
-	table, err := app.FindFirstRecordByFilter(
-		"vibetable_tables",
-		"table_id={:table}",
-		dbx.Params{"table": tableID},
-	)
-	if err != nil {
-		return err
-	}
-	raw, _ := json.Marshal(table.GetRaw("definition_json"))
-	var definition schema.TableDefinition
-	if json.Unmarshal(raw, &definition) != nil {
-		return errors.New("stored table definition is invalid")
-	}
-	for index := range definition.Fields {
-		if definition.Fields[index].Kind == schema.FieldKindFormula &&
-			definition.Fields[index].Formula != nil {
-			spec := *definition.Fields[index].Formula
-			spec.Status = status
-			definition.Fields[index].Formula = &spec
-		}
-	}
-	raw, err = json.Marshal(definition)
-	if err != nil {
-		return err
-	}
-	table.Set("definition_json", types.JSONRaw(raw))
-	return app.Save(table)
+	return nil
 }
 
 func (service *Service) recordCount(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 ) (int, error) {
-	meta, err := service.app.FindFirstRecordByFilter(
+	return recordCountWithApp(service.app, definition)
+}
+
+func recordCountWithApp(
+	app core.App,
+	definition schemaexecution.Table,
+) (int, error) {
+	meta, err := app.FindFirstRecordByFilter(
 		"vibetable_tables",
 		"table_id={:table}",
-		dbx.Params{"table": definition.TableID},
+		dbx.Params{"table": definition.Snapshot.TableID},
 	)
 	if err != nil {
 		return 0, jobError(
 			"job.storage_failed", "table storage could not be read", true,
 		)
 	}
-	collection, err := service.app.FindCollectionByNameOrId(
+	collection, err := app.FindCollectionByNameOrId(
 		meta.GetString("collection_id"),
 	)
 	if err != nil {
@@ -1167,7 +1220,7 @@ func (service *Service) recordCount(
 	query := "SELECT COUNT(*) FROM `" +
 		strings.ReplaceAll(collection.Name, "`", "``") + "`"
 	var total int
-	if err := service.app.DB().NewQuery(query).Row(&total); err != nil {
+	if err := app.DB().NewQuery(query).Row(&total); err != nil {
 		return 0, jobError(
 			"job.storage_failed", "table rows could not be counted", true,
 		)

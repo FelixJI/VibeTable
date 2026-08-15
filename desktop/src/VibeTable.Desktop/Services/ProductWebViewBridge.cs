@@ -134,7 +134,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         core.NavigationCompleted += completed;
         try
         {
-            core.Navigate(WebViewAssetService.AppOrigin);
+            core.Navigate(ResolveAppUri(_readiness is not null));
             await navigation.Task.ConfigureAwait(true);
             _readiness?.Trace("ProductWebView: renderer navigation completed");
         }
@@ -143,6 +143,11 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             core.NavigationCompleted -= completed;
         }
     }
+
+    internal static string ResolveAppUri(bool e2eMode)
+        => e2eMode
+            ? $"{WebViewAssetService.AppOrigin}?vibetable-e2e=1"
+            : WebViewAssetService.AppOrigin;
 
     private void ApplyHardening(CoreWebView2 core)
     {

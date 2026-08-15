@@ -555,104 +555,6 @@ func TestConflictExternalExpectedSettingsCASRejectsPostPreviewEdit(
 	}
 }
 
-func TestConflictExternalLegacySettingsChoiceIsSemanticNoOpWithDurableRollbackBaseline(
-	t *testing.T,
-) {
-	ctx := context.Background()
-	runtime, _, closeRuntime := openExternalConflictTestRuntime(t)
-	defer closeRuntime()
-	current := conflictSettingsForSnapshotDays(t, runtime, 31)
-	applyConflictTestSettings(t, runtime, current)
-	currentID := commitConflictTestObject(
-		t,
-		runtime,
-		"legacy-settings-current",
-		current,
-	)
-	legacyID := commitConflictTestObject(
-		t,
-		runtime,
-		"legacy-settings-marker",
-		[]byte(`{}`),
-	)
-	appender := &workspaceConflictAppender{
-		owner: &productionReplicaConflict{runtime: runtime},
-	}
-
-	staged, err := appender.stageConflictSettings(
-		ctx,
-		conflictresolution.SettingsState{ObjectID: string(currentID)},
-		conflictresolution.SettingsState{ObjectID: string(legacyID)},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(staged.Previous) == 0 ||
-		string(staged.Previous) != string(current) {
-		t.Fatalf("durable rollback baseline = %s", staged.Previous)
-	}
-	external := workspaceConflictExternalStage{
-		FormatVersion: 1,
-		Settings:      &staged,
-	}
-	if err := appender.validateExternalExpected(ctx, external); err != nil {
-		t.Fatalf("legacy expected precondition = %v", err)
-	}
-	if err := replaceWorkspaceSettings(
-		ctx,
-		runtime.state,
-		[]byte(`{}`),
-		99,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := appender.validateExternalChosen(ctx, external); err != nil {
-		t.Fatalf("legacy chosen semantic validation = %v", err)
-	}
-
-	target := conflictSettingsForSnapshotDays(t, runtime, 32)
-	applyConflictTestSettings(t, runtime, target)
-	if err := appender.restoreExternalExpected(ctx, external); err != nil {
-		t.Fatalf("restore durable rollback baseline = %v", err)
-	}
-	restored, err := snapshotWorkspaceSettings(ctx, runtime.state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(restored) != string(current) {
-		t.Fatalf("restored settings = %s", restored)
-	}
-}
-
-func TestConflictExternalLegacyExpectedAcceptsVersionedCurrent(
-	t *testing.T,
-) {
-	ctx := context.Background()
-	runtime, _, closeRuntime := openExternalConflictTestRuntime(t)
-	defer closeRuntime()
-	current := conflictSettingsForSnapshotDays(t, runtime, 31)
-	applyConflictTestSettings(t, runtime, current)
-	legacyID := commitConflictTestObject(
-		t,
-		runtime,
-		"legacy-settings-expected",
-		[]byte(`{}`),
-	)
-	appender := &workspaceConflictAppender{
-		owner: &productionReplicaConflict{runtime: runtime},
-	}
-	external := workspaceConflictExternalStage{
-		FormatVersion: 1,
-		Settings: &workspaceConflictSettingsStage{
-			ExpectedObjectID: legacyID,
-			ObjectID:         legacyID,
-		},
-	}
-	if err := appender.validateExternalExpected(ctx, external); err != nil {
-		t.Fatalf("legacy expected did not match versioned live state: %v", err)
-	}
-}
-
 func TestConflictExternalAttachmentFaultRestoresOldFilesAndTableTransaction(
 	t *testing.T,
 ) {
@@ -881,9 +783,9 @@ func conflictSettingsForSnapshotDays(
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, legacy, err := decodeWorkspaceSettingsSnapshot(raw)
-	if err != nil || legacy {
-		t.Fatalf("current workspace settings: legacy=%v err=%v", legacy, err)
+	value, err := decodeWorkspaceSettingsSnapshot(raw)
+	if err != nil {
+		t.Fatalf("current workspace settings: err=%v", err)
 	}
 	value.Retention.SnapshotDays = days
 	raw, err = json.Marshal(value)

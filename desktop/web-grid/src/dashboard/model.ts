@@ -22,21 +22,21 @@ export function serializeProductPanelType(type: ProductPanelType): string {
 }
 
 export function parseWirePanel(value: unknown): DashboardPanel {
-  const source = isRecord(value) ? value : {};
-  const rawOptions = cloneRecord(source.options);
-  const rawQuery = cloneRecord(source.query);
-  const rawType = stringValue(source.type, "unknown");
+  const source = requiredRecord(value, "dashboard panel");
+  rejectLegacyField(source, "dashboard_id");
+  rejectLegacyField(source, "show_header");
+  const rawOptions = cloneRecord(requiredRecord(source.options, "dashboard panel.options"));
+  const rawQuery = cloneRecord(requiredRecord(source.query, "dashboard panel.query"));
+  const rawType = requiredString(source.type, "dashboard panel.type");
   const productType = parseProductPanelType(rawType);
   return {
-    id: stringValue(source.id),
-    dashboardId: stringValue(source.dashboardId ?? source.dashboard_id),
-    name: stringValue(source.name),
-    note: nullableString(source.note),
-    icon: nullableString(source.icon),
-    color: nullableString(source.color),
-    showHeader: source.showHeader === undefined && source.show_header === undefined
-      ? true
-      : (source.showHeader ?? source.show_header) === true,
+    id: requiredString(source.id, "dashboard panel.id"),
+    dashboardId: requiredString(source.dashboardId, "dashboard panel.dashboardId"),
+    name: requiredString(source.name, "dashboard panel.name"),
+    note: optionalNullableString(source.note, "dashboard panel.note"),
+    icon: optionalNullableString(source.icon, "dashboard panel.icon"),
+    color: optionalNullableString(source.color, "dashboard panel.color"),
+    showHeader: optionalBoolean(source.showHeader, "dashboard panel.showHeader", true),
     type: rawType,
     rawType,
     productType,
@@ -50,18 +50,19 @@ export function parseWirePanel(value: unknown): DashboardPanel {
       note: hasOwn(source, "note"),
       icon: hasOwn(source, "icon"),
       color: hasOwn(source, "color"),
-      showHeader: hasOwn(source, "showHeader") || hasOwn(source, "show_header"),
+      showHeader: hasOwn(source, "showHeader"),
     },
   };
 }
 
 export function parseWireDashboard(value: unknown): Dashboard {
-  const source = isRecord(value) ? value : {};
-  const panels = Array.isArray(source.panels) ? source.panels.map(parseWirePanel) : [];
+  const source = requiredRecord(value, "dashboard");
+  if (!Array.isArray(source.panels)) invalid("dashboard.panels");
+  const panels = source.panels.map(parseWirePanel);
   return {
-    id: stringValue(source.id),
-    name: stringValue(source.name),
-    note: stringValue(source.note),
+    id: requiredString(source.id, "dashboard.id"),
+    name: requiredString(source.name, "dashboard.name"),
+    note: requiredString(source.note, "dashboard.note"),
     panels,
   };
 }
@@ -107,31 +108,51 @@ function hasOwn(source: Readonly<Record<string, unknown>>, key: string): boolean
 }
 
 function parsePosition(value: unknown): PanelPosition {
-  const source = isRecord(value) ? value : {};
+  const source = requiredRecord(value, "dashboard panel.position");
   return {
-    x: nonNegativeInteger(source.x, 0),
-    y: nonNegativeInteger(source.y, 0),
-    width: positiveInteger(source.width ?? source.w, 4),
-    height: positiveInteger(source.height ?? source.h, 4),
+    x: nonNegativeInteger(source.x, "dashboard panel.position.x"),
+    y: nonNegativeInteger(source.y, "dashboard panel.position.y"),
+    width: positiveInteger(source.width, "dashboard panel.position.width"),
+    height: positiveInteger(source.height, "dashboard panel.position.height"),
   };
 }
 
-function stringValue(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
+function requiredRecord(value: unknown, path: string): Readonly<Record<string, unknown>> {
+  if (!isRecord(value)) invalid(path);
+  return value;
 }
 
-function nullableString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
+function requiredString(value: unknown, path: string): string {
+  if (typeof value !== "string") invalid(path);
+  return value;
 }
 
-function nonNegativeInteger(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0
-    ? value
-    : fallback;
+function optionalNullableString(value: unknown, path: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") invalid(path);
+  return value;
 }
 
-function positiveInteger(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1
-    ? value
-    : fallback;
+function optionalBoolean(value: unknown, path: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") invalid(path);
+  return value;
+}
+
+function nonNegativeInteger(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) invalid(path);
+  return value;
+}
+
+function positiveInteger(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) invalid(path);
+  return value;
+}
+
+function rejectLegacyField(source: Readonly<Record<string, unknown>>, field: string): void {
+  if (hasOwn(source, field)) invalid(`dashboard panel.${field}`);
+}
+
+function invalid(path: string): never {
+  throw new TypeError(`Invalid ${path}`);
 }

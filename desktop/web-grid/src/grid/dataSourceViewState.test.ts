@@ -24,6 +24,7 @@ describe("dataSourceViewState", () => {
     expect(view.sorts).toEqual([{ field: "name", direction: "asc" }]);
     expect(view.filters).toEqual([{ field: "cost", operator: "eq", value: 10 }]);
     expect(view.search).toBe("");
+    expect(view).not.toHaveProperty("visibleFields");
     expect(JSON.stringify(view)).not.toContain("rows");
   });
 
@@ -61,7 +62,6 @@ describe("dataSourceViewState", () => {
       kind: "table",
       layout: "table",
       search: "",
-      visibleFields: ["name"],
       columns: [{ name: "name", order: 0, width: 180, visible: true }],
       sorts: [{ field: "name", direction: "desc" }],
       filters: [{ field: "name", operator: "eq", value: "A" }],
@@ -82,7 +82,10 @@ describe("dataSourceViewState", () => {
     }, {
       layout: "table",
       search: "",
-      visibleFields: ["status", "priority"],
+      columns: [
+        { name: "status", order: 0, visible: true },
+        { name: "priority", order: 1, visible: true },
+      ],
       sorts: [],
       filters: [{
         groupLogic: "OR",
@@ -96,7 +99,7 @@ describe("dataSourceViewState", () => {
     expect(setHeaderFilterValue).not.toHaveBeenCalled();
   });
 
-  it("adapts legacy visibleFields and ignores removed fields", async () => {
+  it("rejects legacy visibleFields-only state without mutating the grid", async () => {
     const setColumnLayout = vi.fn();
     const setSort = vi.fn();
     const setHeaderFilterValue = vi.fn();
@@ -109,40 +112,18 @@ describe("dataSourceViewState", () => {
       setSort,
       setHeaderFilterValue,
     };
-    await applyDataSourceView(grid, {
+    const legacyView = {
       layout: "table",
       search: "",
       visibleFields: ["name", "removedField"],
       sorts: [{ field: "removedField", direction: "asc" }],
       filters: [{ field: "removedField", operator: "eq", value: "old" }],
-    });
-    expect(setColumnLayout).toHaveBeenCalledWith([
-      { field: "name", width: 180, visible: true, frozen: false },
-      { field: "newField", width: 120, visible: false, frozen: false },
-    ]);
-    expect(setSort).toHaveBeenCalledWith([]);
-    expect(setHeaderFilterValue).not.toHaveBeenCalled();
-  });
-
-  it("treats empty legacy visibleFields as unspecified visibility", async () => {
-    const setColumnLayout = vi.fn();
-    const grid: DataSourceViewGrid = {
-      getColumns: () => [
-        { getField: () => "name", isVisible: () => true },
-        { getField: () => "private", isVisible: () => false },
-      ],
-      setColumnLayout,
     };
-    await applyDataSourceView(grid, {
-      layout: "table",
-      search: "",
-      visibleFields: [],
-      sorts: [],
-      filters: [],
-    });
-    expect(setColumnLayout).toHaveBeenCalledWith([
-      { field: "name", visible: true, frozen: false },
-      { field: "private", visible: false, frozen: false },
-    ]);
+
+    await applyDataSourceView(grid, legacyView as never);
+
+    expect(setColumnLayout).not.toHaveBeenCalled();
+    expect(setSort).not.toHaveBeenCalled();
+    expect(setHeaderFilterValue).not.toHaveBeenCalled();
   });
 });

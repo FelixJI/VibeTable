@@ -27,9 +27,9 @@ Design notes
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from pydantic.alias_generators import to_camel
 
 from backend.contracts.selection import QuerySnapshot
@@ -105,7 +105,7 @@ class FilterCondition(CamelModel):
 
     field: str = Field(min_length=1, max_length=128)
     operator: FilterOperator
-    value: Any = None
+    value: JsonValue = None
     logic: FilterLogic = "AND"
 
 
@@ -217,7 +217,7 @@ class ViewQuery(CamelModel):
 class QueryPageResult(CamelModel):
     """One authoritative record page returned by ``query.page``."""
 
-    rows: list[dict[str, Any]]
+    rows: list[dict[str, JsonValue]]
     offset: int = Field(ge=0)
     limit: int = Field(ge=1, le=500)
     filtered_rows: int = Field(ge=0)
@@ -225,14 +225,31 @@ class QueryPageResult(CamelModel):
     snapshot: QuerySnapshot
 
 
+class QueryCursorWindowResult(CamelModel):
+    """One bounded, revision-bound keyset window."""
+
+    rows: list[dict[str, JsonValue]]
+    next_cursor: str | None
+    has_more: bool
+    filtered_rows: int = Field(ge=0)
+    total_rows: int = Field(ge=0)
+    query_snapshot: QuerySnapshot
+
+    @model_validator(mode="after")
+    def validate_cursor_presence(self) -> QueryCursorWindowResult:
+        if self.has_more != (self.next_cursor is not None):
+            raise ValueError("nextCursor must be present exactly when hasMore is true")
+        return self
+
+
 class ViewGroupRow(CamelModel):
     """One leaf group and, for two-level views, its complete parent aggregate."""
 
-    key: list[Any] = Field(min_length=1, max_length=2)
+    key: list[JsonValue] = Field(min_length=1, max_length=2)
     count: int = Field(ge=0)
-    summaries: list[Any] = Field(max_length=3)
+    summaries: list[JsonValue] = Field(max_length=3)
     parent_count: int | None = Field(default=None, ge=0)
-    parent_summaries: list[Any] | None = Field(default=None, max_length=3)
+    parent_summaries: list[JsonValue] | None = Field(default=None, max_length=3)
 
     @model_validator(mode="after")
     def validate_parent_aggregate(self) -> ViewGroupRow:

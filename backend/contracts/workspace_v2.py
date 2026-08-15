@@ -66,7 +66,7 @@ def ensure_current_workspace_scope(
 
 class WorkspaceManifest(V2Model):
     contract_version: ContractVersion
-    format_version: int = Field(ge=1)
+    format_version: Literal[2]
     workspace_id: UUID
     display_name: str = Field(min_length=1)
     created_at: datetime
@@ -352,7 +352,7 @@ class RpcError(V2Model):
         Field(
             pattern=(
                 r"^(workspace|snapshot|repository|lease|replica|conflict|"
-                r"file_history|history|retention)\.[a-z0-9_]+$"
+                r"file_history|workspace_search|history|retention)\.[a-z0-9_]+$"
             )
         ),
     ]
@@ -409,6 +409,8 @@ def _valid_rpc_schema_node(schema: Any, *, conditional: bool = False) -> bool:
         "enum",
         "const",
         "minimum",
+        "maximum",
+        "maxItems",
         "minLength",
         "pattern",
         "additionalProperties",
@@ -440,6 +442,16 @@ def _valid_rpc_schema_node(schema: Any, *, conditional: bool = False) -> bool:
         return False
     if "minimum" in schema and (
         not isinstance(schema["minimum"], (int, float)) or isinstance(schema["minimum"], bool)
+    ):
+        return False
+    if "maximum" in schema and (
+        not isinstance(schema["maximum"], (int, float)) or isinstance(schema["maximum"], bool)
+    ):
+        return False
+    if "maxItems" in schema and (
+        not isinstance(schema["maxItems"], int)
+        or isinstance(schema["maxItems"], bool)
+        or schema["maxItems"] < 0
     ):
         return False
     if "minLength" in schema and (
@@ -495,7 +507,7 @@ def _valid_rpc_schema_node(schema: Any, *, conditional: bool = False) -> bool:
     if "items" in schema:
         return False
     return node_type is not None or any(
-        keyword in schema for keyword in ("const", "properties", "allOf", "oneOf")
+        keyword in schema for keyword in ("enum", "const", "properties", "allOf", "oneOf")
     )
 
 

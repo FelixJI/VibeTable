@@ -53,6 +53,15 @@ def test_v2_fixture_strictly_round_trips(fixture_name: str, model: type) -> None
     assert parsed.model_dump(mode="json", by_alias=True) == payload
 
 
+@pytest.mark.parametrize("format_version", [1, 3])
+def test_workspace_manifest_rejects_every_unsupported_format(format_version: int) -> None:
+    payload = json.loads((FIXTURES / "workspace-manifest.json").read_text(encoding="utf-8"))
+    payload["formatVersion"] = format_version
+
+    with pytest.raises(ValidationError):
+        WorkspaceManifest.model_validate(payload)
+
+
 @pytest.mark.parametrize(("fixture_name", "model"), MODEL_BY_FIXTURE.items())
 def test_v2_models_reject_unknown_and_missing_fields(
     fixture_name: str,

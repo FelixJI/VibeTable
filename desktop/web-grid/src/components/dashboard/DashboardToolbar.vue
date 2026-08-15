@@ -39,12 +39,12 @@ const refreshOptions = [
       <NSelect :value="refreshInterval" :options="refreshOptions" size="tiny" class="refresh-select" :disabled="!editing" :aria-label="t('dashboard.refresh.label')" @update:value="emit('refreshInterval', $event)" />
       <NTooltip><template #trigger><NButton quaternary size="small" data-testid="dashboard-refresh" :aria-label="t('dashboard.action.refresh')" @click="emit('refresh')"><NIcon><RefreshCw /></NIcon></NButton></template>{{ t("dashboard.action.refresh") }}</NTooltip>
       <NButtonGroup v-if="editing">
-        <NButton size="small" @click="emit('addPanel')"><template #icon><NIcon><Plus /></NIcon></template>{{ t("dashboard.action.addPanel") }}</NButton>
-        <NButton size="small" @click="emit('configure')"><template #icon><NIcon><Settings2 /></NIcon></template>{{ t("dashboard.action.configure") }}</NButton>
+        <NButton size="small" data-testid="dashboard-add-panel" @click="emit('addPanel')"><template #icon><NIcon><Plus /></NIcon></template>{{ t("dashboard.action.addPanel") }}</NButton>
+        <NButton size="small" data-testid="dashboard-configure" @click="emit('configure')"><template #icon><NIcon><Settings2 /></NIcon></template>{{ t("dashboard.action.configure") }}</NButton>
         <NButton size="small" @click="emit('discard')"><template #icon><NIcon><RotateCcw /></NIcon></template>{{ t("dashboard.action.discard") }}</NButton>
         <NButton size="small" type="primary" data-testid="dashboard-save" :disabled="!dirty" :loading="saving" @click="emit('save')"><template #icon><NIcon><Check /></NIcon></template>{{ t("dashboard.action.save") }}</NButton>
       </NButtonGroup>
-      <NButton v-else size="small" @click="emit('edit')"><template #icon><NIcon><Edit3 /></NIcon></template>{{ t("dashboard.action.edit") }}</NButton>
+      <NButton v-else size="small" data-testid="dashboard-edit" @click="emit('edit')"><template #icon><NIcon><Edit3 /></NIcon></template>{{ t("dashboard.action.edit") }}</NButton>
       <NTooltip v-if="!editing"><template #trigger><NButton quaternary size="small" type="error" :aria-label="t('dashboard.action.delete')" @click="emit('delete')"><NIcon><Trash2 /></NIcon></NButton></template>{{ t("dashboard.action.delete") }}</NTooltip>
       <NTooltip><template #trigger><NButton quaternary size="small" :aria-label="t('dashboard.action.copy')" @click="emit('copy')"><NIcon><Copy /></NIcon></NButton></template>{{ t("dashboard.action.copy") }}</NTooltip>
       <NTooltip><template #trigger><NButton quaternary size="small" :aria-label="t('dashboard.action.exportPng')" @click="emit('exportPng')"><NIcon><Download /></NIcon></NButton></template>{{ t("dashboard.action.exportPng") }}</NTooltip>

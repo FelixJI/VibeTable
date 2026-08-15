@@ -325,6 +325,40 @@ func TestQueueSynchronizePersistsWithoutRunningRemoteIO(t *testing.T) {
 	}
 }
 
+func TestQueuePublishedSnapshotsRejectsMissingTypedFileStateRootBeforePin(
+	t *testing.T,
+) {
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	remote := &productionRemote{
+		identity: RemoteIdentity{
+			WorkspaceID: "11111111-1111-4111-8111-111111111111",
+			ReplicaID:   "replica-a",
+			Strength:    Advisory,
+		},
+	}
+	options, repository, _ := productionManagerFixture(t, remote, now)
+	catalog := options.Catalog.(productionCatalog)
+	delete(catalog.records[0].ObjectMap, "file-state-root")
+	options.Catalog = catalog
+	manager, err := OpenManager(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	err = manager.QueuePublishedSnapshots(context.Background())
+	if !errors.Is(err, snapshot.ErrBundleInvalid) {
+		t.Fatalf("rootless snapshot queue error = %v", err)
+	}
+	pins, err := repository.ListPins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pins) != 0 {
+		t.Fatalf("rootless snapshot created pins: %#v", pins)
+	}
+}
+
 func TestReadPersistedTakeoverClaimRestoresOfflineModeAndRejectsTampering(
 	t *testing.T,
 ) {

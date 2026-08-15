@@ -9,6 +9,13 @@
     {"$ref": "#/$defs/FieldChangePlan"},
     {"$ref": "#/$defs/ApplyRequest"},
     {"$ref": "#/$defs/ApplyReceipt"},
+    {"$ref": "#/$defs/SchemaSnapshot"},
+    {"$ref": "#/$defs/TableCreateIntent"},
+    {"$ref": "#/$defs/TableCreateReceipt"},
+    {"$ref": "#/$defs/TableSettingsIntent"},
+    {"$ref": "#/$defs/TableSettingsReceipt"},
+    {"$ref": "#/$defs/FormulaValidateRequest"},
+    {"$ref": "#/$defs/FormulaPreviewRequest"},
     {"$ref": "#/$defs/MigrationStatus"},
     {"$ref": "#/$defs/FieldSettingsDescribeResult"},
     {"$ref": "#/$defs/FieldRecycleBinResult"},
@@ -451,7 +458,9 @@
         "logicalType", "generalSettings", "advancedSettings", "dangerSettings",
         "recommended", "supportsRequired", "supportsDefault", "supportsUnique",
         "needsPresence", "displayPresets", "conversionTargets", "conversionRules",
-        "compileStrategy", "userCreatable"
+        "compileStrategy", "userCreatable", "filterOperators", "groupable",
+        "summaryOperations", "relationCardinalities", "relationDeletePolicies",
+        "lookupMaxDepth", "formulaResultTypeInferred", "formulaRelationAggregates"
       ],
       "properties": {
         "logicalType": {"$ref": "#/$defs/LogicalType"},
@@ -469,7 +478,124 @@
         },
         "conversionRules": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "compileStrategy": {"type": "string"},
-        "userCreatable": {"type": "boolean"}
+        "userCreatable": {"type": "boolean"},
+        "filterOperators": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "groupable": {"type": "boolean"},
+        "summaryOperations": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "relationCardinalities": {
+          "type": "array", "items": {"enum": ["one", "many"]}, "uniqueItems": true
+        },
+        "relationDeletePolicies": {
+          "type": "array", "items": {"enum": ["setNull", "restrict"]}, "uniqueItems": true
+        },
+        "lookupMaxDepth": {"type": "integer", "minimum": 0, "maximum": 8},
+        "formulaResultTypeInferred": {"type": "boolean"},
+        "formulaRelationAggregates": {
+          "type": "array", "items": {"enum": ["SUM", "COUNT", "AVG", "MIN", "MAX", "ANY"]},
+          "uniqueItems": true
+        }
+      }
+    },
+    "SchemaSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract", "tableId", "displayName", "kind", "schemaRevision",
+        "dataRevision", "archivePolicy", "fields", "capabilities"
+      ],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "tableId": {"type": "string", "minLength": 1},
+        "displayName": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["base", "view"]},
+        "schemaRevision": {"type": "string", "minLength": 1},
+        "dataRevision": {"type": "integer", "minimum": 0},
+        "archivePolicy": {"$ref": "#/$defs/ArchivePolicy"},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/FieldDefinition"}},
+        "capabilities": {"type": "array", "items": {"$ref": "#/$defs/Capability"}}
+      }
+    },
+    "FormulaValidateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tableId", "field"],
+      "properties": {
+        "tableId": {"type": "string", "minLength": 1},
+        "field": {"$ref": "#/$defs/FieldDefinition"}
+      }
+    },
+    "FormulaPreviewRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tableId", "field", "row", "changedFieldIds"],
+      "properties": {
+        "tableId": {"type": "string", "minLength": 1},
+        "field": {"$ref": "#/$defs/FieldDefinition"},
+        "row": {"type": "object"},
+        "changedFieldIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "TableCreateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayName", "operationId", "actor"],
+      "properties": {
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
+        "operationId": {"type": "string", "minLength": 1},
+        "actor": {"$ref": "#/$defs/Actor"}
+      }
+    },
+    "TableCreateReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "operationId", "tableId", "displayName", "schemaRevision"],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "operationId": {"type": "string", "minLength": 1},
+        "tableId": {"type": "string", "minLength": 1},
+        "displayName": {"type": "string", "minLength": 1},
+        "schemaRevision": {"type": "string", "minLength": 1}
+      }
+    },
+    "ArchivePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "fieldId", "archivedValue"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["none", "status", "deletedAt"]},
+        "fieldId": {"type": ["string", "null"]},
+        "archivedValue": {}
+      }
+    },
+    "TableSettingsIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tableId", "expectedSchemaRevision", "archivePolicy", "operationId", "actor"
+      ],
+      "properties": {
+        "tableId": {"type": "string", "minLength": 1},
+        "expectedSchemaRevision": {"type": "string", "minLength": 1},
+        "archivePolicy": {"$ref": "#/$defs/ArchivePolicy"},
+        "operationId": {"type": "string", "minLength": 1},
+        "actor": {"$ref": "#/$defs/Actor"}
+      }
+    },
+    "TableSettingsReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract", "operationId", "tableId", "schemaRevision", "archivePolicy"
+      ],
+      "properties": {
+        "contract": {"const": "vibetable.schema.v2"},
+        "operationId": {"type": "string", "minLength": 1},
+        "tableId": {"type": "string", "minLength": 1},
+        "schemaRevision": {"type": "string", "minLength": 1},
+        "archivePolicy": {"$ref": "#/$defs/ArchivePolicy"}
       }
     },
     "Actor": {

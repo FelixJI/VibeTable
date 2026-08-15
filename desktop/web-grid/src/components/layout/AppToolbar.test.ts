@@ -24,8 +24,8 @@ describe("AppToolbar", () => {
   it("shows the selected table label while preserving the physical key as secondary text", () => {
     const workspace = useWorkspaceStore();
     workspace.setOpened([
-      { collection: "vt_t_01abc", metadata: { displayName: "客户清单" } },
-    ]);
+      { collection: "vt_t_01abc", metadata: {} },
+    ], { vt_t_01abc: "客户清单" });
     workspace.selectTable("vt_t_01abc");
     const wrapper = mount(AppToolbar);
     expect(wrapper.get('[data-testid="toolbar-table-title"]').text()).toBe("客户清单");
@@ -35,9 +35,9 @@ describe("AppToolbar", () => {
   it("provides a compact accessible table switcher with every table on narrow layouts", () => {
     const workspace = useWorkspaceStore();
     workspace.setOpened([
-      { collection: "orders", displayName: "订单" },
-      { collection: "users", metadata: { displayName: "客户清单" } },
-    ]);
+      { collection: "orders" },
+      { collection: "users", metadata: {} },
+    ], { orders: "订单", users: "客户清单" });
     workspace.selectTable("orders");
     const wrapper = mount(AppToolbar);
 

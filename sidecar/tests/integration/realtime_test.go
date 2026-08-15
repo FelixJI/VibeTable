@@ -13,8 +13,6 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
 func saveRealtimeOutboxEvent(
@@ -62,15 +60,9 @@ func TestRealtimeHubDeliversLiveCatchupAndRejectsUnknownCursor(t *testing.T) {
 	defer resetApp(t, app)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("realtime_notes", "realtime_notes", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	table, title := createV2IntegrationTableWithField(
+		t, ctx, app, "Realtime notes", "Title", "op_realtime_notes",
+	)
 	hub := realtime.New(app)
 	kernel := mutation.New(
 		app,
@@ -87,13 +79,15 @@ func TestRealtimeHubDeliversLiveCatchupAndRejectsUnknownCursor(t *testing.T) {
 	}
 	recordID := "realtimerecord1"
 	request := mutationRequest(
-		"realtime_notes",
-		definition.SchemaRevision,
+		table.TableID,
+		title.SchemaRevision,
 		"realtime-insert",
 		mutation.Operation{
 			Kind:     mutation.OperationInsert,
 			RecordID: &recordID,
-			Values:   map[string]any{"title": "first"},
+			Values: map[string]any{
+				title.Definition.Identity.PhysicalName: "first",
+			},
 		},
 	)
 	receipt, err := kernel.Apply(ctx, request)

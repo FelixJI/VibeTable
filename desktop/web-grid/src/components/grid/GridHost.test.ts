@@ -60,8 +60,7 @@ describe("GridHost history selection", () => {
       offset: 0,
       limit: 100,
       totalRows: 0,
-      loadedRows: 0,
-      mode: "client",
+      mode: "remote",
       revision: {
         databaseSessionId: "session-1",
         schemaRevision: "schema-1",
@@ -88,8 +87,7 @@ describe("GridHost history selection", () => {
       offset: 0,
       limit: 100,
       totalRows: 0,
-      loadedRows: 0,
-      mode: "client",
+      mode: "remote",
       revision: {
         databaseSessionId: "session-1",
         schemaRevision: "schema-1",
@@ -107,8 +105,7 @@ describe("GridHost history selection", () => {
       offset: 0,
       limit: 100,
       totalRows: 1,
-      loadedRows: 1,
-      mode: "client",
+      mode: "remote",
       revision: {
         databaseSessionId: "session-1",
         schemaRevision: "schema-1",
@@ -274,7 +271,7 @@ describe("GridHost history selection", () => {
       offset: 0,
       limit: 100,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     store.setEditSchema([{
       name: "metadata",
@@ -364,8 +361,6 @@ describe("GridHost history selection", () => {
       sourceCollection: "orders",
       kind: "m2o",
       relatedCollection: "customers",
-      allowedCollections: [],
-      junction: null,
       unique: true,
       nullable: true,
       onDelete: "nullify",
@@ -406,7 +401,7 @@ describe("GridHost history selection", () => {
       offset: 0,
       limit: 100,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const generation = relations.beginContext("orders");
     relations.acceptContext(generation, {
@@ -499,6 +494,7 @@ describe("GridHost history selection", () => {
     expect(wrapper.emitted("attachmentOpen")?.[0]).toEqual([{
       rowKey: "row-1",
       column: table.schema?.[0],
+      trigger: attachmentCell,
     }]);
     expect(wrapper.emitted("relationEdit")?.[0]).toEqual([{
       rowKey: "row-1",

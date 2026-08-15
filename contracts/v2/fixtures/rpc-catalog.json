@@ -32,8 +32,13 @@
     "repository.previewKeyRotation",
     "repository.applyKeyRotation",
     "fileHistory.import",
-    "fileHistory.listDocuments",
+    "fileHistory.queryDocuments",
     "fileHistory.listPendingChanges",
+    "workspaceSearch.query",
+    "workspaceSearch.resolveHit",
+    "workspaceSearch.status",
+    "workspaceSearch.rebuild",
+    "workspaceSearch.cancel",
     "fileHistory.applyPendingChange",
     "fileHistory.unlink",
     "fileHistory.relink",
@@ -2926,7 +2931,6 @@
                           "m2o",
                           "o2m",
                           "m2m",
-                          "m2a",
                           "file"
                         ]
                       },
@@ -3427,7 +3431,6 @@
                     "m2o",
                     "o2m",
                     "m2m",
-                    "m2a",
                     "file"
                   ]
                 },
@@ -4173,19 +4176,116 @@
       }
     },
     {
-      "method": "fileHistory.listDocuments",
+      "method": "fileHistory.queryDocuments",
       "scope": "workspace",
-      "paramsModel": "ListFileDocumentsParams",
-      "resultModel": "FileDocumentListResult",
+      "paramsModel": "QueryFileDocumentsParams",
+      "resultModel": "FileDocumentQueryResult",
       "paramsSchema": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "includeDeleted"
+          "logic",
+          "filters",
+          "sort",
+          "limit",
+          "cursor"
         ],
         "properties": {
-          "includeDeleted": {
-            "type": "boolean"
+          "logic": {
+            "type": "string",
+            "enum": [
+              "and",
+              "or"
+            ]
+          },
+          "filters": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "operator",
+                "value"
+              ],
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "enum": [
+                    "documentId",
+                    "displayName",
+                    "relativePath",
+                    "extension",
+                    "mimeType",
+                    "sizeBytes",
+                    "effectiveRevisionCreatedAt",
+                    "status"
+                  ]
+                },
+                "operator": {
+                  "type": "string",
+                  "enum": [
+                    "eq",
+                    "contains",
+                    "in",
+                    "gt",
+                    "gte",
+                    "lt",
+                    "lte",
+                    "between",
+                    "before",
+                    "after"
+                  ]
+                },
+                "value": true
+              }
+            }
+          },
+          "sort": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "direction"
+              ],
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "enum": [
+                    "displayName",
+                    "relativePath",
+                    "extension",
+                    "mimeType",
+                    "sizeBytes",
+                    "effectiveRevisionCreatedAt",
+                    "formalVersion",
+                    "status"
+                  ]
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "asc",
+                    "desc"
+                  ]
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4193,7 +4293,9 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "documents"
+          "documents",
+          "nextCursor",
+          "topologyRevision"
         ],
         "properties": {
           "documents": {
@@ -4204,12 +4306,15 @@
               "required": [
                 "contractVersion",
                 "documentId",
-                "workspaceId",
                 "relativePath",
-                "status",
+                "displayName",
+                "extension",
+                "mimeType",
+                "sizeBytes",
                 "effectiveRevisionId",
-                "nextRevisionOrdinal",
-                "nextFormalVersion"
+                "effectiveRevisionCreatedAt",
+                "formalVersion",
+                "status"
               ],
               "properties": {
                 "contractVersion": {
@@ -4218,36 +4323,61 @@
                 "documentId": {
                   "type": "string"
                 },
-                "workspaceId": {
-                  "type": "string"
-                },
                 "relativePath": {
                   "type": "string"
                 },
-                "status": {
+                "displayName": {
                   "type": "string"
                 },
+                "extension": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
                 "effectiveRevisionId": {
+                  "type": "string"
+                },
+                "effectiveRevisionCreatedAt": {
+                  "type": "string"
+                },
+                "formalVersion": {
                   "type": [
-                    "string",
+                    "integer",
                     "null"
+                  ],
+                  "minimum": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "deleted"
                   ]
-                },
-                "nextRevisionOrdinal": {
-                  "type": "integer"
-                },
-                "nextFormalVersion": {
-                  "type": "integer"
                 }
               }
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topologyRevision": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
       "request": {
         "jsonrpc": "2.0",
         "id": "v2-032",
-        "method": "fileHistory.listDocuments",
+        "method": "fileHistory.queryDocuments",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -4256,7 +4386,22 @@
           "sessionEpoch": 7
         },
         "params": {
-          "includeDeleted": false
+          "logic": "and",
+          "filters": [
+            {
+              "field": "extension",
+              "operator": "eq",
+              "value": "docx"
+            }
+          ],
+          "sort": [
+            {
+              "field": "effectiveRevisionCreatedAt",
+              "direction": "desc"
+            }
+          ],
+          "limit": 100,
+          "cursor": null
         }
       },
       "success": {
@@ -4274,14 +4419,19 @@
             {
               "contractVersion": "2.0",
               "documentId": "22222222-2222-4222-8222-222222222222",
-              "workspaceId": "11111111-1111-4111-8111-111111111111",
               "relativePath": "季度规划.docx",
-              "status": "active",
+              "displayName": "季度规划.docx",
+              "extension": "docx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "sizeBytes": 4096,
               "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
-              "nextRevisionOrdinal": 4,
-              "nextFormalVersion": 4
+              "effectiveRevisionCreatedAt": "2026-07-28T09:00:00Z",
+              "formalVersion": 3,
+              "status": "active"
             }
-          ]
+          ],
+          "nextCursor": null,
+          "topologyRevision": 42
         }
       },
       "error": {
@@ -4436,6 +4586,1103 @@
       }
     },
     {
+      "method": "workspaceSearch.query",
+      "scope": "workspace",
+      "paramsModel": "WorkspaceSearchParams",
+      "resultModel": "WorkspaceSearchResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contractVersion",
+          "query",
+          "logic",
+          "filters",
+          "sorts",
+          "scope",
+          "cursor",
+          "limit"
+        ],
+        "properties": {
+          "contractVersion": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "logic": {
+            "type": "string",
+            "enum": [
+              "and",
+              "or"
+            ]
+          },
+          "filters": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "operator",
+                "value"
+              ],
+              "properties": {
+                "field": {
+                  "enum": [
+                    "kind",
+                    "tableId",
+                    "fieldId",
+                    "mimeType",
+                    "extension",
+                    "sizeBytes",
+                    "revisionTime",
+                    "status"
+                  ]
+                },
+                "operator": {
+                  "enum": [
+                    "eq",
+                    "ne",
+                    "contains",
+                    "gt",
+                    "gte",
+                    "lt",
+                    "lte",
+                    "before",
+                    "after"
+                  ]
+                },
+                "value": true
+              }
+            }
+          },
+          "sorts": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "direction"
+              ],
+              "properties": {
+                "field": {
+                  "enum": [
+                    "score",
+                    "revisionTime",
+                    "title",
+                    "sizeBytes"
+                  ]
+                },
+                "direction": {
+                  "enum": [
+                    "asc",
+                    "desc"
+                  ]
+                }
+              }
+            }
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "current",
+              "history"
+            ]
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hits",
+          "nextCursor",
+          "generation"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "contractVersion",
+                "hitId",
+                "kind",
+                "canonicalId",
+                "title",
+                "snippet",
+                "highlights",
+                "sourceRevision",
+                "score",
+                "revisionTime",
+                "metadata",
+                "openTarget"
+              ],
+              "properties": {
+                "contractVersion": {
+                  "type": "string"
+                },
+                "hitId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "record",
+                    "attachment",
+                    "file"
+                  ]
+                },
+                "canonicalId": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "snippet": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "highlights": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "sourceRevision": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number"
+                },
+                "revisionTime": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "key",
+                      "value"
+                    ],
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "value": true
+                    }
+                  }
+                },
+                "openTarget": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "tableId",
+                    "recordId",
+                    "fieldId",
+                    "documentId"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "record",
+                        "attachment",
+                        "file"
+                      ]
+                    },
+                    "tableId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "recordId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "fieldId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "documentId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-034",
+        "method": "workspaceSearch.query",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 34,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "contractVersion": "1.0",
+          "query": "quarterly report",
+          "logic": "and",
+          "filters": [
+            {
+              "field": "kind",
+              "operator": "eq",
+              "value": "file"
+            }
+          ],
+          "sorts": [
+            {
+              "field": "score",
+              "direction": "desc"
+            }
+          ],
+          "scope": "current",
+          "cursor": null,
+          "limit": 50
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-034",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 34,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "hits": [
+            {
+              "contractVersion": "1.0",
+              "hitId": "file:22222222-2222-4222-8222-222222222222:33333333-3333-4333-8333-333333333333",
+              "kind": "file",
+              "canonicalId": "22222222-2222-4222-8222-222222222222",
+              "title": "Quarterly report",
+              "snippet": "Quarterly report",
+              "highlights": [
+                "value"
+              ],
+              "sourceRevision": "33333333-3333-4333-8333-333333333333",
+              "score": 1.25,
+              "revisionTime": "2026-08-12T00:00:00Z",
+              "metadata": [
+                {
+                  "key": "relativePath",
+                  "value": "reports/q1.md"
+                }
+              ],
+              "openTarget": {
+                "kind": "file",
+                "tableId": null,
+                "recordId": null,
+                "fieldId": null,
+                "documentId": "22222222-2222-4222-8222-222222222222"
+              }
+            }
+          ],
+          "nextCursor": null,
+          "generation": 2
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-034",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 34,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "workspace_search.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspaceSearch.resolveHit",
+      "scope": "workspace",
+      "paramsModel": "WorkspaceSearchResolveHitParams",
+      "resultModel": "WorkspaceSearchResolveHitResult",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contractVersion",
+          "scope",
+          "hit"
+        ],
+        "properties": {
+          "contractVersion": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "current",
+              "history"
+            ]
+          },
+          "hit": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "contractVersion",
+              "hitId",
+              "kind",
+              "canonicalId",
+              "title",
+              "snippet",
+              "highlights",
+              "sourceRevision",
+              "score",
+              "revisionTime",
+              "metadata",
+              "openTarget"
+            ],
+            "properties": {
+              "contractVersion": {
+                "type": "string"
+              },
+              "hitId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "record",
+                  "attachment",
+                  "file"
+                ]
+              },
+              "canonicalId": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "highlights": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "sourceRevision": {
+                "type": "string"
+              },
+              "score": {
+                "type": "number"
+              },
+              "revisionTime": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "value"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": true
+                  }
+                }
+              },
+              "openTarget": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "tableId",
+                  "recordId",
+                  "fieldId",
+                  "documentId"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "record",
+                      "attachment",
+                      "file"
+                    ]
+                  },
+                  "tableId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "recordId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "fieldId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "documentId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "hit"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "current",
+              "stale"
+            ]
+          },
+          "hit": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "contractVersion",
+              "hitId",
+              "kind",
+              "canonicalId",
+              "title",
+              "snippet",
+              "highlights",
+              "sourceRevision",
+              "score",
+              "revisionTime",
+              "metadata",
+              "openTarget"
+            ],
+            "properties": {
+              "contractVersion": {
+                "type": "string"
+              },
+              "hitId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "record",
+                  "attachment",
+                  "file"
+                ]
+              },
+              "canonicalId": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "highlights": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "sourceRevision": {
+                "type": "string"
+              },
+              "score": {
+                "type": "number"
+              },
+              "revisionTime": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "value"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": true
+                  }
+                }
+              },
+              "openTarget": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "tableId",
+                  "recordId",
+                  "fieldId",
+                  "documentId"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "record",
+                      "attachment",
+                      "file"
+                    ]
+                  },
+                  "tableId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "recordId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "fieldId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "documentId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-035",
+        "method": "workspaceSearch.resolveHit",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 35,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {
+          "contractVersion": "1.0",
+          "scope": "current",
+          "hit": {
+            "contractVersion": "1.0",
+            "hitId": "file:22222222-2222-4222-8222-222222222222:33333333-3333-4333-8333-333333333333",
+            "kind": "file",
+            "canonicalId": "22222222-2222-4222-8222-222222222222",
+            "title": "Quarterly report",
+            "snippet": "Quarterly report",
+            "highlights": [
+              "value"
+            ],
+            "sourceRevision": "33333333-3333-4333-8333-333333333333",
+            "score": 1.25,
+            "revisionTime": "2026-08-12T00:00:00Z",
+            "metadata": [
+              {
+                "key": "relativePath",
+                "value": "reports/q1.md"
+              }
+            ],
+            "openTarget": {
+              "kind": "file",
+              "tableId": null,
+              "recordId": null,
+              "fieldId": null,
+              "documentId": "22222222-2222-4222-8222-222222222222"
+            }
+          }
+        }
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-035",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 35,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "status": "stale",
+          "hit": {
+            "contractVersion": "1.0",
+            "hitId": "file:22222222-2222-4222-8222-222222222222:33333333-3333-4333-8333-333333333333",
+            "kind": "file",
+            "canonicalId": "22222222-2222-4222-8222-222222222222",
+            "title": "Quarterly report",
+            "snippet": "Quarterly report",
+            "highlights": [
+              "value"
+            ],
+            "sourceRevision": "33333333-3333-4333-8333-333333333333",
+            "score": 1.25,
+            "revisionTime": "2026-08-12T00:00:00Z",
+            "metadata": [
+              {
+                "key": "relativePath",
+                "value": "reports/q1.md"
+              }
+            ],
+            "openTarget": {
+              "kind": "file",
+              "tableId": null,
+              "recordId": null,
+              "fieldId": null,
+              "documentId": "22222222-2222-4222-8222-222222222222"
+            }
+          }
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-035",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 35,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "workspace_search.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspaceSearch.status",
+      "scope": "workspace",
+      "paramsModel": "WorkspaceSearchStatusParams",
+      "resultModel": "WorkspaceSearchStatus",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "generation",
+          "checkpoint",
+          "processed",
+          "total",
+          "errorCode"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "building",
+              "ready",
+              "degraded",
+              "failed"
+            ]
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "checkpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "processed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-036",
+        "method": "workspaceSearch.status",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 36,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-036",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 36,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "state": "ready",
+          "generation": 2,
+          "checkpoint": null,
+          "processed": 42,
+          "total": 42,
+          "errorCode": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-036",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 36,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "workspace_search.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspaceSearch.rebuild",
+      "scope": "workspace",
+      "paramsModel": "WorkspaceSearchRebuildParams",
+      "resultModel": "WorkspaceSearchStatus",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "generation",
+          "checkpoint",
+          "processed",
+          "total",
+          "errorCode"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "building",
+              "ready",
+              "degraded",
+              "failed"
+            ]
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "checkpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "processed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-037",
+        "method": "workspaceSearch.rebuild",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 37,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-037",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 37,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "state": "ready",
+          "generation": 3,
+          "checkpoint": null,
+          "processed": 42,
+          "total": 42,
+          "errorCode": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-037",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 37,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "workspace_search.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
+      "method": "workspaceSearch.cancel",
+      "scope": "workspace",
+      "paramsModel": "WorkspaceSearchCancelParams",
+      "resultModel": "WorkspaceSearchStatus",
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "generation",
+          "checkpoint",
+          "processed",
+          "total",
+          "errorCode"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "building",
+              "ready",
+              "degraded",
+              "failed"
+            ]
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "checkpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "processed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "errorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "v2-038",
+        "method": "workspaceSearch.cancel",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 38,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "params": {}
+      },
+      "success": {
+        "jsonrpc": "2.0",
+        "id": "v2-038",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 38,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "result": {
+          "state": "degraded",
+          "generation": 2,
+          "checkpoint": "cancelling",
+          "processed": 20,
+          "total": 42,
+          "errorCode": null
+        }
+      },
+      "error": {
+        "jsonrpc": "2.0",
+        "id": "v2-038",
+        "wire": {
+          "scope": "workspace",
+          "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "sequence": 38,
+          "workspaceId": "11111111-1111-4111-8111-111111111111",
+          "sessionEpoch": 7
+        },
+        "error": {
+          "code": "workspace_search.request_invalid",
+          "message": "request is invalid",
+          "details": {
+            "path": "params"
+          },
+          "retryable": false
+        }
+      }
+    },
+    {
       "method": "fileHistory.applyPendingChange",
       "scope": "workspace",
       "paramsModel": "ApplyPendingFileChangeParams",
@@ -4532,12 +5779,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-034",
+        "id": "v2-039",
         "method": "fileHistory.applyPendingChange",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 34,
+          "sequence": 39,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4550,11 +5797,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-034",
+        "id": "v2-039",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 34,
+          "sequence": 39,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4575,11 +5822,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-034",
+        "id": "v2-039",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 34,
+          "sequence": 39,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4659,12 +5906,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-035",
+        "id": "v2-040",
         "method": "fileHistory.unlink",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 35,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4675,11 +5922,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-035",
+        "id": "v2-040",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 35,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4696,11 +5943,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-035",
+        "id": "v2-040",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 35,
+          "sequence": 40,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4784,12 +6031,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-036",
+        "id": "v2-041",
         "method": "fileHistory.relink",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 36,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4801,11 +6048,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-036",
+        "id": "v2-041",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 36,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -4822,11 +6069,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-036",
+        "id": "v2-041",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 36,
+          "sequence": 41,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5104,12 +6351,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-037",
+        "id": "v2-042",
         "method": "fileHistory.readTree",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 37,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5119,11 +6366,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-037",
+        "id": "v2-042",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 37,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5155,11 +6402,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-037",
+        "id": "v2-042",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 37,
+          "sequence": 42,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5232,12 +6479,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-038",
+        "id": "v2-043",
         "method": "fileHistory.materializeDiffPair",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 38,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5250,11 +6497,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-038",
+        "id": "v2-043",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 38,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5268,11 +6515,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-038",
+        "id": "v2-043",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 38,
+          "sequence": 43,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5329,12 +6576,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-044",
         "method": "fileHistory.assertEffectiveRevision",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5345,11 +6592,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-044",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5361,11 +6608,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-039",
+        "id": "v2-044",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 39,
+          "sequence": 44,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5480,12 +6727,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-045",
         "method": "fileHistory.restore",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5497,11 +6744,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-045",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5514,11 +6761,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-040",
+        "id": "v2-045",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 40,
+          "sequence": 45,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5633,12 +6880,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-046",
         "method": "fileHistory.upgrade",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5650,11 +6897,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-046",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5667,11 +6914,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-041",
+        "id": "v2-046",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 41,
+          "sequence": 46,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5728,12 +6975,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-047",
         "method": "fileHistory.activateLeaf",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5745,11 +6992,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-047",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5760,11 +7007,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-042",
+        "id": "v2-047",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 42,
+          "sequence": 47,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5848,12 +7095,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-048",
         "method": "retention.get",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5861,11 +7108,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-048",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -5893,11 +7140,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-043",
+        "id": "v2-048",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 43,
+          "sequence": 48,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6010,12 +7257,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-049",
         "method": "retention.status",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6023,11 +7270,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-049",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6047,11 +7294,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-044",
+        "id": "v2-049",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 44,
+          "sequence": 49,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6178,12 +7425,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-050",
         "method": "retention.update",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 50,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6209,11 +7456,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-050",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 50,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6241,11 +7488,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-045",
+        "id": "v2-050",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 45,
+          "sequence": 50,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6295,12 +7542,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-051",
         "method": "retention.plan",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 51,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6308,11 +7555,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-051",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 51,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6326,11 +7573,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-046",
+        "id": "v2-051",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 46,
+          "sequence": 51,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6379,12 +7626,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-052",
         "method": "retention.apply",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 52,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6394,11 +7641,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-052",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 52,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6409,11 +7656,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-047",
+        "id": "v2-052",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 47,
+          "sequence": 52,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6460,12 +7707,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-053",
         "method": "replica.status",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 53,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6473,11 +7720,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-053",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 53,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6489,11 +7736,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-048",
+        "id": "v2-053",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 48,
+          "sequence": 53,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6536,12 +7783,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-049",
+        "id": "v2-054",
         "method": "replica.synchronize",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 49,
+          "sequence": 54,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6549,11 +7796,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-049",
+        "id": "v2-054",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 49,
+          "sequence": 54,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6564,11 +7811,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-049",
+        "id": "v2-054",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 49,
+          "sequence": 54,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6621,12 +7868,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-050",
+        "id": "v2-055",
         "method": "replica.forceTakeover",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 50,
+          "sequence": 55,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6636,11 +7883,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-050",
+        "id": "v2-055",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 50,
+          "sequence": 55,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6652,11 +7899,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-050",
+        "id": "v2-055",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 50,
+          "sequence": 55,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6745,12 +7992,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-051",
+        "id": "v2-056",
         "method": "conflict.list",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 51,
+          "sequence": 56,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6761,11 +8008,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-051",
+        "id": "v2-056",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 51,
+          "sequence": 56,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6783,11 +8030,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-051",
+        "id": "v2-056",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 51,
+          "sequence": 56,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6917,12 +8164,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-052",
+        "id": "v2-057",
         "method": "conflict.inspect",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 52,
+          "sequence": 57,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6932,11 +8179,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-052",
+        "id": "v2-057",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 52,
+          "sequence": 57,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -6963,11 +8210,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-052",
+        "id": "v2-057",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 52,
+          "sequence": 57,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -7057,12 +8304,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-053",
+        "id": "v2-058",
         "method": "conflict.preview",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 53,
+          "sequence": 58,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -7079,11 +8326,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-053",
+        "id": "v2-058",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 53,
+          "sequence": 58,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -7097,11 +8344,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-053",
+        "id": "v2-058",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 53,
+          "sequence": 58,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -7157,12 +8404,12 @@
       },
       "request": {
         "jsonrpc": "2.0",
-        "id": "v2-054",
+        "id": "v2-059",
         "method": "conflict.apply",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 54,
+          "sequence": 59,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -7172,11 +8419,11 @@
       },
       "success": {
         "jsonrpc": "2.0",
-        "id": "v2-054",
+        "id": "v2-059",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 54,
+          "sequence": 59,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },
@@ -7190,11 +8437,11 @@
       },
       "error": {
         "jsonrpc": "2.0",
-        "id": "v2-054",
+        "id": "v2-059",
         "wire": {
           "scope": "workspace",
           "operationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "sequence": 54,
+          "sequence": 59,
           "workspaceId": "11111111-1111-4111-8111-111111111111",
           "sessionEpoch": 7
         },

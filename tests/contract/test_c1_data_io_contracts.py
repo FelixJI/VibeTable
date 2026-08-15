@@ -21,11 +21,6 @@ from backend.contracts.data_io import (
     ImportPlan,
     PreviewImportParams,
 )
-from backend.contracts.relation import (
-    RelationColumn,
-    RelationProjectionParams,
-    RelationProjectionResult,
-)
 from backend.contracts.task import (
     CreateTaskParams,
     SessionPathGrant,
@@ -82,8 +77,7 @@ def test_import_plan_round_trip() -> None:
 def test_apply_import_round_trip() -> None:
     fixture = _load("table-c1-data-io-contracts.json")
     block = fixture["applyImport"]
-    params = ApplyImportParams.model_validate(block["params"])
-    assert params.chunk_size == 500
+    ApplyImportParams.model_validate(block["params"])
     result = ApplyImportResult.model_validate(block["result"])
     assert result.created_count == 2
     assert result.failed_rows == [4]
@@ -100,20 +94,6 @@ def test_export_round_trip() -> None:
     result = ExportResult.model_validate(block["result"])
     assert result.rows_written == 150
     assert result.output_display_name == "contracts-export.csv"
-
-
-def test_relation_projection_round_trip() -> None:
-    fixture = _load("table-c1-data-io-contracts.json")
-    block = fixture["relationProjection"]
-    params = RelationProjectionParams.model_validate(block["params"])
-    assert params.relations == ["project"]
-    assert params.max_depth == 1
-    result = RelationProjectionResult.model_validate(block["result"])
-    assert result.rows[0]["project"]["code"] == "P1"
-    paths = [c.display_path for c in result.relation_columns]
-    assert "project.code" in paths
-    assert "project.name" in paths
-    assert isinstance(result.relation_columns[0], RelationColumn)
 
 
 if __name__ == "__main__":

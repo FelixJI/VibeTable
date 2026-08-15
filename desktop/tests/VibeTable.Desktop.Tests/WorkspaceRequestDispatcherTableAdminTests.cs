@@ -7,7 +7,7 @@ using VibeTable.Infrastructure.Rpc;
 namespace VibeTable.Desktop.Tests;
 
 [TestClass]
-public sealed class WorkspaceRequestDispatcherTableAdminTests
+public sealed class WorkspaceTableRequestControllerTests
 {
     [TestMethod]
     public async Task CreateTable_IgnoresRendererIdentitiesAndBootstrapsAnEmptyOpaqueTable()
@@ -20,14 +20,16 @@ public sealed class WorkspaceRequestDispatcherTableAdminTests
                 new Dictionary<string, string> { ["tbl_created"] = "Orders" }),
         };
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        IProductDataRpcGateway? currentGateway = null;
+        var controller = new WorkspaceTableRequestController(
             new TableWorkspaceService(tableGateway),
             new FakeDatabasePicker("local://configured"),
-            sink);
+            sink,
+            () => currentGateway);
         var transport = new SchemaCaptureTransport();
         await using var client = new JsonRpcClient(transport);
         using var productGateway = new JsonRpcProductDataGateway(client);
-        dispatcher.SetProductDataGateway(productGateway);
+        currentGateway = productGateway;
         using var payload = JsonDocument.Parse(
             """
             {
@@ -38,7 +40,7 @@ public sealed class WorkspaceRequestDispatcherTableAdminTests
             }
             """);
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "tableAdmin.createRequested",
             "create-1",
             payload.RootElement.Clone(),
@@ -51,43 +53,31 @@ public sealed class WorkspaceRequestDispatcherTableAdminTests
 
         var calls = transport.Calls;
         CollectionAssert.AreEqual(
-            new[] { "schema.validate", "schema.apply" },
+            new[] { "schema.table.create" },
             calls.Select(call => call.Method).ToArray());
-        JsonElement validatedDefinition =
-            calls[0].Parameters.GetProperty("definition");
-        string tableId = validatedDefinition.GetProperty("tableId").GetString()!;
-        string physicalName =
-            validatedDefinition.GetProperty("physicalName").GetString()!;
-        Assert.IsTrue(
-            tableId.StartsWith("tbl_", StringComparison.Ordinal)
-            && tableId.Length == 24);
-        Assert.IsTrue(
-            physicalName.StartsWith("t_", StringComparison.Ordinal)
-            && physicalName.Length == 22);
-        Assert.AreNotEqual("renderer_controlled", tableId);
-        Assert.AreEqual("Orders", validatedDefinition.GetProperty("displayName").GetString());
-        Assert.AreEqual(0, validatedDefinition.GetProperty("fields").GetArrayLength());
-        Assert.AreEqual(0, validatedDefinition.GetProperty("indexes").GetArrayLength());
-        Assert.AreEqual(
-            tableId,
-            calls[1].Parameters
-                .GetProperty("definition")
-                .GetProperty("tableId")
-                .GetString());
+        JsonElement intent = calls[0].Parameters;
+        Assert.AreEqual("Orders", intent.GetProperty("displayName").GetString());
+        Assert.IsTrue(intent.GetProperty("operationId").GetString()!
+            .StartsWith("table-create-", StringComparison.Ordinal));
+        Assert.AreEqual("desktop-host", intent.GetProperty("actor").GetProperty("id").GetString());
+        Assert.IsFalse(intent.TryGetProperty("tableId", out _));
+        Assert.IsFalse(intent.TryGetProperty("physicalName", out _));
+        Assert.IsFalse(intent.TryGetProperty("fields", out _));
     }
 
     [TestMethod]
     public async Task CreateTable_RejectsInvalidDisplayNameBeforeBackendLookup()
     {
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        var controller = new WorkspaceTableRequestController(
             new TableWorkspaceService(new FakeTableRpcGateway()),
             new FakeDatabasePicker("local://configured"),
-            sink);
+            sink,
+            () => null);
         using var payload = JsonDocument.Parse(
             """{"displayName":"bad\u0001name"}""");
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "tableAdmin.createRequested",
             "create-invalid",
             payload.RootElement.Clone(),
@@ -97,6 +87,32 @@ public sealed class WorkspaceRequestDispatcherTableAdminTests
         Assert.IsNotNull(failure);
         string serialized = JsonSerializer.Serialize(failure.Payload);
         StringAssert.Contains(serialized, @"""code"":""BAD_PAYLOAD""");
+    }
+
+    [TestMethod]
+    public void HandlesOnlyTheClosedTableCommandUnion()
+    {
+        foreach (string type in new[]
+        {
+            "database.openRequested",
+            "table.selected",
+            "table.updateCellRequested",
+            "table.insertRowRequested",
+            "table.deleteRowsRequested",
+            "table.previewPasteRequested",
+            "table.applyPasteRequested",
+            "history.queryRequested",
+            "history.previewRestoreRequested",
+            "history.applyRestoreRequested",
+            "tableAdmin.createRequested",
+            "tableAdmin.deleteRequested",
+        })
+        {
+            Assert.IsTrue(WorkspaceTableRequestController.Handles(type), type);
+        }
+        Assert.IsFalse(WorkspaceTableRequestController.Handles("schema.rawRequested"));
+        Assert.IsFalse(WorkspaceTableRequestController.Handles("table.pageRequested"));
+        Assert.IsFalse(WorkspaceTableRequestController.Handles("rpc.invoke"));
     }
 
     private sealed class SchemaCaptureTransport : IJsonLineTransport
@@ -135,12 +151,14 @@ public sealed class WorkspaceRequestDispatcherTableAdminTests
             }
             JsonElement result = method switch
             {
-                "schema.validate" => JsonSerializer.SerializeToElement(new
+                "schema.table.create" => JsonSerializer.SerializeToElement(new
                 {
-                    definition = parameters.GetProperty("definition"),
-                    capabilities = new Dictionary<string, object>(),
+                    contract = "vibetable.schema.v2",
+                    operationId = parameters.GetProperty("operationId").GetString(),
+                    tableId = "tbl_created",
+                    displayName = parameters.GetProperty("displayName").GetString(),
+                    schemaRevision = "schema_0001",
                 }),
-                "schema.apply" => parameters.GetProperty("definition").Clone(),
                 _ => throw new InvalidOperationException(
                     $"Unexpected RPC method: {method}"),
             };

@@ -9,15 +9,19 @@ import (
 )
 
 type fakeRuntime struct {
-	failHealth bool
-	stops      int
-	starts     int
-	events     *[]string
+	failHealthGeneration int
+	generation           int
+	healthGenerations    []int
+	running              bool
+	stops                int
+	starts               int
+	events               *[]string
 }
 
 func (*fakeRuntime) Protect(context.Context) error { return nil }
 func (runtime *fakeRuntime) Stop(context.Context) error {
 	runtime.stops++
+	runtime.running = false
 	if runtime.events != nil {
 		*runtime.events = append(*runtime.events, "stop")
 	}
@@ -25,13 +29,16 @@ func (runtime *fakeRuntime) Stop(context.Context) error {
 }
 func (runtime *fakeRuntime) Start(context.Context) error {
 	runtime.starts++
+	runtime.generation++
+	runtime.running = true
 	if runtime.events != nil {
 		*runtime.events = append(*runtime.events, "start")
 	}
 	return nil
 }
 func (runtime *fakeRuntime) Health(context.Context) error {
-	if runtime.failHealth {
+	runtime.healthGenerations = append(runtime.healthGenerations, runtime.generation)
+	if runtime.generation == runtime.failHealthGeneration {
 		return errors.New("unhealthy")
 	}
 	return nil
@@ -42,6 +49,7 @@ type fakeInstaller struct {
 	leaves    int
 	audit     int
 	events    *[]string
+	runtime   *fakeRuntime
 }
 
 func (*fakeInstaller) Stage(context.Context, string, string) (string, error) { return "staging", nil }
@@ -55,6 +63,9 @@ func (installer *fakeInstaller) CommitAuditEpoch(context.Context, string, string
 	return nil
 }
 func (installer *fakeInstaller) Rollback(context.Context, string, string) error {
+	if installer.runtime != nil && installer.runtime.running {
+		return errors.New("rollback while runtime is running")
+	}
 	installer.rollbacks++
 	if installer.events != nil {
 		*installer.events = append(*installer.events, "rollback")
@@ -84,16 +95,20 @@ func TestRestoreUsesJournalCreatesLeavesAndCapturesRecoverySnapshot(t *testing.T
 
 func TestJournalPersistenceFailureAfterMutationRollsBack(t *testing.T) {
 	runtime, installer := &fakeRuntime{}, &fakeInstaller{}
-	coordinator := New(filepath.Join(t.TempDir(), "journal.json"), runtime, installer, &fakeAfter{})
 	writes := 0
-	realPersist := coordinator.persist
-	coordinator.persist = func(journal Journal) error {
-		writes++
-		if journal.Stage == StageDataInstalled {
-			return errors.New("disk full")
-		}
-		return realPersist(journal)
-	}
+	coordinator := newWithPersistenceGate(
+		filepath.Join(t.TempDir(), "journal.json"),
+		runtime,
+		installer,
+		&fakeAfter{},
+		func(journal Journal, _ func(Journal) error) error {
+			writes++
+			if journal.Stage == StageDataInstalled {
+				return errors.New("disk full")
+			}
+			return nil
+		},
+	)
 	if err := coordinator.Restore(context.Background(), "w", "s", "root"); err == nil {
 		t.Fatal("expected journal persistence failure")
 	}
@@ -129,14 +144,17 @@ func TestRecoverRetriesPendingRecoverySnapshotBeforeCommitting(t *testing.T) {
 
 func TestFailedHealthRollsBackWithoutMixedState(t *testing.T) {
 	events := []string{}
-	runtime := &fakeRuntime{failHealth: true, events: &events}
-	installer := &fakeInstaller{events: &events}
+	runtime := &fakeRuntime{failHealthGeneration: 1, events: &events}
+	installer := &fakeInstaller{events: &events, runtime: runtime}
 	coordinator := New(filepath.Join(t.TempDir(), "journal.json"), runtime, installer, &fakeAfter{})
 	if err := coordinator.Restore(context.Background(), "w", "s", "root"); err == nil {
 		t.Fatal("expected health failure")
 	}
 	if installer.rollbacks != 1 || runtime.starts != 2 || runtime.stops != 2 {
-		t.Fatalf("rollback did not restore runtime: %#v %#v", runtime, installer)
+		t.Fatalf(
+			"rollback did not restore runtime: events=%#v runtime=%#v installer=%#v",
+			events, runtime, installer,
+		)
 	}
 	want := []string{"stop", "start", "stop", "rollback", "start"}
 	if len(events) != len(want) {
@@ -146,23 +164,39 @@ func TestFailedHealthRollsBackWithoutMixedState(t *testing.T) {
 		if events[index] != want[index] {
 			t.Fatalf("rollback touched live state: got %#v want %#v", events, want)
 		}
+	}
+	if !runtime.running || runtime.generation != 2 ||
+		len(runtime.healthGenerations) != 2 ||
+		runtime.healthGenerations[0] != 1 || runtime.healthGenerations[1] != 2 {
+		t.Fatalf("rollback runtime health generations = %#v", runtime)
+	}
+	if _, err := coordinator.readJournal(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("healthy rollback left a journal behind: %v", err)
 	}
 }
 
 func TestStageVerifiedPersistenceFailureStopsBeforeRollback(t *testing.T) {
 	events := []string{}
 	runtime := &fakeRuntime{events: &events}
-	installer := &fakeInstaller{events: &events}
-	coordinator := New(filepath.Join(t.TempDir(), "journal.json"), runtime, installer, &fakeAfter{})
-	realPersist := coordinator.persist
-	coordinator.persist = func(journal Journal) error {
-		if journal.Stage == StageVerified {
-			return errors.New("kill before verified journal sync")
-		}
-		return realPersist(journal)
-	}
-	if err := coordinator.Restore(context.Background(), "w", "s", "root"); err == nil {
-		t.Fatal("expected verified journal persistence failure")
+	installer := &fakeInstaller{events: &events, runtime: runtime}
+	coordinator := newWithPersistenceGate(
+		filepath.Join(t.TempDir(), "journal.json"),
+		runtime,
+		installer,
+		&fakeAfter{},
+		func(journal Journal, _ func(Journal) error) error {
+			if journal.Stage == StageVerified {
+				return errors.New("kill before verified journal sync")
+			}
+			return nil
+		},
+	)
+	err := coordinator.Restore(context.Background(), "w", "s", "root")
+	if err == nil || err.Error() != "kill before verified journal sync" {
+		t.Fatalf(
+			"verified persistence error = %v, events=%#v runtime=%#v installer=%#v",
+			err, events, runtime, installer,
+		)
 	}
 	want := []string{"stop", "start", "stop", "rollback", "start"}
 	if len(events) != len(want) {
@@ -172,6 +206,12 @@ func TestStageVerifiedPersistenceFailureStopsBeforeRollback(t *testing.T) {
 		if events[index] != want[index] {
 			t.Fatalf("rollback touched live state: got %#v want %#v", events, want)
 		}
+	}
+	if !runtime.running || installer.rollbacks != 1 {
+		t.Fatalf("rollback did not restore the previous runtime: %#v %#v", runtime, installer)
+	}
+	if _, err := coordinator.readJournal(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed rollback left a journal behind: %v", err)
 	}
 }
 

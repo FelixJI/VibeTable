@@ -7,21 +7,21 @@ import {
   Files,
   Home,
   LayoutDashboard,
+  LayoutTemplate,
   Blocks,
+  Search,
   GitCompareArrows,
   Settings,
   Table2,
 } from "lucide-vue-next";
 import type { AppView } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
-import { useDashboardStore } from "@/stores/dashboardStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { t } from "@/i18n";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 
 const ui = useUiStore();
-const dashboards = useDashboardStore();
 const workspaceSession = useWorkspaceSessionStore();
 const protection = useWorkspaceProtectionStore();
 const emit = defineEmits<{
@@ -33,8 +33,10 @@ const emit = defineEmits<{
 const primary = computed(() => [
   { view: "home" as const, icon: Home, label: "nav.home" },
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
-  ...(dashboards.featureEnabled ? [{ view: "dashboard" as const, icon: LayoutDashboard, label: "nav.dashboard" }] : []),
+  { view: "dashboard" as const, icon: LayoutDashboard, label: "nav.dashboard" },
+  { view: "interfaces" as const, icon: LayoutTemplate, label: "nav.interfaces" },
   { view: "files" as const, icon: Files, label: "nav.files" },
+  { view: "search" as const, icon: Search, label: "nav.search" },
   ...(workspaceSession.conflictEnabled ? [{
     view: "conflicts" as const,
     icon: GitCompareArrows,

@@ -314,7 +314,10 @@ func TestInstallReplicaDatabaseAndFilesMaterializesOnlyBoundPaths(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := []byte(`{"theme":"dark"}`)
+	settings := []byte(`{"formatVersion":1,"retention":{"snapshotDays":30,` +
+		`"snapshotCount":50,"snapshotBuckets":["daily"],` +
+		`"fileRevisionDays":30,"fileRevisionCount":100,` +
+		`"fileRevisionBuckets":["daily"],"repositoryLimitBytes":null}}`)
 	file := []byte("recovered file")
 	fileID := contentIDReplicaOneShot(file)
 	fileRoot, err := json.Marshal(map[string]any{

@@ -165,7 +165,7 @@ func (appender *workspaceConflictAppender) stageConflictSettings(
 }
 
 func validateConflictSettings(raw []byte) error {
-	_, _, err := decodeWorkspaceSettingsSnapshot(raw)
+	_, err := decodeWorkspaceSettingsSnapshot(raw)
 	return err
 }
 

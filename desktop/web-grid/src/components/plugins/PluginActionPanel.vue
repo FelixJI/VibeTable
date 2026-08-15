@@ -10,10 +10,16 @@ interface SchemaField {
   readonly enum?: readonly (string | number)[];
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   description: WebPluginActionDescription;
   task?: PluginTaskViewSnapshot | null;
-}>();
+  showForm?: boolean;
+  closable?: boolean;
+}>(), {
+  task: null,
+  showForm: true,
+  closable: true,
+});
 const emit = defineEmits<{
   start: [input: Readonly<Record<string, unknown>>];
   resolve: [decision: "approved" | "rejected"];
@@ -69,10 +75,10 @@ watch(() => props.description, resetForm, { immediate: true });
         <h2>{{ description.title }}</h2>
         <p v-if="description.description">{{ description.description }}</p>
       </div>
-      <button data-testid="plugin-action-close" class="icon-button" type="button" aria-label="关闭动作面板" @click="emit('close')">×</button>
+      <button v-if="closable !== false" data-testid="plugin-action-close" class="icon-button" type="button" aria-label="关闭动作面板" @click="emit('close')">×</button>
     </header>
 
-    <form class="action-form" @submit.prevent="start">
+    <form v-if="showForm !== false" class="action-form" @submit.prevent="start">
       <label v-for="field in fields" :key="field.name" class="field">
         <span>{{ field.schema.title ?? field.name }} <b v-if="field.required">*</b></span>
         <small v-if="field.schema.description">{{ field.schema.description }}</small>
@@ -112,6 +118,7 @@ watch(() => props.description, resetForm, { immediate: true });
       <div class="task-meta"><span>{{ task.progressMessage ?? '等待运行时更新' }}</span><b>{{ task.progressPercent ?? 0 }}%</b></div>
       <button
         v-if="task.state === 'queued' || task.state === 'running'"
+        data-testid="plugin-task-cancel"
         class="quiet-button"
         type="button"
         :disabled="task.cancelRequested"
@@ -128,7 +135,7 @@ watch(() => props.description, resetForm, { immediate: true });
         <div><dt>确认失效</dt><dd>{{ task.confirmation.expiresAt }}</dd></div>
       </dl>
       <div class="confirm-actions">
-        <button type="button" class="quiet-button" @click="emit('resolve', 'rejected')">拒绝</button>
+        <button data-testid="plugin-confirm-reject" type="button" class="quiet-button" @click="emit('resolve', 'rejected')">拒绝</button>
         <button data-testid="plugin-confirm-approve" type="button" class="danger-button" @click="emit('resolve', 'approved')">确认并继续写入</button>
       </div>
     </section>

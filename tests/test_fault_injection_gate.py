@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import pytest
+
 from qa import fault_injection
+from scripts import build_next
 
 
 def test_release_gate_has_all_required_named_faults() -> None:
@@ -19,13 +23,59 @@ def test_release_gate_has_all_required_named_faults() -> None:
         "TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision",
         "TestReadPersistentMutationRevisionCoversCommittedApplyBeforeFinish",
         "TestAuthorityReceiptsCloseFileHistoryAndSnapshotKillWindows",
-        "TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen",
+        "TestSnapshotRestoreCommitsAuthorityAndRecoversFailedSearchRebuildAfterRestart",
         "TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness",
         "TestConflictExternalAttachmentFaultRestoresOldFilesAndTableTransaction",
         "TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision",
     } <= names
     assert "FaultGateKilledSidecar" in fault_injection.DOTNET_TEST
     assert fault_injection.PRODUCT_SCENARIO == "10-sse-reconnect"
+
+
+def test_fault_gate_prefers_the_exact_versioned_go_toolchain(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    exact = tmp_path / ".tools" / f"go-{build_next.RECOVERY_GO_VERSION}" / "go" / "bin" / suffix
+    stale = tmp_path / ".tools" / "go-full" / "go" / "bin" / suffix
+    exact.parent.mkdir(parents=True)
+    stale.parent.mkdir(parents=True)
+    exact.write_bytes(b"exact")
+    stale.write_bytes(b"stale")
+    go_mod = tmp_path / "tools" / "recovery-tools" / "go.mod"
+    go_mod.parent.mkdir(parents=True)
+    go_mod.write_text(f"module example.invalid/tools\n\ngo {build_next.RECOVERY_GO_VERSION}\n")
+    monkeypatch.setattr(fault_injection, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        fault_injection,
+        "_go_executable_version",
+        lambda executable: build_next.RECOVERY_GO_VERSION if executable == str(exact) else "1.26.5",
+    )
+
+    assert fault_injection._resolve("go") == str(exact)
+
+
+def test_fault_gate_rejects_mismatched_go_toolchains(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    suffix = "go.exe" if os.name == "nt" else "go"
+    stale = tmp_path / ".tools" / "go-full" / "go" / "bin" / suffix
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale")
+    go_mod = tmp_path / "tools" / "recovery-tools" / "go.mod"
+    go_mod.parent.mkdir(parents=True)
+    go_mod.write_text(f"module example.invalid/tools\n\ngo {build_next.RECOVERY_GO_VERSION}\n")
+    monkeypatch.setattr(fault_injection, "ROOT", tmp_path)
+    monkeypatch.setattr(fault_injection.shutil, "which", lambda _tool: str(stale))
+    monkeypatch.setattr(fault_injection, "_go_executable_version", lambda _executable: "1.26.5")
+
+    with pytest.raises(
+        RuntimeError,
+        match=f"Go {build_next.RECOVERY_GO_VERSION} toolchain is required",
+    ):
+        fault_injection._resolve("go")
 
 
 def test_go_gate_rejects_success_when_required_tests_are_missing(
@@ -123,6 +173,44 @@ def test_product_gate_requires_exact_passed_scenario_report(
     monkeypatch.setattr(fault_injection, "_run", fake_run)
 
     result = fault_injection._run_product(tmp_path, tmp_path / "package")
+
+    assert result.status == "passed"
+
+
+def test_product_gate_does_not_traverse_disposable_runtime_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(
+        _command: list[str],
+        _cwd: Path,
+    ) -> tuple[subprocess.CompletedProcess[str], float]:
+        run_root = tmp_path / "real-product" / "run"
+        volatile_runtime = run_root / "_runtime" / "workspace"
+        volatile_runtime.mkdir(parents=True)
+        (volatile_runtime / "transient.json").write_text("{}", encoding="utf-8")
+        (run_root / "product-e2e-report.json").write_text(
+            json.dumps(
+                {
+                    "scenarios": [
+                        {
+                            "scenario": fault_injection.PRODUCT_SCENARIO,
+                            "status": "passed",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(["product-e2e"], 0, "", ""), 0.01
+
+    def reject_recursive_scan(_self: Path, _pattern: str):
+        raise AssertionError("fault gate must not traverse disposable runtime evidence")
+
+    monkeypatch.setattr(fault_injection, "_run", fake_run)
+    monkeypatch.setattr(Path, "rglob", reject_recursive_scan)
+
+    result = fault_injection._run_product(tmp_path)
 
     assert result.status == "passed"
 

@@ -119,16 +119,20 @@ class PocketBaseRelationImportProvider:
                 raw
                 for raw in raw_fields
                 if isinstance(raw, dict)
-                and match_field in {raw.get("fieldId"), raw.get("physicalName")}
+                and isinstance(raw.get("identity"), dict)
+                and match_field
+                in {
+                    raw["identity"].get("fieldId"),
+                    raw["identity"].get("physicalName"),
+                }
             ),
             None,
         )
         constraints = field.get("constraints") if isinstance(field, dict) else None
-        unique = isinstance(constraints, list) and any(
-            isinstance(item, dict) and item.get("kind") == "unique" and item.get("value") is True
-            for item in constraints
-        )
-        physical_match = field.get("physicalName") if isinstance(field, dict) else None
+        unique_spec = constraints.get("unique") if isinstance(constraints, dict) else None
+        unique = isinstance(unique_spec, dict) and unique_spec.get("enabled") is True
+        identity = field.get("identity") if isinstance(field, dict) else None
+        physical_match = identity.get("physicalName") if isinstance(identity, dict) else None
         if not unique or not isinstance(physical_match, str):
             raise RelationIoError(
                 "matchField must be a visible unique field",

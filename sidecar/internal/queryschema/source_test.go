@@ -2,10 +2,12 @@ package queryschema
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/query"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestNewDerivesStableOpaqueDatabaseIdentity(t *testing.T) {
@@ -25,66 +27,72 @@ func TestNewDerivesStableOpaqueDatabaseIdentity(t *testing.T) {
 	}
 }
 
-func TestQueryFieldTypeMapsProductStorageWithoutProviderNames(t *testing.T) {
+func TestQueryFieldTypeMapsSchemaV2LogicalTypes(t *testing.T) {
 	cases := []struct {
-		field schema.FieldDefinition
+		name  string
+		field v2.FieldDefinition
 		want  query.FieldType
 	}{
-		{schema.FieldDefinition{DataType: schema.DataTypeShortText}, query.FieldTypeText},
-		{schema.FieldDefinition{DataType: schema.DataTypeInteger}, query.FieldTypeNumber},
-		{schema.FieldDefinition{DataType: schema.DataTypeBoolean}, query.FieldTypeBool},
-		{schema.FieldDefinition{DataType: schema.DataTypeDateTime}, query.FieldTypeDate},
+		{name: "text", field: v2Field("text", v2.LogicalText), want: query.FieldTypeText},
+		{name: "number", field: v2Field("number", v2.LogicalNumber), want: query.FieldTypeNumber},
+		{name: "bool", field: v2Field("bool", v2.LogicalBool), want: query.FieldTypeBool},
+		{name: "dateTime", field: v2Field("date", v2.LogicalDateTime), want: query.FieldTypeDate},
+		{name: "autoDate", field: v2Field("auto", v2.LogicalAutoDate), want: query.FieldTypeDate},
 		{
-			schema.FieldDefinition{
-				DataType: schema.DataTypeAutoDate,
-				AutoDate: &schema.AutoDateSpec{Role: schema.AutoDateRoleUpdatedAt},
+			name: "many relation",
+			field: v2.FieldDefinition{
+				Identity:    v2.FieldIdentity{PhysicalName: "f_relation"},
+				LogicalType: v2.LogicalRelation,
+				Relation:    &v2.RelationSpec{Cardinality: "many"},
 			},
-			query.FieldTypeDate,
+			want: query.FieldTypeMultiRelation,
+		},
+		{name: "json", field: v2Field("json", v2.LogicalJSON), want: query.FieldTypeJSON},
+		{
+			name: "formula result",
+			field: v2.FieldDefinition{
+				Identity:    v2.FieldIdentity{PhysicalName: "f_formula"},
+				LogicalType: v2.LogicalFormula,
+				Formula:     &v2.FormulaSpec{ResultType: v2.LogicalNumber},
+			},
+			want: query.FieldTypeNumber,
 		},
 		{
-			schema.FieldDefinition{
-				DataType: schema.DataTypeRelation,
-				Relation: &schema.RelationSpec{Cardinality: "many"},
+			name: "lookup envelope",
+			field: v2.FieldDefinition{
+				Identity:    v2.FieldIdentity{PhysicalName: "f_lookup"},
+				LogicalType: v2.LogicalLookup,
+				Lookup:      &v2.LookupSpec{TargetFieldID: "fld_target"},
 			},
-			query.FieldTypeMultiRelation,
-		},
-		{schema.FieldDefinition{DataType: schema.DataTypeJSON}, query.FieldTypeJSON},
-		{
-			schema.FieldDefinition{
-				DataType: schema.DataTypeFormula,
-				Formula:  &schema.FormulaSpec{ResultType: schema.DataTypeFloat},
-			},
-			query.FieldTypeNumber,
-		},
-		{
-			schema.FieldDefinition{
-				DataType:    schema.DataTypeLookup,
-				StorageType: schema.StorageDate,
-			},
-			query.FieldTypeDate,
+			want: query.FieldTypeJSON,
 		},
 	}
 	for _, test := range cases {
-		got, err := queryFieldType(test.field)
-		if err != nil || got != test.want {
-			t.Fatalf("queryFieldType(%#v) = %q, %v; want %q", test.field, got, err, test.want)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			got, err := queryFieldType(test.field)
+			if err != nil || got != test.want {
+				t.Fatalf("queryFieldType(%#v) = %q, %v; want %q", test.field, got, err, test.want)
+			}
+		})
 	}
 }
 
 func TestDescribeFieldExposesCancelledFormulaDiagnostic(t *testing.T) {
+	field := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "fld_formula", PhysicalName: "f_total"},
+		LogicalType: v2.LogicalFormula,
+		Formula:     &v2.FormulaSpec{ResultType: v2.LogicalNumber},
+	}
 	descriptor, err := (&Source{}).describeField(
 		context.Background(),
 		nil,
-		schema.FieldDefinition{
-			PhysicalName: "f_total",
-			Kind:         schema.FieldKindFormula,
-			DataType:     schema.DataTypeFormula,
-			Formula: &schema.FormulaSpec{
-				ResultType: schema.DataTypeFloat,
-				Status:     "cancelled",
+		schemaexecution.Table{
+			Snapshot: v2.SchemaSnapshot{Fields: []v2.FieldDefinition{field}},
+			FormulaRuntime: map[string]schemaexecution.FormulaRuntime{
+				"fld_formula": {Status: "cancelled", Version: 1},
 			},
 		},
+		field,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -93,5 +101,35 @@ func TestDescribeFieldExposesCancelledFormulaDiagnostic(t *testing.T) {
 		descriptor.ComputedError == nil ||
 		descriptor.ComputedError.Code != "calculation.cancelled" {
 		t.Fatalf("cancelled formula descriptor = %#v", descriptor)
+	}
+}
+
+func TestEnumDescriptorUsesActiveStableOptionIdentities(t *testing.T) {
+	descriptor := enumDescriptor(v2.FieldDefinition{
+		LogicalType: v2.LogicalSelect,
+		Select: &v2.SelectSpec{Options: []v2.SelectOption{
+			{OptionID: "opt_active", State: v2.OptionActive},
+			{OptionID: "opt_retired", State: v2.OptionRetired},
+		}},
+	})
+	if descriptor.Multiple || len(descriptor.Options) != 1 ||
+		descriptor.Options[0].Value != "opt_active" ||
+		descriptor.Options[0].StorageValue != "opt_active" {
+		t.Fatalf("enum descriptor = %#v", descriptor)
+	}
+}
+
+func TestMapSchemaErrorPreservesTableNotFoundContract(t *testing.T) {
+	err := mapSchemaError(errors.Join(errors.New("describe table"), schemaexecution.ErrTableNotFound))
+	var productErr *query.ProductError
+	if !errors.As(err, &productErr) || productErr.Code != "query.table.not_found" {
+		t.Fatalf("mapped error = %#v", err)
+	}
+}
+
+func v2Field(name string, logicalType v2.LogicalType) v2.FieldDefinition {
+	return v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{PhysicalName: "f_" + name},
+		LogicalType: logicalType,
 	}
 }

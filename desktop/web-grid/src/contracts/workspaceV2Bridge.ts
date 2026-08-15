@@ -25,6 +25,24 @@ import type {
   RestorePreview,
   RestoreResult,
 } from "@/contracts";
+import type {
+  FileDocumentQuery,
+  FileDocumentSummary,
+} from "@/contracts/fileDocumentQuery";
+import type {
+  SearchHit,
+  SearchRequest,
+  SearchResolveRequest,
+  SearchResolveResult,
+  SearchStatus,
+} from "@/contracts/generated/workbench";
+export type {
+  FileDocumentFilter,
+  FileDocumentFilterField,
+  FileDocumentQuery,
+  FileDocumentSortField,
+  FileDocumentSummary,
+} from "@/contracts/fileDocumentQuery";
 
 export const WORKSPACE_V2_RPC_METHODS = [
   "workspace.list",
@@ -58,7 +76,7 @@ export const WORKSPACE_V2_RPC_METHODS = [
   "repository.previewKeyRotation",
   "repository.applyKeyRotation",
   "fileHistory.import",
-  "fileHistory.listDocuments",
+  "fileHistory.queryDocuments",
   "fileHistory.listPendingChanges",
   "fileHistory.applyPendingChange",
   "fileHistory.unlink",
@@ -67,6 +85,11 @@ export const WORKSPACE_V2_RPC_METHODS = [
   "fileHistory.restore",
   "fileHistory.upgrade",
   "fileHistory.activateLeaf",
+  "workspaceSearch.query",
+  "workspaceSearch.resolveHit",
+  "workspaceSearch.status",
+  "workspaceSearch.rebuild",
+  "workspaceSearch.cancel",
   "retention.get",
   "retention.status",
   "retention.update",
@@ -211,7 +234,7 @@ export interface WorkspaceV2RpcParams {
     readonly relativePath: string;
     readonly mimeType: string;
   };
-  readonly "fileHistory.listDocuments": { readonly includeDeleted: boolean };
+  readonly "fileHistory.queryDocuments": FileDocumentQuery;
   readonly "fileHistory.listPendingChanges": Readonly<Record<string, never>>;
   readonly "fileHistory.applyPendingChange": {
     readonly changeId: string;
@@ -244,6 +267,11 @@ export interface WorkspaceV2RpcParams {
     readonly expectedEffectiveRevisionId: string;
     readonly targetLeafRevisionId: string;
   };
+  readonly "workspaceSearch.query": SearchRequest;
+  readonly "workspaceSearch.resolveHit": SearchResolveRequest;
+  readonly "workspaceSearch.status": Readonly<Record<string, never>>;
+  readonly "workspaceSearch.rebuild": Readonly<Record<string, never>>;
+  readonly "workspaceSearch.cancel": Readonly<Record<string, never>>;
   readonly "retention.get": Readonly<Record<string, never>>;
   readonly "retention.status": Readonly<Record<string, never>>;
   readonly "retention.update": {
@@ -309,6 +337,7 @@ export interface PendingFileChange {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
+
 
 export interface WorkspaceStorageProjection {
   readonly location: string;
@@ -502,8 +531,10 @@ export interface WorkspaceV2RpcResultMap {
   readonly "repository.previewKeyRotation": RepositoryKeyRotationPlan;
   readonly "repository.applyKeyRotation": RepositoryKeyRotationResult;
   readonly "fileHistory.import": FileDocumentV2;
-  readonly "fileHistory.listDocuments": {
-    readonly documents: readonly FileDocumentV2[];
+  readonly "fileHistory.queryDocuments": {
+    readonly documents: readonly FileDocumentSummary[];
+    readonly nextCursor: string | null;
+    readonly topologyRevision: number;
   };
   readonly "fileHistory.listPendingChanges": {
     readonly changes: readonly PendingFileChange[];
@@ -522,6 +553,15 @@ export interface WorkspaceV2RpcResultMap {
     readonly revisionId: string;
     readonly effective: true;
   };
+  readonly "workspaceSearch.query": {
+    readonly hits: readonly SearchHit[];
+    readonly nextCursor: string | null;
+    readonly generation: number;
+  };
+  readonly "workspaceSearch.resolveHit": SearchResolveResult;
+  readonly "workspaceSearch.status": SearchStatus;
+  readonly "workspaceSearch.rebuild": SearchStatus;
+  readonly "workspaceSearch.cancel": SearchStatus;
   readonly "retention.get": RetentionPolicyV2;
   readonly "retention.status": RetentionProtectionStatus;
   readonly "retention.update": RetentionPolicyV2;
@@ -704,6 +744,20 @@ function integer(value: unknown, label: string, minimum = 0): number {
   return value as number;
 }
 
+function finiteNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label} must be a finite number`);
+  }
+  return value;
+}
+
+function jsonScalar(value: unknown, label: string): string | number | boolean | null {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  return finiteNumber(value, label);
+}
+
 function bool(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
   return value;
@@ -734,6 +788,47 @@ function parseWire(value: unknown): WireScopeV2 {
   return source.scope === "global"
     ? parseGlobalWireScope(source)
     : parseWorkspaceWireScope(source);
+}
+
+function parseFileDocumentSummary(value: unknown): FileDocumentSummary {
+  const source = object(value, "file document summary");
+  exact(source, [
+    "contractVersion", "documentId", "relativePath", "displayName", "extension",
+    "mimeType", "sizeBytes", "effectiveRevisionId", "effectiveRevisionCreatedAt",
+    "formalVersion", "status",
+  ], "file document summary");
+  if (source.contractVersion !== "2.0") throw new Error("file document summary version is invalid");
+  const documentId = text(source.documentId, "file documentId");
+  const effectiveRevisionId = text(source.effectiveRevisionId, "effectiveRevisionId");
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  if (!uuid.test(documentId) || !uuid.test(effectiveRevisionId)) {
+    throw new Error("file document summary identity is invalid");
+  }
+  const relativePath = text(source.relativePath, "file relativePath");
+  const parts = relativePath.replaceAll("\\", "/").split("/");
+  if (relativePath.startsWith("/") || parts.some((part) => !part || part === "..")) {
+    throw new Error("file_history.path_invalid");
+  }
+  const effectiveRevisionCreatedAt = text(source.effectiveRevisionCreatedAt, "effectiveRevisionCreatedAt");
+  if (!Number.isFinite(Date.parse(effectiveRevisionCreatedAt))) {
+    throw new Error("effectiveRevisionCreatedAt is invalid");
+  }
+  if (typeof source.extension !== "string" || source.extension.startsWith(".")) {
+    throw new Error("file extension is invalid");
+  }
+  return {
+    contractVersion: "2.0",
+    documentId,
+    relativePath,
+    displayName: text(source.displayName, "file displayName"),
+    extension: source.extension,
+    mimeType: text(source.mimeType, "file mimeType"),
+    sizeBytes: integer(source.sizeBytes, "file sizeBytes"),
+    effectiveRevisionId,
+    effectiveRevisionCreatedAt,
+    formalVersion: source.formalVersion === null ? null : integer(source.formalVersion, "formalVersion", 1),
+    status: oneOf(source.status, ["active", "deleted"] as const, "file status"),
+  };
 }
 
 function parseSnapshot(value: unknown): SnapshotTimelineItem {
@@ -841,7 +936,7 @@ function parseHistoryRelationChange(value: unknown): RelationFieldChange {
   ], "history relation change");
   return {
     field: text(source.field, "history relation field"),
-    kind: oneOf(source.kind, ["m2o", "o2m", "m2m", "m2a", "file"], "history relation kind"),
+    kind: oneOf(source.kind, ["m2o", "o2m", "m2m", "file"], "history relation kind"),
     relatedCollection: nullableText(source.relatedCollection, "relatedCollection"),
     relatedItemId: nullableText(source.relatedItemId, "relatedItemId"),
     displayValue: nullableText(source.displayValue, "displayValue"),
@@ -1045,6 +1140,78 @@ export function parseWorkspaceV2Bootstrap(value: unknown): WorkspaceV2Bootstrap 
 
 export function parseWorkspaceV2Event(value: unknown): WorkspaceEventV2 {
   return parseWorkspaceEventV2(value);
+}
+
+function parseSearchHit(value: unknown): SearchHit {
+  const source = object(value, "workspace search hit");
+  exact(source, [
+    "contractVersion", "hitId", "kind", "canonicalId", "title", "snippet",
+    "highlights", "sourceRevision", "score", "revisionTime", "metadata", "openTarget",
+  ], "workspace search hit");
+  if (source.contractVersion !== "1.0") {
+    throw new Error("workspace search hit contractVersion is invalid");
+  }
+  if (!Array.isArray(source.metadata) || source.metadata.length > 50) {
+    throw new Error("workspace search metadata must be a bounded array");
+  }
+  const metadata = source.metadata.map((value) => {
+    const item = object(value, "workspace search metadata item");
+    exact(item, ["key", "value"], "workspace search metadata item");
+    return {
+      key: text(item.key, "workspace search metadata key"),
+      value: jsonScalar(item.value, "workspace search metadata value"),
+    };
+  });
+  const openTarget = object(source.openTarget, "workspace search open target");
+  exact(openTarget, [
+    "kind", "tableId", "recordId", "fieldId", "documentId",
+  ], "workspace search open target");
+  const kind = oneOf(source.kind, ["record", "attachment", "file"] as const, "search hit kind");
+  const targetKind = oneOf(
+    openTarget.kind,
+    ["record", "attachment", "file"] as const,
+    "search open target kind",
+  );
+  if (targetKind !== kind) throw new Error("workspace search target kind does not match hit kind");
+  return {
+    contractVersion: "1.0",
+    hitId: text(source.hitId, "search hitId"),
+    kind,
+    canonicalId: text(source.canonicalId, "search canonicalId"),
+    title: text(source.title, "search title"),
+    snippet: nullableText(source.snippet, "search snippet"),
+    highlights: stringList(source.highlights, "search highlights"),
+    sourceRevision: text(source.sourceRevision, "search sourceRevision"),
+    score: finiteNumber(source.score, "search score"),
+    revisionTime: text(source.revisionTime, "search revisionTime"),
+    metadata,
+    openTarget: {
+      kind: targetKind,
+      tableId: nullableText(openTarget.tableId, "search tableId"),
+      recordId: nullableText(openTarget.recordId, "search recordId"),
+      fieldId: nullableText(openTarget.fieldId, "search fieldId"),
+      documentId: nullableText(openTarget.documentId, "search documentId"),
+    },
+  };
+}
+
+function parseSearchStatus(value: unknown): SearchStatus {
+  const source = object(value, "workspace search status");
+  exact(source, [
+    "state", "generation", "checkpoint", "processed", "total", "errorCode",
+  ], "workspace search status");
+  return {
+    state: oneOf(
+      source.state,
+      ["idle", "building", "ready", "degraded", "failed"] as const,
+      "workspace search state",
+    ),
+    generation: integer(source.generation, "workspace search generation"),
+    checkpoint: nullableText(source.checkpoint, "workspace search checkpoint"),
+    processed: integer(source.processed, "workspace search processed"),
+    total: source.total === null ? null : integer(source.total, "workspace search total"),
+    errorCode: nullableText(source.errorCode, "workspace search errorCode"),
+  };
 }
 
 function parseResult<M extends WorkspaceV2RpcMethod>(
@@ -1297,12 +1464,16 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
     || method === "fileHistory.relink"
   ) {
     parsed = parseFileDocumentV2(source);
-  } else if (method === "fileHistory.listDocuments") {
-    exact(source, ["documents"], `${method} result`);
-    if (!Array.isArray(source.documents)) {
-      throw new Error("file documents must be an array");
+  } else if (method === "fileHistory.queryDocuments") {
+    exact(source, ["documents", "nextCursor", "topologyRevision"], `${method} result`);
+    if (!Array.isArray(source.documents) || source.documents.length > 500) {
+      throw new Error("file document summaries must be a bounded array");
     }
-    parsed = { documents: source.documents.map(parseFileDocumentV2) };
+    parsed = {
+      documents: source.documents.map(parseFileDocumentSummary),
+      nextCursor: nullableText(source.nextCursor, "file document nextCursor"),
+      topologyRevision: integer(source.topologyRevision, "file topologyRevision"),
+    };
   } else if (method === "fileHistory.listPendingChanges") {
     exact(source, ["changes"], `${method} result`);
     if (!Array.isArray(source.changes)) {
@@ -1378,6 +1549,28 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       revisionId: text(source.revisionId, "revisionId"),
       effective: true,
     };
+  } else if (method === "workspaceSearch.query") {
+    exact(source, ["hits", "nextCursor", "generation"], `${method} result`);
+    if (!Array.isArray(source.hits) || source.hits.length > 200) {
+      throw new Error("workspace search hits must be a bounded array");
+    }
+    parsed = {
+      hits: source.hits.map(parseSearchHit),
+      nextCursor: nullableText(source.nextCursor, "workspace search nextCursor"),
+      generation: integer(source.generation, "workspace search generation"),
+    };
+  } else if (method === "workspaceSearch.resolveHit") {
+    exact(source, ["status", "hit"], `${method} result`);
+    parsed = {
+      status: oneOf(source.status, ["current", "stale"] as const, "search hit status"),
+      hit: parseSearchHit(source.hit),
+    };
+  } else if (
+    method === "workspaceSearch.status"
+    || method === "workspaceSearch.rebuild"
+    || method === "workspaceSearch.cancel"
+  ) {
+    parsed = parseSearchStatus(source);
   } else if (method === "retention.get" || method === "retention.update") {
     parsed = parseRetentionPolicyV2(source);
   } else if (method === "retention.status") {

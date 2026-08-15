@@ -8,19 +8,20 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestFanoutPathRejectsSingleSourceBeforeLoadingOverBudgetTargets(t *testing.T) {
-	relation := schema.FieldDefinition{
-		FieldID: "targets", PhysicalName: "targets",
-		Kind: schema.FieldKindRelation, DataType: schema.DataTypeRelation,
-		Relation: &schema.RelationSpec{
+	relation := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "targets", PhysicalName: "targets"},
+		LogicalType: v2.LogicalRelation,
+		Relation: &v2.RelationSpec{
 			TargetTableID: "targets", Cardinality: "many", DeletePolicy: "setNull",
 		},
 	}
-	definition := schema.TableDefinition{
-		TableID: "sources", Fields: []schema.FieldDefinition{relation},
+	definition := schemaexecution.Table{
+		Snapshot: v2.SchemaSnapshot{TableID: "sources", Fields: []v2.FieldDefinition{relation}},
 	}
 	record := core.NewRecord(core.NewBaseCollection("sources"))
 	ids := make([]string, fanoutTraversalBudget+1)
@@ -31,9 +32,9 @@ func TestFanoutPathRejectsSingleSourceBeforeLoadingOverBudgetTargets(t *testing.
 	_, err := (&Service{}).fanoutPathMatches(
 		context.Background(), nil,
 		fanoutTraversalNode{definition: definition, record: record},
-		[]schema.LookupPathStep{{RelationFieldID: "targets"}},
+		[]v2.LookupPathStep{{RelationFieldID: "targets"}},
 		"targets", map[string]struct{}{},
-		map[string]schema.TableDefinition{"sources": definition},
+		map[string]schemaexecution.Table{"sources": definition},
 	)
 	var productErr *JobError
 	if !errors.As(err, &productErr) || productErr.Code != "job.fanout_too_expensive" {
@@ -46,8 +47,8 @@ func TestFanoutPathHonorsCancellationBeforeTraversingTargets(t *testing.T) {
 	cancel()
 	_, err := (&Service{}).fanoutPathMatches(
 		ctx, nil, fanoutTraversalNode{},
-		[]schema.LookupPathStep{{RelationFieldID: "targets"}},
-		"targets", map[string]struct{}{}, map[string]schema.TableDefinition{},
+		[]v2.LookupPathStep{{RelationFieldID: "targets"}},
+		"targets", map[string]struct{}{}, map[string]schemaexecution.Table{},
 	)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled fan-out error = %#v", err)
@@ -55,15 +56,15 @@ func TestFanoutPathHonorsCancellationBeforeTraversingTargets(t *testing.T) {
 }
 
 func TestMatchingFanoutBatchStopsOnPersistentCancellationBetweenSourceRecords(t *testing.T) {
-	relation := schema.FieldDefinition{
-		FieldID: "targets", PhysicalName: "targets",
-		Kind: schema.FieldKindRelation, DataType: schema.DataTypeRelation,
-		Relation: &schema.RelationSpec{
+	relation := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "targets", PhysicalName: "targets"},
+		LogicalType: v2.LogicalRelation,
+		Relation: &v2.RelationSpec{
 			TargetTableID: "targets", Cardinality: "many", DeletePolicy: "setNull",
 		},
 	}
-	definition := schema.TableDefinition{
-		TableID: "sources", Fields: []schema.FieldDefinition{relation},
+	definition := schemaexecution.Table{
+		Snapshot: v2.SchemaSnapshot{TableID: "sources", Fields: []v2.FieldDefinition{relation}},
 	}
 	rows := make([]*core.Record, 3)
 	for index := range rows {

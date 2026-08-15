@@ -5,19 +5,26 @@ import { FileQuestion, FilePlus2, Files, RefreshCw, Search } from "lucide-vue-ne
 import DocumentList from "@/components/files/DocumentList.vue";
 import DocumentContextMenu from "@/components/files/DocumentContextMenu.vue";
 import DocumentInspector from "@/components/files/DocumentInspector.vue";
-import { createDocumentWorkspaceService, type DocumentWorkspaceIntent, type DocumentWorkspaceScope } from "@/services/documentWorkspaceService";
+import { createDocumentWorkspaceService, defaultDocumentQuery, type DocumentWorkspaceIntent, type DocumentWorkspaceScope } from "@/services/documentWorkspaceService";
 import { useDocumentWorkspaceStore, type DocumentCapability, type DocumentEntry } from "@/stores/documentWorkspaceStore";
 import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { t } from "@/i18n";
 import type {
+  FileDocumentFilter,
+  FileDocumentFilterField,
+  FileDocumentQuery,
   PendingFileChange,
   WorkspaceV2UiAction,
 } from "@/contracts/workspaceV2Bridge";
 import { HOST_FILE_UPGRADE_GRANT } from "@/services/workspaceV2HostAdapter";
 
-const props = withDefaults(defineProps<{ scope?: DocumentWorkspaceScope }>(), {
+const props = withDefaults(defineProps<{
+  scope?: DocumentWorkspaceScope;
+  requestedRevisionId?: string | null;
+}>(), {
   scope: () => ({ kind: "global" as const }),
+  requestedRevisionId: null,
 });
 type WorkspaceFileHistoryAction = WorkspaceV2UiAction<
   | "fileHistory.readTree"
@@ -42,7 +49,13 @@ const pendingCandidates = ref<Record<string, string>>({});
 const dropDepth = ref(0);
 const dropActive = ref(false);
 const dropFeedback = ref(false);
+const filterLogic = ref<"and" | "or">("and");
+const filterField = ref<FileDocumentFilterField>("extension");
+const filterOperator = ref<FileDocumentFilter["operator"]>("eq");
+const filterValue = ref("");
+const metadataFilters = ref<readonly FileDocumentFilter[]>([]);
 let dropFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+let queryTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedCount = computed(() => store.selectedHandles.length);
 const currentRevisionTree = computed(() =>
   store.primaryEntry ? protection.fileTrees[store.primaryEntry.documentId] ?? null : null);
@@ -98,7 +111,64 @@ function formatPendingSize(bytes: number): string {
 function requestList(): void {
   store.setAuthorityFilter("workspace");
   store.beginLoad();
-  service.list(props.scope, "workspace");
+  service.list(props.scope, "workspace", currentQuery());
+}
+
+const fieldOptions: { value: FileDocumentFilterField; label: string }[] = [
+  { value: "displayName", label: t("files.filter.displayName") },
+  { value: "relativePath", label: t("files.filter.relativePath") },
+  { value: "extension", label: t("files.filter.extension") },
+  { value: "mimeType", label: t("files.filter.mimeType") },
+  { value: "sizeBytes", label: t("files.filter.sizeBytes") },
+  { value: "effectiveRevisionCreatedAt", label: t("files.filter.revisionTime") },
+  { value: "status", label: t("files.filter.status") },
+];
+const operatorOptions = computed<readonly FileDocumentFilter["operator"][]>(() => {
+  if (filterField.value === "sizeBytes") return ["eq", "gt", "gte", "lt", "lte"];
+  if (filterField.value === "effectiveRevisionCreatedAt") return ["eq", "before", "after"];
+  if (filterField.value === "status") return ["eq"];
+  return ["eq", "contains"];
+});
+
+function currentQuery(cursor: string | null = null): FileDocumentQuery {
+  const search = store.query.trim();
+  const filters: FileDocumentFilter[] = [
+    ...(search ? [{ field: "displayName" as const, operator: "contains" as const, value: search }] : []),
+    ...metadataFilters.value,
+  ];
+  if (filters.length === 0) return defaultDocumentQuery("", cursor);
+  return {
+    logic: filterLogic.value,
+    filters,
+    sort: [{ field: "effectiveRevisionCreatedAt", direction: "desc" }],
+    limit: 100,
+    cursor,
+  };
+}
+
+function requestNextPage(): void {
+  if (!store.nextCursor || store.phase === "loading") return;
+  store.beginLoad();
+  service.list(props.scope, "workspace", currentQuery(store.nextCursor));
+}
+
+function addMetadataFilter(): void {
+  const raw = filterValue.value.trim();
+  if (!raw) return;
+  const value: unknown = filterField.value === "sizeBytes" ? Number(raw) : raw;
+  if (filterField.value === "sizeBytes" && !Number.isFinite(value)) return;
+  metadataFilters.value = [...metadataFilters.value, {
+    field: filterField.value,
+    operator: filterOperator.value,
+    value,
+  }];
+  filterValue.value = "";
+  requestList();
+}
+
+function removeMetadataFilter(index: number): void {
+  metadataFilters.value = metadataFilters.value.filter((_, current) => current !== index);
+  requestList();
 }
 
 function select(index: number, options: { toggle: boolean; range: boolean }): void {
@@ -241,7 +311,16 @@ function onExternalDrop(event: DragEvent): void {
 onMounted(requestList);
 onBeforeUnmount(() => {
   if (dropFeedbackTimer) clearTimeout(dropFeedbackTimer);
+  if (queryTimer) clearTimeout(queryTimer);
 });
+watch(() => store.query, () => {
+  if (queryTimer) clearTimeout(queryTimer);
+  queryTimer = setTimeout(requestList, 220);
+});
+watch(filterField, () => {
+  filterOperator.value = operatorOptions.value[0] ?? "eq";
+});
+watch(filterLogic, requestList);
 watch(
   () => protection.pendingFileChanges.length,
   (count) => {
@@ -264,9 +343,21 @@ watch(
         <template #prefix><NIcon :size="15"><Search /></NIcon></template>
       </NInput>
       <span v-if="selectedCount" class="selection-count">{{ t("files.selected", { count: selectedCount }) }}</span>
-      <NButton quaternary size="small" :aria-label="t('files.refresh')" @click="requestList"><template #icon><NIcon :size="16"><RefreshCw /></NIcon></template></NButton>
+      <NButton quaternary size="small" :aria-label="t('files.refresh')" data-testid="document-refresh" @click="requestList"><template #icon><NIcon :size="16"><RefreshCw /></NIcon></template></NButton>
       <NButton type="primary" size="small" data-testid="document-import" @click="service.importFiles(scope)"><template #icon><NIcon :size="16"><FilePlus2 /></NIcon></template>{{ t("files.import") }}</NButton>
     </header>
+    <div class="file-query-builder" data-testid="file-query-builder">
+      <NSelect v-model:value="filterLogic" size="small" class="logic-select" data-testid="file-filter-logic" :options="[
+        { value: 'and', label: t('files.filter.and') }, { value: 'or', label: t('files.filter.or') },
+      ]" />
+      <NSelect v-model:value="filterField" size="small" data-testid="file-filter-field" :options="fieldOptions" />
+      <NSelect v-model:value="filterOperator" size="small" data-testid="file-filter-operator" :options="operatorOptions.map((value) => ({ value, label: value }))" />
+      <NInput v-model:value="filterValue" size="small" data-testid="file-filter-value" :placeholder="t('files.filter.value')" @keyup.enter="addMetadataFilter" />
+      <NButton size="small" data-testid="file-filter-add" @click="addMetadataFilter">{{ t("files.filter.add") }}</NButton>
+      <button v-for="(filter, index) in metadataFilters" :key="`${filter.field}-${index}`" type="button" class="filter-chip" :data-testid="`file-filter-chip-${index}`" @click="removeMetadataFilter(index)">
+        {{ filter.field }} {{ filter.operator }} {{ String(filter.value) }} ×
+      </button>
+    </div>
 
     <div v-if="store.phase === 'failed' && store.entries.length" class="file-error" role="alert">
       <span>{{ store.lastError }}</span><NButton text size="tiny" @click="requestList">{{ t("files.retry") }}</NButton>
@@ -323,12 +414,23 @@ watch(
           @context="(entry, point) => menu = { entry, ...point }"
           @drag-out="service.dragOut($event.entryHandle)"
         />
+        <div v-if="store.nextCursor" class="file-pagination">
+          <NButton
+            size="small"
+            :loading="store.phase === 'loading'"
+            data-testid="document-load-more"
+            @click="requestNextPage"
+          >
+            {{ t("files.loadMore") }}
+          </NButton>
+        </div>
       </main>
       <DocumentInspector
         :entry="store.primaryEntry"
         :active-tab="store.inspectorTab"
         :busy="protection.busyOperation !== null"
         :revision-tree="currentRevisionTree"
+        :requested-revision-id="props.requestedRevisionId"
         :diff-phase="store.diffPhase"
         :diff-result="store.diffResult"
         @tab="store.showInspector"
@@ -406,6 +508,7 @@ watch(
                 label: entry.displayName,
                 value: entry.documentId,
               }))"
+              :data-testid="`pending-candidate-${change.changeId}`"
               @update:value="value => {
                 if (typeof value === 'string') {
                   pendingCandidates = { ...pendingCandidates, [change.changeId]: value };
@@ -476,6 +579,10 @@ watch(
 .file-workspace { display: flex; flex-direction: column; height: 100%; min-width: 0; background: var(--vt-bg); }
 .file-toolbar { display: flex; flex: 0 0 46px; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
 .file-search { width: min(280px, 30vw); margin-left: 4px; }
+.file-query-builder { display: grid; grid-template-columns: 125px 150px 105px minmax(150px, 1fr) auto; align-items: center; gap: 6px; min-height: 42px; padding: 5px 12px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg-subtle); }
+.logic-select { min-width: 0; }
+.filter-chip { grid-column: span 1; overflow: hidden; padding: 3px 8px; color: var(--vt-fg-secondary); font-size: var(--vt-font-caption); text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--vt-border); border-radius: 999px; background: var(--vt-bg); cursor: pointer; }
+.filter-chip:hover { color: var(--vt-color-danger-600); border-color: color-mix(in srgb, var(--vt-color-danger-500) 45%, var(--vt-border)); }
 .selection-count { margin-left: auto; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .file-body { position: relative; display: flex; flex: 1; min-height: 0; }
 .drop-feedback { min-height: 32px; padding: 6px 12px; color: var(--vt-fg-accent); font-size: var(--vt-font-caption); border-bottom: 1px solid var(--vt-color-primary-100); background: var(--vt-color-primary-50); }
@@ -487,6 +594,7 @@ watch(
 .external-drop-zone p { margin: 4px 0 0; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .file-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 5px 12px; color: var(--vt-color-danger-600); border-bottom: 1px solid color-mix(in srgb, var(--vt-color-danger-500) 28%, var(--vt-border)); background: color-mix(in srgb, var(--vt-color-danger-500) 7%, var(--vt-bg)); font-size: var(--vt-font-caption); }
 .file-list-pane { flex: 1; min-width: 0; overflow: auto; }
+.file-pagination { display: flex; justify-content: center; padding: 10px 12px 16px; }
 .file-empty { display: flex; height: 100%; min-height: 280px; flex-direction: column; align-items: center; justify-content: center; padding: 32px; color: var(--vt-fg-muted); text-align: center; }
 .file-empty > span { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 12px; color: var(--vt-color-primary-500); border-radius: var(--vt-radius-lg); background: var(--vt-color-primary-50); }
 :root.dark .file-empty > span { background: rgba(91, 139, 255, 0.14); }
@@ -511,6 +619,7 @@ watch(
   .file-toolbar { min-height: 46px; height: auto; flex-wrap: wrap; padding-block: 7px; }
   .file-search { width: min(100%, 240px); flex: 1 1 180px; }
   .selection-count { margin-left: 0; }
+  .file-query-builder { grid-template-columns: 1fr 1fr; }
   .file-body { flex-direction: column; overflow: auto; }
   .file-list-pane { min-height: 260px; }
   .pending-change-card { grid-template-columns: 32px minmax(0, 1fr); }

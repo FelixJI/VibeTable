@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -14,6 +14,7 @@ from backend.application.insights_service import (
     normalize_panel_type,
     parse_panel_type,
 )
+from backend.application.revisioned_metadata_port import DashboardRevisionConflictError
 from backend.contracts.presets_versions_dashboards import (
     DashboardAggregateQuery,
     DashboardFilterState,
@@ -21,11 +22,15 @@ from backend.contracts.presets_versions_dashboards import (
     DashboardMeasure,
     DashboardPanelDraft,
     DashboardRecordQuery,
+    DashboardTimeBucket,
     DashboardWorkspaceParams,
+    DashboardWorkspaceResult,
     ExecuteDashboardQueryParams,
     PanelPosition,
+    PanelType,
     PresetView,
     SaveDashboardDraftParams,
+    SaveDashboardDraftResult,
 )
 from backend.contracts.query import FilterCondition, SortCondition
 
@@ -34,9 +39,20 @@ _UUID = "11111111-1111-4111-8111-111111111111"
 
 
 class FakeMetadataPort:
-    def __init__(self, rows: dict[str, list[dict[str, Any]]] | None = None) -> None:
+    def __init__(
+        self,
+        rows: dict[str, list[dict[str, Any]]] | None = None,
+        *,
+        dashboard_commit_result: SaveDashboardDraftResult | None = None,
+        dashboard_commit_error: DashboardRevisionConflictError | None = None,
+        next_upsert_result: dict[str, Any] | None = None,
+    ) -> None:
         self.rows = rows or {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.dashboard_commit_result = dashboard_commit_result
+        self.dashboard_commit_error = dashboard_commit_error
+        self.dashboard_commit_calls: list[SaveDashboardDraftParams] = []
+        self.next_upsert_result = next_upsert_result
 
     async def list_metadata(
         self,
@@ -50,11 +66,24 @@ class FakeMetadataPort:
 
     async def upsert_metadata(self, namespace: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("upsert", {"namespace": namespace, **kwargs}))
+        if self.next_upsert_result is not None:
+            return self.next_upsert_result
         return {"recordId": kwargs.get("record_id") or "generated"}
 
     async def delete_metadata(self, namespace: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("delete", {"namespace": namespace, **kwargs}))
         return {"deleted": kwargs["record_id"]}
+
+    async def commit_dashboard(
+        self,
+        params: SaveDashboardDraftParams,
+    ) -> SaveDashboardDraftResult:
+        self.dashboard_commit_calls.append(params)
+        if self.dashboard_commit_error is not None:
+            raise self.dashboard_commit_error
+        if self.dashboard_commit_result is None:
+            pytest.fail("unexpected atomic Dashboard commit")
+        return self.dashboard_commit_result
 
 
 class Page:
@@ -340,6 +369,41 @@ async def test_aggregate_dashboard_query_uses_product_aggregate_ast() -> None:
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_query_executes_projection_distinct_bucket_and_top_n() -> None:
+    query_port = FakeQueryPort(page_rows=[{"id": "r1", "name": "Ada", "private": "must-not-leak"}])
+    service = InsightsService(metadata_port=FakeMetadataPort(), query_port=query_port)
+
+    records = await service.execute_dashboard_query(
+        ExecuteDashboardQueryParams(
+            panel_type="list",
+            query=DashboardRecordQuery(collection="orders", fields=["id", "name"]),
+        )
+    )
+    await service.execute_dashboard_query(
+        ExecuteDashboardQueryParams(
+            panel_type="bar",
+            query=DashboardAggregateQuery(
+                collection="orders",
+                dimensions=["region"],
+                measures=[DashboardMeasure(key="buyers", op="countDistinct", field="buyer")],
+                time_bucket=DashboardTimeBucket(field="createdAt", unit="month"),
+                top_n=7,
+            ),
+        )
+    )
+
+    assert records.rows == [{"id": "r1", "name": "Ada"}]
+    assert query_port.aggregates[-1][1] == {
+        "filters": [],
+        "groupBy": ["region"],
+        "metrics": [{"function": "countDistinct", "field": "buyer", "alias": "buyers"}],
+        "timeBucket": {"field": "createdAt", "unit": "month", "timezone": "UTC"},
+        "topN": 7,
+        "limit": 100,
+    }
 
 
 @pytest.mark.asyncio
@@ -719,50 +783,79 @@ async def test_delete_dashboard_workspace_deletes_dashboard() -> None:
 
 
 @pytest.mark.asyncio
-async def test_save_dashboard_draft_requires_atomic_port() -> None:
-    service = InsightsService(metadata_port=FakeMetadataPort(), query_port=FakeQueryPort())
-    with pytest.raises(InsightsError, match="atomic dashboard mutation port is unavailable"):
-        await service.save_dashboard_draft(
-            SaveDashboardDraftParams(idempotency_key=_UUID, name="Draft")
-        )
-
-
-@pytest.mark.asyncio
-async def test_save_dashboard_draft_rejects_non_dict_response() -> None:
-    metadata: Any = FakeMetadataPort()
-
-    async def _commit(_payload: dict[str, Any]) -> list[str]:
-        return ["not-a-dict"]
-
-    metadata.commit_dashboard = _commit
-    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
-    with pytest.raises(InsightsError, match="atomic dashboard mutation returned invalid data"):
-        await service.save_dashboard_draft(
-            SaveDashboardDraftParams(idempotency_key=_UUID, name="Draft")
-        )
-
-
-@pytest.mark.asyncio
 async def test_save_dashboard_draft_success_returns_workspace() -> None:
-    workspace = {
-        "dashboard": {"id": _UUID, "name": "Draft"},
-        "config": {},
-        "revision": "a" * 64,
-    }
     client_panel_ids = {"c1": _UUID}
-
-    metadata: Any = FakeMetadataPort()
-
-    async def _commit(_payload: dict[str, Any]) -> dict[str, Any]:
-        return {"workspace": workspace, "clientPanelIds": client_panel_ids}
-
-    metadata.commit_dashboard = _commit
-    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
-    result = await service.save_dashboard_draft(
-        SaveDashboardDraftParams(idempotency_key=_UUID, name="Draft")
+    committed = SaveDashboardDraftResult(
+        workspace=DashboardWorkspaceResult(
+            dashboard={"id": _UUID, "name": "Draft"},
+            revision="a" * 64,
+        ),
+        client_panel_ids=client_panel_ids,
     )
+    metadata = FakeMetadataPort(dashboard_commit_result=committed)
+    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
+    params = SaveDashboardDraftParams(idempotency_key=_UUID, name="Draft")
+
+    result = await service.save_dashboard_draft(params)
+
+    assert metadata.dashboard_commit_calls == [params]
     assert result.workspace.dashboard.id == _UUID
     assert result.client_panel_ids == client_panel_ids
+
+
+@pytest.mark.asyncio
+async def test_save_dashboard_draft_preserves_revision_conflict_product_code() -> None:
+    metadata = FakeMetadataPort(dashboard_commit_error=DashboardRevisionConflictError())
+    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
+
+    with pytest.raises(InsightsError) as raised:
+        await service.save_dashboard_draft(
+            SaveDashboardDraftParams(idempotency_key=_UUID, name="Draft")
+        )
+
+    assert raised.value.code == "dashboard_edit_conflict"
+
+
+@pytest.mark.asyncio
+async def test_save_dashboard_draft_enforces_manifest_minimum_size() -> None:
+    metadata = FakeMetadataPort()
+    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
+    params = SaveDashboardDraftParams(
+        idempotency_key=_UUID,
+        name="Draft",
+        panels=[
+            DashboardPanelDraft(
+                client_id="metric-1",
+                type="metric",
+                position=PanelPosition(x=0, y=0, width=1, height=1),
+            )
+        ],
+    )
+    with pytest.raises(InsightsError) as raised:
+        await service.save_dashboard_draft(params)
+    assert raised.value.code == "dashboard_panel_size_invalid"
+
+
+@pytest.mark.asyncio
+async def test_save_dashboard_draft_validates_options_against_renderer_schema() -> None:
+    metadata = FakeMetadataPort()
+    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
+    params = SaveDashboardDraftParams(
+        idempotency_key=_UUID,
+        name="Draft",
+        panels=[
+            DashboardPanelDraft(
+                client_id="bar-1",
+                type="bar",
+                position=PanelPosition(x=0, y=0, width=4, height=3),
+                options={"physicalField": "amount"},
+            )
+        ],
+    )
+    with pytest.raises(InsightsError) as raised:
+        await service.save_dashboard_draft(params)
+    assert raised.value.code == "dashboard_panel_options_invalid"
+    assert raised.value.field == "options.physicalField"
 
 
 # ===========================================================================
@@ -789,7 +882,7 @@ async def test_save_panel_rejects_unknown_panel_type() -> None:
         await service.save_panel(
             "d1",
             "X",
-            "custom",  # type: ignore[arg-type]
+            cast(PanelType, "custom"),
             PanelPosition(x=0, y=0, width=4, height=4),
             {},
             {},
@@ -814,6 +907,11 @@ def test_panel_manifest_and_query_limits_are_published() -> None:
     assert limits.max_concurrent_requests == 6
 
 
+def test_dashboard_time_bucket_rejects_unimplemented_granularity() -> None:
+    with pytest.raises(ValueError, match="Input should be 'day', 'week' or 'month'"):
+        DashboardTimeBucket.model_validate({"field": "createdAt", "unit": "hour"})
+
+
 def test_is_known_panel_type_recognizes_manifest() -> None:
     service = InsightsService(metadata_port=FakeMetadataPort(), query_port=FakeQueryPort())
     assert service.is_known_panel_type("metric") is True
@@ -825,6 +923,11 @@ def test_normalize_panel_type_freezes_options() -> None:
     canonical, frozen = normalize_panel_type("metric", {"b": 2, "a": 1})
     assert canonical == "metric"
     assert frozen == {"a": 1, "b": 2}
+
+
+def test_normalize_panel_type_rejects_non_json_options_with_stable_error() -> None:
+    with pytest.raises(ValueError, match="JSON-compatible"):
+        normalize_panel_type("label", {"text": object()})
 
 
 def test_parse_panel_type_known_and_unknown_branches() -> None:
@@ -923,17 +1026,14 @@ def test_merge_global_filter_skips_when_field_not_in_allowed() -> None:
 
 @pytest.mark.asyncio
 async def test_create_version_exposes_receipt_revision_and_events() -> None:
-    metadata: Any = FakeMetadataPort()
-
-    async def _upsert(_namespace: str, **kwargs: Any) -> dict[str, Any]:
-        return {
-            "recordId": kwargs.get("record_id", ""),
+    metadata = FakeMetadataPort(
+        next_upsert_result={
+            "recordId": "generated",
             "item": {"revision": "rev-9"},
             "status": "committed",
             "emittedEvents": ["e1", "e2"],
         }
-
-    metadata.upsert_metadata = _upsert
+    )
     service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
     entry = await service.create_version("orders", "row-1", "k", "n", "op")
     assert entry.revision == "rev-9"

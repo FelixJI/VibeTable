@@ -47,7 +47,7 @@ function samplePage(): TablePage {
     offset: 0,
     limit: 50,
     totalRows: 3,
-    mode: "client",
+    mode: "remote",
   };
 }
 
@@ -207,7 +207,7 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     const col = buildColumns(page)[0] as {
       formatter?: string;
@@ -229,7 +229,7 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     const col = buildColumns(page)[0] as {
       formatterParams?: { precision?: number };
@@ -288,7 +288,7 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
 
     expect(buildColumns(page)[0]?.headerFilterFunc).toBe(jsonHeaderFilter);
@@ -437,7 +437,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 100,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
 
     const column = buildColumns(
@@ -474,7 +474,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 100,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
 
     const column = buildColumns(
@@ -523,6 +523,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
     expect(onAttachmentOpenRequested).toHaveBeenCalledWith(
       "record-7",
       page.columns[0],
+      element,
     );
   });
 
@@ -537,7 +538,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     const editSchema: ColumnEditSchema[] = [
       editCol("id", { kind: "number", storage: "integer" }, false),
@@ -561,7 +562,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     const editSchema: ColumnEditSchema[] = [
       editCol("tags", { kind: "multi_select", options: ["a", "b"], allowCustom: false }, true),
@@ -584,7 +585,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     // editSchema only describes `id`; `name` has no entry -> stays read-only.
     const editSchema: ColumnEditSchema[] = [
@@ -606,7 +607,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     // Backend says editable:false despite the column existing -> no editor.
     const editSchema: ColumnEditSchema[] = [
@@ -627,7 +628,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     const editSchema: ColumnEditSchema[] = [
       {
@@ -658,7 +659,7 @@ describe("buildColumns (with editSchema — Task M3)", () => {
       offset: 0,
       limit: 0,
       totalRows: 0,
-      mode: "client",
+      mode: "remote",
     };
     const colsNoSchema = buildColumns(page);
     const colsNull = buildColumns(page, null);

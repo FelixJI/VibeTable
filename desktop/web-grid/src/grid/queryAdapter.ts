@@ -113,14 +113,6 @@ export function queryToTabulator(query: TableQuery): {
   return { sorters, headerFilters };
 }
 
-/**
- * Decide whether the grid should switch to remote mode for the given total.
- * Mirrors the backend threshold (25,000 rows).
- */
-export function shouldUseRemoteMode(totalRows: number): boolean {
-  return totalRows > 25_000;
-}
-
 /** Normalize a keyword: trim, return null when empty/whitespace. */
 function normalizeKeyword(keyword: string | null | undefined): string | null {
   if (keyword === null || keyword === undefined) {

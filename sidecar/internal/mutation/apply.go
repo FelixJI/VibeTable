@@ -19,10 +19,11 @@ import (
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
-	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -38,7 +39,7 @@ type operationResult struct {
 }
 
 type reciprocalRecordChange struct {
-	definition schema.TableDefinition
+	definition schemaexecution.Table
 	record     *core.Record
 	recordID   string
 	before     map[string]any
@@ -46,7 +47,7 @@ type reciprocalRecordChange struct {
 }
 
 type relatedTableBatch struct {
-	definition   schema.TableDefinition
+	definition   schemaexecution.Table
 	metadata     *core.Record
 	dataRevision int64
 	recordIDs    []string
@@ -172,7 +173,8 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			}
 
 			after, applyErr := kernel.applyOperation(
-				ctx, txApp, definition, record, operation, before, computedFields,
+				ctx, txApp, definition, record, operation, before,
+				baseRowRevisions[recordID]+1, computedFields,
 			)
 			if applyErr != nil {
 				return applyErr
@@ -184,7 +186,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 				return relationErr
 			}
 			for _, change := range related {
-				if change.definition.TableID == request.TableID {
+				if change.definition.Snapshot.TableID == request.TableID {
 					recordStates[change.recordID] = change.record
 					if change.recordID == recordID {
 						record = change.record
@@ -225,12 +227,12 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		auditSequence := len(preview.Operations) + 1
 		for _, change := range reciprocalChanges {
 			relatedRequest := request
-			relatedRequest.TableID = change.definition.TableID
+			relatedRequest.TableID = change.definition.Snapshot.TableID
 			relatedRevision := dataRevision
-			if change.definition.TableID != request.TableID {
-				batch := relatedBatches[change.definition.TableID]
+			if change.definition.Snapshot.TableID != request.TableID {
+				batch := relatedBatches[change.definition.Snapshot.TableID]
 				if batch == nil {
-					meta, _, loadErr := loadTableMetadata(txApp, change.definition.TableID)
+					meta, _, loadErr := loadTableMetadata(txApp, change.definition.Snapshot.TableID)
 					if loadErr != nil {
 						return loadErr
 					}
@@ -250,7 +252,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 						definition: change.definition, metadata: meta,
 						dataRevision: storedRevision,
 					}
-					relatedBatches[change.definition.TableID] = batch
+					relatedBatches[change.definition.Snapshot.TableID] = batch
 				}
 				relatedRevision = batch.dataRevision
 				batch.recordIDs = appendUniqueString(batch.recordIDs, change.recordID)
@@ -277,13 +279,20 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			ContractVersion: ContractVersion, Topic: "data.changed",
 			EventID: eventID, Sequence: nextDataRevision,
 			OccurredAt:     kernel.now().UTC().Format(time.RFC3339),
-			SchemaRevision: definition.SchemaRevision,
+			SchemaRevision: definition.Snapshot.SchemaRevision,
 			DataRevision:   formatRevision("data", nextDataRevision),
 			ChangeSetID:    &changeSetID, TableID: request.TableID,
 			RecordIDs: recordIDs, Operation: eventOperation(operationResults),
 		}
 		if err := saveOutbox(txApp, event); err != nil {
 			return err
+		}
+		if kernel.invalidator != nil {
+			if _, err := kernel.invalidator.EnqueueInvalidations(
+				ctx, txApp, event,
+			); err != nil {
+				return err
+			}
 		}
 		emitted := []string{eventID}
 		relatedTableIDs := make([]string, 0, len(relatedBatches))
@@ -303,7 +312,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 				ContractVersion: ContractVersion, Topic: "data.changed",
 				EventID: relatedEventID, Sequence: nextRevision,
 				OccurredAt:     kernel.now().UTC().Format(time.RFC3339),
-				SchemaRevision: batch.definition.SchemaRevision,
+				SchemaRevision: batch.definition.Snapshot.SchemaRevision,
 				DataRevision:   formatRevision("data", nextRevision),
 				ChangeSetID:    &changeSetID, TableID: tableID,
 				RecordIDs: batch.recordIDs, Operation: DataChangeUpdate,
@@ -311,7 +320,25 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			if err := saveOutbox(txApp, relatedEvent); err != nil {
 				return err
 			}
+			if kernel.invalidator != nil {
+				if _, err := kernel.invalidator.EnqueueInvalidations(
+					ctx, txApp, relatedEvent,
+				); err != nil {
+					return err
+				}
+			}
 			emitted = append(emitted, relatedEventID)
+		}
+		// Reciprocal Relation writes can advance a dependency table revision in
+		// the same transaction after the source cell was calculated. Refresh only
+		// the version metadata once all table revisions are final; the scalar was
+		// already computed from the transaction's final record images.
+		for _, record := range recordStates {
+			if err := refreshComputedVersions(
+				ctx, txApp, definition, record,
+			); err != nil {
+				return err
+			}
 		}
 		if err := kernel.injectFault("after_outbox"); err != nil {
 			return err
@@ -367,6 +394,44 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		}
 	}
 	return receipt, nil
+}
+
+func refreshComputedVersions(
+	ctx context.Context,
+	app core.App,
+	definition schemaexecution.Table,
+	record *core.Record,
+) error {
+	changed := false
+	for _, field := range definition.Snapshot.Fields {
+		if field.LogicalType != v2.LogicalFormula && field.LogicalType != v2.LogicalLookup {
+			continue
+		}
+		envelope, ok := relatedcomputation.Decode(record.GetRaw(field.Identity.PhysicalName))
+		if !ok {
+			continue
+		}
+		expectation, err := relatedcomputation.ExpectationFor(
+			ctx, app, definition.Snapshot.TableID, definition.Snapshot.Fields, field.Identity.FieldID,
+			envelope.Version.SourceDataRevision,
+		)
+		if err != nil {
+			return mutationError(
+				"mutation.computed.version_failed", nil,
+				"computed version could not be finalized", nil, true,
+			)
+		}
+		envelope.Version.DefinitionVersion = expectation.DefinitionVersion
+		envelope.Version.DependencyWatermark = expectation.DependencyWatermark
+		record.Set(field.Identity.PhysicalName, envelope)
+		changed = true
+	}
+	if changed {
+		if err := app.Save(record); err != nil {
+			return storageValidationFailure(err)
+		}
+	}
+	return nil
 }
 
 func validateOperationGuard(
@@ -463,7 +528,7 @@ func eventOperation(results []operationResult) DataChangeOperation {
 func (kernel *Kernel) resolveOperationRecord(
 	app core.App,
 	collection *core.Collection,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	operation NormalizedOperation,
 	states map[string]*core.Record,
 	deleted map[string]bool,
@@ -509,16 +574,17 @@ func (kernel *Kernel) resolveOperationRecord(
 		}
 		record = found
 	}
-	return record, productRow(app, definition, record), nil
+	return record, ProductRow(app, definition, record), nil
 }
 
 func (kernel *Kernel) applyOperation(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 	operation NormalizedOperation,
 	before map[string]any,
+	rowRevision int64,
 	computedFields map[string]map[string]any,
 ) (map[string]any, error) {
 	var finalizeAttachments AttachmentFinalizer
@@ -550,7 +616,7 @@ func (kernel *Kernel) applyOperation(
 				return nil, mutationError(
 					"mutation.schema.storage_mismatch", nil,
 					"field value cannot be represented by the active storage schema",
-					map[string]any{"fieldId": field.FieldID, "cause": err.Error()},
+					map[string]any{"fieldId": field.Identity.FieldID, "cause": err.Error()},
 					false,
 				)
 			}
@@ -566,7 +632,7 @@ func (kernel *Kernel) applyOperation(
 		}
 	case OperationDelete:
 		if err := validateRestrictedDelete(
-			ctx, app, definition.TableID, record.Id,
+			ctx, app, definition.Snapshot.TableID, record.Id,
 		); err != nil {
 			return nil, err
 		}
@@ -594,9 +660,7 @@ func (kernel *Kernel) applyOperation(
 			return nil, err
 		}
 		if err := setAttachmentPresence(
-			ctx,
-			app,
-			definition.TableID,
+			definition,
 			operation.Attachment.FieldID,
 			record,
 			attachmentChangePresent(
@@ -610,6 +674,7 @@ func (kernel *Kernel) applyOperation(
 	default:
 		return nil, mutationError("mutation.operation.unsupported", nil, "operation is not supported", nil, false)
 	}
+	record.Set(relatedcomputation.RowRevisionField, rowRevision)
 	if kernel.formulas != nil {
 		calculated, err := kernel.formulas.Calculate(ctx, app, definition, record)
 		if err != nil {
@@ -627,7 +692,16 @@ func (kernel *Kernel) applyOperation(
 		if err != nil {
 			return nil, err
 		}
-		for name, value := range normalized {
+		stored, err := relatedcomputation.WrapValues(
+			ctx, app, definition.Snapshot.TableID, definition.Snapshot.Fields, rowRevision, normalized,
+		)
+		if err != nil {
+			return nil, mutationError(
+				"mutation.computed.version_failed", nil,
+				"computed version could not be derived", nil, true,
+			)
+		}
+		for name, value := range stored {
 			record.Set(name, value)
 		}
 		if len(normalized) > 0 {
@@ -643,15 +717,15 @@ func (kernel *Kernel) applyOperation(
 		}
 	}
 	_ = before
-	saved := productRow(app, definition, record)
+	saved := ProductRow(app, definition, record)
 	serverFields := map[string]any{}
-	for _, field := range definition.Fields {
-		if field.Kind == schema.FieldKindSystem {
-			serverValue, valueErr := systemWireValue(field, saved[field.PhysicalName])
+	for _, field := range definition.Snapshot.Fields {
+		if field.LogicalType == v2.LogicalAutoDate {
+			serverValue, valueErr := systemWireValue(field, saved[field.Identity.PhysicalName])
 			if valueErr != nil {
 				return nil, valueErr
 			}
-			serverFields[field.PhysicalName] = serverValue
+			serverFields[field.Identity.PhysicalName] = serverValue
 		}
 	}
 	if len(serverFields) != 0 {
@@ -666,23 +740,23 @@ func (kernel *Kernel) applyOperation(
 func (kernel *Kernel) syncReciprocalRelations(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	sourceRecordID string,
 	before map[string]any,
 	after map[string]any,
 ) ([]reciprocalRecordChange, error) {
 	changes := make([]reciprocalRecordChange, 0)
-	for _, field := range definition.Fields {
+	for _, field := range definition.Snapshot.Fields {
 		relation := field.Relation
-		if field.Kind != schema.FieldKindRelation || relation == nil ||
+		if field.LogicalType != v2.LogicalRelation || relation == nil ||
 			relation.PairID == "" || relation.ReciprocalFieldID == "" {
 			continue
 		}
-		beforeIDs, err := relationIDsFromRow(before, field.PhysicalName)
+		beforeIDs, err := relationIDsFromRow(before, field.Identity.PhysicalName)
 		if err != nil {
 			return nil, err
 		}
-		afterIDs, err := relationIDsFromRow(after, field.PhysicalName)
+		afterIDs, err := relationIDsFromRow(after, field.Identity.PhysicalName)
 		if err != nil {
 			return nil, err
 		}
@@ -706,18 +780,18 @@ func (kernel *Kernel) syncReciprocalRelations(
 		)
 		if !found || reciprocal.Relation == nil ||
 			reciprocal.Relation.PairID != relation.PairID ||
-			reciprocal.Relation.ReciprocalFieldID != field.FieldID ||
-			reciprocal.Relation.TargetTableID != definition.TableID {
+			reciprocal.Relation.ReciprocalFieldID != field.Identity.FieldID ||
+			reciprocal.Relation.TargetTableID != definition.Snapshot.TableID {
 			return nil, mutationError(
 				"mutation.relation.pair_invalid", nil,
 				"reciprocal relation metadata is not symmetric",
 				map[string]any{
-					"fieldId":           field.FieldID,
+					"fieldId":           field.Identity.FieldID,
 					"reciprocalFieldId": relation.ReciprocalFieldID,
 				}, false,
 			)
 		}
-		_, targetCollection, err := loadTableMetadata(app, targetDefinition.TableID)
+		_, targetCollection, err := loadTableMetadata(app, targetDefinition.Snapshot.TableID)
 		if err != nil {
 			return nil, err
 		}
@@ -726,7 +800,7 @@ func (kernel *Kernel) syncReciprocalRelations(
 			targetRecord, findErr := app.FindRecordById(targetCollection, targetID)
 			if findErr != nil {
 				if errors.Is(findErr, sql.ErrNoRows) {
-					if targetDefinition.TableID == definition.TableID &&
+					if targetDefinition.Snapshot.TableID == definition.Snapshot.TableID &&
 						targetID == sourceRecordID && after == nil {
 						continue
 					}
@@ -738,8 +812,8 @@ func (kernel *Kernel) syncReciprocalRelations(
 				}
 				return nil, storageFailure()
 			}
-			beforeTarget := productRow(app, targetDefinition, targetRecord)
-			current := targetRecord.GetStringSlice(reciprocal.PhysicalName)
+			beforeTarget := ProductRow(app, targetDefinition, targetRecord)
+			current := targetRecord.GetStringSlice(reciprocal.Identity.PhysicalName)
 			next := append([]string(nil), current...)
 			if _, remove := removedSet[targetID]; remove {
 				next = removeString(next, sourceRecordID)
@@ -749,7 +823,7 @@ func (kernel *Kernel) syncReciprocalRelations(
 						"mutation.relation.reciprocal_cardinality", nil,
 						"reciprocal single relation already has a different source",
 						map[string]any{
-							"fieldId":  reciprocal.FieldID,
+							"fieldId":  reciprocal.Identity.FieldID,
 							"recordId": targetID,
 						}, false,
 					)
@@ -775,10 +849,10 @@ func (kernel *Kernel) syncReciprocalRelations(
 				return nil, mutationError(
 					"mutation.schema.storage_mismatch", nil,
 					"reciprocal relation cannot be represented by the target schema",
-					map[string]any{"fieldId": reciprocal.FieldID}, false,
+					map[string]any{"fieldId": reciprocal.Identity.FieldID}, false,
 				)
 			}
-			targetRecord.Set(reciprocal.PhysicalName, storageValue)
+			targetRecord.Set(reciprocal.Identity.PhysicalName, storageValue)
 			if err := kernel.calculateRelatedFormulas(
 				ctx, app, targetDefinition, targetRecord,
 			); err != nil {
@@ -792,7 +866,7 @@ func (kernel *Kernel) syncReciprocalRelations(
 				record:     targetRecord,
 				recordID:   targetID,
 				before:     beforeTarget,
-				after:      productRow(app, targetDefinition, targetRecord),
+				after:      ProductRow(app, targetDefinition, targetRecord),
 			})
 		}
 	}
@@ -802,7 +876,7 @@ func (kernel *Kernel) syncReciprocalRelations(
 func (kernel *Kernel) calculateRelatedFormulas(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) error {
 	if kernel.formulas == nil {
@@ -902,18 +976,12 @@ func appendUniqueString(values []string, candidate string) []string {
 }
 
 func setAttachmentPresence(
-	ctx context.Context,
-	app core.App,
-	tableID string,
+	definition schemaexecution.Table,
 	fieldID string,
 	record *core.Record,
 	present bool,
 ) error {
-	fields, err := loadV2FieldDefinitions(ctx, app, tableID)
-	if err != nil {
-		return err
-	}
-	for _, field := range fields {
+	for _, field := range definition.Snapshot.Fields {
 		if field.Identity.FieldID != fieldID ||
 			field.Value.Presence.PhysicalName == "" {
 			continue
@@ -925,16 +993,16 @@ func setAttachmentPresence(
 }
 
 func attachmentChangePresent(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 	change AttachmentChange,
 ) bool {
-	for _, field := range definition.Fields {
-		if field.FieldID != change.FieldID &&
-			field.PhysicalName != change.FieldID {
+	for _, field := range definition.Snapshot.Fields {
+		if field.Identity.FieldID != change.FieldID &&
+			field.Identity.PhysicalName != change.FieldID {
 			continue
 		}
-		current := record.GetStringSlice(field.PhysicalName)
+		current := record.GetStringSlice(field.Identity.PhysicalName)
 		removed := make(map[string]struct{}, len(change.RemoveStoredNames))
 		for _, name := range change.RemoveStoredNames {
 			removed[name] = struct{}{}
@@ -950,9 +1018,9 @@ func attachmentChangePresent(
 	return len(change.UploadHandles) != 0
 }
 
-func systemWireValue(field schema.FieldDefinition, value any) (any, error) {
+func systemWireValue(field v2.FieldDefinition, value any) (any, error) {
 	normalized := wireValue(value)
-	if field.DataType != schema.DataTypeAutoDate {
+	if field.LogicalType != v2.LogicalAutoDate {
 		return normalized, nil
 	}
 	text, ok := normalized.(string)
@@ -960,9 +1028,9 @@ func systemWireValue(field schema.FieldDefinition, value any) (any, error) {
 		autodateobs.Increment(autodateobs.ReadParseFailed)
 		return nil, mutationError(
 			"mutation.system.autodate_invalid",
-			stringPointer(field.PhysicalName),
+			stringPointer(field.Identity.PhysicalName),
 			"saved automatic date is not a timestamp",
-			map[string]any{"fieldId": field.FieldID},
+			map[string]any{"fieldId": field.Identity.FieldID},
 			false,
 		)
 	}
@@ -971,13 +1039,16 @@ func systemWireValue(field schema.FieldDefinition, value any) (any, error) {
 		autodateobs.Increment(autodateobs.ReadParseFailed)
 		return nil, mutationError(
 			"mutation.system.autodate_invalid",
-			stringPointer(field.PhysicalName),
+			stringPointer(field.Identity.PhysicalName),
 			"saved automatic date is not a valid timestamp",
-			map[string]any{"fieldId": field.FieldID},
+			map[string]any{"fieldId": field.Identity.FieldID},
 			false,
 		)
 	}
-	return parsed.Time().UTC().Format(time.RFC3339Nano), nil
+	// PocketBase persists date fields at millisecond precision. Normalize the
+	// immediate save receipt to that same precision so a later read/update does
+	// not appear to mutate immutable createdAt merely by truncating sub-ms data.
+	return parsed.Time().UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano), nil
 }
 
 func wireValue(value any) any {
@@ -1034,7 +1105,7 @@ func firstStorageValidationError(
 }
 
 func directlyUnarchives(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	before map[string]any,
 	values map[string]any,
 ) bool {
@@ -1042,17 +1113,17 @@ func directlyUnarchives(
 	if err != nil {
 		return false
 	}
-	if _, changesArchiveField := values[field.PhysicalName]; !changesArchiveField {
+	if _, changesArchiveField := values[field.Identity.PhysicalName]; !changesArchiveField {
 		return false
 	}
 	switch definition.ArchivePolicy.Mode {
-	case schema.ArchiveModeStatus:
-		return schema.ProductValuesEqual(
-			before[field.PhysicalName],
+	case "status":
+		return productValuesEqual(
+			before[field.Identity.PhysicalName],
 			definition.ArchivePolicy.ArchivedValue,
 		)
-	case schema.ArchiveModeDeletedAt:
-		return stringValue(before[field.PhysicalName]) != ""
+	case "deletedAt":
+		return stringValue(before[field.Identity.PhysicalName]) != ""
 	default:
 		return false
 	}
@@ -1075,7 +1146,7 @@ func loadTableMetadata(app core.App, tableID string) (*core.Record, *core.Collec
 func (kernel *Kernel) validateGlobalGuard(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	collection *core.Collection,
 	request Request,
 	operations []NormalizedOperation,
@@ -1124,7 +1195,7 @@ func (kernel *Kernel) validateGlobalGuard(
 		}
 	}
 	if request.ExpectedDigest != nil {
-		actual, digestErr := canonicalDigest(productRow(app, definition, record))
+		actual, digestErr := canonicalDigest(ProductRow(app, definition, record))
 		if digestErr != nil {
 			return storageFailure()
 		}
@@ -1169,7 +1240,7 @@ func saveAudit(
 	changeSetID string,
 	sequence int,
 	request Request,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	recordID string,
 	operation OperationKind,
 	before, after map[string]any,
@@ -1203,7 +1274,7 @@ func saveAudit(
 		}
 		record.Set("after_json", pbtypes.JSONRaw(raw))
 	}
-	schemaRevision, err := schema.ParseSchemaRevision(definition.SchemaRevision)
+	schemaRevision, err := v2.ParseSchemaRevision(definition.Snapshot.SchemaRevision)
 	if err != nil {
 		return mutationError("mutation.schema_revision.invalid", nil, "stored schema revision is invalid", nil, false)
 	}
@@ -1308,7 +1379,7 @@ func saveAuditOutbox(
 }
 
 func redactSensitiveFields(
-	definition schema.TableDefinition,
+	_ schemaexecution.Table,
 	image map[string]any,
 ) map[string]any {
 	if image == nil {
@@ -1317,17 +1388,6 @@ func redactSensitiveFields(
 	result := make(map[string]any, len(image))
 	for key, value := range image {
 		result[key] = value
-	}
-	for _, field := range definition.Fields {
-		if field.DataType != schema.DataTypeSecret &&
-			field.DataType != schema.DataTypeHash {
-			continue
-		}
-		if value, exists := result[field.PhysicalName]; exists {
-			result[field.PhysicalName] = map[string]any{
-				"redacted": value != nil && fmt.Sprint(value) != "",
-			}
-		}
 	}
 	return result
 }
@@ -1360,11 +1420,11 @@ func validateRestrictedDelete(
 		if err != nil {
 			return storageFailure()
 		}
-		var sourceField *schema.FieldDefinition
-		for index := range sourceDefinition.Fields {
-			if sourceDefinition.Fields[index].FieldID ==
+		var sourceField *v2.FieldDefinition
+		for index := range sourceDefinition.Snapshot.Fields {
+			if sourceDefinition.Snapshot.Fields[index].Identity.FieldID ==
 				relation.GetString("source_field_id") {
-				sourceField = &sourceDefinition.Fields[index]
+				sourceField = &sourceDefinition.Snapshot.Fields[index]
 				break
 			}
 		}
@@ -1377,43 +1437,14 @@ func validateRestrictedDelete(
 		}
 		referenceTable := sourceDefinition
 		referenceField := *sourceField
-		discriminatorName := ""
-		if relationSpec.EffectiveMode() != "direct" {
-			if relationSpec.JunctionTableID == nil {
-				return storageFailure()
-			}
-			referenceTable, err = source.Describe(
-				ctx, app, *relationSpec.JunctionTableID,
-			)
-			if err != nil {
-				return storageFailure()
-			}
-			var found bool
-			referenceField, found = mutationSchemaFieldByID(
-				referenceTable, relationSpec.JunctionTargetFieldID,
-			)
-			if !found {
-				return storageFailure()
-			}
-			if relationSpec.EffectiveMode() == "m2a" {
-				discriminator, discriminatorFound := mutationSchemaFieldByID(
-					referenceTable,
-					relationSpec.JunctionDiscriminatorFieldID,
-				)
-				if !discriminatorFound {
-					return storageFailure()
-				}
-				discriminatorName = discriminator.PhysicalName
-			}
-		}
 		references, countErr := countRelationReferences(
 			ctx,
 			app,
 			referenceTable,
-			referenceField.PhysicalName,
+			referenceField.Identity.PhysicalName,
 			targetTableID,
 			targetRecordID,
-			discriminatorName,
+			"",
 		)
 		if countErr != nil {
 			return storageFailure()
@@ -1424,8 +1455,8 @@ func validateRestrictedDelete(
 				"referenced record cannot be deleted",
 				map[string]any{
 					"relationId": relation.GetString("relation_id"),
-					"tableId":    sourceDefinition.TableID,
-					"fieldId":    sourceField.FieldID,
+					"tableId":    sourceDefinition.Snapshot.TableID,
+					"fieldId":    sourceField.Identity.FieldID,
 				},
 				false,
 			)
@@ -1434,44 +1465,33 @@ func validateRestrictedDelete(
 	return nil
 }
 
-func relationTargetsTable(relation schema.RelationSpec, targetTableID string) bool {
-	if relation.TargetTableID == targetTableID {
-		return true
-	}
-	if relation.EffectiveMode() != "m2a" {
-		return false
-	}
-	for _, allowedTableID := range relation.AllowedTargetTableIDs {
-		if allowedTableID == targetTableID {
-			return true
-		}
-	}
-	return false
+func relationTargetsTable(relation v2.RelationSpec, targetTableID string) bool {
+	return relation.TargetTableID == targetTableID
 }
 
 func mutationSchemaFieldByID(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	fieldID string,
-) (schema.FieldDefinition, bool) {
-	for _, field := range definition.Fields {
-		if field.FieldID == fieldID {
+) (v2.FieldDefinition, bool) {
+	for _, field := range definition.Snapshot.Fields {
+		if field.Identity.FieldID == fieldID {
 			return field, true
 		}
 	}
-	return schema.FieldDefinition{}, false
+	return v2.FieldDefinition{}, false
 }
 
 func countRelationReferences(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	fieldName string,
 	targetTableID string,
 	targetRecordID string,
 	discriminatorName string,
 ) (int, error) {
 	predicates := make([]string, 0, 3)
-	if definition.TableID == targetTableID {
+	if definition.Snapshot.TableID == targetTableID {
 		predicates = append(predicates, "`id` != {:target}")
 	}
 	predicates = append(predicates, fmt.Sprintf(
@@ -1684,45 +1704,15 @@ func (ctx publishLifecycleContext) Value(key any) any {
 	return ctx.values.Value(key)
 }
 
-func productRow(
-	app core.App,
-	definition schema.TableDefinition,
+// ProductRow is the single canonical projection used by mutation guards,
+// audit restore and public receipts. It hides provider storage details such as
+// select encoding, presence companions and versioned computed envelopes.
+func ProductRow(
+	_ core.App,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) map[string]any {
-	fieldNames := make([]string, 0, len(definition.Fields))
-	for _, field := range definition.Fields {
-		fieldNames = append(fieldNames, field.PhysicalName)
-	}
-	row := productrow.FromRecord(fieldNames, record)
-	for _, field := range definition.Fields {
-		if field.DataType == schema.DataTypeSelect ||
-			field.DataType == schema.DataTypeMultiSelect {
-			row[field.PhysicalName] = schema.DecodeSelectValueFromStorage(
-				field,
-				row[field.PhysicalName],
-			)
-		}
-	}
-	if app != nil {
-		v2Fields, err := loadV2FieldDefinitions(
-			context.Background(), app, definition.TableID,
-		)
-		if err == nil {
-			physical := make(map[string]any, len(v2Fields))
-			for _, field := range v2Fields {
-				physical[field.Identity.PhysicalName] =
-					record.GetRaw(field.Identity.PhysicalName)
-				if field.Value.Presence.PhysicalName != "" {
-					physical[field.Value.Presence.PhysicalName] =
-						record.GetRaw(field.Value.Presence.PhysicalName)
-				}
-				row[field.Identity.PhysicalName] = (fieldprojection.Descriptor{
-					Definition: field,
-				}).ProductValue(physical)
-			}
-		}
-	}
-	return row
+	return productrow.Project(definition.Snapshot.Fields, record)
 }
 
 func canonicalDigest(row map[string]any) (string, error) {
@@ -1770,20 +1760,20 @@ func storedNonNegativeInteger(value any, code string) (int64, error) {
 }
 
 func normalizeComputedFields(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	values map[string]any,
 ) (map[string]any, error) {
-	fields := map[string]schema.FieldDefinition{}
-	for _, field := range definition.Fields {
-		fields[field.FieldID], fields[field.PhysicalName] = field, field
+	fields := map[string]v2.FieldDefinition{}
+	for _, field := range definition.Snapshot.Fields {
+		fields[field.Identity.FieldID], fields[field.Identity.PhysicalName] = field, field
 	}
 	result := make(map[string]any, len(values))
 	for key, value := range values {
 		field, ok := fields[key]
-		if !ok || (field.Kind != schema.FieldKindFormula && field.Kind != schema.FieldKindLookup) {
+		if !ok || (field.LogicalType != v2.LogicalFormula && field.LogicalType != v2.LogicalLookup) {
 			return nil, mutationError("mutation.formula.invalid_output", nil, "formula calculator returned a non-computed field", nil, false)
 		}
-		result[field.PhysicalName] = value
+		result[field.Identity.PhysicalName] = value
 	}
 	return result, nil
 }

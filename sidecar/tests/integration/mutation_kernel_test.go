@@ -19,8 +19,10 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type uppercaseFormula struct {
@@ -30,14 +32,23 @@ type uppercaseFormula struct {
 func (calculator *uppercaseFormula) Calculate(
 	_ context.Context,
 	app core.App,
-	_ schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) (map[string]any, error) {
-	if _, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id='formula_notes'"); err != nil {
+	if _, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.Snapshot.TableID}); err != nil {
 		return nil, err
 	}
+	var title, computed string
+	for _, field := range definition.Snapshot.Fields {
+		switch field.DisplayName {
+		case "title":
+			title = field.Identity.PhysicalName
+		case "computed":
+			computed = field.Identity.PhysicalName
+		}
+	}
 	calculator.called = true
-	return map[string]any{"fld_computed": strings.ToUpper(record.GetString("title"))}, nil
+	return map[string]any{computed: strings.ToUpper(record.GetString(title))}, nil
 }
 
 type committedOutboxPublisher struct {
@@ -63,12 +74,16 @@ func TestMutationKernelAppliesInsertAtomicallyAndReplaysIdempotently(t *testing.
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("notes", "notes", []schema.FieldDefinition{
-			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
+	definition := createV2IntegrationTable(t, ctx, app, "notes", "mutation_notes_table")
+	title := createV2IntegrationField(
+		t, ctx, app, definition.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_notes_title",
+	)
+	definition.SchemaRevision = title.SchemaRevision
+	if title.Definition == nil {
+		t.Fatal("V2 title fixture omitted field definition")
+	}
+	idempotencyBefore, err := app.FindAllRecords("vibetable_idempotency_keys")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,9 +108,9 @@ func TestMutationKernelAppliesInsertAtomicallyAndReplaysIdempotently(t *testing.
 	request := mutation.Request{
 		ContractVersion: mutation.ContractVersion,
 		RequestID:       "req_insert", IdempotencyKey: "idem_insert",
-		TableID: "notes", SchemaRevision: definition.SchemaRevision,
+		TableID: definition.TableID, SchemaRevision: definition.SchemaRevision,
 		Operations: []mutation.Operation{{
-			Kind: mutation.OperationInsert, Values: map[string]any{"title": "first"},
+			Kind: mutation.OperationInsert, Values: map[string]any{title.Definition.Identity.PhysicalName: "first"},
 		}},
 		Actor: mutation.Actor{Type: "user", ID: "local"},
 	}
@@ -109,13 +124,13 @@ func TestMutationKernelAppliesInsertAtomicallyAndReplaysIdempotently(t *testing.
 		receipt.AffectedRows[0].RecordID != "rec000000000001" {
 		t.Fatalf("unexpected receipt: %#v", receipt)
 	}
-	collection, _ := app.FindCollectionByNameOrId("notes")
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 	record, err := app.FindRecordById(collection, "rec000000000001")
-	if err != nil || record.GetString("title") != "first" {
+	if err != nil || record.GetString(title.Definition.Identity.PhysicalName) != "first" {
 		t.Fatalf("stored record = %#v, err=%v", record, err)
 	}
 	assertRecordCount(t, app, "vibetable_audit_events", 1)
-	assertRecordCount(t, app, "vibetable_idempotency_keys", 1)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", len(idempotencyBefore)+1)
 	assertRecordCount(t, app, "vibetable_outbox", 1)
 	audit, _ := app.FindFirstRecordByFilter("vibetable_audit_events", "request_id='req_insert'")
 	if audit.GetFloat("sequence") != 1 || audit.GetString("operation") != "insert" ||
@@ -127,7 +142,7 @@ func TestMutationKernelAppliesInsertAtomicallyAndReplaysIdempotently(t *testing.
 	}
 	var after map[string]any
 	auditAfter, _ := json.Marshal(audit.GetRaw("after_json"))
-	if json.Unmarshal(auditAfter, &after) != nil || after["title"] != "first" {
+	if json.Unmarshal(auditAfter, &after) != nil || after[title.Definition.Identity.PhysicalName] != "first" {
 		t.Fatalf("audit after image = %s", auditAfter)
 	}
 	outbox, _ := app.FindFirstRecordByFilter("vibetable_outbox", "event_id='evt_data_0001'")
@@ -138,10 +153,14 @@ func TestMutationKernelAppliesInsertAtomicallyAndReplaysIdempotently(t *testing.
 	var event mutation.DataChangedEvent
 	if err := mutation.DecodeStrict(eventRaw, &event); err != nil ||
 		event.Sequence != 1 || event.OccurredAt != "2026-07-24T08:30:00Z" ||
-		event.DataRevision != "data_0001" || event.TableID != "notes" {
+		event.SchemaRevision != definition.SchemaRevision ||
+		event.DataRevision != *receipt.NewRevision || event.TableID != definition.TableID {
 		t.Fatalf("outbox event = %#v, decode=%v", event, err)
 	}
-	tableMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id='notes'")
+	tableMeta, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := int64(tableMeta.GetFloat("data_revision")); got != 1 {
 		t.Fatalf("data revision = %d", got)
 	}
@@ -162,16 +181,17 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("autodate_receipts", "autodate_receipts", []schema.FieldDefinition{
-			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			autoDateField("created_at", schema.AutoDateRoleCreatedAt),
-			autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	definition := createV2IntegrationTable(t, ctx, app, "autodate receipts", "mutation_autodate_table")
+	title := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_autodate_title")
+	createdDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "created_at")
+	createdDraft.AutoDate = &v2.AutoDateSpec{Role: "createdAt"}
+	created := createV2IntegrationField(t, ctx, app, definition.TableID, createdDraft, "mutation_autodate_created")
+	updatedDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "updated_at")
+	updatedDraft.AutoDate = &v2.AutoDateSpec{Role: "updatedAt"}
+	updatedField := createV2IntegrationField(t, ctx, app, definition.TableID, updatedDraft, "mutation_autodate_updated")
+	definition.SchemaRevision = updatedField.SchemaRevision
+	if title.Definition == nil || created.Definition == nil || updatedField.Definition == nil {
+		t.Fatal("V2 autoDate fixture omitted field definition")
 	}
 	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
 	recordID := "autodaterecord1"
@@ -179,7 +199,7 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		definition.TableID, definition.SchemaRevision, "autodate-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"title": "first"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "first"},
 		},
 	)
 	inserted, err := kernel.Apply(ctx, insertRequest)
@@ -187,8 +207,8 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		t.Fatalf("insert: %v", err)
 	}
 	serverValues := inserted.ComputedFields[recordID]
-	createdRaw, createdOK := serverValues["created_at"].(string)
-	updatedRaw, updatedOK := serverValues["updated_at"].(string)
+	createdRaw, createdOK := serverValues[created.Definition.Identity.PhysicalName].(string)
+	updatedRaw, updatedOK := serverValues[updatedField.Definition.Identity.PhysicalName].(string)
 	createdAt, createdErr := time.Parse(time.RFC3339Nano, createdRaw)
 	updatedAt, updatedErr := time.Parse(time.RFC3339Nano, updatedRaw)
 	if !createdOK || !updatedOK || createdErr != nil || updatedErr != nil ||
@@ -214,7 +234,7 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 			fmt.Sprintf("autodate-update-%d", attempt),
 			mutation.Operation{
 				Kind: mutation.OperationUpdate, RecordID: &recordID,
-				Values: map[string]any{"title": nextTitle},
+				Values: map[string]any{title.Definition.Identity.PhysicalName: nextTitle},
 			},
 		))
 		if err != nil {
@@ -223,7 +243,7 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		lastTitle = nextTitle
 		candidate, parseErr := time.Parse(
 			time.RFC3339Nano,
-			updated.ComputedFields[recordID]["updated_at"].(string),
+			updated.ComputedFields[recordID][updatedField.Definition.Identity.PhysicalName].(string),
 		)
 		if parseErr == nil && candidate.After(updatedAt) {
 			break
@@ -232,7 +252,7 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 			t.Fatalf("updatedAt did not advance: %#v", updated.ComputedFields)
 		}
 	}
-	if updated.ComputedFields[recordID]["created_at"] != createdRaw {
+	if updated.ComputedFields[recordID][created.Definition.Identity.PhysicalName] != createdRaw {
 		t.Fatalf("createdAt changed: %#v", updated.ComputedFields[recordID])
 	}
 	querySource, err := queryschema.New(app.DataDir())
@@ -246,16 +266,16 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		Format(time.RFC3339Nano)
 	page, err := port.QueryPage(ctx, definition.TableID, query.TableQuery{
 		Filters: []query.FilterExpression{{
-			Field: "created_at", Operator: query.OperatorEqual,
+			Field: created.Definition.Identity.PhysicalName, Operator: query.OperatorEqual,
 			Value: offsetValue, Logic: query.LogicAnd,
 		}},
 		Limit: 10,
 	})
 	if err != nil || len(page.Rows) != 1 ||
-		page.Rows[0]["created_at"] != createdRaw {
+		page.Rows[0][created.Definition.Identity.PhysicalName] != createdRaw {
 		t.Fatalf("autoDate RFC equality/read = %#v, err=%v", page, err)
 	}
-	lastUpdatedRaw := updated.ComputedFields[recordID]["updated_at"].(string)
+	lastUpdatedRaw := updated.ComputedFields[recordID][updatedField.Definition.Identity.PhysicalName].(string)
 	lastUpdatedAt, _ := time.Parse(time.RFC3339Nano, lastUpdatedRaw)
 	deadline = time.Now().Add(2 * time.Second)
 	for attempt := 0; ; attempt++ {
@@ -265,7 +285,7 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 			fmt.Sprintf("autodate-same-value-%d", attempt),
 			mutation.Operation{
 				Kind: mutation.OperationUpdate, RecordID: &recordID,
-				Values: map[string]any{"title": lastTitle},
+				Values: map[string]any{title.Definition.Identity.PhysicalName: lastTitle},
 			},
 		))
 		if sameErr != nil {
@@ -273,7 +293,7 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		}
 		candidate, parseErr := time.Parse(
 			time.RFC3339Nano,
-			sameValue.ComputedFields[recordID]["updated_at"].(string),
+			sameValue.ComputedFields[recordID][updatedField.Definition.Identity.PhysicalName].(string),
 		)
 		if parseErr == nil && candidate.After(lastUpdatedAt) {
 			break
@@ -288,15 +308,15 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeCreated := beforeFailed.GetString("created_at")
-	beforeUpdated := beforeFailed.GetString("updated_at")
+	beforeCreated := beforeFailed.GetString(created.Definition.Identity.PhysicalName)
+	beforeUpdated := beforeFailed.GetString(updatedField.Definition.Identity.PhysicalName)
 	forged := mutationRequest(
 		definition.TableID, definition.SchemaRevision, "autodate-forged",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &recordID,
 			Values: map[string]any{
-				"title":      "forged",
-				"updated_at": "2000-01-01T00:00:00Z",
+				title.Definition.Identity.PhysicalName:        "forged",
+				updatedField.Definition.Identity.PhysicalName: "2000-01-01T00:00:00Z",
 			},
 		},
 	)
@@ -307,12 +327,12 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		t.Fatalf("forged autoDate = %#v", err)
 	}
 	record, err := app.FindRecordById(collection, recordID)
-	if err != nil || record.GetString("title") == "forged" ||
-		record.GetString("created_at") != beforeCreated ||
-		record.GetString("updated_at") != beforeUpdated {
+	if err != nil || record.GetString(title.Definition.Identity.PhysicalName) == "forged" ||
+		record.GetString(created.Definition.Identity.PhysicalName) != beforeCreated ||
+		record.GetString(updatedField.Definition.Identity.PhysicalName) != beforeUpdated {
 		t.Fatalf("forged mutation was partially applied: %#v, err=%v", record, err)
 	}
-	pbUpdated := collection.Fields.GetByName("updated_at").(*core.AutodateField)
+	pbUpdated := collection.Fields.GetByName(updatedField.Definition.Identity.PhysicalName).(*core.AutodateField)
 	pbUpdated.OnCreate = true
 	pbUpdated.OnUpdate = false
 	if err := app.Save(collection); err != nil {
@@ -322,7 +342,7 @@ func TestMutationKernelReturnsAuthoritativeAutoDatesAndRejectsForgery(t *testing
 		definition.TableID, definition.SchemaRevision, "autodate-corrupt",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &recordID,
-			Values: map[string]any{"title": "must not write"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "must not write"},
 		},
 	))
 	if !errors.As(err, &productErr) ||
@@ -335,24 +355,26 @@ func TestMutationKernelGeneratedRecordIDPassesPocketBaseValidation(t *testing.T)
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("generated_ids", "generated_ids", []schema.FieldDefinition{
-			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	definition := createV2IntegrationTable(
+		t, ctx, app, "generated ids", "mutation_generated_ids_table",
+	)
+	title := createV2IntegrationField(
+		t, ctx, app, definition.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_generated_ids_title",
+	)
+	definition.SchemaRevision = title.SchemaRevision
+	if title.Definition == nil {
+		t.Fatal("V2 title fixture omitted field definition")
 	}
 	receipt, err := mutation.New(
 		app,
 		mutation.MetadataSchemaSource{},
 	).Apply(ctx, mutationRequest(
-		"generated_ids", definition.SchemaRevision, "generated-id-insert",
+		definition.TableID, definition.SchemaRevision, "generated-id-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert,
 			Values: map[string]any{
-				"title": "created with a generated id",
+				title.Definition.Identity.PhysicalName: "created with a generated id",
 			},
 		},
 	))
@@ -371,12 +393,12 @@ func TestMutationKernelGeneratedRecordIDPassesPocketBaseValidation(t *testing.T)
 			t.Fatalf("generated record id = %q", recordID)
 		}
 	}
-	collection, err := app.FindCollectionByNameOrId("generated_ids")
+	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record, err := app.FindRecordById(collection, recordID)
-	if err != nil || record.GetString("title") != "created with a generated id" {
+	if err != nil || record.GetString(title.Definition.Identity.PhysicalName) != "created with a generated id" {
 		t.Fatalf("stored record = %#v, err=%v", record, err)
 	}
 }
@@ -385,18 +407,19 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	title := field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText)
-	title.Nullable = false
-	title.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRequired, Value: true,
-	}}
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition:       baseTable("guarded_notes", "guarded_notes", []schema.FieldDefinition{title}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	definition := createV2IntegrationTable(
+		t, ctx, app, "guarded notes", "mutation_guarded_notes_table",
+	)
+	titleDraft := fieldDraftForIntegration(t, v2.LogicalText, "title")
+	titleDraft.Value.Required = true
+	title := createV2IntegrationField(
+		t, ctx, app, definition.TableID, titleDraft, "mutation_guarded_notes_title",
+	)
+	definition.SchemaRevision = title.SchemaRevision
+	if title.Definition == nil {
+		t.Fatal("V2 title fixture omitted field definition")
 	}
+	titleName := title.Definition.Identity.PhysicalName
 	var idMu sync.Mutex
 	idSequence := 0
 	kernel := mutation.New(app, mutation.MetadataSchemaSource{},
@@ -409,17 +432,17 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 	)
 	firstID := "rec000000000011"
 	insert := mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "insert-1",
-		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &firstID, Values: map[string]any{"title": "one"}},
+		definition.TableID, definition.SchemaRevision, "insert-1",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &firstID, Values: map[string]any{titleName: "one"}},
 	)
 	insertReceipt, err := kernel.Apply(ctx, insert)
 	if err != nil {
 		t.Fatal(err)
 	}
 	update := mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "update-1",
-		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{"title": "two"}},
-		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{"title": "three"}},
+		definition.TableID, definition.SchemaRevision, "update-1",
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{titleName: "two"}},
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{titleName: "three"}},
 	)
 	update.ExpectedRevision = stringAddress("row_0001")
 	update.ExpectedDigest = &insertReceipt.AffectedRows[0].Digest
@@ -433,10 +456,10 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 		updated.AffectedRows[0].Digest != updated.AffectedRows[1].Digest {
 		t.Fatalf("same-record batch revisions = %#v", updated.AffectedRows)
 	}
-	collection, _ := app.FindCollectionByNameOrId("guarded_notes")
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 	record, _ := app.FindRecordById(collection, firstID)
-	if record.GetString("title") != "three" {
-		t.Fatalf("final title = %q", record.GetString("title"))
+	if record.GetString(titleName) != "three" {
+		t.Fatalf("final title = %q", record.GetString(titleName))
 	}
 
 	stale := update
@@ -465,15 +488,15 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 		)
 		key := "fault-" + faultPoint
 		faultRequest := mutationRequest(
-			"guarded_notes", definition.SchemaRevision, key,
-			mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{"title": "rolled-back"}},
+			definition.TableID, definition.SchemaRevision, key,
+			mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{titleName: "rolled-back"}},
 		)
 		if _, err := faultKernel.Apply(ctx, faultRequest); err == nil {
 			t.Fatalf("%s mutation unexpectedly succeeded", faultPoint)
 		}
 		record, _ = app.FindRecordById(collection, firstID)
-		if record.GetString("title") != "three" {
-			t.Fatalf("%s changed title to %q", faultPoint, record.GetString("title"))
+		if record.GetString(titleName) != "three" {
+			t.Fatalf("%s changed title to %q", faultPoint, record.GetString(titleName))
 		}
 		if _, err := app.FindFirstRecordByFilter(
 			"vibetable_idempotency_keys", "key={:key}", dbx.Params{"key": key},
@@ -482,36 +505,38 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 		}
 		assertRecordCount(t, app, "vibetable_audit_events", 3)
 		assertRecordCount(t, app, "vibetable_outbox", 2)
-		tableMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id='guarded_notes'")
+		tableMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID})
 		if int64(tableMeta.GetFloat("data_revision")) != 2 {
 			t.Fatalf("%s changed data revision", faultPoint)
 		}
 	}
 
 	invalid := mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "invalid-key",
-		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{"title": ""}},
+		definition.TableID, definition.SchemaRevision, "invalid-key",
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{titleName: nil}},
 	)
 	_, err = kernel.Apply(ctx, invalid)
-	if !errors.As(err, &productErr) || productErr.Code != "mutation.validation.failed" {
+	if !errors.As(err, &productErr) || productErr.Code != "mutation.field.invalid_value" ||
+		productErr.Path == nil || *productErr.Path != "operations[0].values."+titleName ||
+		productErr.Details["fieldId"] != title.FieldID {
 		t.Fatalf("PB validation error = %#v", err)
 	}
 	record, _ = app.FindRecordById(collection, firstID)
-	if record.GetString("title") != "three" {
-		t.Fatalf("PB validation failure changed title to %q", record.GetString("title"))
+	if record.GetString(titleName) != "three" {
+		t.Fatalf("PB validation failure changed title to %q", record.GetString(titleName))
 	}
 
 	secondID := "rec000000000012"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "insert-2",
-		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &secondID, Values: map[string]any{"title": "second"}},
+		definition.TableID, definition.SchemaRevision, "insert-2",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &secondID, Values: map[string]any{titleName: "second"}},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	invalidGuard := mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "invalid-guard",
-		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{"title": "x"}},
-		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &secondID, Values: map[string]any{"title": "y"}},
+		definition.TableID, definition.SchemaRevision, "invalid-guard",
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{titleName: "x"}},
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &secondID, Values: map[string]any{titleName: "y"}},
 	)
 	invalidGuard.ExpectedRevision = stringAddress("row_0002")
 	_, err = kernel.Apply(ctx, invalidGuard)
@@ -520,14 +545,14 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 	}
 	thirdID := "rec000000000013"
 	mixedGuard := mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "mixed-guard",
+		definition.TableID, definition.SchemaRevision, "mixed-guard",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &firstID,
-			Values: map[string]any{"title": "guarded"},
+			Values: map[string]any{titleName: "guarded"},
 		},
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &thirdID,
-			Values: map[string]any{"title": "unguarded insert"},
+			Values: map[string]any{titleName: "unguarded insert"},
 		},
 	)
 	mixedGuard.ExpectedRevision = stringAddress("row_0002")
@@ -536,25 +561,25 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 		t.Fatalf("mixed insert guard = %#v", err)
 	}
 	atomicFailure := mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "atomic-failure",
-		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{"title": "must-rollback"}},
-		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &secondID, Values: map[string]any{"title": ""}},
+		definition.TableID, definition.SchemaRevision, "atomic-failure",
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &firstID, Values: map[string]any{titleName: "must-rollback"}},
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &secondID, Values: map[string]any{titleName: nil}},
 	)
 	if _, err := kernel.Apply(ctx, atomicFailure); err == nil {
 		t.Fatal("invalid second operation did not fail")
 	}
 	first, _ := app.FindRecordById(collection, firstID)
 	second, _ := app.FindRecordById(collection, secondID)
-	if first.GetString("title") != "three" || second.GetString("title") != "second" {
+	if first.GetString(titleName) != "three" || second.GetString(titleName) != "second" {
 		t.Fatalf("batch was partially applied: first=%q second=%q",
-			first.GetString("title"), second.GetString("title"))
+			first.GetString(titleName), second.GetString(titleName))
 	}
 	deleteReinsert := mutationRequest(
-		"guarded_notes", definition.SchemaRevision, "delete-reinsert",
+		definition.TableID, definition.SchemaRevision, "delete-reinsert",
 		mutation.Operation{Kind: mutation.OperationDelete, RecordID: &firstID},
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &firstID,
-			Values: map[string]any{"title": "replacement"},
+			Values: map[string]any{titleName: "replacement"},
 		},
 	)
 	if _, err := kernel.Apply(ctx, deleteReinsert); !errors.As(err, &productErr) ||
@@ -562,8 +587,8 @@ func TestMutationKernelBatchGuardsAndFailuresAreAtomic(t *testing.T) {
 		t.Fatalf("delete/reinsert batch = %#v", err)
 	}
 	first, _ = app.FindRecordById(collection, firstID)
-	if first.GetString("title") != "three" {
-		t.Fatalf("delete/reinsert rollback title = %q", first.GetString("title"))
+	if first.GetString(titleName) != "three" {
+		t.Fatalf("delete/reinsert rollback title = %q", first.GetString(titleName))
 	}
 }
 
@@ -571,29 +596,34 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	maxSelected := 1
-	status := field("status_id", "status", schema.FieldKindScalar, schema.DataTypeSelect)
-	status.Nullable = false
-	status.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintEnum, Multiple: false, MinSelected: 1,
-		MaxSelected: &maxSelected,
-		Options: []schema.SelectOption{
-			{Value: "active", DisplayName: "Active"},
-			{Value: "paused", DisplayName: "Paused"},
-			{Value: "archived", DisplayName: "Archived"},
-		},
+	definition := createV2IntegrationTable(t, ctx, app, "archivable", "mutation_archivable_table")
+	statusDraft := fieldDraftForIntegration(t, v2.LogicalSelect, "status")
+	statusDraft.Value.Required = true
+	statusDraft.Select = &v2.SelectSpec{Options: []v2.SelectOption{
+		{Label: "Active", Color: "#16a34a", Order: 10, State: v2.OptionActive},
+		{Label: "Paused", Color: "#f59e0b", Order: 20, State: v2.OptionActive},
+		{Label: "Archived", Color: "#64748b", Order: 30, State: v2.OptionActive},
 	}}
-	definition := baseTable("archivable", "archivable", []schema.FieldDefinition{
-		status,
-		autoDateField("created_at", schema.AutoDateRoleCreatedAt),
-		autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
-	})
-	definition.ArchivePolicy = schema.ArchivePolicy{
-		Mode: schema.ArchiveModeStatus, FieldID: stringAddress("status_id"),
-		ArchivedValue: "archived",
+	status := createV2IntegrationField(t, ctx, app, definition.TableID, statusDraft, "mutation_archivable_status")
+	createdDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "created_at")
+	createdDraft.AutoDate = &v2.AutoDateSpec{Role: "createdAt"}
+	created := createV2IntegrationField(t, ctx, app, definition.TableID, createdDraft, "mutation_archivable_created")
+	updatedDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "updated_at")
+	updatedDraft.AutoDate = &v2.AutoDateSpec{Role: "updatedAt"}
+	updated := createV2IntegrationField(t, ctx, app, definition.TableID, updatedDraft, "mutation_archivable_updated")
+	if status.Definition == nil || status.Definition.Select == nil || len(status.Definition.Select.Options) != 3 || created.Definition == nil || updated.Definition == nil {
+		t.Fatal("V2 archive fixture omitted field definition")
 	}
-	applied, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: definition, ExpectedRevision: 0,
+	active, paused, archived := status.Definition.Select.Options[0].OptionID, status.Definition.Select.Options[1].OptionID, status.Definition.Select.Options[2].OptionID
+	lifecycle, err := schemacore.NewTableLifecycle(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusID := status.FieldID
+	applied, err := lifecycle.Configure(ctx, v2.TableSettingsIntent{
+		TableID: definition.TableID, ExpectedSchemaRev: updated.SchemaRevision,
+		ArchivePolicy: v2.ArchivePolicy{Mode: "status", FieldID: &statusID, ArchivedValue: archived},
+		OperationID:   "mutation_archivable_archive_policy", Actor: v2.Actor{ID: "local-user", Kind: "user"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -617,12 +647,12 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 		revision  string
 		restored  string
 	}{
-		{"insert", mutation.Operation{Kind: mutation.OperationInsert, RecordID: &recordID, Values: map[string]any{"status": "active"}}, "row_0001", ""},
+		{"insert", mutation.Operation{Kind: mutation.OperationInsert, RecordID: &recordID, Values: map[string]any{status.Definition.Identity.PhysicalName: active}}, "row_0001", ""},
 		{"archive-1", mutation.Operation{Kind: mutation.OperationArchive, RecordID: &recordID}, "row_0002", ""},
-		{"restore-1", mutation.Operation{Kind: mutation.OperationRestore, RecordID: &recordID}, "row_0003", "active"},
-		{"pause", mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &recordID, Values: map[string]any{"status": "paused"}}, "row_0004", ""},
+		{"restore-1", mutation.Operation{Kind: mutation.OperationRestore, RecordID: &recordID}, "row_0003", active},
+		{"pause", mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &recordID, Values: map[string]any{status.Definition.Identity.PhysicalName: paused}}, "row_0004", ""},
 		{"archive-2", mutation.Operation{Kind: mutation.OperationArchive, RecordID: &recordID}, "row_0005", ""},
-		{"restore-2", mutation.Operation{Kind: mutation.OperationRestore, RecordID: &recordID}, "row_0006", "paused"},
+		{"restore-2", mutation.Operation{Kind: mutation.OperationRestore, RecordID: &recordID}, "row_0006", paused},
 		{"delete", mutation.Operation{Kind: mutation.OperationDelete, RecordID: &recordID}, "row_0007", ""},
 	}
 	var createdValue any
@@ -635,7 +665,7 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 		}
 		currentTime = currentTime.Add(time.Minute)
 		receipt, err := kernel.Apply(ctx, mutationRequest(
-			"archivable", applied.SchemaRevision, step.key, step.operation,
+			definition.TableID, applied.SchemaRevision, step.key, step.operation,
 		))
 		if err != nil {
 			t.Fatalf("%s: %#v", step.key, err)
@@ -646,35 +676,35 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 		if step.key != "delete" {
 			values := receipt.ComputedFields[recordID]
 			if createdValue == nil {
-				createdValue = values["created_at"]
+				createdValue = values[created.Definition.Identity.PhysicalName]
 			}
 			nextUpdated, parseErr := time.Parse(
 				time.RFC3339Nano,
-				values["updated_at"].(string),
+				values[updated.Definition.Identity.PhysicalName].(string),
 			)
-			if values["created_at"] != createdValue || parseErr != nil ||
+			if values[created.Definition.Identity.PhysicalName] != createdValue || parseErr != nil ||
 				(!previousUpdated.IsZero() && !nextUpdated.After(previousUpdated)) {
 				t.Fatalf("%s autoDate receipt = %#v", step.key, values)
 			}
 			previousUpdated = nextUpdated
 		}
 		if step.restored != "" {
-			collection, _ := app.FindCollectionByNameOrId("archivable")
+			collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 			record, _ := app.FindRecordById(collection, recordID)
-			if record.GetString("status") != step.restored {
-				t.Fatalf("restore status = %q", record.GetString("status"))
+			if record.GetString(status.Definition.Identity.PhysicalName) != step.restored {
+				t.Fatalf("restore status = %q", record.GetString(status.Definition.Identity.PhysicalName))
 			}
 		}
 		if step.key == "insert" || step.key == "archive-1" {
-			target := "archived"
+			target := archived
 			if step.key == "archive-1" {
-				target = "active"
+				target = active
 			}
 			_, bypassErr := kernel.Apply(ctx, mutationRequest(
-				"archivable", applied.SchemaRevision, "bypass-"+step.key,
+				definition.TableID, applied.SchemaRevision, "bypass-"+step.key,
 				mutation.Operation{
 					Kind: mutation.OperationUpdate, RecordID: &recordID,
-					Values: map[string]any{"status": target},
+					Values: map[string]any{status.Definition.Identity.PhysicalName: target},
 				},
 			))
 			var productErr *mutation.ProductError
@@ -684,12 +714,12 @@ func TestMutationKernelArchiveRestoreAndDeleteUseAuditHistory(t *testing.T) {
 			}
 		}
 	}
-	collection, _ := app.FindCollectionByNameOrId("archivable")
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if _, err := app.FindRecordById(collection, recordID); err == nil {
 		t.Fatal("deleted record still exists")
 	}
 	assertRecordCount(t, app, "vibetable_audit_events", 7)
-	tableMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id='archivable'")
+	tableMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID})
 	if got := int64(tableMeta.GetFloat("data_revision")); got != 7 {
 		t.Fatalf("data revision = %d", got)
 	}
@@ -699,22 +729,21 @@ func TestMutationKernelDeletedAtArchiveRoundTrip(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	deletedAt := field(
-		"deleted_at_id", "deleted_at",
-		schema.FieldKindScalar, schema.DataTypeDateTime,
-	)
-	definition := baseTable(
-		"soft_delete_notes", "soft_delete_notes",
-		[]schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			deletedAt,
-		},
-	)
-	definition.ArchivePolicy = schema.ArchivePolicy{
-		Mode: schema.ArchiveModeDeletedAt, FieldID: stringAddress("deleted_at_id"),
+	definition := createV2IntegrationTable(t, ctx, app, "soft delete notes", "mutation_soft_delete_table")
+	title := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_soft_delete_title")
+	deletedAt := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalDateTime, "deleted_at"), "mutation_soft_delete_deleted_at")
+	if title.Definition == nil || deletedAt.Definition == nil {
+		t.Fatal("V2 deletedAt fixture omitted field definition")
 	}
-	applied, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: definition, ExpectedRevision: 0,
+	lifecycle, err := schemacore.NewTableLifecycle(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletedAtID := deletedAt.FieldID
+	applied, err := lifecycle.Configure(ctx, v2.TableSettingsIntent{
+		TableID: definition.TableID, ExpectedSchemaRev: deletedAt.SchemaRevision,
+		ArchivePolicy: v2.ArchivePolicy{Mode: "deletedAt", FieldID: &deletedAtID},
+		OperationID:   "mutation_soft_delete_archive_policy", Actor: v2.Actor{ID: "local-user", Kind: "user"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -726,19 +755,19 @@ func TestMutationKernelDeletedAtArchiveRoundTrip(t *testing.T) {
 	)
 	recordID := "rec000000000022"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"soft_delete_notes", applied.SchemaRevision, "deleted-at-insert",
+		definition.TableID, applied.SchemaRevision, "deleted-at-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"title": "soft"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "soft"},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"soft_delete_notes", applied.SchemaRevision, "deleted-at-bypass",
+		definition.TableID, applied.SchemaRevision, "deleted-at-bypass",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &recordID,
-			Values: map[string]any{"deleted_at": now},
+			Values: map[string]any{deletedAt.Definition.Identity.PhysicalName: now},
 		},
 	)); err == nil {
 		t.Fatal("direct deleted_at archive was accepted")
@@ -750,25 +779,25 @@ func TestMutationKernelDeletedAtArchiveRoundTrip(t *testing.T) {
 		}
 	}
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"soft_delete_notes", applied.SchemaRevision, "deleted-at-archive",
+		definition.TableID, applied.SchemaRevision, "deleted-at-archive",
 		mutation.Operation{Kind: mutation.OperationArchive, RecordID: &recordID},
 	)); err != nil {
 		t.Fatal(err)
 	}
-	collection, _ := app.FindCollectionByNameOrId("soft_delete_notes")
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 	record, _ := app.FindRecordById(collection, recordID)
-	if !record.GetDateTime("deleted_at").Time().Equal(now) {
-		t.Fatalf("deleted_at = %v, want %v", record.GetRaw("deleted_at"), now)
+	if !record.GetDateTime(deletedAt.Definition.Identity.PhysicalName).Time().Equal(now) {
+		t.Fatalf("deleted_at = %v, want %v", record.GetRaw(deletedAt.Definition.Identity.PhysicalName), now)
 	}
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"soft_delete_notes", applied.SchemaRevision, "deleted-at-restore",
+		definition.TableID, applied.SchemaRevision, "deleted-at-restore",
 		mutation.Operation{Kind: mutation.OperationRestore, RecordID: &recordID},
 	)); err != nil {
 		t.Fatal(err)
 	}
 	record, _ = app.FindRecordById(collection, recordID)
-	if !record.GetDateTime("deleted_at").IsZero() {
-		t.Fatalf("restored deleted_at = %v", record.GetRaw("deleted_at"))
+	if !record.GetDateTime(deletedAt.Definition.Identity.PhysicalName).IsZero() {
+		t.Fatalf("restored deleted_at = %v", record.GetRaw(deletedAt.Definition.Identity.PhysicalName))
 	}
 }
 
@@ -776,14 +805,11 @@ func TestMutationKernelConcurrentIdempotencyConflictExpiryAndRestart(t *testing.
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("idem_notes", "idem_notes", []schema.FieldDefinition{
-			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	definition := createV2IntegrationTable(t, ctx, app, "idem notes", "mutation_idem_notes_table")
+	title := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_idem_notes_title")
+	definition.SchemaRevision = title.SchemaRevision
+	if title.Definition == nil {
+		t.Fatal("V2 title fixture omitted field definition")
 	}
 	now := time.Date(2026, 7, 24, 8, 30, 0, 0, time.UTC)
 	var generatorMu sync.Mutex
@@ -804,8 +830,8 @@ func TestMutationKernelConcurrentIdempotencyConflictExpiryAndRestart(t *testing.
 	)
 	recordID := "rec000000000031"
 	request := mutationRequest(
-		"idem_notes", definition.SchemaRevision, "shared-key",
-		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &recordID, Values: map[string]any{"title": "one"}},
+		definition.TableID, definition.SchemaRevision, "shared-key",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &recordID, Values: map[string]any{title.Definition.Identity.PhysicalName: "one"}},
 	)
 	type result struct {
 		receipt mutation.Receipt
@@ -878,7 +904,7 @@ func TestMutationKernelConcurrentIdempotencyConflictExpiryAndRestart(t *testing.
 	conflict := request
 	conflict.Operations = []mutation.Operation{{
 		Kind: mutation.OperationUpdate, RecordID: &recordID,
-		Values: map[string]any{"title": "different"},
+		Values: map[string]any{title.Definition.Identity.PhysicalName: "different"},
 	}}
 	_, err = restarted.Apply(ctx, conflict)
 	var productErr *mutation.ProductError
@@ -896,10 +922,10 @@ func TestMutationKernelConcurrentIdempotencyConflictExpiryAndRestart(t *testing.
 	if err != nil || reused.Status != mutation.StatusApplied {
 		t.Fatalf("expired key reuse = %#v, %#v", reused, err)
 	}
-	collection, _ := app.FindCollectionByNameOrId("idem_notes")
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 	record, _ := app.FindRecordById(collection, recordID)
-	if record.GetString("title") != "different" {
-		t.Fatalf("expired key reuse title = %q", record.GetString("title"))
+	if record.GetString(title.Definition.Identity.PhysicalName) != "different" {
+		t.Fatalf("expired key reuse title = %q", record.GetString(title.Definition.Identity.PhysicalName))
 	}
 }
 
@@ -907,14 +933,11 @@ func TestMutationKernelReturnsPendingForAnActiveIdenticalRequest(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("pending_notes", "pending_notes", []schema.FieldDefinition{
-			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	definition := createV2IntegrationTable(t, ctx, app, "pending notes", "mutation_pending_notes_table")
+	title := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_pending_notes_title")
+	definition.SchemaRevision = title.SchemaRevision
+	if title.Definition == nil {
+		t.Fatal("V2 title fixture omitted field definition")
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -935,10 +958,10 @@ func TestMutationKernelReturnsPendingForAnActiveIdenticalRequest(t *testing.T) {
 	follower := mutation.New(app, mutation.MetadataSchemaSource{})
 	recordID := "rec000000000032"
 	request := mutationRequest(
-		"pending_notes", definition.SchemaRevision, "pending-shared",
+		definition.TableID, definition.SchemaRevision, "pending-shared",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"title": "one"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "one"},
 		},
 	)
 	type applyResult struct {
@@ -971,10 +994,10 @@ func TestMutationKernelReturnsPendingForAnActiveIdenticalRequest(t *testing.T) {
 	}
 	secondID := "rec000000000033"
 	queued := mutationRequest(
-		"pending_notes", definition.SchemaRevision, "queued-key",
+		definition.TableID, definition.SchemaRevision, "queued-key",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &secondID,
-			Values: map[string]any{"title": "queued"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "queued"},
 		},
 	)
 	canceled, cancel := context.WithCancel(ctx)
@@ -1001,22 +1024,22 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	computed := field("fld_computed", "computed", schema.FieldKindFormula, schema.DataTypeFormula)
-	computed.StorageType = schema.StorageText
-	computed.ReadOnly = true
-	computed.Formula = &schema.FormulaSpec{
-		Language: "cel-v1", Source: "upper(title)",
-		ResultType: schema.DataTypeShortText, Version: 1, Status: "ready",
+	definition := createV2IntegrationTable(t, ctx, app, "formula notes", "mutation_formula_notes_table")
+	title := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_formula_notes_title")
+	computedDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "computed")
+	computedDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: "upper({title})"}
+	computed := createV2IntegrationFormula(t, ctx, app, definition.TableID, computedDraft, "mutation_formula_notes_computed")
+	createdDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "created_at")
+	createdDraft.AutoDate = &v2.AutoDateSpec{Role: "createdAt"}
+	created := createV2IntegrationField(t, ctx, app, definition.TableID, createdDraft, "mutation_formula_notes_created")
+	updatedDraft := fieldDraftForIntegration(t, v2.LogicalAutoDate, "updated_at")
+	updatedDraft.AutoDate = &v2.AutoDateSpec{Role: "updatedAt"}
+	updated := createV2IntegrationField(t, ctx, app, definition.TableID, updatedDraft, "mutation_formula_notes_updated")
+	definition.SchemaRevision = updated.SchemaRevision
+	if title.Definition == nil || computed.Definition == nil || created.Definition == nil || updated.Definition == nil {
+		t.Fatal("V2 formula fixture omitted field definition")
 	}
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("formula_notes", "formula_notes", []schema.FieldDefinition{
-			field("fld_title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			computed,
-			autoDateField("created_at", schema.AutoDateRoleCreatedAt),
-			autoDateField("updated_at", schema.AutoDateRoleUpdatedAt),
-		}),
-		ExpectedRevision: 0,
-	})
+	idempotencyBefore, err := app.FindAllRecords("vibetable_idempotency_keys")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1028,10 +1051,10 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 	)
 	recordID := "rec000000000041"
 	receipt, err := kernel.Apply(ctx, mutationRequest(
-		"formula_notes", definition.SchemaRevision, "formula-key",
+		definition.TableID, definition.SchemaRevision, "formula-key",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"title": "hello"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "hello"},
 		},
 	))
 	if err != nil {
@@ -1040,13 +1063,13 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 	if !formulas.called || !publisher.called || !publisher.committed {
 		t.Fatalf("seams: formula=%v publisher=%v committed=%v", formulas.called, publisher.called, publisher.committed)
 	}
-	if got := receipt.ComputedFields[recordID]["computed"]; got != "HELLO" {
+	if got := receipt.ComputedFields[recordID][computed.Definition.Identity.PhysicalName]; got != "HELLO" {
 		t.Fatalf("computed receipt value = %#v", got)
 	}
-	firstCreated := receipt.ComputedFields[recordID]["created_at"]
+	firstCreated := receipt.ComputedFields[recordID][created.Definition.Identity.PhysicalName]
 	firstUpdated, parseErr := time.Parse(
 		time.RFC3339Nano,
-		receipt.ComputedFields[recordID]["updated_at"].(string),
+		receipt.ComputedFields[recordID][updated.Definition.Identity.PhysicalName].(string),
 	)
 	if parseErr != nil {
 		t.Fatal(parseErr)
@@ -1055,10 +1078,10 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 		time.Sleep(time.Millisecond)
 	}
 	updatedReceipt, err := kernel.Apply(ctx, mutationRequest(
-		"formula_notes", definition.SchemaRevision, "formula-update",
+		definition.TableID, definition.SchemaRevision, "formula-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &recordID,
-			Values: map[string]any{"title": "world"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "world"},
 		},
 	))
 	if err != nil {
@@ -1066,21 +1089,21 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 	}
 	updatedAt, parseErr := time.Parse(
 		time.RFC3339Nano,
-		updatedReceipt.ComputedFields[recordID]["updated_at"].(string),
+		updatedReceipt.ComputedFields[recordID][updated.Definition.Identity.PhysicalName].(string),
 	)
 	if parseErr != nil ||
-		updatedReceipt.ComputedFields[recordID]["computed"] != "WORLD" ||
-		updatedReceipt.ComputedFields[recordID]["created_at"] != firstCreated ||
+		updatedReceipt.ComputedFields[recordID][computed.Definition.Identity.PhysicalName] != "WORLD" ||
+		updatedReceipt.ComputedFields[recordID][created.Definition.Identity.PhysicalName] != firstCreated ||
 		!updatedAt.After(firstUpdated) {
 		t.Fatalf("formula Save autoDate receipt = %#v", updatedReceipt)
 	}
-	collection, _ := app.FindCollectionByNameOrId("formula_notes")
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 	record, err := app.FindRecordById(collection, recordID)
-	if err != nil || record.GetString("computed") != "WORLD" {
+	if err != nil || relatedcomputation.ProjectStored(record.GetRaw(computed.Definition.Identity.PhysicalName)) != "WORLD" {
 		t.Fatalf("stored computed field = %#v, %v", record, err)
 	}
 	assertRecordCount(t, app, "vibetable_outbox", 2)
-	assertRecordCount(t, app, "vibetable_idempotency_keys", 2)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", len(idempotencyBefore)+2)
 	outbox, _ := app.FindAllRecords("vibetable_outbox")
 	if len(outbox) != 2 || outbox[0].GetString("status") != "pending" ||
 		outbox[0].GetFloat("attempts") != 0 ||
@@ -1098,26 +1121,17 @@ func TestMutationKernelFormulaUsesTransactionAndPublisherFailureDoesNotRollback(
 func TestMutationKernelDrainsCommittedOutboxAfterRequestCancellation(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
-	definition, err := schemaapi.New(app).ApplyChange(
-		context.Background(),
-		schemaapi.Change{
-			Definition: baseTable(
-				"cancelled_publish_notes",
-				"cancelled_publish_notes",
-				[]schema.FieldDefinition{
-					field(
-						"title",
-						"title",
-						schema.FieldKindScalar,
-						schema.DataTypeShortText,
-					),
-				},
-			),
-			ExpectedRevision: 0,
-		},
+	ctx := context.Background()
+	definition := createV2IntegrationTable(
+		t, ctx, app, "cancelled publish notes", "mutation_cancelled_publish_table",
 	)
-	if err != nil {
-		t.Fatal(err)
+	title := createV2IntegrationField(
+		t, ctx, app, definition.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_cancelled_publish_title",
+	)
+	definition.SchemaRevision = title.SchemaRevision
+	if title.Definition == nil {
+		t.Fatal("V2 title fixture omitted field definition")
 	}
 
 	hub := realtime.New(app)
@@ -1152,7 +1166,7 @@ func TestMutationKernelDrainsCommittedOutboxAfterRequestCancellation(t *testing.
 			mutation.Operation{
 				Kind:     mutation.OperationInsert,
 				RecordID: &recordID,
-				Values:   map[string]any{"title": "committed"},
+				Values:   map[string]any{title.Definition.Identity.PhysicalName: "committed"},
 			},
 		),
 	)
@@ -1181,16 +1195,17 @@ func TestMutationKernelRealFormulaCalculatorComputesAndPreservesErrors(t *testin
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("formula_orders", "formula_orders", []schema.FieldDefinition{
-			field("quantity_id", "quantity", schema.FieldKindScalar, schema.DataTypeFloat),
-			formulaField("double_id", "double_quantity", schema.DataTypeFloat, "quantity * 2.0"),
-			formulaField("ratio_id", "ratio", schema.DataTypeFloat, "1.0 / quantity"),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	definition := createV2IntegrationTable(t, ctx, app, "formula orders", "mutation_formula_orders_table")
+	quantity := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalNumber, "quantity"), "mutation_formula_orders_quantity")
+	doubleDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "double_quantity")
+	doubleDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: "{quantity} * 2.0"}
+	double := createV2IntegrationFormula(t, ctx, app, definition.TableID, doubleDraft, "mutation_formula_orders_double")
+	ratioDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "ratio")
+	ratioDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: "1.0 / {quantity}"}
+	ratio := createV2IntegrationFormula(t, ctx, app, definition.TableID, ratioDraft, "mutation_formula_orders_ratio")
+	definition.SchemaRevision = ratio.SchemaRevision
+	if quantity.Definition == nil || double.Definition == nil || ratio.Definition == nil {
+		t.Fatal("V2 formula fixture omitted field definition")
 	}
 	calculator := formula.NewCalculator(formula.NewCompiler(formula.DefaultLimits()))
 	kernel := mutation.New(
@@ -1200,33 +1215,33 @@ func TestMutationKernelRealFormulaCalculatorComputesAndPreservesErrors(t *testin
 	)
 	recordID := "rec000000000091"
 	receipt, err := kernel.Apply(ctx, mutationRequest(
-		"formula_orders", definition.SchemaRevision, "formula-real-ok",
+		definition.TableID, definition.SchemaRevision, "formula-real-ok",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"quantity": 4.0},
+			Values: map[string]any{quantity.Definition.Identity.PhysicalName: 4.0},
 		},
 	))
 	if err != nil {
 		t.Fatalf("real formula mutation: %#v", err)
 	}
-	if receipt.ComputedFields[recordID]["double_quantity"] != 8.0 ||
-		receipt.ComputedFields[recordID]["ratio"] != 0.25 {
+	if receipt.ComputedFields[recordID][double.Definition.Identity.PhysicalName] != 8.0 ||
+		receipt.ComputedFields[recordID][ratio.Definition.Identity.PhysicalName] != 0.25 {
 		t.Fatalf("computed values = %#v", receipt.ComputedFields)
 	}
 
 	failedRecordID := "rec000000000092"
 	_, err = kernel.Apply(ctx, mutationRequest(
-		"formula_orders", definition.SchemaRevision, "formula-real-error",
+		definition.TableID, definition.SchemaRevision, "formula-real-error",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &failedRecordID,
-			Values: map[string]any{"quantity": 0.0},
+			Values: map[string]any{quantity.Definition.Identity.PhysicalName: 0.0},
 		},
 	))
 	var formulaErr *formula.Error
 	if !errors.As(err, &formulaErr) || formulaErr.Code != "formula.divide_by_zero" {
 		t.Fatalf("formula error = %#v, want formula.divide_by_zero", err)
 	}
-	collection, _ := app.FindCollectionByNameOrId("formula_orders")
+	collection, _ := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if _, findErr := app.FindRecordById(collection, failedRecordID); !errors.Is(findErr, sql.ErrNoRows) {
 		t.Fatalf("failed formula mutation persisted record: %v", findErr)
 	}
@@ -1236,51 +1251,53 @@ func TestMutationKernelValidatesRelationsAndKeepsTableDataRevisionsIndependent(t
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	catalog := schemaapi.New(app)
-	categories, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("categories", "categories", []schema.FieldDefinition{
-			field("name", "name", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
+	var err error
+	categories := createV2IntegrationTable(t, ctx, app, "categories", "mutation_categories_table")
+	name := createV2IntegrationField(t, ctx, app, categories.TableID, fieldDraftForIntegration(t, v2.LogicalText, "name"), "mutation_categories_name")
+	categories.SchemaRevision = name.SchemaRevision
+	items := createV2IntegrationTable(t, ctx, app, "items", "mutation_items_table")
+	title := createV2IntegrationField(t, ctx, app, items.TableID, fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_items_title")
+	relation := createV2IntegrationRelation(t, ctx, app, items.TableID, title.FieldID, categories.TableID, name.FieldID, "category", "items", "one", "mutation_items_category")
+	items.SchemaRevision = relation.SchemaRevision
+	for _, related := range relation.Related {
+		if related.TableID == categories.TableID {
+			categories.SchemaRevision = related.SchemaRevision
+		}
+	}
+	if name.Definition == nil || title.Definition == nil || relation.Definition == nil {
+		t.Fatal("V2 relation fixture omitted field definition")
+	}
+	categoryMeta, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": categories.TableID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	relation := field("category_id", "category", schema.FieldKindRelation, schema.DataTypeRelation)
-	relation.Relation = &schema.RelationSpec{
-		TargetTableID: "categories", Cardinality: "one", DeletePolicy: "setNull",
-	}
-	relation.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRelation, TargetTableID: "categories",
-		Cardinality: "one", DeletePolicy: "setNull",
-	}}
-	items, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("items", "items", []schema.FieldDefinition{
-			field("title", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			relation,
-		}),
-		ExpectedRevision: 0,
-	})
+	categoryDataRevision := int64(categoryMeta.GetFloat("data_revision"))
+	itemMeta, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": items.TableID})
 	if err != nil {
 		t.Fatal(err)
 	}
+	itemDataRevision := int64(itemMeta.GetFloat("data_revision"))
 	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
 	categoryID := "rec000000000051"
 	if _, err := kernel.Apply(ctx, mutationRequest(
-		"categories", categories.SchemaRevision, "category-insert",
+		categories.TableID, categories.SchemaRevision, "category-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &categoryID,
-			Values: map[string]any{"name": "General"},
+			Values: map[string]any{name.Definition.Identity.PhysicalName: "General"},
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
+	categoryMeta, _ = app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": categories.TableID})
+	if got := int64(categoryMeta.GetFloat("data_revision")); got != categoryDataRevision+1 {
+		t.Fatalf("category insert data revision = %d", got)
+	}
 	itemID := "rec000000000052"
 	invalid := mutationRequest(
-		"items", items.SchemaRevision, "invalid-relation",
+		items.TableID, items.SchemaRevision, "invalid-relation",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &itemID,
-			Values: map[string]any{"title": "Bad", "category": "rec000000009999"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "Bad", relation.Definition.Identity.PhysicalName: "rec000000009999"},
 		},
 	)
 	_, err = kernel.Apply(ctx, invalid)
@@ -1288,14 +1305,14 @@ func TestMutationKernelValidatesRelationsAndKeepsTableDataRevisionsIndependent(t
 	if !errors.As(err, &productErr) ||
 		productErr.Code != "mutation.relation.target_not_found" ||
 		productErr.Path == nil ||
-		*productErr.Path != "operations[0].values.category" {
+		*productErr.Path != "operations[0].values."+relation.Definition.Identity.PhysicalName {
 		t.Fatalf("invalid relation = %#v", err)
 	}
 	if _, err := app.FindFirstRecordByFilter("vibetable_idempotency_keys", "key='invalid-relation'"); err == nil {
 		t.Fatal("invalid relation left idempotency state")
 	}
-	itemMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id='items'")
-	if got := int64(itemMeta.GetFloat("data_revision")); got != 0 {
+	itemMeta, _ = app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": items.TableID})
+	if got := int64(itemMeta.GetFloat("data_revision")); got != itemDataRevision {
 		t.Fatalf("failed item mutation data revision = %d", got)
 	}
 	itemMeta.Set("data_revision", -1)
@@ -1304,26 +1321,26 @@ func TestMutationKernelValidatesRelationsAndKeepsTableDataRevisionsIndependent(t
 	}
 	corrupt := invalid
 	corrupt.RequestID, corrupt.IdempotencyKey = "req-corrupt-counter", "corrupt-counter"
-	corrupt.Operations[0].Values["category"] = categoryID
+	corrupt.Operations[0].Values[relation.Definition.Identity.PhysicalName] = categoryID
 	_, err = kernel.Apply(ctx, corrupt)
 	if !errors.As(err, &productErr) ||
 		productErr.Code != "mutation.metadata.invalid_data_revision" {
 		t.Fatalf("corrupt data revision = %#v", err)
 	}
-	itemMeta.Set("data_revision", 0)
+	itemMeta.Set("data_revision", itemDataRevision)
 	if err := app.Save(itemMeta); err != nil {
 		t.Fatal(err)
 	}
 	valid := invalid
 	valid.RequestID, valid.IdempotencyKey = "req-valid-relation", "valid-relation"
-	valid.Operations[0].Values["category"] = categoryID
+	valid.Operations[0].Values[relation.Definition.Identity.PhysicalName] = categoryID
 	if _, err := kernel.Apply(ctx, valid); err != nil {
 		t.Fatalf("valid relation: %#v", err)
 	}
-	categoryMeta, _ := app.FindFirstRecordByFilter("vibetable_tables", "table_id='categories'")
-	itemMeta, _ = app.FindFirstRecordByFilter("vibetable_tables", "table_id='items'")
-	if int64(categoryMeta.GetFloat("data_revision")) != 1 ||
-		int64(itemMeta.GetFloat("data_revision")) != 1 {
+	categoryMeta, _ = app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": categories.TableID})
+	itemMeta, _ = app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": items.TableID})
+	if int64(categoryMeta.GetFloat("data_revision")) != categoryDataRevision+2 ||
+		int64(itemMeta.GetFloat("data_revision")) != itemDataRevision+1 {
 		t.Fatalf("independent data revisions: category=%v item=%v",
 			categoryMeta.GetRaw("data_revision"), itemMeta.GetRaw("data_revision"))
 	}
@@ -1333,12 +1350,13 @@ func TestMutationKernelOneThousandOperationsCommitOrFullyRollback(t *testing.T) 
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("bulk_rows", "bulk_rows", []schema.FieldDefinition{
-			field("value_id", "value", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
+	definition := createV2IntegrationTable(t, ctx, app, "bulk rows", "mutation_bulk_rows_table")
+	value := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalText, "value"), "mutation_bulk_rows_value")
+	definition.SchemaRevision = value.SchemaRevision
+	if value.Definition == nil {
+		t.Fatal("V2 value fixture omitted field definition")
+	}
+	idempotencyBefore, err := app.FindAllRecords("vibetable_idempotency_keys")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1347,14 +1365,14 @@ func TestMutationKernelOneThousandOperationsCommitOrFullyRollback(t *testing.T) 
 		recordID := fmt.Sprintf("bulk%011d", index+1)
 		operations[index] = mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"value": fmt.Sprintf("row-%d", index+1)},
+			Values: map[string]any{value.Definition.Identity.PhysicalName: fmt.Sprintf("row-%d", index+1)},
 		}
 	}
 	request := mutation.Request{
 		ContractVersion: mutation.ContractVersion,
 		RequestID:       "bulk-rollback",
 		IdempotencyKey:  "bulk-rollback",
-		TableID:         "bulk_rows",
+		TableID:         definition.TableID,
 		SchemaRevision:  definition.SchemaRevision,
 		Operations:      operations,
 		Actor:           mutation.Actor{Type: "user", ID: "scale-test"},
@@ -1372,9 +1390,9 @@ func TestMutationKernelOneThousandOperationsCommitOrFullyRollback(t *testing.T) 
 	if _, err := faultKernel.Apply(ctx, request); err == nil {
 		t.Fatal("1k mutation with before_commit fault unexpectedly succeeded")
 	}
-	assertRecordCount(t, app, "bulk_rows", 0)
+	assertRecordCount(t, app, definition.PhysicalName, 0)
 	assertRecordCount(t, app, "vibetable_audit_events", 0)
-	assertRecordCount(t, app, "vibetable_idempotency_keys", 0)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", len(idempotencyBefore))
 	assertRecordCount(t, app, "vibetable_outbox", 0)
 
 	request.RequestID = "bulk-commit"
@@ -1389,9 +1407,9 @@ func TestMutationKernelOneThousandOperationsCommitOrFullyRollback(t *testing.T) 
 	if len(receipt.AffectedRows) != 1_000 {
 		t.Fatalf("affected rows = %d", len(receipt.AffectedRows))
 	}
-	assertRecordCount(t, app, "bulk_rows", 1_000)
+	assertRecordCount(t, app, definition.PhysicalName, 1_000)
 	assertRecordCount(t, app, "vibetable_audit_events", 1_000)
-	assertRecordCount(t, app, "vibetable_idempotency_keys", 1)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", len(idempotencyBefore)+1)
 	assertRecordCount(t, app, "vibetable_outbox", 1)
 }
 
@@ -1399,25 +1417,22 @@ func TestMutationKernelDigestRoundTripsJSONAcrossFreshRecordReads(t *testing.T) 
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("digest_notes", "digest_notes", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			field("payload_id", "payload", schema.FieldKindScalar, schema.DataTypeJSON),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	definition := createV2IntegrationTable(t, ctx, app, "digest notes", "mutation_digest_notes_table")
+	title := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalText, "title"), "mutation_digest_notes_title")
+	payload := createV2IntegrationField(t, ctx, app, definition.TableID, fieldDraftForIntegration(t, v2.LogicalJSON, "payload"), "mutation_digest_notes_payload")
+	definition.SchemaRevision = payload.SchemaRevision
+	if title.Definition == nil || payload.Definition == nil {
+		t.Fatal("V2 digest fixture omitted field definition")
 	}
 	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
 	recordID := "rec000000000061"
 	inserted, err := kernel.Apply(ctx, mutationRequest(
-		"digest_notes", definition.SchemaRevision, "digest-insert",
+		definition.TableID, definition.SchemaRevision, "digest-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
 			Values: map[string]any{
-				"title": "one",
-				"payload": map[string]any{
+				title.Definition.Identity.PhysicalName: "one",
+				payload.Definition.Identity.PhysicalName: map[string]any{
 					"nested": []any{json.Number("1"), "two"},
 				},
 			},
@@ -1427,10 +1442,10 @@ func TestMutationKernelDigestRoundTripsJSONAcrossFreshRecordReads(t *testing.T) 
 		t.Fatal(err)
 	}
 	update := mutationRequest(
-		"digest_notes", definition.SchemaRevision, "digest-update",
+		definition.TableID, definition.SchemaRevision, "digest-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &recordID,
-			Values: map[string]any{"title": "two"},
+			Values: map[string]any{title.Definition.Identity.PhysicalName: "two"},
 		},
 	)
 	update.ExpectedDigest = &inserted.AffectedRows[0].Digest

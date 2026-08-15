@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -437,31 +437,21 @@ func migrationFixture(
 	if err := app.Save(collection); err != nil {
 		t.Fatal(err)
 	}
-	legacy := schema.TableDefinition{
-		ContractVersion: schema.ContractVersion,
-		TableID:         "tbl_orders", PhysicalName: collection.Name,
-		DisplayName: "Orders", Kind: schema.TableKindBase,
-		SchemaRevision: "schema_0001",
-		ArchivePolicy:  schema.ArchivePolicy{Mode: schema.ArchiveModeNone},
-		Fields:         []schema.FieldDefinition{toLegacyField(before)},
-		Indexes:        []schema.IndexDefinition{},
-	}
-	legacyRaw, _ := json.Marshal(legacy)
+	tableID := "tbl_orders"
 	tables, _ := app.FindCollectionByNameOrId("vibetable_tables")
 	table := core.NewRecord(tables)
-	table.Set("table_id", legacy.TableID)
+	table.Set("table_id", tableID)
 	table.Set("collection_id", collection.Id)
 	table.Set("physical_name", collection.Name)
-	table.Set("display_name", legacy.DisplayName)
-	table.Set("kind", legacy.Kind)
+	table.Set("display_name", "Orders")
+	table.Set("kind", "base")
 	table.Set("schema_revision", 1)
 	table.Set("data_revision", 2)
 	table.Set("archive_policy", `{"mode":"none"}`)
-	table.Set("definition_json", types.JSONRaw(legacyRaw))
 	if err := app.Save(table); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveDefinitionMetadata(app, legacy.TableID, before); err != nil {
+	if err := saveDefinitionMetadata(app, tableID, before); err != nil {
 		t.Fatal(err)
 	}
 	for _, input := range []struct {
@@ -480,7 +470,7 @@ func migrationFixture(
 		Contract: v2.Contract, PlanID: "plan_migration_12345678",
 		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
 		Intent: v2.FieldChangeIntent{
-			Action: v2.ActionConvert, TableID: legacy.TableID,
+			Action: v2.ActionConvert, TableID: tableID,
 			FieldID:              before.Identity.FieldID,
 			ExpectedSchemaRev:    "schema_0001",
 			ExpectedDataRevision: &dataRevision,
@@ -501,6 +491,110 @@ func migrationFixture(
 	}
 	plan.PlanHash, _ = hashPlan(plan)
 	return app, plan, collection
+}
+
+func TestSchemaRevisionUpdateUsesOnlyNormalizedMetadata(t *testing.T) {
+	app, plan, _ := migrationFixture(t)
+	table, err := app.FindFirstRecordByFilter(
+		"vibetable_tables",
+		"table_id='tbl_orders'",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.Collection().Fields.GetByName("definition_json") != nil {
+		t.Fatal("vibetable_tables exposes the removed definition_json authority")
+	}
+	if err := saveTableRevisionAndComputedMetadata(
+		context.Background(), app, plan, 2,
+	); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := app.FindRecordById("vibetable_tables", table.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.GetInt("schema_revision") != 2 {
+		t.Fatalf("schema revision = %d", reloaded.GetInt("schema_revision"))
+	}
+	field, err := app.FindFirstRecordByFilter(
+		"vibetable_fields",
+		"table_id={:tableId} && field_id={:fieldId}",
+		dbx.Params{
+			"tableId": plan.Intent.TableID,
+			"fieldId": plan.Before.Identity.FieldID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if field.GetString("data_type") != string(plan.Before.LogicalType) {
+		t.Fatalf("logical type = %q", field.GetString("data_type"))
+	}
+}
+
+func TestSchemaAuditOutboxContainsOnlyIdentityAndSafeHashes(t *testing.T) {
+	app, plan, _ := migrationFixture(t)
+	plan.PlanID = "plan_audit_safe_12345678"
+	plan.Intent.Action = v2.ActionUpdate
+	secretDefault := "customer-business-value-must-not-leak"
+	plan.After.Value.Default.Enabled = true
+	plan.After.Value.Default.Value = secretDefault
+	request := v2.ApplyRequest{
+		PlanID:      plan.PlanID,
+		OperationID: "operation_audit_safe_12345678",
+		Actor:       v2.Actor{ID: "local-user", Kind: "user"},
+	}
+	receipt := v2.ApplyReceipt{
+		Contract:       v2.Contract,
+		OperationID:    request.OperationID,
+		PlanID:         plan.PlanID,
+		Action:         plan.Intent.Action,
+		TableID:        plan.Intent.TableID,
+		FieldID:        plan.After.Identity.FieldID,
+		SchemaRevision: "schema_0002",
+		Definition:     plan.After,
+	}
+	if err := app.RunInTransaction(func(txApp core.App) error {
+		return saveSchemaAudit(
+			context.Background(), txApp, plan, request, receipt,
+			time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC),
+		)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := app.FindFirstRecordByFilter(
+		"vibetable_audit_outbox",
+		"event_id={:event}",
+		dbx.Params{"event": "schema:" + request.OperationID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(outbox.GetRaw("payload_json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secretDefault) {
+		t.Fatalf("schema audit leaked a business default: %s", raw)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"before", "after", "value", "default"} {
+		if _, exists := payload[forbidden]; exists {
+			t.Fatalf("schema audit contains forbidden %q: %s", forbidden, raw)
+		}
+	}
+	for _, required := range []string{
+		"operationId", "planId", "action", "tableId", "fieldId",
+		"schemaRevision", "beforeHash", "afterHash", "actor",
+	} {
+		if _, exists := payload[required]; !exists {
+			t.Fatalf("schema audit is missing %q: %s", required, raw)
+		}
+	}
 }
 
 func migrationTempDir(t *testing.T) string {

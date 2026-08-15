@@ -7,18 +7,19 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type staticSchemaSource struct {
-	definition schema.TableDefinition
+	definition schemaexecution.Table
 }
 
 func (source staticSchemaSource) Describe(
 	_ context.Context,
 	_ core.App,
 	_ string,
-) (schema.TableDefinition, error) {
+) (schemaexecution.Table, error) {
 	return source.definition, nil
 }
 
@@ -65,7 +66,7 @@ func TestPreviewNormalizesFieldIDsAndRejectsNonWritableFields(t *testing.T) {
 
 func TestPreviewRejectsReadOnlyViewTables(t *testing.T) {
 	definition := mutationTestDefinition()
-	definition.Kind = schema.TableKindView
+	definition.Kind = "view"
 	kernel := mutation.New(nil, staticSchemaSource{definition: definition})
 	recordID := "rec_00000000001"
 	_, err := kernel.Preview(
@@ -103,33 +104,33 @@ func TestPreviewRejectsCrossContainerAliasesBeforeValueNormalization(t *testing.
 	}
 }
 
-func mutationTestDefinition() schema.TableDefinition {
-	return schema.TableDefinition{
-		ContractVersion: schema.ContractVersion,
-		TableID:         "tbl_notes", PhysicalName: "notes", DisplayName: "Notes",
-		Kind: schema.TableKindBase, SchemaRevision: "schema_0001",
-		ArchivePolicy: schema.ArchivePolicy{Mode: schema.ArchiveModeNone},
-		Fields: []schema.FieldDefinition{
-			{
-				FieldID: "fld_title", PhysicalName: "title", DisplayName: "Title",
-				Kind: schema.FieldKindScalar, DataType: schema.DataTypeShortText,
-				StorageType: schema.StorageText, Nullable: true,
-				Constraints: []schema.FieldConstraint{},
-				Editor:      schema.EditorDefinition{Kind: "text", Config: map[string]any{}},
-			},
-			{
-				FieldID: "fld_computed", PhysicalName: "computed", DisplayName: "Computed",
-				Kind: schema.FieldKindFormula, DataType: schema.DataTypeFormula,
-				StorageType: schema.StorageText, Nullable: true, ReadOnly: true,
-				Constraints: []schema.FieldConstraint{},
-				Editor:      schema.EditorDefinition{Kind: "formula", Config: map[string]any{}},
-				Formula: &schema.FormulaSpec{
-					Language: "cel-v1", Source: "title", ResultType: schema.DataTypeShortText,
-					Version: 1, Status: "ready",
+func mutationTestDefinition() schemaexecution.Table {
+	return schemaexecution.Table{
+		Snapshot: v2.SchemaSnapshot{
+			Contract: v2.Contract, TableID: "tbl_notes", DisplayName: "Notes",
+			SchemaRevision: "schema_0001",
+			Fields: []v2.FieldDefinition{
+				{
+					Contract:    v2.Contract,
+					Identity:    v2.FieldIdentity{FieldID: "fld_title", PhysicalName: "title"},
+					DisplayName: "Title", LogicalType: v2.LogicalText,
+					Lifecycle: v2.Lifecycle{State: v2.LifecycleActive},
+					Value:     v2.ValueSpec{Default: v2.DefaultSpec{Source: v2.DefaultRecommended}},
+				},
+				{
+					Contract:    v2.Contract,
+					Identity:    v2.FieldIdentity{FieldID: "fld_computed", PhysicalName: "computed"},
+					DisplayName: "Computed", LogicalType: v2.LogicalFormula,
+					Lifecycle: v2.Lifecycle{State: v2.LifecycleActive},
+					Value:     v2.ValueSpec{Default: v2.DefaultSpec{Source: v2.DefaultRecommended}},
+					Formula: &v2.FormulaSpec{
+						Language: "cel-v1", Source: "title", ResultType: v2.LogicalText,
+					},
 				},
 			},
 		},
-		Indexes: []schema.IndexDefinition{},
+		PhysicalName: "notes", Kind: "base",
+		ArchivePolicy: v2.ArchivePolicy{Mode: "none"},
 	}
 }
 

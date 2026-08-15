@@ -57,7 +57,7 @@ onBeforeUnmount(() => {
     <div ref="root" class="dashboard-chart" role="img" :aria-label="panel.name"></div>
     <label class="keyboard-select-label">
       <span class="sr-only">{{ t("dashboard.chart.keyboardSelect") }}</span>
-      <select :aria-label="t('dashboard.chart.keyboardSelect')" @change="selectByIndex">
+      <select data-testid="dashboard-chart-selection" :aria-label="t('dashboard.chart.keyboardSelect')" @change="selectByIndex">
         <option value="" selected disabled>{{ t("dashboard.chart.keyboardSelect") }}</option>
         <option v-for="(item, index) in keyboardSelections" :key="index" :value="index">{{ item.label }}</option>
       </select>

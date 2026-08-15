@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -55,6 +56,7 @@ public sealed class GridStateCoordinator
     private GridState? _confirmedState;
     private string? _confirmedRevision;
     private int _lastDataRevision;
+    private bool _cursorFetchInFlight;
 
     /// <summary>
     /// Raised when a selection snapshot is produced (after loaded row keys are
@@ -86,31 +88,39 @@ public sealed class GridStateCoordinator
     }
 
     /// <summary>
-    /// Requests a debounced query read. The read is cancelled if a newer query
-    /// arrives within <see cref="QueryDebounceMs"/>. Stale responses (older
-    /// generation or snapshot) are dropped.
+    /// Requests a renderer-authored canonical query. WPF treats the JSON as an
+    /// opaque contract and leaves all AST validation to the data service.
     /// </summary>
-    public void RequestQuery(string table, TableQuery query)
+    public void RequestQuery(string table, JsonElement query)
     {
-        if (string.IsNullOrEmpty(table))
+        if (string.IsNullOrEmpty(table) || query.ValueKind != JsonValueKind.Object)
         {
             return;
         }
         _currentTable = table;
         int generation = Interlocked.Increment(ref _generation);
-        // Cancel any in-flight query read.
         CancelQuery();
         _queryCts = new CancellationTokenSource();
         var token = _queryCts.Token;
-
-        // Debounce: coalesce rapid search/filter changes into one read.
         _queryDebounce?.Dispose();
-        var state = (table, query, generation, token);
+        JsonElement stableQuery = query.Clone();
+        var state = (table, stableQuery, generation, token);
         _queryDebounce = new Timer(
-            _ => _ = ExecuteQueryAsync(state.table, state.query, state.generation, state.token),
+            _ => _ = ExecuteRawQueryAsync(
+                state.table, state.stableQuery, state.generation, state.token),
             null,
             QueryDebounceMs,
             Timeout.Infinite);
+    }
+
+    public void RequestNextWindow(string cursor)
+    {
+        if (string.IsNullOrWhiteSpace(cursor) || _cursorFetchInFlight || _queryCts is null)
+        {
+            return;
+        }
+        _cursorFetchInFlight = true;
+        _ = FetchNextWindowAsync(cursor, _generation, _queryCts.Token);
     }
 
     /// <summary>
@@ -132,7 +142,8 @@ public sealed class GridStateCoordinator
         }
         _pendingSave = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _confirmedState = state;
-        var snapshot = (_databaseId, _currentTable, state, _confirmedRevision);
+        string? revision = _confirmedRevision ?? state.Revision;
+        var snapshot = (_databaseId, _currentTable, state, revision);
         _saveDebounce?.Dispose();
         _saveDebounce = new Timer(
             _ => _ = ExecuteSaveAsync(snapshot.Item1, snapshot.Item2, snapshot.Item3, snapshot.Item4),
@@ -215,73 +226,49 @@ public sealed class GridStateCoordinator
     // Private execution
     // -------------------------------------------------------------------
 
-    private async Task ExecuteQueryAsync(
-        string table, TableQuery query, int generation, CancellationToken token)
+    private async Task ExecuteRawQueryAsync(
+        string table, JsonElement query, int generation, CancellationToken token)
     {
         try
         {
-            int pageLimit = Math.Min(
-                Math.Max(query.Limit, 1), TableWorkspaceLimits.MaxPageLimit);
-            var firstPage = await _gateway.QueryTableViewAsync(
-                table, query.Offset, pageLimit, query, token).ConfigureAwait(true);
+            Task<TablePage> windowTask = _gateway.OpenTableCursorRawAsync(table, query, token);
+            TablePage page;
+            if (HasViewAggregates(query))
+            {
+                Task<TablePage> groupsTask = _gateway.QueryTableViewRawAsync(table, query, token);
+                await Task.WhenAll(windowTask, groupsTask).ConfigureAwait(true);
+                TablePage window = await windowTask.ConfigureAwait(true);
+                TablePage groups = await groupsTask.ConfigureAwait(true);
+                if (!HaveSameQueryRevision(window, groups))
+                {
+                    throw new InvalidOperationException(
+                        "The table changed while loading the cursor and group summary.");
+                }
+                page = window with
+                {
+                    GroupRows = groups.GroupRows,
+                    GroupOffset = groups.GroupOffset,
+                    GroupLimit = groups.GroupLimit,
+                    HasMoreGroups = groups.HasMoreGroups,
+                };
+            }
+            else
+            {
+                page = await windowTask.ConfigureAwait(true);
+            }
             if (IsStale(generation) || token.IsCancellationRequested)
             {
                 return;
             }
-
-            int expectedRows = firstPage.FilteredRows ?? firstPage.TotalRows;
-            int loadedRows = firstPage.Rows.Count;
-            int offset = query.Offset + loadedRows;
-            var rows = new List<Dictionary<string, object?>>(firstPage.Rows);
-            while (loadedRows < expectedRows)
-            {
-                if (IsStale(generation) || token.IsCancellationRequested)
-                {
-                    return;
-                }
-
-                int limit = Math.Min(pageLimit, expectedRows - loadedRows);
-                var nextPage = await _gateway.QueryTableViewAsync(
-                    table, offset, limit, query, token).ConfigureAwait(true);
-                if (!HaveSameQueryRevision(firstPage, nextPage))
-                {
-                    throw new InvalidOperationException(
-                        "The table changed while loading the complete query result. Refresh and try again.");
-                }
-                if (nextPage.Rows.Count == 0)
-                {
-                    throw new InvalidOperationException(
-                        "The query ended before its advertised filtered row count was loaded.");
-                }
-                rows.AddRange(nextPage.Rows);
-                loadedRows += nextPage.Rows.Count;
-                offset += nextPage.Rows.Count;
-            }
-
-            if (IsStale(generation) || token.IsCancellationRequested)
-            {
-                return;
-            }
-            var completePage = firstPage with
-            {
-                Rows = rows,
-                Offset = query.Offset,
-                Limit = loadedRows,
-                Mode = "client",
-            };
             _notify(new TableNotification
             {
-                // A debounced query is one complete authoritative dataset.
-                // Partial pages stay inside the host and never leak stale rows
-                // into projections such as calendar, kanban, and timeline.
                 Type = "table.datasetReady",
-                Page = completePage,
-                LoadedRows = loadedRows,
+                Page = page,
             });
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // Superseded by a newer query: drop quietly.
+            // Superseded renderer query.
         }
         catch (Exception ex)
         {
@@ -292,21 +279,66 @@ public sealed class GridStateCoordinator
             _notify(new TableNotification
             {
                 Type = "operation.failed",
-                LoadedRows = 0,
                 MutationResult = new MutationOutcome(
-                    "query", false,
-                    new MutationError(MutationErrorKind.Unknown, ex.Message, null, null, null),
-                    null),
+                    "query", false, MutationErrorMapper.Map(ex), null),
             });
         }
     }
 
+    private async Task FetchNextWindowAsync(
+        string cursor, int generation, CancellationToken token)
+    {
+        try
+        {
+            TablePage page = await _gateway.FetchTableCursorAsync(cursor, token)
+                .ConfigureAwait(true);
+            if (IsStale(generation) || token.IsCancellationRequested)
+            {
+                return;
+            }
+            _notify(new TableNotification
+            {
+                Type = "table.windowLoaded",
+                Page = page,
+            });
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Superseded query.
+        }
+        catch (Exception ex)
+        {
+            if (!IsStale(generation))
+            {
+                _notify(new TableNotification
+                {
+                    Type = "operation.failed",
+                    MutationResult = new MutationOutcome(
+                        "query.cursor", false, MutationErrorMapper.Map(ex), null),
+                });
+            }
+        }
+        finally
+        {
+            _cursorFetchInFlight = false;
+        }
+    }
+
+    private static bool HasViewAggregates(JsonElement query)
+        => HasNonEmptyArray(query, "groups")
+            || HasNonEmptyArray(query, "summaries")
+            || (query.TryGetProperty("groupOffset", out JsonElement offset)
+                && offset.ValueKind == JsonValueKind.Number
+                && offset.TryGetInt32(out int value)
+                && value > 0);
+
+    private static bool HasNonEmptyArray(JsonElement query, string property)
+        => query.TryGetProperty(property, out JsonElement value)
+            && value.ValueKind == JsonValueKind.Array
+            && value.GetArrayLength() > 0;
+
     private static bool HaveSameQueryRevision(TablePage first, TablePage next)
     {
-        if (first.Revision is not null || next.Revision is not null)
-        {
-            return first.Revision is not null && first.Revision == next.Revision;
-        }
         if (first.QuerySnapshot is not null || next.QuerySnapshot is not null)
         {
             return first.QuerySnapshot is not null
@@ -314,10 +346,19 @@ public sealed class GridStateCoordinator
                 && first.QuerySnapshot.DatabaseId == next.QuerySnapshot.DatabaseId
                 && first.QuerySnapshot.Table == next.QuerySnapshot.Table
                 && first.QuerySnapshot.SchemaRevision == next.QuerySnapshot.SchemaRevision
-                && first.QuerySnapshot.DataRevision == next.QuerySnapshot.DataRevision
-                && first.QuerySnapshot.Digest == next.QuerySnapshot.Digest;
+                && first.QuerySnapshot.DataRevision == next.QuerySnapshot.DataRevision;
         }
-        return true;
+
+        if (first.Revision is not null || next.Revision is not null)
+        {
+            return first.Revision is not null
+                && next.Revision is not null
+                && first.Revision.DatabaseSessionId == next.Revision.DatabaseSessionId
+                && first.Revision.SchemaRevision == next.Revision.SchemaRevision
+                && first.Revision.DataRevision == next.Revision.DataRevision;
+        }
+
+        return false;
     }
 
     private async Task ExecuteSaveAsync(

@@ -136,6 +136,7 @@ export interface RelationLookupGridContext {
   readonly onAttachmentOpenRequested?: (
     rowKey: string | number,
     column: ColumnSchema,
+    trigger: HTMLElement | null,
   ) => void;
 }
 
@@ -367,9 +368,12 @@ function toColumnDef(
         : "vt-attachment-cell",
       ...(actionable
         ? {
-            cellDblClick: (_event: MouseEvent, cell: TabulatorCellLike) => {
+            cellDblClick: (event: MouseEvent, cell: TabulatorCellLike) => {
               const rowKey = cell.getRow().getData()[ROW_KEY_FIELD] as string | number;
-              relationLookup.onAttachmentOpenRequested?.(rowKey, col);
+              event.preventDefault();
+              const trigger = cell.getElement?.() ?? null;
+              trigger?.blur();
+              relationLookup.onAttachmentOpenRequested?.(rowKey, col, trigger);
             },
           }
         : {}),
@@ -770,7 +774,8 @@ export function buildOptions(
     // In remote mode Tabulator records the user's sort/filter AST but does not
     // reorder the currently loaded page. useTabulator forwards the events to
     // the host/Lookup authoritative full-dataset query pipeline.
-    ...(page.mode === "remote" ? { sortMode: "remote", filterMode: "remote" } : {}),
+    sortMode: "remote",
+    filterMode: "remote",
   };
 
   // Strip the undefined keys so the object is clean for assertion & wire.

@@ -8,9 +8,7 @@ func decodeEnumValue(descriptor *EnumDescriptor, value any) any {
 	}
 	decodeOne := func(storage string) any {
 		for _, option := range descriptor.Options {
-			if storage == option.StorageValue ||
-				option.LegacyStorageValue != "" &&
-					storage == option.LegacyStorageValue {
+			if storage == option.StorageValue {
 				return option.Value
 			}
 		}
@@ -62,12 +60,7 @@ func enumStorageCandidates(
 		if !queryJSONValuesEqual(option.Value, value) {
 			continue
 		}
-		result := []string{option.StorageValue}
-		if option.LegacyStorageValue != "" &&
-			option.LegacyStorageValue != option.StorageValue {
-			result = append(result, option.LegacyStorageValue)
-		}
-		return result, true
+		return []string{option.StorageValue}, true
 	}
 	return nil, false
 }

@@ -94,6 +94,23 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
   let globalSequence = 0;
   let hydratedSessionKey: string | null = null;
   const actionContexts = new Map<string, WorkspaceV2UiAction>();
+  let requestTail: Promise<void> = Promise.resolve();
+
+  function enqueueRequest<Result>(operation: () => Promise<Result>): Promise<Result> {
+    const predecessor = requestTail;
+    let release!: () => void;
+    requestTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return (async () => {
+      await predecessor;
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    })();
+  }
 
   function supportsMethod(method: WorkspaceV2RpcMethod): boolean {
     if (method.startsWith("workspace.")) return session.enabled;
@@ -170,7 +187,16 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       actions.push({ method: "snapshot.list", params: { cursor: null, limit: 50 } });
     }
     if (session.fileHistoryEnabled) {
-      actions.push({ method: "fileHistory.listDocuments", params: { includeDeleted: false } });
+      actions.push({
+        method: "fileHistory.queryDocuments",
+        params: {
+          logic: "and",
+          filters: [{ field: "status", operator: "eq", value: "active" }],
+          sort: [{ field: "relativePath", direction: "asc" }],
+          limit: 500,
+          cursor: null,
+        },
+      });
       actions.push({ method: "fileHistory.listPendingChanges", params: {} });
     }
     if (session.policyEnabled) {
@@ -273,7 +299,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       protection.setFileTree(result);
     } else if (method === "fileHistory.listPendingChanges") {
       protection.setPendingFileChanges(result.changes);
-    } else if (method === "fileHistory.listDocuments") {
+    } else if (method === "fileHistory.queryDocuments") {
       protection.setDocuments(result.documents);
     } else if (method === "fileHistory.applyPendingChange") {
       protection.removePendingFileChange(result.changeId);
@@ -439,30 +465,45 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     async request<M extends WorkspaceV2RpcMethod>(
       action: WorkspaceV2UiAction<M>,
     ): Promise<WorkspaceV2RpcResult<M>> {
-      if (!supportsMethod(action.method)) {
-        throw new WorkspaceV2RequestError(
-          "workspace.capability_unavailable",
-          `Workspace v2 capability is unavailable for ${action.method}.`,
-          false,
-        );
-      }
-      const wire = nextWire(action.method);
-      actionContexts.set(wire.operationId, action as WorkspaceV2UiAction);
-      if (actionContexts.size > 100) {
-        const oldest = actionContexts.keys().next().value;
-        if (oldest) actionContexts.delete(oldest);
-      }
-      const payload = {
-        method: action.method,
-        params: action.params,
-        wire,
-      } as WorkspaceV2RequestPayload;
-      const raw = await bridge.request("workspace.v2.request", payload);
-      const reply = processReply(raw, {
-        method: action.method,
-        operationId: wire.operationId,
+      const expectedSessionKey = GLOBAL_METHODS.has(action.method)
+        ? null
+        : currentSessionKey();
+      return enqueueRequest(async () => {
+        if (!supportsMethod(action.method)) {
+          throw new WorkspaceV2RequestError(
+            "workspace.capability_unavailable",
+            `Workspace v2 capability is unavailable for ${action.method}.`,
+            false,
+          );
+        }
+        if (
+          expectedSessionKey !== null
+          && currentSessionKey() !== expectedSessionKey
+        ) {
+          throw new WorkspaceV2RequestError(
+            "workspace.session_stale",
+            "The queued workspace request no longer belongs to the active session.",
+            false,
+          );
+        }
+        const wire = nextWire(action.method);
+        actionContexts.set(wire.operationId, action as WorkspaceV2UiAction);
+        if (actionContexts.size > 100) {
+          const oldest = actionContexts.keys().next().value;
+          if (oldest) actionContexts.delete(oldest);
+        }
+        const payload = {
+          method: action.method,
+          params: action.params,
+          wire,
+        } as WorkspaceV2RequestPayload;
+        const raw = await bridge.request("workspace.v2.request", payload);
+        const reply = processReply(raw, {
+          method: action.method,
+          operationId: wire.operationId,
+        });
+        return reply.result as WorkspaceV2RpcResult<M>;
       });
-      return reply.result as WorkspaceV2RpcResult<M>;
     },
   };
 

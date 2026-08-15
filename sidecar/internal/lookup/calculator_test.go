@@ -6,67 +6,38 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
-func TestAggregateLookupValues(t *testing.T) {
-	tests := []struct {
-		name    string
-		kind    string
-		storage schema.StorageType
-		values  []any
-		want    any
+func TestCanonicalLookupValuePreservesOneOrManyCardinality(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		values []any
+		want   any
 	}{
-		{name: "empty first", kind: "first", storage: schema.StorageText, values: []any{}, want: nil},
-		{name: "first", kind: "first", storage: schema.StorageText, values: []any{"b", "a"}, want: "b"},
-		{name: "many", kind: "none", storage: schema.StorageText, values: []any{"b", "a"}, want: []any{"b", "a"}},
-		{name: "count", kind: "count", storage: schema.StorageNumber, values: []any{1, 2}, want: 2},
-		{name: "non-null count", kind: "countNonNull", storage: schema.StorageNumber, values: []any{1, nil, 2}, want: 2},
-		{name: "distinct", kind: "distinct", storage: schema.StorageJSON, values: []any{"a", "a", "b"}, want: []any{"a", "b"}},
-		{name: "sum", kind: "sum", storage: schema.StorageNumber, values: []any{1, "2.5"}, want: 3.5},
-		{name: "average", kind: "avg", storage: schema.StorageNumber, values: []any{2, 4}, want: 3.0},
-		{name: "minimum", kind: "min", storage: schema.StorageText, values: []any{"b", "a"}, want: "a"},
-		{name: "maximum", kind: "max", storage: schema.StorageNumber, values: []any{2, 7, 1}, want: 7},
-	}
-	for _, testCase := range tests {
+		{name: "empty", values: []any{}, want: nil},
+		{name: "one", values: []any{"Ada"}, want: "Ada"},
+		{name: "many", values: []any{"Ada", "Grace"}, want: []any{"Ada", "Grace"}},
+	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			got, err := aggregate(testCase.kind, testCase.storage, testCase.values)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, testCase.want) {
-				t.Fatalf("aggregate = %#v, want %#v", got, testCase.want)
+			if got := canonicalLookupValue(testCase.values); !reflect.DeepEqual(got, testCase.want) {
+				t.Fatalf("canonical lookup value = %#v, want %#v", got, testCase.want)
 			}
 		})
 	}
 }
 
-func TestAggregateLookupRejectsInvalidNumericValues(t *testing.T) {
-	for _, values := range [][]any{{"not-number"}, {1e308, 1e308}} {
-		_, err := aggregate("sum", schema.StorageNumber, values)
-		var productErr *mutation.ProductError
-		if !errors.As(err, &productErr) ||
-			productErr.Code != "mutation.lookup.invalid_value" {
-			t.Fatalf("error = %#v", err)
-		}
-	}
-}
-
-func TestCalculateFieldPageRejectsLegacyAggregateDefinition(t *testing.T) {
-	field := schema.FieldDefinition{
-		Kind: schema.FieldKindLookup,
-		Lookup: &schema.LookupSpec{
-			Aggregate: "sum",
-		},
-	}
-	_, err := NewCalculator().CalculateFieldPage(
-		context.Background(), nil, schema.TableDefinition{}, nil, field, 0, 100,
+func TestLookupDefinitionRejectsRemovedAggregateField(t *testing.T) {
+	var lookup v2.LookupSpec
+	err := v2.StrictDecode(
+		[]byte(`{"relationFieldId":"customer","targetFieldId":"name","aggregate":"sum"}`),
+		&lookup,
 	)
-	var productErr *mutation.ProductError
-	if !errors.As(err, &productErr) ||
-		productErr.Code != "lookup.request.aggregate_unsupported" {
-		t.Fatalf("legacy aggregate value page error = %#v", err)
+	if err == nil {
+		t.Fatal("removed Lookup aggregate field was accepted")
 	}
 }
 
@@ -83,6 +54,21 @@ func TestRelationIDsAcceptProviderNeutralCollections(t *testing.T) {
 		if got := relationIDs(testCase.value); !reflect.DeepEqual(got, testCase.want) {
 			t.Fatalf("relationIDs(%#v) = %#v, want %#v", testCase.value, got, testCase.want)
 		}
+	}
+}
+
+func TestDecodeLookupFieldValuePreservesV2OptionIdentity(t *testing.T) {
+	record := core.NewRecord(core.NewBaseCollection("lookup_targets"))
+	record.Set("f_status", "opt_in_progress")
+	field := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{PhysicalName: "f_status"},
+		LogicalType: v2.LogicalSelect,
+		Select: &v2.SelectSpec{Options: []v2.SelectOption{{
+			OptionID: "opt_in_progress", Label: "进行中", State: v2.OptionActive,
+		}}},
+	}
+	if got := decodeLookupFieldValue(field, record); got != "opt_in_progress" {
+		t.Fatalf("decoded Lookup option = %#v", got)
 	}
 }
 
@@ -117,47 +103,13 @@ func TestMaterializationBudgetMeasuresBytesInsteadOfRecordCount(t *testing.T) {
 	}
 }
 
-func TestStreamingAggregateKeepsOnlyBoundedProvenanceAtScale(t *testing.T) {
-	state := &streamingAggregateState{
-		kind: "avg", storage: schema.StorageNumber, capture: true,
-		seen: map[string]struct{}{},
-		budget: materializationBudget{
-			remainingBytes: lookupMaterializationBytes,
-		},
-	}
-	for start := 0; start < 10_001; start += lookupTraversalBatch {
-		end := min(start+lookupTraversalBatch, 10_001)
-		batch := make([]lookupPathValue, 0, end-start)
-		for index := start; index < end; index++ {
-			batch = append(batch, lookupPathValue{
-				collection: "items", itemID: "item",
-				fieldID: "amount", value: 2,
-			})
-		}
-		if err := state.consume(batch); err != nil {
-			t.Fatal(err)
-		}
-	}
-	value, err := state.value()
-	if err != nil || value != 2.0 || state.count != 10_001 {
-		t.Fatalf("streaming average = %#v count=%d err=%v", value, state.count, err)
-	}
-	if len(state.provenance) != cellProvenancePageSize || len(state.distinct) != 0 {
-		t.Fatalf(
-			"retained provenance=%d distinct=%d",
-			len(state.provenance),
-			len(state.distinct),
-		)
-	}
-}
-
 func TestWalkLookupPageHonorsCancellationBeforeStorage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := walkLookupPage(
-		ctx, nil, traversalNode{}, schema.FieldDefinition{},
-		[]schema.LookupPathStep{{RelationFieldID: "relation"}}, 0,
-		map[string]schema.TableDefinition{}, &lookupPageCollector{limit: 1},
+		ctx, nil, traversalNode{}, v2.FieldDefinition{},
+		[]v2.LookupPathStep{{RelationFieldID: "relation"}}, 0,
+		map[string]schemaexecution.Table{}, &lookupPageCollector{limit: 1},
 	)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled traversal error = %#v", err)

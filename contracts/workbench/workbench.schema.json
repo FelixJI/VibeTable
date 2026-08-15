@@ -1,0 +1,499 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibetable.local/contracts/workbench/workbench.schema.json",
+  "title": "VibeTable offline workbench contracts",
+  "x-vibetable-generate": [
+    "ViewFilter",
+    "ViewSort",
+    "ViewQuery",
+    "BindingVariable",
+    "DataBinding",
+    "InterfaceAction",
+    "InterfaceElement",
+    "InterfacePage",
+    "InterfaceDefinition",
+    "InterfaceSnapshot",
+    "InterfaceCommitRequest",
+    "InterfaceListRequest",
+    "InterfaceListEntry",
+    "InterfaceListResult",
+    "InterfaceLoadRequest",
+    "InterfaceCancelRequest",
+    "InterfaceDeleteRequest",
+    "InterfaceDeleteResult",
+    "ContentProfile",
+    "ContentProfileSnapshot",
+    "ContentProfileLoadRequest",
+    "ContentProfileCommitRequest",
+    "ContentProfileDeleteRequest",
+    "ContentProfileDeleteResult",
+    "RecordDocumentLink",
+    "RecordDocumentLinkSnapshot",
+    "RecordDocumentLinkListRequest",
+    "RecordDocumentLinkListResult",
+    "RecordDocumentLinkCommitRequest",
+    "RecordDocumentLinkRepairRequest",
+    "RecordDocumentLinkDeleteRequest",
+    "RecordDocumentLinkDeleteResult",
+    "SearchFilter",
+    "SearchSort",
+    "SearchOpenTarget",
+    "SearchMetadataItem",
+    "SearchRequest",
+    "SearchHit",
+    "SearchResolveRequest",
+    "SearchResolveResult",
+    "SearchStatus",
+    "ComputedCellEnvelope",
+    "SchemaAuditEvent"
+  ],
+  "$defs": {
+    "ViewFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fieldId", "operator", "value"],
+      "properties": {
+        "fieldId": {"type": "string", "minLength": 1},
+        "operator": {"enum": ["eq", "ne", "contains", "startsWith", "gt", "gte", "lt", "lte", "isNull", "isNotNull"]},
+        "value": {"type": ["string", "number", "boolean", "null"]}
+      }
+    },
+    "ViewSort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fieldId", "direction"],
+      "properties": {
+        "fieldId": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["asc", "desc"]}
+      }
+    },
+    "ViewQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "tableId", "fields", "filters", "sorts", "cursor", "pageSize"],
+      "properties": {
+        "contractVersion": {"const": "1.0"},
+        "tableId": {"type": "string", "minLength": 1},
+        "fields": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+        "filters": {"type": "array", "items": {"$ref": "#/$defs/ViewFilter"}},
+        "sorts": {"type": "array", "items": {"$ref": "#/$defs/ViewSort"}},
+        "cursor": {"type": ["string", "null"]},
+        "pageSize": {"type": "integer", "minimum": 1, "maximum": 500}
+      }
+    },
+    "BindingVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variableId", "targetFieldId", "operator", "source", "sourceBindingId", "sourceFieldId", "value"],
+      "properties": {
+        "variableId": {"type": "string", "minLength": 1},
+        "targetFieldId": {"type": "string", "minLength": 1},
+        "operator": {"enum": ["eq", "ne", "contains", "startsWith", "gt", "gte", "lt", "lte", "isNull", "isNotNull"]},
+        "source": {"enum": ["literal", "selectedRecordField"]},
+        "sourceBindingId": {"type": ["string", "null"]},
+        "sourceFieldId": {"type": ["string", "null"]},
+        "value": {"type": ["string", "number", "boolean", "null"]}
+      }
+    },
+    "DataBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bindingId", "query", "variables"],
+      "properties": {
+        "bindingId": {"type": "string", "minLength": 1},
+        "query": {"$ref": "#/$defs/ViewQuery"},
+        "variables": {"type": "array", "items": {"$ref": "#/$defs/BindingVariable"}, "maxItems": 32}
+      }
+    },
+    "InterfaceAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actionId", "kind", "bindingId", "targetPageId", "pluginId", "pluginActionId", "requiresConfirmation"],
+      "properties": {
+        "actionId": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["record.create", "record.update", "binding.refresh", "navigate", "plugin"]},
+        "bindingId": {"type": ["string", "null"]},
+        "targetPageId": {"type": ["string", "null"]},
+        "pluginId": {"type": ["string", "null"]},
+        "pluginActionId": {"type": ["string", "null"]},
+        "requiresConfirmation": {"type": "boolean"}
+      }
+    },
+    "InterfaceElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elementId", "kind", "bindingId", "actionId", "text", "width", "children"],
+      "properties": {
+        "elementId": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["section", "columns", "tabs", "text", "metric", "chart", "record-list", "record-detail", "form", "button", "navigation"]},
+        "bindingId": {"type": ["string", "null"]},
+        "actionId": {"type": ["string", "null"]},
+        "text": {"type": ["string", "null"]},
+        "width": {"enum": ["full", "half", "third"]},
+        "children": {"type": "array", "items": {"$ref": "#/$defs/InterfaceElement"}}
+      }
+    },
+    "InterfacePage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pageId", "title", "elements"],
+      "properties": {
+        "pageId": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "elements": {"type": "array", "items": {"$ref": "#/$defs/InterfaceElement"}}
+      }
+    },
+    "InterfaceDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "interfaceId", "name", "bindings", "actions", "pages"],
+      "properties": {
+        "contractVersion": {"const": "1.0"},
+        "interfaceId": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "bindings": {"type": "array", "items": {"$ref": "#/$defs/DataBinding"}},
+        "actions": {"type": "array", "items": {"$ref": "#/$defs/InterfaceAction"}},
+        "pages": {"type": "array", "items": {"$ref": "#/$defs/InterfacePage"}, "minItems": 1}
+      }
+    },
+    "InterfaceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["definition", "revision"],
+      "properties": {
+        "definition": {"$ref": "#/$defs/InterfaceDefinition"},
+        "revision": {"type": "string", "minLength": 1}
+      }
+    },
+      "InterfaceCommitRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["definition", "expectedRevision", "idempotencyKey"],
+      "properties": {
+        "definition": {"$ref": "#/$defs/InterfaceDefinition"},
+        "expectedRevision": {"type": ["string", "null"]},
+        "idempotencyKey": {"type": "string", "minLength": 1}
+        }
+      },
+      "InterfaceListRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "InterfaceListEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["interfaceId", "name", "revision"],
+        "properties": {
+          "interfaceId": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1},
+          "revision": {"type": "string", "minLength": 1}
+        }
+      },
+      "InterfaceListResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/$defs/InterfaceListEntry"}}
+        }
+      },
+    "InterfaceLoadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["interfaceId"],
+        "properties": {
+          "interfaceId": {"type": "string", "minLength": 1}
+        }
+      },
+      "InterfaceCancelRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["targetRequestId"],
+        "properties": {
+          "targetRequestId": {"type": "string", "minLength": 1}
+        }
+      },
+      "InterfaceDeleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["interfaceId", "expectedRevision", "idempotencyKey"],
+        "properties": {
+          "interfaceId": {"type": "string", "minLength": 1},
+          "expectedRevision": {"type": "string", "minLength": 1},
+          "idempotencyKey": {"type": "string", "minLength": 1}
+        }
+      },
+      "InterfaceDeleteResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["interfaceId"],
+        "properties": {
+          "interfaceId": {"type": "string", "minLength": 1}
+        }
+      },
+      "ContentProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["contractVersion", "tableId", "titleFieldId", "bodyFieldId", "summaryFieldId", "searchableFieldIds"],
+        "properties": {
+          "contractVersion": {"const": "1.0"},
+          "tableId": {"type": "string", "minLength": 1},
+          "titleFieldId": {"type": "string", "minLength": 1},
+          "bodyFieldId": {"type": "string", "minLength": 1},
+          "summaryFieldId": {"type": ["string", "null"]},
+          "searchableFieldIds": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 32, "uniqueItems": true}
+        }
+      },
+      "ContentProfileSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["profile", "revision"],
+        "properties": {
+          "profile": {"$ref": "#/$defs/ContentProfile"},
+          "revision": {"type": "string", "minLength": 1}
+        }
+      },
+      "ContentProfileLoadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tableId"],
+        "properties": {"tableId": {"type": "string", "minLength": 1}}
+      },
+      "ContentProfileCommitRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["profile", "expectedRevision", "idempotencyKey"],
+        "properties": {
+          "profile": {"$ref": "#/$defs/ContentProfile"},
+          "expectedRevision": {"type": ["string", "null"]},
+          "idempotencyKey": {"type": "string", "minLength": 1}
+        }
+      },
+      "ContentProfileDeleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tableId", "expectedRevision", "idempotencyKey"],
+        "properties": {
+          "tableId": {"type": "string", "minLength": 1},
+          "expectedRevision": {"type": "string", "minLength": 1},
+          "idempotencyKey": {"type": "string", "minLength": 1}
+        }
+      },
+      "ContentProfileDeleteResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tableId"],
+        "properties": {"tableId": {"type": "string", "minLength": 1}}
+      },
+      "RecordDocumentLink": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["contractVersion", "linkId", "tableId", "recordId", "documentId", "role", "order"],
+        "properties": {
+          "contractVersion": {"const": "1.0"},
+          "linkId": {"type": "string", "minLength": 1},
+          "tableId": {"type": "string", "minLength": 1},
+          "recordId": {"type": "string", "minLength": 1},
+          "documentId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+          "role": {"enum": ["source", "reference", "supporting", "output"]},
+          "order": {"type": "integer", "minimum": 0, "maximum": 10000}
+        }
+      },
+      "RecordDocumentLinkSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["link", "revision"],
+        "properties": {
+          "link": {"$ref": "#/$defs/RecordDocumentLink"},
+          "revision": {"type": "string", "minLength": 1}
+        }
+      },
+      "RecordDocumentLinkListRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tableId", "recordId"],
+        "properties": {
+          "tableId": {"type": "string", "minLength": 1},
+          "recordId": {"type": "string", "minLength": 1}
+        }
+      },
+      "RecordDocumentLinkListResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/RecordDocumentLinkSnapshot"}}}
+      },
+      "RecordDocumentLinkCommitRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["link", "expectedRevision", "idempotencyKey"],
+        "properties": {
+          "link": {"$ref": "#/$defs/RecordDocumentLink"},
+          "expectedRevision": {"type": ["string", "null"]},
+          "idempotencyKey": {"type": "string", "minLength": 1}
+        }
+      },
+      "RecordDocumentLinkRepairRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["linkId", "documentId", "expectedRevision", "idempotencyKey"],
+        "properties": {
+          "linkId": {"type": "string", "minLength": 1},
+          "documentId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+          "expectedRevision": {"type": "string", "minLength": 1},
+          "idempotencyKey": {"type": "string", "minLength": 1}
+        }
+      },
+      "RecordDocumentLinkDeleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["linkId", "expectedRevision", "idempotencyKey"],
+        "properties": {
+          "linkId": {"type": "string", "minLength": 1},
+          "expectedRevision": {"type": "string", "minLength": 1},
+          "idempotencyKey": {"type": "string", "minLength": 1}
+        }
+      },
+      "RecordDocumentLinkDeleteResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["linkId"],
+        "properties": {"linkId": {"type": "string", "minLength": 1}}
+      },
+      "SearchFilter": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "operator", "value"],
+        "properties": {
+          "field": {"enum": ["kind", "tableId", "fieldId", "mimeType", "extension", "sizeBytes", "revisionTime", "status"]},
+          "operator": {"enum": ["eq", "ne", "contains", "gt", "gte", "lt", "lte", "before", "after"]},
+          "value": {"type": ["string", "number", "boolean", "null"]}
+        }
+      },
+      "SearchSort": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "direction"],
+        "properties": {
+          "field": {"enum": ["score", "revisionTime", "title", "sizeBytes"]},
+          "direction": {"enum": ["asc", "desc"]}
+        }
+      },
+      "SearchOpenTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "tableId", "recordId", "fieldId", "documentId"],
+        "properties": {
+          "kind": {"enum": ["record", "attachment", "file"]},
+          "tableId": {"type": ["string", "null"]},
+          "recordId": {"type": ["string", "null"]},
+          "fieldId": {"type": ["string", "null"]},
+          "documentId": {"type": ["string", "null"]}
+        }
+      },
+      "SearchMetadataItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "value"],
+        "properties": {
+          "key": {"type": "string", "minLength": 1},
+          "value": {"type": ["string", "number", "boolean", "null"]}
+        }
+      },
+      "SearchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "query", "logic", "filters", "sorts", "scope", "cursor", "limit"],
+      "properties": {
+        "contractVersion": {"const": "1.0"},
+        "query": {"type": "string", "minLength": 1},
+        "logic": {"enum": ["and", "or"]},
+        "filters": {"type": "array", "items": {"$ref": "#/$defs/SearchFilter"}, "maxItems": 20},
+        "sorts": {"type": "array", "items": {"$ref": "#/$defs/SearchSort"}, "maxItems": 3},
+        "scope": {"enum": ["current", "history"]},
+        "cursor": {"type": ["string", "null"]},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200}
+      }
+    },
+    "SearchHit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "hitId", "kind", "canonicalId", "title", "snippet", "highlights", "sourceRevision", "score", "revisionTime", "metadata", "openTarget"],
+      "properties": {
+        "contractVersion": {"const": "1.0"},
+        "hitId": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["record", "attachment", "file"]},
+        "canonicalId": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "snippet": {"type": ["string", "null"]},
+        "highlights": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+        "sourceRevision": {"type": "string", "minLength": 1},
+        "score": {"type": "number"},
+        "revisionTime": {"type": "string", "format": "date-time"},
+        "metadata": {"type": "array", "items": {"$ref": "#/$defs/SearchMetadataItem"}},
+        "openTarget": {"$ref": "#/$defs/SearchOpenTarget"}
+      }
+    },
+    "SearchResolveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "scope", "hit"],
+      "properties": {
+        "contractVersion": {"const": "1.0"},
+        "scope": {"enum": ["current", "history"]},
+        "hit": {"$ref": "#/$defs/SearchHit"}
+      }
+    },
+    "SearchResolveResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "hit"],
+      "properties": {
+        "status": {"enum": ["current", "stale"]},
+        "hit": {"$ref": "#/$defs/SearchHit"}
+      }
+    },
+    "SearchStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "generation", "checkpoint", "processed", "total", "errorCode"],
+      "properties": {
+        "state": {"enum": ["idle", "building", "ready", "degraded", "failed"]},
+        "generation": {"type": "integer", "minimum": 0},
+        "checkpoint": {"type": ["string", "null"]},
+        "processed": {"type": "integer", "minimum": 0},
+        "total": {"type": ["integer", "null"], "minimum": 0},
+        "errorCode": {"type": ["string", "null"]}
+      }
+    },
+    "ComputedCellEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "value", "definitionVersion", "sourceDataRevision", "dependencyWatermark", "diagnostic"],
+      "properties": {
+        "state": {"enum": ["ready", "pending", "stale", "error"]},
+        "value": {"type": ["string", "number", "boolean", "null"]},
+        "definitionVersion": {"type": "integer", "minimum": 1},
+        "sourceDataRevision": {"type": "integer", "minimum": 0},
+        "dependencyWatermark": {"type": "integer", "minimum": 0},
+        "diagnostic": {"type": ["string", "null"]}
+      }
+    },
+    "SchemaAuditEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventId", "workspaceId", "tableId", "fieldId", "operation", "schemaRevision", "occurredAt", "actorId"],
+      "properties": {
+        "eventId": {"type": "string", "minLength": 1},
+        "workspaceId": {"type": "string", "format": "uuid"},
+        "tableId": {"type": "string", "minLength": 1},
+        "fieldId": {"type": ["string", "null"]},
+        "operation": {"enum": ["field.create", "field.update", "field.delete", "table.update"]},
+        "schemaRevision": {"type": "integer", "minimum": 1},
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "actorId": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

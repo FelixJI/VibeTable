@@ -12,7 +12,7 @@
       "artifacts": [
         {
           "path": "fixtures/workspace-manifest.json",
-          "sha256": "d0bd6a69757df06f649433acb970e90237d1a0049db6dd55085dac985073fd3f",
+          "sha256": "bfca233920e32806edd5c264b284d37aee6af938def4c2da3c55880c9cb13e65",
           "expected": "read"
         },
         {
@@ -27,7 +27,7 @@
         },
         {
           "path": "fixtures/snapshot-package-v2.vtsnapshot",
-          "sha256": "85388ca583698f452232b9a0291190aeb98ec94e314ca8eccb2cf35a438aebc2",
+          "sha256": "9c1351a5e56a382f85789097f9b731108cbc81d496dca7e5b24b9a39ab790118",
           "expected": "read"
         }
       ]

@@ -196,7 +196,7 @@ def check_package(
     if layout.get("protocolVersion") != "2.0":
         errors.append("package protocol version is not workspace v2")
     expected_formats = {
-        "workspace": 1,
+        "workspace": 2,
         "repository": "kopia-v3",
         "snapshot": 2,
         "package": 2,
@@ -483,7 +483,7 @@ def check_package(
             "schemaVersion": expected.schema,
             "migrationHash": expected.migration_hash,
             "protocolV2Version": "2.0",
-            "workspaceFormat": "1",
+            "workspaceFormat": "2",
             "repositoryFormat": "kopia-v3",
             "snapshotFormat": "2",
             "packageFormat": "2",

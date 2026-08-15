@@ -59,6 +59,9 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
 
+    public static bool Handles(string requestType) =>
+        requestType.StartsWith("plugin.", StringComparison.Ordinal);
+
     public bool HasGateway => _gateway is not null;
 
     public void SetGateway(IPluginRpcGateway gateway)

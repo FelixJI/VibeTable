@@ -3,10 +3,19 @@ import { createPinia, setActivePinia } from "pinia";
 import { useDocumentWorkspaceStore, type DocumentEntry } from "./documentWorkspaceStore";
 
 const entries: readonly DocumentEntry[] = [
-  { documentId: "11111111-1111-4111-8111-111111111111", entryHandle: "a", displayName: "A.docx", authority: "workspace", availability: "available", capabilities: ["open", "preview", "reveal", "history"] },
-  { documentId: "22222222-2222-4222-8222-222222222222", entryHandle: "b", displayName: "B.pdf", authority: "workspace", availability: "available", capabilities: ["open", "preview"] },
-  { documentId: "33333333-3333-4333-8333-333333333333", entryHandle: "c", displayName: "C.xlsx", authority: "workspace", availability: "missing", capabilities: ["relink", "history"] },
+  entry({ documentId: "11111111-1111-4111-8111-111111111111", entryHandle: "a", displayName: "A.docx", capabilities: ["open", "preview", "reveal", "history"] }),
+  entry({ documentId: "22222222-2222-4222-8222-222222222222", entryHandle: "b", displayName: "B.pdf", capabilities: ["open", "preview"] }),
+  entry({ documentId: "33333333-3333-4333-8333-333333333333", entryHandle: "c", displayName: "C.xlsx", availability: "missing", capabilities: ["relink", "history"] }),
 ];
+
+function entry(overrides: Partial<DocumentEntry> & Pick<DocumentEntry, "documentId" | "entryHandle" | "displayName">): DocumentEntry {
+  return {
+    authority: "workspace", availability: "available", capabilities: [],
+    relativePath: overrides.displayName, extension: "txt", mimeType: "text/plain",
+    sizeBytes: 1, effectiveRevisionCreatedAt: "2026-08-12T00:00:00Z",
+    formalVersion: 1, status: "active", ...overrides,
+  };
+}
 
 describe("documentWorkspaceStore", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -35,6 +44,42 @@ describe("documentWorkspaceStore", () => {
     store.beginLoad();
     expect(store.phase).toBe("loading");
     expect(store.entries).toHaveLength(3);
+  });
+
+  it("appends a cursor page without duplicating documents and tracks page metadata", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setPage(entries.slice(0, 2), "cursor-2", 7, false);
+    store.setPage([entries[1]!, entries[2]!], null, 7, true);
+
+    expect(store.entries.map((item) => item.documentId)).toEqual([
+      entries[0]!.documentId,
+      entries[1]!.documentId,
+      entries[2]!.documentId,
+    ]);
+    expect(store.nextCursor).toBeNull();
+    expect(store.topologyRevision).toBe(7);
+  });
+
+  it("retains document labels when an active-only refresh drops a deleted document", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setPage([entries[0]!], null, 7, false);
+    store.setPage([], null, 8, false);
+
+    expect(store.entries).toEqual([]);
+    expect(store.documentLabels[entries[0]!.documentId]).toBe("A.docx");
+  });
+
+  it("removes a successfully unlinked document from the active projection only", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.selectAt(0);
+
+    store.removeActiveDocument(entries[0]!.documentId);
+
+    expect(store.entries).toEqual(entries.slice(1));
+    expect(store.documentLabels[entries[0]!.documentId]).toBe("A.docx");
+    expect(store.selectedHandles).toEqual([]);
+    expect(store.primaryHandle).toBeNull();
   });
 
   it("retains a typed document failure code until the next load", () => {

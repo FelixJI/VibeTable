@@ -10,8 +10,6 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
 
 func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
@@ -20,27 +18,10 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(
-		ctx,
-		schemaapi.Change{
-			Definition: baseTable(
-				"ledger_history_notes",
-				"ledger_history_notes",
-				[]schema.FieldDefinition{
-					field(
-						"title_id",
-						"title",
-						schema.FieldKindScalar,
-						schema.DataTypeShortText,
-					),
-				},
-			),
-			ExpectedRevision: 0,
-		},
+	table, title := createV2IntegrationTableWithField(
+		t, ctx, app, "Ledger history notes", "Title", "op_ledger_history_notes",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	titlePhysicalName := title.Definition.Identity.PhysicalName
 	currentTime := time.Date(
 		2026, 7, 22, 16, 0, 0, 0,
 		time.FixedZone("UTC+08", 8*60*60),
@@ -51,15 +32,15 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 		mutation.WithClock(func() time.Time { return currentTime }),
 	)
 	recordID := "ledgerhistrow01"
-	apply := func(key string, kind mutation.OperationKind, title string) {
+	apply := func(key string, kind mutation.OperationKind, value string) {
 		t.Helper()
-		values := map[string]any{"title": title}
+		values := map[string]any{titlePhysicalName: value}
 		if _, err := kernel.Apply(ctx, mutation.Request{
 			ContractVersion: mutation.ContractVersion,
 			RequestID:       "ledger_history_" + key,
 			IdempotencyKey:  "ledger_history_" + key,
-			TableID:         definition.TableID,
-			SchemaRevision:  definition.SchemaRevision,
+			TableID:         table.TableID,
+			SchemaRevision:  title.SchemaRevision,
 			Operations: []mutation.Operation{{
 				Kind:     kind,
 				RecordID: &recordID,
@@ -101,7 +82,6 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 	service, err := audit.New(
 		app,
 		kernel,
-		mutation.MetadataSchemaSource{},
 
 		audit.WithLedgerHistory(ledger))
 
@@ -111,7 +91,7 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 	read := func() audit.Page {
 		t.Helper()
 		page, err := service.ReadChangeSets(ctx, audit.ReadParams{
-			TableID: definition.TableID,
+			TableID: table.TableID,
 			ItemID:  &recordID,
 			Scope:   "row",
 			Limit:   20,
@@ -135,7 +115,7 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 	dateFrom := "2026-07-22T08:30:00Z"
 	dateTo := "2026-07-22T09:30:00Z"
 	filtered, err := service.ReadChangeSets(ctx, audit.ReadParams{
-		TableID:  definition.TableID,
+		TableID:  table.TableID,
 		ItemID:   &recordID,
 		Scope:    "row",
 		DateFrom: &dateFrom,
@@ -166,7 +146,7 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 		t.Fatalf("history moved backwards after rollback: %#v", afterRollback)
 	}
 	preview, err := service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID:        definition.TableID,
+		TableID:        table.TableID,
 		ItemID:         recordID,
 		TargetRevision: targetRevision,
 		Scope:          "row",
@@ -215,11 +195,11 @@ func TestWorkspaceV2LedgerHistorySurvivesBusinessAuditRollback(
 		"revisionId":     "postrestore-rev",
 		"changeSetId":    "postrestore-change",
 		"sequence":       1,
-		"tableId":        definition.TableID,
+		"tableId":        table.TableID,
 		"recordId":       recordID,
 		"operation":      "update",
-		"before":         map[string]any{"title": "before snapshot"},
-		"after":          map[string]any{"title": "post restore"},
+		"before":         map[string]any{titlePhysicalName: "before snapshot"},
+		"after":          map[string]any{titlePhysicalName: "post restore"},
 		"schemaRevision": 1,
 		"dataRevision":   1,
 		"requestId":      "postrestore-request",

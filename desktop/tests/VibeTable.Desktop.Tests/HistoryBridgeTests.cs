@@ -41,7 +41,7 @@ public sealed class HistoryBridgeTests
     [TestMethod]
     public async Task Query_ForwardsTableSearchFiltersAndPaging()
     {
-        var (dispatcher, gateway, sink) = CreateDispatcher();
+        var (controller, gateway, sink) = CreateController();
         var payload = Parse("""
             {
               "collection":"projects","scope":"table","field":"status",
@@ -52,7 +52,7 @@ public sealed class HistoryBridgeTests
             }
             """);
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "history.queryRequested", "query-1", payload, ""));
 
         var reply = await sink.WaitForAsync("history.pageLoaded");
@@ -76,13 +76,13 @@ public sealed class HistoryBridgeTests
     [TestMethod]
     public async Task Query_RetriesTransientBackendRecoveryWithoutPostingFailure()
     {
-        var (dispatcher, gateway, sink) = CreateDispatcher();
+        var (controller, gateway, sink) = CreateController();
         gateway.NextHistoryException = new BackendUnavailableException(
             "sidecar generation is restarting");
         var payload = Parse(
             """{"collection":"projects","scope":"table","limit":50,"offset":0}""");
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "history.queryRequested",
             "recovering-history",
             payload,
@@ -99,14 +99,14 @@ public sealed class HistoryBridgeTests
     [TestMethod]
     public async Task Query_RetriesRetiredRpcGenerationWithoutPostingFailure()
     {
-        var (dispatcher, gateway, sink) = CreateDispatcher();
+        var (controller, gateway, sink) = CreateController();
         gateway.NextHistoryException = new ObjectDisposedException(
             "JsonRpcClient",
             "retired backend generation");
         var payload = Parse(
             """{"collection":"projects","scope":"table","limit":50,"offset":0}""");
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "history.queryRequested",
             "retired-history-client",
             payload,
@@ -129,7 +129,7 @@ public sealed class HistoryBridgeTests
         string? itemId,
         string? field)
     {
-        var (dispatcher, gateway, sink) = CreateDispatcher();
+        var (controller, gateway, sink) = CreateController();
         var payload = Parse(JsonSerializer.Serialize(new
         {
             table = "projects",
@@ -140,7 +140,7 @@ public sealed class HistoryBridgeTests
             offset = 0,
         }));
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "history.queryRequested", $"query-{scope}", payload, ""));
 
         Assert.IsNotNull(await sink.WaitForAsync("history.pageLoaded"));
@@ -155,7 +155,7 @@ public sealed class HistoryBridgeTests
         string scope,
         string? field)
     {
-        var (dispatcher, gateway, sink) = CreateDispatcher();
+        var (controller, gateway, sink) = CreateController();
         var payload = Parse(JsonSerializer.Serialize(new
         {
             collection = "projects",
@@ -165,7 +165,7 @@ public sealed class HistoryBridgeTests
             field,
         }));
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "history.previewRestoreRequested", $"preview-{scope}", payload, ""));
 
         var reply = await sink.WaitForAsync("history.restorePreviewReady");
@@ -180,7 +180,7 @@ public sealed class HistoryBridgeTests
     [TestMethod]
     public async Task ApplyRestore_ForwardsPreviewTokenAndReturnsApplyResult()
     {
-        var (dispatcher, gateway, sink) = CreateDispatcher();
+        var (controller, gateway, sink) = CreateController();
         gateway.NextRestoreResult = new RestoreResult(
             "projects", "p-1", "rev-7", "rev-8",
             new Dictionary<string, object?> { ["status"] = "draft" });
@@ -188,7 +188,7 @@ public sealed class HistoryBridgeTests
             {"table":"projects","itemId":"p-1","token":"preview-token"}
             """);
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "history.applyRestoreRequested", "apply-1", payload, ""));
 
         var reply = await sink.WaitForAsync("history.restoreApplied");
@@ -204,12 +204,12 @@ public sealed class HistoryBridgeTests
     [TestMethod]
     public async Task CellQueryWithoutField_IsRejectedBeforeGateway()
     {
-        var (dispatcher, gateway, sink) = CreateDispatcher();
+        var (controller, gateway, sink) = CreateController();
         var payload = Parse("""
             {"collection":"projects","scope":"cell","itemId":"p-1"}
             """);
 
-        dispatcher.Dispatch(new RoutedWebRequest(
+        await controller.DispatchAsync(new RoutedWebRequest(
             "history.queryRequested", "bad-cell", payload, ""));
 
         var reply = await sink.WaitForFailedAsync();
@@ -250,16 +250,17 @@ public sealed class HistoryBridgeTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(failure.Message));
     }
 
-    private static (WorkspaceRequestDispatcher Dispatcher, FakeTableRpcGateway Gateway, FakeWebReplySink Sink)
-        CreateDispatcher()
+    private static (WorkspaceTableRequestController Controller, FakeTableRpcGateway Gateway, FakeWebReplySink Sink)
+        CreateController()
     {
         var gateway = new FakeTableRpcGateway();
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        var controller = new WorkspaceTableRequestController(
             new TableWorkspaceService(gateway),
             new FakeDatabasePicker("local://configured"),
-            sink);
-        return (dispatcher, gateway, sink);
+            sink,
+            () => null);
+        return (controller, gateway, sink);
     }
 
     private static JsonElement Parse(string json)

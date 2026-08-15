@@ -19,7 +19,6 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
@@ -129,7 +128,7 @@ func (service *MigrationService) Enqueue(
 	if err != nil {
 		return "", fmt.Errorf("load field migration jobs: %w", err)
 	}
-	revision, err := schema.ParseSchemaRevision(plan.ExpectedSchemaRev)
+	revision, err := v2.ParseSchemaRevision(plan.ExpectedSchemaRev)
 	if err != nil {
 		return "", err
 	}
@@ -804,7 +803,7 @@ func (service *MigrationService) switchAuthority(
 			return err
 		}
 		currentRevision, _ := storedInteger(currentTable.GetRaw("schema_revision"))
-		expected, _ := schema.ParseSchemaRevision(plan.ExpectedSchemaRev)
+		expected, _ := v2.ParseSchemaRevision(plan.ExpectedSchemaRev)
 		if currentRevision != expected {
 			return productError(
 				"field.change.schema_conflict", "expectedSchemaRevision",
@@ -855,7 +854,7 @@ func (service *MigrationService) switchAuthority(
 		if err := saveDefinitionMetadata(app, plan.Intent.TableID, *plan.After); err != nil {
 			return err
 		}
-		if err := saveTableRevisionAndLegacy(ctx, app, plan, expected+1); err != nil {
+		if err := saveTableRevisionAndComputedMetadata(ctx, app, plan, expected+1); err != nil {
 			return err
 		}
 		audit, auditErr := app.FindFirstRecordByFilter(

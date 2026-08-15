@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	legacyschema "github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/jsonschemavalidation"
 )
 
 type ProductError struct {
@@ -279,14 +279,7 @@ func validateDefault(definition FieldDefinition) error {
 			return invalid("value.default.value", "JSON default is invalid")
 		}
 		if len(definition.JSON.Schema) != 0 {
-			field := legacyschema.FieldDefinition{
-				DataType: legacyschema.DataTypeJSON,
-				Constraints: []legacyschema.FieldConstraint{{
-					Kind:   legacyschema.ConstraintJSONSchema,
-					Schema: definition.JSON.Schema,
-				}},
-			}
-			if err := legacyschema.ValidateFieldValue(field, spec.Value); err != nil {
+			if err := jsonschemavalidation.ValidateValue(definition.JSON.Schema, spec.Value); err != nil {
 				return invalid(
 					"value.default.value",
 					"JSON default does not satisfy schema",
@@ -650,7 +643,7 @@ func validateTypeSpecific(definition FieldDefinition) error {
 			len(definition.Lookup.Path) == 0 {
 			return &ProductError{Code: "lookup.path.invalid", Path: "lookup", Message: "lookup requires a relation path and a target field"}
 		}
-		if len(definition.Lookup.Path) > 8 {
+		if len(definition.Lookup.Path) > MaxLookupPathDepth {
 			return &ProductError{Code: "lookup.path.depth_limit", Path: "lookup.path", Message: "lookup supports at most eight relation path steps"}
 		}
 		for index, step := range definition.Lookup.Path {

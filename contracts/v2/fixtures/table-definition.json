@@ -149,11 +149,9 @@
       "readOnly": false,
       "formula": null,
       "relation": {
-        "mode": "direct",
         "targetTableId": "tbl_products",
         "cardinality": "one",
-        "deletePolicy": "setNull",
-        "junctionTableId": null
+        "deletePolicy": "setNull"
       },
       "lookup": null,
       "attachmentPolicy": null
@@ -174,8 +172,7 @@
       "relation": null,
       "lookup": {
         "relationFieldId": "fld_product",
-        "targetFieldId": "fld_product_title",
-        "aggregate": "none"
+        "targetFieldId": "fld_product_title"
       },
       "attachmentPolicy": null
     },

@@ -7,9 +7,13 @@ import (
 	"io"
 	"regexp"
 	"time"
+
+	"github.com/vibetable/vibetable/sidecar/internal/contracts/schemav2wire"
 )
 
 const Contract = "vibetable.schema.v2"
+
+const MaxLookupPathDepth = 8
 
 var (
 	fieldIDPattern         = regexp.MustCompile(`^fld_[A-Za-z0-9_-]{8,}$`)
@@ -86,6 +90,10 @@ type FieldDraft struct {
 }
 
 func (value *FieldDraft) UnmarshalJSON(raw []byte) error {
+	var generated schemav2wire.FieldDraft
+	if err := schemav2wire.StrictDecode(raw, &generated); err != nil {
+		return fmt.Errorf("decode generated Schema V2 FieldDraft: %w", err)
+	}
 	type wire FieldDraft
 	var decoded wire
 	if err := StrictDecode(raw, &decoded); err != nil {
@@ -96,6 +104,10 @@ func (value *FieldDraft) UnmarshalJSON(raw []byte) error {
 }
 
 func (value *FieldDefinition) UnmarshalJSON(raw []byte) error {
+	var generated schemav2wire.FieldDefinition
+	if err := schemav2wire.StrictDecode(raw, &generated); err != nil {
+		return fmt.Errorf("decode generated Schema V2 FieldDefinition: %w", err)
+	}
 	type wire FieldDefinition
 	var decoded wire
 	if err := StrictDecode(raw, &decoded); err != nil {
@@ -345,20 +357,80 @@ type LookupPathStep struct {
 }
 
 type Capability struct {
-	LogicalType       LogicalType       `json:"logicalType"`
-	GeneralSettings   []string          `json:"generalSettings"`
-	AdvancedSettings  []string          `json:"advancedSettings"`
-	DangerSettings    []string          `json:"dangerSettings"`
-	Recommended       RecommendedValues `json:"recommended"`
-	SupportsRequired  bool              `json:"supportsRequired"`
-	SupportsDefault   bool              `json:"supportsDefault"`
-	SupportsUnique    bool              `json:"supportsUnique"`
-	NeedsPresence     bool              `json:"needsPresence"`
-	DisplayPresets    []string          `json:"displayPresets"`
-	ConversionTargets []LogicalType     `json:"conversionTargets"`
-	ConversionRules   []string          `json:"conversionRules"`
-	CompileStrategy   string            `json:"compileStrategy"`
-	UserCreatable     bool              `json:"userCreatable"`
+	LogicalType               LogicalType       `json:"logicalType"`
+	GeneralSettings           []string          `json:"generalSettings"`
+	AdvancedSettings          []string          `json:"advancedSettings"`
+	DangerSettings            []string          `json:"dangerSettings"`
+	Recommended               RecommendedValues `json:"recommended"`
+	SupportsRequired          bool              `json:"supportsRequired"`
+	SupportsDefault           bool              `json:"supportsDefault"`
+	SupportsUnique            bool              `json:"supportsUnique"`
+	NeedsPresence             bool              `json:"needsPresence"`
+	DisplayPresets            []string          `json:"displayPresets"`
+	ConversionTargets         []LogicalType     `json:"conversionTargets"`
+	ConversionRules           []string          `json:"conversionRules"`
+	CompileStrategy           string            `json:"compileStrategy"`
+	UserCreatable             bool              `json:"userCreatable"`
+	FilterOperators           []string          `json:"filterOperators"`
+	Groupable                 bool              `json:"groupable"`
+	SummaryOperations         []string          `json:"summaryOperations"`
+	RelationCardinalities     []string          `json:"relationCardinalities"`
+	RelationDeletePolicies    []string          `json:"relationDeletePolicies"`
+	LookupMaxDepth            int               `json:"lookupMaxDepth"`
+	FormulaResultTypeInferred bool              `json:"formulaResultTypeInferred"`
+	FormulaRelationAggregates []string          `json:"formulaRelationAggregates"`
+}
+
+// SchemaSnapshot is the complete authoritative schema read model exposed by
+// SchemaCore. Clients receive stable product field identities and sidecar
+// capabilities together with the revisions they were computed from; they do
+// not reconstruct table schema from PocketBase metadata.
+type SchemaSnapshot struct {
+	Contract       string            `json:"contract"`
+	TableID        string            `json:"tableId"`
+	DisplayName    string            `json:"displayName"`
+	Kind           string            `json:"kind"`
+	SchemaRevision string            `json:"schemaRevision"`
+	DataRevision   int64             `json:"dataRevision"`
+	ArchivePolicy  ArchivePolicy     `json:"archivePolicy"`
+	Fields         []FieldDefinition `json:"fields"`
+	Capabilities   []Capability      `json:"capabilities"`
+}
+
+type TableCreateIntent struct {
+	DisplayName string `json:"displayName"`
+	OperationID string `json:"operationId"`
+	Actor       Actor  `json:"actor"`
+}
+
+type TableCreateReceipt struct {
+	Contract       string `json:"contract"`
+	OperationID    string `json:"operationId"`
+	TableID        string `json:"tableId"`
+	DisplayName    string `json:"displayName"`
+	SchemaRevision string `json:"schemaRevision"`
+}
+
+type ArchivePolicy struct {
+	Mode          string  `json:"mode"`
+	FieldID       *string `json:"fieldId"`
+	ArchivedValue any     `json:"archivedValue"`
+}
+
+type TableSettingsIntent struct {
+	TableID           string        `json:"tableId"`
+	ExpectedSchemaRev string        `json:"expectedSchemaRevision"`
+	ArchivePolicy     ArchivePolicy `json:"archivePolicy"`
+	OperationID       string        `json:"operationId"`
+	Actor             Actor         `json:"actor"`
+}
+
+type TableSettingsReceipt struct {
+	Contract       string        `json:"contract"`
+	OperationID    string        `json:"operationId"`
+	TableID        string        `json:"tableId"`
+	SchemaRevision string        `json:"schemaRevision"`
+	ArchivePolicy  ArchivePolicy `json:"archivePolicy"`
 }
 
 type RecommendedValues struct {

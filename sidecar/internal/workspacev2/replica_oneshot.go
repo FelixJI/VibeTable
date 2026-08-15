@@ -821,7 +821,7 @@ func installReplicaDatabaseAndFilesWithContext(
 	if err != nil {
 		return errors.Join(errors.New("replica.settings_invalid"), err)
 	}
-	if _, _, err := decodeWorkspaceSettingsSnapshot(settings); err != nil {
+	if _, err := decodeWorkspaceSettingsSnapshot(settings); err != nil {
 		return errors.Join(errors.New("replica.settings_invalid"), err)
 	}
 	store, err := openStateStore(

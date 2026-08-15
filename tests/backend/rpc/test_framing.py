@@ -43,3 +43,14 @@ async def test_write_frame_is_compact_json_line() -> None:
     writer = BufferWriter()
     await write_frame(writer, {"ok": True})
     assert writer.data == b'{"ok":true}\n'
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.asyncio
+async def test_write_frame_rejects_non_standard_json_numbers(non_finite: float) -> None:
+    writer = BufferWriter()
+
+    with pytest.raises(ValueError, match="Out of range float values"):
+        await write_frame(writer, {"value": non_finite})
+
+    assert writer.data == b""

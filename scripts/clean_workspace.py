@@ -49,6 +49,21 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
+def _is_linked(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(path))
+
+
+def _contains_protected_entry(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    for base, directories, files in os.walk(path, followlinks=False):
+        if PROTECTED_NAMES.intersection(directories) or PROTECTED_NAMES.intersection(files):
+            return True
+        base_path = Path(base)
+        directories[:] = [name for name in directories if not _is_linked(base_path / name)]
+    return False
+
+
 def validate_target(root: Path, target: Path) -> Path:
     root = root.resolve()
     target = target.absolute()
@@ -58,8 +73,10 @@ def validate_target(root: Path, target: Path) -> Path:
     relative_parts = resolved.relative_to(root).parts
     if not relative_parts or any(part in PROTECTED_NAMES for part in relative_parts):
         raise ValueError(f"refusing protected target: {target}")
-    if target.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(target)):
+    if _is_linked(target):
         raise ValueError(f"refusing linked target: {target}")
+    if _contains_protected_entry(target):
+        raise ValueError(f"refusing target containing protected entries: {target}")
     return resolved
 
 
@@ -94,7 +111,11 @@ def _existing(paths: Iterable[Path]) -> Iterable[Path]:
 def _artifact_paths(root: Path, keep_qa_runs: int) -> Iterable[Path]:
     build = root / "build"
     if build.is_dir():
-        yield from (path for path in build.iterdir() if path.name != "qa")
+        yield from (
+            path
+            for path in build.iterdir()
+            if path.name != "qa" and not _contains_protected_entry(path)
+        )
         qa = build / "qa"
         if qa.is_dir():
             qa_runs = sorted(
@@ -165,7 +186,7 @@ def remove_candidates(root: Path, candidates: Iterable[Candidate]) -> list[str]:
                 shutil.rmtree(path, onerror=_retry_readonly)
             elif path.exists():
                 path.unlink()
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             failures.append(f"{candidate.path}: {exc}")
     return failures
 

@@ -47,72 +47,7 @@ PNG_1X1 = base64.b64decode(
 )
 
 
-def _field(
-    field_id: str,
-    name: str,
-    *,
-    kind: str = "scalar",
-    data_type: str = "shortText",
-    storage_type: str = "text",
-    nullable: bool = True,
-    read_only: bool = False,
-    formula: dict[str, Any] | None = None,
-    relation: dict[str, Any] | None = None,
-    lookup: dict[str, Any] | None = None,
-    attachment: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    editor = "text"
-    if data_type == "integer":
-        editor = "number"
-    elif data_type == "file":
-        editor = "file"
-    constraints: list[dict[str, Any]] = []
-    if relation:
-        constraints.append(
-            {
-                "kind": "relation",
-                "targetTableId": relation["targetTableId"],
-                "cardinality": relation["cardinality"],
-                "deletePolicy": relation["deletePolicy"],
-            }
-        )
-    if attachment:
-        constraints.append({"kind": "attachment", "policy": attachment})
-    return {
-        "fieldId": field_id,
-        "physicalName": name,
-        "displayName": name,
-        "kind": kind,
-        "dataType": data_type,
-        "storageType": storage_type,
-        "nullable": nullable,
-        "defaultValue": None,
-        "constraints": constraints,
-        "editor": {"kind": editor, "config": {}},
-        "readOnly": read_only,
-        "formula": formula,
-        "relation": relation,
-        "lookup": lookup,
-        "attachmentPolicy": attachment,
-    }
-
-
-def _table(table_id: str, fields: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "contractVersion": "2.0",
-        "tableId": table_id,
-        "physicalName": table_id,
-        "displayName": table_id,
-        "kind": "base",
-        "schemaRevision": "schema_0000",
-        "archivePolicy": {
-            "mode": "none",
-            "fieldId": None,
-            "archivedValue": None,
-        },
-        "fields": fields,
-        "indexes": [],
-    }
+SCHEMA_ACTOR = {"id": "release-matrix", "kind": "test"}
 
 
 def _mutation(
@@ -325,7 +260,7 @@ def _create_v2_workspace(root: Path) -> Path:
         (metadata / name).mkdir(parents=True)
     manifest = {
         "contractVersion": "2.0",
-        "formatVersion": 1,
+        "formatVersion": 2,
         "workspaceId": WORKSPACE_ID,
         "displayName": "Packaged sidecar v2 matrix",
         "createdAt": "2026-07-28T08:00:00Z",
@@ -431,7 +366,7 @@ def _run_workspace_v2_smoke(
     )
     build_info = json.loads(build_info_result.stdout)
     assert build_info["protocolV2Version"] == "2.0"
-    assert build_info["workspaceFormat"] == "1"
+    assert build_info["workspaceFormat"] == "2"
     assert build_info["repositoryFormat"] == "kopia-v3"
     assert build_info["snapshotFormat"] == "2"
     assert build_info["packageFormat"] == "2"
@@ -578,21 +513,91 @@ def _page(sidecar: Sidecar, table_id: str) -> dict[str, Any]:
     ).json()
 
 
-def _apply_schema(
-    sidecar: Sidecar,
-    definition: dict[str, Any],
-    expected_revision: int,
-    operation_id: str,
-) -> dict[str, Any]:
-    return sidecar.request(
+def _create_table(sidecar: Sidecar, display_name: str, operation_id: str) -> dict[str, Any]:
+    receipt = sidecar.request(
         "POST",
-        "/api/vibetable/v1/schema/apply",
+        "/api/vibetable/v2/schema/tables",
         json_body={
-            "definition": definition,
-            "expectedRevision": expected_revision,
+            "displayName": display_name,
             "operationId": operation_id,
+            "actor": SCHEMA_ACTOR,
         },
     ).json()
+    assert receipt["contract"] == "vibetable.schema.v2", receipt
+    assert receipt["schemaRevision"] == "schema_0001", receipt
+    assert receipt["tableId"], receipt
+    return receipt
+
+
+def _recommended_field_draft(
+    sidecar: Sidecar,
+    table_id: str,
+    display_name: str,
+    logical_type: str,
+) -> dict[str, Any]:
+    described = sidecar.request("GET", f"/api/vibetable/v2/field-settings/{table_id}").json()
+    capability = next(
+        item for item in described["capabilities"] if item["logicalType"] == logical_type
+    )
+    recommended = capability["recommended"]
+    return {
+        "displayName": display_name,
+        "help": "",
+        "logicalType": logical_type,
+        "value": recommended["value"],
+        "constraints": recommended["constraints"],
+        "storage": recommended["storage"],
+        "display": recommended["display"],
+    }
+
+
+def _create_field(
+    sidecar: Sidecar,
+    table: dict[str, Any],
+    draft: dict[str, Any],
+    operation_id: str,
+    *,
+    relation_pair: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    intent = {
+        "action": "create",
+        "tableId": table["tableId"],
+        "fieldId": "",
+        "expectedSchemaRevision": table["schemaRevision"],
+        "expectedDataRevision": None,
+        "draft": draft,
+        "actor": SCHEMA_ACTOR,
+        "conversionRule": "",
+        "confirmation": "",
+        "backupReceipt": "",
+    }
+    if relation_pair is not None:
+        intent["relationPair"] = relation_pair
+    plan = sidecar.request(
+        "POST",
+        "/api/vibetable/v2/field-change/plan",
+        json_body=intent,
+    ).json()
+    assert plan["contract"] == "vibetable.schema.v2", plan
+    assert plan["canApply"] is True, plan
+    assert plan["errors"] == [], plan
+    receipt = sidecar.request(
+        "POST",
+        "/api/vibetable/v2/field-change/apply",
+        json_body={
+            "planId": plan["planId"],
+            "planHash": plan["planHash"],
+            "operationId": operation_id,
+            "actor": SCHEMA_ACTOR,
+            "confirmations": plan["confirmations"],
+            "protectionSnapshotId": None,
+        },
+    ).json()
+    assert receipt["contract"] == "vibetable.schema.v2", receipt
+    assert receipt["tableId"] == table["tableId"], receipt
+    assert receipt["definition"] is not None, receipt
+    table["schemaRevision"] = receipt["schemaRevision"]
+    return receipt
 
 
 def _apply(
@@ -662,176 +667,216 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         assert (data_dir / "data.db").is_file()
         coverage["fresh-data+migrations"] = "passed"
 
-        customers = _apply_schema(
+        customers = _create_table(sidecar, "matrix_customers", "create-customers")
+        customer_name = _create_field(
             sidecar,
-            _table("matrix_customers", [_field("name_id", "name")]),
-            0,
-            "create-customers",
-        )
-        orders_base = _table(
-            "matrix_orders",
-            [
-                _field("title_id", "title"),
-                _field(
-                    "quantity_id",
-                    "quantity",
-                    data_type="integer",
-                    storage_type="number",
-                ),
-            ],
-        )
-        orders = _apply_schema(sidecar, orders_base, 0, "create-orders")
+            customers,
+            _recommended_field_draft(sidecar, customers["tableId"], "name", "text"),
+            "create-customer-name",
+        )["definition"]
+
+        orders = _create_table(sidecar, "matrix_orders", "create-orders")
+        title = _create_field(
+            sidecar,
+            orders,
+            _recommended_field_draft(sidecar, orders["tableId"], "title", "text"),
+            "create-order-title",
+        )["definition"]
+        quantity_draft = _recommended_field_draft(sidecar, orders["tableId"], "quantity", "number")
+        quantity_draft["storage"]["options"]["onlyInt"] = True
+        quantity_draft["display"]["preset"] = "integer"
+        quantity = _create_field(
+            sidecar,
+            orders,
+            quantity_draft,
+            "create-order-quantity",
+        )["definition"]
         order_id = "matrixorder0001"
         _apply(
             sidecar,
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "insert-before-alter",
             [
                 {
                     "kind": "insert",
                     "recordId": order_id,
-                    "values": {"title": "before backup", "quantity": 4},
+                    "values": {
+                        title["identity"]["fieldId"]: "before backup",
+                        quantity["identity"]["fieldId"]: 4,
+                    },
                 }
             ],
         )
-        relation = {
-            "targetTableId": "matrix_customers",
+
+        relation_draft = _recommended_field_draft(
+            sidecar, orders["tableId"], "customer", "relation"
+        )
+        relation_draft["relation"] = {
+            "targetTableId": customers["tableId"],
             "cardinality": "one",
             "deletePolicy": "setNull",
-            "junctionTableId": None,
+            "displayFieldId": customer_name["identity"]["fieldId"],
         }
-        lookup = {
-            "relationFieldId": "customer_id",
-            "targetFieldId": "name_id",
-            # v1 keeps the wire member frozen, but product semantics no longer
-            # permit Lookup aggregation. A one-valued path is scalar by shape.
-            "aggregate": "none",
+        customer_relation = _create_field(
+            sidecar,
+            orders,
+            relation_draft,
+            "create-order-customer",
+            relation_pair={
+                "reciprocalDisplayName": "orders",
+                "reciprocalCardinality": "many",
+                "sourceDisplayFieldId": title["identity"]["fieldId"],
+            },
+        )
+        for related in customer_relation.get("related") or []:
+            if related["tableId"] == customers["tableId"]:
+                customers["schemaRevision"] = related["schemaRevision"]
+        customer_relation = customer_relation["definition"]
+
+        lookup_draft = _recommended_field_draft(
+            sidecar, orders["tableId"], "customer_name", "lookup"
+        )
+        lookup_draft["lookup"] = {
+            "path": [{"relationFieldId": customer_relation["identity"]["fieldId"]}],
+            "targetFieldId": customer_name["identity"]["fieldId"],
         }
-        attachment = {
+        customer_lookup = _create_field(
+            sidecar,
+            orders,
+            lookup_draft,
+            "create-order-customer-name",
+        )["definition"]
+
+        attachment_draft = _recommended_field_draft(sidecar, orders["tableId"], "images", "file")
+        attachment_draft["file"] = {
             "maxFiles": 2,
             "maxBytesPerFile": 1048576,
             "allowedMimeTypes": ["image/png"],
-            "thumbnailVariants": ["64x64"],
+            "thumbs": ["64x64"],
             "protected": True,
         }
-        formula = {
-            "language": "cel-v1",
-            "source": "quantity * 2",
-            "resultType": "integer",
-            "version": 1,
-            "status": "ready",
-        }
-        # Alter requests carry the last persisted definition/revision, not the
-        # original create draft.
-        orders_base = orders
-        orders_base["fields"].extend(
-            [
-                _field(
-                    "double_id",
-                    "double_quantity",
-                    kind="formula",
-                    data_type="formula",
-                    storage_type="number",
-                    nullable=False,
-                    read_only=True,
-                    formula=formula,
-                ),
-                _field(
-                    "customer_id",
-                    "customer",
-                    kind="relation",
-                    data_type="relation",
-                    storage_type="relation",
-                    relation=relation,
-                ),
-                _field(
-                    "customer_name_id",
-                    "customer_name",
-                    kind="lookup",
-                    data_type="lookup",
-                    storage_type="text",
-                    read_only=True,
-                    lookup=lookup,
-                ),
-                _field(
-                    "images_id",
-                    "images",
-                    kind="attachment",
-                    data_type="file",
-                    storage_type="file",
-                    attachment=attachment,
-                ),
-            ]
+        images = _create_field(
+            sidecar,
+            orders,
+            attachment_draft,
+            "create-order-images",
+        )["definition"]
+
+        # Formula creation is last: the existing row deliberately turns it into
+        # a durable backfill and the migration fence must not block other fields.
+        formula_draft = _recommended_field_draft(
+            sidecar, orders["tableId"], "double_quantity", "formula"
         )
-        orders_base["indexes"] = [
-            {"name": "idx_matrix_orders_title", "fieldIds": ["title_id"], "unique": False}
-        ]
-        orders = _apply_schema(sidecar, orders_base, 1, "alter-orders")
-        assert orders["schemaRevision"] == "schema_0002"
+        formula_draft["formula"] = {
+            "language": "cel-v1",
+            "source": "{quantity} * 2",
+        }
+        backfill_ready = threading.Event()
+        backfill_result: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+        current_data_revision = _page(sidecar, orders["tableId"])["querySnapshot"]["dataRevision"]
+        expected_backfill_revision = f"data_{current_data_revision + 1:04d}"
+        backfill_thread = threading.Thread(
+            target=_read_sse_event,
+            args=(
+                sidecar,
+                backfill_ready,
+                backfill_result,
+                order_id,
+                expected_backfill_revision,
+            ),
+            daemon=True,
+        )
+        backfill_thread.start()
+        assert backfill_ready.wait(5)
+        doubled_receipt = _create_field(
+            sidecar,
+            orders,
+            formula_draft,
+            "create-order-double-quantity",
+        )
+        doubled = doubled_receipt["definition"]
+        assert orders["schemaRevision"] == "schema_0007"
+        backfill_event = backfill_result.get(timeout=15)
+        assert backfill_event.get("topic") == "data.changed", backfill_event
+        assert backfill_event["dataRevision"] == expected_backfill_revision
         coverage["schema-create-alter-index"] = "passed"
 
+        formula_field = sidecar.request(
+            "GET",
+            "/api/vibetable/v2/field-settings/"
+            + orders["tableId"]
+            + "?fieldId="
+            + doubled["identity"]["fieldId"],
+        ).json()["definition"]
         preview = sidecar.request(
             "POST",
             "/api/vibetable/v1/formulas/preview",
             json_body={
-                "definition": orders,
-                "row": {"quantity": 7},
-                "changedFieldIds": ["quantity_id"],
+                "tableId": orders["tableId"],
+                "field": formula_field,
+                "row": {quantity["identity"]["physicalName"]: 7},
+                "changedFieldIds": [quantity["identity"]["fieldId"]],
             },
         ).json()
-        assert preview["values"]["double_quantity"] == 14
-        # Describing a backfilling formula schedules/resumes the durable job.
-        sidecar.request("GET", "/api/vibetable/v1/schema/tables/matrix_orders")
-        deadline = time.monotonic() + 15
-        while True:
-            row = _page(sidecar, "matrix_orders")["rows"][0]
-            if row.get("double_quantity") == 8:
-                break
-            assert time.monotonic() < deadline, row
-            time.sleep(0.1)
+        assert preview["values"][doubled["identity"]["physicalName"]] == 14
+        row = _page(sidecar, orders["tableId"])["rows"][0]
+        assert row[doubled["identity"]["physicalName"]] == 8, row
         coverage["formula-preview-save-backfill"] = "passed"
 
         customer_id = "matrixcustomer1"
         _apply(
             sidecar,
-            "matrix_customers",
+            customers["tableId"],
             customers["schemaRevision"],
             "customer-insert",
-            [{"kind": "insert", "recordId": customer_id, "values": {"name": "Ada"}}],
+            [
+                {
+                    "kind": "insert",
+                    "recordId": customer_id,
+                    "values": {customer_name["identity"]["fieldId"]: "Ada"},
+                }
+            ],
         )
         update_receipt = _apply(
             sidecar,
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "order-update-relation",
             [
                 {
                     "kind": "update",
                     "recordId": order_id,
-                    "values": {"title": "updated", "customer": customer_id},
+                    "values": {
+                        title["identity"]["fieldId"]: "updated",
+                        customer_relation["identity"]["fieldId"]: customer_id,
+                    },
                 }
             ],
         )
         assert update_receipt["status"] == "applied"
-        page = _page(sidecar, "matrix_orders")
+        page = _page(sidecar, orders["tableId"])
         assert page["totalRows"] == 1
-        assert page["rows"][0]["title"] == "updated"
-        assert page["rows"][0]["customer_name"] == "Ada"
+        assert page["rows"][0][title["identity"]["physicalName"]] == "updated"
+        assert page["rows"][0][customer_lookup["identity"]["physicalName"]] == "Ada"
         described = sidecar.request(
-            "GET", "/api/vibetable/v1/relations/describe?tableId=matrix_orders"
+            "GET",
+            "/api/vibetable/v1/relations/describe?"
+            + urllib.parse.urlencode({"tableId": orders["tableId"]}),
         ).json()
-        assert described["relations"][0]["relationId"] == "matrix_orders.customer_id"
+        assert described["relations"][0]["relationId"] == (
+            orders["tableId"] + "." + customer_relation["identity"]["fieldId"]
+        )
         lookup_page = sidecar.request(
             "POST",
             "/api/vibetable/v1/lookups/query",
             json_body={
-                "tableId": "matrix_orders",
+                "tableId": orders["tableId"],
                 "schemaRevision": orders["schemaRevision"],
                 "query": {"filters": [], "sorts": [], "offset": 0, "limit": 100},
             },
         ).json()
-        lookup_cell = lookup_page["rows"][0]["customer_name"]
+        lookup_cell = lookup_page["rows"][0][customer_lookup["identity"]["physicalName"]]
         assert lookup_cell["state"] == "ok", lookup_cell
         assert lookup_cell["value"] == "Ada", lookup_cell
         assert lookup_cell["provenance"][0]["recordLabel"] == "Ada", lookup_cell
@@ -839,30 +884,33 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
 
         rollback = _apply(
             sidecar,
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "atomic-rollback",
             [
                 {
                     "kind": "insert",
                     "recordId": "matrixrollback01",
-                    "values": {"title": "must rollback", "quantity": 1},
+                    "values": {
+                        title["identity"]["fieldId"]: "must rollback",
+                        quantity["identity"]["fieldId"]: 1,
+                    },
                 },
                 {
                     "kind": "update",
                     "recordId": "missingrecord001",
-                    "values": {"title": "fail"},
+                    "values": {title["identity"]["fieldId"]: "fail"},
                 },
             ],
             expected=422,
         )
         assert rollback["code"] == "mutation.validation.failed"
-        assert _page(sidecar, "matrix_orders")["totalRows"] == 1
+        assert _page(sidecar, orders["tableId"])["totalRows"] == 1
         coverage["atomic-batch-rollback"] = "passed"
 
         ready = threading.Event()
         sse_result: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
-        current_data_revision = _page(sidecar, "matrix_orders")["querySnapshot"]["dataRevision"]
+        current_data_revision = _page(sidecar, orders["tableId"])["querySnapshot"]["dataRevision"]
         expected_data_revision = f"data_{current_data_revision + 1:04d}"
         sse_thread = threading.Thread(
             target=_read_sse_event,
@@ -879,10 +927,16 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         assert ready.wait(5)
         _apply(
             sidecar,
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "sse-update",
-            [{"kind": "update", "recordId": order_id, "values": {"quantity": 9}}],
+            [
+                {
+                    "kind": "update",
+                    "recordId": order_id,
+                    "values": {quantity["identity"]["fieldId"]: 9},
+                }
+            ],
         )
         event = sse_result.get(timeout=15)
         assert event.get("topic") == "data.changed", event
@@ -890,14 +944,14 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         coverage["sse"] = "passed"
 
         upload = _mutation(
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "file-upload",
             [
                 {
                     "kind": "setAttachments",
                     "recordId": order_id,
-                    "fieldId": "images_id",
+                    "fieldId": images["identity"]["fieldId"],
                     "uploadHandles": ["image-one"],
                     "removeStoredNames": [],
                 }
@@ -906,9 +960,9 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         sidecar.multipart_mutation(upload, "image-one", "pixel.png", PNG_1X1)
         query = urllib.parse.urlencode(
             {
-                "tableId": "matrix_orders",
+                "tableId": orders["tableId"],
                 "recordId": order_id,
-                "fieldId": "images_id",
+                "fieldId": images["identity"]["fieldId"],
             }
         )
         refs = sidecar.request("GET", f"/api/vibetable/v1/attachments/refs?{query}").json()[
@@ -943,14 +997,14 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         stored_name = refs[0]["storedName"]
         _apply(
             sidecar,
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "file-delete",
             [
                 {
                     "kind": "setAttachments",
                     "recordId": order_id,
-                    "fieldId": "images_id",
+                    "fieldId": images["identity"]["fieldId"],
                     "uploadHandles": [],
                     "removeStoredNames": [stored_name],
                 }
@@ -969,7 +1023,7 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
             "/api/vibetable/v1/history/change-sets?"
             + urllib.parse.urlencode(
                 {
-                    "collection": "matrix_orders",
+                    "collection": orders["tableId"],
                     "itemId": order_id,
                     "scope": "row",
                 }
@@ -979,23 +1033,30 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
             change["rootRevisionId"]
             for change in history["changeSets"]
             if any(
-                field.get("field") == "title" and field.get("after") == "updated"
+                field.get("field") == title["identity"]["physicalName"]
+                and field.get("after") == "updated"
                 for field in change["scalarChanges"]
             )
         ]
         assert revisions, history
         _apply(
             sidecar,
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "title-after-history",
-            [{"kind": "update", "recordId": order_id, "values": {"title": "later"}}],
+            [
+                {
+                    "kind": "update",
+                    "recordId": order_id,
+                    "values": {title["identity"]["fieldId"]: "later"},
+                }
+            ],
         )
         restore_preview = sidecar.request(
             "POST",
             "/api/vibetable/v1/history/restore-preview",
             json_body={
-                "collection": "matrix_orders",
+                "collection": orders["tableId"],
                 "itemId": order_id,
                 "targetRevision": revisions[0],
                 "scope": "row",
@@ -1005,27 +1066,33 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
             "POST",
             "/api/vibetable/v1/history/restore-apply",
             json_body={
-                "collection": "matrix_orders",
+                "collection": orders["tableId"],
                 "itemId": order_id,
                 "token": restore_preview["token"],
             },
         )
-        assert _page(sidecar, "matrix_orders")["rows"][0]["title"] == "updated"
+        assert (
+            _page(sidecar, orders["tableId"])["rows"][0][title["identity"]["physicalName"]]
+            == "updated"
+        )
         coverage["audit+restore"] = "passed"
 
         sidecar.stop()
         sidecar.start()
-        assert _page(sidecar, "matrix_orders")["rows"][0]["title"] == "updated"
+        assert (
+            _page(sidecar, orders["tableId"])["rows"][0][title["identity"]["physicalName"]]
+            == "updated"
+        )
         coverage["process-restart"] = "passed"
 
         _apply(
             sidecar,
-            "matrix_orders",
+            orders["tableId"],
             orders["schemaRevision"],
             "hard-delete",
             [{"kind": "delete", "recordId": order_id}],
         )
-        assert _page(sidecar, "matrix_orders")["totalRows"] == 0
+        assert _page(sidecar, orders["tableId"])["totalRows"] == 0
         coverage["record-delete"] = "passed"
         sidecar.stop()
         workspace_root = data_dir.parent / f"{data_dir.name}-workspace-v2"

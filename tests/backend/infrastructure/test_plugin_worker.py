@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Never
 
 import pytest
 
@@ -22,6 +23,7 @@ from backend.infrastructure.plugin_worker import (
     PluginWorkerError,
     _ResolvedWorker,
 )
+from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
 class FakePluginStore:
@@ -90,18 +92,24 @@ class FakePluginStore:
         return setting
 
 
+@dataclass(frozen=True)
+class FakeQueryPage:
+    rows: list[dict[str, object]]
+
+
 class FakeProductReadClient:
     def __init__(self) -> None:
-        self.calls: list[tuple[Any, Any, list[str]]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def read_items_with_fields(
-        self,
-        profile: Any,
-        query: Any,
-        fields: list[str],
-    ) -> tuple[list[dict[str, Any]], dict[str, Any], object]:
-        self.calls.append((profile, query, fields))
-        return ([{"id": "1", "title": "safe"}], {}, object())
+    def __getattr__(self, name: str) -> Never:
+        raise AssertionError(f"plugin read port probed an undeclared member: {name}")
+
+    async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
+        self.calls.append((table_id, query))
+        return FakeQueryPage(rows=[{"id": "1", "title": "safe"}])
+
+    async def describe_table(self, table_id: str) -> dict[str, Any]:
+        raise AssertionError(f"static plugin read port requested schema for {table_id}")
 
 
 class DynamicSchemaClient(FakeProductReadClient):
@@ -112,32 +120,10 @@ class DynamicSchemaClient(FakeProductReadClient):
     async def describe_table(self, table_id: str) -> dict[str, Any]:
         assert table_id == "articles"
         self.revision += 1
-        fields = [
-            {
-                "fieldId": "fld_title",
-                "physicalName": "title",
-                "kind": "text",
-                "dataType": "text",
-                "nullable": True,
-                "constraints": [],
-            }
-        ]
+        fields = [field_v2("title")]
         if self.revision >= 8:
-            fields.append(
-                {
-                    "fieldId": "fld_note",
-                    "physicalName": "note",
-                    "kind": "text",
-                    "dataType": "text",
-                    "nullable": True,
-                    "constraints": [],
-                }
-            )
-        return {
-            "tableId": "articles",
-            "schemaRevision": f"schema-{self.revision}",
-            "fields": fields,
-        }
+            fields.append(field_v2("note"))
+        return snapshot_v2("articles", fields, revision=f"schema-{self.revision}")
 
 
 class HangingSchemaClient(FakeProductReadClient):
@@ -255,9 +241,9 @@ async def test_dynamic_worker_profile_refreshes_after_schema_change() -> None:
     second = await adapter._profile("articles")
 
     assert first.schema_revision == "schema-7"
-    assert first.update_fields == ["title"]
+    assert first.update_fields == ["f_title000"]
     assert second.schema_revision == "schema-8"
-    assert second.update_fields == ["title", "note"]
+    assert second.update_fields == ["f_title000", "f_note0000"]
 
 
 @pytest.mark.asyncio
@@ -360,8 +346,18 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
 
     assert result["summary"] == "compact"
     assert result["metrics"] == [{"label": "rows", "value": 1}]
-    assert client.calls[0][1].limit == 25
-    assert client.calls[0][2] == ["title"]
+    assert client.calls == [
+        (
+            "articles",
+            {
+                "keyword": None,
+                "filters": [],
+                "limit": 25,
+                "offset": 0,
+                "sorts": [],
+            },
+        )
+    ]
     setting = store.get_private_setting(
         "project-a",
         "com.example.safe-worker",
@@ -851,36 +847,6 @@ async def test_data_read_rejects_invalid_cursor_type() -> None:
         await adapter._data_read(
             resolved, {}, {"collection": "orders", "fields": ["id"], "cursor": [1, 2]}
         )
-
-
-@pytest.mark.asyncio
-async def test_data_read_query_page_fallback_projects_rows() -> None:
-    """Covers the else-branch: client without read_items_with_fields uses query_page."""
-
-    class QueryPageOnlyClient:
-        async def query_page(self, *, table_id: str, query: dict[str, Any]) -> Any:
-            assert table_id == "orders"
-            return SimpleNamespace(rows=[{"id": "r1", "name": "Ada"}, {"id": "r2"}])
-
-    adapter = _make_adapter(
-        profiles={
-            "orders": CollectionProfile(
-                collection="orders",
-                fields=["id", "name"],
-                archive_field=None,
-                date_updated_field=None,
-            )
-        },
-        client=QueryPageOnlyClient(),
-    )
-    resolved = _resolved(
-        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["$configured"]}]}
-    )
-    result = await adapter._data_read(
-        resolved, {}, {"collection": "orders", "fields": ["id", "name"]}
-    )
-    assert len(result["items"]) == 2
-    assert result["items"][0] == {"id": "r1", "name": "Ada"}
 
 
 # ---------------------------------------------------------------------------

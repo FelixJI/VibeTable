@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from backend.adapters.pocketbase.data_io import (
@@ -9,86 +7,42 @@ from backend.adapters.pocketbase.data_io import (
     collection_profile_from_definition,
 )
 from backend.application.paste_service import PasteError
+from backend.application.revisioned_metadata_port import JsonObject, json_object
+from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
-def _definition(*, revision: str = "schema_7", readonly: bool = False) -> dict[str, Any]:
-    return {
-        "contractVersion": "2.0",
-        "tableId": "orders",
-        "physicalName": "orders",
-        "displayName": "Orders",
-        "kind": "base",
-        "schemaRevision": revision,
-        "archivePolicy": {
-            "mode": "status",
-            "fieldId": "status",
-            "archivedValue": "archived",
-        },
-        "fields": [
-            {
-                "fieldId": "title",
-                "physicalName": "title",
-                "displayName": "Title",
-                "kind": "scalar",
-                "dataType": "shortText",
-                "nullable": False,
-                "constraints": [],
-                "readOnly": readonly,
-            },
-            {
-                "fieldId": "amount",
-                "physicalName": "amount",
-                "displayName": "Amount",
-                "kind": "scalar",
-                "dataType": "decimal",
-                "nullable": True,
-                "constraints": [{"kind": "precisionScale", "precision": 12, "scale": 2}],
-                "readOnly": False,
-            },
-            {
-                "fieldId": "status",
-                "physicalName": "status",
-                "displayName": "Status",
-                "kind": "scalar",
-                "dataType": "select",
-                "nullable": False,
-                "constraints": [],
-                "readOnly": False,
-            },
-            {
-                "fieldId": "total",
-                "physicalName": "total",
-                "displayName": "Total",
-                "kind": "formula",
-                "dataType": "formula",
-                "nullable": True,
-                "constraints": [],
-                "readOnly": True,
-            },
-        ],
-        "indexes": [],
-    }
+def _definition(*, revision: str = "schema_7", readonly: bool = False) -> JsonObject:
+    fields = [
+        field_v2("title", required=True, writable=not readonly),
+        field_v2("amount", "number"),
+        field_v2("status", "select", required=True),
+        field_v2("total", "formula", writable=False),
+    ]
+    return json_object(
+        snapshot_v2("orders", fields, revision=revision, archive_field="fld_status00")
+    )
 
 
 def test_profile_projects_live_schema_revision_and_writable_fields() -> None:
     profile = collection_profile_from_definition(_definition())
 
     assert profile.capability_hash == "schema_7"
-    assert profile.fields == ["id", "title", "amount", "status", "total"]
-    assert profile.create_fields == ["title", "amount", "status"]
-    assert profile.update_fields == ["title", "amount", "status"]
-    assert profile.archive_field == "status"
+    assert profile.fields == ["id", "f_title000", "f_amount00", "f_status00", "f_total000"]
+    assert profile.create_fields == ["f_title000", "f_amount00", "f_status00"]
+    assert profile.update_fields == ["f_title000", "f_amount00", "f_status00"]
+    assert profile.archive_field == "f_status00"
     assert profile.date_updated_field is None
 
 
 class _Client:
-    def __init__(self, definition: dict[str, Any]) -> None:
+    def __init__(self, definition: JsonObject) -> None:
         self.definition = definition
 
-    async def describe_table(self, _table_id: str) -> dict[str, Any]:
+    async def describe_table(self, table_id: str) -> JsonObject:
+        assert table_id == "orders"
         return self.definition
 
-    async def read_rows(self, *, table_id: str, row_ids: list[str]) -> list[dict[str, Any]]:
+    async def read_rows(self, *, table_id: str, row_ids: list[str]) -> list[JsonObject]:
         assert table_id == "orders"
         return [
             {
@@ -107,26 +61,47 @@ async def test_paste_read_port_refreshes_policy_and_exposes_decimal_shape() -> N
     definitions = {"orders": original}
     client = _Client(_definition(readonly=True))
     port = PocketBasePasteReadPort(
-        client=client,  # type: ignore[arg-type]
+        client=client,
         profiles=profiles,
         definitions=definitions,
     )
 
     fields = await port.fields(profile)
-    amount = next(item for item in fields if item["field"] == "amount")
+    amount = next(item for item in fields if item["field"] == "f_amount00")
     assert amount["schema"] == {
-        "data_type": "decimal",
+        "data_type": "number",
         "numeric_scale": 2,
-        "numeric_precision": 12,
+        "numeric_precision": None,
     }
-    title = next(item for item in fields if item["field"] == "title")
-    assert title["schema"]["data_type"] == "shortText"
+    title = next(item for item in fields if item["field"] == "f_title000")
+    title_schema = title["schema"]
+    assert isinstance(title_schema, dict)
+    assert title_schema["data_type"] == "text"
     row = await port.read_item(profile, "row-1")
     assert row["__vibetableDigest"] == "sha256:" + "a" * 64
     with pytest.raises(PasteError, match="field policy changed"):
         await port.require_write_fields(
             profile,
-            {"title"},
+            {"f_title000"},
             operation="update",
             refresh=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_paste_read_port_rejects_non_finite_schema_field_metadata() -> None:
+    definition = _definition()
+    raw_fields = definition["fields"]
+    assert isinstance(raw_fields, list)
+    first_field = raw_fields[0]
+    assert isinstance(first_field, dict)
+    first_field["storage"] = {"options": {"scale": float("nan")}}
+    profile = collection_profile_from_definition(_definition())
+    port = PocketBasePasteReadPort(
+        client=_Client(_definition()),
+        profiles={"orders": profile},
+        definitions={"orders": definition},
+    )
+
+    with pytest.raises(ValueError, match="numbers must be finite"):
+        await port.fields(profile)

@@ -3,24 +3,23 @@ import { lookupFormatter, normalizeTargets, relationFormatter } from "./relation
 import type { LookupDefinition, NormalizedRelationDescriptor } from "@/contracts";
 
 const relation: NormalizedRelationDescriptor = {
-  relationId: "content.blocks", fieldRef: "blocks", sourceCollection: "content", kind: "m2a",
-  relatedCollection: null, allowedCollections: ["images", "videos"], junction: null,
+  relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
+  relatedCollection: "contracts",
   unique: false, nullable: true, onDelete: "nullify", preset: "standard", selfRelation: false,
   managed: true, state: "valid", displayTemplate: "{{title}}", diagnostics: [],
 };
 const lookup: LookupDefinition = {
   lookupId: "orders.price", collection: "orders", fieldKey: "price", displayName: "Price",
   path: [{ relationId: "orders.contract" }], source: { kind: "target_field", fieldRef: "price" },
-  m2aFieldMapping: [], aggregation: "single", outputType: "decimal", outputScale: 2,
+  outputType: "decimal", outputScale: 2,
   revision: 1, state: "valid", diagnostics: [], dependencies: [],
 };
 
 describe("relation / Lookup grid renderers", () => {
-  it("labels M2A values with their target collection", () => {
+  it("renders direct relation values with their authoritative label", () => {
     const node = relationFormatter(relation)({ getValue: () => ({
-      collection: "videos", itemId: "v1", label: "Launch", junctionValues: {},
+      collection: "contracts", itemId: "v1", label: "Launch",
     }) });
-    expect(node.textContent).toContain("videos");
     expect(node.textContent).toContain("Launch");
   });
 
@@ -127,11 +126,8 @@ describe("relation / Lookup grid renderers", () => {
     expect(node.querySelector(".vt-lookup-source-more")?.textContent).toBe("…");
   });
 
-  it("preserves optimistic junction revisions while normalizing relation values", () => {
-    const revision = "b".repeat(64);
-    expect(normalizeTargets({
-      collection: "tags", itemId: "t1", label: "Tag 1", junctionId: "j1",
-      junctionRevision: revision, junctionValues: { weight: 2 },
-    })[0]?.junctionRevision).toBe(revision);
+  it("normalizes a direct relation value without compatibility metadata", () => {
+    expect(normalizeTargets({ collection: "tags", itemId: "t1", label: "Tag 1" }))
+      .toEqual([{ collection: "tags", itemId: "t1", label: "Tag 1" }]);
   });
 });

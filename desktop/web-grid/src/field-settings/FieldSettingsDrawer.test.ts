@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
@@ -11,10 +13,15 @@ import type {
   FieldDefinitionV2,
   FieldMigrationStatusV2,
   FieldSettingsDescribeResultV2,
+  JsonValueV2,
   LogicalTypeV2,
 } from "@/contracts";
 
 const mounted: VueWrapper[] = [];
+const capabilityFixturePath = resolve(
+  import.meta.dirname,
+  "../../../../contracts/schema-v2/fixtures/capability.json",
+);
 
 function definition(type: LogicalTypeV2 = "number"): FieldDefinitionV2 {
   const field = {
@@ -58,6 +65,7 @@ function definition(type: LogicalTypeV2 = "number"): FieldDefinitionV2 {
 function capability(type: LogicalTypeV2): CapabilityV2 {
   const field = definition(type);
   return {
+    ...(JSON.parse(readFileSync(capabilityFixturePath, "utf8")) as CapabilityV2),
     logicalType: type,
     generalSettings: ["displayName", "required", "default"], advancedSettings: ["unique"], dangerSettings: ["retire", "purge"],
     recommended: {
@@ -174,6 +182,28 @@ describe("FieldSettingsDrawer", () => {
     const store = useFieldSettingsStore();
     store.beginOpen();
     store.load(described(type));
+    if (type !== "formula" && type !== "lookup") {
+      const defaultValues: Partial<Record<LogicalTypeV2, JsonValueV2>> = {
+        bool: false,
+        number: 0,
+        select: "opt_a",
+        date: "2026-08-12",
+        dateTime: "2026-08-12T12:00:00Z",
+        time: "12:00:00",
+        geoPoint: { lat: 31.23, lon: 121.47 },
+        json: { enabled: true },
+      };
+      store.patchDraft({
+        value: {
+          ...store.draft!.value,
+          default: {
+            ...store.draft!.value.default,
+            enabled: true,
+            value: defaultValues[type] ?? "示例值",
+          },
+        },
+      });
+    }
     const wrapper = mountDrawer();
     await flushPromises();
 
@@ -215,6 +245,9 @@ describe("FieldSettingsDrawer", () => {
         targetFieldId: "fld_balance",
       });
     }
+
+    await openTab(wrapper, "高级");
+    expect(wrapper.text()).toContain("数据源字段标识（只读）");
   });
 
   it("编辑选择项并发出关闭与预览事件", async () => {

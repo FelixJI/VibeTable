@@ -23,7 +23,18 @@ describe("documentWorkspaceService", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(intents).toEqual([
-      { type: "document.listRequested", scope: { kind: "record", collection: "orders", itemId: 42 }, authority: "workspace" },
+      {
+        type: "document.listRequested",
+        scope: { kind: "record", collection: "orders", itemId: 42 },
+        authority: "workspace",
+        query: {
+          logic: "and",
+          filters: [{ field: "status", operator: "eq", value: "active" }],
+          sort: [{ field: "effectiveRevisionCreatedAt", direction: "desc" }],
+          limit: 100,
+          cursor: null,
+        },
+      },
       { type: "document.importRequested", scope: { kind: "record", collection: "orders", itemId: 42 } },
       { type: "document.openRequested", entryHandle: "entry-capability-1" },
       { type: "document.relinkRequested", handle: "entry-capability-2" },

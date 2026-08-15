@@ -26,24 +26,27 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 const (
-	attachmentFaultTableID    = "attachment_faults"
-	attachmentFaultCollection = "attachment_faults"
-	attachmentFaultFieldID    = "documents_id"
-	attachmentFaultRecordID   = "faultrecord0001"
-	attachmentCrashEnv        = "VIBETABLE_ATTACHMENT_CRASH_HELPER"
-	attachmentCrashDataEnv    = "VIBETABLE_ATTACHMENT_CRASH_DATA"
-	attachmentCrashMarkerEnv  = "VIBETABLE_ATTACHMENT_CRASH_MARKER"
+	attachmentFaultDisplayName      = "Attachment faults"
+	attachmentFaultFieldDisplayName = "Documents"
+	attachmentFaultRecordID         = "faultrecord0001"
+	attachmentCrashEnv              = "VIBETABLE_ATTACHMENT_CRASH_HELPER"
+	attachmentCrashDataEnv          = "VIBETABLE_ATTACHMENT_CRASH_DATA"
+	attachmentCrashMarkerEnv        = "VIBETABLE_ATTACHMENT_CRASH_MARKER"
 )
 
 type attachmentFaultFixture struct {
 	app        *pocketbase.PocketBase
 	manager    *attachments.Manager
-	definition schema.TableDefinition
+	definition schemaexecution.Table
+	execution  schemaexecution.Table
+	titleField v2.FieldDefinition
+	fileField  v2.FieldDefinition
 	apply      func(string, mutation.Operation) (mutation.Receipt, error)
 }
 
@@ -54,40 +57,38 @@ func newAttachmentFaultFixture(
 ) attachmentFaultFixture {
 	t.Helper()
 	app := bootstrapApp(t, dataDir)
-	fileField := field(
-		attachmentFaultFieldID,
-		"documents",
-		schema.FieldKindAttachment,
-		schema.DataTypeFile,
+	ctx := context.Background()
+	table := createV2IntegrationTable(
+		t, ctx, app, attachmentFaultDisplayName, "attachment_faults_table",
 	)
-	fileField.Editor.Kind = "file"
-	fileField.AttachmentPolicy = &schema.AttachmentPolicy{
-		MaxFiles:          4,
-		MaxBytesPerFile:   4096,
-		AllowedMIMETypes:  []string{"text/plain"},
-		ThumbnailVariants: []string{},
-		Protected:         true,
+	titleReceipt := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"),
+		"attachment_faults_title",
+	)
+	fileDraft := fieldDraftForIntegration(t, v2.LogicalFile, attachmentFaultFieldDisplayName)
+	fileDraft.File = &v2.FileSpec{
+		MaxFiles: 4, MaxBytesPerFile: 4096,
+		AllowedMIMETypes: []string{"text/plain"}, Thumbs: []string{}, Protected: true,
 	}
-	fileField.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintAttachment, Policy: fileField.AttachmentPolicy,
-	}}
-	definition, err := schemaapi.New(app).ApplyChange(
-		context.Background(),
-		schemaapi.Change{
-			Definition: baseTable(
-				attachmentFaultTableID,
-				attachmentFaultCollection,
-				[]schema.FieldDefinition{
-					field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-					fileField,
-				},
-			),
-			ExpectedRevision: 0,
-		},
+	fileReceipt := createV2IntegrationField(
+		t, ctx, app, table.TableID, fileDraft, "attachment_faults_documents",
 	)
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		resetApp(t, app)
-		t.Fatalf("create attachment fault table: %v", err)
+		t.Fatalf("read attachment fault execution view: %v", err)
+	}
+	fileField, fileFound := definition.Field(fileReceipt.FieldID)
+	titleField, titleFound := definition.Field(titleReceipt.FieldID)
+	if !fileFound || !titleFound {
+		resetApp(t, app)
+		t.Fatal("attachment fault execution view omitted fixture fields")
+	}
+	execution, err := schemaexecution.Describe(ctx, app, table.TableID)
+	if err != nil {
+		resetApp(t, app)
+		t.Fatalf("read attachment fault Schema V2 execution view: %v", err)
 	}
 	manager, err := attachments.New(
 		options...,
@@ -123,14 +124,15 @@ func newAttachmentFaultFixture(
 			ContractVersion: mutation.ContractVersion,
 			RequestID:       "request_" + key,
 			IdempotencyKey:  "idem_" + key,
-			TableID:         definition.TableID,
-			SchemaRevision:  definition.SchemaRevision,
+			TableID:         definition.Snapshot.TableID,
+			SchemaRevision:  definition.Snapshot.SchemaRevision,
 			Operations:      []mutation.Operation{operation},
 			Actor:           mutation.Actor{Type: "user", ID: "fault-test"},
 		})
 	}
 	return attachmentFaultFixture{
-		app: app, manager: manager, definition: definition, apply: apply,
+		app: app, manager: manager, definition: definition, execution: execution,
+		titleField: titleField, fileField: fileField, apply: apply,
 	}
 }
 
@@ -139,7 +141,7 @@ func (fixture attachmentFaultFixture) insert(t *testing.T) {
 	recordID := attachmentFaultRecordID
 	if _, err := fixture.apply("insert", mutation.Operation{
 		Kind: mutation.OperationInsert, RecordID: &recordID,
-		Values: map[string]any{"title": "fault fixture"},
+		Values: map[string]any{fixture.titleField.Identity.PhysicalName: "fault fixture"},
 	}); err != nil {
 		t.Fatalf("insert attachment fault record: %v", err)
 	}
@@ -155,7 +157,7 @@ func (fixture attachmentFaultFixture) setAttachments(
 	_, err := fixture.apply(key, mutation.Operation{
 		Kind:              mutation.OperationSetAttachments,
 		RecordID:          stringPointerForAttachmentFault(attachmentFaultRecordID),
-		FieldID:           attachmentFaultFieldID,
+		FieldID:           fixture.fileField.Identity.FieldID,
 		UploadHandles:     handles,
 		RemoveStoredNames: removed,
 	})
@@ -171,7 +173,8 @@ func attachmentFaultRecord(
 	app core.App,
 ) *core.Record {
 	t.Helper()
-	collection, err := app.FindCollectionByNameOrId(attachmentFaultCollection)
+	identity := resolveAttachmentFaultIdentity(t, app)
+	collection, err := app.FindCollectionByNameOrId(identity.definition.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +183,34 @@ func attachmentFaultRecord(
 		t.Fatal(err)
 	}
 	return record
+}
+
+type attachmentFaultIdentity struct {
+	definition schemaexecution.Table
+	fileField  v2.FieldDefinition
+}
+
+func resolveAttachmentFaultIdentity(t *testing.T, app core.App) attachmentFaultIdentity {
+	t.Helper()
+	table, err := app.FindFirstRecordByFilter(
+		"vibetable_tables",
+		"display_name={:display}",
+		map[string]any{"display": attachmentFaultDisplayName},
+	)
+	if err != nil {
+		t.Fatalf("resolve attachment fault table identity: %v", err)
+	}
+	definition, err := schemaapi.New(app).Describe(context.Background(), table.GetString("table_id"))
+	if err != nil {
+		t.Fatalf("read attachment fault execution view: %v", err)
+	}
+	for _, field := range definition.Snapshot.Fields {
+		if field.DisplayName == attachmentFaultFieldDisplayName {
+			return attachmentFaultIdentity{definition: definition, fileField: field}
+		}
+	}
+	t.Fatal("resolve attachment fault field identity: field not found")
+	return attachmentFaultIdentity{}
 }
 
 func deleteAttachmentFaultObject(
@@ -239,7 +270,7 @@ func TestManagedAttachmentsMultiFileMidwayFailureRollsBackAtomically(t *testing.
 		t.Fatalf("multi-file failure error=%#v metadataWrites=%d", err, metadataWrites)
 	}
 	record := attachmentFaultRecord(t, fixture.app)
-	if got := record.GetStringSlice("documents"); len(got) != 0 {
+	if got := record.GetStringSlice(fixture.fileField.Identity.PhysicalName); len(got) != 0 {
 		t.Fatalf("partially committed attachment names: %#v", got)
 	}
 	assertRecordCount(t, fixture.app, "vibetable_attachment_meta", 0)
@@ -261,7 +292,7 @@ func TestManagedAttachmentsCommittedDBCleanupFailureIsReportedAndRecoverable(t *
 	}
 	fixture.manager.Drop("cleanup_old")
 	before := attachmentFaultRecord(t, fixture.app)
-	oldNames := before.GetStringSlice("documents")
+	oldNames := before.GetStringSlice(fixture.fileField.Identity.PhysicalName)
 	if len(oldNames) != 1 {
 		t.Fatalf("old attachment names=%#v", oldNames)
 	}
@@ -270,7 +301,7 @@ func TestManagedAttachmentsCommittedDBCleanupFailureIsReportedAndRecoverable(t *
 			Id:       "attachment-cleanup-failure",
 			Priority: -100,
 			Func: func(event *core.RecordEvent) error {
-				if event.Record.Collection().Name == attachmentFaultCollection {
+				if event.Record.Collection().Name == fixture.definition.PhysicalName {
 					return errors.New("injected post-commit cleanup failure")
 				}
 				return event.Next()
@@ -292,7 +323,7 @@ func TestManagedAttachmentsCommittedDBCleanupFailureIsReportedAndRecoverable(t *
 		t.Fatal("post-commit cleanup failure was not returned")
 	}
 	committed := attachmentFaultRecord(t, fixture.app)
-	newNames := committed.GetStringSlice("documents")
+	newNames := committed.GetStringSlice(fixture.fileField.Identity.PhysicalName)
 	if len(newNames) != 1 || newNames[0] == oldNames[0] {
 		t.Fatalf("database replacement did not commit: %#v", newNames)
 	}
@@ -345,7 +376,8 @@ func TestManagedAttachmentsProcessExitDuringUploadLeavesNoDurableState(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRecordCount(t, app, attachmentFaultCollection, 0)
+	identity := resolveAttachmentFaultIdentity(t, app)
+	assertRecordCount(t, app, identity.definition.PhysicalName, 0)
 	assertRecordCount(t, app, "vibetable_attachment_meta", 0)
 	report, err := manager.Integrity(context.Background(), app)
 	if err != nil || !report.Valid {
@@ -362,8 +394,9 @@ func TestManagedAttachmentsProcessExitDuringCommitReportsAndRecoversOrphans(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	identity := resolveAttachmentFaultIdentity(t, app)
 	record := attachmentFaultRecord(t, app)
-	if got := record.GetStringSlice("documents"); len(got) != 0 {
+	if got := record.GetStringSlice(identity.fileField.Identity.PhysicalName); len(got) != 0 {
 		t.Fatalf("uncommitted DB attachment survived process exit: %#v", got)
 	}
 	report, err := manager.Integrity(context.Background(), app)
@@ -394,8 +427,9 @@ func TestManagedAttachmentsProcessExitDuringCleanupReportsAndRecoversOrphans(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	identity := resolveAttachmentFaultIdentity(t, app)
 	record := attachmentFaultRecord(t, app)
-	newNames := record.GetStringSlice("documents")
+	newNames := record.GetStringSlice(identity.fileField.Identity.PhysicalName)
 	if len(newNames) != 1 || newNames[0] == oldName {
 		t.Fatalf("cleanup-exit DB replacement=%#v old=%q", newNames, oldName)
 	}
@@ -489,7 +523,9 @@ func TestManagedAttachmentsCrashHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		fixture.manager.Drop("crash_cleanup_old")
-		oldNames := attachmentFaultRecord(t, fixture.app).GetStringSlice("documents")
+		oldNames := attachmentFaultRecord(t, fixture.app).GetStringSlice(
+			fixture.fileField.Identity.PhysicalName,
+		)
 		if len(oldNames) != 1 {
 			t.Fatalf("cleanup helper old names=%#v", oldNames)
 		}
@@ -505,7 +541,7 @@ func TestManagedAttachmentsCrashHelper(t *testing.T) {
 				Id:       "attachment-cleanup-crash",
 				Priority: -100,
 				Func: func(event *core.RecordEvent) error {
-					if event.Record.Collection().Name == attachmentFaultCollection {
+					if event.Record.Collection().Name == fixture.definition.PhysicalName {
 						os.Exit(33)
 					}
 					return event.Next()
@@ -535,13 +571,14 @@ func TestManagedAttachmentsCrashHelper(t *testing.T) {
 
 func attachmentAuditFingerprint(t *testing.T, app core.App) []string {
 	t.Helper()
+	identity := resolveAttachmentFaultIdentity(t, app)
 	events, err := app.FindRecordsByFilter(
 		"vibetable_audit_events",
 		"table_id={:table}",
 		"",
 		0,
 		0,
-		map[string]any{"table": attachmentFaultTableID},
+		map[string]any{"table": identity.definition.Snapshot.TableID},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -580,7 +617,9 @@ func TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAnd
 		t.Fatal(err)
 	}
 	fixture.manager.Drop("backup_old")
-	oldNames := attachmentFaultRecord(t, fixture.app).GetStringSlice("documents")
+	oldNames := attachmentFaultRecord(t, fixture.app).GetStringSlice(
+		fixture.fileField.Identity.PhysicalName,
+	)
 	if err := fixture.manager.Stage(
 		"backup_new",
 		"backup-new.txt",
@@ -601,9 +640,9 @@ func TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAnd
 	sourceRefs, err := fixture.manager.Refs(
 		context.Background(),
 		fixture.app,
-		fixture.definition,
+		fixture.execution,
 		sourceRecord,
-		attachmentFaultFieldID,
+		fixture.fileField.Identity.FieldID,
 	)
 	if err != nil || len(sourceRefs) != 1 {
 		t.Fatalf("source refs=%#v err=%v", sourceRefs, err)
@@ -672,13 +711,19 @@ func TestManagedAttachmentsWholeBackupRestorePreservesReferencesHashesContentAnd
 	if err != nil {
 		t.Fatal(err)
 	}
+	restoredExecution, err := schemaexecution.Describe(
+		context.Background(), restoredApp, fixture.definition.Snapshot.TableID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	restoredRecord := attachmentFaultRecord(t, restoredApp)
 	restoredRefs, err := restoredManager.Refs(
 		context.Background(),
 		restoredApp,
-		fixture.definition,
+		restoredExecution,
 		restoredRecord,
-		attachmentFaultFieldID,
+		fixture.fileField.Identity.FieldID,
 	)
 	if err != nil || len(restoredRefs) != 1 {
 		t.Fatalf("restored refs=%#v err=%v", restoredRefs, err)

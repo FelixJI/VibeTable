@@ -56,8 +56,45 @@ public sealed class ProductContractV2RoundTripTests
             var wire = parsed.ToJsonString().ToLowerInvariant();
             Assert.IsFalse(wire.Contains(
                 "dire" + "ctus", StringComparison.Ordinal), name);
-            Assert.IsFalse(wire.Contains("pocketbase", StringComparison.Ordinal), name);
         }
+    }
+
+    [TestMethod]
+    public void SchemaGetTableFixtureUsesGeneratedSchemaV2WithoutLegacyWireShape()
+    {
+        JsonObject catalog = ReadObject("product-rpc-catalog.json");
+        JsonObject tableCase = catalog["rpcCases"]!.AsArray()
+            .Select(node => node!.AsObject())
+            .Single(item =>
+                item["method"]!.GetValue<string>() == "schema.getTable");
+        JsonObject result = tableCase["success"]!["result"]!.AsObject();
+        JsonObject field = result["fields"]!.AsArray()[0]!.AsObject();
+
+        Assert.AreEqual("SchemaSnapshot", tableCase["resultModel"]!.GetValue<string>());
+        Assert.AreEqual("vibetable.schema.v2", result["contract"]!.GetValue<string>());
+        Assert.IsTrue(field.ContainsKey("identity"));
+        Assert.IsTrue(field.ContainsKey("logicalType"));
+        Assert.IsTrue(field.ContainsKey("storage"));
+        Assert.IsFalse(field.ContainsKey("dataType"));
+        Assert.IsFalse(field.ContainsKey("storageType"));
+        Assert.AreEqual(
+            "pocketbase-text",
+            field["storage"]!["kind"]!.GetValue<string>(),
+            "Schema V2 provider storage kinds are a legal closed enum.");
+
+        string tableWire = tableCase.ToJsonString();
+        Assert.IsFalse(tableWire.Contains("ProductTableDefinition", StringComparison.Ordinal));
+        Assert.IsFalse(tableWire.Contains("ProductFieldDefinition", StringComparison.Ordinal));
+        Assert.IsFalse(tableWire.Contains("\"dataType\"", StringComparison.Ordinal));
+        Assert.IsFalse(tableWire.Contains("\"storageType\"", StringComparison.Ordinal));
+
+        string catalogWire = catalog.ToJsonString();
+        Assert.IsFalse(catalogWire.Contains("/v1/schema", StringComparison.Ordinal));
+        Assert.IsFalse(catalogWire.Contains(
+            "/api/vibetable/v1/schema",
+            StringComparison.Ordinal));
+        Assert.IsFalse(catalogWire.Contains("ProductTableDefinition", StringComparison.Ordinal));
+        Assert.IsFalse(catalogWire.Contains("ProductFieldDefinition", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -180,11 +217,13 @@ public sealed class ProductContractV2RoundTripTests
         }
 
         var table = cases["schema.getTable"];
-        Assert.AreEqual("TableDefinition", table["resultModel"]!.GetValue<string>());
+        Assert.AreEqual("SchemaSnapshot", table["resultModel"]!.GetValue<string>());
         var tableResult = table["success"]!["result"]!.AsObject();
         Assert.IsTrue(tableResult.ContainsKey("tableId"));
         Assert.IsTrue(tableResult.ContainsKey("schemaRevision"));
         Assert.IsInstanceOfType<JsonArray>(tableResult["fields"]);
+        var snapshot = tableResult.Deserialize<SchemaSnapshotV2>();
+        Assert.IsNotNull(snapshot);
 
         var plugins = cases["plugin.listCatalog"];
         Assert.AreEqual("PluginSnapshotList", plugins["resultModel"]!.GetValue<string>());

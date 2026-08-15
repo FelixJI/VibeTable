@@ -43,12 +43,22 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
         => InvokeStrictElement<FieldMigrationStatusV2>("field.change.cancel", p, t);
     public Task<JsonElement> ListRecycledFieldsAsync(JsonElement p, CancellationToken t)
         => InvokeStrictElement<FieldRecycleBinResultV2>("field.recycleBin.list", p, t);
-    public Task<JsonElement> ValidateSchemaAsync(JsonElement p, CancellationToken t) => Invoke("schema.validate", p, t);
-    public Task<JsonElement> ApplySchemaAsync(JsonElement p, CancellationToken t) => Invoke("schema.apply", p, t);
+    public Task<JsonElement> CreateTableAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<SchemaTableCreateReceiptV2>("schema.table.create", p, t);
     public Task<JsonElement> DeleteSchemaAsync(JsonElement p, CancellationToken t) => Invoke("schema.delete", p, t);
     public Task<JsonElement> ListTablesAsync(JsonElement p, CancellationToken t) => Invoke("schema.list", p, t);
-    public Task<JsonElement> GetTableSchemaAsync(JsonElement p, CancellationToken t) => Invoke("schema.getTable", p, t);
+    public Task<JsonElement> GetTableSchemaAsync(JsonElement p, CancellationToken t)
+        => InvokeStrictElement<SchemaSnapshotV2>("schema.getTable", p, t);
+    public Task<JsonElement> LoadContentProfileAsync(JsonElement p, CancellationToken t) => Invoke("contentProfile.load", p, t);
+    public Task<JsonElement> CommitContentProfileAsync(JsonElement p, CancellationToken t) => Invoke("contentProfile.commit", p, t);
+    public Task<JsonElement> DeleteContentProfileAsync(JsonElement p, CancellationToken t) => Invoke("contentProfile.delete", p, t);
+    public Task<JsonElement> ListRecordDocumentLinksAsync(JsonElement p, CancellationToken t) => Invoke("recordDocumentLink.list", p, t);
+    public Task<JsonElement> CommitRecordDocumentLinkAsync(JsonElement p, CancellationToken t) => Invoke("recordDocumentLink.commit", p, t);
+    public Task<JsonElement> RepairRecordDocumentLinkAsync(JsonElement p, CancellationToken t) => Invoke("recordDocumentLink.repair", p, t);
+    public Task<JsonElement> DeleteRecordDocumentLinkAsync(JsonElement p, CancellationToken t) => Invoke("recordDocumentLink.delete", p, t);
     public Task<JsonElement> QueryPageAsync(JsonElement p, CancellationToken t) => Invoke("query.page", p, t);
+    public Task<JsonElement> OpenQueryCursorAsync(JsonElement p, CancellationToken t) => Invoke("query.cursorOpen", p, t);
+    public Task<JsonElement> FetchQueryCursorAsync(JsonElement p, CancellationToken t) => Invoke("query.cursorFetch", p, t);
     public Task<JsonElement> QueryViewAsync(JsonElement p, CancellationToken t) => Invoke("query.view", p, t);
     public Task<JsonElement> ReadRowsAsync(JsonElement p, CancellationToken t) => Invoke("query.readRows", p, t);
     public Task<JsonElement> ValidateSnapshotAsync(JsonElement p, CancellationToken t) => Invoke("query.validateSnapshot", p, t);
@@ -70,9 +80,6 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public Task<RestoreResult> ApplyHistoryRestoreAsync(ApplyRestoreParams p, CancellationToken t)
         => InvokeStrict<ApplyRestoreParams, RestoreResult>("history.applyRestore", p, t);
     public Task<JsonElement> ReconcileAsync(JsonElement p, CancellationToken t) => Invoke("events.reconcile", p, t);
-    public Task<JsonElement> ListIdentifierMappingsAsync(JsonElement p, CancellationToken t) => Invoke("identifier.list", p, t);
-    public Task<JsonElement> UpdateIdentifierAliasesAsync(JsonElement p, CancellationToken t) => Invoke("identifier.updateAliases", p, t);
-    public Task<JsonElement> ReconcileIdentifierMappingsAsync(JsonElement p, CancellationToken t) => Invoke("identifier.reconcile", p, t);
     public Task<JsonElement> ListPresetsAsync(JsonElement p, CancellationToken t) => Invoke("preset.list", p, t);
     public Task<JsonElement> SavePresetAsync(JsonElement p, CancellationToken t) => Invoke("preset.save", p, t);
     public Task<JsonElement> DeletePresetAsync(JsonElement p, CancellationToken t) => Invoke("preset.delete", p, t);
@@ -97,8 +104,6 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public Task<JsonElement> PreviewRelationDeltaAsync(JsonElement p, CancellationToken t) => Invoke("relation.previewDelta", p, t);
     public Task<JsonElement> ApplyRelationDeltaAsync(JsonElement p, CancellationToken t) => Invoke("relation.applyDelta", p, t);
     public Task<JsonElement> ListLookupsAsync(JsonElement p, CancellationToken t) => Invoke("lookup.list", p, t);
-    public Task<JsonElement> ValidateLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.validate", p, t);
-    public Task<JsonElement> PreviewLookupAsync(JsonElement p, CancellationToken t) => Invoke("lookup.preview", p, t);
     public Task<JsonElement> QueryLookupsAsync(JsonElement p, CancellationToken t) => Invoke("lookup.query", p, t);
     public Task<JsonElement> ReadLookupValuePageAsync(JsonElement p, CancellationToken t) => Invoke("lookup.valuePage", p, t);
 

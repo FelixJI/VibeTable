@@ -105,4 +105,13 @@ public sealed class DashboardContractTests
         ];
         Assert.AreEqual(9, values.Distinct().Count());
     }
+
+    [TestMethod]
+    public void TimeBucket_RejectsGranularitiesNotImplementedByQueryPort()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => new DashboardTimeBucket("date_created", "hour"));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => new DashboardTimeBucket("date_created", "day", "Asia/Shanghai"));
+    }
 }

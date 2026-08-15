@@ -66,13 +66,10 @@ class PluginExecutionRuntime:
         self,
         *,
         registry: RegistryPort,
-        tasks: Any | None = None,
         worker_adapter: WorkerPort | None = None,
         confirmation_adapter: ConfirmationPort | None = None,
         mutation_adapter: MutationPort | None = None,
-        **_removed_legacy: Any,
     ) -> None:
-        del tasks
         self._registry = registry
         self._worker = worker_adapter
         self._confirmation = confirmation_adapter

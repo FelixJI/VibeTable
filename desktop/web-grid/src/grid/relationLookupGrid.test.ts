@@ -4,14 +4,14 @@ import type { LookupDefinition, NormalizedRelationDescriptor, TablePage } from "
 
 const relation: NormalizedRelationDescriptor = {
   relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
-  relatedCollection: "contracts", allowedCollections: [], junction: null, unique: true, nullable: true,
+  relatedCollection: "contracts", unique: true, nullable: true,
   onDelete: "nullify", preset: "standard", selfRelation: false, managed: true, state: "valid",
   displayTemplate: "{{number}}", diagnostics: [],
 };
 const lookup: LookupDefinition = {
   lookupId: "orders.price", collection: "orders", fieldKey: "price", displayName: "Price",
   path: [{ relationId: "orders.contract" }], source: { kind: "target_field", fieldRef: "price" },
-  m2aFieldMapping: [], aggregation: "single", outputType: "decimal", outputScale: 2,
+  outputType: "decimal", outputScale: 2,
   revision: 1, state: "valid", diagnostics: [], dependencies: [],
 };
 const page: TablePage = {
@@ -20,7 +20,7 @@ const page: TablePage = {
     { name: "contract", title: "Contract", kind: "relation", relationId: relation.relationId, dataType: "text", editable: true, nullable: true },
     { name: "price", title: "Price", kind: "lookup", lookupId: lookup.lookupId, dataType: "decimal", editable: false, nullable: true },
   ],
-  rows: [], offset: 0, limit: 50, totalRows: 0, mode: "client",
+  rows: [], offset: 0, limit: 50, totalRows: 0, mode: "remote",
 };
 
 describe("relation + Lookup grid integration", () => {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -15,12 +16,12 @@ namespace VibeTable.Desktop.Tests;
 /// <remarks>
 /// <para>
 /// The fake is fully synchronous-but-async (no real I/O) so tests are stable
-/// and fast. It also supports an optional per-table <c>read gate</c>: when set,
-/// the page read for that table awaits the supplied task before returning,
+/// and fast. It also supports an optional per-table <c>window-read gate</c>: when set,
+/// the window read for that table awaits the supplied task before returning,
 /// letting tests simulate a slow/stale backend response.
 /// </para>
 /// <para>
-/// <see cref="ReadTablePageAsync"/> cooperates with cancellation: if the
+/// The fixture window reader cooperates with cancellation: if the
 /// supplied <c>CancellationToken</c> is cancelled while waiting on a gate, the
 /// fake throws <see cref="OperationCanceledException"/> (matching how a real
 /// gateway would surface a cancelled RPC).
@@ -28,9 +29,9 @@ namespace VibeTable.Desktop.Tests;
 /// </remarks>
 public sealed class FakeTableRpcGateway : ITableRpcGateway
 {
-    public readonly struct ReadCall
+    public readonly struct WindowReadCall
     {
-        public ReadCall(string table, int offset, int limit)
+        public WindowReadCall(string table, int offset, int limit)
         {
             Table = table;
             Offset = offset;
@@ -49,13 +50,13 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     public List<string> OpenDatabaseCalls { get; } = new();
 
-    public List<ReadCall> ReadTablePageCalls { get; } = new();
+    public List<WindowReadCall> WindowWindowReadCalls { get; } = new();
 
     /// <summary>
     /// Optional scripted read used by consistency/retry tests. The fourth
     /// argument is the 1-based total read call count.
     /// </summary>
-    public Func<string, int, int, int, TablePage>? ReadTablePageOverride { get; set; }
+    public Func<string, int, int, int, TablePage>? WindowReadOverride { get; set; }
 
     /// <summary>
     /// When set, <see cref="ListTablesAsync"/> returns this instead of falling
@@ -66,7 +67,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     private readonly Dictionary<string, Task> _readGates = new(StringComparer.Ordinal);
 
-    public void SetReadGate(string table, Task gate)
+    public void SetWindowReadGate(string table, Task gate)
     {
         _readGates[table] = gate;
     }
@@ -96,16 +97,18 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         foreach (var kv in DatabaseOpenResults)
         {
             return Task.FromResult(new TableSummary(
-                kv.Value.Tables, kv.Value.Views));
+                kv.Value.Tables, kv.Value.Views, kv.Value.DisplayNames));
         }
         return Task.FromResult(new TableSummary(
-            Array.Empty<string>(), Array.Empty<string>()));
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            TestDisplayNames.For()));
     }
 
-    public async Task<TablePage> ReadTablePageAsync(
+    private async Task<TablePage> ReadFixturePageAsync(
         string table, int offset, int limit, CancellationToken token)
     {
-        ReadTablePageCalls.Add(new ReadCall(table, offset, limit));
+        WindowWindowReadCalls.Add(new WindowReadCall(table, offset, limit));
 
         if (_readGates.TryGetValue(table, out var gate))
         {
@@ -122,10 +125,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
             throw new OperationCanceledException(token);
         }
 
-        if (ReadTablePageOverride is not null)
+        if (WindowReadOverride is not null)
         {
-            return ReadTablePageOverride(
-                table, offset, limit, ReadTablePageCalls.Count);
+            return WindowReadOverride(
+                table, offset, limit, WindowWindowReadCalls.Count);
         }
 
         if (!TablePages.TryGetValue(table, out var pages))
@@ -146,7 +149,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
             Offset: offset,
             Limit: limit,
             TotalRows: pages.Values.Count > 0 ? pages[0].TotalRows : 0,
-            Mode: pages.Values.Count > 0 ? pages[0].Mode : "client");
+            Mode: pages.Values.Count > 0 ? pages[0].Mode : "remote");
     }
 
     private static TablePage TablePageForMissing(string table, int offset, int limit)
@@ -157,7 +160,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
             Offset: offset,
             Limit: limit,
             TotalRows: 0,
-            Mode: "client");
+            Mode: "remote");
 
     // -------------------------------------------------------------------
     // B1 mutation methods (deterministic stubs for workspace tests).
@@ -332,11 +335,14 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     // tests).
     // -------------------------------------------------------------------
 
-    public List<string> QueryTablePageCalls { get; } = new();
-    public List<TableQuery> QueryTablePageQueries { get; } = new();
-    public Dictionary<string, TablePage> QueryTablePageResults { get; } =
+    public List<string> QueryWindowCalls { get; } = new();
+    public List<JsonElement> RawViewQueries { get; } = new();
+    public List<string> CursorFetchCalls { get; } = new();
+    public Dictionary<string, TablePage> CursorPageResults { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, TablePage> CursorOpenResults { get; } =
         new(StringComparer.Ordinal);
-    public Func<string, int, int, TableQuery, TablePage>? QueryTablePageOverride { get; set; }
+    public Dictionary<string, TablePage> QueryWindowResults { get; } =
+        new(StringComparer.Ordinal);
 
     public List<string> ValidateSnapshotCalls { get; } = new();
     public SnapshotValidation? NextValidateSnapshotResult { get; set; }
@@ -345,29 +351,44 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         new(StringComparer.Ordinal);
     public List<string> GetGridStateCalls { get; } = new();
     public List<string> SaveGridStateCalls { get; } = new();
+    public List<(string DatabaseId, string Table, GridState State, string? Revision)>
+        SavedGridStates
+    { get; } = new();
     public GridStateResult? NextSaveGridStateResult { get; set; }
 
-    public Task<TablePage> QueryTablePageAsync(
-        string table, int offset, int limit, TableQuery query, CancellationToken token)
+    public Task<TablePage> QueryTableViewRawAsync(
+        string table, JsonElement query, CancellationToken token)
     {
-        QueryTablePageCalls.Add(table);
-        QueryTablePageQueries.Add(query);
-        if (QueryTablePageOverride is not null)
-        {
-            return Task.FromResult(QueryTablePageOverride(table, offset, limit, query));
-        }
-        if (QueryTablePageResults.TryGetValue(table, out var page))
+        QueryWindowCalls.Add(table);
+        RawViewQueries.Add(query.Clone());
+        if (QueryWindowResults.TryGetValue(table, out var page))
         {
             return Task.FromResult(page);
         }
-        // Fall back to the plain page fixture so query reads work without extra
-        // setup when the test only cares about the call being made.
-        return ReadTablePageAsync(table, offset, limit, token);
+        return ReadFixturePageAsync(table, 0, TableWorkspaceLimits.MaxPageLimit, token);
     }
 
-    public Task<TablePage> QueryTableViewAsync(
-        string table, int offset, int limit, TableQuery query, CancellationToken token)
-        => QueryTablePageAsync(table, offset, limit, query, token);
+    public Task<TablePage> OpenTableCursorRawAsync(
+        string table, JsonElement query, CancellationToken token)
+    {
+        if (CursorOpenResults.TryGetValue(table, out var page))
+        {
+            QueryWindowCalls.Add(table);
+            RawViewQueries.Add(query.Clone());
+            return Task.FromResult(page);
+        }
+        return QueryTableViewRawAsync(table, query, token);
+    }
+
+    public Task<TablePage> FetchTableCursorAsync(string cursor, CancellationToken token)
+    {
+        CursorFetchCalls.Add(cursor);
+        if (CursorPageResults.TryGetValue(cursor, out var page))
+        {
+            return Task.FromResult(page);
+        }
+        throw new InvalidOperationException("Unknown fake cursor.");
+    }
 
     public Task<SnapshotValidation> ValidateSnapshotAsync(
         QuerySnapshot snapshot, int? currentRevision, CancellationToken token)
@@ -394,6 +415,7 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         string? revision, CancellationToken token)
     {
         SaveGridStateCalls.Add(table);
+        SavedGridStates.Add((databaseId, table, state, revision));
         return Task.FromResult(
             NextSaveGridStateResult ?? new GridStateResult(
                 state, "rev-2", Conflict: false));
@@ -445,4 +467,13 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
             Conflicts: Array.Empty<ApplyPasteConflict>(),
             RequestId: idempotencyKey));
     }
+}
+
+internal static class TestDisplayNames
+{
+    internal static IReadOnlyDictionary<string, string> For(params string[] collections)
+        => collections.ToDictionary(
+            collection => collection,
+            collection => collection,
+            StringComparer.Ordinal);
 }

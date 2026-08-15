@@ -200,7 +200,9 @@ public sealed class AppPreferencesServiceTests
     private static bool ParsePatch(string json, out AppPreferencesPatch? patch)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        return MainWindow.TryReadAppPreferencesPatch(document.RootElement, out patch);
+        return ApplicationRequestController.TryReadAppPreferencesPatch(
+            document.RootElement,
+            out patch);
     }
 
     private string PreferencesPath()

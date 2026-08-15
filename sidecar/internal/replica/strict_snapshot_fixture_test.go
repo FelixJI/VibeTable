@@ -114,10 +114,15 @@ func strictSnapshotFixture(
 		t.Fatalf("encode topology root: %v", err)
 	}
 	fileIDs := make(map[string]objectrepo.ObjectID, len(files))
+	workspaceSettings := []byte(`{"formatVersion":1,"retention":{` +
+		`"snapshotDays":30,"snapshotCount":50,` +
+		`"snapshotBuckets":["daily"],"fileRevisionDays":30,` +
+		`"fileRevisionCount":100,"fileRevisionBuckets":["daily"],` +
+		`"repositoryLimitBytes":null}}`)
 	inputs := []objectrepo.ObjectInput{
 		{Name: "database", Content: database},
 		{Name: "topology-root", Content: topologyRoot},
-		{Name: "workspace-settings", Content: []byte("{}")},
+		{Name: "workspace-settings", Content: workspaceSettings},
 		{Name: "audit-prefix", Content: auditPrefix},
 	}
 	for name, content := range files {
@@ -161,7 +166,7 @@ func strictSnapshotFixture(
 		BusinessDatabaseObjectID:  strictSnapshotObjectID(database),
 		TopologyRootObjectID:      strictSnapshotObjectID(topologyRoot),
 		FileStateRootObjectID:     strictSnapshotObjectID(fileStateRoot),
-		WorkspaceSettingsObjectID: strictSnapshotObjectID([]byte("{}")),
+		WorkspaceSettingsObjectID: strictSnapshotObjectID(workspaceSettings),
 		AuditAnchor:               auditAnchor,
 		AuditPrefixObjectID:       strictSnapshotObjectID(auditPrefix),
 		MinimumAppVersion:         "2.0.0",

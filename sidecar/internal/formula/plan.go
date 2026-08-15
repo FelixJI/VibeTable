@@ -15,22 +15,23 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type Plan struct {
 	Formulas []*CompiledFormula
 	byID     map[string]*CompiledFormula
 	byName   map[string]*CompiledFormula
-	fields   map[string]schema.FieldDefinition
+	fields   map[string]v2.FieldDefinition
 	fieldIDs map[string]struct{}
 	limits   Limits
 }
 
-func (compiler *Compiler) CompileTable(definition schema.TableDefinition) (*Plan, *Error) {
+func (compiler *Compiler) CompileExecutionTable(definition schemaexecution.Table) (*Plan, *Error) {
 	formulas := make([]*CompiledFormula, 0)
-	for index, field := range definition.Fields {
-		if field.Kind != schema.FieldKindFormula {
+	for index, field := range definition.Snapshot.Fields {
+		if field.LogicalType != v2.LogicalFormula {
 			continue
 		}
 		compiled, err := compiler.Compile(definition, field)
@@ -51,13 +52,13 @@ func (compiler *Compiler) CompileTable(definition schema.TableDefinition) (*Plan
 		Formulas: ordered,
 		byID:     make(map[string]*CompiledFormula, len(ordered)),
 		byName:   make(map[string]*CompiledFormula, len(ordered)),
-		fields:   make(map[string]schema.FieldDefinition, len(definition.Fields)),
-		fieldIDs: make(map[string]struct{}, len(definition.Fields)),
+		fields:   make(map[string]v2.FieldDefinition, len(definition.Snapshot.Fields)),
+		fieldIDs: make(map[string]struct{}, len(definition.Snapshot.Fields)),
 		limits:   compiler.limits,
 	}
-	for _, field := range definition.Fields {
-		plan.fields[field.PhysicalName] = field
-		plan.fieldIDs[field.FieldID] = struct{}{}
+	for _, field := range definition.Snapshot.Fields {
+		plan.fields[field.Identity.PhysicalName] = field
+		plan.fieldIDs[field.Identity.FieldID] = struct{}{}
 	}
 	for _, formula := range ordered {
 		plan.byID[formula.FieldID] = formula
@@ -243,16 +244,18 @@ func (formula *CompiledFormula) hasNullDependency(activation map[string]any) boo
 }
 
 func (formula *CompiledFormula) validateRuntimeResult(value any) *Error {
-	switch formula.ResultType {
-	case schema.DataTypeInteger:
-		number, ok := value.(int64)
-		if !ok {
-			return formulaError("formula.type", "formula returned a non-integer value", nil)
+	switch formula.ResultType.LogicalType {
+	case v2.LogicalNumber:
+		if formula.ResultType.OnlyInt {
+			number, ok := value.(int64)
+			if !ok {
+				return formulaError("formula.type", "formula returned a non-integer value", nil)
+			}
+			if number > 1<<53-1 || number < -(1<<53-1) {
+				return formulaError("formula.overflow", "formula integer exceeds the JSON safe range", nil)
+			}
+			return nil
 		}
-		if number > 1<<53-1 || number < -(1<<53-1) {
-			return formulaError("formula.overflow", "formula integer exceeds the JSON safe range", nil)
-		}
-	case schema.DataTypeFloat, schema.DataTypeDecimal:
 		number, ok := value.(float64)
 		if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
 			if ok && math.IsInf(number, 0) && formula.hasDivision {
@@ -260,21 +263,20 @@ func (formula *CompiledFormula) validateRuntimeResult(value any) *Error {
 			}
 			return formulaError("formula.overflow", "formula returned a non-finite number", nil)
 		}
-	case schema.DataTypeDate, schema.DataTypeDateTime, schema.DataTypeAutoDate:
+	case v2.LogicalDate, v2.LogicalDateTime, v2.LogicalAutoDate:
 		if _, ok := value.(time.Time); !ok {
 			return formulaError("formula.type", "formula returned a non-timestamp value", nil)
 		}
-	case schema.DataTypeBoolean:
+	case v2.LogicalBool:
 		if _, ok := value.(bool); !ok {
 			return formulaError("formula.type", "formula returned a non-boolean value", nil)
 		}
-	case schema.DataTypeShortText, schema.DataTypeLongText, schema.DataTypeRichText,
-		schema.DataTypeTime, schema.DataTypeEmail, schema.DataTypeURL, schema.DataTypeUUID,
-		schema.DataTypeSelect, schema.DataTypeHash:
+	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail,
+		v2.LogicalURL, v2.LogicalSelect:
 		if _, ok := value.(string); !ok {
 			return formulaError("formula.type", "formula returned a non-string value", nil)
 		}
-	case schema.DataTypeMultiSelect, schema.DataTypeList:
+	case v2.LogicalMultiSelect:
 		valueType := reflect.TypeOf(value)
 		if valueType == nil ||
 			(valueType.Kind() != reflect.Slice && valueType.Kind() != reflect.Array) {
@@ -294,19 +296,38 @@ func containsNull(values map[string]any) bool {
 }
 
 func normalizeInput(
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	value any,
 	limits Limits,
 ) (any, *Error) {
 	if value == nil {
 		return nil, nil
 	}
-	dataType := field.DataType
-	if field.Kind == schema.FieldKindFormula && field.Formula != nil {
-		dataType = field.Formula.ResultType
-	}
-	switch dataType {
-	case schema.DataTypeInteger:
+	valueType := valueTypeForField(field)
+	switch valueType.LogicalType {
+	case v2.LogicalNumber:
+		if !valueType.OnlyInt {
+			switch typed := value.(type) {
+			case int:
+				return float64(typed), nil
+			case int64:
+				return float64(typed), nil
+			case float32:
+				return float64(typed), nil
+			case float64:
+				if math.IsNaN(typed) || math.IsInf(typed, 0) {
+					return nil, formulaError("formula.overflow", "numeric input must be finite", map[string]any{"fieldId": field.Identity.FieldID})
+				}
+				return typed, nil
+			case json.Number:
+				number, err := typed.Float64()
+				if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+					return nil, formulaError("formula.overflow", "numeric input must be finite", map[string]any{"fieldId": field.Identity.FieldID})
+				}
+				return number, nil
+			}
+			break
+		}
 		switch typed := value.(type) {
 		case int:
 			return int64(typed), nil
@@ -314,37 +335,17 @@ func normalizeInput(
 			return typed, nil
 		case float64:
 			if math.Trunc(typed) != typed || typed > math.MaxInt64 || typed < math.MinInt64 {
-				return nil, formulaError("formula.type", "integer input is invalid", map[string]any{"fieldId": field.FieldID})
+				return nil, formulaError("formula.type", "integer input is invalid", map[string]any{"fieldId": field.Identity.FieldID})
 			}
 			return int64(typed), nil
 		case json.Number:
 			number, err := typed.Int64()
 			if err != nil {
-				return nil, formulaError("formula.type", "integer input is invalid", map[string]any{"fieldId": field.FieldID})
+				return nil, formulaError("formula.type", "integer input is invalid", map[string]any{"fieldId": field.Identity.FieldID})
 			}
 			return number, nil
 		}
-	case schema.DataTypeFloat, schema.DataTypeDecimal:
-		switch typed := value.(type) {
-		case int:
-			return float64(typed), nil
-		case int64:
-			return float64(typed), nil
-		case float32:
-			return float64(typed), nil
-		case float64:
-			if math.IsNaN(typed) || math.IsInf(typed, 0) {
-				return nil, formulaError("formula.overflow", "numeric input must be finite", map[string]any{"fieldId": field.FieldID})
-			}
-			return typed, nil
-		case json.Number:
-			number, err := typed.Float64()
-			if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-				return nil, formulaError("formula.overflow", "numeric input must be finite", map[string]any{"fieldId": field.FieldID})
-			}
-			return number, nil
-		}
-	case schema.DataTypeDate, schema.DataTypeDateTime, schema.DataTypeAutoDate:
+	case v2.LogicalDate, v2.LogicalDateTime, v2.LogicalAutoDate:
 		switch typed := value.(type) {
 		case time.Time:
 			return typed.UTC(), nil
@@ -354,7 +355,7 @@ func normalizeInput(
 			parsed, err := time.Parse(time.RFC3339Nano, typed)
 			if err != nil {
 				return nil, formulaError("formula.timezone", "timestamp input must be RFC3339 with an explicit timezone", map[string]any{
-					"fieldId": field.FieldID,
+					"fieldId": field.Identity.FieldID,
 				})
 			}
 			return parsed.UTC(), nil
@@ -372,16 +373,48 @@ func normalizeInput(
 		decoder.UseNumber()
 		var decoded any
 		if err := decoder.Decode(&decoded); err != nil {
-			return nil, formulaError("formula.type", "JSON input is invalid", map[string]any{"fieldId": field.FieldID})
+			return nil, formulaError("formula.type", "JSON input is invalid", map[string]any{"fieldId": field.Identity.FieldID})
 		}
 		value = decoded
 	}
-	return normalizeDynamicInput(value, limits, 0, field.FieldID)
+	return normalizeDynamicInput(value, limits, 0, field.Identity.FieldID)
 }
 
 func normalizeDynamicInput(value any, limits Limits, depth int, fieldID string) (any, *Error) {
+	budget := &collectionBudget{remaining: limits.CollectionBytes}
+	return normalizeDynamicInputBudget(value, limits, depth, fieldID, budget)
+}
+
+type collectionBudget struct{ remaining int }
+
+func (budget *collectionBudget) consume(value any) bool {
+	cost := 16
+	switch typed := value.(type) {
+	case string:
+		cost += len(typed)
+	case []byte:
+		cost += len(typed)
+	case json.Number:
+		cost += len(typed.String())
+	}
+	budget.remaining -= cost
+	return budget.remaining >= 0
+}
+
+func normalizeDynamicInputBudget(
+	value any,
+	limits Limits,
+	depth int,
+	fieldID string,
+	budget *collectionBudget,
+) (any, *Error) {
 	if depth > limits.RecursionDepth {
 		return nil, resourceInputError(fieldID, "formula input exceeds the recursion limit", limits.RecursionDepth)
+	}
+	if !budget.consume(value) {
+		return nil, resourceInputError(
+			fieldID, "formula input exceeds the byte budget", limits.CollectionBytes,
+		)
 	}
 	switch typed := value.(type) {
 	case time.Time:
@@ -398,12 +431,11 @@ func normalizeDynamicInput(value any, limits Limits, depth int, fieldID string) 
 		}
 		return number, nil
 	case []any:
-		if len(typed) > limits.CollectionSize {
-			return nil, resourceInputError(fieldID, "formula input collection exceeds the size limit", limits.CollectionSize)
-		}
 		result := make([]any, len(typed))
 		for index, item := range typed {
-			normalized, err := normalizeDynamicInput(item, limits, depth+1, fieldID)
+			normalized, err := normalizeDynamicInputBudget(
+				item, limits, depth+1, fieldID, budget,
+			)
 			if err != nil {
 				return nil, err
 			}
@@ -411,12 +443,16 @@ func normalizeDynamicInput(value any, limits Limits, depth int, fieldID string) 
 		}
 		return result, nil
 	case map[string]any:
-		if len(typed) > limits.CollectionSize {
-			return nil, resourceInputError(fieldID, "formula input collection exceeds the size limit", limits.CollectionSize)
-		}
 		result := make(map[string]any, len(typed))
 		for key, item := range typed {
-			normalized, err := normalizeDynamicInput(item, limits, depth+1, fieldID)
+			if !budget.consume(key) {
+				return nil, resourceInputError(
+					fieldID, "formula input exceeds the byte budget", limits.CollectionBytes,
+				)
+			}
+			normalized, err := normalizeDynamicInputBudget(
+				item, limits, depth+1, fieldID, budget,
+			)
 			if err != nil {
 				return nil, err
 			}
@@ -427,13 +463,11 @@ func normalizeDynamicInput(value any, limits Limits, depth int, fieldID string) 
 		valueType := reflect.TypeOf(value)
 		if valueType != nil && (valueType.Kind() == reflect.Slice || valueType.Kind() == reflect.Array) {
 			length := reflect.ValueOf(value).Len()
-			if length > limits.CollectionSize {
-				return nil, resourceInputError(fieldID, "formula input collection exceeds the size limit", limits.CollectionSize)
-			}
 			result := make([]any, length)
 			for index := 0; index < length; index++ {
-				normalized, err := normalizeDynamicInput(
+				normalized, err := normalizeDynamicInputBudget(
 					reflect.ValueOf(value).Index(index).Interface(), limits, depth+1, fieldID,
+					budget,
 				)
 				if err != nil {
 					return nil, err
@@ -447,22 +481,35 @@ func normalizeDynamicInput(value any, limits Limits, depth int, fieldID string) 
 }
 
 func normalizeOutput(value any, limits Limits, depth int) (any, *Error) {
+	budget := &collectionBudget{remaining: limits.CollectionBytes}
+	return normalizeOutputBudget(value, limits, depth, budget)
+}
+
+func normalizeOutputBudget(
+	value any,
+	limits Limits,
+	depth int,
+	budget *collectionBudget,
+) (any, *Error) {
 	if depth > limits.RecursionDepth {
 		return nil, formulaError("formula.resource_limit", "formula output exceeds the recursion limit", nil)
 	}
 	if wrapped, ok := value.(ref.Val); ok {
-		return normalizeOutput(wrapped.Value(), limits, depth)
+		return normalizeOutputBudget(wrapped.Value(), limits, depth, budget)
+	}
+	if !budget.consume(value) {
+		return nil, formulaError(
+			"formula.resource_limit", "formula output exceeds the byte budget",
+			map[string]any{"limitBytes": limits.CollectionBytes},
+		)
 	}
 	switch typed := value.(type) {
 	case time.Time:
 		return typed.UTC().Format(time.RFC3339Nano), nil
 	case []any:
-		if len(typed) > limits.CollectionSize {
-			return nil, formulaError("formula.resource_limit", "formula output collection exceeds the size limit", nil)
-		}
 		result := make([]any, len(typed))
 		for index, item := range typed {
-			normalized, err := normalizeOutput(item, limits, depth+1)
+			normalized, err := normalizeOutputBudget(item, limits, depth+1, budget)
 			if err != nil {
 				return nil, err
 			}
@@ -470,12 +517,15 @@ func normalizeOutput(value any, limits Limits, depth int) (any, *Error) {
 		}
 		return result, nil
 	case map[string]any:
-		if len(typed) > limits.CollectionSize {
-			return nil, formulaError("formula.resource_limit", "formula output collection exceeds the size limit", nil)
-		}
 		result := make(map[string]any, len(typed))
 		for key, item := range typed {
-			normalized, err := normalizeOutput(item, limits, depth+1)
+			if !budget.consume(key) {
+				return nil, formulaError(
+					"formula.resource_limit", "formula output exceeds the byte budget",
+					map[string]any{"limitBytes": limits.CollectionBytes},
+				)
+			}
+			normalized, err := normalizeOutputBudget(item, limits, depth+1, budget)
 			if err != nil {
 				return nil, err
 			}
@@ -489,12 +539,11 @@ func normalizeOutput(value any, limits Limits, depth int) (any, *Error) {
 		}
 		switch valueOf.Kind() {
 		case reflect.Slice, reflect.Array:
-			if valueOf.Len() > limits.CollectionSize {
-				return nil, formulaError("formula.resource_limit", "formula output collection exceeds the size limit", nil)
-			}
 			result := make([]any, valueOf.Len())
 			for index := 0; index < valueOf.Len(); index++ {
-				normalized, err := normalizeOutput(valueOf.Index(index).Interface(), limits, depth+1)
+				normalized, err := normalizeOutputBudget(
+					valueOf.Index(index).Interface(), limits, depth+1, budget,
+				)
 				if err != nil {
 					return nil, err
 				}
@@ -502,13 +551,12 @@ func normalizeOutput(value any, limits Limits, depth int) (any, *Error) {
 			}
 			return result, nil
 		case reflect.Map:
-			if valueOf.Len() > limits.CollectionSize {
-				return nil, formulaError("formula.resource_limit", "formula output collection exceeds the size limit", nil)
-			}
 			result := make(map[string]any, valueOf.Len())
 			iterator := valueOf.MapRange()
 			for iterator.Next() {
-				key, err := normalizeOutput(iterator.Key().Interface(), limits, depth+1)
+				key, err := normalizeOutputBudget(
+					iterator.Key().Interface(), limits, depth+1, budget,
+				)
 				if err != nil {
 					return nil, err
 				}
@@ -516,7 +564,9 @@ func normalizeOutput(value any, limits Limits, depth int) (any, *Error) {
 				if !ok {
 					return nil, formulaError("formula.type", "formula JSON object key is not a string", nil)
 				}
-				normalized, err := normalizeOutput(iterator.Value().Interface(), limits, depth+1)
+				normalized, err := normalizeOutputBudget(
+					iterator.Value().Interface(), limits, depth+1, budget,
+				)
 				if err != nil {
 					return nil, err
 				}

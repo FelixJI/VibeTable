@@ -17,20 +17,26 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		return Capability{}, err
 	}
 	capability := Capability{
-		LogicalType:       logicalType,
-		GeneralSettings:   []string{"displayName", "help"},
-		AdvancedSettings:  []string{},
-		DangerSettings:    []string{"retire", "purge"},
-		Recommended:       recommended,
-		SupportsRequired:  true,
-		SupportsDefault:   true,
-		SupportsUnique:    supportsUnique(logicalType),
-		NeedsPresence:     presenceTypes[logicalType],
-		DisplayPresets:    []string{},
-		ConversionTargets: conversionTargets(logicalType),
-		ConversionRules:   []string{},
-		CompileStrategy:   string(recommended.Storage.Kind),
-		UserCreatable:     true,
+		LogicalType:               logicalType,
+		GeneralSettings:           []string{"displayName", "help"},
+		AdvancedSettings:          []string{},
+		DangerSettings:            []string{"retire", "purge"},
+		Recommended:               recommended,
+		SupportsRequired:          true,
+		SupportsDefault:           true,
+		SupportsUnique:            supportsUnique(logicalType),
+		NeedsPresence:             presenceTypes[logicalType],
+		DisplayPresets:            []string{},
+		ConversionTargets:         conversionTargets(logicalType),
+		ConversionRules:           []string{},
+		CompileStrategy:           string(recommended.Storage.Kind),
+		UserCreatable:             true,
+		FilterOperators:           filterOperators(logicalType),
+		Groupable:                 groupable(logicalType),
+		SummaryOperations:         summaryOperations(logicalType),
+		RelationCardinalities:     []string{},
+		RelationDeletePolicies:    []string{},
+		FormulaRelationAggregates: []string{},
 	}
 	if logicalType == LogicalAutoDate || logicalType == LogicalFormula || logicalType == LogicalLookup {
 		capability.SupportsRequired = false
@@ -90,6 +96,8 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		}
 		capability.DangerSettings = []string{"cascade", "retire", "purge"}
 		capability.ConversionRules = []string{"first", "last", "clear", "block"}
+		capability.RelationCardinalities = []string{"one", "many"}
+		capability.RelationDeletePolicies = []string{"setNull", "restrict"}
 	case LogicalFile:
 		capability.AdvancedSettings = []string{"maxFiles", "maxBytes", "mime", "thumbs", "protected"}
 	case LogicalGeoPoint:
@@ -100,10 +108,50 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		capability.AdvancedSettings = []string{"role"}
 	case LogicalFormula:
 		capability.AdvancedSettings = []string{"source", "autoType"}
+		capability.FormulaResultTypeInferred = true
+		capability.FormulaRelationAggregates = []string{"SUM", "COUNT", "AVG", "MIN", "MAX", "ANY"}
 	case LogicalLookup:
 		capability.AdvancedSettings = []string{"path", "targetField"}
+		capability.LookupMaxDepth = MaxLookupPathDepth
 	}
 	return capability, nil
+}
+
+func filterOperators(logicalType LogicalType) []string {
+	common := []string{"eq", "ne", "isEmpty", "isNotEmpty"}
+	switch logicalType {
+	case LogicalText, LogicalEditor, LogicalEmail, LogicalURL:
+		return append(common, "contains", "startsWith")
+	case LogicalNumber, LogicalDate, LogicalDateTime, LogicalTime, LogicalAutoDate:
+		return append(common, "gt", "gte", "lt", "lte")
+	case LogicalMultiSelect, LogicalRelation, LogicalLookup:
+		return []string{"containsAny", "containsAll", "isEmpty", "isNotEmpty"}
+	case LogicalFile:
+		return []string{"isEmpty", "isNotEmpty"}
+	case LogicalJSON, LogicalGeoPoint:
+		return []string{"isEmpty", "isNotEmpty"}
+	case LogicalFormula:
+		return common
+	default:
+		return common
+	}
+}
+
+func groupable(logicalType LogicalType) bool {
+	switch logicalType {
+	case LogicalMultiSelect, LogicalRelation, LogicalFile, LogicalJSON,
+		LogicalGeoPoint, LogicalLookup:
+		return false
+	default:
+		return true
+	}
+}
+
+func summaryOperations(logicalType LogicalType) []string {
+	if logicalType == LogicalNumber {
+		return []string{"count", "countDistinct", "sum", "avg", "min", "max"}
+	}
+	return []string{"count", "countDistinct"}
 }
 
 func RecommendedDefaults(logicalType LogicalType) (RecommendedValues, error) {

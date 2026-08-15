@@ -6,7 +6,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 var displayAggregateFunctions = map[string]string{
@@ -24,19 +25,19 @@ type displayToken struct {
 	name  string
 }
 
-// CanonicalizeDisplaySource turns user-facing {display name} tokens into the
-// permanent physical identifiers consumed and stored by CEL. Target schemas
-// are keyed by the source relation field's physical name.
-func CanonicalizeDisplaySource(
-	definition schema.TableDefinition,
-	targets map[string]schema.TableDefinition,
+// CanonicalizeExecutionDisplaySource turns user-facing {display name} tokens
+// into the permanent physical identifiers consumed and stored by CEL. Target
+// schemas are keyed by the source relation field's physical name.
+func CanonicalizeExecutionDisplaySource(
+	definition schemaexecution.Table,
+	targets map[string]schemaexecution.Table,
 	displaySource string,
 ) (string, *Error) {
 	tokens, err := scanDisplayTokens(displaySource)
 	if err != nil {
 		return "", err
 	}
-	locals := fieldsByDisplayName(definition.Fields)
+	locals := fieldsByDisplayName(definition.Snapshot.Fields)
 	var builder strings.Builder
 	cursor := 0
 	for index := 0; index < len(tokens); index++ {
@@ -48,21 +49,21 @@ func CanonicalizeDisplaySource(
 		}
 		if index+1 < len(tokens) && displaySource[token.end:tokens[index+1].start] == "." {
 			next := tokens[index+1]
-			if local.Kind != schema.FieldKindRelation || local.Relation == nil {
+			if local.LogicalType != v2.LogicalRelation || local.Relation == nil {
 				return "", formulaError(
 					"formula.dependency", "field path root is not a relation",
 					map[string]any{"displayName": token.name},
 				)
 			}
-			targetDefinition, exists := targets[local.PhysicalName]
+			targetDefinition, exists := targets[local.Identity.PhysicalName]
 			if !exists {
 				return "", formulaError(
 					"formula.dependency", "relation target schema is unavailable",
-					map[string]any{"fieldId": local.FieldID},
+					map[string]any{"fieldId": local.Identity.FieldID},
 				)
 			}
 			target, targetErr := uniqueDisplayField(
-				fieldsByDisplayName(targetDefinition.Fields), next.name, "relation target",
+				fieldsByDisplayName(targetDefinition.Snapshot.Fields), next.name, "relation target",
 			)
 			if targetErr != nil {
 				return "", targetErr
@@ -70,19 +71,19 @@ func CanonicalizeDisplaySource(
 			function := precedingFunction(displaySource, token.start)
 			if canonical, aggregate := displayAggregateFunctions[function]; aggregate &&
 				canonical != "relationCount" {
-				builder.WriteString(local.PhysicalName)
+				builder.WriteString(local.Identity.PhysicalName)
 				builder.WriteString(", ")
-				builder.WriteString(fmt.Sprintf("%q", target.PhysicalName))
+				builder.WriteString(fmt.Sprintf("%q", target.Identity.PhysicalName))
 			} else {
-				builder.WriteString(local.PhysicalName)
+				builder.WriteString(local.Identity.PhysicalName)
 				builder.WriteByte('.')
-				builder.WriteString(target.PhysicalName)
+				builder.WriteString(target.Identity.PhysicalName)
 			}
 			cursor = next.end
 			index++
 			continue
 		}
-		builder.WriteString(local.PhysicalName)
+		builder.WriteString(local.Identity.PhysicalName)
 		cursor = token.end
 	}
 	builder.WriteString(displaySource[cursor:])
@@ -131,23 +132,19 @@ func scanDisplayTokens(source string) ([]displayToken, *Error) {
 	return tokens, nil
 }
 
-func fieldsByDisplayName(fields []schema.FieldDefinition) map[string][]schema.FieldDefinition {
-	result := make(map[string][]schema.FieldDefinition, len(fields))
+func fieldsByDisplayName(fields []v2.FieldDefinition) map[string][]v2.FieldDefinition {
+	result := make(map[string][]v2.FieldDefinition, len(fields))
 	for _, field := range fields {
-		if field.DataType == schema.DataTypeSecret || field.DataType == schema.DataTypeHash ||
-			field.Kind == schema.FieldKindSystem || field.Kind == schema.FieldKindAttachment {
-			continue
-		}
 		result[field.DisplayName] = append(result[field.DisplayName], field)
 	}
 	return result
 }
 
 func uniqueDisplayField(
-	fields map[string][]schema.FieldDefinition,
+	fields map[string][]v2.FieldDefinition,
 	displayName string,
 	scope string,
-) (schema.FieldDefinition, *Error) {
+) (v2.FieldDefinition, *Error) {
 	matches := fields[displayName]
 	if len(matches) == 1 {
 		return matches[0], nil
@@ -156,15 +153,15 @@ func uniqueDisplayField(
 	if len(matches) > 1 {
 		fieldIDs := make([]string, 0, len(matches))
 		for _, field := range matches {
-			fieldIDs = append(fieldIDs, field.FieldID)
+			fieldIDs = append(fieldIDs, field.Identity.FieldID)
 		}
 		sort.Strings(fieldIDs)
 		details["fieldIds"] = fieldIDs
-		return schema.FieldDefinition{}, formulaError(
+		return v2.FieldDefinition{}, formulaError(
 			"formula.dependency", "field display name is ambiguous; rename one field", details,
 		)
 	}
-	return schema.FieldDefinition{}, formulaError(
+	return v2.FieldDefinition{}, formulaError(
 		"formula.dependency", "field display name was not found", details,
 	)
 }

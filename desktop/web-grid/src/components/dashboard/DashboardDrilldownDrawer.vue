@@ -37,6 +37,7 @@ function rowKey(row: Record<string, unknown>): string {
 <template>
   <NDrawer :show="show" :width="680" placement="right" @update:show="!$event && emit('close')">
     <NDrawerContent :title="title" closable>
+      <div data-testid="dashboard-drilldown">
       <p class="drilldown-context">{{ t("dashboard.drilldown.selection", { value: formatCell(selection) }) }}</p>
       <NAlert v-if="truncated" type="warning" class="drilldown-alert">{{ t("dashboard.drilldown.truncated") }}</NAlert>
       <NAlert v-if="error" type="error" class="drilldown-alert">{{ error }}</NAlert>
@@ -52,6 +53,7 @@ function rowKey(row: Record<string, unknown>): string {
         :row-key="rowKey"
         :aria-label="t('dashboard.drilldown.table')"
       />
+      </div>
     </NDrawerContent>
   </NDrawer>
 </template>

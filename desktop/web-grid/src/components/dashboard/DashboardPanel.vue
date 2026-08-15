@@ -22,7 +22,7 @@ const emit = defineEmits<{
   edit: [panel: DashboardPanel];
   exportCsv: [panel: DashboardPanel];
   exportPng: [panel: DashboardPanel];
-  select: [panel: DashboardPanel, value: unknown];
+  select: [value: unknown];
 }>();
 const showData = ref(false);
 const ui = useUiStore();
@@ -59,7 +59,7 @@ function integer(value: unknown): number | undefined {
 </script>
 
 <template>
-  <article class="dashboard-panel" :data-panel-id="panel.id" :aria-label="summary">
+  <article class="dashboard-panel" :data-panel-id="panel.id" :data-testid="`dashboard-panel-${panel.id}`" :aria-label="summary">
     <header v-if="panel.showHeader !== false || editing" class="panel-header">
       <span v-if="editing" class="panel-drag" :aria-label="t('dashboard.layout.drag')"><Grip :size="14" /></span>
       <div class="panel-title">
@@ -68,7 +68,7 @@ function integer(value: unknown): number | undefined {
       </div>
       <div class="panel-actions">
         <NTooltip><template #trigger><NButton quaternary size="tiny" :aria-label="t('dashboard.action.refreshPanel')" @click="emit('refresh', panel.id)"><NIcon><RefreshCw /></NIcon></NButton></template>{{ t("dashboard.action.refreshPanel") }}</NTooltip>
-        <NTooltip><template #trigger><NButton quaternary size="tiny" :aria-label="t('dashboard.action.dataView')" @click="showData = !showData"><NIcon><Table2 /></NIcon></NButton></template>{{ t("dashboard.action.dataView") }}</NTooltip>
+        <NTooltip><template #trigger><NButton quaternary size="tiny" data-testid="dashboard-panel-data-view" :aria-label="t('dashboard.action.dataView')" @click="showData = !showData"><NIcon><Table2 /></NIcon></NButton></template>{{ t("dashboard.action.dataView") }}</NTooltip>
         <NTooltip><template #trigger><NButton quaternary size="tiny" :aria-label="t('dashboard.action.exportCsv')" @click="emit('exportCsv', panel)"><NIcon><Download /></NIcon></NButton></template>{{ t("dashboard.action.exportCsv") }}</NTooltip>
         <NTooltip><template #trigger><NButton quaternary size="tiny" :aria-label="t('dashboard.action.exportPanelPng')" @click="emit('exportPng', panel)"><NIcon><ImageDown /></NIcon></NButton></template>{{ t("dashboard.action.exportPanelPng") }}</NTooltip>
         <NButton v-if="editing && panel.editable" quaternary size="tiny" :aria-label="t('dashboard.panel.edit')" @click="emit('edit', panel)"><NIcon><Pencil /></NIcon></NButton>
@@ -93,7 +93,7 @@ function integer(value: unknown): number | undefined {
         </div>
         <p v-if="data.rows.length === 0" class="empty-copy">{{ t("dashboard.data.empty") }}</p>
       </div>
-      <DashboardChart v-else-if="isChart && !showData && visible" :panel="panel" :rows="data.rows" @select="emit('select', panel, $event)" />
+      <DashboardChart v-else-if="isChart && !showData && visible" :panel="panel" :rows="data.rows" @select="emit('select', $event)" />
       <div v-else-if="isChart && !visible" class="chart-placeholder" aria-hidden="true"></div>
 
       <div v-if="showData" class="data-table-wrap">

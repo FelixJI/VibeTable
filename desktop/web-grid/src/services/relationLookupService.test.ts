@@ -38,14 +38,12 @@ describe("relationLookupService", () => {
     await useRelationLookupService().searchTargets({
       relationId: "orders.contract",
       query: "",
-      collection: null,
       offset: 0,
       limit: 50,
     });
 
     expect(request).toHaveBeenCalledWith("relation.searchTargets", {
       relationId: "orders.contract",
-      collection: null,
       offset: 0,
       limit: 50,
     });
@@ -55,7 +53,6 @@ describe("relationLookupService", () => {
     request.mockResolvedValue({
       items: [{
         collection: "regions", itemId: "region-51", label: "华北仓",
-        junctionValues: {},
       }],
       total: 1,
     });
@@ -63,7 +60,6 @@ describe("relationLookupService", () => {
     const result = await useRelationLookupService().searchTargets({
       relationId: "customers.region",
       query: "华北仓",
-      collection: null,
       offset: 0,
       limit: 50,
     });
@@ -71,7 +67,6 @@ describe("relationLookupService", () => {
     expect(request).toHaveBeenCalledWith("relation.searchTargets", {
       relationId: "customers.region",
       query: "华北仓",
-      collection: null,
       offset: 0,
       limit: 50,
     });
@@ -90,73 +85,21 @@ describe("relationLookupService", () => {
     });
     request.mockResolvedValue({
       outcome: "committed",
-      target: { collection: "customers", itemId: "c-2", label: "Grace", junctionValues: {} },
+      target: { collection: "customers", itemId: "c-2", label: "Grace" },
       requestId: "create-1",
     });
 
     const result = await useRelationLookupService().createTarget(
       "orders.customer",
       "  Grace  ",
-      "customers",
     );
 
     expect(result.target.label).toBe("Grace");
     expect(request).toHaveBeenCalledWith("relation.createTarget", {
       relationId: "orders.customer",
       label: "Grace",
-      collection: "customers",
       idempotencyKey: expect.any(String),
     });
-  });
-
-  it("loads an authoritative Lookup dataset through backend-bounded pages", async () => {
-    const store = useRelationLookupStore();
-    const generation = store.beginContext("orders");
-    store.acceptContext(generation, {
-      collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
-      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
-    }, [], {
-      contract: "vibetable.relation-capabilities.v1",
-      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
-    });
-    request.mockImplementation(async (_method: string, payload: {
-      requestGeneration: number;
-      query: { offset: number; limit: number };
-    }) => {
-      const count = payload.query.offset === 0 ? 500 : 100;
-      return {
-        contract: "vibetable.lookup-query.v1",
-        collection: "orders",
-        requestGeneration: payload.requestGeneration,
-        schemaRevision: "s",
-        permissionRevision: "p",
-        lookupRevision: "l",
-        columns: [],
-        rows: Array.from({ length: count }, (_, index) => ({
-          rowKey: payload.query.offset + index,
-        })),
-        groups: [],
-        offset: payload.query.offset,
-        limit: payload.query.limit,
-        filteredRows: 600,
-        totalRows: 600,
-        snapshot: {},
-      };
-    });
-
-    const result = await useRelationLookupService().queryDataset({
-      collection: "orders",
-      fieldRefs: ["customer_name"],
-      query: { filters: [], sorts: [], groups: [] },
-    });
-
-    expect(result.rows).toHaveLength(600);
-    expect(request).toHaveBeenNthCalledWith(1, "lookup.query", expect.objectContaining({
-      query: expect.objectContaining({ offset: 0, limit: 500 }),
-    }));
-    expect(request).toHaveBeenNthCalledWith(2, "lookup.query", expect.objectContaining({
-      query: expect.objectContaining({ offset: 500, limit: 500 }),
-    }));
   });
 
 	it("binds source-value pages to the active schema and lookup revisions", async () => {
@@ -187,7 +130,7 @@ describe("relationLookupService", () => {
 		});
 	});
 
-  it("builds add/update/remove from a staged multi relation", () => {
+  it("builds add/remove from a staged direct multi relation", () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("articles");
     store.acceptContext(generation, {
@@ -197,22 +140,15 @@ describe("relationLookupService", () => {
       contract: "vibetable.relation-capabilities.v1",
       relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
     });
-    const removed = { collection: "tags", itemId: "1", label: "old", junctionId: "j1", junctionRevision: "a".repeat(64), junctionValues: {} };
-    const updated = { collection: "tags", itemId: "2", label: "same", junctionId: "j2", junctionRevision: "b".repeat(64), junctionValues: { note: "a" } };
-    const added = { collection: "tags", itemId: "3", label: "new", junctionValues: {} };
-    store.openDraft("articles.tags", "a1", [removed, updated]);
+    const removed = { collection: "tags", itemId: "1", label: "old" };
+    const retained = { collection: "tags", itemId: "2", label: "same" };
+    const added = { collection: "tags", itemId: "3", label: "new" };
+    store.openDraft("articles.tags", "a1", [removed, retained]);
     store.toggleDraftTarget(removed);
     store.toggleDraftTarget(added);
-    store.patchDraftJunction(updated, { note: "b" });
     const delta = useRelationLookupService().buildDraftDelta();
     expect(delta.adds.map((item) => item.target.itemId)).toEqual(["3"]);
     expect(delta.removes.map((item) => item.target.itemId)).toEqual(["1"]);
-    expect(delta.removes[0]?.expectedRevision).toBe("a".repeat(64));
-    expect(delta.updates).toEqual([{
-      junctionId: "j2",
-      values: { note: "b" },
-      expectedRevision: "b".repeat(64),
-    }]);
   });
 
   it("hydrates a multi-relation draft from the authoritative backend preview", async () => {
@@ -226,8 +162,7 @@ describe("relationLookupService", () => {
       relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
     });
     const current = [{
-      collection: "tags", itemId: "t1", label: "Tag 1", junctionId: "j1",
-      junctionRevision: "a".repeat(64), junctionValues: { weight: 2 },
+      collection: "tags", itemId: "t1", label: "Tag 1",
     }];
     request.mockResolvedValue({
       delta: {}, relationId: "articles.tags", sourceItemId: "a1",
@@ -239,8 +174,35 @@ describe("relationLookupService", () => {
 
     expect(store.draft?.original).toEqual(current);
     expect(request).toHaveBeenCalledWith("relation.previewDelta", expect.objectContaining({
-      relationId: "articles.tags", sourceItemId: "a1", adds: [], updates: [], removes: [],
+      relationId: "articles.tags", sourceItemId: "a1", adds: [], removes: [],
     }));
+  });
+
+  it("does not publish an authoritative draft after the editor epoch is invalidated", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("articles");
+    store.acceptContext(generation, {
+      collection: "articles", primaryKey: "id", columns: [], normalizedRelations: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    }, [], {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    });
+    request.mockResolvedValue({
+      delta: {}, relationId: "articles.tags", sourceItemId: "a1",
+      adds: 0, updates: 0, removes: 0,
+      current: [{ collection: "tags", itemId: "t1", label: "Tag 1" }],
+      canApply: true, schemaRevision: "s", diagnostics: [],
+    });
+
+    await useRelationLookupService().loadDraft(
+      "articles.tags",
+      "a1",
+      undefined,
+      () => false,
+    );
+
+    expect(store.draft).toBeNull();
   });
 
   it("loads Lookup candidates from a path target collection", async () => {
@@ -261,7 +223,7 @@ describe("relationLookupService", () => {
       relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
     });
     const target = {
-      collection: "contracts", itemId: "contract-7", label: "CT-0007", junctionValues: {},
+      collection: "contracts", itemId: "contract-7", label: "CT-0007",
     };
     request.mockResolvedValue({
       outcome: "committed", current: target, schemaRevision: "s", requestId: "update-1",
@@ -278,7 +240,7 @@ describe("relationLookupService", () => {
 
   it("attaches a record created in the target table using the captured source revision", async () => {
     const target = {
-      collection: "customers", itemId: "customer-9", label: "Ada", junctionValues: {},
+      collection: "customers", itemId: "customer-9", label: "Ada",
     };
     request.mockResolvedValueOnce({
       delta: {}, relationId: "orders.customers", sourceItemId: "order-1",
@@ -313,7 +275,7 @@ describe("relationLookupService", () => {
       collection: "orders", primaryKey: "id", columns: [],
       normalizedRelations: [{
         relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
-        relatedCollection: "contracts", allowedCollections: [], unique: false, nullable: true,
+        relatedCollection: "contracts", unique: false, nullable: true,
         onDelete: "nullify", preset: "standard", selfRelation: false, managed: true, state: "valid",
         diagnostics: [],
       }],
@@ -328,7 +290,7 @@ describe("relationLookupService", () => {
         { relationId: "customers.country" },
       ],
       source: { kind: "target_field", fieldRef: "countries.currency" },
-      m2aFieldMapping: [], aggregation: "single", outputType: "text", revision: 1,
+      outputType: "text", revision: 1,
       state: "valid", diagnostics: [], dependencies: [],
     };
     store.acceptContext(generation, snapshot, [deepLookup], {

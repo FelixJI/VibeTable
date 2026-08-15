@@ -25,8 +25,6 @@
         "sourceCollection": "orders",
         "kind": "m2o",
         "relatedCollection": "contracts",
-        "allowedCollections": [],
-        "junction": null,
         "unique": false,
         "nullable": true,
         "onDelete": "nullify",
@@ -48,10 +46,8 @@
     "collection": "orders",
     "fieldKey": "contract_price",
     "displayName": "Contract price",
-    "path": [{"relationId": "orders.contract", "m2aCollection": null}],
+    "path": [{"relationId": "orders.contract"}],
     "source": {"kind": "target_field", "fieldRef": "price"},
-    "m2aFieldMapping": [],
-    "aggregation": "single",
     "outputType": "decimal",
     "outputScale": 2,
     "revision": 1,
@@ -64,10 +60,7 @@
     "current": {
       "collection": "contracts",
       "itemId": "contract-7",
-      "label": "CT-0007",
-      "junctionId": null,
-      "junctionRevision": null,
-      "junctionValues": {}
+      "label": "CT-0007"
     },
     "schemaRevision": "schema-1",
     "requestId": "single-update-1"

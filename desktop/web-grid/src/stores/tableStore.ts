@@ -15,32 +15,25 @@ import type {
 
 const LOOKUP_STABLE_KEY_ERROR =
   "Lookup query returned a row without a stable key.";
+const MAX_CURSOR_WINDOWS = 5;
 
 /**
  * tableStore — renderer-side bookkeeping for the loaded table.
  *
- * Tracks the loaded table's pages (accumulated INCREMENTALLY from
- * `table.pageLoaded` events — never destroy + rebuild per page), schema,
- * rowCount, and loading/error state. The host drives the multi-page client-mode
- * fetch: one `table.pageLoaded` per page, then a single `table.datasetReady`
- * once `loadedRows == totalRows`. `tableService` wires the inbound events to
- * this store; see `src/services/tableService.ts`.
+ * Tracks the loaded table's bounded row windows, schema, rowCount, and
+ * loading/error state. Every host result is a revision-bound server window;
+ * `tableService` wires the inbound events to this store.
  *
- * DatasetReady nuance: `DatasetReadyPayload extends TablePage`, so the
- * `datasetReady` payload IS a page carrying the authoritative full dataset
- * (per `contracts/index.ts`: "the complete client-mode dataset"). Appending it
- * on top of accumulated pages would double-count rows. Instead — mirroring the
- * legacy `desktop/web-grid/src/tableFlow.ts` (`rows: payload.rows` replacement
- * on datasetReady) — `setDatasetReady` REPLACES accumulated pages with this one
- * authoritative page. `allRows` then flattens a single page, yielding the full
- * dataset with no double-count.
+ * The initial `table.datasetReady` payload is one revision-bound cursor window.
+ * Subsequent `table.windowLoaded` events append at most five windows, evicting
+ * the oldest so large datasets never become an unbounded renderer allocation.
  */
 export const useTableStore = defineStore("table", () => {
   /** True while the host is fetching pages for the current table. */
   const loading = ref(false);
-  /** True after `table.datasetReady` arrived (full dataset loaded). */
+  /** True after the authoritative initial window arrived. */
   const datasetReady = ref(false);
-  /** Accumulated pages (incremental). Replaced wholesale by datasetReady. */
+  /** Revision-bound row windows, capped by MAX_CURSOR_WINDOWS. */
   const pages = ref<TablePage[]>([]);
   /** Schema columns learned from the host; null before the first page. */
   const schema = ref<readonly ColumnSchema[] | null>(null);
@@ -71,6 +64,9 @@ export const useTableStore = defineStore("table", () => {
   /** Independently paged group combinations from the authoritative ViewQuery. */
   const viewGroups = ref<ViewGroupRow[]>([]);
   const hasMoreViewGroups = ref(false);
+  const nextCursor = ref<string | null>(null);
+  const hasMoreWindows = ref(false);
+  const windowLoading = ref(false);
 
   /** All accumulated rows across pages, flattened in order. */
   const allRows = computed<ReadonlyArray<Record<string, unknown>>>(() =>
@@ -89,45 +85,29 @@ export const useTableStore = defineStore("table", () => {
     lookupGroups.value = [];
     viewGroups.value = [];
     hasMoreViewGroups.value = false;
+    nextCursor.value = null;
+    hasMoreWindows.value = false;
+    windowLoading.value = false;
   }
 
   /**
-   * Accumulate one incremental page from `table.pageLoaded`. Pages are pushed
-   * in arrival order; `allRows` flattens them. Also learn the schema/count from
-   * each page so the grid can render incrementally before datasetReady.
+   * Accept one completed `table.pageLoaded` query window. A new result replaces
+   * the previous window rather than accumulating rows from different queries.
    */
   function appendPage(page: TablePage): boolean {
     discardEditSchemaForDifferentRevision(page.revision);
     const incoming = page.revision;
     if (isBelowRevisionFloor(incoming)) return false;
-    // Offset zero starts a new read attempt. This matters when the desktop
-    // host restarts a client-mode multi-page fetch after detecting that the
-    // database revision changed between pages. Remote mode also retains only
-    // the requested page rather than accumulating unrelated windows.
-    pages.value = page.offset === 0 || page.mode === "remote"
-      ? [page]
-      : [...pages.value, page];
-    // Adopt the page's schema/count if present so the grid can render during
-    // the incremental load (host advertises the same schema/count per page).
+    pages.value = [page];
     if (page.columns.length > 0) {
       schema.value = page.columns;
     }
     rowCount.value = page.totalRows;
-    // Remote mode never emits datasetReady. Each page therefore carries the
-    // only authoritative mutation revision available to the renderer.
     if (page.revision) {
       adoptRevision(page.revision);
     }
-    return true;
-  }
-
-  /**
-   * End a page-oriented load that intentionally has no datasetReady event
-   * (remote mode). The page remains incremental/not-full, so datasetReady
-   * stays false.
-   */
-  function finishPageLoad(): void {
     loading.value = false;
+    return true;
   }
 
   /**
@@ -155,6 +135,9 @@ export const useTableStore = defineStore("table", () => {
     schema.value = payload.columns;
     rowCount.value = payload.totalRows;
     datasetReady.value = true;
+    nextCursor.value = payload.nextCursor ?? null;
+    hasMoreWindows.value = payload.hasMore ?? false;
+    windowLoading.value = false;
     loading.value = false;
     // DatasetReadyPayload extends TablePage which carries the authoritative
     // MutationRevision. If the host supplied one, adopt it (overriding the
@@ -163,6 +146,47 @@ export const useTableStore = defineStore("table", () => {
       adoptRevision(payload.revision);
     }
     return true;
+  }
+
+  function beginNextWindow(): string | null {
+    if (windowLoading.value || !hasMoreWindows.value || !nextCursor.value) return null;
+    windowLoading.value = true;
+    return nextCursor.value;
+  }
+
+  function appendWindow(page: TablePage): boolean {
+    const current = pages.value[0]?.querySnapshot;
+    const incoming = page.querySnapshot;
+    if (
+      !current
+      || !incoming
+      || current.databaseId !== incoming.databaseId
+      || current.table !== incoming.table
+      || current.schemaRevision !== incoming.schemaRevision
+      || current.dataRevision !== incoming.dataRevision
+    ) {
+      windowLoading.value = false;
+      return false;
+    }
+    const known = new Set(pages.value.flatMap(window => window.rows)
+      .map(row => String(row.rowKey)));
+    const rows = page.rows.filter(row => !known.has(String(row.rowKey)));
+    pages.value = [...pages.value, { ...page, rows }].slice(-MAX_CURSOR_WINDOWS);
+    nextCursor.value = page.nextCursor ?? null;
+    hasMoreWindows.value = page.hasMore ?? false;
+    windowLoading.value = false;
+    if (page.revision) adoptRevision(page.revision);
+    return true;
+  }
+
+  function cancelNextWindow(): void {
+    windowLoading.value = false;
+  }
+
+  function beginCursorReopen(): void {
+    loading.value = true;
+    windowLoading.value = false;
+    error.value = null;
   }
 
   /** Record an error and end loading. */
@@ -190,6 +214,9 @@ export const useTableStore = defineStore("table", () => {
     lookupGroups.value = [];
     viewGroups.value = [];
     hasMoreViewGroups.value = false;
+    nextCursor.value = null;
+    hasMoreWindows.value = false;
+    windowLoading.value = false;
   }
 
   /**
@@ -428,6 +455,17 @@ export const useTableStore = defineStore("table", () => {
       };
       for (const [wireField, value] of Object.entries(wireRow)) {
         if (wireField === "rowKey") continue;
+        if (wireField === "__vibetableDigest") {
+          // QueryPort recomputes this guard after formulas, Lookups, and other
+          // authoritative projections. Retaining the pre-query digest makes
+          // the next inline edit conflict with the very snapshot being shown.
+          if (typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value)) {
+            row.__vibetableDigest = value;
+          } else {
+            delete row.__vibetableDigest;
+          }
+          continue;
+        }
         const field = fieldNames.get(wireField);
         if (field) row[field] = value;
       }
@@ -459,11 +497,17 @@ export const useTableStore = defineStore("table", () => {
     lookupGroups,
     viewGroups,
     hasMoreViewGroups,
+    nextCursor,
+    hasMoreWindows,
+    windowLoading,
     allRows,
     beginLoad,
     appendPage,
-    finishPageLoad,
     setDatasetReady,
+    beginNextWindow,
+    appendWindow,
+    cancelNextWindow,
+    beginCursorReopen,
     setError,
     reset,
     setEditSchema,

@@ -81,30 +81,44 @@ import {
   WORKSPACE_V2_HOST_MESSAGE_TYPES,
   WORKSPACE_V2_WEB_MESSAGE_TYPES,
 } from "@/contracts/workspaceV2Bridge";
+import type {
+  SurfaceHostMessageType,
+  SurfaceHostPayloadMap,
+  SurfaceWebMessageType,
+  SurfaceWebPayloadMap,
+} from "@/contracts/surfaceBridgeContracts";
+import {
+  SURFACE_HOST_MESSAGE_TYPES,
+  SURFACE_WEB_MESSAGE_TYPES,
+} from "@/contracts/surfaceBridgeContracts";
 
 type HostMessageType =
   | SharedHostMessageType
   | RuntimeDiagnosticsHostMessageType
   | AppPreferencesHostMessageType
   | ReleaseUpdateHostMessageType
+  | SurfaceHostMessageType
   | WorkspaceV2HostMessageType;
 type HostPayloadMap =
   & SharedHostPayloadMap
   & RuntimeDiagnosticsHostPayloadMap
   & AppPreferencesHostPayloadMap
   & ReleaseUpdateHostPayloadMap
+  & SurfaceHostPayloadMap
   & WorkspaceV2HostPayloadMap;
 type WebMessageType =
   | SharedWebMessageType
   | RuntimeDiagnosticsWebMessageType
   | AppPreferencesWebMessageType
   | ReleaseUpdateWebMessageType
+  | SurfaceWebMessageType
   | WorkspaceV2WebMessageType;
 type WebPayloadMap =
   & SharedWebPayloadMap
   & RuntimeDiagnosticsWebPayloadMap
   & AppPreferencesWebPayloadMap
   & ReleaseUpdateWebPayloadMap
+  & SurfaceWebPayloadMap
   & WorkspaceV2WebPayloadMap;
 
 /** Diagnostic emitted when an inbound message is dropped. */
@@ -203,6 +217,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "database.opened",
   "table.pageLoaded",
   "table.datasetReady",
+  "table.windowLoaded",
   "operation.failed",
   // B1 mutation notifications.
   "table.editSchemaLoaded",
@@ -228,7 +243,16 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "field.change.cancel",
   "field.recycleBin.list",
   "schema.getTable",
+  "contentProfile.load",
+  "contentProfile.commit",
+  "contentProfile.delete",
+  "recordDocumentLink.list",
+  "recordDocumentLink.commit",
+  "recordDocumentLink.repair",
+  "recordDocumentLink.delete",
   "query.page",
+  "query.cursorOpen",
+  "query.cursorFetch",
   "mutation.preview",
   "mutation.apply",
   "formula.validate",
@@ -247,8 +271,6 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "relation.previewDelta",
   "relation.applyDelta",
   "lookup.list",
-  "lookup.validate",
-  "lookup.preview",
   "lookup.query",
 	"lookup.valuePage",
   "preset.list",
@@ -264,6 +286,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
+  ...SURFACE_HOST_MESSAGE_TYPES,
   // B2 paste preview + apply outcomes.
   "table.pastePreviewReady",
   "table.pasteApplied",
@@ -272,7 +295,6 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "history.restoreApplied",
   // Table management: collection lifecycle events.
   "database.collectionsChanged",
-  "identifierMappings.result",
   "dashboard.listLoaded",
   "dashboard.loaded",
   "dashboard.manifestLoaded",
@@ -319,7 +341,6 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "host.startupCancelRequested",
   "database.openRequested",
   "table.selected",
-  "table.pageRequested",
   "table.updateCellRequested",
   "table.insertRowRequested",
   "table.deleteRowsRequested",
@@ -330,7 +351,16 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "field.change.cancel",
   "field.recycleBin.list",
   "schema.getTable",
+  "contentProfile.load",
+  "contentProfile.commit",
+  "contentProfile.delete",
+  "recordDocumentLink.list",
+  "recordDocumentLink.commit",
+  "recordDocumentLink.repair",
+  "recordDocumentLink.delete",
   "query.page",
+  "query.cursorOpen",
+  "query.cursorFetch",
   "mutation.preview",
   "mutation.apply",
   "formula.validate",
@@ -351,8 +381,6 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "relation.previewDelta",
   "relation.applyDelta",
   "lookup.list",
-  "lookup.validate",
-  "lookup.preview",
   "lookup.query",
 	"lookup.valuePage",
   "preset.list",
@@ -368,8 +396,10 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   ...APP_PREFERENCES_WEB_MESSAGE_TYPES,
   ...RELEASE_UPDATE_WEB_MESSAGE_TYPES,
   ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
+  ...SURFACE_WEB_MESSAGE_TYPES,
   // B3 query + state requests.
   "table.queryRequested",
+  "table.cursorRequested",
   "gridState.saveRequested",
   // B2 paste preview + apply requests.
   "table.previewPasteRequested",
@@ -389,9 +419,6 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // Table management: create/delete collection requests.
   "tableAdmin.createRequested",
   "tableAdmin.deleteRequested",
-  "identifierMappings.listRequested",
-  "identifierMappings.updateAliasesRequested",
-  "identifierMappings.reconcileRequested",
   "dashboard.listRequested",
   "dashboard.readRequested",
   "dashboard.manifestRequested",
@@ -452,7 +479,6 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
 > = {
   "database.openRequested": ["database.opened"],
   "table.selected": ["table.editSchemaLoaded"],
-  "table.pageRequested": ["table.pageLoaded"],
   "table.updateCellRequested": ["table.editCommitted", "table.editRejected"],
   "table.insertRowRequested": ["table.rowsInserted"],
   "table.deleteRowsRequested": ["table.rowsDeleted"],
@@ -464,15 +490,16 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "history.applyRestoreRequested": ["history.restoreApplied"],
   "tableAdmin.createRequested": ["database.collectionsChanged"],
   "tableAdmin.deleteRequested": ["database.collectionsChanged"],
-  "identifierMappings.listRequested": ["identifierMappings.result"],
-  "identifierMappings.updateAliasesRequested": ["identifierMappings.result"],
-  "identifierMappings.reconcileRequested": ["identifierMappings.result"],
   "dashboard.listRequested": ["dashboard.listLoaded"],
   "dashboard.readRequested": ["dashboard.loaded"],
   "dashboard.manifestRequested": ["dashboard.manifestLoaded"],
   "dashboard.queryRequested": ["dashboard.queryLoaded"],
   "dashboard.saveRequested": ["dashboard.saved"],
   "dashboard.deleteRequested": ["dashboard.deleted"],
+  "interface.listRequested": ["interface.listLoaded"],
+  "interface.loadRequested": ["interface.loaded"],
+  "interface.commitRequested": ["interface.committed"],
+  "interface.deleteRequested": ["interface.deleted"],
   "document.listRequested": ["document.listLoaded"],
   "document.openRequested": ["document.actionCompleted"],
   "document.previewRequested": ["document.actionCompleted"],
@@ -546,10 +573,14 @@ export interface HostBridge {
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
   ): Promise<unknown>;
+  request<K extends SurfaceWebMessageType>(
+    type: K,
+    payload: SurfaceWebPayloadMap[K],
+  ): Promise<unknown>;
   request<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
-  ): Promise<unknown>;
+  ): Promise<K extends keyof SharedHostPayloadMap ? SharedHostPayloadMap[K] : unknown>;
   /** Begin a correlated request and expose its envelope id for typed cancellation. */
   requestWithHandle<K extends RuntimeDiagnosticsWebMessageType>(
     type: K,
@@ -558,6 +589,10 @@ export interface HostBridge {
   requestWithHandle<K extends WorkspaceV2WebMessageType>(
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
+  ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  requestWithHandle<K extends SurfaceWebMessageType>(
+    type: K,
+    payload: SurfaceWebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> };
   requestWithHandle<K extends SharedWebMessageType>(
     type: K,
@@ -571,6 +606,10 @@ export interface HostBridge {
   notify<K extends WorkspaceV2WebMessageType>(
     type: K,
     payload: WorkspaceV2WebPayloadMap[K],
+  ): void;
+  notify<K extends SurfaceWebMessageType>(
+    type: K,
+    payload: SurfaceWebPayloadMap[K],
   ): void;
   notify<K extends SharedWebMessageType>(
     type: K,
@@ -607,6 +646,10 @@ export interface HostBridge {
   on<K extends WorkspaceV2HostMessageType>(
     type: K,
     handler: (payload: WorkspaceV2HostPayloadMap[K]) => void,
+  ): () => void;
+  on<K extends SurfaceHostMessageType>(
+    type: K,
+    handler: (payload: SurfaceHostPayloadMap[K]) => void,
   ): () => void;
   on<K extends SharedHostMessageType>(
     type: K,

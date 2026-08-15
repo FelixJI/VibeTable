@@ -107,6 +107,33 @@ func TestMaterializerTracksEffectiveLeafRenameRestoreAndDelete(t *testing.T) {
 	}
 }
 
+func TestMaterializerJournalWritesUseDistinctTemporaryFiles(t *testing.T) {
+	root := t.TempDir()
+	materializer := &Materializer{
+		journalRoot: root,
+		journalPath: filepath.Join(root, "journal.json"),
+	}
+	var sources []string
+	replaceFile := func(source string, destination string) error {
+		sources = append(sources, source)
+		raw, err := os.ReadFile(source)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(destination, raw, 0o600)
+	}
+	for _, state := range []string{"prepared", "applied"} {
+		if err := materializer.writeJournalWithReplace(
+			materializerJournal{State: state}, replaceFile,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sources) != 2 || sources[0] == sources[1] {
+		t.Fatalf("journal temp sources = %#v", sources)
+	}
+}
+
 func TestFormalRelinkRematerializesMissingSameContentLeaf(t *testing.T) {
 	ctx := context.Background()
 	coordinator, err := writecoordinator.New(

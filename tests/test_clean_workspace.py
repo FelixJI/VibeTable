@@ -89,6 +89,47 @@ def test_artifact_cleanup_preserves_recent_qa_runs_and_protected_dependencies(
     assert all(".tools" not in item and "node_modules" not in item for item in relative)
 
 
+def test_artifact_cleanup_never_collects_a_git_worktree_nested_under_build(
+    tmp_path: Path,
+) -> None:
+    now = 2_000_000_000.0
+    worktree = tmp_path / "build" / "codex-worktrees" / "offline-data-workbench"
+    _old(worktree / ".git", root=tmp_path, now=now)
+    _old(worktree / "backend" / "__init__.py", root=tmp_path, now=now)
+
+    candidates = collect_candidates(
+        tmp_path,
+        scope="artifacts",
+        older_than_days=7,
+        keep_qa_runs=2,
+        now=now,
+    )
+
+    assert all(not worktree.is_relative_to(candidate.path) for candidate in candidates)
+
+
+def test_artifact_cleanup_rechecks_protected_entries_before_removal(tmp_path: Path) -> None:
+    now = 2_000_000_000.0
+    artifact = tmp_path / "build" / "stale-output"
+    _old(artifact / "result.json", root=tmp_path, now=now)
+    candidates = collect_candidates(
+        tmp_path,
+        scope="artifacts",
+        older_than_days=7,
+        keep_qa_runs=2,
+        now=now,
+    )
+    assert [item.path for item in candidates] == [artifact]
+
+    (artifact / ".git").write_text("gitdir: protected-worktree", encoding="utf-8")
+
+    failures = remove_candidates(tmp_path, candidates)
+
+    assert failures
+    assert "protected entries" in failures[0]
+    assert artifact.exists()
+
+
 def test_target_validation_refuses_repository_root_and_protected_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="outside repository"):
         validate_target(tmp_path, tmp_path)

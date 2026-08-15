@@ -1,10 +1,8 @@
 package mutation
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -15,8 +13,8 @@ import (
 	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 const (
@@ -31,7 +29,7 @@ var (
 )
 
 type SchemaSource interface {
-	Describe(ctx context.Context, app core.App, tableID string) (schema.TableDefinition, error)
+	Describe(ctx context.Context, app core.App, tableID string) (schemaexecution.Table, error)
 }
 
 type Kernel struct {
@@ -43,8 +41,17 @@ type Kernel struct {
 	formulas    FormulaCalculator
 	attachments AttachmentManager
 	publisher   Publisher
+	invalidator ComputationInvalidator
 	publishCtx  context.Context
 	coordinator *mutationCoordinator
+}
+
+type ComputationInvalidator interface {
+	EnqueueInvalidations(
+		context.Context,
+		core.App,
+		DataChangedEvent,
+	) ([]string, error)
 }
 
 type mutationCoordinator struct {
@@ -57,7 +64,7 @@ type mutationCoordinator struct {
 var coordinatorRegistry sync.Map
 
 type PreviewResult struct {
-	Definition schema.TableDefinition
+	Definition schemaexecution.Table
 	Operations []NormalizedOperation
 }
 
@@ -82,14 +89,14 @@ type AttachmentManager interface {
 	Prepare(
 		context.Context,
 		core.App,
-		schema.TableDefinition,
+		schemaexecution.Table,
 		*core.Record,
 		AttachmentChange,
 	) (AttachmentFinalizer, error)
 	CleanupRecord(
 		context.Context,
 		core.App,
-		schema.TableDefinition,
+		schemaexecution.Table,
 		*core.Record,
 	) error
 }
@@ -98,7 +105,7 @@ type FormulaCalculator interface {
 	Calculate(
 		ctx context.Context,
 		app core.App,
-		definition schema.TableDefinition,
+		definition schemaexecution.Table,
 		record *core.Record,
 	) (map[string]any, error)
 }
@@ -122,7 +129,15 @@ func WithFaultInjector(injector func(point string) error) Option {
 }
 
 func WithFormulaCalculator(calculator FormulaCalculator) Option {
-	return func(kernel *Kernel) { kernel.formulas = calculator }
+	return func(kernel *Kernel) {
+		kernel.formulas = calculator
+	}
+}
+
+func WithComputationInvalidator(invalidator ComputationInvalidator) Option {
+	return func(kernel *Kernel) {
+		kernel.invalidator = invalidator
+	}
 }
 
 func WithAttachmentManager(manager AttachmentManager) Option {
@@ -235,20 +250,20 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 	if err != nil {
 		return PreviewResult{}, err
 	}
-	if definition.TableID != request.TableID {
+	if definition.Snapshot.TableID != request.TableID {
 		return PreviewResult{}, mutationError("mutation.table.not_found", stringPointer("tableId"), "table was not found", nil, false)
 	}
-	if definition.Kind != schema.TableKindBase {
+	if definition.Kind != "base" {
 		return PreviewResult{}, mutationError(
 			"mutation.table.read_only", stringPointer("tableId"),
 			"only base tables accept mutations", nil, false,
 		)
 	}
-	if definition.SchemaRevision != request.SchemaRevision {
+	if definition.Snapshot.SchemaRevision != request.SchemaRevision {
 		return PreviewResult{}, mutationError(
 			"mutation.schema_revision_conflict", stringPointer("schemaRevision"),
 			"schema revision does not match", map[string]any{
-				"expected": request.SchemaRevision, "actual": definition.SchemaRevision,
+				"expected": request.SchemaRevision, "actual": definition.Snapshot.SchemaRevision,
 			}, false,
 		)
 	}
@@ -257,19 +272,10 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			return PreviewResult{}, err
 		}
 	}
-	fields := make(map[string]schema.FieldDefinition, len(definition.Fields))
-	for _, field := range definition.Fields {
-		fields[field.FieldID] = field
-		fields[field.PhysicalName] = field
-	}
-	v2Fields, err := loadV2FieldDefinitions(ctx, app, request.TableID)
-	if err != nil {
-		return PreviewResult{}, err
-	}
-	v2ByAlias := make(map[string]v2.FieldDefinition, len(v2Fields))
-	for _, field := range v2Fields {
-		v2ByAlias[field.Identity.FieldID] = field
-		v2ByAlias[field.Identity.PhysicalName] = field
+	fields := make(map[string]v2.FieldDefinition)
+	for _, field := range definition.Snapshot.Fields {
+		fields[field.Identity.FieldID] = field
+		fields[field.Identity.PhysicalName] = field
 	}
 	pendingRecordIDs := make(map[string]struct{}, len(request.Operations))
 	for _, operation := range request.Operations {
@@ -295,9 +301,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 				)
 			}
 			field, ok := fields[operation.FieldID]
-			if !ok || field.Kind != schema.FieldKindAttachment ||
-				field.DataType != schema.DataTypeFile ||
-				field.AttachmentPolicy == nil {
+			if !ok || field.LogicalType != v2.LogicalFile || field.File == nil {
 				return PreviewResult{}, mutationError(
 					"mutation.attachment.invalid_field", stringPointer(path+".fieldId"),
 					"attachment field was not found", nil, false,
@@ -315,7 +319,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 				ExpectedRevision: operation.ExpectedRevision,
 				ExpectedDigest:   operation.ExpectedDigest,
 				Attachment: &AttachmentChange{
-					FieldID:           field.FieldID,
+					FieldID:           field.Identity.FieldID,
 					UploadHandles:     append([]string(nil), operation.UploadHandles...),
 					RemoveStoredNames: append([]string(nil), operation.RemoveStoredNames...),
 				},
@@ -326,7 +330,7 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			return PreviewResult{}, mutationError("mutation.record.missing_id", stringPointer(path+".recordId"), "record id is required", nil, false)
 		}
 		if operation.Kind == OperationArchive || operation.Kind == OperationRestore {
-			if definition.ArchivePolicy.Mode == schema.ArchiveModeNone {
+			if definition.ArchivePolicy.Mode == "none" {
 				return PreviewResult{}, mutationError("mutation.archive.unsupported", stringPointer(path), "table has no archive policy", nil, false)
 			}
 		}
@@ -371,14 +375,14 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 					map[string]any{"field": entry.key}, false,
 				)
 			}
-			if previous, duplicate := seenFields[field.FieldID]; duplicate {
+			if previous, duplicate := seenFields[field.Identity.FieldID]; duplicate {
 				return PreviewResult{}, mutationError(
 					"mutation.field.duplicate", stringPointer(valuePath),
 					"field was specified by more than one alias",
 					map[string]any{"previousPath": previous}, false,
 				)
 			}
-			seenFields[field.FieldID] = valuePath
+			seenFields[field.Identity.FieldID] = valuePath
 		}
 		for _, entry := range supplied {
 			key, value := entry.key, entry.value
@@ -388,81 +392,32 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			}
 			valuePath := path + "." + valueContainer + "." + key
 			field := fields[key]
-			v2Field, isV2 := v2ByAlias[key]
-			if entry.raw && !isV2 {
-				return PreviewResult{}, mutationError(
-					"mutation.field.raw_unsupported", stringPointer(valuePath),
-					"raw field input requires a Schema v2 field",
-					map[string]any{"fieldId": field.FieldID}, false,
-				)
-			}
-			if field.ReadOnly || field.Kind == schema.FieldKindFormula ||
-				field.Kind == schema.FieldKindLookup || field.Kind == schema.FieldKindSystem {
-				if field.Kind == schema.FieldKindSystem {
+			if isReadOnlyField(field) {
+				if field.LogicalType == v2.LogicalAutoDate {
 					autodateobs.Increment(autodateobs.ClientWriteRejected)
 				}
 				return PreviewResult{}, mutationError(
 					"mutation.field.read_only", stringPointer(valuePath),
-					"field is read-only", map[string]any{"fieldId": field.FieldID}, false,
+					"field is read-only", map[string]any{"fieldId": field.Identity.FieldID}, false,
 				)
 			}
-			if field.Kind == schema.FieldKindAttachment {
+			if field.LogicalType == v2.LogicalFile {
 				return PreviewResult{}, mutationError(
 					"mutation.attachment.requires_operation", stringPointer(valuePath),
-					"attachment fields require setAttachments", map[string]any{"fieldId": field.FieldID}, false,
+					"attachment fields require setAttachments", map[string]any{"fieldId": field.Identity.FieldID}, false,
 				)
-			}
-			var v2Result *fieldvalue.Result
-			if isV2 {
-				mode := fieldvalue.Update
-				if operation.Kind == OperationInsert {
-					mode = fieldvalue.Insert
-				}
-				input := fieldvalue.Input{Supplied: true, Value: value}
-				if entry.raw {
-					rawInput, normalizeRawErr := fieldvalue.New().NormalizeRawInput(
-						ctx, v2Field, value,
-					)
-					if normalizeRawErr != nil {
-						return PreviewResult{}, mutationError(
-							"mutation.field.invalid_value",
-							stringPointer(valuePath),
-							normalizeRawErr.Error(),
-							map[string]any{"fieldId": field.FieldID},
-							false,
-						)
-					}
-					input = rawInput
-				}
-				result, normalizeErr := fieldvalue.New().NormalizeWrite(
-					ctx, v2Field, mode, input,
-				)
-				if normalizeErr != nil {
-					return PreviewResult{}, mutationError(
-						"mutation.field.invalid_value",
-						stringPointer(valuePath),
-						normalizeErr.Error(),
-						map[string]any{"fieldId": field.FieldID},
-						false,
-					)
-				}
-				v2Result = &result
-				value = result.ProductValue
 			}
 			if isArchiveField(definition, field) {
 				switch definition.ArchivePolicy.Mode {
-				case schema.ArchiveModeDeletedAt:
+				case "deletedAt":
 					return PreviewResult{}, mutationError(
 						"mutation.archive.requires_operation",
 						stringPointer(valuePath),
 						"deleted-at archive fields require archive or restore",
 						nil, false,
 					)
-				case schema.ArchiveModeStatus:
-					if schema.ProductValuesEqual(
-						value,
-						definition.ArchivePolicy.ArchivedValue,
-					) {
+				case "status":
+					if productValuesEqual(value, definition.ArchivePolicy.ArchivedValue) {
 						return PreviewResult{}, mutationError(
 							"mutation.archive.requires_operation",
 							stringPointer(valuePath),
@@ -472,155 +427,101 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 					}
 				}
 			}
-			if _, duplicate := values[field.PhysicalName]; duplicate {
+			mode := fieldvalue.Update
+			if operation.Kind == OperationInsert {
+				mode = fieldvalue.Insert
+			}
+			input := fieldvalue.Input{Supplied: true, Value: value}
+			if entry.raw {
+				rawInput, normalizeRawErr := fieldvalue.New().NormalizeRawInput(ctx, field, value)
+				if normalizeRawErr != nil {
+					return PreviewResult{}, mutationError(
+						"mutation.field.invalid_value", stringPointer(valuePath),
+						normalizeRawErr.Error(), map[string]any{"fieldId": field.Identity.FieldID}, false,
+					)
+				}
+				input = rawInput
+			}
+			result, normalizeErr := fieldvalue.New().NormalizeWrite(ctx, field, mode, input)
+			if normalizeErr != nil {
+				return PreviewResult{}, mutationError(
+					"mutation.field.invalid_value", stringPointer(valuePath),
+					normalizeErr.Error(), map[string]any{"fieldId": field.Identity.FieldID}, false,
+				)
+			}
+			if _, duplicate := values[field.Identity.PhysicalName]; duplicate {
 				return PreviewResult{}, mutationError(
 					"mutation.field.duplicate", stringPointer(valuePath),
 					"field was specified by more than one alias", nil, false,
 				)
 			}
-			if v2Result != nil {
-				if field.Kind == schema.FieldKindRelation {
-					normalizedRelation, relationErr := validateRelationValue(
-						ctx,
-						app,
-						definition,
-						field,
-						v2Result.ProductValue,
-						pendingRecordIDs,
-					)
-					if relationErr != nil {
-						return PreviewResult{}, withMutationPath(
-							relationErr,
-							valuePath,
-						)
-					}
-					v2Result.ProductValue = normalizedRelation
-					if v2Result.Present {
-						v2Result.PhysicalValues[field.PhysicalName] = normalizedRelation
-					}
-				}
-				for physicalName, physicalValue := range v2Result.PhysicalValues {
-					values[physicalName] = physicalValue
-				}
-				suppliedV2[v2Field.Identity.FieldID] = struct{}{}
-				continue
-			}
-			if field.Kind == schema.FieldKindRelation {
-				normalizedRelation, err := validateRelationValue(
+			if field.LogicalType == v2.LogicalRelation {
+				normalizedRelation, relationErr := validateRelationValue(
 					ctx,
 					app,
 					definition,
 					field,
-					value,
+					result.ProductValue,
 					pendingRecordIDs,
 				)
-				if err != nil {
+				if relationErr != nil {
 					return PreviewResult{}, withMutationPath(
-						err,
+						relationErr,
 						valuePath,
 					)
 				}
-				value = normalizedRelation
-			} else if err := schema.ValidateFieldValue(field, value); err != nil {
-				var valueErr *schema.ValueError
-				details := map[string]any{"fieldId": field.FieldID}
-				if errors.As(err, &valueErr) && valueErr.InstancePath != "" {
-					details["instancePath"] = valueErr.InstancePath
+				result.ProductValue = normalizedRelation
+				if result.Present {
+					result.PhysicalValues[field.Identity.PhysicalName] = normalizedRelation
 				}
-				return PreviewResult{}, mutationError(
-					"mutation.field.invalid_value",
-					stringPointer(valuePath),
-					err.Error(),
-					details,
-					false,
-				)
 			}
-			values[field.PhysicalName] = value
+			for physicalName, physicalValue := range result.PhysicalValues {
+				values[physicalName] = physicalValue
+			}
+			suppliedV2[field.Identity.FieldID] = struct{}{}
 		}
 		if operation.Kind == OperationInsert {
-			for _, v2Field := range v2Fields {
-				if _, supplied := suppliedV2[v2Field.Identity.FieldID]; supplied {
+			for _, field := range definition.Snapshot.Fields {
+				if _, supplied := suppliedV2[field.Identity.FieldID]; supplied {
 					continue
 				}
 				result, normalizeErr := fieldvalue.New().NormalizeWrite(
-					ctx, v2Field, fieldvalue.Insert,
+					ctx, field, fieldvalue.Insert,
 					fieldvalue.Input{Supplied: false},
 				)
 				if normalizeErr != nil {
 					return PreviewResult{}, mutationError(
 						"mutation.field.invalid_value",
-						stringPointer(path+".values."+v2Field.Identity.PhysicalName),
+						stringPointer(path+".values."+field.Identity.PhysicalName),
 						normalizeErr.Error(),
-						map[string]any{"fieldId": v2Field.Identity.FieldID},
+						map[string]any{"fieldId": field.Identity.FieldID},
 						false,
 					)
 				}
-				legacyField := fields[v2Field.Identity.FieldID]
-				if result.Write && legacyField.Kind == schema.FieldKindRelation {
+				if result.Write && field.LogicalType == v2.LogicalRelation {
 					normalizedRelation, relationErr := validateRelationValue(
 						ctx,
 						app,
 						definition,
-						legacyField,
+						field,
 						result.ProductValue,
 						pendingRecordIDs,
 					)
 					if relationErr != nil {
 						return PreviewResult{}, withMutationPath(
 							relationErr,
-							path+".values."+v2Field.Identity.PhysicalName,
+							path+".values."+field.Identity.PhysicalName,
 						)
 					}
 					result.ProductValue = normalizedRelation
 					if result.Present {
-						result.PhysicalValues[legacyField.PhysicalName] = normalizedRelation
+						result.PhysicalValues[field.Identity.PhysicalName] = normalizedRelation
 					}
 				}
 				for physicalName, physicalValue := range result.PhysicalValues {
 					values[physicalName] = physicalValue
 				}
 			}
-			for _, field := range definition.Fields {
-				if _, managed := v2ByAlias[field.FieldID]; managed {
-					continue
-				}
-				if _, supplied := values[field.PhysicalName]; supplied ||
-					field.DefaultValue == nil ||
-					field.ReadOnly ||
-					field.Kind == schema.FieldKindAttachment ||
-					field.Kind == schema.FieldKindFormula ||
-					field.Kind == schema.FieldKindLookup ||
-					field.Kind == schema.FieldKindSystem {
-					continue
-				}
-				defaultValue, cloneErr := cloneProductValue(field.DefaultValue)
-				if cloneErr != nil {
-					return PreviewResult{}, mutationError(
-						"mutation.schema.invalid_default",
-						stringPointer(path+".values."+field.PhysicalName),
-						"field default could not be applied",
-						map[string]any{"fieldId": field.FieldID},
-						false,
-					)
-				}
-				if field.Kind != schema.FieldKindRelation {
-					if err := schema.ValidateFieldValue(field, defaultValue); err != nil {
-						return PreviewResult{}, mutationError(
-							"mutation.schema.invalid_default",
-							stringPointer(path+".values."+field.PhysicalName),
-							"field default is invalid",
-							map[string]any{"fieldId": field.FieldID},
-							false,
-						)
-					}
-				}
-				values[field.PhysicalName] = defaultValue
-			}
-		}
-		if err := validateM2AJunctionValues(
-			ctx, app, definition, operation, values,
-		); err != nil {
-			return PreviewResult{}, withMutationPath(err, path+".values")
 		}
 		normalized = append(normalized, NormalizedOperation{
 			Kind: operation.Kind, RecordID: operation.RecordID, Values: values,
@@ -628,29 +529,24 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 			ExpectedDigest:   operation.ExpectedDigest,
 		})
 	}
-	return PreviewResult{Definition: definition, Operations: normalized}, nil
-}
-
-func cloneProductValue(value any) (any, error) {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var cloned any
-	if err := decoder.Decode(&cloned); err != nil {
-		return nil, err
-	}
-	return cloned, nil
+	return PreviewResult{
+		Definition: definition,
+		Operations: normalized,
+	}, nil
 }
 
 func isArchiveField(
-	definition schema.TableDefinition,
-	field schema.FieldDefinition,
+	definition schemaexecution.Table,
+	field v2.FieldDefinition,
 ) bool {
 	return definition.ArchivePolicy.FieldID != nil &&
-		field.FieldID == *definition.ArchivePolicy.FieldID
+		field.Identity.FieldID == *definition.ArchivePolicy.FieldID
+}
+
+func isReadOnlyField(field v2.FieldDefinition) bool {
+	return field.LogicalType == v2.LogicalAutoDate ||
+		field.LogicalType == v2.LogicalFormula ||
+		field.LogicalType == v2.LogicalLookup
 }
 
 func validateRequestShape(request Request) error {
@@ -660,7 +556,7 @@ func validateRequestShape(request Request) error {
 	if request.RequestID == "" || request.IdempotencyKey == "" || request.TableID == "" || request.SchemaRevision == "" {
 		return mutationError("mutation.request.invalid", nil, "request identifiers and schema revision are required", nil, false)
 	}
-	if _, err := schema.ParseSchemaRevision(request.SchemaRevision); err != nil {
+	if _, err := v2.ParseSchemaRevision(request.SchemaRevision); err != nil {
 		return mutationError(
 			"mutation.request.invalid", stringPointer("schemaRevision"),
 			"schema revision is invalid", nil, false,

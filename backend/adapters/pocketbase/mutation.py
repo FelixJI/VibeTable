@@ -13,6 +13,7 @@ from backend.application.paste_service import (
     PasteError,
     PastePlanRow,
 )
+from backend.application.revisioned_metadata_port import json_object
 from backend.contracts.data_profile import CollectionProfile
 
 
@@ -64,21 +65,23 @@ class PocketBaseBulkMutationClient:
             return
         user = await self._auth.current_user()
         request_id = "paste-preview-" + pysecrets.token_hex(12)
-        request = {
-            "contractVersion": "2.0",
-            "requestId": request_id,
-            "idempotencyKey": request_id,
-            "tableId": collection,
-            "schemaRevision": schema_revision or profile.capability_hash,
-            "operations": operations,
-            "actor": {
-                "type": "user",
-                "id": str(getattr(user, "id", "") or "local-user"),
-                "displayName": _display_name(user),
-            },
-            "expectedRevision": None,
-            "expectedDigest": None,
-        }
+        request = json_object(
+            {
+                "contractVersion": "2.0",
+                "requestId": request_id,
+                "idempotencyKey": request_id,
+                "tableId": collection,
+                "schemaRevision": schema_revision or profile.capability_hash,
+                "operations": operations,
+                "actor": {
+                    "type": "user",
+                    "id": str(getattr(user, "id", "") or "local-user"),
+                    "displayName": _display_name(user),
+                },
+                "expectedRevision": None,
+                "expectedDigest": None,
+            }
+        )
         try:
             await self._client.preview_mutation(request)
         except PocketBaseProductError as exc:
@@ -108,21 +111,23 @@ class PocketBaseBulkMutationClient:
                 request_id=idempotency_key,
             )
         user = await self._auth.current_user()
-        request = {
-            "contractVersion": "2.0",
-            "requestId": idempotency_key,
-            "idempotencyKey": idempotency_key,
-            "tableId": collection,
-            "schemaRevision": schema_revision or profile.capability_hash,
-            "operations": operations,
-            "actor": {
-                "type": "user",
-                "id": str(getattr(user, "id", "") or "local-user"),
-                "displayName": _display_name(user),
-            },
-            "expectedRevision": None,
-            "expectedDigest": None,
-        }
+        request = json_object(
+            {
+                "contractVersion": "2.0",
+                "requestId": idempotency_key,
+                "idempotencyKey": idempotency_key,
+                "tableId": collection,
+                "schemaRevision": schema_revision or profile.capability_hash,
+                "operations": operations,
+                "actor": {
+                    "type": "user",
+                    "id": str(getattr(user, "id", "") or "local-user"),
+                    "displayName": _display_name(user),
+                },
+                "expectedRevision": None,
+                "expectedDigest": None,
+            }
+        )
         try:
             receipt = await self._client.apply_mutation(request)
         except PocketBaseProductError as exc:
@@ -182,15 +187,21 @@ class PocketBaseBulkMutationClient:
                 code="mutation_invalid_response",
             )
         for raw in affected:
-            if not isinstance(raw, dict) or not isinstance(raw.get("recordId"), str):
+            if not isinstance(raw, dict):
+                raise PasteError(
+                    "PocketBase returned an invalid mutation receipt",
+                    code="mutation_invalid_response",
+                )
+            record_id = raw.get("recordId")
+            if not isinstance(record_id, str):
                 raise PasteError(
                     "PocketBase returned an invalid mutation receipt",
                     code="mutation_invalid_response",
                 )
             if raw.get("operation") == "insert":
-                created.append(raw["recordId"])
+                created.append(record_id)
             elif raw.get("operation") == "update":
-                updated.append(raw["recordId"])
+                updated.append(record_id)
         return ApplyPasteResult(
             collection=collection,
             outcome="committed",

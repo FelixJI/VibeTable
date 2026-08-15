@@ -164,6 +164,7 @@ func TestImportedRestoreAuditIsLocalAndIdempotentAcrossCompletionReplay(
 	// Models a process dying after both local audit appends and the recovery
 	// snapshot catalog publication, but before the central receipt and journal
 	// completion were committed.
+	runtime.restoreSearchRebuild = func(context.Context) error { return nil }
 	if err := runtime.CompletePendingSnapshotRestore(ctx); err != nil {
 		t.Fatal(err)
 	}

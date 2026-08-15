@@ -9,7 +9,7 @@ export function resolveLookupPathCollection(
   for (const step of path) {
     const relation = relations.find((item) => item.relationId === step.relationId && item.sourceCollection === current);
     if (!relation) return null;
-    current = relation.kind === "m2a" ? step.m2aCollection ?? "" : relation.relatedCollection ?? "";
+    current = relation.relatedCollection ?? "";
     if (!current) return null;
   }
   return current;

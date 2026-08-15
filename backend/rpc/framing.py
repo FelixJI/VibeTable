@@ -30,7 +30,12 @@ async def read_frame(reader, max_bytes: int = MAX_FRAME_BYTES) -> dict[str, Any]
 
 
 async def write_frame(writer: AsyncWriter, payload: dict[str, Any]) -> None:
-    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+    raw = (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
     if len(raw) > MAX_FRAME_BYTES:
         raise FrameTooLargeError(f"RPC frame exceeds {MAX_FRAME_BYTES} bytes")
     writer.write(raw)

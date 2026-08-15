@@ -48,6 +48,23 @@ def test_manifest_lists_every_required_legacy_surface_category() -> None:
         "delete_backup",
         "restore_backup",
     } <= forbidden_sources["backend/adapters/pocketbase/client.py"]
+    assert {"ReadPageForRemoteAsync", "client-mode", "LoadedRows"} <= forbidden_sources[
+        "desktop/src/VibeTable.Desktop/Services/TableWorkspaceService.cs"
+    ]
+    assert {
+        "ReadTablePageAsync",
+        "QueryTablePageAsync",
+        "QueryTableViewAsync",
+    } <= forbidden_sources["desktop/src/VibeTable.Desktop/Services/ITableRpcGateway.cs"]
+    assert {"TableQuery query"} <= forbidden_sources[
+        "desktop/src/VibeTable.Desktop/Services/GridStateCoordinator.cs"
+    ]
+    assert {'"table.pageRequested"', '"client"'} <= forbidden_sources[
+        "desktop/web-grid/src/contracts/index.ts"
+    ]
+    assert {"shouldUseRemoteMode", "25_000"} <= forbidden_sources[
+        "desktop/web-grid/src/grid/queryAdapter.ts"
+    ]
     assert (
         "ResolveBackupRoot"
         in forbidden_sources["desktop/src/VibeTable.Infrastructure/LaunchPaths.cs"]
@@ -57,6 +74,7 @@ def test_manifest_lists_every_required_legacy_surface_category() -> None:
         "desktop/src/VibeTable.Infrastructure/Workspace/WorkspaceMountStore.cs",
         "desktop/tests/VibeTable.Desktop.Tests/ProductDataRootManagerTests.cs",
         "desktop/tests/VibeTable.Infrastructure.Tests/Workspace/WorkspaceMountStoreTests.cs",
+        "sidecar/internal/workspacemigrator",
     } <= set(manifest["forbiddenPaths"])
     publish_layout_members = {
         entry["pointer"]: set(entry["members"])
@@ -80,7 +98,6 @@ def test_checker_is_precise_and_respects_detection_allowlist(tmp_path: Path) -> 
         "def verify_upgrade_backup(): pass\n",
         encoding="utf-8",
     )
-    (tmp_path / "sidecar/internal/workspacemigrator").mkdir(parents=True)
     (tmp_path / "sidecar/internal/filehistory").mkdir(parents=True)
     (tmp_path / "sidecar/internal/filehistory/materializer.go").write_text(
         "package filehistory\n",

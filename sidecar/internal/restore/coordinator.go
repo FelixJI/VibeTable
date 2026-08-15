@@ -86,11 +86,28 @@ type Coordinator struct {
 	persist     func(Journal) error
 }
 
+type persistenceGate func(Journal, func(Journal) error) error
+
 func New(journalPath string, runtime Runtime, installer Installer, after SnapshotAfterRestore) *Coordinator {
+	return newWithPersistenceGate(journalPath, runtime, installer, after, nil)
+}
+
+func newWithPersistenceGate(
+	journalPath string,
+	runtime Runtime,
+	installer Installer,
+	after SnapshotAfterRestore,
+	gate persistenceGate,
+) *Coordinator {
 	coordinator := &Coordinator{
 		journalPath: journalPath, runtime: runtime, installer: installer, after: after,
 	}
 	coordinator.persist = coordinator.writeJournal
+	if gate != nil {
+		coordinator.persist = func(journal Journal) error {
+			return gate(journal, coordinator.writeJournal)
+		}
+	}
 	return coordinator
 }
 

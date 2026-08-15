@@ -5,12 +5,13 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func (kernel *Kernel) applyArchive(
 	_ core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) error {
 	field, err := archiveField(definition)
@@ -18,12 +19,9 @@ func (kernel *Kernel) applyArchive(
 		return err
 	}
 	switch definition.ArchivePolicy.Mode {
-	case schema.ArchiveModeStatus:
-		current := schema.DecodeSelectValueFromStorage(
-			field,
-			record.GetRaw(field.PhysicalName),
-		)
-		if schema.ProductValuesEqual(current, definition.ArchivePolicy.ArchivedValue) {
+	case "status":
+		current := decodeSelectValue(field, record.GetRaw(field.Identity.PhysicalName))
+		if productValuesEqual(current, definition.ArchivePolicy.ArchivedValue) {
 			return mutationError("mutation.archive.already_archived", nil, "record is already archived", nil, false)
 		}
 		storageValue, encodeErr := encodeFieldStorageValue(
@@ -35,16 +33,16 @@ func (kernel *Kernel) applyArchive(
 			return mutationError(
 				"mutation.schema.storage_mismatch", nil,
 				"archive value cannot be represented by the active storage schema",
-				map[string]any{"fieldId": field.FieldID, "cause": encodeErr.Error()},
+				map[string]any{"fieldId": field.Identity.FieldID, "cause": encodeErr.Error()},
 				false,
 			)
 		}
-		record.Set(field.PhysicalName, storageValue)
-	case schema.ArchiveModeDeletedAt:
-		if record.GetString(field.PhysicalName) != "" {
+		record.Set(field.Identity.PhysicalName, storageValue)
+	case "deletedAt":
+		if record.GetString(field.Identity.PhysicalName) != "" {
 			return mutationError("mutation.archive.already_archived", nil, "record is already archived", nil, false)
 		}
-		record.Set(field.PhysicalName, kernel.now().UTC())
+		record.Set(field.Identity.PhysicalName, kernel.now().UTC())
 	default:
 		return mutationError("mutation.archive.unsupported", nil, "table has no archive policy", nil, false)
 	}
@@ -53,7 +51,7 @@ func (kernel *Kernel) applyArchive(
 
 func (kernel *Kernel) applyRestore(
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) error {
 	field, err := archiveField(definition)
@@ -61,19 +59,16 @@ func (kernel *Kernel) applyRestore(
 		return err
 	}
 	switch definition.ArchivePolicy.Mode {
-	case schema.ArchiveModeStatus:
-		current := schema.DecodeSelectValueFromStorage(
-			field,
-			record.GetRaw(field.PhysicalName),
-		)
-		if !schema.ProductValuesEqual(current, definition.ArchivePolicy.ArchivedValue) {
+	case "status":
+		current := decodeSelectValue(field, record.GetRaw(field.Identity.PhysicalName))
+		if !productValuesEqual(current, definition.ArchivePolicy.ArchivedValue) {
 			return mutationError("mutation.restore.not_archived", nil, "record is not archived", nil, false)
 		}
 		records, err := app.FindRecordsByFilter(
 			"vibetable_audit_events",
 			"table_id={:table} && record_id={:record}",
 			"-occurred_at,-sequence", 0, 0,
-			dbx.Params{"table": definition.TableID, "record": record.Id},
+			dbx.Params{"table": definition.Snapshot.TableID, "record": record.Id},
 		)
 		if err != nil {
 			return mutationError("mutation.restore.unavailable", nil, "archive history is unavailable", nil, false)
@@ -93,7 +88,7 @@ func (kernel *Kernel) applyRestore(
 		if json.Unmarshal(raw, &before) != nil {
 			return storageFailure()
 		}
-		previous, exists := before[field.PhysicalName]
+		previous, exists := before[field.Identity.PhysicalName]
 		if !exists {
 			return mutationError(
 				"mutation.restore.unavailable", nil,
@@ -105,32 +100,32 @@ func (kernel *Kernel) applyRestore(
 			return mutationError(
 				"mutation.schema.storage_mismatch", nil,
 				"restored value cannot be represented by the active storage schema",
-				map[string]any{"fieldId": field.FieldID, "cause": encodeErr.Error()},
+				map[string]any{"fieldId": field.Identity.FieldID, "cause": encodeErr.Error()},
 				false,
 			)
 		}
-		record.Set(field.PhysicalName, storageValue)
-	case schema.ArchiveModeDeletedAt:
-		if record.GetString(field.PhysicalName) == "" {
+		record.Set(field.Identity.PhysicalName, storageValue)
+	case "deletedAt":
+		if record.GetString(field.Identity.PhysicalName) == "" {
 			return mutationError("mutation.restore.not_archived", nil, "record is not archived", nil, false)
 		}
-		record.Set(field.PhysicalName, nil)
+		record.Set(field.Identity.PhysicalName, nil)
 	default:
 		return mutationError("mutation.archive.unsupported", nil, "table has no archive policy", nil, false)
 	}
 	return nil
 }
 
-func archiveField(definition schema.TableDefinition) (schema.FieldDefinition, error) {
+func archiveField(definition schemaexecution.Table) (v2.FieldDefinition, error) {
 	if definition.ArchivePolicy.FieldID == nil {
-		return schema.FieldDefinition{}, mutationError("mutation.archive.invalid_policy", nil, "archive policy has no field", nil, false)
+		return v2.FieldDefinition{}, mutationError("mutation.archive.invalid_policy", nil, "archive policy has no field", nil, false)
 	}
-	for _, field := range definition.Fields {
-		if field.FieldID == *definition.ArchivePolicy.FieldID {
+	for _, field := range definition.Snapshot.Fields {
+		if field.Identity.FieldID == *definition.ArchivePolicy.FieldID {
 			return field, nil
 		}
 	}
-	return schema.FieldDefinition{}, mutationError("mutation.archive.invalid_policy", nil, "archive field does not exist", nil, false)
+	return v2.FieldDefinition{}, mutationError("mutation.archive.invalid_policy", nil, "archive field does not exist", nil, false)
 }
 
 func stringValue(value any) string {
