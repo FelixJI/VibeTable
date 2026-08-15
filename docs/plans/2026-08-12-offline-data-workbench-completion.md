@@ -1,12 +1,12 @@
 # VibeTable 离线数据工作台全面完成实施方案
 
-> 状态：本地实现、双轨终审修正及当前树 quality/release build/定向 E2E 已完成；完整 release smoke/eligibility、GitHub `required` 与 Win10/11 双平台验证待外部交付流程
+> 状态：本地实现、current-tree quality、fresh release build、定向 E2E、完整 release smoke/eligibility 与双轨终审已完成；GitHub `required` 与 Win10/11 双平台验证仍属外部交付门禁
 >
 > 日期：2026-08-12
 >
 > 事实基线：`e730f558713eb702648ca0be7a41a850c9687e1d`
 >
-> 需求来源：[架构与质量审计](../../vibetable-audit-report-2026-08-11.md)
+> 需求来源：本文件是当前实现与验收的唯一 Spec；与当前源码和证据冲突的旧审计附件不进入交付
 >
 > 适用范围：开发期破坏性收敛；不兼容任何旧 workspace、Snapshot、Preset、Dashboard 或 wire 格式
 
@@ -629,8 +629,8 @@ M2 与 M3 可在不同 worktree 并行；M4 与 M6 可并行；M5 与 M7 在共�
 
 ## 21. 当前实施与验收证据（2026-08-15）
 
-本节记录当前实现、M9 聚焦验证和 2026-08-15 最近一次完整本地 quality/build 及
-smoke/eligibility 尝试证据，不替代各里程碑的删除清单，也不得冒充 GitHub `required` 或
+本节记录当前实现、M9 聚焦验证和 2026-08-15 当前源码的完整本地 quality/build 及
+smoke/eligibility 证据，不替代各里程碑的删除清单，也不得冒充 GitHub `required` 或
 Win10/11 双平台发布验证。
 
 ### 21.1 当前实现与 quality
@@ -640,9 +640,11 @@ Win10/11 双平台发布验证。
   `GridRequestController`；M9 随后完成 Desktop/Web 深模块收口及 stale-race 回归。
 - Schema V2 codegen 覆盖 59 个 wire shapes；`schemaexecution.Table` 直接持有
   `v2.SchemaSnapshot`/`v2.FieldDefinition`，生产执行链不再以 legacy `schema.TableDefinition` 为模型。
-- 最终 `uv run python scripts/automation_project.py quality` 退出码为 0（254.2 s）；contracts、
-  Ruff/Pyright/mypy、Python、Web、Go 与 .NET 全部通过，Web 163 files/1,146 tests、Desktop 461/461，Desktop/PreviewHost 独立
-  coverage gates 均通过。
+- 当前源码的 `uv run python scripts/automation_project.py quality` 退出码为 0：contracts、Ruff、
+  Pyright、mypy、Python、Web、SDK/examples、Go fmt/vet/test/coverage/build 与 .NET 独立 coverage gates 全部
+  通过。Python 覆盖率为 90.21%；Web 为 164 files/1,148 tests；Go core line/diff 90.09%（882/979）、
+  branch 82.67%（477/577）；Desktop 469/469、line 59.15%、branch 51.21%，PreviewHost 13/13、
+  line 42.13%、branch 51.78%。
 - 终局竞态修复均有旧实现红灯：Lookup fanout 等待当前 mutation receipt 的 `source_event_id`，Dashboard
   refresh 不再覆盖 pending selection，Dashboard CAS 场景使用确定置脏的公开设置操作；附件 modal 在显式
   trigger 与当前焦点不同时先释放 workspace，再于关闭后恢复 trigger；JSON/附件/Lookup 三个 NModal 禁用过早
@@ -651,41 +653,43 @@ Win10/11 双平台发布验证。
 
 ### 21.2 当前本地发布门禁状态
 
-- 终审修复前的最后一轮完整资格中，`uv run python scripts/automation_project.py build` 退出码为 0（62.8 s），随后
-  `uv run python scripts/automation_project.py smoke` 退出码为 0（1,968.6 s）。
-  `build/automation/vibetable-release-eligibility.json`（2026-08-14T16:35:13Z）为 `ok=true`、
-  `releaseEligible=true`，21/21 stages 全部返回 0。版本、
-  package contract、Go fmt/vet/test/race/build、Python/contracts/tooling、.NET、Web test/build、
-  fault injection、product E2E、workbench qualification 和 readonly smoke 全部成功；当前 production
-  `sourceHash` 为 `eb6e03bb156c47d4ab5a6accef4a38da749c25d6a1595d2f00d000c8e923f5ca`。该证据因随后
-  week bucket 参数绑定、modal transition 公开入口回归与 fault gate 工具链解析修复而过期，不能作为当前资格结论。
-- 当前树最终 quality 已全绿，fresh release build 退出码为 0（63.1 s）。其候选
+- 当前源码的 `uv run python scripts/automation_project.py build` 退出码为 0。fresh 候选
   `VibeTable-v0.5.1-win-x64.zip` SHA-256 为
-  `d801b34f84589111536351b739d21747a37fd835e3b942b1ad41c839d75a3122`，package tree SHA-256
-  为 `21ec28fe3f468846ea3d565fd905759ff0bd74346706494557428f2714b470b5`，共 141,246,826 bytes、
-  177 files。此前 current-candidate smoke 暴露 fault gate 错误回退到系统 Go 1.26.5；resolver 现从
-  `tools/recovery-tools/go.mod` 读取 1.25.8 并优先使用精确版本目录，正式 component gate 已通过。
-- 修复 resolver 后的上一候选 release smoke 前置 stages 已通过 version/package、Go fmt/vet/test/coverage/race/build、
-  packaged sidecar 14 项 matrix、Python/contracts/tooling、.NET、Web 与 fault injection 3/3；real
-  WPF/WebView2 product E2E 为 18/18 passed、0 failed、0 skipped。它包含此前分别闭环的
-  Dashboard 16、Interface 17 与 WorkspaceSearch 18，并保留各场景截图、trace 和结果 JSON。
-  本轮随后在 release qualification 物化第 8,019 个文件时因 C: 空间不足退出，当前 eligibility
-  `sourceHash` 为 `fb3fb3dccbc5ec851428da20281008bad0e4c9390ec70398181c46b30b0ebd7b`、
-  `ok=false`、`releaseEligible=false`；qualification、readonly smoke 与最终 candidate verify 尚未完成，
-  不得写成通过。
+  `97cfa2d578734c43e8c07e4d6ab886972d05e8961619a017b4bd052baa7eb71d`，package tree SHA-256 为
+  `2ef95873fccdfd181162e821a26483e68107e3c2f5921f058780cf03dd8482f5`，141,247,649 bytes、177 files；
+  checksum、identity 与 SPDX 2.3 SBOM 均由 fresh build 生成并绑定该候选。
+- 同一候选的 `uv run python scripts/automation_project.py smoke` 退出码为 0；
+  `build/automation/vibetable-release-eligibility.json`（`2026-08-15T01:27:37.747026Z`）为 `ok=true`、
+  `releaseEligible=true`，21/21 stages 全部返回 0，累计阶段耗时 1,890.031 s。候选起止未漂移，报告
+  `sourceHash` 为 `fb696d87dba1c3f21f3f4ae02af921cd054e6f53adaf94b9a1d032d5fdd38f32`，WebView2 evidence 为
+  `required-passed`。
+- 权威 smoke 内 packaged sidecar matrix 14/14、fault injection 3/3、real WPF/WebView2 product E2E
+  18/18 passed（0 failed、0 skipped，648.594 s）、readonly smoke 2/2 全部通过；没有通过 retry、sleep、
+  failure acknowledgement 或降低门禁获得绿色。末尾仅有已不存在 lock 路径的 QA 临时证据清理警告，
+  进程退出码和 eligibility 均保持成功。
+- release qualification 实际物化并读取 100,000 records、10,000 file documents、20 GiB
+  （21,474,836,480 bytes），`failures=[]`：index 465,574,112 bytes、peak RSS 255,528,960 bytes、
+  first screen 3.265 ms、warm p95 1.003 ms、incremental p95 4.859 ms，qualification 160.900 s
+  （门禁 stage 168.484 s）。为满足本机物理空间，仅对仓库工具、worktree 与 QA 证据启用了可逆 NTFS
+  压缩；没有删除用户数据、worktree、候选或报告，也未改变 qualification 数据量或实现。
 - PR 提交 `1cb20223` 的首轮 GitHub CI 中，CodeQL、core、race-a、race-b 与 release lanes 均通过；
   resilience 的 18 场 product E2E 暴露 JSON round-trip 的 Tabulator stale-row warning，以及 sidecar
   主动故障恢复轮询未确认精确 `BACKEND_UNAVAILABLE`。当前实现复用已枚举 row component，避免
   `getRows`/`getRow` 间的 TOCTOU；E2E helper 只确认主动故障窗口内的该稳定错误码，不放宽其他失败。
   fresh 候选上的 04/10 原场景为 2/2 passed，renderer warnings、page errors、未预期 bridge failures 和
   pending requests 均为 0；场景规定的预期失败进入 `acknowledgedFailures`（本次 1 项），完整 GitHub
-  `required` 尚待当前提交重跑，不能写成通过。
-- 最近一次成功的历史 `build/qa/workbench-qualification.json`（schema v3、`failures=[]`）实际物化并读取
-  100,000 records、10,000 file documents、20 GiB（21,474,836,480 bytes）：peak RSS
-  257,400,832 bytes、first screen 1.023 ms、warm p95 0.999 ms、incremental p95 4.180 ms，
-  qualification 114.050 s；它证明规模实现曾达标，但不替代当前树重跑。当前候选 identity 为
-  VibeTable 0.5.1/windows/x64，`source_sha` 是 `local`，
-  因此它不能替代提交后由 CI 绑定真实 source SHA、SBOM/provenance 和正式资产集合的发布候选。
+  `required` 尚待当前提交重跑，不能写成通过。后续提交 `bc4449b4` 的 GitHub run `31834447589`
+  再次通过 CodeQL、core、race-a、race-b 与 release lanes，但 resilience 为 17/18：场景 18 在 sidecar
+  重启后由 BFF `query.page` 判活，文档列表却仍从旧的直连 WorkspaceV2 generation 发出，错误又被压成
+  `DOCUMENT_LIST_FAILED`。当前修复让 `DocumentBrowseRequestController` 在旧 transport 失败时有界等待
+  replacement generation，仅在同一 workspace/session scope 下重发一次；安全的文档错误码直接映射，
+  未知码仍回落到固定消息。终审又确认旧 E2E instrumentation 会改写正式 envelope，令该轮场景 18 证据
+  不能代表产品 allocator；当前实现已把 instrumentation 收敛为只读观察，并让 raw E2E 请求通过仅测试模式
+  暴露的正式 `workspaceWireAllocator` 端口取号。当前 fresh 候选的场景 08/18 定向回归与权威 product
+  E2E 18/18 均已通过；本地 quality/build/smoke/eligibility 已完成，只有完整 GitHub `required` 仍待当前
+  提交推送后重跑。
+- 当前候选 identity 为 VibeTable 0.5.1/windows/x64，`source_sha` 是 `local`；因此上述本地绿色仍不能
+  替代提交后由 CI 绑定真实 source SHA、SBOM/provenance 和正式资产集合的发布候选。
 
 ### 21.3 已解决阻塞的根因链
 
@@ -705,7 +709,7 @@ Win10/11 双平台发布验证。
 ### 21.4 M9 深模块收口已完成
 
 - `WorkspaceRequestDispatcher.cs`、`MainWindow.Product.cs`、`WorkspaceView.vue` 当前物理行数分别为
-  159、869、1,570。Dispatcher 只保留 allowlist/envelope/transport，MainWindow 只保留
+  161、869、1,570。Dispatcher 只保留 allowlist/envelope/transport，MainWindow 只保留
   composition/lifecycle；Desktop 产品状态机迁入 `HostRequestDispatcher`、`WorkspaceProductController`、
   `ProductWorkspaceController`、`WorkspaceTableRequestController` 等 closed controller interfaces，测试从
   相邻 module interface/fake host seam 进入。
@@ -713,10 +717,11 @@ Win10/11 双平台发布验证。
   lookup provenance、plugin、session UI、table interaction 与 navigation 均进入 `src/workspace/` 深模块。
   relation `loadDraft` 以 editor epoch/accept-result seam 丢弃关闭后晚到的旧草稿；authoritative lookup 在
   `recordQuery` 时立即使旧 in-flight refresh generation 失效，下一次 refresh 使用新查询。
-- M9 Web 聚焦回归最终为 11 files/82 tests；全 Web 163 files/1,146 tests、typecheck 和 build 已通过。
+- M9 Web 聚焦回归最终为 11 files/82 tests；当前完整 quality/smoke 的 Web 为 164 files/1,148 tests，
+  typecheck 和 build 已通过。
   workspace 模块中 `as unknown as`/`as never` 为 0，relation full-create/pending、table paste/CRUD、plugin
   start/resolve/cancel 与 lookup stale race 均通过公开 module interface 验证。其后 attachment modal 的
-  显式 focus trigger 回归也进入正式 seam，并由最终 quality 与 18/18 product E2E 复验。
+  显式 focus trigger 回归也进入正式 seam；对应当前完整 quality 与 product E2E 18/18 已复验。
 
 ### 21.5 最终双轴复审
 
@@ -728,8 +733,18 @@ Win10/11 双平台发布验证。
   从 `go test` deadline 派生的有界清理路径，并以 CI 同型 `-race -count=3` 复验。
 - CodeQL 的 native int、容量提示与 week bucket SQL 修复未改变产品语义；week bucket 的固定 UTC/Monday
   格式通过既有 compiler 参数绑定 seam 传入，动态 field SQL 不再邻接 SQL 引号。lookup provenance 改用已渲染 row 集合定位，
-  NModal 改为 transition 后聚焦 dialog；上一候选 18/18 E2E 中 aria-hidden warning 为 0，最新 fresh 候选的
-  04/10 定向 E2E 又确认 Tabulator warning 与未预期 bridge failures 均为 0。
+  NModal 改为 transition 后聚焦 dialog；上一候选 18/18 E2E 中 aria-hidden warning 为 0，较早 fresh 候选的
+  04/10 定向 E2E 又确认 Tabulator warning 与未预期 bridge failures均为 0；这些均不替代最新源码重跑。
+- 最后一次 resilience 修复以公开 seam 做红绿：`DocumentBrowseRequestController.DispatchAsync` 折叠到
+  同 workspace/session 的最新 replacement generation，且初次失败后最多只执行一次重发；E2E raw request
+  通过正式 allocator 的窄测试端口取号，诊断 instrumentation 仅观察既有 wire。聚焦证据为
+  Document/WebView .NET 9/9、Web allocator 3/3、Node raw/instrumentation 3/3、Python runner 54/54；
+  当前完整 quality、fresh build、场景 08/18 与权威 smoke 18/18 均已通过。没有加入 UI retry、sleep 或
+  failure acknowledgement。最终 Standards 与 Spec 复审对该状态均为 0 findings。
+- 最终 Spec 审查补充发现的两个 legacy reader 也已红绿删除：缺少 canonical `file-state-root` 的 Snapshot
+  在 reachability、DurableCatalog 与 replica pin 前稳定拒绝；Grid cursor/group 双缺或不一致 revision 时
+  不再合并页面。旧实现分别返回成功和 `table.datasetReady`，修复后聚焦 Go 与 .NET 27 项均通过，并由上述
+  current-tree quality、fresh build 与完整 smoke 重新覆盖。与当前事实冲突的 2026-08-11 旧审计附件已从交付删除。
 
 ### 21.6 外部交付门禁
 

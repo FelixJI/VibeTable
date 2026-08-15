@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VibeTable.Contracts;
@@ -15,11 +17,20 @@ namespace VibeTable.Desktop.Services;
 public sealed class DocumentBrowseRequestController
 {
     private readonly IWebReplySink _reply;
+    private readonly TimeSpan _readRecoveryTimeout;
     private readonly ConcurrentDictionary<string, DiffRequestState> _diffRequests = [];
-    private WorkspaceDocumentOsAdapter? _documents;
+    private readonly object _workspaceGate = new();
+    private WorkspaceGeneration _workspace = WorkspaceGeneration.CreateEmpty();
 
-    public DocumentBrowseRequestController(IWebReplySink reply)
-        => _reply = reply ?? throw new ArgumentNullException(nameof(reply));
+    public DocumentBrowseRequestController(
+        IWebReplySink reply,
+        TimeSpan? readRecoveryTimeout = null)
+    {
+        _reply = reply ?? throw new ArgumentNullException(nameof(reply));
+        _readRecoveryTimeout = readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
+        if (_readRecoveryTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(readRecoveryTimeout));
+    }
 
     public static bool Handles(string requestType)
         => requestType is
@@ -35,13 +46,25 @@ public sealed class DocumentBrowseRequestController
     public void SetWorkspace(WorkspaceDocumentOsAdapter documents)
     {
         CancelDiffRequests();
-        _documents = documents ?? throw new ArgumentNullException(nameof(documents));
+        ArgumentNullException.ThrowIfNull(documents);
+        TaskCompletionSource<WorkspaceGeneration> replacement;
+        WorkspaceGeneration next;
+        lock (_workspaceGate)
+        {
+            replacement = _workspace.Replacement;
+            next = new WorkspaceGeneration(
+                documents,
+                checked(_workspace.Generation + 1),
+                CreateReplacementSignal());
+            _workspace = next;
+        }
+        replacement.TrySetResult(next);
     }
 
     public void RotateCapabilityEpoch()
     {
         CancelDiffRequests();
-        _documents?.RotateCapabilityEpoch();
+        CurrentWorkspace()?.RotateCapabilityEpoch();
     }
 
     public Task DispatchAsync(RoutedWebRequest request)
@@ -72,8 +95,8 @@ public sealed class DocumentBrowseRequestController
 
     private async Task ListAsync(RoutedWebRequest request)
     {
-        WorkspaceDocumentOsAdapter? documents = RequireWorkspace(request);
-        if (documents is null)
+        WorkspaceGeneration? workspace = RequireWorkspaceGeneration(request);
+        if (workspace is null)
             return;
         string? authority = GetString(request.Payload, "authority");
         if (!string.Equals(authority, "workspace", StringComparison.Ordinal))
@@ -93,19 +116,10 @@ public sealed class DocumentBrowseRequestController
 
         try
         {
-            DocumentListPayload result = GetString(scope, "kind") switch
-            {
-                "global" => await ListGlobalAsync(
-                    documents,
-                    request).ConfigureAwait(false),
-                "record" => await ListRecordAsync(
-                    documents,
-                    request,
-                    scope).ConfigureAwait(false),
-                _ => throw new DocumentRequestPayloadException(
-                    "未知文件范围。",
-                    "BAD_PAYLOAD"),
-            };
+            DocumentListPayload result = await ListWithRecoveryAsync(
+                workspace,
+                request,
+                scope).ConfigureAwait(false);
             _reply.PostResponse("document.listLoaded", request.RequestId, result);
         }
         catch (DocumentRequestPayloadException exception)
@@ -117,6 +131,108 @@ public sealed class DocumentBrowseRequestController
             PostFailure(request, exception, "DOCUMENT_LIST_FAILED");
         }
     }
+
+    private async Task<DocumentListPayload> ListWithRecoveryAsync(
+        WorkspaceGeneration workspace,
+        RoutedWebRequest request,
+        JsonElement scope)
+    {
+        long deadline = Stopwatch.GetTimestamp()
+            + (long)(_readRecoveryTimeout.TotalSeconds * Stopwatch.Frequency);
+        try
+        {
+            return await ExecuteListAsync(
+                workspace.Documents!,
+                request,
+                scope).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsTransientListFailure(exception))
+        {
+            WorkspaceGeneration replacement = await WaitForCurrentReplacementAsync(
+                workspace,
+                request.Scope,
+                deadline).ConfigureAwait(false);
+            try
+            {
+                return await ExecuteListAsync(
+                    replacement.Documents!,
+                    request,
+                    scope).ConfigureAwait(false);
+            }
+            catch (Exception retryException) when (IsTransientListFailure(retryException))
+            {
+                throw BackendUnavailable();
+            }
+        }
+    }
+
+    private static Task<DocumentListPayload> ExecuteListAsync(
+        WorkspaceDocumentOsAdapter documents,
+        RoutedWebRequest request,
+        JsonElement scope)
+        => GetString(scope, "kind") switch
+        {
+            "global" => ListGlobalAsync(documents, request),
+            "record" => ListRecordAsync(documents, request, scope),
+            _ => throw new DocumentRequestPayloadException(
+                "未知文件范围。",
+                "BAD_PAYLOAD"),
+        };
+
+    private async Task<WorkspaceGeneration> WaitForCurrentReplacementAsync(
+        WorkspaceGeneration attempted,
+        WorkspaceWireScope? requestScope,
+        long deadline)
+    {
+        while (true)
+        {
+            WorkspaceGeneration current = CurrentWorkspaceGeneration();
+            if (current.Generation != attempted.Generation)
+            {
+                if (!current.Documents!.MatchesScope(requestScope))
+                {
+                    throw new DocumentFileOperationException(
+                        "工作区会话已切换，请刷新后重试。",
+                        "DOCUMENT_SESSION_STALE");
+                }
+                return current;
+            }
+            long remainingTicks = deadline - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0)
+                throw BackendUnavailable();
+            using var timeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(
+                    remainingTicks / (double)Stopwatch.Frequency));
+            try
+            {
+                _ = await attempted.Replacement.Task.WaitAsync(
+                    timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                throw BackendUnavailable();
+            }
+            current = CurrentWorkspaceGeneration();
+            if (!current.Documents!.MatchesScope(requestScope))
+            {
+                throw new DocumentFileOperationException(
+                    "工作区会话已切换，请刷新后重试。",
+                    "DOCUMENT_SESSION_STALE");
+            }
+            return current;
+        }
+    }
+
+    private static DocumentFileOperationException BackendUnavailable()
+        => new(
+            "本地数据服务尚未恢复。",
+            "BACKEND_UNAVAILABLE");
+
+    private static bool IsTransientListFailure(Exception exception)
+        => exception is HttpRequestException or
+            IOException or
+            ObjectDisposedException or
+            TaskCanceledException;
 
     private static async Task<DocumentListPayload> ListGlobalAsync(
         WorkspaceDocumentOsAdapter documents,
@@ -318,14 +434,44 @@ public sealed class DocumentBrowseRequestController
 
     private WorkspaceDocumentOsAdapter? RequireWorkspace(RoutedWebRequest request)
     {
-        if (_documents is null)
+        WorkspaceDocumentOsAdapter? documents = CurrentWorkspace();
+        if (documents is null)
         {
             Reject(
                 request,
                 "文档工作区尚未连接。",
                 "DOCUMENT_WORKSPACE_UNAVAILABLE");
         }
-        return _documents;
+        return documents;
+    }
+
+    private WorkspaceGeneration? RequireWorkspaceGeneration(
+        RoutedWebRequest request)
+    {
+        WorkspaceGeneration workspace;
+        lock (_workspaceGate)
+            workspace = _workspace;
+        if (workspace.Documents is null)
+        {
+            Reject(
+                request,
+                "文档工作区尚未连接。",
+                "DOCUMENT_WORKSPACE_UNAVAILABLE");
+            return null;
+        }
+        return workspace;
+    }
+
+    private WorkspaceDocumentOsAdapter? CurrentWorkspace()
+    {
+        lock (_workspaceGate)
+            return _workspace.Documents;
+    }
+
+    private WorkspaceGeneration CurrentWorkspaceGeneration()
+    {
+        lock (_workspaceGate)
+            return _workspace;
     }
 
     private void PostFailure(
@@ -336,6 +482,7 @@ public sealed class DocumentBrowseRequestController
         string candidateCode = exception switch
         {
             DocumentCapabilityException value => value.Code,
+            DocumentFileOperationException value => value.Code,
             DocumentPreviewException value => value.Code,
             _ => fallbackCode,
         };
@@ -368,6 +515,16 @@ public sealed class DocumentBrowseRequestController
                 (candidateCode, "当前版本不允许执行此操作。"),
             "DOCUMENT_LINK_UNAVAILABLE" =>
                 (candidateCode, "当前文档没有可解除的记录关联。"),
+            "DOCUMENT_WORKSPACE_UNAVAILABLE" =>
+                (candidateCode, "文档工作区尚未连接。"),
+            "DOCUMENT_SESSION_STALE" =>
+                (candidateCode, "工作区会话已切换，请刷新后重试。"),
+            "DOCUMENT_LIST_UNAVAILABLE" =>
+                (candidateCode, "当前工作区不支持文件列表。"),
+            "DOCUMENT_LIST_INVALID" =>
+                (candidateCode, "文件列表响应无效，请稍后重试。"),
+            "BACKEND_UNAVAILABLE" =>
+                (candidateCode, "本地数据服务尚未恢复，请稍后重试。"),
             "WORKSPACE_UNMOUNTED" =>
                 (candidateCode, "此工作区尚未挂载到本机。"),
             "DOCUMENT_MISSING" =>
@@ -485,6 +642,19 @@ public sealed class DocumentBrowseRequestController
 
         public void Dispose() => cancellation.Dispose();
     }
+
+    private sealed record WorkspaceGeneration(
+        WorkspaceDocumentOsAdapter? Documents,
+        long Generation,
+        TaskCompletionSource<WorkspaceGeneration> Replacement)
+    {
+        public static WorkspaceGeneration CreateEmpty()
+            => new(null, 0, CreateReplacementSignal());
+    }
+
+    private static TaskCompletionSource<WorkspaceGeneration>
+        CreateReplacementSignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private sealed class DocumentRequestPayloadException(
         string message,

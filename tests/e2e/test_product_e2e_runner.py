@@ -1361,10 +1361,14 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
     assert "grid did not reach a stable expected state" in source
 
 
-def test_realtime_recovery_acknowledges_only_expected_backend_unavailability() -> None:
-    test_file = runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs")
+def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime() -> None:
+    test_files = [
+        runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
+        runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
+        runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
+    ]
     completed = subprocess.run(
-        [str(ensure_node(runner.ROOT)), "--test", str(test_file)],
+        [str(ensure_node(runner.ROOT)), "--test", *(str(path) for path in test_files)],
         check=False,
         capture_output=True,
         text=True,

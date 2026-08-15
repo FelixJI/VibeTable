@@ -39,4 +39,15 @@ public sealed class WebViewAssetServiceTests
         Assert.AreEqual("/index.html", uri.AbsolutePath,
             "Virtual-host folder mappings do not provide a web-server directory index; navigate to the bundled entry file explicitly.");
     }
+
+    [TestMethod]
+    public void ProductWebView_AppendsTheE2EPortFlagOnlyInTestMode()
+    {
+        Assert.AreEqual(
+            WebViewAssetService.AppOrigin,
+            ProductWebViewBridge.ResolveAppUri(e2eMode: false));
+        Assert.AreEqual(
+            $"{WebViewAssetService.AppOrigin}?vibetable-e2e=1",
+            ProductWebViewBridge.ResolveAppUri(e2eMode: true));
+    }
 }

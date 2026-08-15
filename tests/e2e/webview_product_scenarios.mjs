@@ -5,6 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import { acknowledgeExpectedSidecarRecoveryFailure } from "./bridge_failure_policy.mjs";
+import { installBridgeDiagnosticsInPage } from "./bridge_diagnostics_instrumentation.mjs";
+import { beginRawBridgeRequestInPage } from "./bridge_raw_request.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -1170,11 +1172,25 @@ async function rawBridgeRequest(
   return page.evaluate(
     ({ type: requestType, payload: requestPayload, timeout, responseTypes }) =>
       new Promise((resolve, reject) => {
-        const requestId = `e2e-${crypto.randomUUID()}`;
+        const operationId = crypto.randomUUID();
+        const requestId = `e2e-${operationId}`;
+        const wirePort = window.__vibetableE2EWorkspaceWirePort;
+        if (!wirePort) {
+          reject(new Error(`workspace wire E2E port unavailable for ${requestType}`));
+          return;
+        }
+        let scope;
+        try {
+          scope = wirePort.reserve(operationId);
+        } catch (error) {
+          reject(error);
+          return;
+        }
         const envelope = {
           type: requestType,
           requestId,
           payload: requestPayload,
+          scope,
         };
         const timer = setTimeout(() => {
           window.chrome.webview.removeEventListener("message", handler);
@@ -1189,15 +1205,7 @@ async function rawBridgeRequest(
           if (!responseTypes.includes(message.type) && message.type !== "operation.failed") return;
           clearTimeout(timer);
           window.chrome.webview.removeEventListener("message", handler);
-          const finishAfterSequenceWindow = () => {
-            const sequence = envelope.scope?.sequence ?? 0;
-            if (Date.now() * 1_000 > sequence) {
-              resolve(message);
-              return;
-            }
-            setTimeout(finishAfterSequenceWindow, 1);
-          };
-          finishAfterSequenceWindow();
+          resolve(message);
         };
         window.chrome.webview.addEventListener("message", handler);
         window.chrome.webview.postMessage(envelope);
@@ -1215,30 +1223,20 @@ async function rawWorkspaceV2Request(
   return page.evaluate(
     ({ rpcMethod, rpcParams, timeout }) =>
       new Promise((resolve, reject) => {
-        const diagnostics = window.__vibetableE2EBridgeDiagnostics;
-        const session = diagnostics?.workspaceSession;
-        if (
-          typeof session?.workspaceId !== "string"
-          || !Number.isSafeInteger(session?.sessionEpoch)
-          || session.sessionEpoch < 1
-        ) {
-          reject(new Error(`workspace v2 session unavailable for ${rpcMethod}`));
+        const wirePort = window.__vibetableE2EWorkspaceWirePort;
+        if (!wirePort) {
+          reject(new Error(`workspace wire E2E port unavailable for ${rpcMethod}`));
           return;
         }
         const operationId = crypto.randomUUID();
         const requestId = `e2e-${operationId}`;
-        const sequence = Math.max(
-          Date.now() * 1_000,
-          (diagnostics.maxWorkspaceSequence ?? 0) + 1,
-        );
-        const wire = {
-          scope: "workspace",
-          workspaceId: session.workspaceId,
-          sessionEpoch: session.sessionEpoch,
-          operationId,
-          sequence,
-        };
-        diagnostics.maxWorkspaceSequence = sequence;
+        let wire;
+        try {
+          wire = wirePort.reserve(operationId);
+        } catch (error) {
+          reject(error);
+          return;
+        }
         const envelope = {
           type: "workspace.v2.request",
           requestId,
@@ -1264,36 +1262,29 @@ async function rawWorkspaceV2Request(
           }
           clearTimeout(timer);
           window.chrome.webview.removeEventListener("message", handler);
-          const finishAfterSequenceWindow = () => {
-            if (Date.now() * 1_000 <= sequence) {
-              setTimeout(finishAfterSequenceWindow, 1);
-              return;
-            }
-            if (message.type === "operation.failed") {
-              reject(new Error(
-                `${rpcMethod} failed: ${JSON.stringify(message.payload)}`,
-              ));
-              return;
-            }
-            const reply = message.payload;
-            if (
-              reply?.method !== rpcMethod
-              || reply?.wire?.operationId !== operationId
-            ) {
-              reject(new Error(
-                `${rpcMethod} returned a mismatched reply: ${JSON.stringify(reply)}`,
-              ));
-              return;
-            }
-            if (reply.ok !== true) {
-              reject(new Error(
-                `${rpcMethod} failed closed: ${JSON.stringify(reply.error)}`,
-              ));
-              return;
-            }
-            resolve(reply);
-          };
-          finishAfterSequenceWindow();
+          if (message.type === "operation.failed") {
+            reject(new Error(
+              `${rpcMethod} failed: ${JSON.stringify(message.payload)}`,
+            ));
+            return;
+          }
+          const reply = message.payload;
+          if (
+            reply?.method !== rpcMethod
+            || reply?.wire?.operationId !== operationId
+          ) {
+            reject(new Error(
+              `${rpcMethod} returned a mismatched reply: ${JSON.stringify(reply)}`,
+            ));
+            return;
+          }
+          if (reply.ok !== true) {
+            reject(new Error(
+              `${rpcMethod} failed closed: ${JSON.stringify(reply.error)}`,
+            ));
+            return;
+          }
+          resolve(reply);
         };
         window.chrome.webview.addEventListener("message", handler);
         window.chrome.webview.postMessage(envelope);
@@ -1303,148 +1294,7 @@ async function rawWorkspaceV2Request(
 }
 
 async function installBridgeDiagnostics(page) {
-  await page.evaluate(() => {
-    if (window.__vibetableE2EBridgeDiagnostics?.installed) return;
-
-    const diagnostics = {
-      installed: true,
-      installedAt: new Date().toISOString(),
-      requests: [],
-      roundTrips: [],
-      failures: [],
-      pending: {},
-      workspaceSession: null,
-      maxWorkspaceSequence: 0,
-    };
-    const webview = window.chrome.webview;
-    const originalPostMessage = webview.postMessage.bind(webview);
-    webview.postMessage = (...args) => {
-      const candidate = args[0];
-      let message = candidate;
-      if (typeof candidate === "string") {
-        try { message = JSON.parse(candidate); } catch { message = null; }
-      }
-      const existingWire = message?.scope ?? message?.wire ?? message?.payload?.wire;
-      if (
-        existingWire?.scope === "workspace"
-        && Number.isSafeInteger(existingWire.sequence)
-      ) {
-        diagnostics.maxWorkspaceSequence = Math.max(
-          diagnostics.maxWorkspaceSequence,
-          existingWire.sequence,
-        );
-      }
-      if (
-        typeof candidate === "object"
-        && candidate !== null
-        && typeof message?.requestId === "string"
-        && message.requestId.startsWith("e2e-")
-        && message.type !== "workspace.v2.request"
-        && !message.scope
-        && diagnostics.workspaceSession
-      ) {
-        const sequence = Math.max(
-          Date.now() * 1_000,
-          diagnostics.maxWorkspaceSequence + 1,
-        );
-        message.scope = {
-          scope: "workspace",
-          workspaceId: diagnostics.workspaceSession.workspaceId,
-          sessionEpoch: diagnostics.workspaceSession.sessionEpoch,
-          operationId: message.requestId.slice("e2e-".length),
-          sequence,
-        };
-        diagnostics.maxWorkspaceSequence = sequence;
-      }
-      if (message?.requestId && message?.type) {
-        const requestPayload = message.payload;
-        const payloadShape = requestPayload
-          && typeof requestPayload === "object"
-          && !Array.isArray(requestPayload)
-          ? Object.fromEntries(Object.entries(requestPayload).map(([key, value]) => [
-            key,
-            typeof value === "string"
-              ? { kind: "string", length: value.length }
-              : Array.isArray(value)
-                ? { kind: "array", length: value.length }
-                : { kind: value === null ? "null" : typeof value },
-          ]))
-          : null;
-        const request = {
-          requestId: message.requestId,
-          requestType: message.type === "workspace.v2.request"
-            && typeof message.payload?.method === "string"
-            ? message.payload.method
-            : message.type,
-          payloadShape,
-          startedAt: new Date().toISOString(),
-          startedMonotonicMs: performance.now(),
-        };
-        diagnostics.requests.push(request);
-        diagnostics.pending[message.requestId] = request;
-      }
-      return originalPostMessage(...args);
-    };
-    webview.addEventListener("message", (event) => {
-      let message = event.data;
-      if (typeof message === "string") {
-        try { message = JSON.parse(message); } catch { return; }
-      }
-      const inboundWire = message?.wire ?? message?.payload?.wire;
-      if (
-        inboundWire?.scope === "workspace"
-        && Number.isSafeInteger(inboundWire.sequence)
-      ) {
-        diagnostics.maxWorkspaceSequence = Math.max(
-          diagnostics.maxWorkspaceSequence,
-          inboundWire.sequence,
-        );
-      }
-      if (message?.type === "workspace.v2.bootstrap") {
-        const session = message.payload?.session;
-        diagnostics.workspaceSession =
-          typeof session?.workspaceId === "string"
-          && Number.isSafeInteger(session?.sessionEpoch)
-          && session.sessionEpoch > 0
-            ? {
-                workspaceId: session.workspaceId,
-                sessionEpoch: session.sessionEpoch,
-              }
-            : null;
-      }
-      const request = message?.requestId
-        ? diagnostics.pending[message.requestId]
-        : null;
-      if (!request) return;
-      const roundTrip = {
-        requestId: request.requestId,
-        requestType: request.requestType,
-        payloadShape: request.payloadShape,
-        responseType: message.type ?? null,
-        code: message.payload?.code
-          ?? message.payload?.error?.code
-          ?? message.error?.code
-          ?? null,
-        message: message.payload?.message
-          ?? message.payload?.error?.message
-          ?? message.error?.message
-          ?? null,
-        startedAt: request.startedAt,
-        finishedAt: new Date().toISOString(),
-        durationMs: Math.round((performance.now() - request.startedMonotonicMs) * 100) / 100,
-      };
-      diagnostics.roundTrips.push(roundTrip);
-      if (
-        message.type === "operation.failed"
-        || message.ok === false
-        || message.payload?.ok === false
-      ) {
-        diagnostics.failures.push(roundTrip);
-      }
-      delete diagnostics.pending[message.requestId];
-    });
-    window.__vibetableE2EBridgeDiagnostics = diagnostics;
-  });
+  await page.evaluate(installBridgeDiagnosticsInPage);
 }
 
 async function readBridgeDiagnostics(page) {
@@ -1629,34 +1479,7 @@ async function beginRawBridgeRequest(
   expectedResponseTypes = [type],
 ) {
   return page.evaluate(
-    ({ requestType, requestPayload, responseTypes }) => {
-      const requestId = `e2e-${crypto.randomUUID()}`;
-      window.__vibetableE2ERawRequests ??= {};
-      window.__vibetableE2ERawRequests[requestId] = {
-        responseTypes,
-        message: null,
-        scopeSequence: 0,
-      };
-      window.chrome.webview.addEventListener("message", function handler(event) {
-        let message = event.data;
-        if (typeof message === "string") {
-          try { message = JSON.parse(message); } catch { return; }
-        }
-        if (!message || message.requestId !== requestId) return;
-        if (!responseTypes.includes(message.type) && message.type !== "operation.failed") return;
-        window.__vibetableE2ERawRequests[requestId].message = message;
-        window.chrome.webview.removeEventListener("message", handler);
-      });
-      const envelope = {
-        type: requestType,
-        requestId,
-        payload: requestPayload,
-      };
-      window.chrome.webview.postMessage(envelope);
-      window.__vibetableE2ERawRequests[requestId].scopeSequence =
-        envelope.scope?.sequence ?? 0;
-      return requestId;
-    },
+    beginRawBridgeRequestInPage,
     {
       requestType: type,
       requestPayload: payload,
@@ -1671,17 +1494,11 @@ async function waitForRawBridgeRequest(page, requestId, timeoutMs = 20_000) {
     const result = await page.evaluate(
       (id) => {
         const request = window.__vibetableE2ERawRequests?.[id];
-        return request
-          ? {
-              message: request.message,
-              sequenceWindowPassed:
-                Date.now() * 1_000 > (request.scopeSequence ?? 0),
-            }
-          : null;
+        return request?.message ?? null;
       },
       requestId,
     );
-    if (result?.message && result.sequenceWindowPassed) return result.message;
+    if (result) return result;
     await page.waitForTimeout(25);
   }
   throw new Error(`bridge response timeout for ${requestId}`);

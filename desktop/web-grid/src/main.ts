@@ -27,15 +27,30 @@ import { initLocale } from "@/i18n";
 import { useHostBridge } from "@/services/bridgeContext";
 import { createWorkspaceV2HostAdapter } from "@/services/workspaceV2HostAdapter";
 import { setWorkspaceV2UiPort } from "@/services/workspaceV2UiPort";
+import { installWorkspaceWireE2EPort } from "@/services/workspaceWireE2EPort";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import App from "./App.vue";
 
 initLocale();
 
 const app = createApp(App);
-app.use(createPinia());
+const pinia = createPinia();
+app.use(pinia);
 const bridge = useHostBridge();
 const workspaceV2Adapter = createWorkspaceV2HostAdapter(bridge);
 setWorkspaceV2UiPort(workspaceV2Adapter.port);
+const disposeE2EWirePort = new URL(window.location.href).searchParams
+  .get("vibetable-e2e") === "1"
+  ? installWorkspaceWireE2EPort(window, () => {
+      const session = useWorkspaceSessionStore(pinia);
+      return session.activeWorkspaceId && session.sessionEpoch > 0
+        ? {
+            workspaceId: session.activeWorkspaceId,
+            sessionEpoch: session.sessionEpoch,
+          }
+        : null;
+    })
+  : () => undefined;
 app.mount("#app");
 
 // Start the host bridge and notify the .NET host that the renderer is ready.
@@ -45,6 +60,7 @@ bridge.notify("app.ready", {});
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    disposeE2EWirePort();
     workspaceV2Adapter.dispose();
     setWorkspaceV2UiPort(null);
   });

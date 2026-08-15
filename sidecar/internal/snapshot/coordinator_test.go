@@ -276,7 +276,11 @@ func TestDurableCatalogPublishesAtomicallyAndReopens(t *testing.T) {
 		SnapshotID: "snapshot-1", WorkspaceID: "workspace-1",
 		ManifestID: "manifest_snapshot", SealID: "manifest_seal",
 		SnapshotSequence: 1, MutationRevision: 3,
-		ObjectMap: map[string]objectrepo.ObjectID{"database": "obj_database"},
+		ObjectMap: map[string]objectrepo.ObjectID{
+			"database":        "obj_database",
+			"file-state-root": "obj_file_state_root",
+		},
+		Objects:   []objectrepo.ObjectID{"obj_database", "obj_file_state_root"},
 		RootPinID: "pin-1",
 	}
 	if err := catalog.Publish(context.Background(), record); err != nil {
@@ -293,8 +297,32 @@ func TestDurableCatalogPublishesAtomicallyAndReopens(t *testing.T) {
 	last, found, err := reopened.Last(context.Background(), "workspace-1")
 	if err != nil || !found ||
 		last.SnapshotID != record.SnapshotID ||
-		last.ObjectMap["database"] != "obj_database" {
+		last.ObjectMap["database"] != "obj_database" ||
+		last.ObjectMap["file-state-root"] != "obj_file_state_root" {
 		t.Fatalf("reopened catalog = %#v %v %v", last, found, err)
+	}
+}
+
+func TestDurableCatalogRejectsSnapshotWithoutTypedFileStateRoot(t *testing.T) {
+	catalog, err := OpenDurableCatalog(
+		filepath.Join(t.TempDir(), "snapshots", "catalog.db"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	record := Record{
+		SnapshotID: "snapshot-1", WorkspaceID: "workspace-1",
+		ManifestID: "manifest_snapshot", SealID: "manifest_seal",
+		SnapshotSequence: 1, MutationRevision: 3,
+		ObjectMap: map[string]objectrepo.ObjectID{"database": "obj_database"},
+		Objects:   []objectrepo.ObjectID{"obj_database"},
+		RootPinID: "pin-1",
+	}
+
+	err = catalog.Publish(context.Background(), record)
+	if err == nil || err.Error() != "snapshot.catalog_record_invalid" {
+		t.Fatalf("rootless catalog record error = %v", err)
 	}
 }
 

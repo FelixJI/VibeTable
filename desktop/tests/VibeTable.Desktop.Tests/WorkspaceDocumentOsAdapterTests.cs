@@ -32,6 +32,323 @@ public sealed class WorkspaceDocumentOsAdapterTests
         Assert.IsFalse(DocumentBrowseRequestController.Handles("file.uploadRequested"));
     }
 
+    [TestMethod]
+    public async Task DocumentListJoinsTheReplacementWorkspaceGenerationAfterTransportFailure()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, "files"));
+        var started = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var staleHandler = new AsyncRecordingHandler(async (_, cancellationToken) =>
+        {
+            started.TrySetResult(true);
+            await release.Task.WaitAsync(cancellationToken);
+            throw new HttpRequestException("retired sidecar generation");
+        });
+        int intermediateCalls = 0;
+        var intermediateHandler = new RecordingHandler(_ =>
+        {
+            intermediateCalls++;
+            throw new AssertFailedException("an obsolete intermediate generation was used");
+        });
+        int replacementCalls = 0;
+        var replacementHandler = new RecordingHandler(request =>
+        {
+            replacementCalls++;
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return RpcSuccess(
+                body.RootElement,
+                "{\"documents\":[],\"nextCursor\":null,\"topologyRevision\":0}");
+        });
+        using WorkspaceV2HttpGateway staleGateway = Gateway(staleHandler);
+        using WorkspaceV2HttpGateway intermediateGateway = Gateway(intermediateHandler);
+        using WorkspaceV2HttpGateway replacementGateway = Gateway(replacementHandler);
+        using WorkspaceDocumentOsAdapter stale = Adapter(
+            workspaceRoot,
+            staleGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using WorkspaceDocumentOsAdapter intermediate = Adapter(
+            workspaceRoot,
+            intermediateGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using WorkspaceDocumentOsAdapter replacement = Adapter(
+            workspaceRoot,
+            replacementGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        var sink = new FakeWebReplySink();
+        var controller = new DocumentBrowseRequestController(
+            sink,
+            TimeSpan.FromSeconds(1));
+        controller.SetWorkspace(stale);
+        Task pending = controller.DispatchAsync(Request(
+            "document.listRequested",
+            "list-after-recovery",
+            """
+            {
+              "authority":"workspace",
+              "scope":{"kind":"global"}
+            }
+            """,
+            WorkspaceScope()));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        controller.SetWorkspace(intermediate);
+        controller.SetWorkspace(replacement);
+        release.TrySetResult(true);
+        await pending;
+
+        FakeWebReplySink.Reply? loaded = await sink.WaitForAsync(
+            "document.listLoaded");
+        Assert.IsNotNull(loaded);
+        Assert.AreEqual("list-after-recovery", loaded.RequestId);
+        Assert.AreEqual(0, intermediateCalls);
+        Assert.AreEqual(1, replacementCalls);
+        Assert.IsFalse(sink.Replies.Any(reply => reply.Type == "operation.failed"));
+    }
+
+    [TestMethod]
+    public async Task DocumentListJoinsOneReplacementGenerationWithoutWaitingForAnother()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, "files"));
+        var started = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var staleHandler = new AsyncRecordingHandler((_, _) =>
+        {
+            started.TrySetResult(true);
+            return Task.FromException<HttpResponseMessage>(
+                new HttpRequestException("retired sidecar generation"));
+        });
+        var replacementHandler = new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return RpcSuccess(
+                body.RootElement,
+                "{\"documents\":[],\"nextCursor\":null,\"topologyRevision\":0}");
+        });
+        using WorkspaceV2HttpGateway staleGateway = Gateway(staleHandler);
+        using WorkspaceV2HttpGateway replacementGateway = Gateway(replacementHandler);
+        using WorkspaceDocumentOsAdapter stale = Adapter(
+            workspaceRoot,
+            staleGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using WorkspaceDocumentOsAdapter replacement = Adapter(
+            workspaceRoot,
+            replacementGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        var sink = new FakeWebReplySink();
+        var controller = new DocumentBrowseRequestController(
+            sink,
+            TimeSpan.FromMilliseconds(250));
+        controller.SetWorkspace(stale);
+        Task pending = controller.DispatchAsync(Request(
+            "document.listRequested",
+            "list-after-one-replacement",
+            """
+            {
+              "authority":"workspace",
+              "scope":{"kind":"global"}
+            }
+            """,
+            WorkspaceScope()));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        controller.SetWorkspace(replacement);
+        await pending;
+
+        Assert.IsNotNull(await sink.WaitForAsync("document.listLoaded"));
+        Assert.IsFalse(sink.Replies.Any(reply => reply.Type == "operation.failed"));
+    }
+
+    [TestMethod]
+    public async Task DocumentListRetriesOnlyOneReplacementGeneration()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, "files"));
+        var initialStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var replacementStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReplacement = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var initialHandler = new AsyncRecordingHandler((_, _) =>
+        {
+            initialStarted.TrySetResult(true);
+            return Task.FromException<HttpResponseMessage>(
+                new HttpRequestException("retired sidecar generation"));
+        });
+        int replacementCalls = 0;
+        var replacementHandler = new AsyncRecordingHandler(async (_, cancellationToken) =>
+        {
+            replacementCalls++;
+            replacementStarted.TrySetResult(true);
+            await releaseReplacement.Task.WaitAsync(cancellationToken);
+            throw new HttpRequestException("replacement generation is unavailable");
+        });
+        int laterCalls = 0;
+        var laterHandler = new RecordingHandler(request =>
+        {
+            laterCalls++;
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return RpcSuccess(
+                body.RootElement,
+                "{\"documents\":[],\"nextCursor\":null,\"topologyRevision\":0}");
+        });
+        using WorkspaceV2HttpGateway initialGateway = Gateway(initialHandler);
+        using WorkspaceV2HttpGateway replacementGateway = Gateway(replacementHandler);
+        using WorkspaceV2HttpGateway laterGateway = Gateway(laterHandler);
+        using WorkspaceDocumentOsAdapter initial = Adapter(
+            workspaceRoot,
+            initialGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using WorkspaceDocumentOsAdapter replacement = Adapter(
+            workspaceRoot,
+            replacementGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using WorkspaceDocumentOsAdapter later = Adapter(
+            workspaceRoot,
+            laterGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        var sink = new FakeWebReplySink();
+        var controller = new DocumentBrowseRequestController(
+            sink,
+            TimeSpan.FromSeconds(1));
+        controller.SetWorkspace(initial);
+        Task pending = controller.DispatchAsync(Request(
+            "document.listRequested",
+            "list-with-one-retry",
+            """
+            {
+              "authority":"workspace",
+              "scope":{"kind":"global"}
+            }
+            """,
+            WorkspaceScope()));
+        await initialStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        controller.SetWorkspace(replacement);
+        await replacementStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        controller.SetWorkspace(later);
+        releaseReplacement.TrySetResult(true);
+        await pending;
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("BACKEND_UNAVAILABLE", ((dynamic)failed.Payload!).code);
+        Assert.AreEqual(1, replacementCalls);
+        Assert.AreEqual(0, laterCalls);
+        Assert.IsFalse(sink.Replies.Any(reply => reply.Type == "document.listLoaded"));
+    }
+
+    [TestMethod]
+    public async Task DocumentListPreservesTheSafeWorkspaceUnavailableCode()
+    {
+        using var adapter = new WorkspaceDocumentOsAdapter(
+            () => null,
+            new DocumentCapabilityStore(),
+            new NoopActions(),
+            new NoopPreview(),
+            new NoopPicker());
+        var sink = new FakeWebReplySink();
+        var controller = new DocumentBrowseRequestController(sink);
+        controller.SetWorkspace(adapter);
+
+        await controller.DispatchAsync(Request(
+            "document.listRequested",
+            "list-without-binding",
+            """
+            {
+              "authority":"workspace",
+              "scope":{"kind":"global"}
+            }
+            """,
+            WorkspaceScope()));
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual(
+            "DOCUMENT_WORKSPACE_UNAVAILABLE",
+            ((dynamic)failed.Payload!).code);
+    }
+
+    [TestMethod]
+    public async Task DocumentListDoesNotRecoverAcrossWorkspaceSessions()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, "files"));
+        var started = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var staleHandler = new AsyncRecordingHandler(async (_, cancellationToken) =>
+        {
+            started.TrySetResult(true);
+            await release.Task.WaitAsync(cancellationToken);
+            throw new HttpRequestException("retired sidecar generation");
+        });
+        int replacementCalls = 0;
+        var replacementHandler = new RecordingHandler(_ =>
+        {
+            replacementCalls++;
+            throw new AssertFailedException("a stale request crossed workspace sessions");
+        });
+        using WorkspaceV2HttpGateway staleGateway = Gateway(staleHandler);
+        using WorkspaceV2HttpGateway replacementGateway = Gateway(replacementHandler);
+        using WorkspaceDocumentOsAdapter stale = Adapter(
+            workspaceRoot,
+            staleGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        Guid otherWorkspaceId = Guid.Parse(
+            "99999999-9999-4999-8999-999999999999");
+        var otherBinding = new WorkspaceDocumentBinding(
+            otherWorkspaceId,
+            8,
+            true,
+            workspaceRoot,
+            replacementGateway,
+            [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using var replacement = new WorkspaceDocumentOsAdapter(
+            () => otherBinding,
+            new DocumentCapabilityStore(),
+            new NoopActions(),
+            new NoopPreview(),
+            new NoopPicker());
+        var sink = new FakeWebReplySink();
+        var controller = new DocumentBrowseRequestController(
+            sink,
+            TimeSpan.FromSeconds(1));
+        controller.SetWorkspace(stale);
+        Task pending = controller.DispatchAsync(Request(
+            "document.listRequested",
+            "list-across-session",
+            """
+            {
+              "authority":"workspace",
+              "scope":{"kind":"global"}
+            }
+            """,
+            WorkspaceScope()));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        controller.SetWorkspace(replacement);
+        release.TrySetResult(true);
+        await pending;
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        Assert.AreEqual("DOCUMENT_SESSION_STALE", ((dynamic)failed.Payload!).code);
+        Assert.AreEqual(0, replacementCalls);
+    }
+
     private const string DiffOperationId =
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     private static readonly Guid WorkspaceId =
@@ -668,15 +985,27 @@ public sealed class WorkspaceDocumentOsAdapterTests
     private static RoutedWebRequest Request(
         string type,
         string requestId,
-        string payload)
+        string payload,
+        WorkspaceWireScope? scope = null)
     {
         using JsonDocument document = JsonDocument.Parse(payload);
         return new RoutedWebRequest(
             type,
             requestId,
             document.RootElement.Clone(),
-            string.Empty);
+            string.Empty,
+            scope);
     }
+
+    private static WorkspaceWireScope WorkspaceScope()
+        => new()
+        {
+            Scope = "workspace",
+            WorkspaceId = WorkspaceId,
+            SessionEpoch = 7,
+            OperationId = Guid.NewGuid(),
+            Sequence = 1,
+        };
 
     private static HttpResponseMessage Json(string body)
         => new(HttpStatusCode.OK)
@@ -692,6 +1021,16 @@ public sealed class WorkspaceDocumentOsAdapterTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
             => Task.FromResult(responder(request));
+    }
+
+    private sealed class AsyncRecordingHandler(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => responder(request, cancellationToken);
     }
 
     private sealed class NoopActions : ILocalDocumentActions

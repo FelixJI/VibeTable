@@ -223,6 +223,16 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
 
     public void RotateCapabilityEpoch() => _capabilities.RotateEpoch();
 
+    internal bool MatchesScope(WorkspaceWireScope? scope)
+    {
+        if (_disposed || scope is null || scope.Scope != "workspace")
+            return false;
+        WorkspaceDocumentBinding? binding = _bindingProvider();
+        return binding is not null
+            && binding.WorkspaceId == scope.WorkspaceId
+            && binding.SessionEpoch == scope.SessionEpoch;
+    }
+
     public void Dispose()
     {
         if (_disposed)

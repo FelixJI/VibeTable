@@ -339,6 +339,8 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public List<JsonElement> RawViewQueries { get; } = new();
     public List<string> CursorFetchCalls { get; } = new();
     public Dictionary<string, TablePage> CursorPageResults { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, TablePage> CursorOpenResults { get; } =
+        new(StringComparer.Ordinal);
     public Dictionary<string, TablePage> QueryWindowResults { get; } =
         new(StringComparer.Ordinal);
 
@@ -368,7 +370,15 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     public Task<TablePage> OpenTableCursorRawAsync(
         string table, JsonElement query, CancellationToken token)
-        => QueryTableViewRawAsync(table, query, token);
+    {
+        if (CursorOpenResults.TryGetValue(table, out var page))
+        {
+            QueryWindowCalls.Add(table);
+            RawViewQueries.Add(query.Clone());
+            return Task.FromResult(page);
+        }
+        return QueryTableViewRawAsync(table, query, token);
+    }
 
     public Task<TablePage> FetchTableCursorAsync(string cursor, CancellationToken token)
     {

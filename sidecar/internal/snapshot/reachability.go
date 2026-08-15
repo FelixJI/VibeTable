@@ -126,12 +126,6 @@ func ReachabilityObjectIDs(
 	if repository == nil || record.WorkspaceID == "" {
 		return nil, ErrBundleInvalid
 	}
-	// Legacy/internal records predate typed file-state roots. They have no
-	// separately addressable history graph, so their complete flat root set
-	// remains the only reachable closure.
-	if record.ObjectMap["file-state-root"] == "" {
-		return mergeSnapshotObjectIDs(record.Objects), nil
-	}
 	history, err := HistoryObjectIDs(ctx, repository, record)
 	if err != nil {
 		return nil, err

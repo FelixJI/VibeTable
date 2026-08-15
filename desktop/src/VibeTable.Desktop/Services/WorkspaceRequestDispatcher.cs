@@ -54,7 +54,9 @@ public sealed class WorkspaceRequestDispatcher
             _reply,
             correlatedRequestTimeout,
             () => _workspaceSessionToken);
-        _documentController = new DocumentBrowseRequestController(_reply);
+        _documentController = new DocumentBrowseRequestController(
+            _reply,
+            readRecoveryTimeout);
         _routes =
         [
             new(WorkspaceTableRequestController.Handles, _tableController.DispatchAsync),

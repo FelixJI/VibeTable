@@ -358,9 +358,7 @@ public sealed class GridStateCoordinator
                 && first.Revision.DataRevision == next.Revision.DataRevision;
         }
 
-        // Legacy/test gateways may not expose revision metadata. Production
-        // cursor and grouped-view responses always do and take the strict paths above.
-        return true;
+        return false;
     }
 
     private async Task ExecuteSaveAsync(

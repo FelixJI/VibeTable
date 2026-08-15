@@ -177,6 +177,56 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
+    public async Task RequestQuery_RejectsGroupedPagesWhenBothRevisionsAreMissing()
+    {
+        var gateway = new FakeTableRpcGateway();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add);
+        gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1);
+        gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 1) with
+        {
+            GroupRows = new[] { new GroupRow(new object?[] { "open" }, 1, Array.Empty<object?>()) },
+        };
+        using var query = JsonDocument.Parse("""{"groups":[{"field":"status"}],"limit":100}""");
+
+        coordinator.RequestQuery("contracts", query.RootElement);
+        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+
+        Assert.AreEqual(1, notifications.Count);
+        Assert.AreEqual("operation.failed", notifications[0].Type);
+        Assert.IsNull(notifications[0].Page);
+    }
+
+    [TestMethod]
+    public async Task RequestQuery_RejectsGroupedPagesFromDifferentRevisions()
+    {
+        var gateway = new FakeTableRpcGateway();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add);
+        gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1) with
+        {
+            QuerySnapshot = new QuerySnapshot(
+                "cursor", "digest", "db-identity", "contracts", "schema-1", 7,
+                new Dictionary<string, object?>()),
+        };
+        gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 1) with
+        {
+            QuerySnapshot = new QuerySnapshot(
+                "groups", "digest", "db-identity", "contracts", "schema-1", 8,
+                new Dictionary<string, object?>()),
+            GroupRows = new[] { new GroupRow(new object?[] { "open" }, 1, Array.Empty<object?>()) },
+        };
+        using var query = JsonDocument.Parse("""{"groups":[{"field":"status"}],"limit":100}""");
+
+        coordinator.RequestQuery("contracts", query.RootElement);
+        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+
+        Assert.AreEqual(1, notifications.Count);
+        Assert.AreEqual("operation.failed", notifications[0].Type);
+        Assert.IsNull(notifications[0].Page);
+    }
+
+    [TestMethod]
     public async Task RequestQuery_Cancels_SupersededRead()
     {
         var gateway = new FakeTableRpcGateway();

@@ -1418,9 +1418,7 @@ func validateSnapshotClosure(
 	}
 	fileStateRoot := record.ObjectMap["file-state-root"]
 	if fileStateRoot == "" {
-		// Legacy/internal test records have no typed root map. Their complete
-		// flat root set is still independently verified by the remote.
-		return nil
+		return ErrVerificationInvalid
 	}
 	reader, err := repository.Open(ctx, fileStateRoot)
 	if err != nil {
