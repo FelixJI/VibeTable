@@ -10,10 +10,11 @@ interface StructuredCellLike {
 
 interface StructuredRowLike {
   getCell?: (field: string) => StructuredCellLike | null | undefined;
+  getIndex?: () => string | number;
 }
 
 export interface StructuredGridLike {
-  getRow?: (rowKey: string | number) => StructuredRowLike | null | undefined;
+  getRows?: () => readonly StructuredRowLike[] | null | undefined;
 }
 
 /**
@@ -21,15 +22,19 @@ export interface StructuredGridLike {
  *
  * Tabulator can replace a cell DOM node while its range module settles. The
  * original trigger is preferred, but row/field identity lets us resolve the
- * current node when that happens.
+ * current node when that happens. The row is resolved from one enumerated
+ * `getRows` snapshot matched by `getIndex` instead of Tabulator's `getRow`,
+ * whose miss path emits the "Find Error - No matching row found" console
+ * warning that product E2E treats as a renderer contract violation.
  */
 export function restoreStructuredDialogFocus(
   grid: StructuredGridLike | null,
   target: StructuredDialogFocusTarget | null,
 ): boolean {
   if (!target) return false;
-  const fallback = grid
-    ?.getRow?.(target.rowKey)
+  const rows = grid?.getRows?.() ?? [];
+  const fallback = rows
+    .find((row) => String(row.getIndex?.()) === String(target.rowKey))
     ?.getCell?.(target.field)
     ?.getElement?.();
   const element = target.element?.isConnected ? target.element : fallback;

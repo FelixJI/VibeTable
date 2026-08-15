@@ -10,30 +10,47 @@ describe("restoreStructuredDialogFocus", () => {
     const trigger = document.createElement("button");
     const fallback = document.createElement("button");
     document.body.append(trigger, fallback);
-    const getRow = vi.fn(() => ({
+    const getRows = vi.fn(() => [{
+      getIndex: () => "row-1",
       getCell: () => ({ getElement: () => fallback }),
-    }));
+    }]);
 
     expect(restoreStructuredDialogFocus(
-      { getRow },
+      { getRows },
       { element: trigger, rowKey: "row-1", field: "payload" },
     )).toBe(true);
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("resolves the current Tabulator cell when the original node was replaced", () => {
+  it("resolves the current Tabulator cell from the enumerated rows", () => {
     const detachedTrigger = document.createElement("button");
     const currentCell = document.createElement("button");
     document.body.append(currentCell);
     const getCell = vi.fn(() => ({ getElement: () => currentCell }));
-    const getRow = vi.fn(() => ({ getCell }));
+    const getRows = vi.fn(() => [
+      { getIndex: () => "row-6", getCell: vi.fn() },
+      { getIndex: () => "row-7", getCell },
+    ]);
 
     expect(restoreStructuredDialogFocus(
-      { getRow },
+      { getRows },
       { element: detachedTrigger, rowKey: "row-7", field: "payload" },
     )).toBe(true);
-    expect(getRow).toHaveBeenCalledWith("row-7");
+    expect(getRows).toHaveBeenCalledTimes(1);
     expect(getCell).toHaveBeenCalledWith("payload");
     expect(document.activeElement).toBe(currentCell);
+  });
+
+  it("fails closed without warnings when the row is not in the snapshot", () => {
+    const detachedTrigger = document.createElement("button");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const getRows = vi.fn(() => [{ getIndex: () => "row-6", getCell: vi.fn() }]);
+
+    expect(restoreStructuredDialogFocus(
+      { getRows },
+      { element: detachedTrigger, rowKey: "row-9", field: "payload" },
+    )).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
