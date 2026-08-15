@@ -126,3 +126,15 @@ def test_matrix_declares_every_plan_12_4_coverage_axis() -> None:
     }
     assert all(axis in source for axis in expected)
     assert '"backup+restore"' not in source
+
+
+def test_matrix_creates_schema_only_through_v2_lifecycle_and_field_change() -> None:
+    source = Path(matrix.__file__).read_text(encoding="utf-8")
+
+    assert '"/api/vibetable/v2/schema/tables"' in source
+    assert '"/api/vibetable/v2/field-change/plan"' in source
+    assert '"/api/vibetable/v2/field-change/apply"' in source
+    assert "/api/vibetable/v1/schema/apply" not in source
+    assert 'receipt["tableId"]' in source
+    assert 'receipt["physicalName"]' not in source
+    assert 'described["physicalName"]' not in source

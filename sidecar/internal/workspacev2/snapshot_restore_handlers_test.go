@@ -13,6 +13,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacesearch"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -140,7 +141,7 @@ func TestSnapshotRestoreAcceptsSnapshotWithoutFileHistory(
 	}
 }
 
-func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
+func TestSnapshotRestoreCommitsAuthorityAndRecoversFailedSearchRebuildAfterRestart(
 	t *testing.T,
 ) {
 	ctx := context.Background()
@@ -392,14 +393,20 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 		App: reopenedApp, DataDir: dataDir,
 		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: testClaimID, Ledger: reopenedLedger,
+		DeferBackgroundWorkers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reopened.Close(ctx)
-	if err := reopened.CompletePendingSnapshotRestore(ctx); err != nil {
-		t.Fatal(err)
+	reopened.restoreSearchRebuild = func(context.Context) error {
+		return errors.New("private search storage detail")
 	}
+	if err := reopened.CompletePendingSnapshotRestore(ctx); err == nil ||
+		err.Error() != "workspace_search.restore_rebuild_required" {
+		t.Fatalf("restore rebuild startup failure = %v", err)
+	}
+	reopened.restoreSearchRebuild = nil
 	restoredSettings, _, err := reopened.state.retention(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -457,6 +464,35 @@ func TestSnapshotRestoreStagesOfflineInstallAndCommitsAfterHealthyOpen(
 		restoreJournalName,
 	)); !os.IsNotExist(err) {
 		t.Fatalf("committed restore left journal: %v", err)
+	}
+	status, err := reopened.search.Status(ctx)
+	if err != nil || status.State != "degraded" || status.ErrorCode == nil ||
+		*status.ErrorCode != "workspace_search.restore_rebuild_required" {
+		t.Fatalf("restore rebuild marker = %#v, %v", status, err)
+	}
+	searchPath := filepath.Join(
+		root, ".vibetable", "coordination", "workspace-search.db",
+	)
+	if err := reopened.search.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restartedSearch, err := workspacesearch.Open(searchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.search = restartedSearch
+	status, err = restartedSearch.Status(ctx)
+	if err != nil || status.State != "degraded" {
+		t.Fatalf("restart lost rebuild marker = %#v, %v", status, err)
+	}
+	if err := restartedSearch.RebuildProjection(
+		ctx, nil, workspacesearch.ProjectionCheckpoint{}, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	status, err = restartedSearch.Status(ctx)
+	if err != nil || status.State != "ready" || status.ErrorCode != nil {
+		t.Fatalf("restart rebuild recovery = %#v, %v", status, err)
 	}
 }
 

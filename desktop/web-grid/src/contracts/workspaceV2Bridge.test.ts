@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseWorkspaceV2Reply } from "./workspaceV2Bridge";
 
 const reply = {
-  method: "fileHistory.listDocuments",
+  method: "fileHistory.queryDocuments",
   wire: {
     scope: "workspace",
     workspaceId: "11111111-1111-4111-8111-111111111111",
@@ -15,22 +15,27 @@ const reply = {
     documents: [{
       contractVersion: "2.0",
       documentId: "22222222-2222-4222-8222-222222222222",
-      workspaceId: "11111111-1111-4111-8111-111111111111",
       relativePath: "季度规划.docx",
+      displayName: "季度规划.docx",
+      extension: "docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sizeBytes: 4096,
       status: "active",
       effectiveRevisionId: "33333333-3333-4333-8333-333333333333",
-      nextRevisionOrdinal: 4,
-      nextFormalVersion: 4,
+      effectiveRevisionCreatedAt: "2026-08-12T09:00:00Z",
+      formalVersion: 3,
     }],
+    nextCursor: null,
+    topologyRevision: 42,
   },
   error: null,
 } as const;
 
-describe("workspace v2 document list reply", () => {
-  it("strictly parses canonical FileDocument projections", () => {
+describe("workspace v2 document query reply", () => {
+  it("strictly parses canonical FileDocumentSummary projections", () => {
     const parsed = parseWorkspaceV2Reply(reply);
     expect(parsed.ok).toBe(true);
-    if (parsed.ok && parsed.method === "fileHistory.listDocuments") {
+    if (parsed.ok && parsed.method === "fileHistory.queryDocuments") {
       expect(parsed.result.documents[0]?.documentId)
         .toBe("22222222-2222-4222-8222-222222222222");
     }
@@ -40,9 +45,9 @@ describe("workspace v2 document list reply", () => {
     const invalid = structuredClone(reply) as unknown as {
       result: { documents: Array<Record<string, unknown>> };
     };
-    invalid.result.documents[0]!.displayName = "must be derived by the OS adapter";
+    invalid.result.documents[0]!.workspaceId = "must not leak aggregate state";
     expect(() => parseWorkspaceV2Reply(invalid)).toThrow(
-      "file document has unknown or missing fields",
+      "file document summary has unknown or missing fields",
     );
   });
 });
@@ -654,5 +659,126 @@ describe("workspace v2 storage relocation replies", () => {
     expect(() => parseWorkspaceV2Reply(makeReply("overwriteInPlace"))).toThrow(
       "storage action is invalid",
     );
+  });
+});
+
+describe("workspace v2 closed result catalog", () => {
+  const storage = {
+    location: "D:\\Workspaces\\Quarter",
+    activityRoot: "C:\\Activity\\Quarter",
+    mode: "mirrored",
+    provider: "fixed",
+    health: "attention",
+    logicalSize: 2048,
+    physicalSize: 1024,
+    reclaimableSize: 256,
+    encryption: "protected",
+    keyVersion: 2,
+    pendingSync: true,
+    replicaVerified: false,
+  } as const;
+  const status = {
+    state: "building",
+    generation: 3,
+    checkpoint: "item-20",
+    processed: 20,
+    total: 100,
+    errorCode: null,
+  } as const;
+
+  it.each([
+    ["workspace.open", { workspaceId: null, sessionEpoch: 2, state: "closed" }],
+    ["workspace.switch", { workspaceId: "w-2", sessionEpoch: 3, state: "switching" }],
+    ["workspace.close", { workspaceId: null, sessionEpoch: 4, state: "closed" }],
+    ["workspace.create", { workspaceId: "w-1", status: "created" }],
+    ["workspace.register", { workspaceId: "w-1", status: "registered" }],
+    ["workspace.relink", { workspaceId: "w-1", status: "relinked" }],
+    ["workspace.remove", { workspaceId: "w-1", status: "removed" }],
+    ["workspace.applyDelete", { workspaceId: "w-1", status: "deleted" }],
+    ["workspace.planDelete", { planId: "plan-1", displayName: "Quarter", requiresTypedName: true }],
+    ["workspace.storage.apply", { workspaceId: "w-1", status: "applied", storage }],
+    ["snapshot.list", { snapshots: [], nextCursor: "next" }],
+    ["snapshot.inspect", { snapshotId: "s-1", state: "repairing", integrity: "repairing" }],
+    ["snapshot.update", { snapshotId: "s-1", state: "ready", integrity: "verified" }],
+    ["snapshot.previewRestore", { planId: "plan-1", protectionRequired: true, changes: ["tables"] }],
+    ["snapshot.export", { displayName: "quarter.vtsnapshot", sha256: `sha256:${"ab".repeat(32)}` }],
+    ["snapshot.inspectPackage", { planId: "plan-1", trusted: false, workspaceId: "w-1", sourceSnapshotId: null, snapshotCount: 2, encrypted: true, verified: false, expiresAt: "2026-08-13T00:00:00Z" }],
+    ["fileHistory.applyPendingChange", { changeId: "c-1", state: "dismissed", document: null }],
+    ["fileHistory.activateLeaf", { revisionId: "r-1", effective: true }],
+    ["workspaceSearch.status", status],
+    ["workspaceSearch.rebuild", status],
+    ["workspaceSearch.cancel", { ...status, state: "idle", total: null, checkpoint: null }],
+    ["retention.plan", { planId: "plan-1", reclaimableBytes: 1024, blockedReasons: ["pinned"] }],
+    ["retention.apply", { deletedObjects: 3, reclaimedBytes: 1024 }],
+    ["replica.status", { coordinationStrength: "advisory", syncState: "failed", pendingSync: true }],
+    ["replica.forceTakeover", { fenceEpoch: 2, claimId: "claim-1", mode: "provisional" }],
+    ["conflict.preview", { planId: "plan-1", diagnostics: ["dependency"], valid: false }],
+    ["conflict.apply", { operationId: "op-1", state: "applied", recoverySnapshotIds: ["s-1"] }],
+    ["snapshot.applyRestore", { operationId: "op-1", state: "succeeded" }],
+    ["snapshot.applyExtract", { operationId: "op-2", state: "succeeded" }],
+    ["replica.synchronize", { operationId: "op-3", state: "queued" }],
+  ] as const)("strictly parses the %s success result", (method, result) => {
+    const parsed = parseWorkspaceV2Reply({ ...reply, method, result });
+    expect(parsed.ok).toBe(true);
+    expect(parsed.method).toBe(method);
+  });
+
+  it("parses every JSON scalar metadata form and rejects non-finite search values", () => {
+    const searchHit = {
+      contractVersion: "1.0",
+      hitId: "hit-1",
+      kind: "record",
+      canonicalId: "orders/1",
+      title: "Order 1",
+      snippet: null,
+      highlights: [],
+      sourceRevision: "revision-1",
+      score: 1.5,
+      revisionTime: "2026-08-13T00:00:00Z",
+      metadata: [
+        { key: "text", value: "paid" },
+        { key: "count", value: 2 },
+        { key: "active", value: true },
+        { key: "optional", value: null },
+      ],
+      openTarget: {
+        kind: "record",
+        tableId: "orders",
+        recordId: "1",
+        fieldId: null,
+        documentId: null,
+      },
+    };
+    const parsed = parseWorkspaceV2Reply({
+      ...reply,
+      method: "workspaceSearch.query",
+      result: { hits: [searchHit], nextCursor: null, generation: 3 },
+    });
+    expect(parsed.ok).toBe(true);
+
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "workspaceSearch.query",
+      result: { hits: [{ ...searchHit, score: Number.NaN }], nextCursor: null, generation: 3 },
+    })).toThrow("finite number");
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "workspaceSearch.query",
+      result: { hits: [{ ...searchHit, metadata: [{ key: "bad", value: [] }] }], nextCursor: null, generation: 3 },
+    })).toThrow("finite number");
+  });
+
+  it("strictly parses failed replies and rejects mixed success/failure envelopes", () => {
+    const failed = parseWorkspaceV2Reply({
+      ...reply,
+      ok: false,
+      result: null,
+      error: { code: "workspace.offline", message: "offline", retryable: true },
+    });
+    expect(failed).toMatchObject({ ok: false, result: null, error: { retryable: true } });
+    expect(() => parseWorkspaceV2Reply({ ...reply, error: { code: "bad" } }))
+      .toThrow("cannot contain an error");
+    expect(() => parseWorkspaceV2Reply({ ...reply, ok: false, error: null }))
+      .toThrow("cannot contain a result");
   });
 });

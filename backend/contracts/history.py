@@ -72,7 +72,7 @@ class ScalarFieldChange(HistoryModel):
 
 
 class RelationFieldChange(HistoryModel):
-    """A relation field change (M2O, O2M, M2M, M2A).
+    """A direct relation field change.
 
     ``related_collection`` and ``related_item_id`` identify the target.
     ``display_value`` is a human-readable rendering cropped to readable fields.
@@ -80,7 +80,7 @@ class RelationFieldChange(HistoryModel):
     """
 
     field: str = Field(min_length=1, max_length=128)
-    kind: Literal["m2o", "o2m", "m2m", "m2a", "file"] = "m2o"
+    kind: Literal["m2o", "o2m", "m2m", "file"] = "m2o"
     related_collection: str | None = Field(default=None, max_length=128)
     related_item_id: str | None = Field(default=None, max_length=128)
     display_value: str | None = Field(default=None, max_length=512)

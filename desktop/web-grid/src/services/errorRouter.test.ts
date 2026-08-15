@@ -116,4 +116,20 @@ describe("errorRouter", () => {
     emit("operation.failed", { message: "load failed", code: "X" });
     expect(table.error).toBe("load failed");
   });
+
+  it("leaves query.cursor_stale to the cursor reopen controller", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const router = useErrorRouter();
+    router.init();
+
+    emit("operation.failed", {
+      message: "cursor changed",
+      code: "query.cursor_stale",
+      operation: "query.cursor",
+    });
+
+    expect(table.error).toBeNull();
+  });
 });

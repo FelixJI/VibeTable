@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -92,9 +93,6 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
         => Gateway.OpenDatabaseAsync(path, token);
     public Task<TableSummary> ListTablesAsync(CancellationToken token)
         => Gateway.ListTablesAsync(token);
-    public Task<TablePage> ReadTablePageAsync(
-        string table, int offset, int limit, CancellationToken token)
-        => Gateway.ReadTablePageAsync(table, offset, limit, token);
     public Task<EditSchemaResult> GetEditSchemaAsync(string table, CancellationToken token)
         => Gateway.GetEditSchemaAsync(table, token);
     public Task<UpdateCellResult> UpdateCellAsync(
@@ -124,12 +122,17 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
     public Task<RestoreResult> ApplyRestoreAsync(
         ApplyRestoreParams parameters, CancellationToken token)
         => Gateway.ApplyRestoreAsync(parameters, token);
-    public Task<TablePage> QueryTablePageAsync(
-        string table, int offset, int limit, TableQuery query, CancellationToken token)
-        => Gateway.QueryTablePageAsync(table, offset, limit, query, token);
-    public Task<TablePage> QueryTableViewAsync(
-        string table, int offset, int limit, TableQuery query, CancellationToken token)
-        => Gateway.QueryTableViewAsync(table, offset, limit, query, token);
+
+    public Task<TablePage> QueryTableViewRawAsync(
+        string table, JsonElement query, CancellationToken token)
+        => Gateway.QueryTableViewRawAsync(table, query, token);
+
+    public Task<TablePage> OpenTableCursorRawAsync(
+        string table, JsonElement query, CancellationToken token)
+        => Gateway.OpenTableCursorRawAsync(table, query, token);
+
+    public Task<TablePage> FetchTableCursorAsync(string cursor, CancellationToken token)
+        => Gateway.FetchTableCursorAsync(cursor, token);
     public Task<SnapshotValidation> ValidateSnapshotAsync(
         QuerySnapshot snapshot, int? currentRevision, CancellationToken token)
         => Gateway.ValidateSnapshotAsync(snapshot, currentRevision, token);

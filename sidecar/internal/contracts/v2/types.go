@@ -14,7 +14,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const ContractVersion = "2.0"
+const (
+	ContractVersion        = "2.0"
+	WorkspaceFormatVersion = uint64(2)
+)
 
 var (
 	objectIDPattern = regexp.MustCompile(`^obj_[0-9a-f]{64}$`)
@@ -134,8 +137,10 @@ func (value WorkspaceManifest) Validate() error {
 	if err := validateVersion(value.ContractVersion); err != nil {
 		return err
 	}
-	if value.FormatVersion == 0 ||
-		value.TopologySchemaVersion == 0 ||
+	if value.FormatVersion != WorkspaceFormatVersion {
+		return errors.New("workspace.format_unsupported")
+	}
+	if value.TopologySchemaVersion == 0 ||
 		value.BusinessSchemaVersion == 0 {
 		return errors.New("workspace format versions must be positive")
 	}
@@ -749,9 +754,14 @@ func (value RPCContractCatalog) Validate() error {
 	}
 	methods := map[string]bool{}
 	for index, item := range value.RPCCases {
-		if err := item.Validate(); err != nil || value.RPCMethods[index] != item.Method ||
-			methods[item.Method] {
-			return errors.New("RPC catalog method registry is missing, duplicated, or stale")
+		if err := item.Validate(); err != nil {
+			return fmt.Errorf("RPC catalog case %q is invalid: %w", item.Method, err)
+		}
+		if value.RPCMethods[index] != item.Method || methods[item.Method] {
+			return fmt.Errorf(
+				"RPC catalog method registry is missing, duplicated, or stale at %q",
+				item.Method,
+			)
 		}
 		methods[item.Method] = true
 	}
@@ -787,7 +797,9 @@ func validRPCSchemaNodeAt(value any, conditional bool) bool {
 		"enum",
 		"const",
 		"minimum",
+		"maximum",
 		"minLength",
+		"maxItems",
 		"pattern",
 		"additionalProperties",
 		"required",
@@ -834,8 +846,16 @@ func validRPCSchemaNodeAt(value any, conditional bool) bool {
 			return false
 		}
 	}
-	if raw, exists := node["minimum"]; exists {
-		if _, ok := raw.(float64); !ok {
+	for _, keyword := range []string{"minimum", "maximum"} {
+		if raw, exists := node[keyword]; exists {
+			if _, ok := raw.(float64); !ok {
+				return false
+			}
+		}
+	}
+	if raw, exists := node["maxItems"]; exists {
+		number, ok := raw.(float64)
+		if !ok || number < 0 || math.Trunc(number) != number {
 			return false
 		}
 	}
@@ -931,10 +951,11 @@ func validRPCSchemaNodeAt(value any, conditional bool) bool {
 		return false
 	}
 	_, hasConst := node["const"]
+	_, hasEnum := node["enum"]
 	_, hasProperties := node["properties"]
 	_, hasAllOf := node["allOf"]
 	_, hasOneOf := node["oneOf"]
-	return hasType || hasConst || hasProperties || hasAllOf || hasOneOf
+	return hasType || hasConst || hasEnum || hasProperties || hasAllOf || hasOneOf
 }
 
 func onlyRPCSchemaKeys(value map[string]any, allowed ...string) bool {

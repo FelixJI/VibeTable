@@ -59,7 +59,7 @@ func registerMetadataRoutes(
 		); err != nil {
 			return writeMetadataError(request, err)
 		}
-		receipt, err := service.Upsert(
+		receipt, err := metadataMutationWithGate(
 			request.Request.Context(),
 			metadata.UpsertRequest{
 				Namespace: metadata.Namespace(
@@ -70,6 +70,8 @@ func registerMetadataRoutes(
 				ExpectedRevision: body.ExpectedRevision,
 				IdempotencyKey:   body.IdempotencyKey,
 			},
+			gates,
+			service.Upsert,
 		)
 		if err != nil {
 			return writeMetadataError(request, err)
@@ -85,7 +87,7 @@ func registerMetadataRoutes(
 		); err != nil {
 			return writeMetadataError(request, err)
 		}
-		receipt, err := service.Delete(
+		receipt, err := deleteMetadataWithGate(
 			request.Request.Context(),
 			metadata.DeleteRequest{
 				Namespace: metadata.Namespace(
@@ -95,6 +97,8 @@ func registerMetadataRoutes(
 				ExpectedRevision: body.ExpectedRevision,
 				IdempotencyKey:   body.IdempotencyKey,
 			},
+			gates,
+			service.Delete,
 		)
 		if err != nil {
 			return writeMetadataError(request, err)
@@ -121,6 +125,48 @@ func registerMetadataRoutes(
 		}
 		return request.JSON(http.StatusOK, receipt)
 	})
+}
+
+func metadataMutationWithGate(
+	ctx context.Context,
+	request metadata.UpsertRequest,
+	gates []businessWriteGate,
+	apply func(context.Context, metadata.UpsertRequest) (metadata.MutationReceipt, error),
+) (metadata.MutationReceipt, error) {
+	var receipt metadata.MutationReceipt
+	err := runIdempotentBusinessWrite(
+		ctx,
+		gates,
+		"metadata."+string(request.Namespace)+".upsert",
+		request.IdempotencyKey,
+		func(writeContext context.Context) error {
+			var applyErr error
+			receipt, applyErr = apply(writeContext, request)
+			return applyErr
+		},
+	)
+	return receipt, err
+}
+
+func deleteMetadataWithGate(
+	ctx context.Context,
+	request metadata.DeleteRequest,
+	gates []businessWriteGate,
+	apply func(context.Context, metadata.DeleteRequest) (metadata.DeleteReceipt, error),
+) (metadata.DeleteReceipt, error) {
+	var receipt metadata.DeleteReceipt
+	err := runIdempotentBusinessWrite(
+		ctx,
+		gates,
+		"metadata."+string(request.Namespace)+".delete",
+		request.IdempotencyKey,
+		func(writeContext context.Context) error {
+			var applyErr error
+			receipt, applyErr = apply(writeContext, request)
+			return applyErr
+		},
+	)
+	return receipt, err
 }
 
 func commitDashboardWithGate(

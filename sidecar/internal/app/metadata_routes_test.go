@@ -48,6 +48,46 @@ func TestDashboardCommitUsesBusinessWriteGateAndReturnsTheAppliedReceipt(t *test
 	}
 }
 
+func TestMetadataMutationUsesIdempotentBusinessWriteGate(t *testing.T) {
+	t.Parallel()
+	called := false
+	gate := businessWriteGate(func(
+		ctx context.Context,
+		kind string,
+		identity string,
+		apply func(context.Context) error,
+	) error {
+		called = true
+		if kind != "metadata.interfaces.upsert" || identity != "interface-save-1" {
+			t.Fatalf("unexpected gate identity: %s %s", kind, identity)
+		}
+		return apply(ctx)
+	})
+	request := metadata.UpsertRequest{
+		Namespace:      metadata.NamespaceInterfaces,
+		LogicalID:      "interface-1",
+		IdempotencyKey: "interface-save-1",
+	}
+
+	_, err := metadataMutationWithGate(
+		context.Background(), request, []businessWriteGate{nil, gate},
+		func(_ context.Context, got metadata.UpsertRequest) (metadata.MutationReceipt, error) {
+			if got.LogicalID != request.LogicalID {
+				t.Fatalf("logical id = %q, want %q", got.LogicalID, request.LogicalID)
+			}
+			return metadata.MutationReceipt{
+				ReceiptTrace: metadata.ReceiptTrace{Status: metadata.StatusApplied},
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("metadataMutationWithGate() error = %v", err)
+	}
+	if !called {
+		t.Fatal("idempotent business gate was not called")
+	}
+}
+
 func TestDecodeMetadataBodyIsStrictAndBounded(t *testing.T) {
 	var body metadataUpsertBody
 	if err := decodeMetadataBody(strings.NewReader(

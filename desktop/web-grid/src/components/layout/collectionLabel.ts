@@ -1,23 +1,13 @@
 import type { CollectionSummary } from "@/stores/workspaceStore";
 
-/** Keep physical identifiers on events while presenting the best available label. */
+/** Present the canonical display name while physical identifiers stay on events. */
 export function collectionLabel(
   collection: CollectionSummary,
-  displayNames?: Readonly<Record<string, string>>,
+  displayNames: Readonly<Record<string, string>>,
 ): string {
-  const item = collection as CollectionSummary & {
-    displayName?: string;
-    title?: string;
-  };
-  const metadata = collection.metadata as
-    | { displayName?: unknown; title?: unknown }
-    | undefined;
-  return (
-    displayNames?.[collection.collection] ??
-    item.displayName ??
-    item.title ??
-    (typeof metadata?.displayName === "string" ? metadata.displayName : undefined) ??
-    (typeof metadata?.title === "string" ? metadata.title : undefined) ??
-    collection.collection
-  );
+  const label = displayNames[collection.collection];
+  if (typeof label !== "string" || !label.trim()) {
+    throw new Error(`Missing canonical display name for ${collection.collection}`);
+  }
+  return label;
 }

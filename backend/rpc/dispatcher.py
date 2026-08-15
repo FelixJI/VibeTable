@@ -20,19 +20,17 @@ JSON-RPC code     Name                         Source
 ``-32603``        Internal error               any other handler exception
 ================  ===========================  =========================
 
-Typed application errors are mapped to ``(code, kind)`` pairs through the
-``_APP_ERROR_MAP`` registry below. To add a new mapping, extend both the table
-and the ``CODE_*`` constant. Application errors must NOT subclass each other:
-the dispatcher iterates the registry in definition order, so common base
-classes would shadow their more specific subclasses.
+Typed application errors are resolved by :mod:`backend.rpc.error_registry`.
+The registry deliberately matches exact exception types, so an unregistered
+subclass remains an internal error instead of inheriting an accidental wire
+contract.
 
 The B1 mutation errors (:class:`EditConflictError`,
 :class:`MutationValidationError`) carry **extra structured data** beyond the
 generic ``{kind, message}`` envelope: a conflict carries ``currentRow`` and a
 validation error carries ``fieldErrors``. Application errors may expose an
-``rpc_error_data`` attribute returning a dict that the dispatcher merges into
-the error object's ``data``; the registry's ``kind``/``message`` are still
-applied so the generic envelope stays stable.
+``rpc_error_data`` attribute; the registry merges it while preserving the
+generic envelope.
 
 B3 reuses the existing ``-32021`` invalid-argument code for query-compile
 errors (unknown columns, bad operator arity, remote-regex rejection): they
@@ -54,7 +52,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 from pydantic_core import to_jsonable_python
 
-from backend.application.system_service import ProtocolMismatchError
+from backend.rpc.error_registry import application_error_registry
 from backend.rpc.messages import RpcRequest
 
 logger = logging.getLogger(__name__)
@@ -64,149 +62,6 @@ CODE_INVALID_REQUEST = -32600
 CODE_METHOD_NOT_FOUND = -32601
 CODE_INVALID_PARAMS = -32602
 CODE_INTERNAL_ERROR = -32603
-CODE_PROTOCOL_MISMATCH = -32001
-CODE_EDIT_CONFLICT = -32010
-CODE_MUTATION_VALIDATION = -32011
-CODE_TABLE_NOT_FOUND = -32020
-CODE_INVALID_ARGUMENT = -32021
-CODE_DATABASE_NOT_FOUND = -32022
-CODE_PASTE = -32040
-CODE_PATH_GRANT = -32050
-CODE_IMPORT = -32060
-CODE_EXPORT = -32061
-CODE_INSIGHTS = -32080
-CODE_SETTINGS_COMMAND = -32100
-CODE_PLUGIN = -32120
-CODE_PRODUCT_DATA = -32150
-CODE_IDENTIFIER = -32160
-
-#: Maps each typed application error class to a ``(code, message, kind)``
-#: tuple. Order matters only if classes share a base class — they do not here.
-#: Keep ``Exception`` *out* of this map: the dispatcher falls back to
-#: ``CODE_INTERNAL_ERROR`` for any exception not listed.
-_APP_ERROR_MAP: dict[type[Exception], tuple[int, str, str]] = {
-    ProtocolMismatchError: (CODE_PROTOCOL_MISMATCH, "Protocol mismatch", "protocol_mismatch"),
-}
-
-
-def register_rpc_error(
-    error_type: type[Exception],
-    *,
-    code: int,
-    message: str,
-    kind: str,
-) -> None:
-    """Register one typed error without importing its concrete layer here."""
-
-    _APP_ERROR_MAP[error_type] = (code, message, kind)
-
-
-def register_paste_errors() -> None:
-    """Register B2 paste errors without importing the service at startup."""
-    from backend.application.paste_service import PasteError
-
-    if PasteError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[PasteError] = (
-            CODE_PASTE,
-            "Paste error",
-            "paste_error",
-        )
-
-
-def register_path_grant_errors() -> None:
-    """Register C1 path-grant errors without importing the service at startup."""
-    from backend.application.path_grant import PathGrantError
-
-    if PathGrantError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[PathGrantError] = (
-            CODE_PATH_GRANT,
-            "Path grant error",
-            "path_grant_error",
-        )
-
-
-def register_import_errors() -> None:
-    """Register C1 import errors without importing the service at startup."""
-    from backend.application.import_service import ImportFlowError
-
-    if ImportFlowError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[ImportFlowError] = (
-            CODE_IMPORT,
-            "Import error",
-            "import_error",
-        )
-
-
-def register_export_errors() -> None:
-    """Register C1 export errors without importing the service at startup."""
-    from backend.application.export_service import ExportError
-
-    if ExportError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[ExportError] = (
-            CODE_EXPORT,
-            "Export error",
-            "export_error",
-        )
-
-
-def register_identifier_errors() -> None:
-    """Register product identifier-management errors."""
-    from backend.application.identifier_mapping_service import (
-        IdentifierManagementError,
-    )
-
-    if IdentifierManagementError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[IdentifierManagementError] = (
-            CODE_IDENTIFIER,
-            "Identifier mapping error",
-            "identifier_mapping_error",
-        )
-
-
-def register_insights_errors() -> None:
-    """Register C2 insights errors without importing the service at startup."""
-    from backend.application.insights_service import InsightsError
-
-    if InsightsError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[InsightsError] = (
-            CODE_INSIGHTS,
-            "Insights error",
-            "insights_error",
-        )
-
-
-def register_settings_command_errors() -> None:
-    """Register D2 settings/command errors without importing the service at startup."""
-    from backend.application.settings_command_service import SettingsCommandError
-
-    if SettingsCommandError not in _APP_ERROR_MAP:
-        _APP_ERROR_MAP[SettingsCommandError] = (
-            CODE_SETTINGS_COMMAND,
-            "Settings/command error",
-            "settings_command_error",
-        )
-
-
-def register_plugin_errors() -> None:
-    """Register stable plugin-domain failures without loading them at startup."""
-
-    from backend.application.plugin_registry import PluginRegistryError
-    from backend.infrastructure.plugin_package import PluginPackageError
-    from backend.infrastructure.plugin_schema import PluginSchemaError
-
-    for error_type in (
-        PluginRegistryError,
-        PluginPackageError,
-        PluginSchemaError,
-    ):
-        if error_type not in _APP_ERROR_MAP:
-            _APP_ERROR_MAP[error_type] = (
-                CODE_PLUGIN,
-                "Plugin error",
-                "plugin_error",
-            )
-
-
 Handler = Callable[..., Any]
 ParamsModel = type[BaseModel]
 
@@ -307,21 +162,13 @@ class RpcDispatcher:
         except Exception as exc:
             if is_notification:
                 return None
-            mapping = _APP_ERROR_MAP.get(type(exc))
-            if mapping is not None:
-                code, message, kind = mapping
-                # B1 mutation errors carry extra structured data (currentRow,
-                # fieldErrors) exposed via ``rpc_error_data``. Merge it into
-                # the generic envelope.
-                data: dict[str, Any] = {"kind": kind, "message": str(exc)}
-                extra = getattr(exc, "rpc_error_data", None)
-                if isinstance(extra, dict):
-                    data.update(extra)
+            mapped = application_error_registry.resolve(exc)
+            if mapped is not None:
                 return self._error_response(
                     request.id,
-                    code,
-                    message,
-                    data=data,
+                    mapped.code,
+                    mapped.message,
+                    data=mapped.data,
                 )
             logger.exception(
                 "rpc handler failed: method=%s exception=%s",

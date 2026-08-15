@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,8 +15,9 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 )
 
 const maxSchemaRequestBytes = 1 << 20
@@ -28,23 +28,20 @@ func registerSchemaRoutes(
 	jobService *jobs.Service,
 	gates ...businessWriteGate,
 ) {
-	r.GET("/api/vibetable/v1/schema/tables", func(request *core.RequestEvent) error {
+	r.GET("/api/vibetable/v2/schema/tables", func(request *core.RequestEvent) error {
 		definitions, err := catalog.List(request.Request.Context())
 		if err != nil {
 			return writeSchemaError(request, err)
 		}
-		return request.JSON(http.StatusOK, map[string]any{"tables": definitions})
-	})
-
-	r.GET("/api/vibetable/v1/schema/tables/{id}", func(request *core.RequestEvent) error {
-		definition, err := catalog.Describe(
-			request.Request.Context(),
-			request.Request.PathValue("id"),
-		)
-		if err != nil {
-			return writeSchemaError(request, err)
+		tables := make([]map[string]any, 0, len(definitions))
+		for _, definition := range definitions {
+			tables = append(tables, map[string]any{
+				"tableId":     definition.Snapshot.TableID,
+				"displayName": definition.Snapshot.DisplayName,
+				"kind":        definition.Snapshot.Kind,
+			})
 		}
-		return request.JSON(http.StatusOK, definition)
+		return request.JSON(http.StatusOK, map[string]any{"tables": tables})
 	})
 
 	r.GET("/api/vibetable/v1/schema/autodate-diagnostics", func(request *core.RequestEvent) error {
@@ -59,93 +56,6 @@ func registerSchemaRoutes(
 		})
 	})
 
-	r.POST("/api/vibetable/v1/schema/validate", func(request *core.RequestEvent) error {
-		var change schemaapi.Change
-		if err := decodeSchemaRequest(request.Request.Body, &change); err != nil {
-			return writeSchemaError(request, err)
-		}
-		result, err := catalog.ValidateChange(request.Request.Context(), change)
-		if err != nil {
-			return writeSchemaError(request, err)
-		}
-		return request.JSON(http.StatusOK, result)
-	})
-
-	r.POST("/api/vibetable/v1/schema/apply", func(request *core.RequestEvent) error {
-		var change schemaapi.Change
-		if err := decodeSchemaRequest(request.Request.Body, &change); err != nil {
-			return writeSchemaError(request, err)
-		}
-		var definition schema.TableDefinition
-		var backfill jobs.Snapshot
-		err := runIdempotentBusinessWrite(
-			request.Request.Context(),
-			gates,
-			"schema.apply",
-			schemaChangeIdentity(change),
-			func(ctx context.Context) error {
-				var applyErr error
-				definition, applyErr = catalog.ApplyChange(ctx, change)
-				return applyErr
-			},
-		)
-		if err != nil {
-			return writeSchemaError(request, err)
-		}
-		// An idempotent coordinator replay deliberately skips the mutator
-		// callback, so always re-read the committed authority projection.
-		definition, err = catalog.Describe(
-			request.Request.Context(),
-			change.Definition.TableID,
-		)
-		if err != nil {
-			return writeSchemaError(request, err)
-		}
-		if definitionNeedsBackfill(definition) {
-			err = runIdempotentBusinessWrite(
-				request.Request.Context(),
-				gates,
-				"formula.backfill.enqueue",
-				fmt.Sprintf(
-					"%s:%s",
-					definition.TableID,
-					definition.SchemaRevision,
-				),
-				func(ctx context.Context) error {
-					var startErr error
-					backfill, startErr = jobService.StartFormulaBackfill(
-						ctx,
-						definition.TableID,
-						definition.SchemaRevision,
-					)
-					return startErr
-				},
-			)
-			if err != nil {
-				if _, ok := err.(*jobs.JobError); ok {
-					return writeJobError(request, err)
-				}
-				return writeSchemaError(request, err)
-			}
-			if backfill.JobID == "" {
-				backfill, err = jobService.StartFormulaBackfill(
-					request.Request.Context(),
-					definition.TableID,
-					definition.SchemaRevision,
-				)
-				if err != nil {
-					return writeJobError(request, err)
-				}
-			}
-		}
-		if err := dispatchFormulaBackfill(
-			request.Request.Context(), jobService, backfill,
-		); err != nil {
-			return writeJobError(request, err)
-		}
-		return request.JSON(http.StatusOK, definition)
-	})
-
 	r.POST("/api/vibetable/v1/schema/delete", func(request *core.RequestEvent) error {
 		var body struct {
 			TableID          string `json:"tableId"`
@@ -154,9 +64,9 @@ func registerSchemaRoutes(
 		if err := decodeSchemaRequest(request.Request.Body, &body); err != nil {
 			return writeSchemaError(request, err)
 		}
-		expectedRevision, err := schema.ParseSchemaRevision(body.ExpectedRevision)
+		expectedRevision, err := v2.ParseSchemaRevision(body.ExpectedRevision)
 		if err != nil {
-			return writeSchemaError(request, &schema.ProductError{
+			return writeSchemaError(request, &schemaerror.ProductError{
 				Code: "schema.revision.invalid", Path: "expectedRevision",
 				Message: err.Error(),
 			})
@@ -184,37 +94,6 @@ func registerSchemaRoutes(
 	})
 }
 
-const synchronousFormulaBackfillMaxRecords = 100
-
-func dispatchFormulaBackfill(
-	ctx context.Context,
-	service *jobs.Service,
-	snapshot jobs.Snapshot,
-) error {
-	if service == nil || snapshot.State != "queued" || snapshot.JobID == "" {
-		return nil
-	}
-	if snapshot.Progress.Total <= synchronousFormulaBackfillMaxRecords {
-		return service.Run(ctx, snapshot.JobID)
-	}
-	service.Start(snapshot.JobID)
-	return nil
-}
-
-func schemaChangeIdentity(change schemaapi.Change) string {
-	if change.OperationID != "" {
-		return change.OperationID
-	}
-	raw, _ := json.Marshal(struct {
-		Definition       schema.TableDefinition `json:"definition"`
-		ExpectedRevision int64                  `json:"expectedRevision"`
-	}{
-		Definition:       change.Definition,
-		ExpectedRevision: change.ExpectedRevision,
-	})
-	return fmt.Sprintf("derived:%x", sha256.Sum256(raw))
-}
-
 func autoDateScanCounts(
 	diagnostics []schemaapi.AutoDateDiagnostic,
 ) map[string]int {
@@ -228,17 +107,6 @@ func autoDateScanCounts(
 		counts[key]++
 	}
 	return counts
-}
-
-func definitionNeedsBackfill(definition schema.TableDefinition) bool {
-	for _, field := range definition.Fields {
-		if field.Kind == schema.FieldKindFormula &&
-			field.Formula != nil &&
-			field.Formula.Status == "backfilling" {
-			return true
-		}
-	}
-	return false
 }
 
 func decodeSchemaRequest(reader io.Reader, target any) error {
@@ -264,8 +132,8 @@ func decodeSchemaRequest(reader io.Reader, target any) error {
 	return nil
 }
 
-func invalidSchemaRequest(cause error) *schema.ProductError {
-	return &schema.ProductError{
+func invalidSchemaRequest(cause error) *schemaerror.ProductError {
+	return &schemaerror.ProductError{
 		Code:    "schema.request.invalid",
 		Path:    "",
 		Message: "schema request body is invalid",
@@ -281,9 +149,9 @@ func writeSchemaError(request *core.RequestEvent, err error) error {
 		}
 		return nil
 	}
-	var productError *schema.ProductError
+	var productError *schemaerror.ProductError
 	if !errors.As(err, &productError) {
-		productError = &schema.ProductError{
+		productError = &schemaerror.ProductError{
 			Code:    "schema.internal.failed",
 			Path:    "",
 			Message: "schema operation failed",

@@ -135,17 +135,6 @@ func registerRelationRoutes(
 		}
 		return request.JSON(http.StatusOK, result)
 	})
-	r.POST("/api/vibetable/v1/lookups/preview", func(request *core.RequestEvent) error {
-		var input relation.LookupPreviewRequest
-		if err := decodeRelationBody(request, &input); err != nil {
-			return writeMutationError(request, err)
-		}
-		result, err := service.PreviewLookups(request.Request.Context(), input)
-		if err != nil {
-			return writeRelationQueryError(request, err)
-		}
-		return request.JSON(http.StatusOK, result)
-	})
 	r.POST("/api/vibetable/v1/lookups/value-page", func(request *core.RequestEvent) error {
 		var input relation.LookupValuePageRequest
 		if err := decodeRelationBody(request, &input); err != nil {

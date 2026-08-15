@@ -35,7 +35,7 @@ describe("HomeView", () => {
   it("shows display names and emits only the physical key", async () => {
     const workspace = useWorkspaceStore();
     workspace.setOpened(
-      [{ collection: "vt_t_01", displayName: "客户清单", metadata: {} }],
+      [{ collection: "vt_t_01", metadata: {} }],
       { vt_t_01: "客户清单" },
     );
     const wrapper = mount(HomeView);

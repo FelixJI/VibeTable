@@ -196,7 +196,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const service = useMutationService();
 
@@ -243,7 +243,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const onRejected = vi.fn();
     const service = useMutationService();
@@ -277,7 +277,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const onRejected = vi.fn();
     const service = useMutationService();
@@ -294,7 +294,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     await vi.advanceTimersByTimeAsync(25);
 
@@ -324,7 +324,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const onRejected = vi.fn();
     const service = useMutationService();
@@ -355,7 +355,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const history = useHistoryStore();
     const svc = useMutationService();
@@ -385,7 +385,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     table.setEditSchema([], {
       databaseSessionId: "s",
@@ -448,7 +448,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const onRejected = vi.fn();
     const svc = useMutationService();
@@ -510,7 +510,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 2,
       totalRows: 2,
-      mode: "client",
+      mode: "remote",
     });
     const history = useHistoryStore();
     const ws = useWorkspaceStore();
@@ -563,7 +563,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const history = useHistoryStore();
     const svc = useMutationService();
@@ -625,7 +625,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const history = useHistoryStore();
     const svc = useMutationService();
@@ -681,7 +681,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const svc = useMutationService();
     svc.init();
@@ -728,7 +728,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     table.setEditSchema([], {
       databaseSessionId: "s",
@@ -760,7 +760,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const svc = useMutationService();
     svc.init();
@@ -806,7 +806,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const svc = useMutationService();
     svc.init();
@@ -851,7 +851,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const history = useHistoryStore();
     const svc = useMutationService();
@@ -909,7 +909,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const history = useHistoryStore();
     const svc = useMutationService();
@@ -976,7 +976,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 1,
       totalRows: 1,
-      mode: "client",
+      mode: "remote",
     });
     const history = useHistoryStore();
     const svc = useMutationService();
@@ -1065,7 +1065,7 @@ describe("mutationService", () => {
       offset: 0,
       limit: 2,
       totalRows: 2,
-      mode: "client",
+      mode: "remote",
     });
     table.setEditSchema([], {
       databaseSessionId: "s",

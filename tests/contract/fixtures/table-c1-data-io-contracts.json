@@ -32,7 +32,7 @@
       "schemaRevision": "fixture-capability-hash",
       "mode": "create_only",
       "columnMapping": [
-        {"sourceColumn": "合同编号", "targetField": "number", "relationLookup": false}
+        {"sourceColumn": "合同编号", "targetField": "number"}
       ]
     },
     "plan": {
@@ -66,7 +66,7 @@
     }
   },
   "applyImport": {
-    "params": {"grantId": "grant-1", "collection": "vibetable_demo", "token": "imp-fixture-token", "mode": "create_only", "chunkSize": 500, "idempotencyPrefix": "imp-uuid-1"},
+    "params": {"grantId": "grant-1", "collection": "vibetable_demo", "token": "imp-fixture-token", "mode": "create_only", "idempotencyPrefix": "imp-uuid-1"},
     "result": {
       "collection": "vibetable_demo",
       "createdCount": 2,
@@ -87,19 +87,6 @@
       "schemaRevision": "fixture-capability-hash",
       "capabilityHash": "fixture-capability-hash",
       "outputDisplayName": "contracts-export.csv"
-    }
-  },
-  "relationProjection": {
-    "params": {"collection": "vibetable_demo", "query": {}, "relations": ["project"], "maxDepth": 1},
-    "result": {
-      "collection": "vibetable_demo",
-      "rows": [{"id": "1", "number": "A-1", "project": {"code": "P1", "name": "Project One"}}],
-      "relationColumns": [
-        {"relation": "project", "field": "code", "relatedCollection": "vibetable_demo", "displayPath": "project.code"},
-        {"relation": "project", "field": "name", "relatedCollection": "vibetable_demo", "displayPath": "project.name"}
-      ],
-      "restrictedRelations": [],
-      "capabilityHash": "fixture-capability-hash"
     }
   }
 }

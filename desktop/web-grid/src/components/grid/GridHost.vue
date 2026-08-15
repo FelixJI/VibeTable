@@ -53,6 +53,7 @@ const emit = defineEmits<{
   attachmentOpen: [payload: {
     rowKey: string | number;
     column: ColumnSchema;
+    trigger: HTMLElement | null;
   }];
   jsonEdit: [payload: {
     rowKey: string | number;
@@ -68,6 +69,7 @@ const emit = defineEmits<{
   }];
   insertFirstRow: [];
   columnContext: [payload: { field: string; x: number; y: number }];
+  windowBoundary: [];
 }>();
 
 const gridEl = ref<HTMLElement | null>(null);
@@ -92,9 +94,10 @@ const { dataApplying } = useTabulator(gridEl, {
   },
   onLookupSourceRequested: (source) => emit("lookupSource", source),
 	onLookupSourcePageRequested: (intent) => emit("lookupSourcePage", intent),
-  onAttachmentOpenRequested: (rowKey, column) =>
-    emit("attachmentOpen", { rowKey, column }),
+  onAttachmentOpenRequested: (rowKey, column, trigger) =>
+    emit("attachmentOpen", { rowKey, column, trigger }),
   onViewQueryChanged: (query) => emit("viewQueryChange", query),
+  onWindowBoundary: () => emit("windowBoundary"),
   tabulator: tabulator ?? undefined,
 });
 
@@ -313,7 +316,9 @@ function onGridKeyDown(event: KeyboardEvent): void {
     event.preventDefault();
     event.stopPropagation();
     markSelection(located);
-    emit("attachmentOpen", { rowKey: located.rowKey, column });
+    const trigger = located.cellElement;
+    trigger?.blur();
+    emit("attachmentOpen", { rowKey: located.rowKey, column, trigger });
     return;
   }
   if (column.dataType === "json") {

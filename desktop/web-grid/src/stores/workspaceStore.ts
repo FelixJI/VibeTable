@@ -11,7 +11,6 @@ export type WorkspacePhase = "idle" | "opening" | "opened" | "failed";
  */
 export interface CollectionSummary {
   readonly collection: string;
-  readonly displayName?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
@@ -29,7 +28,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   function setOpened(
     cols: readonly CollectionSummary[],
-    names: Readonly<Record<string, string>> = {},
+    names: Readonly<Record<string, string>>,
   ): void {
     collections.value = cols;
     displayNames.value = names;
@@ -39,7 +38,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   function setCollections(
     cols: readonly CollectionSummary[],
-    names: Readonly<Record<string, string>> = {},
+    names: Readonly<Record<string, string>>,
   ): void {
     collections.value = cols;
     displayNames.value = names;

@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import {
   NButton,
   NAlert,
-  NDynamicTags,
   NIcon,
   NInput,
   NRadioButton,
@@ -11,13 +10,10 @@ import {
   NSelect,
   NSwitch,
   NTag,
-  NTooltip,
 } from "naive-ui";
 import {
-  Braces,
   ArchiveRestore,
   CalendarDays,
-  Check,
   ChevronLeft,
   ChevronRight,
   HelpCircle,
@@ -25,18 +21,12 @@ import {
   Download,
   Info,
   Keyboard,
-  Copy,
   Palette,
   SlidersHorizontal,
-  RefreshCw,
-  Search,
-  Tags,
-  X,
 } from "lucide-vue-next";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 import changelog from "@/generated/changelog.json";
 import { QUOTE_STYLES_BY_SOURCE, useUiStore } from "@/stores/uiStore";
-import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
 import type {
   DailyQuoteSource,
   DailyQuoteStyle,
@@ -66,29 +56,20 @@ import WorkspaceProtectionSettings, {
   type WorkspaceProtectionAction,
 } from "@/components/settings/WorkspaceProtectionSettings.vue";
 
-type Section = "general" | "calendar" | "mapping" | "storage" | "versions" | "interaction" | "about";
+type Section = "general" | "calendar" | "storage" | "versions" | "interaction" | "about";
 type ChangelogEntry = Readonly<{
   subject: string;
   commit: string | null;
 }>;
 
 const ui = useUiStore();
-const mappings = useIdentifierMappingStore();
 const workCalendar = useWorkCalendarStore();
 const current = ref<Section>("general");
 const emit = defineEmits<{
   reconnect: [];
   openHelp: [];
-  openAdmin: [];
-  loadMappings: [];
-  saveMappingAliases: [mappingId: string, aliases: readonly string[]];
-  reconcileMappings: [];
   workspaceV2Action: [action: WorkspaceProtectionAction];
 }>();
-const mappingQuery = ref("");
-const editingMappingId = ref<string | null>(null);
-const aliasDraft = ref<string[]>([]);
-const transferMessage = ref<string | null>(null);
 const calendarMonth = ref(formatMonthKey(new Date()));
 const selectedCalendarDate = ref(formatDateKey(new Date()));
 const diagnosticsService = useRuntimeDiagnosticsService();
@@ -118,17 +99,7 @@ const updateProxyOptions = computed(() => [
 
 onMounted(() => void loadAppPreferences());
 
-const filteredMappings = computed(() => {
-  const needle = mappingQuery.value.trim().toLocaleLowerCase();
-  if (!needle) return mappings.mappings;
-  return mappings.mappings.filter((item) =>
-    [item.displayName, item.physicalName, item.parentPhysicalName ?? "", ...item.aliases]
-      .some((value) => value.toLocaleLowerCase().includes(needle)),
-  );
-});
-
 watch(current, (section) => {
-  if (section === "mapping") emit("loadMappings");
   if (section === "about") void loadDiagnostics();
 });
 
@@ -229,54 +200,9 @@ function formatMemory(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function beginAliasEdit(mappingId: string, aliases: readonly string[]): void {
-  editingMappingId.value = mappingId;
-  aliasDraft.value = [...aliases];
-}
-
-function saveAliases(): void {
-  if (!editingMappingId.value) return;
-  emit("saveMappingAliases", editingMappingId.value, aliasDraft.value);
-  editingMappingId.value = null;
-}
-
-async function copyPhysicalKey(value: string): Promise<void> {
-  try {
-    await navigator.clipboard?.writeText?.(value);
-    transferMessage.value = t("settings.mapping.copied");
-  } catch {
-    transferMessage.value = t("settings.mapping.copyFailed");
-  }
-}
-
-function exportMappings(): void {
-  const portable = {
-    format: "vibetable-identifier-map",
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    mappings: mappings.mappings.map((item) => ({
-      entityKind: item.entityKind,
-      parentPhysicalName: item.parentPhysicalName ?? null,
-      physicalName: item.physicalName,
-      displayName: item.displayName,
-      aliases: [...item.aliases],
-    })),
-  };
-  const url = URL.createObjectURL(new Blob(
-    [JSON.stringify(portable, null, 2)], { type: "application/json" },
-  ));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `vibetable-identifier-map-${new Date().toISOString().slice(0, 10)}.json`;
-  anchor.click();
-  URL.revokeObjectURL(url);
-  transferMessage.value = t("settings.mapping.exported");
-}
-
 const sections = computed(() => [
   { key: "general" as const, icon: Palette, label: "settings.general" },
   { key: "calendar" as const, icon: CalendarDays, label: "settings.workCalendar" },
-  { key: "mapping" as const, icon: Braces, label: "settings.mapping" },
   {
     key: "storage" as const,
     icon: Database,
@@ -571,43 +497,6 @@ function setCalendarName(name: string): void {
           </section>
         </template>
 
-        <template v-else-if="current === 'mapping'">
-          <header><h1>{{ t("settings.mapping") }}</h1><p>{{ t("settings.mapping.description") }}</p></header>
-          <section class="mapping-workbench">
-            <div class="mapping-toolbar">
-              <NInput v-model:value="mappingQuery" clearable :input-props="{ 'aria-label': t('settings.mapping.search') }" :placeholder="t('settings.mapping.search')">
-                <template #prefix><NIcon :size="15"><Search /></NIcon></template>
-              </NInput>
-              <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.reconcile')" :loading="mappings.phase === 'reconciling'" @click="emit('reconcileMappings')"><template #icon><NIcon><RefreshCw /></NIcon></template></NButton></template>{{ t("settings.mapping.reconcile") }}</NTooltip>
-              <NTooltip><template #trigger><NButton quaternary circle :aria-label="t('settings.mapping.export')" :disabled="!mappings.mappings.length" @click="exportMappings"><template #icon><NIcon><Download /></NIcon></template></NButton></template>{{ t("settings.mapping.export") }}</NTooltip>
-            </div>
-            <p v-if="transferMessage" class="mapping-message">{{ transferMessage }}</p>
-            <p v-if="mappings.error" class="mapping-error">{{ mappings.error }}</p>
-            <div v-if="mappings.phase === 'loading'" class="mapping-state">{{ t("settings.mapping.loading") }}</div>
-            <div v-else-if="filteredMappings.length === 0" class="mapping-state">{{ t("settings.mapping.empty") }}</div>
-            <div v-else class="mapping-list">
-              <article v-for="item in filteredMappings" :key="item.id" class="mapping-item">
-                <div class="mapping-kind" :class="`mapping-kind--${item.entityKind}`"><NIcon :size="15"><Tags /></NIcon></div>
-                <div class="mapping-body">
-                  <div class="mapping-title"><strong>{{ item.displayName }}</strong><NTag size="tiny" :bordered="false">{{ item.entityKind === 'collection' ? t('settings.mapping.table') : t('settings.mapping.field') }}</NTag><NTag v-if="item.status !== 'active'" size="tiny" type="warning">{{ item.status }}</NTag></div>
-                  <button class="physical-key" type="button" @click="copyPhysicalKey(item.physicalName)"><code>{{ item.physicalName }}</code><NIcon :size="13"><Copy /></NIcon></button>
-                  <div v-if="editingMappingId === item.id" class="alias-editor">
-                    <NDynamicTags v-model:value="aliasDraft" />
-                    <NButton size="tiny" type="primary" :loading="mappings.phase === 'saving'" @click="saveAliases"><template #icon><NIcon><Check /></NIcon></template>{{ t("settings.mapping.save") }}</NButton>
-                    <NButton size="tiny" quaternary @click="editingMappingId = null"><template #icon><NIcon><X /></NIcon></template>{{ t("settings.mapping.cancel") }}</NButton>
-                  </div>
-                  <button v-else class="alias-line" type="button" @click="beginAliasEdit(item.id, item.aliases)">
-                    <span>{{ t("settings.mapping.aliases") }}</span>
-                    <template v-if="item.aliases.length"><NTag v-for="alias in item.aliases" :key="alias" size="tiny">{{ alias }}</NTag></template>
-                    <small v-else>{{ t("settings.mapping.noAliases") }}</small>
-                  </button>
-                </div>
-              </article>
-            </div>
-            <footer class="mapping-footer"><span>{{ t("settings.mapping.physicalLocked") }}</span><NButton size="small" @click="emit('openAdmin')">{{ t("nav.admin") }}</NButton></footer>
-          </section>
-        </template>
-
         <template v-else-if="current === 'storage'">
           <WorkspaceProtectionSettings
             mode="storage"
@@ -787,15 +676,15 @@ function setCalendarName(name: string): void {
               {{ diagnosticsError }}
             </NAlert>
             <dl v-else-if="diagnostics" class="diagnostics-grid">
-              <div><dt>{{ t("settings.about.currentDirectory") }}</dt><dd><code>{{ diagnostics.currentDirectory }}</code></dd></div>
-              <div><dt>{{ t("settings.about.programDirectory") }}</dt><dd><code>{{ diagnostics.programDirectory }}</code></dd></div>
-              <div><dt>{{ t("settings.about.dataDirectory") }}</dt><dd><code>{{ diagnostics.dataDirectory }}</code></dd></div>
               <div><dt>{{ t("settings.about.systemVersion") }}</dt><dd>{{ diagnostics.operatingSystem }}</dd></div>
               <div><dt>{{ t("settings.about.programVersion") }}</dt><dd>{{ diagnostics.programVersion }}</dd></div>
               <div><dt>{{ t("settings.about.runtimeVersion") }}</dt><dd>{{ diagnostics.dotnetVersion }}</dd></div>
               <div><dt>{{ t("settings.about.pocketBaseVersion") }}</dt><dd>{{ diagnostics.pocketBaseVersion }}</dd></div>
               <div><dt>{{ t("settings.about.memory") }}</dt><dd>{{ formatMemory(diagnostics.memoryBytes) }}</dd></div>
-              <div><dt>{{ t("settings.about.dataServiceState") }}</dt><dd>{{ diagnostics.dataServiceState }}</dd></div>
+              <div><dt>索引状态</dt><dd>{{ diagnostics.index.state }} · G{{ diagnostics.index.generation }}</dd></div>
+              <div><dt>后台任务</dt><dd>{{ diagnostics.jobs.running }} 运行 / {{ diagnostics.jobs.failed }} 失败</dd></div>
+              <div><dt>待恢复 mutation</dt><dd>{{ diagnostics.pendingMutationRevision || "—" }}</dd></div>
+              <div><dt>脱敏日志</dt><dd>{{ diagnostics.logs.length }} 条事件</dd></div>
             </dl>
             <p v-else class="diagnostics-loading">{{ t("settings.about.loading") }}</p>
           </section>
@@ -910,38 +799,7 @@ header p { margin: 0; color: var(--vt-fg-muted); }
 .calendar-seal { display: grid; place-items: center; width: 18px; height: 18px; font-size: 9px; font-style: normal; font-weight: 700; }
 .calendar-seal--rest { color: var(--vt-color-danger); border-radius: 50%; background: color-mix(in srgb, var(--vt-color-danger) 14%, transparent); }
 .calendar-seal--work { color: var(--vt-color-success); border-radius: 5px; background: color-mix(in srgb, var(--vt-color-success) 15%, transparent); }
-.mapping-visual {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin: 16px;
-  padding: 14px;
-  color: var(--vt-fg-secondary);
-  border-radius: var(--vt-radius-md);
-  background: var(--vt-bg-subtle);
-}
-.mapping-workbench { overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-lg); background: var(--vt-bg); }
-.mapping-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(2, 32px); gap: 6px; padding: 12px; border-bottom: 1px solid var(--vt-border); }
-.mapping-list { max-height: 520px; overflow: auto; }
-.mapping-item { display: grid; grid-template-columns: 30px 1fr; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--vt-border); }
-.mapping-kind { display: grid; place-items: center; width: 28px; height: 28px; color: var(--vt-color-primary-500); border-radius: 6px; background: var(--vt-color-primary-50); }
-.mapping-kind--field { color: var(--vt-fg-muted); background: var(--vt-bg-subtle); }
-.mapping-body { min-width: 0; }
-.mapping-title { display: flex; align-items: center; gap: 7px; }
-.mapping-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
-.physical-key { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin: 4px 0 7px; padding: 0; color: var(--vt-fg-muted); border: 0; background: transparent; cursor: pointer; }
-.physical-key code { overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
-.alias-line { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; width: 100%; padding: 0; color: var(--vt-fg-muted); text-align: left; border: 0; background: transparent; cursor: pointer; }
-.alias-line > span { font-size: var(--vt-font-caption); }
-.alias-line small { color: var(--vt-fg-placeholder); }
-.alias-editor { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.alias-editor :deep(.n-dynamic-tags) { flex: 1 1 260px; }
-.mapping-state { padding: 42px 18px; color: var(--vt-fg-muted); text-align: center; }
-.mapping-message, .mapping-error { margin: 0; padding: 8px 12px; font-size: var(--vt-font-caption); border-bottom: 1px solid var(--vt-border); background: var(--vt-bg-subtle); }
-.mapping-error { color: var(--vt-color-danger-500, #d03050); }
-.mapping-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; color: var(--vt-fg-muted); font-size: var(--vt-font-caption); background: var(--vt-bg-subtle); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
-.mapping-visual code { color: var(--vt-color-primary-500); font-family: Consolas, monospace; }
 .read-only-badge, .desktop-badge {
   padding: 3px 8px;
   color: var(--vt-fg-muted);
@@ -1032,6 +890,5 @@ header p { margin: 0; color: var(--vt-fg-muted); }
   .setting-row { align-items: stretch; flex-direction: column; gap: 10px; }
   .setting-row > .setting-control { width: 100%; }
   .calendar-layout { padding: 12px; }
-  .mapping-footer { align-items: flex-start; flex-direction: column; }
 }
 </style>

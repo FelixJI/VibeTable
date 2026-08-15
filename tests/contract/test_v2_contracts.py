@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from tests.contract.test_product_contracts import SchemaMismatchError, _validate
 
@@ -12,6 +15,24 @@ ROOT = Path(__file__).parents[2]
 CONTRACT_ROOT = ROOT / "contracts" / "v2"
 SCHEMA_PATH = CONTRACT_ROOT / "contracts.schema.json"
 FIXTURES = CONTRACT_ROOT / "fixtures"
+CATALOG_GENERATOR = CONTRACT_ROOT / "generate_rpc_catalog.py"
+
+
+def _load_catalog_generator():
+    spec = importlib.util.spec_from_file_location("generate_rpc_catalog", CATALOG_GENERATOR)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_rpc_catalog_generator_rejects_non_finite_json_examples() -> None:
+    generator = _load_catalog_generator()
+
+    with pytest.raises(ValueError, match="finite JSON number"):
+        generator.json_value(float("nan"))
 
 
 def test_v2_is_the_only_language_neutral_contract_seam() -> None:

@@ -23,7 +23,7 @@ describe("workspaceStore", () => {
   it("setOpened stores collections and moves to opened", () => {
     const s = useWorkspaceStore();
     s.beginOpen();
-    s.setOpened([{ collection: "users", metadata: {} }]);
+    s.setOpened([{ collection: "users", metadata: {} }], { users: "Users" });
     expect(s.phase).toBe("opened");
     expect(s.collections).toHaveLength(1);
   });
@@ -31,12 +31,12 @@ describe("workspaceStore", () => {
   it("stores display names separately from physical collection keys", () => {
     const s = useWorkspaceStore();
     s.setOpened(
-      [{ collection: "vt_t_01", displayName: "客户清单", metadata: {} }],
+      [{ collection: "vt_t_01", metadata: {} }],
       { vt_t_01: "客户清单" },
     );
     expect(s.displayNames).toEqual({ vt_t_01: "客户清单" });
     expect(s.collections[0].collection).toBe("vt_t_01");
-    expect(s.collections[0].displayName).toBe("客户清单");
+    expect(s.collections[0]).not.toHaveProperty("displayName");
   });
 
   it("selectTable sets currentTable", () => {
@@ -55,7 +55,7 @@ describe("workspaceStore", () => {
 
   it("clear resets to idle", () => {
     const s = useWorkspaceStore();
-    s.setOpened([{ collection: "x", metadata: {} }]);
+    s.setOpened([{ collection: "x", metadata: {} }], { x: "X" });
     s.selectTable("x");
     s.clear();
     expect(s.phase).toBe("idle");

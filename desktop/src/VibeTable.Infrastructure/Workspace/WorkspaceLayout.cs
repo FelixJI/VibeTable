@@ -58,7 +58,7 @@ public static class WorkspaceLayout
         var manifest = new WorkspaceManifestV2
         {
             ContractVersion = WorkspaceV2Json.ContractVersion,
-            FormatVersion = 1,
+            FormatVersion = WorkspaceV2Json.WorkspaceFormatVersion,
             WorkspaceId = identity,
             DisplayName = displayName.Trim(),
             CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
@@ -115,6 +115,14 @@ public static class WorkspaceLayout
         catch (WorkspaceRegistryException)
         {
             throw;
+        }
+        catch (JsonException exception) when (
+            exception.Message.Contains("workspace.format_unsupported", StringComparison.Ordinal))
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.format_unsupported",
+                "This workspace belongs to an incompatible development format.",
+                exception);
         }
         catch (Exception exception) when (
             exception is JsonException or IOException or UnauthorizedAccessException)

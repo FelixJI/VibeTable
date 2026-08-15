@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
@@ -26,16 +27,6 @@ public interface ITableRpcGateway
     /// Lists collections from the currently configured source.
     /// </summary>
     Task<TableSummary> ListTablesAsync(CancellationToken token);
-
-    /// <summary>
-    /// Reads one collection page. <paramref name="table"/> must come from a
-    /// prior source-open result (the workspace service enforces this).
-    /// </summary>
-    Task<TablePage> ReadTablePageAsync(
-        string table,
-        int offset,
-        int limit,
-        CancellationToken token);
 
     /// <summary>
     /// Reads the editable schema for a product collection.
@@ -101,18 +92,22 @@ public interface ITableRpcGateway
     /// carrying <c>querySnapshot</c>/<c>revision</c>/<c>filteredRows</c> so the
     /// host can bind selection state to a stable snapshot.
     /// </summary>
-    Task<TablePage> QueryTablePageAsync(
+    /// <summary>
+    /// Forwards the renderer-authored canonical ViewQuery JSON without
+    /// rebuilding its filter, sort, group, or summary AST in WPF.
+    /// </summary>
+    Task<TablePage> QueryTableViewRawAsync(
         string table,
-        int offset,
-        int limit,
-        TableQuery query,
+        JsonElement query,
         CancellationToken token);
 
-    Task<TablePage> QueryTableViewAsync(
+    Task<TablePage> OpenTableCursorRawAsync(
         string table,
-        int offset,
-        int limit,
-        TableQuery query,
+        JsonElement query,
+        CancellationToken token);
+
+    Task<TablePage> FetchTableCursorAsync(
+        string cursor,
         CancellationToken token);
 
     /// <summary>

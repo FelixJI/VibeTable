@@ -221,6 +221,32 @@ def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
     assert observed == []
 
 
+def test_pr_e2e_builds_a_package_and_selects_exact_release_smoke_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(command),
+    )
+
+    automation_project.pr_e2e()
+
+    assert len(observed) == 3
+    assert observed[0][-1] == "scripts/build_next.py"
+    assert observed[1][:3] == ("go", "run", "./cmd/workbench-qualification")
+    assert observed[1][observed[1].index("--profile") + 1] == "pr"
+    assert observed[1][observed[1].index("--logical-bytes") + 1] == str(64 << 20)
+    assert observed[2][3:5] == ("qa/product_acceptance.py", "--package-root")
+    assert observed[2][-2:] == ("--capability", "release.smoke")
+
+
 def test_contract_gate_runs_generation_and_all_four_consumers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -236,6 +262,14 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
     assert automation_project.main(["contracts"]) == 0
 
     assert observed == [
+        (
+            ("uv", "run", "python", "contracts/schema-v2/generate_dtos.py", "--check"),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            ("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check"),
+            automation_project.REPO_ROOT,
+        ),
         (
             (
                 "uv",
@@ -265,6 +299,8 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "pytest",
                 "tests/contract/test_v2_contracts.py",
                 "tests/contract/test_product_contracts.py",
+                "tests/contract/test_schema_v2_dto_codegen.py",
+                "tests/contract/test_workbench_dto_codegen.py",
                 "tests/backend/contracts/test_workspace_v2_models.py",
                 "-q",
                 "--no-cov",
@@ -300,6 +336,8 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "test",
                 "./internal/contracts/v2",
                 "./internal/contracts",
+                "./internal/contracts/schemav2wire",
+                "./internal/contracts/workbench",
                 "./internal/protocolv2",
             ),
             automation_project.REPO_ROOT / "sidecar",
@@ -322,7 +360,9 @@ def test_full_quality_starts_with_the_stable_contract_gate(
 
     automation_project.quality()
 
-    assert [command for command, _cwd in observed[:6]] == [
+    assert [command for command, _cwd in observed[:7]] == [
+        ("uv", "run", "python", "contracts/schema-v2/generate_dtos.py", "--check"),
+        ("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check"),
         (
             "uv",
             "run",
@@ -345,6 +385,8 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "pytest",
             "tests/contract/test_v2_contracts.py",
             "tests/contract/test_product_contracts.py",
+            "tests/contract/test_schema_v2_dto_codegen.py",
+            "tests/contract/test_workbench_dto_codegen.py",
             "tests/backend/contracts/test_workspace_v2_models.py",
             "-q",
             "--no-cov",
@@ -365,13 +407,6 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "--configuration",
             "Release",
             "--no-restore",
-        ),
-        (
-            "go",
-            "test",
-            "./internal/contracts/v2",
-            "./internal/contracts",
-            "./internal/protocolv2",
         ),
     ]
     assert (
@@ -508,6 +543,7 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     assert commands == [
         ["python", "scripts/automation_project.py", "bootstrap"],
         ["uv", "run", "python", "scripts/automation_project.py", "quality"],
+        ["uv", "run", "python", "scripts/automation_project.py", "pr-e2e"],
         ["uv", "run", "python", "scripts/automation_project.py", "build"],
         ["uv", "run", "python", "scripts/automation_project.py", "smoke"],
     ]

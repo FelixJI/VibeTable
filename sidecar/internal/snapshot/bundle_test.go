@@ -74,7 +74,7 @@ func TestClassifyBundleLoadErrorPreservesOperationalFailures(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSettingsBundleSchemaIsStrictAndLegacyCompatible(t *testing.T) {
+func TestSnapshotRestoreRejectsUnversionedWorkspaceSettings(t *testing.T) {
 	valid := []byte(`{
 		"formatVersion":1,
 		"retention":{
@@ -92,8 +92,8 @@ func TestWorkspaceSettingsBundleSchemaIsStrictAndLegacyCompatible(t *testing.T) 
 	}
 	if err := validateWorkspaceSettingsObject(
 		[]byte(`{"theme":"legacy"}`),
-	); err != nil {
-		t.Fatalf("legacy settings = %v", err)
+	); !errors.Is(err, ErrBundleInvalid) {
+		t.Fatalf("unversioned settings error = %v", err)
 	}
 	invalid := []byte(`{
 		"formatVersion":1,

@@ -13,12 +13,14 @@ type internalField struct {
 	name     string
 	kind     string
 	required bool
+	max      int
 }
 
 type internalCollection struct {
 	name         string
 	fields       []internalField
 	unique       []string
+	indexes      []string
 	uniqueGroups [][]string
 }
 
@@ -35,7 +37,6 @@ var internalCollections = []internalCollection{
 		// code so the initial data revision can remain exactly zero.
 		{name: "data_revision", kind: "number"},
 		{name: "archive_policy", kind: "text", required: true},
-		{name: "definition_json", kind: "json", required: true},
 	}, unique: []string{"table_id", "physical_name"}},
 	{name: "vibetable_fields", fields: []internalField{
 		{name: "table_id", kind: "text", required: true},
@@ -68,18 +69,31 @@ var internalCollections = []internalCollection{
 		"source_table_id", "formula_field_id", "relation_field_id",
 		"target_table_id", "target_field_id",
 	}}},
+	{name: "vibetable_computation_dependencies", fields: []internalField{
+		{name: "source_table_id", kind: "text", required: true},
+		{name: "computed_field_id", kind: "text", required: true},
+		{name: "computed_kind", kind: "text", required: true},
+		{name: "relation_field_id", kind: "text", required: true},
+		{name: "target_table_id", kind: "text", required: true},
+		{name: "target_field_id", kind: "text", required: true},
+		{name: "path_json", kind: "json", required: true},
+		{name: "definition_version", kind: "number", required: true},
+	}, uniqueGroups: [][]string{{
+		"source_table_id", "computed_field_id", "relation_field_id",
+		"target_table_id", "target_field_id",
+	}}},
 	{name: "vibetable_relations", fields: []internalField{
 		{name: "relation_id", kind: "text", required: true}, {name: "source_table_id", kind: "text", required: true},
 		{name: "source_field_id", kind: "text", required: true},
 		{name: "target_table_id", kind: "text", required: true}, {name: "cardinality", kind: "text", required: true},
-		{name: "junction_table_id", kind: "text"}, {name: "delete_policy", kind: "text", required: true},
+		{name: "delete_policy", kind: "text", required: true},
 	}, unique: []string{"relation_id"}, uniqueGroups: [][]string{{"source_table_id", "source_field_id"}}},
 	{name: "vibetable_lookups", fields: []internalField{
 		{name: "lookup_id", kind: "text", required: true}, {name: "path_json", kind: "json", required: true},
 		{name: "table_id", kind: "text", required: true}, {name: "field_id", kind: "text", required: true},
 		{name: "relation_field_id", kind: "text", required: true},
 		{name: "target_field_id", kind: "text", required: true},
-		{name: "aggregate", kind: "text"}, {name: "output_type", kind: "text", required: true},
+		{name: "output_type", kind: "text", required: true},
 		{name: "revision", kind: "number", required: true},
 	}, unique: []string{"lookup_id"}, uniqueGroups: [][]string{{"table_id", "field_id"}}},
 	{name: "vibetable_audit_events", fields: []internalField{
@@ -134,34 +148,26 @@ var internalCollections = []internalCollection{
 		{name: "blob", kind: "file", required: true},
 	}, uniqueGroups: [][]string{{"table_id", "record_id", "field_id", "stored_name"}}},
 	{name: "vibetable_shared_settings", fields: []internalField{
-		{name: "key", kind: "text", required: true}, {name: "value_json", kind: "json", required: true},
-		{name: "revision", kind: "number", required: true},
-	}, unique: []string{"key"}},
+		{name: "logical_id", kind: "text", required: true, max: 128},
+		{name: "payload_json", kind: "json"},
+	}, unique: []string{"logical_id"}},
 	{name: "vibetable_dashboards", fields: []internalField{
-		{name: "dashboard_id", kind: "text", required: true}, {name: "layout_json", kind: "json", required: true},
-		{name: "display_json", kind: "json"}, {name: "revision", kind: "number", required: true},
-	}, unique: []string{"dashboard_id"}},
+		{name: "logical_id", kind: "text", required: true, max: 128},
+		{name: "payload_json", kind: "json"},
+	}, unique: []string{"logical_id"}},
 	{name: "vibetable_panels", fields: []internalField{
-		{name: "panel_id", kind: "text", required: true}, {name: "dashboard_id", kind: "text", required: true},
-		{name: "query_json", kind: "json", required: true}, {name: "display_json", kind: "json"},
-		{name: "revision", kind: "number", required: true},
-	}, unique: []string{"panel_id"}},
+		{name: "logical_id", kind: "text", required: true, max: 128},
+		{name: "payload_json", kind: "json"},
+		{name: "parent_id", kind: "text", max: 128},
+	}, unique: []string{"logical_id"}, indexes: []string{"parent_id"}},
 	{name: "vibetable_presets", fields: []internalField{
-		{name: "preset_id", kind: "text", required: true}, {name: "scope", kind: "text", required: true},
-		{name: "table_id", kind: "text"}, {name: "projection_json", kind: "json", required: true},
-		{name: "revision", kind: "number", required: true},
-	}, unique: []string{"preset_id"}},
-	{name: "vibetable_identifier_mappings", fields: []internalField{
-		{name: "entity_kind", kind: "text", required: true}, {name: "parent_id", kind: "text"},
-		{name: "physical_name", kind: "text", required: true}, {name: "display_name", kind: "text", required: true},
-		{name: "aliases_json", kind: "json"}, {name: "origin", kind: "text", required: true},
-		{name: "status", kind: "text", required: true},
-	}},
+		{name: "logical_id", kind: "text", required: true, max: 128},
+		{name: "payload_json", kind: "json"},
+	}, unique: []string{"logical_id"}},
 	{name: "vibetable_content_versions", fields: []internalField{
-		{name: "table_id", kind: "text", required: true}, {name: "record_id", kind: "text", required: true},
-		{name: "name", kind: "text", required: true}, {name: "change_set_id", kind: "text", required: true},
-		{name: "created_at", kind: "date", required: true},
-	}},
+		{name: "logical_id", kind: "text", required: true, max: 128},
+		{name: "payload_json", kind: "json"},
+	}, unique: []string{"logical_id"}},
 	{name: "vibetable_workspace_index", fields: []internalField{
 		{name: "document_id", kind: "text", required: true}, {name: "record_link_json", kind: "json"},
 		{name: "published_revision", kind: "number", required: true}, {name: "outbox_state", kind: "text", required: true},
@@ -202,8 +208,12 @@ func buildInternalCollection(definition internalCollection) *core.Collection {
 	for _, field := range definition.fields {
 		switch field.kind {
 		case "text":
+			maxLength := field.max
+			if maxLength == 0 {
+				maxLength = 10000
+			}
 			collection.Fields.Add(&core.TextField{
-				Name: field.name, Required: field.required, Max: 10000,
+				Name: field.name, Required: field.required, Max: maxLength,
 			})
 		case "number":
 			collection.Fields.Add(&core.NumberField{
@@ -228,6 +238,14 @@ func buildInternalCollection(definition internalCollection) *core.Collection {
 		collection.AddIndex(
 			"uniq_"+definition.name+"_"+field,
 			true,
+			"`"+field+"`",
+			"",
+		)
+	}
+	for _, field := range definition.indexes {
+		collection.AddIndex(
+			"idx_"+definition.name+"_"+field,
+			false,
 			"`"+field+"`",
 			"",
 		)

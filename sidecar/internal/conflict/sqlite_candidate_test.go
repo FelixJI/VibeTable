@@ -212,8 +212,8 @@ func TestTypedWorkspaceDependencyEdgesUsesBusinessMetadata(t *testing.T) {
 			ID:   "metadata-panels",
 			Name: "vibetable_panels",
 			Records: []json.RawMessage{
-				record(`{"query_json":"{\"tableId\":\"task-logical\"}"}`),
-				record(`{"query_json":"{\"tableId\":\"project-logical\"}"}`),
+				record(`{"logical_id":"panel-1","payload_json":"{\"tableId\":\"task-logical\"}"}`),
+				record(`{"logical_id":"panel-2","payload_json":"{\"tableId\":\"project-logical\"}"}`),
 			},
 		},
 	}
@@ -246,12 +246,46 @@ func TestTypedWorkspaceDependencyEdgesFailsClosedOnDanglingReference(t *testing.
 			ID:   "metadata-panels",
 			Name: "vibetable_panels",
 			Records: []json.RawMessage{
-				json.RawMessage(`{"query_json":"{\"tableId\":\"missing\"}"}`),
+				json.RawMessage(`{"logical_id":"panel-1","payload_json":"{\"tableId\":\"missing\"}"}`),
 			},
 		},
 	})
 	if err != ErrDependencyIncomplete {
 		t.Fatalf("dangling metadata reference accepted: %v", err)
+	}
+}
+
+func TestTypedWorkspaceDependencyEdgesRejectsLegacyMetadataProjection(t *testing.T) {
+	_, err := typedWorkspaceDependencyEdges([]sqliteCollectionProjection{
+		{ID: "tasks", Name: "tasks"},
+		{
+			ID:   "metadata-panels",
+			Name: "vibetable_panels",
+			Records: []json.RawMessage{
+				json.RawMessage(`{"panel_id":"panel-1","query_json":"{\"tableId\":\"tasks\"}"}`),
+			},
+		},
+	})
+	if err != ErrDependencyIncomplete {
+		t.Fatalf("legacy metadata projection accepted: %v", err)
+	}
+}
+
+func TestTypedWorkspaceDependencyEdgesAcceptsCanonicalNullPayload(t *testing.T) {
+	edges, err := typedWorkspaceDependencyEdges([]sqliteCollectionProjection{
+		{
+			ID:   "metadata-settings",
+			Name: "vibetable_shared_settings",
+			Records: []json.RawMessage{
+				json.RawMessage(`{"logical_id":"empty-setting","payload_json":null}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("canonical null payload rejected: %v", err)
+	}
+	if dependencies := edges["metadata-settings"]; len(dependencies) != 0 {
+		t.Fatalf("canonical null payload dependencies = %#v", dependencies)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"reflect"
 	"sort"
@@ -22,8 +23,11 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 const (
@@ -43,17 +47,13 @@ type MutationKernel interface {
 	Apply(context.Context, mutation.Request) (mutation.Receipt, error)
 }
 
-type SchemaSource interface {
-	Describe(context.Context, core.App, string) (schema.TableDefinition, error)
-}
-
 type Service struct {
-	app     core.App
-	kernel  MutationKernel
-	schemas SchemaSource
-	files   AttachmentHistory
-	ledger  *auditledger.Ledger
-	now     func() time.Time
+	app    core.App
+	kernel MutationKernel
+	files  AttachmentHistory
+	ledger *auditledger.Ledger
+	logger *slog.Logger
+	now    func() time.Time
 
 	mu         sync.Mutex
 	tokens     map[string]restoreState
@@ -81,7 +81,7 @@ type AttachmentHistory interface {
 	PreviewRestore(
 		context.Context,
 		core.App,
-		schema.TableDefinition,
+		schemaexecution.Table,
 		string,
 		string,
 		[]string,
@@ -110,17 +110,22 @@ func WithLedgerHistory(ledger *auditledger.Ledger) Option {
 	return func(service *Service) { service.ledger = ledger }
 }
 
+// WithLogger records content-free internal diagnostics at the storage seam.
+// Product values and underlying error text are intentionally not emitted.
+func WithLogger(logger *slog.Logger) Option {
+	return func(service *Service) { service.logger = logger }
+}
+
 func New(
 	app core.App,
 	kernel MutationKernel,
-	schemas SchemaSource,
 	options ...Option,
 ) (*Service, error) {
-	if app == nil || kernel == nil || schemas == nil {
+	if app == nil || kernel == nil {
 		return nil, errors.New("audit service dependencies are required")
 	}
 	service := &Service{
-		app: app, kernel: kernel, schemas: schemas,
+		app: app, kernel: kernel,
 		now:    func() time.Time { return time.Now().UTC() },
 		tokens: map[string]restoreState{},
 	}
@@ -187,14 +192,14 @@ func (service *Service) ReadChangeSets(
 	if end > total {
 		end = total
 	}
-	capabilityHash, err := hashJSON(definition)
+	capabilityHash, err := hashJSON(schemaIdentity(definition))
 	if err != nil {
 		return Page{}, historyError("history.storage_failed", "schema identity could not be computed", true)
 	}
 	return Page{
 		Collection: params.TableID, ItemID: params.ItemID,
 		ChangeSets: groups[start:end], Total: total,
-		CapabilityHash: capabilityHash, SchemaRevision: definition.SchemaRevision,
+		CapabilityHash: capabilityHash, SchemaRevision: definition.Snapshot.SchemaRevision,
 		Scope: params.Scope, Field: params.Field, HasMore: end < total,
 		ArchivedDefaultRevisionIDs: archivedDefaults,
 	}, nil
@@ -283,9 +288,9 @@ func (service *Service) PreviewRestore(
 	patch := map[string]any{}
 	attachmentPlans := []attachments.RestorePlan{}
 	restorable := []string{}
-	known := make(map[string]schema.FieldDefinition, len(definition.Fields))
-	for _, field := range definition.Fields {
-		known[field.PhysicalName] = field
+	known := make(map[string]v2.FieldDefinition, len(definition.Snapshot.Fields))
+	for _, field := range definition.Snapshot.Fields {
+		known[field.Identity.PhysicalName] = field
 	}
 	for name := range target {
 		if name == "id" {
@@ -298,26 +303,20 @@ func (service *Service) PreviewRestore(
 			))
 		}
 	}
-	for _, field := range definition.Fields {
-		if fieldName != nil && field.PhysicalName != *fieldName {
+	for _, field := range definition.Snapshot.Fields {
+		physicalName := field.Identity.PhysicalName
+		if fieldName != nil && physicalName != *fieldName {
 			continue
 		}
-		targetValue, present := target[field.PhysicalName]
+		targetValue, present := target[physicalName]
 		if !present {
 			continue
 		}
-		currentValue := current[field.PhysicalName]
+		currentValue := current[physicalName]
 		if wireEqual(currentValue, targetValue) {
 			continue
 		}
-		if isSensitiveField(field) {
-			diagnostics = append(diagnostics, diagnostic(
-				field.PhysicalName, "sensitive", "field_sensitive",
-				"Sensitive fields are excluded from history restore.",
-			))
-			continue
-		}
-		if field.Kind == schema.FieldKindRelation {
+		if field.LogicalType == v2.LogicalRelation {
 			relationChanges = append(relationChanges, relationChange(field, currentValue, targetValue))
 			available, availabilityErr := service.relationTargetsAvailable(
 				ctx, field, targetValue,
@@ -328,30 +327,29 @@ func (service *Service) PreviewRestore(
 			if !available {
 				relationChanges[len(relationChanges)-1].TargetAvailable = false
 				diagnostics = append(diagnostics, diagnostic(
-					field.PhysicalName, "incompatible", "relation_target_unavailable",
+					physicalName, "incompatible", "relation_target_unavailable",
 					"A historical relation target is no longer available.",
 				))
 				continue
 			}
-			patch[field.PhysicalName] = targetValue
-			restorable = append(restorable, field.PhysicalName)
+			patch[physicalName] = targetValue
+			restorable = append(restorable, physicalName)
 			continue
 		}
 		scalarChanges = append(scalarChanges, ScalarFieldChange{
-			Field: field.PhysicalName, Before: currentValue, After: targetValue,
+			Field: physicalName, Before: currentValue, After: targetValue,
 		})
-		if field.ReadOnly || field.Kind == schema.FieldKindFormula ||
-			field.Kind == schema.FieldKindLookup || field.Kind == schema.FieldKindSystem {
+		if isGeneratedField(field) {
 			diagnostics = append(diagnostics, diagnostic(
-				field.PhysicalName, "derived", "field_generated",
+				physicalName, "derived", "field_generated",
 				"Computed and system fields are recalculated and cannot be written directly.",
 			))
 			continue
 		}
-		if field.Kind == schema.FieldKindAttachment {
+		if field.LogicalType == v2.LogicalFile {
 			if service.files == nil {
 				diagnostics = append(diagnostics, diagnostic(
-					field.PhysicalName, "incompatible", "attachment_requires_manifest",
+					physicalName, "incompatible", "attachment_requires_manifest",
 					"Managed attachment history is unavailable.",
 				))
 				continue
@@ -361,7 +359,7 @@ func (service *Service) PreviewRestore(
 				service.app,
 				definition,
 				params.ItemID,
-				field.FieldID,
+				field.Identity.FieldID,
 				stringValues(targetValue),
 				stringValues(currentValue),
 			)
@@ -369,11 +367,11 @@ func (service *Service) PreviewRestore(
 				return Preview{}, attachmentHistoryError(planErr)
 			}
 			attachmentPlans = append(attachmentPlans, plan)
-			restorable = append(restorable, field.PhysicalName)
+			restorable = append(restorable, physicalName)
 			continue
 		}
-		patch[field.PhysicalName] = targetValue
-		restorable = append(restorable, field.PhysicalName)
+		patch[physicalName] = targetValue
+		restorable = append(restorable, physicalName)
 	}
 	sort.Strings(restorable)
 	storedPatch, patchSize, err := cloneJSONMap(patch)
@@ -394,7 +392,7 @@ func (service *Service) PreviewRestore(
 	}
 	state := restoreState{
 		tableID: params.TableID, recordID: params.ItemID,
-		targetRevision: params.TargetRevision, schemaRevision: definition.SchemaRevision,
+		targetRevision: params.TargetRevision, schemaRevision: definition.Snapshot.SchemaRevision,
 		currentDigest: currentDigest, patch: storedPatch, insert: !exists,
 		scope: params.Scope, archiveField: archiveField,
 		attachments: attachmentPlans, size: patchSize,
@@ -411,7 +409,7 @@ func (service *Service) PreviewRestore(
 	return Preview{
 		Collection: params.TableID, ItemID: params.ItemID,
 		TargetRevision: params.TargetRevision, CurrentHash: currentDigest,
-		SchemaRevision: definition.SchemaRevision, ScalarChanges: scalarChanges,
+		SchemaRevision: definition.Snapshot.SchemaRevision, ScalarChanges: scalarChanges,
 		RelationChanges: relationChanges, Diagnostics: diagnostics,
 		Token: token, ExpiresAt: state.expiresAt.Format(time.RFC3339),
 		Scope: params.Scope, Field: params.Field,
@@ -441,7 +439,7 @@ func (service *Service) ApplyRestore(
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	if definition.SchemaRevision != state.schemaRevision {
+	if definition.Snapshot.SchemaRevision != state.schemaRevision {
 		return RestoreResult{}, historyError("schema_drift", "schema changed after restore preview", false)
 	}
 	current, exists, err := service.readCurrent(definition, state.recordID)
@@ -537,10 +535,21 @@ func (service *Service) ApplyRestore(
 					true,
 				)
 			}
+			// Keep the underlying mutation diagnostics: PocketBase validation
+			// failures surface their field path and message only here, and
+			// dropping them makes apply-time fail-closed rejections (for
+			// example a preview/apply race on shared state) undiagnosable.
+			details := map[string]any{"mutationCode": productErr.Code}
+			if productErr.Path != nil && *productErr.Path != "" {
+				details["mutationField"] = *productErr.Path
+			}
+			if productErr.Message != "" {
+				details["mutationMessage"] = productErr.Message
+			}
 			return RestoreResult{}, &Error{
 				Code:      "restore_validation_failed",
 				Message:   "restore no longer satisfies current table constraints",
-				Details:   map[string]any{"mutationCode": productErr.Code},
+				Details:   details,
 				Retryable: false,
 			}
 		}
@@ -766,11 +775,12 @@ func (service *Service) readCurrentByTableID(
 }
 
 func (service *Service) readCurrent(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	recordID string,
 ) (map[string]any, bool, error) {
 	meta, err := service.app.FindFirstRecordByFilter(
-		"vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID},
+		"vibetable_tables", "table_id={:table}",
+		dbx.Params{"table": definition.Snapshot.TableID},
 	)
 	if err != nil {
 		return nil, false, historyError("history.storage_failed", "table metadata could not be read", true)
@@ -791,7 +801,7 @@ func (service *Service) readCurrent(
 
 func (service *Service) relationTargetsAvailable(
 	ctx context.Context,
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	value any,
 ) (bool, error) {
 	if field.Relation == nil || field.Relation.TargetTableID == "" {
@@ -849,7 +859,7 @@ func relationTargetIDs(value any) ([]string, bool) {
 
 func groupEvents(
 	events []*core.Record,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	fieldName *string,
 	params ReadParams,
 	archivedIDs map[string]struct{},
@@ -899,14 +909,15 @@ func groupEvents(
 }
 
 func (service *Service) archivedRecordIDs(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 ) (map[string]struct{}, error) {
 	archiveName, err := archivedFieldName(definition)
 	if err != nil {
 		return nil, err
 	}
 	meta, err := service.app.FindFirstRecordByFilter(
-		"vibetable_tables", "table_id={:table}", dbx.Params{"table": definition.TableID},
+		"vibetable_tables", "table_id={:table}",
+		dbx.Params{"table": definition.Snapshot.TableID},
 	)
 	if err != nil {
 		return nil, historyError("history.storage_failed", "table metadata could not be read", true)
@@ -939,7 +950,7 @@ func (service *Service) archivedRecordIDs(
 
 func buildChangeSet(
 	events []*core.Record,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	fieldName *string,
 	params ReadParams,
 ) (ChangeSet, bool, error) {
@@ -1026,40 +1037,33 @@ func buildChangeSet(
 
 func diffImages(
 	before, after map[string]any,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	fieldName *string,
 ) ([]ScalarFieldChange, []RelationFieldChange) {
 	scalars := []ScalarFieldChange{}
 	relations := []RelationFieldChange{}
-	for _, field := range definition.Fields {
-		if fieldName != nil && field.PhysicalName != *fieldName {
+	for _, field := range definition.Snapshot.Fields {
+		physicalName := field.Identity.PhysicalName
+		if fieldName != nil && physicalName != *fieldName {
 			continue
 		}
-		if isSensitiveField(field) {
-			continue
-		}
-		beforeValue, afterValue := before[field.PhysicalName], after[field.PhysicalName]
+		beforeValue, afterValue := before[physicalName], after[physicalName]
 		if reflect.DeepEqual(beforeValue, afterValue) {
 			continue
 		}
-		if field.Kind == schema.FieldKindRelation {
+		if field.LogicalType == v2.LogicalRelation {
 			relations = append(relations, relationChange(field, beforeValue, afterValue))
 		} else {
 			scalars = append(scalars, ScalarFieldChange{
-				Field: field.PhysicalName, Before: beforeValue, After: afterValue,
+				Field: physicalName, Before: beforeValue, After: afterValue,
 			})
 		}
 	}
 	return scalars, relations
 }
 
-func isSensitiveField(field schema.FieldDefinition) bool {
-	return field.DataType == schema.DataTypeSecret ||
-		field.DataType == schema.DataTypeHash
-}
-
 func relationChange(
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	before, after any,
 ) RelationFieldChange {
 	beforeID, afterID := nullableString(before), nullableString(after)
@@ -1076,7 +1080,7 @@ func relationChange(
 		target = &field.Relation.TargetTableID
 	}
 	return RelationFieldChange{
-		Field: field.PhysicalName, Kind: kind,
+		Field: field.Identity.PhysicalName, Kind: kind,
 		RelatedCollection: target, RelatedItemID: afterID,
 		BeforeItemID: beforeID, AfterItemID: afterID,
 		BeforeDisplayValue: beforeDisplay, AfterDisplayValue: afterDisplay,
@@ -1204,22 +1208,16 @@ func validateReadParams(params ReadParams) error {
 }
 
 func resolveFieldName(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	requested *string,
 ) (*string, error) {
 	if requested == nil {
 		return nil, nil
 	}
-	for _, field := range definition.Fields {
-		if field.FieldID == *requested || field.PhysicalName == *requested {
-			if isSensitiveField(field) {
-				return nil, historyError(
-					"history.field_unreadable",
-					"history field is not readable",
-					false,
-				)
-			}
-			name := field.PhysicalName
+	for _, field := range definition.Snapshot.Fields {
+		if field.Identity.FieldID == *requested ||
+			field.Identity.PhysicalName == *requested {
+			name := field.Identity.PhysicalName
 			return &name, nil
 		}
 	}
@@ -1270,18 +1268,6 @@ func decodeImage(value any) (map[string]any, error) {
 	return result, nil
 }
 
-func productRow(
-	definition schema.TableDefinition,
-	record *core.Record,
-) map[string]any {
-	result := make(map[string]any, len(definition.Fields))
-	result["id"] = record.Id
-	for _, field := range definition.Fields {
-		result[field.PhysicalName] = record.GetRaw(field.PhysicalName)
-	}
-	return result
-}
-
 func digestRow(row map[string]any) (string, error) {
 	raw, err := json.Marshal(row)
 	if err != nil {
@@ -1289,6 +1275,45 @@ func digestRow(row map[string]any) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func productRow(definition schemaexecution.Table, record *core.Record) map[string]any {
+	row := make(map[string]any)
+	row["id"] = record.Id
+	for _, field := range definition.Snapshot.Fields {
+		physicalName := field.Identity.PhysicalName
+		if field.LogicalType == v2.LogicalFormula ||
+			field.LogicalType == v2.LogicalLookup {
+			row[physicalName] = relatedcomputation.ProjectStored(record.GetRaw(physicalName))
+			continue
+		}
+		physical := map[string]any{physicalName: record.GetRaw(physicalName)}
+		if presenceName := field.Value.Presence.PhysicalName; presenceName != "" {
+			physical[presenceName] = record.GetRaw(presenceName)
+		}
+		row[physicalName] = (fieldprojection.Descriptor{Definition: field}).ProductValue(physical)
+	}
+	return row
+}
+
+func schemaIdentity(definition schemaexecution.Table) any {
+	return struct {
+		Snapshot              v2.SchemaSnapshot
+		PhysicalName          string
+		PrimaryDisplayFieldID string
+		ArchivePolicy         v2.ArchivePolicy
+	}{
+		Snapshot:              definition.Snapshot,
+		PhysicalName:          definition.PhysicalName,
+		PrimaryDisplayFieldID: definition.PrimaryDisplayFieldID,
+		ArchivePolicy:         definition.ArchivePolicy,
+	}
+}
+
+func isGeneratedField(field v2.FieldDefinition) bool {
+	return field.LogicalType == v2.LogicalAutoDate ||
+		field.LogicalType == v2.LogicalFormula ||
+		field.LogicalType == v2.LogicalLookup
 }
 
 func hashJSON(value any) (string, error) {
@@ -1319,67 +1344,61 @@ func historyAction(operation string, actorType string) string {
 func (service *Service) describe(
 	ctx context.Context,
 	tableID string,
-) (schema.TableDefinition, error) {
-	definition, err := service.schemas.Describe(ctx, service.app, tableID)
+) (schemaexecution.Table, error) {
+	definition, err := schemaexecution.Describe(ctx, service.app, tableID)
 	if err == nil {
 		return definition, nil
 	}
-	var productErr *schema.ProductError
-	if errors.As(err, &productErr) {
-		if strings.HasSuffix(productErr.Code, ".not_found") {
-			return schema.TableDefinition{}, historyError(
-				"history.table_not_found",
-				"history table was not found",
-				false,
-			)
-		}
-		return schema.TableDefinition{}, historyError(
-			"history.storage_failed",
-			"history schema could not be read",
-			true,
+	if errors.Is(err, schemaexecution.ErrTableNotFound) {
+		return schemaexecution.Table{}, historyError(
+			"history.table_not_found",
+			"history table was not found",
+			false,
 		)
 	}
 	var mutationErr *mutation.ProductError
 	if errors.As(err, &mutationErr) {
 		if strings.HasSuffix(mutationErr.Code, ".not_found") {
-			return schema.TableDefinition{}, historyError(
+			return schemaexecution.Table{}, historyError(
 				"history.table_not_found",
 				"history table was not found",
 				false,
 			)
 		}
-		return schema.TableDefinition{}, historyError(
+		return schemaexecution.Table{}, historyError(
 			"history.storage_failed",
 			"history schema could not be read",
 			true,
 		)
 	}
-	return schema.TableDefinition{}, err
+	return schemaexecution.Table{}, historyError(
+		"history.storage_failed", "history schema could not be read", true,
+	)
 }
 
-func archivedFieldName(definition schema.TableDefinition) (string, error) {
-	if definition.ArchivePolicy.Mode == schema.ArchiveModeNone ||
+func archivedFieldName(definition schemaexecution.Table) (string, error) {
+	if definition.ArchivePolicy.Mode == "none" ||
 		definition.ArchivePolicy.FieldID == nil {
 		return "", historyError("archive_not_supported", "table has no archive policy", false)
 	}
-	for _, field := range definition.Fields {
-		if field.FieldID == *definition.ArchivePolicy.FieldID {
-			return field.PhysicalName, nil
+	for _, field := range definition.Snapshot.Fields {
+		if field.Identity.FieldID == *definition.ArchivePolicy.FieldID {
+			return field.Identity.PhysicalName, nil
 		}
 	}
 	return "", historyError("archive_not_supported", "archive field is unavailable", false)
 }
 
 func isArchived(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	archiveField string,
 	value any,
 ) bool {
 	switch definition.ArchivePolicy.Mode {
-	case schema.ArchiveModeStatus:
+	case "status":
 		return reflect.DeepEqual(value, definition.ArchivePolicy.ArchivedValue) ||
 			fmt.Sprint(value) == fmt.Sprint(definition.ArchivePolicy.ArchivedValue)
-	case schema.ArchiveModeDeletedAt:
+	case "deletedAt":
 		if value == nil {
 			return false
 		}

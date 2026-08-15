@@ -26,6 +26,11 @@ type BarrierView struct {
 	SnapshotSequence      uint64
 	SchemaRevision        uint64
 	BusinessSchemaVersion uint64
+	DataRevision          uint64
+	ComputationWatermark  uint64
+	JobSchemaVersion      uint64
+	PendingWork           PendingWork
+	SearchGeneration      int64
 	FileRevision          uint64
 	AuditRevision         uint64
 	AuditAnchor           string
@@ -42,6 +47,13 @@ type BarrierView struct {
 	MinimumAppVersion     string
 	SourceWorkspaceID     string
 	SourceSnapshotID      string
+}
+
+type PendingWork struct {
+	Jobs             uint64 `json:"jobs"`
+	BusinessOutbox   uint64 `json:"businessOutbox"`
+	SearchRebuild    bool   `json:"searchRebuild"`
+	SearchCheckpoint string `json:"searchCheckpoint,omitempty"`
 }
 
 type Barrier interface {
@@ -81,6 +93,13 @@ type Manifest struct {
 	FenceEpoch                uint64              `json:"fenceEpoch"`
 	ClaimID                   string              `json:"claimId"`
 	MutationRevision          uint64              `json:"mutationRevision"`
+	SchemaRevision            uint64              `json:"schemaRevision"`
+	DataRevision              uint64              `json:"dataRevision"`
+	ComputationWatermark      uint64              `json:"computationWatermark"`
+	JobSchemaVersion          uint64              `json:"jobSchemaVersion"`
+	PendingWork               PendingWork         `json:"pendingWork"`
+	FileRevision              uint64              `json:"fileRevision"`
+	SearchGeneration          int64               `json:"searchGeneration"`
 	SnapshotSequence          uint64              `json:"snapshotSequence"`
 	Trigger                   Trigger             `json:"trigger"`
 	CreatedAt                 time.Time           `json:"createdAt"`
@@ -411,6 +430,9 @@ func normalizeBarrierView(view BarrierView) (BarrierView, error) {
 			"snapshot.business_schema_version_invalid",
 		)
 	}
+	if view.JobSchemaVersion == 0 {
+		view.JobSchemaVersion = 1
+	}
 	if view.CreatedByDevice == "" {
 		view.CreatedByDevice = "00000000-0000-4000-8000-000000000000"
 	}
@@ -487,6 +509,10 @@ func buildSnapshot(
 		FormatVersion: 2, SnapshotID: snapshotID, WorkspaceID: request.WorkspaceID,
 		FenceEpoch: request.Authority.FenceEpoch, ClaimID: request.Authority.ClaimID,
 		MutationRevision: view.MutationRevision, SnapshotSequence: view.SnapshotSequence,
+		SchemaRevision: view.SchemaRevision, DataRevision: view.DataRevision,
+		ComputationWatermark: view.ComputationWatermark,
+		JobSchemaVersion:     view.JobSchemaVersion, PendingWork: view.PendingWork,
+		FileRevision: view.FileRevision, SearchGeneration: view.SearchGeneration,
 		Trigger: manifestTrigger(request.Trigger), CreatedAt: createdAt,
 		CreatedByDevice:          view.CreatedByDevice,
 		BusinessDatabaseObjectID: contentObjectID(view.Database),

@@ -183,6 +183,18 @@ def test_default_path_and_singleton_reset_are_isolated(
     monkeypatch.setattr(local_state_store, "_SINGLETON", None)
 
 
+def test_explicit_state_dir_overrides_local_app_data_and_creates_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_dir = tmp_path / "workspace-state" / "nested"
+    monkeypatch.setenv("VIBETABLE_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "ignored-local-app-data"))
+
+    expected = state_dir / "vibetable-state.db"
+    assert local_state_store.default_state_db_path() == expected
+    assert expected.parent.is_dir()
+
+
 def test_default_path_falls_back_to_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))

@@ -70,14 +70,10 @@ class ImportColumnMapping(CamelModel):
     must provide both the stable product ``relation_id`` and a ``match_field``
     whose uniqueness has been established from the live schema.
 
-    ``relation_lookup`` is retained solely for wire compatibility with early C1
-    clients. Setting it without the explicit relation metadata is rejected by
-    the import service.
     """
 
     source_column: str = Field(min_length=1, max_length=128)
     target_field: str = Field(min_length=1, max_length=128)
-    relation_lookup: bool = False
     relation_id: str | None = Field(default=None, min_length=1, max_length=128)
     match_field: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -206,18 +202,16 @@ class ApplyImportParams(CamelModel):
     Wire form::
 
         {"grantId": "grant-1", "collection": "...", "token": "...",
-         "mode": "create_only", "chunkSize": 500, "idempotencyPrefix": "imp-uuid"}
+         "mode": "create_only", "idempotencyPrefix": "imp-uuid"}
 
-    ``chunk_size`` is retained as a wire-compatibility/progress hint and never
-    creates independent commits. ``idempotency_prefix`` binds the single
-    atomic request so retries are deduplicated.
+    ``idempotency_prefix`` binds the single atomic request so retries are
+    deduplicated.
     """
 
     grant_id: str = Field(min_length=1, max_length=128)
     collection: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=2048)
     mode: ImportMode = "create_only"
-    chunk_size: int = Field(default=500, ge=1, le=10000)
     idempotency_prefix: str = Field(default="", max_length=128)
 
 

@@ -3,9 +3,10 @@ import type {
   FieldApplyReceiptV2,
   FieldChangeActionV2,
   FormulaDraftValidationResult,
+  FieldDefinitionV2,
+  CapabilityV2,
+  JsonValueV2,
   LogicalTypeV2,
-  ProductFieldDefinition,
-  ProductTableDefinition,
   SchemaDescribeResult,
   SchemaSnapshot,
 } from "@/contracts";
@@ -20,6 +21,7 @@ import { useHostBridge } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
 import { buildFieldChangeIntent } from "./model";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { collectionLabel } from "@/components/layout/collectionLabel";
 import { useTableStore } from "@/stores/tableStore";
 import {
   createBridgeFormulaPreviewPort,
@@ -52,68 +54,36 @@ interface FieldSettingsServiceOptions {
   readonly onCommitted?: (receipt: FieldApplyReceiptV2) => void | Promise<void>;
 }
 
-function isProductTableDefinition(
-  value: unknown,
-  tableId: string,
-): value is ProductTableDefinition {
-  return !!value && typeof value === "object"
-    && (value as { tableId?: unknown }).tableId === tableId
-    && Array.isArray((value as { fields?: unknown }).fields);
-}
-
-function formulaPreviewType(resultType: LogicalTypeV2): {
-  readonly dataType: NonNullable<ProductFieldDefinition["formula"]>["resultType"];
-  readonly storageType: ProductFieldDefinition["storageType"];
-} {
-  switch (resultType) {
-    case "text": return { dataType: "shortText", storageType: "text" };
-    case "number": return { dataType: "float", storageType: "number" };
-    case "bool": return { dataType: "boolean", storageType: "bool" };
-    case "date": return { dataType: "date", storageType: "date" };
-    case "dateTime": return { dataType: "dateTime", storageType: "date" };
-    case "time": return { dataType: "time", storageType: "text" };
-    default: throw new Error(`公式预览不支持结果类型 ${resultType}`);
-  }
-}
-
-function buildFormulaPreviewDefinition(
-  definition: ProductTableDefinition,
+function buildFormulaPreviewField(
+  recommended: CapabilityV2["recommended"],
   validation: FormulaDraftValidationResult,
-  existingFieldId: string | undefined,
+  existing: FieldDefinitionV2 | null,
   displayName: string,
-): { readonly definition: ProductTableDefinition; readonly field: ProductFieldDefinition } {
-  const mapped = formulaPreviewType(validation.resultType);
-  const fieldId = existingFieldId ?? "fld_formula_preview";
-  const existing = definition.fields.find(field => field.fieldId === fieldId);
-  const field: ProductFieldDefinition = {
-    ...(existing ?? {
-      fieldId,
+): FieldDefinitionV2 {
+  return {
+    contract: "vibetable.schema.v2",
+    identity: existing?.identity ?? {
+      fieldId: "fld_formula_preview",
       physicalName: "f_formula_preview",
-      displayName: displayName || "公式预览",
-      nullable: true,
-      defaultValue: null,
-      constraints: [],
-      editor: { kind: "formula", config: {} },
-      relation: null,
-      lookup: null,
-      attachmentPolicy: null,
-    }),
-    kind: "formula",
-    dataType: "formula",
-    storageType: mapped.storageType,
-    readOnly: true,
+      providerFieldId: "pb_formula_preview",
+    },
+    displayName: displayName || "公式预览",
+    help: existing?.help ?? "",
+    logicalType: "formula",
+    lifecycle: existing?.lifecycle ?? { state: "active", retiredAt: null },
+    value: existing?.value ?? recommended.value,
+    constraints: existing?.constraints ?? recommended.constraints,
+    storage: {
+      ...(existing?.storage ?? recommended.storage),
+      kind: "computed",
+    },
+    display: existing?.display ?? recommended.display,
     formula: {
       language: "cel-v1",
       source: validation.canonicalSource,
-      resultType: mapped.dataType,
-      version: 1,
-      status: "ready",
+      resultType: validation.resultType,
     },
   };
-  const fields = existing
-    ? definition.fields.map(item => item.fieldId === fieldId ? field : item)
-    : [...definition.fields, field];
-  return { definition: { ...definition, fields }, field };
 }
 
 export function useFieldSettingsService(options: FieldSettingsServiceOptions = {}): {
@@ -146,7 +116,6 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   let generation = 0;
   let frozenOperationId: string | null = null;
   let formulaValidationGeneration = 0;
-  let formulaProductDefinition: ProductTableDefinition | null = null;
 
   async function describe(
     tableId: string,
@@ -155,7 +124,6 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   ): Promise<void> {
     const current = ++generation;
     formulaPreview.cancel();
-    formulaProductDefinition = null;
     store.beginOpen();
     try {
       const result = parseFieldSettingsDescribeResultV2(unwrapFieldResult(
@@ -333,10 +301,13 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     const tableId = store.result.tableId;
     const tables = workspace.collections.map(item => ({
       tableId: item.collection,
-      displayName: item.displayName ?? workspace.displayNames[item.collection] ?? item.collection,
+      displayName: collectionLabel(item, workspace.displayNames),
     }));
     if (!tables.some(item => item.tableId === tableId)) {
-      tables.unshift({ tableId, displayName: workspace.displayNames[tableId] ?? tableId });
+      tables.unshift({
+        tableId,
+        displayName: collectionLabel({ collection: tableId }, workspace.displayNames),
+      });
     }
     store.setRelationTables(tables);
     if (store.relationPair && !store.relationPair.reciprocalDisplayName) {
@@ -410,7 +381,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
         const relation = current.normalizedRelations.find(
           item => item.relationId === `${current.collection}.${step.relationFieldId}`,
         );
-        if (!relation?.relatedCollection || relation.kind === "m2a" || relation.junction) {
+        if (!relation?.relatedCollection) {
           throw new Error(`第 ${index + 1} 跳不是可用于 Lookup 的直接关系`);
         }
         schemas.push(await describeRelationTable(relation.relatedCollection));
@@ -425,20 +396,13 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     if (!store.result || store.draft?.logicalType !== "formula") return;
     try {
       store.beginFormulaCatalog();
-      const [source, productDefinition] = await Promise.all([
-        describeRelationTable(store.result.tableId),
-        bridge.request("schema.getTable", { tableId: store.result.tableId }),
-      ]);
-      if (!isProductTableDefinition(productDefinition, store.result.tableId)) {
-        throw new Error("公式预览表结构响应无效");
-      }
-      formulaProductDefinition = productDefinition;
+      const source = await describeRelationTable(store.result.tableId);
       const relations = source.columns.flatMap(column => {
         if (!column.fieldId || column.kind !== "relation" || !column.relationId) return [];
         const descriptor = source.normalizedRelations.find(
           item => item.relationId === column.relationId,
         );
-        if (!descriptor?.relatedCollection || descriptor.kind === "m2a" || descriptor.junction) {
+        if (!descriptor?.relatedCollection) {
           return [];
         }
         return [{ fieldId: column.fieldId, tableId: descriptor.relatedCollection }];
@@ -482,9 +446,12 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   }
 
   function scheduleFormulaPreview(validation: FormulaDraftValidationResult): void {
-    const definition = formulaProductDefinition;
+    const tableId = store.result?.tableId;
+    const formulaCapability = store.result?.capabilities.find(
+      item => item.logicalType === "formula",
+    );
     const row = tableStore.allRows[0];
-    if (!definition) {
+    if (!tableId || !formulaCapability) {
       store.setFormulaPreviewNote("正在等待权威表结构，完成后可预览样例结果");
       return;
     }
@@ -492,23 +459,26 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       store.setFormulaPreviewNote("当前表没有可用于预览的样例记录");
       return;
     }
-    const preview = buildFormulaPreviewDefinition(
-      definition,
+    const field = buildFormulaPreviewField(
+      formulaCapability.recommended,
       validation,
-      store.result?.definition?.identity.fieldId,
+      store.result?.definition ?? null,
       store.draft?.displayName ?? "公式预览",
     );
-    const physicalNames = new Set(preview.definition.fields.map(item => item.physicalName));
+    const physicalNames = new Set(
+      store.formulaSourceSchema?.columns.map(item => item.name) ?? [],
+    );
     const sample = Object.fromEntries(
       Object.entries(row).filter(([key]) => physicalNames.has(key) || key === "id"),
-    );
+    ) as Readonly<Record<string, JsonValueV2>>;
     store.beginFormulaPreview();
     formulaPreview.schedule({
-      definition: preview.definition,
+      tableId,
+      field,
       row: sample,
       changedFieldIds: [],
     }, {
-      onResult: result => store.setFormulaPreview(result.values[preview.field.physicalName]),
+      onResult: result => store.setFormulaPreview(result.values[field.identity.physicalName]),
       onError: error => store.failFormulaPreview(error),
     });
   }

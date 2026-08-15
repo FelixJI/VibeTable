@@ -18,8 +18,10 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type firstBatchPauseKernel struct {
@@ -41,10 +43,56 @@ type cancelDuringApplyKernel struct {
 
 type businessDeadlineKernel struct{}
 
+type formulaBackfillFixture struct {
+	definition schemaexecution.Table
+	title      *v2.FieldDefinition
+	computed   *v2.FieldDefinition
+}
+
+func createFormulaBackfillFixture(
+	t *testing.T,
+	ctx context.Context,
+	app core.App,
+	displayName string,
+	operationPrefix string,
+) formulaBackfillFixture {
+	t.Helper()
+	table := createV2IntegrationTable(
+		t, ctx, app, displayName, operationPrefix+"_table",
+	)
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"),
+		operationPrefix+"_title",
+	)
+	computedDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Computed")
+	computedDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: "upper({Title})",
+	}
+	computed := createV2IntegrationFormula(
+		t, ctx, app, table.TableID, computedDraft, operationPrefix+"_computed",
+	)
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	titleDefinition := integrationFieldByID(definition, title.FieldID)
+	computedDefinition := integrationFieldByID(definition, computed.FieldID)
+	if titleDefinition == nil || computedDefinition == nil {
+		t.Fatalf("Schema V2 fixture omitted fields: %#v", definition.Snapshot.Fields)
+	}
+	return formulaBackfillFixture{
+		definition: definition, title: titleDefinition, computed: computedDefinition,
+	}
+}
+
 type countingFanoutKernel struct {
 	mu             sync.Mutex
 	operationCount int
 	batchCount     int
+	expectedCount  int
+	completed      chan struct{}
+	completedOnce  sync.Once
 }
 
 func (kernel *countingFanoutKernel) Apply(
@@ -54,7 +102,11 @@ func (kernel *countingFanoutKernel) Apply(
 	kernel.mu.Lock()
 	kernel.operationCount += len(request.Operations)
 	kernel.batchCount++
+	reachedExpected := kernel.expectedCount > 0 && kernel.operationCount >= kernel.expectedCount
 	kernel.mu.Unlock()
+	if reachedExpected {
+		kernel.completedOnce.Do(func() { close(kernel.completed) })
+	}
 	return mutation.Receipt{
 		ContractVersion: mutation.ContractVersion,
 		Status:          mutation.StatusApplied,
@@ -140,28 +192,17 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("job_notes", "job_notes", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			formulaField(
-				"computed_id", "computed",
-				schema.DataTypeShortText, "upper(title)",
-			),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	collection, err := app.FindCollectionByNameOrId("job_notes")
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Job notes", "job_notes")
+	definition := fixture.definition
+	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for index := 0; index < 3; index++ {
 		record := core.NewRecord(collection)
 		record.Id = fmt.Sprintf("jobrecord%06d", index+1)
-		record.Set("title", fmt.Sprintf("note-%d", index+1))
-		record.Set("computed", "STALE")
+		record.Set(fixture.title.Identity.PhysicalName, fmt.Sprintf("note-%d", index+1))
+		record.Set(fixture.computed.Identity.PhysicalName, "STALE")
 		if err := app.Save(record); err != nil {
 			t.Fatal(err)
 		}
@@ -193,7 +234,7 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 		return apply(ctx)
 	})
 	started, err := service.StartFormulaBackfill(
-		ctx, "job_notes", definition.SchemaRevision,
+		ctx, definition.Snapshot.TableID, definition.Snapshot.SchemaRevision,
 	)
 	if err != nil || started.State != "queued" ||
 		started.Progress.Total != 3 {
@@ -216,20 +257,21 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 		recordID := fmt.Sprintf("jobrecord%06d", index+1)
 		record, err := app.FindRecordById(collection, recordID)
 		if err != nil ||
-			record.GetString("computed") != fmt.Sprintf("NOTE-%d", index+1) {
+			relatedcomputation.ProjectStored(record.GetRaw(fixture.computed.Identity.PhysicalName)) != fmt.Sprintf("NOTE-%d", index+1) {
 			t.Fatalf("backfilled record %q = %#v, err=%v", recordID, record, err)
 		}
 	}
 	formulaMeta, err := app.FindFirstRecordByFilter(
 		"vibetable_formulas",
-		"table_id='job_notes' && field_id='computed_id'",
+		"table_id={:table} && field_id={:field}",
+		dbx.Params{"table": definition.Snapshot.TableID, "field": fixture.computed.Identity.FieldID},
 	)
 	if err != nil || formulaMeta.GetString("status") != "ready" {
 		t.Fatalf("formula metadata = %#v, err=%v", formulaMeta, err)
 	}
-	refreshed, err := schemaapi.New(app).Describe(ctx, "job_notes")
-	if err != nil || refreshed.Fields[1].Formula == nil ||
-		refreshed.Fields[1].Formula.Status != "ready" {
+	refreshed, err := schemaapi.New(app).Describe(ctx, definition.Snapshot.TableID)
+	if err != nil ||
+		refreshed.FormulaRuntime[fixture.computed.Identity.FieldID].Status != "ready" {
 		t.Fatalf("refreshed schema = %#v, err=%v", refreshed, err)
 	}
 	if err := service.Run(ctx, started.JobID); err != nil {
@@ -263,7 +305,7 @@ func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 		t.Fatalf("task states = %#v", taskStates)
 	}
 	second, err := service.StartFormulaBackfill(
-		ctx, "job_notes", definition.SchemaRevision,
+		ctx, definition.Snapshot.TableID, definition.Snapshot.SchemaRevision,
 	)
 	if err != nil || second.JobID == "" || second.JobID == started.JobID {
 		t.Fatalf("second formula backfill = %#v, err=%v", second, err)
@@ -276,20 +318,13 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("scale_notes", "scale_notes", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			formulaField(
-				"computed_id", "computed",
-				schema.DataTypeShortText, "upper(title)",
-			),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Scale notes", "scale_notes")
+	definition := fixture.definition
+	var initialIdempotencyCount int
+	if err := app.DB().NewQuery("SELECT COUNT(*) FROM vibetable_idempotency_keys").Row(&initialIdempotencyCount); err != nil {
 		t.Fatal(err)
 	}
-	collection, err := app.FindCollectionByNameOrId("scale_notes")
+	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,8 +333,8 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 		for index := 0; index < rowCount; index++ {
 			record := core.NewRecord(collection)
 			record.Id = fmt.Sprintf("scale%010d", index+1)
-			record.Set("title", fmt.Sprintf("note-%d", index+1))
-			record.Set("computed", "STALE")
+			record.Set(fixture.title.Identity.PhysicalName, fmt.Sprintf("note-%d", index+1))
+			record.Set(fixture.computed.Identity.PhysicalName, "STALE")
 			if err := txApp.Save(record); err != nil {
 				return err
 			}
@@ -324,7 +359,7 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	service := jobs.New(app, pausedKernel)
 	defer service.Shutdown()
 	started, err := service.StartFormulaBackfill(
-		ctx, "scale_notes", definition.SchemaRevision,
+		ctx, definition.Snapshot.TableID, definition.Snapshot.SchemaRevision,
 	)
 	if err != nil || started.Progress.Total != rowCount {
 		t.Fatalf("start %d-row backfill = %#v, err=%v", rowCount, started, err)
@@ -338,12 +373,13 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	if err != nil || cancelled.State != "cancelled" {
 		t.Fatalf("cancelled snapshot = %#v, err=%v", cancelled, err)
 	}
-	cancelledDefinition, err := schemaapi.New(app).Describe(ctx, "scale_notes")
-	if err != nil || cancelledDefinition.Fields[1].Formula.Status != "cancelled" {
+	cancelledDefinition, err := schemaapi.New(app).Describe(ctx, definition.Snapshot.TableID)
+	if err != nil ||
+		cancelledDefinition.FormulaRuntime[fixture.computed.Identity.FieldID].Status != "cancelled" {
 		t.Fatalf("cancelled formula definition = %#v, err=%v", cancelledDefinition, err)
 	}
 	deduplicated, err := service.StartFormulaBackfill(
-		ctx, "scale_notes", definition.SchemaRevision,
+		ctx, definition.Snapshot.TableID, definition.Snapshot.SchemaRevision,
 	)
 	if err != nil || deduplicated.JobID != started.JobID ||
 		deduplicated.State != "cancelled" {
@@ -353,8 +389,9 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	if err != nil || resumed.State != "queued" {
 		t.Fatalf("resumed snapshot = %#v, err=%v", resumed, err)
 	}
-	resumedDefinition, err := schemaapi.New(app).Describe(ctx, "scale_notes")
-	if err != nil || resumedDefinition.Fields[1].Formula.Status != "backfilling" {
+	resumedDefinition, err := schemaapi.New(app).Describe(ctx, definition.Snapshot.TableID)
+	if err != nil ||
+		resumedDefinition.FormulaRuntime[fixture.computed.Identity.FieldID].Status != "backfilling" {
 		t.Fatalf("resumed formula definition = %#v, err=%v", resumedDefinition, err)
 	}
 	close(pausedKernel.release)
@@ -365,8 +402,9 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 	if err != nil || stillQueued.State != "queued" {
 		t.Fatalf("old worker overwrote resumed job = %#v, err=%v", stillQueued, err)
 	}
-	stillBackfilling, err := schemaapi.New(app).Describe(ctx, "scale_notes")
-	if err != nil || stillBackfilling.Fields[1].Formula.Status != "backfilling" {
+	stillBackfilling, err := schemaapi.New(app).Describe(ctx, definition.Snapshot.TableID)
+	if err != nil ||
+		stillBackfilling.FormulaRuntime[fixture.computed.Identity.FieldID].Status != "backfilling" {
 		t.Fatalf(
 			"old worker overwrote resumed formula definition = %#v, err=%v",
 			stillBackfilling,
@@ -381,12 +419,13 @@ func TestFormulaBackfillScaleCancelsResumesWithoutDuplicateAudit(
 		completed.Progress.Completed != rowCount {
 		t.Fatalf("completed %d-row backfill = %#v, err=%v", rowCount, completed, err)
 	}
-	readyDefinition, err := schemaapi.New(app).Describe(ctx, "scale_notes")
-	if err != nil || readyDefinition.Fields[1].Formula.Status != "ready" {
+	readyDefinition, err := schemaapi.New(app).Describe(ctx, definition.Snapshot.TableID)
+	if err != nil ||
+		readyDefinition.FormulaRuntime[fixture.computed.Identity.FieldID].Status != "ready" {
 		t.Fatalf("completed formula definition = %#v, err=%v", readyDefinition, err)
 	}
 	assertRecordCount(t, app, "vibetable_audit_events", rowCount)
-	assertRecordCount(t, app, "vibetable_idempotency_keys", rowCount/100)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", initialIdempotencyCount+rowCount/100)
 }
 
 func TestFormulaBackfillStartupRecoveryQueuesMissingJob(t *testing.T) {
@@ -394,32 +433,15 @@ func TestFormulaBackfillStartupRecoveryQueuesMissingJob(t *testing.T) {
 	defer resetApp(t, app)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"recovery_notes", "recovery_notes",
-			[]schema.FieldDefinition{
-				field(
-					"title_id", "title",
-					schema.FieldKindScalar, schema.DataTypeShortText,
-				),
-				formulaField(
-					"computed_id", "computed",
-					schema.DataTypeShortText, "upper(title)",
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	collection, err := app.FindCollectionByNameOrId("recovery_notes")
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Recovery notes", "recovery_notes")
+	definition := fixture.definition
+	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := core.NewRecord(collection)
-	record.Set("title", "recover me")
-	record.Set("computed", "STALE")
+	record.Set(fixture.title.Identity.PhysicalName, "recover me")
+	record.Set(fixture.computed.Identity.PhysicalName, "STALE")
 	if err := app.Save(record); err != nil {
 		t.Fatal(err)
 	}
@@ -439,11 +461,16 @@ func TestFormulaBackfillStartupRecoveryQueuesMissingJob(t *testing.T) {
 	for time.Now().Before(deadline) {
 		formulaMeta, findErr := app.FindFirstRecordByFilter(
 			"vibetable_formulas",
-			"table_id='recovery_notes' && field_id='computed_id'",
+			"table_id={:table} && field_id={:field}",
+			dbx.Params{
+				"table": definition.Snapshot.TableID,
+				"field": fixture.computed.Identity.FieldID,
+			},
 		)
 		if findErr == nil && formulaMeta.GetString("status") == "ready" {
 			updated, readErr := app.FindRecordById(collection, record.Id)
-			if readErr != nil || updated.GetString("computed") != "RECOVER ME" {
+			if readErr != nil ||
+				relatedcomputation.ProjectStored(updated.GetRaw(fixture.computed.Identity.PhysicalName)) != "RECOVER ME" {
 				t.Fatalf("recovered record = %#v, err=%v", updated, readErr)
 			}
 			return
@@ -452,7 +479,7 @@ func TestFormulaBackfillStartupRecoveryQueuesMissingJob(t *testing.T) {
 	}
 	t.Fatalf(
 		"missing backfill for schema revision %s was not recovered",
-		definition.SchemaRevision,
+		definition.Snapshot.SchemaRevision,
 	)
 }
 
@@ -462,37 +489,15 @@ func TestFormulaBackfillShutdownJoinsCommittedRunBeforeStorageTeardown(
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"shutdown_notes",
-			"shutdown_notes",
-			[]schema.FieldDefinition{
-				field(
-					"title_id",
-					"title",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-				formulaField(
-					"computed_id",
-					"computed",
-					schema.DataTypeShortText,
-					"upper(title)",
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Shutdown notes", "shutdown_notes")
+	definition := fixture.definition
 	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := core.NewRecord(collection)
-	record.Set("title", "survives shutdown")
-	record.Set("computed", "STALE")
+	record.Set(fixture.title.Identity.PhysicalName, "survives shutdown")
+	record.Set(fixture.computed.Identity.PhysicalName, "STALE")
 	if err := app.Save(record); err != nil {
 		t.Fatal(err)
 	}
@@ -578,37 +583,17 @@ func TestFormulaBackfillLifecycleCancellationRemainsResumable(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"cancel_backfill_notes",
-			"cancel_backfill_notes",
-			[]schema.FieldDefinition{
-				field(
-					"title_id",
-					"title",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-				formulaField(
-					"computed_id",
-					"computed",
-					schema.DataTypeShortText,
-					"upper(title)",
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := createFormulaBackfillFixture(
+		t, ctx, app, "Cancel backfill notes", "cancel_backfill_notes",
+	)
+	definition := fixture.definition
 	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := core.NewRecord(collection)
-	record.Set("title", "resume me")
-	record.Set("computed", "STALE")
+	record.Set(fixture.title.Identity.PhysicalName, "resume me")
+	record.Set(fixture.computed.Identity.PhysicalName, "STALE")
 	if err := app.Save(record); err != nil {
 		t.Fatal(err)
 	}
@@ -617,8 +602,8 @@ func TestFormulaBackfillLifecycleCancellationRemainsResumable(t *testing.T) {
 	interrupted := jobs.New(app, blockingKernel)
 	started, err := interrupted.StartFormulaBackfill(
 		ctx,
-		definition.TableID,
-		definition.SchemaRevision,
+		definition.Snapshot.TableID,
+		definition.Snapshot.SchemaRevision,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -640,7 +625,7 @@ func TestFormulaBackfillLifecycleCancellationRemainsResumable(t *testing.T) {
 	formulaMeta, err := app.FindFirstRecordByFilter(
 		"vibetable_formulas",
 		"table_id={:table}",
-		dbx.Params{"table": definition.TableID},
+		dbx.Params{"table": definition.Snapshot.TableID},
 	)
 	if err != nil || formulaMeta.GetString("status") != "backfilling" {
 		t.Fatalf("interrupted formula metadata = %#v, err=%v", formulaMeta, err)
@@ -660,7 +645,8 @@ func TestFormulaBackfillLifecycleCancellationRemainsResumable(t *testing.T) {
 	restarted.ResumePending(ctx)
 	waitForJobState(t, restarted, started.JobID, "complete")
 	updated, err := app.FindRecordById(collection, record.Id)
-	if err != nil || updated.GetString("computed") != "RESUME ME" {
+	if err != nil ||
+		relatedcomputation.ProjectStored(updated.GetRaw(fixture.computed.Identity.PhysicalName)) != "RESUME ME" {
 		t.Fatalf("resumed backfill record = %#v, err=%v", updated, err)
 	}
 }
@@ -669,33 +655,29 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	selfRelation := field(
-		"source", "source", schema.FieldKindRelation, schema.DataTypeRelation,
+	table := createV2IntegrationTable(
+		t, ctx, app, "Cancel fanout notes", "cancel_fanout_notes_table",
 	)
-	selfRelation.Relation = &schema.RelationSpec{
-		TargetTableID: "cancel_fanout_notes", Cardinality: "one", DeletePolicy: "setNull",
-	}
-	selfRelation.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRelation, TargetTableID: "cancel_fanout_notes",
-		Cardinality: "one", DeletePolicy: "setNull",
-	}}
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"cancel_fanout_notes",
-			"cancel_fanout_notes",
-			[]schema.FieldDefinition{
-				field(
-					"title_id",
-					"title",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-				selfRelation,
-			},
-		),
-		ExpectedRevision: 0,
-	})
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"),
+		"cancel_fanout_notes_title",
+	)
+	source := createV2IntegrationRelation(
+		t, ctx, app, table.TableID, title.FieldID, table.TableID, title.FieldID,
+		"Source", "Referenced by", "one", "cancel_fanout_notes_source",
+	)
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	titleDefinition := integrationFieldByID(definition, title.FieldID)
+	sourceDefinition := integrationFieldByID(definition, source.FieldID)
+	if titleDefinition == nil || sourceDefinition == nil {
+		t.Fatalf("Schema V2 fanout fixture omitted fields: %#v", definition.Snapshot.Fields)
+	}
+	var initialIdempotencyCount int
+	if err := app.DB().NewQuery("SELECT COUNT(*) FROM vibetable_idempotency_keys").Row(&initialIdempotencyCount); err != nil {
 		t.Fatal(err)
 	}
 	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
@@ -704,15 +686,15 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	}
 	row := core.NewRecord(collection)
 	row.Id = "cancelfanout001"
-	row.Set("title", "unchanged")
+	row.Set(titleDefinition.Identity.PhysicalName, "unchanged")
 	if err := app.Save(row); err != nil {
 		t.Fatal(err)
 	}
-	row.Set("source", row.Id)
+	row.Set(sourceDefinition.Identity.PhysicalName, row.Id)
 	if err := app.Save(row); err != nil {
 		t.Fatal(err)
 	}
-	revision, err := schema.ParseSchemaRevision(definition.SchemaRevision)
+	revision, err := v2.ParseSchemaRevision(definition.Snapshot.SchemaRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,10 +707,11 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	job.Set("state", "queued")
 	job.Set("schema_revision", revision)
 	job.Set("cursor_json", types.JSONRaw([]byte(fmt.Sprintf(
-		`{"tableId":%q,"lastRecordId":"","relationFieldId":"source",`+
+		`{"tableId":%q,"lastRecordId":"","relationFieldId":%q,`+
 			`"changedTableId":%q,"targetRecordIds":[%q],"formulaFieldIds":[]}`,
-		definition.TableID,
-		definition.TableID,
+		definition.Snapshot.TableID,
+		source.FieldID,
+		definition.Snapshot.TableID,
 		row.Id,
 	))))
 	job.Set(
@@ -768,7 +751,7 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 		preserved.Cursor.LastRecordID != "" || preserved.Progress.Completed != 0 {
 		t.Fatalf("cancelled fan-out = %#v, err=%v", preserved, err)
 	}
-	assertRecordCount(t, app, "vibetable_idempotency_keys", 1)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", initialIdempotencyCount+1)
 	restarted := jobs.New(app, realKernel)
 	fanoutGate := make(chan [2]string, 1)
 	restarted.SetBusinessWriteGate(func(
@@ -797,10 +780,10 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 		t.Fatal("fanout batch bypassed the business write gate")
 	}
 	updated, err := app.FindRecordById(collection, row.Id)
-	if err != nil || updated.GetString("title") != "unchanged" {
+	if err != nil || updated.GetString(titleDefinition.Identity.PhysicalName) != "unchanged" {
 		t.Fatalf("resumed fan-out record = %#v, err=%v", updated, err)
 	}
-	assertRecordCount(t, app, "vibetable_idempotency_keys", 1)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", initialIdempotencyCount+1)
 
 	deadlineJob := core.NewRecord(jobCollection)
 	deadlineJob.Set("job_type", "formula_fanout")
@@ -809,10 +792,11 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	deadlineJob.Set(
 		"cursor_json",
 		types.JSONRaw([]byte(fmt.Sprintf(
-			`{"tableId":%q,"lastRecordId":"","relationFieldId":"source",`+
+			`{"tableId":%q,"lastRecordId":"","relationFieldId":%q,`+
 				`"changedTableId":%q,"targetRecordIds":[%q],"formulaFieldIds":[]}`,
-			definition.TableID,
-			definition.TableID,
+			definition.Snapshot.TableID,
+			source.FieldID,
+			definition.Snapshot.TableID,
 			row.Id,
 		))),
 	)
@@ -822,7 +806,7 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	)
 	deadlineJob.Set("error_json", nil)
 	deadlineJob.Set("source_event_id", "business-deadline")
-	deadlineJob.Set("source_table_id", definition.TableID)
+	deadlineJob.Set("source_table_id", definition.Snapshot.TableID)
 	deadlineJob.Set("relation_field_id", "deadline")
 	if err := app.Save(deadlineJob); err != nil {
 		t.Fatal(err)
@@ -841,44 +825,35 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	catalog := schemaapi.New(app)
-	authors, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"fanout_scale_authors", "fanout_scale_authors",
-			[]schema.FieldDefinition{
-				field("name_id", "name", schema.FieldKindScalar, schema.DataTypeShortText),
-			},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	relationField := field(
-		"author_id", "author", schema.FieldKindRelation, schema.DataTypeRelation,
+	authors := createV2IntegrationTable(
+		t, ctx, app, "Fanout scale authors", "fanout_scale_authors_table",
 	)
-	relationField.Relation = &schema.RelationSpec{
-		TargetTableID: authors.TableID, Cardinality: "one", DeletePolicy: "setNull",
+	name := createV2IntegrationField(
+		t, ctx, app, authors.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"),
+		"fanout_scale_authors_name",
+	)
+	articles := createV2IntegrationTable(
+		t, ctx, app, "Fanout scale articles", "fanout_scale_articles_table",
+	)
+	articleTitle := createV2IntegrationField(
+		t, ctx, app, articles.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Article"),
+		"fanout_scale_articles_title",
+	)
+	authorRelation := createV2IntegrationRelation(
+		t, ctx, app, articles.TableID, articleTitle.FieldID, authors.TableID, name.FieldID,
+		"Author", "Articles", "one", "fanout_scale_articles_author",
+	)
+	authorNameDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Author name")
+	authorNameDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: `concat({Author}.{Name}, "")`,
 	}
-	relationField.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRelation, TargetTableID: authors.TableID,
-		Cardinality: "one", DeletePolicy: "setNull",
-	}}
-	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"fanout_scale_articles", "fanout_scale_articles",
-			[]schema.FieldDefinition{
-				relationField,
-				formulaField(
-					"author_name_id", "author_name", schema.DataTypeShortText,
-					"author.name",
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
+	authorName := createV2IntegrationFormula(
+		t, ctx, app, articles.TableID, authorNameDraft, "fanout_scale_articles_author_name",
+	)
+	if name.Definition == nil || authorRelation.Definition == nil || authorName.Definition == nil {
+		t.Fatalf("Schema V2 fanout scale fixture omitted field definitions: %#v %#v %#v", name, authorRelation, authorName)
 	}
 	authorID := "scaleauthor0001"
 	authorCollection, err := app.FindCollectionByNameOrId(authors.PhysicalName)
@@ -887,39 +862,44 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 	}
 	author := core.NewRecord(authorCollection)
 	author.Id = authorID
-	author.Set("name", "Before")
+	author.Set(name.Definition.Identity.PhysicalName, "Before")
 	if err := app.Save(author); err != nil {
 		t.Fatal(err)
 	}
 	otherAuthorID := "scaleauthor0002"
 	otherAuthor := core.NewRecord(authorCollection)
 	otherAuthor.Id = otherAuthorID
-	otherAuthor.Set("name", "Other")
+	otherAuthor.Set(name.Definition.Identity.PhysicalName, "Other")
 	if err := app.Save(otherAuthor); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.DB().NewQuery(`
+	seedQuery := fmt.Sprintf(`
 		WITH RECURSIVE sequence(value) AS (
 			SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 10001
 		)
-		INSERT INTO fanout_scale_articles (id, author, author_name)
+		INSERT INTO "%s" (id, "%s", "%s")
 		SELECT
-			printf('src%012d', value),
+			printf('src%%012d', value),
 			CASE WHEN value <= 10000 THEN {:author} ELSE {:otherAuthor} END,
 			CASE WHEN value <= 10000 THEN 'Before' ELSE 'Other' END
 		FROM sequence
-	`).WithContext(ctx).Bind(dbx.Params{
+	`, articles.PhysicalName, authorRelation.Definition.Identity.PhysicalName, authorName.Definition.Identity.PhysicalName)
+	if _, err := app.DB().NewQuery(seedQuery).WithContext(ctx).Bind(dbx.Params{
 		"author": authorID, "otherAuthor": otherAuthorID,
 	}).Execute(); err != nil {
 		t.Fatalf("seed 10001 fan-out sources: %v", err)
 	}
+	authorsDefinition, err := schemaapi.New(app).Describe(ctx, authors.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	realKernel := mutation.New(app, mutation.MetadataSchemaSource{})
 	receipt, err := realKernel.Apply(ctx, mutationRequest(
-		authors.TableID, authors.SchemaRevision, "fanout-scale-target-update",
+		authors.TableID, authorsDefinition.Snapshot.SchemaRevision, "fanout-scale-target-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &authorID,
-			Values: map[string]any{"name": "After"},
+			Values: map[string]any{name.Definition.Identity.PhysicalName: "After"},
 		},
 	))
 	if err != nil {
@@ -944,7 +924,10 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	countingKernel := &countingFanoutKernel{}
+	countingKernel := &countingFanoutKernel{
+		expectedCount: 10_000,
+		completed:     make(chan struct{}),
+	}
 	service := jobs.New(app, countingKernel)
 	defer service.Shutdown()
 	if err := service.Publish(ctx, committedEvent); err != nil {
@@ -957,6 +940,26 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	testDeadline, ok := t.Deadline()
+	if !ok {
+		t.Fatal("10,000-row fan-out test requires the go test deadline")
+	}
+	completionWait := time.Until(testDeadline) - 5*time.Second
+	if completionWait <= 0 {
+		t.Fatal("10,000-row fan-out test deadline leaves no completion window")
+	}
+	completionTimer := time.NewTimer(completionWait)
+	defer completionTimer.Stop()
+	select {
+	case <-countingKernel.completed:
+	case <-completionTimer.C:
+		operationCount, batchCount := countingKernel.counts()
+		t.Fatalf(
+			"10,000-row fan-out did not reach the counting kernel: operations=%d batches=%d",
+			operationCount,
+			batchCount,
+		)
 	}
 	completed := waitForJobState(t, service, job.Id, "complete")
 	if completed.Progress.Completed != 10_001 || completed.Progress.Total != 10_001 {
@@ -991,30 +994,10 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"terminal_event_notes",
-			"terminal_event_notes",
-			[]schema.FieldDefinition{
-				field(
-					"title_id",
-					"title",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-				formulaField(
-					"computed_id",
-					"computed",
-					schema.DataTypeShortText,
-					"upper(title)",
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := createFormulaBackfillFixture(
+		t, ctx, app, "Terminal event notes", "terminal_event_notes",
+	)
+	definition := fixture.definition
 	hub := realtime.New(app)
 	publisher := crashAfterTerminalPersistPublisher{hub: hub}
 	kernel := mutation.New(
@@ -1035,8 +1018,8 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 
 	completed, err := service.StartFormulaBackfill(
 		ctx,
-		definition.TableID,
-		definition.SchemaRevision,
+		definition.Snapshot.TableID,
+		definition.Snapshot.SchemaRevision,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1045,7 +1028,7 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	revision, err := schema.ParseSchemaRevision(definition.SchemaRevision)
+	revision, err := v2.ParseSchemaRevision(definition.Snapshot.SchemaRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1062,7 +1045,7 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 		types.JSONRaw([]byte(fmt.Sprintf(
 			`{"tableId":%q,"lastRecordId":"","relationFieldId":"cancel",`+
 				`"targetRecordIds":[],"recordIds":[]}`,
-			definition.TableID,
+			definition.Snapshot.TableID,
 		))),
 	)
 	cancelled.Set(
@@ -1071,7 +1054,7 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 	)
 	cancelled.Set("error_json", nil)
 	cancelled.Set("source_event_id", "terminal-cancelled")
-	cancelled.Set("source_table_id", definition.TableID)
+	cancelled.Set("source_table_id", definition.Snapshot.TableID)
 	cancelled.Set("relation_field_id", "cancel")
 	if err := app.Save(cancelled); err != nil {
 		t.Fatal(err)
@@ -1089,7 +1072,7 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 		types.JSONRaw([]byte(fmt.Sprintf(
 			`{"tableId":%q,"lastRecordId":"","relationFieldId":"failed",`+
 				`"targetRecordIds":[],"recordIds":["missingrecord"]}`,
-			definition.TableID,
+			definition.Snapshot.TableID,
 		))),
 	)
 	failed.Set(
@@ -1098,7 +1081,7 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 	)
 	failed.Set("error_json", nil)
 	failed.Set("source_event_id", "terminal-failed")
-	failed.Set("source_table_id", definition.TableID)
+	failed.Set("source_table_id", definition.Snapshot.TableID)
 	failed.Set("relation_field_id", "failed")
 	if err := app.Save(failed); err != nil {
 		t.Fatal(err)
@@ -1146,25 +1129,19 @@ func TestResumePendingDrainsJobsBeyondConcurrencyWindow(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"resume_window_notes",
-			"resume_window_notes",
-			[]schema.FieldDefinition{
-				field(
-					"title_id",
-					"title",
-					schema.FieldKindScalar,
-					schema.DataTypeShortText,
-				),
-			},
-		),
-		ExpectedRevision: 0,
-	})
+	table := createV2IntegrationTable(
+		t, ctx, app, "Resume window notes", "resume_window_notes_table",
+	)
+	createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"),
+		"resume_window_notes_title",
+	)
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	revision, err := schema.ParseSchemaRevision(definition.SchemaRevision)
+	revision, err := v2.ParseSchemaRevision(definition.Snapshot.SchemaRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1183,7 +1160,7 @@ func TestResumePendingDrainsJobsBeyondConcurrencyWindow(t *testing.T) {
 			types.JSONRaw([]byte(fmt.Sprintf(
 				`{"tableId":%q,"lastRecordId":"","relationFieldId":%q,`+
 					`"targetRecordIds":[],"recordIds":[]}`,
-				definition.TableID,
+				definition.Snapshot.TableID,
 				fmt.Sprintf("field-%02d", index),
 			))),
 		)
@@ -1193,7 +1170,7 @@ func TestResumePendingDrainsJobsBeyondConcurrencyWindow(t *testing.T) {
 		)
 		job.Set("error_json", nil)
 		job.Set("source_event_id", fmt.Sprintf("resume-event-%02d", index))
-		job.Set("source_table_id", definition.TableID)
+		job.Set("source_table_id", definition.Snapshot.TableID)
 		job.Set("relation_field_id", fmt.Sprintf("field-%02d", index))
 		if err := app.Save(job); err != nil {
 			t.Fatal(err)
@@ -1384,18 +1361,20 @@ func TestResumePendingRejectsJobRecoveryOverflow(t *testing.T) {
 func seedFormulaDependency(t *testing.T, app core.App) {
 	t.Helper()
 	collection, err := app.FindCollectionByNameOrId(
-		"vibetable_formula_dependencies",
+		"vibetable_computation_dependencies",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := core.NewRecord(collection)
 	record.Set("source_table_id", "resume_source")
-	record.Set("formula_field_id", "resume_formula")
+	record.Set("computed_field_id", "resume_formula")
+	record.Set("computed_kind", "formula")
 	record.Set("relation_field_id", "resume_relation")
 	record.Set("target_table_id", "resume_target")
 	record.Set("target_field_id", "resume_target_field")
-	record.Set("dependency_kind", "formula")
+	record.Set("path_json", types.JSONRaw(`[{"relationFieldId":"resume_relation"}]`))
+	record.Set("definition_version", 1)
 	if err := app.Save(record); err != nil {
 		t.Fatal(err)
 	}
@@ -1431,20 +1410,8 @@ func TestFormulaBackfillJobFailsClosedOnSchemaDrift(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	catalog := schemaapi.New(app)
-	definition, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("drift_notes", "drift_notes", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			formulaField(
-				"computed_id", "computed",
-				schema.DataTypeShortText, "upper(title)",
-			),
-		}),
-		ExpectedRevision: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Drift notes", "drift_notes")
+	definition := fixture.definition
 	kernel := mutation.New(
 		app,
 		mutation.MetadataSchemaSource{},
@@ -1456,17 +1423,16 @@ func TestFormulaBackfillJobFailsClosedOnSchemaDrift(t *testing.T) {
 	)
 	service := jobs.New(app, kernel)
 	started, err := service.StartFormulaBackfill(
-		ctx, definition.TableID, definition.SchemaRevision,
+		ctx, definition.Snapshot.TableID, definition.Snapshot.SchemaRevision,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	definition.DisplayName = "Renamed"
-	if _, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: definition, ExpectedRevision: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	createV2IntegrationField(
+		t, ctx, app, definition.Snapshot.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Renamed"),
+		"drift_notes_schema_change",
+	)
 	err = service.Run(ctx, started.JobID)
 	var jobErr *jobs.JobError
 	if !errors.As(err, &jobErr) ||

@@ -143,7 +143,7 @@ public sealed class WorkspaceStorageBroker
                 return PlanProjection(
                     conversion,
                     expectedTargetMode == "direct"
-                        ? MainWindow.MeasureWorkspaceStorage(topologyWorkspace)
+                        ? WorkspaceStorageMeter.MeasureDirectory(topologyWorkspace)
                             .PhysicalSize
                         : 0,
                     "Topology conversion is published only after independent replica verification.");
@@ -187,7 +187,7 @@ public sealed class WorkspaceStorageBroker
                 WritePlan(release);
                 return PlanProjection(
                     release,
-                    MainWindow.MeasureWorkspaceStorage(cacheWorkspace)
+                    WorkspaceStorageMeter.MeasureDirectory(cacheWorkspace)
                         .PhysicalSize,
                     "The activity cache is deleted only after an authenticated independent replica reopen.");
             }
@@ -1030,7 +1030,7 @@ public sealed class WorkspaceStorageBroker
         WorkspaceManifestV2 manifest =
             WorkspaceLayout.ReadManifest(workspace.SelectedRoot);
         (long logicalSize, long physicalSize) =
-            MainWindow.MeasureWorkspaceStorage(workspace);
+            WorkspaceStorageMeter.MeasureDirectory(workspace);
         return new
         {
             location = workspace.SelectedRoot,
@@ -1127,7 +1127,8 @@ public sealed class WorkspaceStorageBroker
         public required string TargetMode { get; init; }
         public required WorkspaceStorageKind TargetStorageKind { get; init; }
         public required WorkspaceCoordinationStrength
-            TargetCoordinationStrength { get; init; }
+            TargetCoordinationStrength
+        { get; init; }
         public required WorkspaceStoragePlan? CopyPlan { get; init; }
         public required WorkspaceReplicaReceipt? ReplicaReceipt { get; init; }
         public required string Phase { get; init; }

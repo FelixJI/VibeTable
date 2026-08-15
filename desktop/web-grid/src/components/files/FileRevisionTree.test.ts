@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { mount } from "@vue/test-utils";
 import FileRevisionTree from "./FileRevisionTree.vue";
@@ -92,6 +92,30 @@ describe("FileRevisionTree", () => {
     expect(wrapper.findAll('[role="treeitem"]')).toHaveLength(1);
     await first.trigger("keydown", { key: "ArrowRight" });
     expect(wrapper.findAll('[role="treeitem"]')).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it("reveals and focuses the exact historical revision requested by search", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const wrapper = mount(FileRevisionTree, {
+      attachTo: document.body,
+      props: {
+        tree: {
+          documentId: "opaque-document",
+          effectiveRevisionId: revisions[2]!.revisionId,
+          revisions,
+        },
+        busy: false,
+        requestedRevisionId: revisions[1]!.revisionId,
+      },
+    });
+    await wrapper.vm.$nextTick();
+
+    const requested = wrapper.get(`[data-revision-id="${revisions[1]!.revisionId}"]`);
+    expect(requested.classes()).toContain("requested");
+    expect(document.activeElement).toBe(requested.element);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
     wrapper.unmount();
   });
 

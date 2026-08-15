@@ -39,27 +39,34 @@ describe("dashboard wire model", () => {
     expect(custom.editable).toBe(false);
   });
 
-  it("normalizes malformed safe fields without throwing", () => {
-    const panel = parseWirePanel({
+  it("rejects malformed dashboard and panel DTOs instead of repairing them", () => {
+    expect(() => parseWirePanel({
       id: 42,
+      dashboardId: "d1",
+      name: "Broken",
       type: "metric",
-      position: { x: -1, y: "bad", width: 0, h: 2 },
+      position: { x: -1, y: "bad", width: 0, height: 2 },
       options: null,
       query: [],
-    });
-    expect(panel).toMatchObject({
-      id: "",
-      productType: "metric",
-      position: { x: 0, y: 0, width: 4, height: 2 },
-      options: {},
-      query: {},
-    });
-    expect(parseWireDashboard(null)).toEqual({ id: "", name: "", note: "", panels: [] });
+    })).toThrowError("Invalid dashboard panel");
+    expect(() => parseWireDashboard(null)).toThrowError("Invalid dashboard");
   });
 
-  it("accepts missing or null query from older product panels", () => {
-    expect(parseWirePanel({ id: "missing", type: "metric", options: {} }).query).toEqual({});
-    expect(parseWirePanel({ id: "null", type: "metric", options: {}, query: null }).query).toEqual({});
+  it("rejects legacy aliases and panels without the current query object", () => {
+    const current = {
+      id: "p1", dashboardId: "d1", name: "Current", type: "metric",
+      position: { x: 0, y: 0, width: 4, height: 2 }, options: {}, query: {},
+    };
+    expect(() => parseWirePanel({ ...current, dashboardId: undefined, dashboard_id: "d1" }))
+      .toThrowError("Invalid dashboard panel.dashboard_id");
+    expect(() => parseWirePanel({ ...current, show_header: false }))
+      .toThrowError("Invalid dashboard panel.show_header");
+    expect(() => parseWirePanel({ ...current, position: { x: 0, y: 0, width: 4, h: 2 } }))
+      .toThrowError("Invalid dashboard panel.position.height");
+    expect(() => parseWirePanel({ ...current, query: undefined }))
+      .toThrowError("Invalid dashboard panel.query");
+    expect(() => parseWirePanel({ ...current, query: null }))
+      .toThrowError("Invalid dashboard panel.query");
   });
 
   it("preserves canonical donut options without adding provider discriminators", () => {
@@ -81,8 +88,8 @@ describe("dashboard wire model", () => {
 
   it("preserves dashboard presentation metadata in both directions", () => {
     const panel = parseWirePanel({
-      id: "p-meta", dashboard_id: "d-meta", name: "Hidden header", note: "context",
-      icon: "insights", color: "#245cff", show_header: false, type: "metric",
+      id: "p-meta", dashboardId: "d-meta", name: "Hidden header", note: "context",
+      icon: "insights", color: "#245cff", showHeader: false, type: "metric",
       position: { x: 0, y: 0, width: 3, height: 2 }, options: {}, query: {},
     });
     expect(panel).toMatchObject({ dashboardId: "d-meta", note: "context", icon: "insights", color: "#245cff", showHeader: false });

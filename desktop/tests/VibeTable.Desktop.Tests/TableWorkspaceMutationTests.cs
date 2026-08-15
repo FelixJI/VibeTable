@@ -103,7 +103,9 @@ public sealed class TableWorkspaceMutationTests
     {
         var fake = new FakeTableRpcGateway();
         fake.DatabaseOpenResults["path"] = new DatabaseOpenResult(
-            new List<string> { "a", "b" }, new List<string>(), "read_write", null);
+            new List<string> { "a", "b" },
+            new List<string>(),
+            TestDisplayNames.For("a", "b"));
         var workspace = new TableWorkspaceService(fake);
         var notifications = new List<TableNotification>();
         workspace.Notification += n => notifications.Add(n);
@@ -136,7 +138,9 @@ public sealed class TableWorkspaceMutationTests
     {
         var fake = new FakeTableRpcGateway();
         fake.DatabaseOpenResults["path"] = new DatabaseOpenResult(
-            new List<string> { "a", "b" }, new List<string>(), "read_write", null);
+            new List<string> { "a", "b" },
+            new List<string>(),
+            TestDisplayNames.For("a", "b"));
         var workspace = new TableWorkspaceService(fake);
         var notifications = new List<TableNotification>();
         workspace.Notification += n => notifications.Add(n);

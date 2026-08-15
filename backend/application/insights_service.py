@@ -10,15 +10,26 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Protocol, TypeGuard, cast
+from collections.abc import Mapping
+from typing import Protocol, TypeGuard
 
+from pydantic import BaseModel
+
+from backend.application.revisioned_metadata_port import (
+    DashboardRevisionConflictError,
+    JsonObject,
+    JsonValue,
+)
 from backend.contracts.presets_versions_dashboards import (
     CompiledDashboardQuery,
     ContentVersionEntry,
     DashboardEntry,
+    DashboardFilterState,
+    DashboardFilterVariable,
     DashboardManagedConfig,
+    DashboardPanelDraft,
     DashboardPanelQuery,
     DashboardQueryLimits,
     DashboardQueryResult,
@@ -45,42 +56,76 @@ from backend.contracts.presets_versions_dashboards import (
 
 PANEL_MANIFEST_VERSION = "dashboard-panel-manifest.v2"
 _CHART_PANEL_TYPES: tuple[PanelType, ...] = ("bar", "line", "donut", "pie")
+_EMPTY_OPTIONS_SCHEMA: JsonObject = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
+_DRILLDOWN_OPTIONS_SCHEMA: JsonObject = {
+    "type": "object",
+    "properties": {
+        "drilldownFields": {"type": "array", "items": {"type": "string"}},
+    },
+    "additionalProperties": False,
+}
 BUILT_IN_PANEL_MANIFEST: list[PanelManifestEntry] = [
     PanelManifestEntry(
         type="label",
         min_size=PanelPosition(x=0, y=0, width=1, height=1),
-        options_schema={"text": {"type": "string"}},
+        options_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "additionalProperties": False,
+        },
         renderer_version="2",
     ),
     PanelManifestEntry(
         type="metric",
         min_size=PanelPosition(x=0, y=0, width=2, height=2),
-        options_schema={"field": {"type": "string"}, "aggregate": {"type": "string"}},
+        options_schema=_EMPTY_OPTIONS_SCHEMA,
         renderer_version="2",
     ),
     PanelManifestEntry(
         type="metric-list",
         min_size=PanelPosition(x=0, y=0, width=3, height=3),
-        options_schema={"fields": {"type": "array"}},
+        options_schema=_EMPTY_OPTIONS_SCHEMA,
         renderer_version="2",
     ),
     PanelManifestEntry(
         type="list",
         min_size=PanelPosition(x=0, y=0, width=4, height=3),
-        options_schema={"fields": {"type": "array"}},
+        options_schema=_DRILLDOWN_OPTIONS_SCHEMA,
         renderer_version="2",
     ),
     PanelManifestEntry(
         type="time-series",
         min_size=PanelPosition(x=0, y=0, width=6, height=4),
-        options_schema={"dateField": {"type": "string"}},
+        options_schema={
+            "type": "object",
+            "properties": {
+                "fillType": {"type": "string", "enum": ["solid", "gradient"]},
+                "drilldownFields": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        },
         renderer_version="2",
     ),
     *[
         PanelManifestEntry(
             type=panel_type,
             min_size=PanelPosition(x=0, y=0, width=4, height=3),
-            options_schema={},
+            options_schema=(
+                {
+                    "type": "object",
+                    "properties": {
+                        "fillType": {"type": "string", "enum": ["solid", "gradient"]},
+                        "drilldownFields": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "additionalProperties": False,
+                }
+                if panel_type == "line"
+                else _DRILLDOWN_OPTIONS_SCHEMA
+            ),
             renderer_version="2",
         )
         for panel_type in _CHART_PANEL_TYPES
@@ -96,17 +141,17 @@ class InternalMetadataPort(Protocol):
         *,
         scope: str | None = None,
         keys: list[str] | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[JsonObject]: ...
 
     async def upsert_metadata(
         self,
         namespace: str,
         *,
         record_id: str | None,
-        values: Mapping[str, Any],
+        values: Mapping[str, JsonValue],
         expected_revision: str | None,
         idempotency_key: str,
-    ) -> dict[str, Any]: ...
+    ) -> JsonObject: ...
 
     async def delete_metadata(
         self,
@@ -115,25 +160,35 @@ class InternalMetadataPort(Protocol):
         record_id: str,
         expected_revision: str | None,
         idempotency_key: str,
-    ) -> dict[str, Any]: ...
+    ) -> JsonObject: ...
+
+    async def commit_dashboard(
+        self,
+        params: SaveDashboardDraftParams,
+    ) -> SaveDashboardDraftResult: ...
+
+
+class InsightsPage(Protocol):
+    @property
+    def rows(self) -> list[JsonObject]: ...
 
 
 class InsightsQueryPort(Protocol):
-    async def query_page(self, *, table_id: str, query: dict[str, Any]) -> Any: ...
+    async def query_page(self, *, table_id: str, query: JsonObject) -> InsightsPage: ...
 
-    async def aggregate(self, *, table_id: str, query: dict[str, Any]) -> list[dict[str, Any]]: ...
+    async def aggregate(self, *, table_id: str, query: JsonObject) -> list[JsonObject]: ...
 
     async def read_history(
         self, *, collection: str, item_id: str, limit: int = 50
-    ) -> dict[str, Any]: ...
+    ) -> JsonObject: ...
 
     async def preview_history_restore(
         self, *, collection: str, item_id: str, target_revision: str
-    ) -> dict[str, Any]: ...
+    ) -> JsonObject: ...
 
     async def apply_history_restore(
         self, *, collection: str, item_id: str, token: str
-    ) -> dict[str, Any]: ...
+    ) -> JsonObject: ...
 
 
 class InsightsError(Exception):
@@ -143,8 +198,8 @@ class InsightsError(Exception):
         self.field = field
 
     @property
-    def rpc_error_data(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"code": self.code}
+    def rpc_error_data(self) -> JsonObject:
+        result: JsonObject = {"code": self.code}
         if self.field is not None:
             result["field"] = self.field
         return result
@@ -187,11 +242,11 @@ class InsightsService:
         record_id = preset_id or str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"vibetable:preset:{operation_id}")
         )
-        values = {
+        values: JsonObject = {
             "scope": collection,
             "name": name,
             "presetScope": "system",
-            "view": view.model_dump(by_alias=True, mode="json"),
+            "view": _model_object(view),
         }
         receipt = await self._metadata.upsert_metadata(
             "presets",
@@ -216,7 +271,7 @@ class InsightsService:
         preset_id: str,
         expected_revision: str,
         operation_id: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         receipt = await self._delete(
             "presets",
             preset_id,
@@ -285,9 +340,9 @@ class InsightsService:
         collection: str,
         item_id: str,
         version_id: str,
-        values: dict[str, Any],
+        values: JsonObject,
         operation_id: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         if values:
             raise InsightsError(
                 "content versions point to audit snapshots and do not accept arbitrary values",
@@ -339,20 +394,26 @@ class InsightsService:
             item_id=item_id,
             target_revision=revision_id,
         )
-        differences: dict[str, dict[str, Any]] = {}
+        differences: dict[str, JsonObject] = {}
         scalar_changes = preview.get("scalarChanges", [])
         if isinstance(scalar_changes, list):
             for change in scalar_changes:
-                if isinstance(change, dict) and isinstance(change.get("field"), str):
-                    differences[change["field"]] = {
+                if not isinstance(change, dict):
+                    continue
+                field = change.get("field")
+                if isinstance(field, str):
+                    differences[field] = {
                         "main": change.get("before"),
                         "version": change.get("after"),
                     }
         relation_changes = preview.get("relationChanges", [])
         if isinstance(relation_changes, list):
             for change in relation_changes:
-                if isinstance(change, dict) and isinstance(change.get("field"), str):
-                    differences[change["field"]] = {
+                if not isinstance(change, dict):
+                    continue
+                field = change.get("field")
+                if isinstance(field, str):
+                    differences[field] = {
                         "main": change.get("beforeItemId"),
                         "version": change.get("afterItemId"),
                     }
@@ -373,7 +434,7 @@ class InsightsService:
         version_id: str,
         main_hash: str,
         operation_id: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         if not operation_id:
             raise InsightsError("operationId is required", code="operation_id_required")
         rows = await self._metadata.list_metadata(
@@ -421,7 +482,7 @@ class InsightsService:
         version_id: str,
         expected_revision: str,
         operation_id: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         del collection, item_id
         receipt = await self._delete(
             "content_versions",
@@ -467,17 +528,18 @@ class InsightsService:
         record_changes = change_set.get("recordChanges")
         if isinstance(record_changes, list):
             for change in record_changes:
+                candidate_revision = change.get("revisionId") if isinstance(change, dict) else None
                 if (
                     isinstance(change, dict)
                     and change.get("itemId") == item_id
-                    and isinstance(change.get("revisionId"), str)
-                    and change["revisionId"]
+                    and isinstance(candidate_revision, str)
+                    and candidate_revision
                 ):
-                    revision_id = change["revisionId"]
+                    revision_id = candidate_revision
                     break
         return change_set_id, revision_id
 
-    async def list_dashboards(self, _params: Any = None) -> DashboardsResult:
+    async def list_dashboards(self, _params: object | None = None) -> DashboardsResult:
         dashboards, panels = await asyncio.gather(
             self._metadata.list_metadata("dashboards"),
             self._metadata.list_metadata("panels"),
@@ -512,27 +574,15 @@ class InsightsService:
     async def save_dashboard_draft(
         self, params: SaveDashboardDraftParams
     ) -> SaveDashboardDraftResult:
-        commit = getattr(self._metadata, "commit_dashboard", None)
-        if not callable(commit):
+        for panel in params.panels:
+            _validate_panel_manifest(panel)
+        try:
+            return await self._metadata.commit_dashboard(params)
+        except DashboardRevisionConflictError as error:
             raise InsightsError(
-                "atomic dashboard mutation port is unavailable",
-                code="dashboard_atomic_endpoint_unavailable",
-            )
-        payload = params.model_dump(by_alias=True, mode="json")
-        result = await cast(
-            Callable[[dict[str, Any]], Awaitable[object]],
-            commit,
-        )(payload)
-        if not isinstance(result, dict):
-            raise InsightsError(
-                "atomic dashboard mutation returned invalid data",
-                code="dashboard_atomic_response_invalid",
-            )
-        workspace = DashboardWorkspaceResult.model_validate(result["workspace"])
-        return SaveDashboardDraftResult(
-            workspace=workspace,
-            client_panel_ids=result.get("clientPanelIds", {}),
-        )
+                "dashboard revision does not match",
+                code="dashboard_edit_conflict",
+            ) from error
 
     async def delete_dashboard_workspace(self, params: DashboardWorkspaceParams) -> dict[str, str]:
         await self.delete_dashboard(params.dashboard_id)
@@ -567,7 +617,10 @@ class InsightsService:
                         ),
                     },
                 )
-                rows = list(getattr(page, "rows", []))
+                rows = [
+                    {field: row.get(field) for field in params.query.fields}
+                    for row in getattr(page, "rows", [])
+                ]
                 limit = min(params.query.limit, DASHBOARD_QUERY_LIMITS.max_list_rows)
                 return DashboardQueryResult(
                     rows=rows[:limit],
@@ -575,12 +628,12 @@ class InsightsService:
                     max_points=limit,
                 )
             query = params.query
-            aggregate: dict[str, Any] = {
+            aggregate: JsonObject = {
                 "filters": [item.model_dump(by_alias=True, mode="json") for item in query.filters],
                 "groupBy": list(query.dimensions),
                 "metrics": [
                     {
-                        "function": ("count" if measure.op == "countDistinct" else measure.op),
+                        "function": measure.op,
                         "field": measure.field or "",
                         "alias": measure.key,
                     }
@@ -591,8 +644,15 @@ class InsightsService:
                     DASHBOARD_QUERY_LIMITS.max_panel_points,
                 ),
             }
+            if query.time_bucket is not None:
+                aggregate["timeBucket"] = query.time_bucket.model_dump(
+                    by_alias=True,
+                    mode="json",
+                )
+            if query.top_n is not None:
+                aggregate["topN"] = query.top_n
             rows = await self._query.aggregate(table_id=query.collection, query=aggregate)
-            limit = aggregate["limit"]
+            limit = min(query.limit, DASHBOARD_QUERY_LIMITS.max_panel_points)
             return DashboardQueryResult(
                 rows=rows[:limit],
                 truncated=len(rows) > limit,
@@ -612,7 +672,7 @@ class InsightsService:
         )
         return DashboardEntry(id=record_id, name=name, note=note)
 
-    async def delete_dashboard(self, dashboard_id: str) -> dict[str, Any]:
+    async def delete_dashboard(self, dashboard_id: str) -> JsonObject:
         await self._delete("dashboards", dashboard_id, label="dashboard")
         return {"deleted": dashboard_id}
 
@@ -622,19 +682,21 @@ class InsightsService:
         name: str,
         panel_type: PanelType,
         position: PanelPosition,
-        options: dict[str, Any],
-        query: dict[str, Any],
+        options: Mapping[str, object],
+        query: Mapping[str, object],
         panel_id: str | None = None,
     ) -> PanelEntry:
         self._validate_panel_type(panel_type)
         record_id = panel_id or str(uuid.uuid4())
-        values = {
+        frozen_options = _json_object(options, "panel options")
+        frozen_query = _json_object(query, "panel query")
+        values: JsonObject = {
             "dashboardId": dashboard_id,
             "name": name,
             "type": panel_type,
             "position": position.model_dump(by_alias=True, mode="json"),
-            "options": _freeze(options),
-            "query": _freeze(query),
+            "options": frozen_options,
+            "query": frozen_query,
         }
         await self._metadata.upsert_metadata(
             "panels",
@@ -649,23 +711,23 @@ class InsightsService:
             name=name,
             type=panel_type,
             position=position,
-            options=options,
-            query=query,
+            options=frozen_options,
+            query=frozen_query,
         )
 
-    async def delete_panel(self, dashboard_id: str, panel_id: str) -> dict[str, Any]:
+    async def delete_panel(self, dashboard_id: str, panel_id: str) -> JsonObject:
         del dashboard_id
         await self._delete("panels", panel_id, label="panel")
         return {"deleted": panel_id}
 
-    def panel_manifest(self, _params: Any = None) -> PanelManifestResult:
+    def panel_manifest(self, _params: object | None = None) -> PanelManifestResult:
         return PanelManifestResult(
             manifest_version=PANEL_MANIFEST_VERSION,
             query_contract="product-query-port.v1",
             panels=list(BUILT_IN_PANEL_MANIFEST),
         )
 
-    def dashboard_query_limits(self, _params: Any = None) -> DashboardQueryLimits:
+    def dashboard_query_limits(self, _params: object | None = None) -> DashboardQueryLimits:
         return DASHBOARD_QUERY_LIMITS
 
     def is_known_panel_type(self, panel_type: str) -> bool:
@@ -686,7 +748,7 @@ class InsightsService:
         expected_revision: str | None = None,
         operation_id: str | None = None,
         label: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         return await self._metadata.delete_metadata(
             namespace,
             record_id=record_id,
@@ -699,51 +761,57 @@ def compile_dashboard_query(
     query: DashboardPanelQuery,
     *,
     panel_type: PanelType,
-    profile: Any = None,
+    profile: object | None = None,
     field_types: dict[str, str] | None = None,
 ) -> CompiledDashboardQuery:
     """Compatibility helper that now emits the normalized product query AST."""
     del profile, field_types
     if isinstance(query, DashboardRecordQuery):
-        params = {
+        record_query: JsonObject = {
+            "keyword": None,
+            "filters": [_model_object(item) for item in query.filters],
+            "sorts": [_model_object(item) for item in query.sorts],
+            "offset": 0,
+            "limit": query.limit,
+        }
+        record_params: JsonObject = {
             "operation": "page",
             "tableId": query.collection,
-            "query": {
-                "keyword": None,
-                "filters": [item.model_dump(by_alias=True, mode="json") for item in query.filters],
-                "sorts": [item.model_dump(by_alias=True, mode="json") for item in query.sorts],
-                "offset": 0,
-                "limit": query.limit,
-            },
+            "query": record_query,
         }
         return CompiledDashboardQuery(
-            params=params,
+            params=record_params,
             referenced_fields=list(query.fields),
             max_rows=query.limit,
             max_points=query.limit,
         )
     max_points = min(query.limit, _panel_point_cap(panel_type))
-    params = {
+    aggregate: JsonObject = {
+        "filters": [_model_object(item) for item in query.filters],
+        "groupBy": list(query.dimensions),
+        "metrics": [
+            {
+                "function": item.op,
+                "field": item.field or "",
+                "alias": item.key,
+            }
+            for item in query.measures
+        ],
+        "limit": max_points,
+    }
+    aggregate_params: JsonObject = {
         "operation": "aggregate",
         "tableId": query.collection,
-        "aggregate": {
-            "filters": [item.model_dump(by_alias=True, mode="json") for item in query.filters],
-            "groupBy": list(query.dimensions),
-            "metrics": [
-                {
-                    "function": "count" if item.op == "countDistinct" else item.op,
-                    "field": item.field or "",
-                    "alias": item.key,
-                }
-                for item in query.measures
-            ],
-            "limit": max_points,
-        },
+        "aggregate": aggregate,
     }
+    if query.time_bucket is not None:
+        aggregate["timeBucket"] = _model_object(query.time_bucket)
+    if query.top_n is not None:
+        aggregate["topN"] = query.top_n
     fields = list(query.dimensions)
     fields.extend(item.field for item in query.measures if item.field)
     return CompiledDashboardQuery(
-        params=params,
+        params=aggregate_params,
         referenced_fields=fields,
         max_rows=max_points,
         max_points=max_points,
@@ -759,25 +827,25 @@ def _panel_point_cap(panel_type: PanelType) -> int:
 
 
 def merge_global_filter(
-    panel_filters: list[dict[str, Any]],
-    variables: list[Any],
-    state: Any,
+    panel_filters: list[JsonObject],
+    variables: list[DashboardFilterVariable],
+    state: DashboardFilterState,
     panel_id: str,
-) -> list[dict[str, Any]]:
+) -> list[JsonObject]:
     """Merge permitted dashboard variables into typed flat filter conditions."""
     merged = list(panel_filters)
-    values = getattr(state, "values", {})
+    values = state.values
     for variable in variables:
-        targets = getattr(variable, "target_panels", [])
+        targets = variable.target_panels
         if targets and panel_id not in targets:
             continue
         value = values.get(variable.key, variable.default_value)
         if value is None:
             continue
-        field = getattr(variable, "field_bindings", {}).get(panel_id)
+        field = variable.field_bindings.get(panel_id)
         if not field:
             continue
-        allowed = getattr(variable, "allowed_fields", [])
+        allowed = variable.allowed_fields
         if allowed and field not in allowed:
             continue
         merged.append({"field": field, "operator": "eq", "value": value, "logic": "AND"})
@@ -794,27 +862,81 @@ def resolve_selection_targets(selection: PanelSelection, panels: list[PanelEntry
 
 
 def normalize_panel_type(
-    panel_type: PanelType, options: dict[str, Any]
-) -> tuple[str, dict[str, Any]]:
+    panel_type: PanelType, options: Mapping[str, object]
+) -> tuple[str, JsonObject]:
     """Return a canonical product panel type and frozen options."""
-    return panel_type, _freeze(options)
+    return panel_type, _json_object(options, "panel options")
 
 
 def _is_panel_type(value: str, known: set[PanelType]) -> TypeGuard[PanelType]:
     return value in known
 
 
-def parse_panel_type(panel_type: str, options: dict[str, Any]) -> tuple[PanelType, dict[str, Any]]:
+def parse_panel_type(
+    panel_type: str, options: Mapping[str, object]
+) -> tuple[PanelType, JsonObject]:
     """Parse a panel type, falling back safely for unknown renderers."""
     known: set[PanelType] = {entry.type for entry in BUILT_IN_PANEL_MANIFEST}
     canonical = panel_type if _is_panel_type(panel_type, known) else "custom"
     return (
         canonical,
-        _freeze(options),
+        _json_object(options, "panel options"),
     )
 
 
-def _preset(row: Mapping[str, Any], collection: str) -> PresetEntry:
+def _validate_panel_manifest(panel: DashboardPanelDraft) -> None:
+    entry = next((item for item in BUILT_IN_PANEL_MANIFEST if item.type == panel.type), None)
+    if entry is None:
+        raise InsightsError(
+            "panel type is not in the runtime manifest", code="dashboard_panel_type_unknown"
+        )
+    if panel.position.width < entry.min_size.width or panel.position.height < entry.min_size.height:
+        raise InsightsError(
+            "panel position is smaller than the renderer minimum",
+            code="dashboard_panel_size_invalid",
+            field="position",
+        )
+    schema = entry.options_schema
+    properties = schema.get("properties")
+    if schema.get("type") != "object" or not isinstance(properties, dict):
+        raise InsightsError(
+            "panel manifest options schema is invalid", code="dashboard_manifest_invalid"
+        )
+    unknown = set(panel.options) - set(properties)
+    if schema.get("additionalProperties") is False and unknown:
+        raise InsightsError(
+            "panel options contain fields not declared by the renderer",
+            code="dashboard_panel_options_invalid",
+            field=f"options.{sorted(unknown)[0]}",
+        )
+    for key, value in panel.options.items():
+        rule = properties.get(key)
+        if not isinstance(rule, dict) or not _matches_option_rule(value, rule):
+            raise InsightsError(
+                "panel option does not match the renderer schema",
+                code="dashboard_panel_options_invalid",
+                field=f"options.{key}",
+            )
+
+
+def _matches_option_rule(value: object, rule: Mapping[str, JsonValue]) -> bool:
+    expected = rule.get("type")
+    if expected == "string":
+        if not isinstance(value, str):
+            return False
+        allowed = rule.get("enum")
+        return not isinstance(allowed, list) or value in allowed
+    if expected == "array":
+        if not isinstance(value, list):
+            return False
+        item_rule = rule.get("items")
+        return not isinstance(item_rule, dict) or all(
+            _matches_option_rule(item, item_rule) for item in value
+        )
+    return False
+
+
+def _preset(row: Mapping[str, JsonValue], collection: str) -> PresetEntry:
     view = row.get("view")
     scope = row.get("presetScope")
     return PresetEntry(
@@ -828,11 +950,15 @@ def _preset(row: Mapping[str, Any], collection: str) -> PresetEntry:
     )
 
 
-def _preset_scope(value: Any) -> PresetScope:
-    return value if value in {"personal", "system", "role"} else "personal"
+def _preset_scope(value: object) -> PresetScope:
+    if value == "system":
+        return "system"
+    if value == "role":
+        return "role"
+    return "personal"
 
 
-def _version(row: Mapping[str, Any]) -> ContentVersionEntry:
+def _version(row: Mapping[str, JsonValue]) -> ContentVersionEntry:
     return ContentVersionEntry(
         id=_text(row.get("id")),
         key=_text(row.get("key")),
@@ -843,7 +969,7 @@ def _version(row: Mapping[str, Any]) -> ContentVersionEntry:
     )
 
 
-def _dashboard(row: Mapping[str, Any], panel_rows: list[dict[str, Any]]) -> DashboardEntry:
+def _dashboard(row: Mapping[str, JsonValue], panel_rows: list[JsonObject]) -> DashboardEntry:
     dashboard_id = _text(row.get("id"))
     panels = [
         _panel(item, dashboard_id)
@@ -860,12 +986,17 @@ def _dashboard(row: Mapping[str, Any], panel_rows: list[dict[str, Any]]) -> Dash
     )
 
 
-def _panel(row: Mapping[str, Any], dashboard_id: str) -> PanelEntry:
+def _panel(row: Mapping[str, JsonValue], dashboard_id: str) -> PanelEntry:
     position = row.get("position")
     options = row.get("options")
     query = row.get("query")
     panel_type = row.get("type")
-    known = {entry.type for entry in BUILT_IN_PANEL_MANIFEST}
+    known: set[PanelType] = {entry.type for entry in BUILT_IN_PANEL_MANIFEST}
+    canonical_type: PanelType = (
+        panel_type
+        if isinstance(panel_type, str) and _is_panel_type(panel_type, known)
+        else "custom"
+    )
     return PanelEntry(
         id=_text(row.get("id")),
         dashboard_id=dashboard_id,
@@ -874,7 +1005,7 @@ def _panel(row: Mapping[str, Any], dashboard_id: str) -> PanelEntry:
         icon=_optional_text(row.get("icon")),
         color=_optional_text(row.get("color")),
         show_header=row.get("showHeader") is not False,
-        type=panel_type if panel_type in known else "custom",
+        type=canonical_type,
         position=PanelPosition.model_validate(
             position if isinstance(position, dict) else {"x": 0, "y": 0, "width": 4, "height": 4}
         ),
@@ -883,9 +1014,9 @@ def _panel(row: Mapping[str, Any], dashboard_id: str) -> PanelEntry:
     )
 
 
-def _revision(value: Any) -> str:
+def _revision(value: object) -> str:
     encoded = json.dumps(
-        value,
+        _freeze(value),
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,
@@ -894,45 +1025,63 @@ def _revision(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _freeze(value: Any) -> Any:
-    return json.loads(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
+def _freeze(value: object) -> JsonValue:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("dashboard value contains a non-finite number")
+        return value
+    if isinstance(value, list):
+        return [_freeze(item) for item in value]
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("dashboard JSON object keys must be strings")
+        return {str(key): _freeze(item) for key, item in value.items()}
+    raise ValueError("dashboard value is not JSON-compatible")
 
 
-def _text(value: Any, fallback: str = "") -> str:
+def _text(value: object, fallback: str = "") -> str:
     return value if isinstance(value, str) else fallback
 
 
-def _optional_text(value: Any) -> str | None:
+def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _string_list(value: Any) -> list[str]:
+def _string_list(value: object) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         return []
     return list(value)
 
 
-def _receipt_revision(receipt: Mapping[str, Any]) -> str:
+def _receipt_revision(receipt: Mapping[str, JsonValue]) -> str:
     item = receipt.get("item")
     if not isinstance(item, Mapping):
         return ""
     return _text(item.get("revision"))
 
 
-def _receipt_trace(receipt: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "status": _text(receipt.get("status")),
-        "changeSetId": _text(receipt.get("changeSetId")),
-        "emittedEvents": _string_list(receipt.get("emittedEvents")),
-    }
+def _receipt_trace(receipt: Mapping[str, JsonValue]) -> JsonObject:
+    return _json_object(
+        {
+            "status": _text(receipt.get("status")),
+            "changeSetId": _text(receipt.get("changeSetId")),
+            "emittedEvents": _string_list(receipt.get("emittedEvents")),
+        },
+        "metadata receipt",
+    )
+
+
+def _json_object(value: object, label: str) -> JsonObject:
+    frozen = _freeze(value)
+    if not isinstance(frozen, dict):
+        raise ValueError(f"{label} is not a JSON object")
+    return frozen
+
+
+def _model_object(value: BaseModel) -> JsonObject:
+    return _json_object(value.model_dump(by_alias=True, mode="json"), "dashboard model")
 
 
 __all__ = [

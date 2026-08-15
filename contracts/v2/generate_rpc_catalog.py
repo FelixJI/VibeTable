@@ -8,15 +8,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal, TypeAlias
 
 ROOT = Path(__file__).parents[2]
 OUTPUT = ROOT / "contracts" / "v2" / "fixtures" / "rpc-catalog.json"
 
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 OPERATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
+
+
+@dataclass(frozen=True)
+class ContractValue:
+    """Example wire value paired with a schema not inferable from the example."""
+
+    example: CatalogValue
+    schema: JsonValue
+
+
+CatalogValue: TypeAlias = (
+    JsonScalar | ContractValue | list["CatalogValue"] | dict[str, "CatalogValue"]
+)
+CatalogObject: TypeAlias = dict[str, CatalogValue]
 
 
 @dataclass(frozen=True)
@@ -25,16 +44,8 @@ class Rpc:
     scope: Literal["global", "workspace"]
     params_model: str
     result_model: str
-    params: Any
-    result: Any
-
-
-@dataclass(frozen=True)
-class ContractValue:
-    """Example wire value paired with a schema not inferable from the example."""
-
-    example: Any
-    schema: Any
+    params: CatalogValue
+    result: CatalogValue
 
 
 def nullable_string(example: str | None = None) -> ContractValue:
@@ -71,7 +82,7 @@ def nullable_enum_string(example: str | None, *values: str) -> ContractValue:
     )
 
 
-def _schema_from_example(value: Any) -> dict[str, Any]:
+def _schema_from_example(value: CatalogValue) -> JsonValue:
     if isinstance(value, ContractValue):
         return value.schema
     if isinstance(value, dict):
@@ -99,7 +110,7 @@ def _schema_from_example(value: Any) -> dict[str, Any]:
     return {"type": "string"}
 
 
-def typed_array(item_example: Any) -> ContractValue:
+def typed_array(item_example: CatalogValue) -> ContractValue:
     return ContractValue(
         [item_example],
         {"type": "array", "items": _schema_from_example(item_example)},
@@ -112,7 +123,7 @@ def string_array() -> ContractValue:
 
 def string_map(example: dict[str, str] | None = None) -> ContractValue:
     return ContractValue(
-        example or {},
+        _catalog_value(example or {}),
         {
             "type": "object",
             "additionalProperties": {"type": "string"},
@@ -120,22 +131,231 @@ def string_map(example: dict[str, str] | None = None) -> ContractValue:
     )
 
 
-def json_value(example: Any = None) -> ContractValue:
+def _require_json_value(value: object) -> JsonValue:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("catalog examples require a finite JSON number")
+        return value
+    if isinstance(value, list):
+        return [_require_json_value(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("catalog example JSON object keys must be strings")
+        return {key: _require_json_value(item) for key, item in value.items()}
+    raise ValueError("catalog examples must contain only JSON values")
+
+
+def _require_json_object(value: object) -> JsonObject:
+    closed = _require_json_value(value)
+    if not isinstance(closed, dict):
+        raise ValueError("catalog value must be a JSON object")
+    return closed
+
+
+def _catalog_value(value: object) -> CatalogValue:
+    if isinstance(value, ContractValue):
+        return value
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("catalog examples require a finite JSON number")
+        return value
+    if isinstance(value, list):
+        return [_catalog_value(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("catalog example object keys must be strings")
+        return {key: _catalog_value(item) for key, item in value.items()}
+    raise ValueError("catalog examples contain an unsupported value")
+
+
+def json_value(example: JsonValue = None) -> ContractValue:
     # JSON Schema's boolean true schema is the closed catalog's explicit
     # spelling for a field whose value may be any JSON value.
-    return ContractValue(example, True)
+    return ContractValue(_catalog_value(_require_json_value(example)), True)
 
 
 def constrained_object(
-    example: dict[str, Any],
-    *constraints: dict[str, Any],
+    example: CatalogObject,
+    *constraints: JsonObject,
 ) -> ContractValue:
     schema = _schema_from_example(example)
+    if not isinstance(schema, dict):
+        raise ValueError("constrained object schema must be a JSON object")
     schema["allOf"] = list(constraints)
     return ContractValue(example, schema)
 
 
-def provisional_identity_constraint() -> dict[str, Any]:
+def file_document_filter_array() -> ContractValue:
+    example = [{"field": "extension", "operator": "eq", "value": "docx"}]
+    return ContractValue(
+        _catalog_value(example),
+        {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["field", "operator", "value"],
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "enum": [
+                            "documentId",
+                            "displayName",
+                            "relativePath",
+                            "extension",
+                            "mimeType",
+                            "sizeBytes",
+                            "effectiveRevisionCreatedAt",
+                            "status",
+                        ],
+                    },
+                    "operator": {
+                        "type": "string",
+                        "enum": [
+                            "eq",
+                            "contains",
+                            "in",
+                            "gt",
+                            "gte",
+                            "lt",
+                            "lte",
+                            "between",
+                            "before",
+                            "after",
+                        ],
+                    },
+                    "value": True,
+                },
+            },
+        },
+    )
+
+
+def workspace_search_filter_array() -> ContractValue:
+    example = [{"field": "kind", "operator": "eq", "value": "file"}]
+    return ContractValue(
+        _catalog_value(example),
+        {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["field", "operator", "value"],
+                "properties": {
+                    "field": {
+                        "enum": [
+                            "kind",
+                            "tableId",
+                            "fieldId",
+                            "mimeType",
+                            "extension",
+                            "sizeBytes",
+                            "revisionTime",
+                            "status",
+                        ]
+                    },
+                    "operator": {
+                        "enum": [
+                            "eq",
+                            "ne",
+                            "contains",
+                            "gt",
+                            "gte",
+                            "lt",
+                            "lte",
+                            "before",
+                            "after",
+                        ]
+                    },
+                    "value": True,
+                },
+            },
+        },
+    )
+
+
+def workspace_search_sort_array() -> ContractValue:
+    example = [{"field": "score", "direction": "desc"}]
+    return ContractValue(
+        _catalog_value(example),
+        {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["field", "direction"],
+                "properties": {
+                    "field": {"enum": ["score", "revisionTime", "title", "sizeBytes"]},
+                    "direction": {"enum": ["asc", "desc"]},
+                },
+            },
+        },
+    )
+
+
+def workspace_search_hit() -> CatalogObject:
+    return {
+        "contractVersion": "1.0",
+        "hitId": "file:22222222-2222-4222-8222-222222222222:33333333-3333-4333-8333-333333333333",
+        "kind": enum_string("file", "record", "attachment", "file"),
+        "canonicalId": "22222222-2222-4222-8222-222222222222",
+        "title": "Quarterly report",
+        "snippet": nullable_string("Quarterly report"),
+        "highlights": string_array(),
+        "sourceRevision": "33333333-3333-4333-8333-333333333333",
+        "score": 1.25,
+        "revisionTime": "2026-08-12T00:00:00Z",
+        "metadata": typed_array({"key": "relativePath", "value": json_value("reports/q1.md")}),
+        "openTarget": {
+            "kind": enum_string("file", "record", "attachment", "file"),
+            "tableId": nullable_string(),
+            "recordId": nullable_string(),
+            "fieldId": nullable_string(),
+            "documentId": nullable_string("22222222-2222-4222-8222-222222222222"),
+        },
+    }
+
+
+def file_document_sort_array() -> ContractValue:
+    example = [{"field": "effectiveRevisionCreatedAt", "direction": "desc"}]
+    return ContractValue(
+        _catalog_value(example),
+        {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["field", "direction"],
+                "properties": {
+                    "field": {
+                        "type": "string",
+                        "enum": [
+                            "displayName",
+                            "relativePath",
+                            "extension",
+                            "mimeType",
+                            "sizeBytes",
+                            "effectiveRevisionCreatedAt",
+                            "formalVersion",
+                            "status",
+                        ],
+                    },
+                    "direction": {"type": "string", "enum": ["asc", "desc"]},
+                },
+            },
+        },
+    )
+
+
+def provisional_identity_constraint() -> JsonObject:
     return {
         "oneOf": [
             {
@@ -156,66 +376,68 @@ def provisional_identity_constraint() -> dict[str, Any]:
     }
 
 
-def file_revision_kind_constraint() -> dict[str, Any]:
+def file_revision_kind_constraint() -> JsonObject:
     uuid = {
         "type": "string",
         "pattern": ("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
     }
-    return {
-        "oneOf": [
-            {
-                "type": "object",
-                "properties": {
-                    "kind": {"const": "autosave"},
-                    "formalVersion": {"type": "null"},
-                    "restoredFromRevisionId": {"type": "null"},
+    return _require_json_object(
+        {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"const": "autosave"},
+                        "formalVersion": {"type": "null"},
+                        "restoredFromRevisionId": {"type": "null"},
+                    },
                 },
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "revisionOrdinal": {"type": "integer", "minimum": 1},
-                    "kind": {"const": "formal"},
-                    "formalVersion": {"type": "integer", "minimum": 1},
-                    "restoredFromRevisionId": {"type": "null"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "revisionOrdinal": {"type": "integer", "minimum": 1},
+                        "kind": {"const": "formal"},
+                        "formalVersion": {"type": "integer", "minimum": 1},
+                        "restoredFromRevisionId": {"type": "null"},
+                    },
                 },
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "revisionOrdinal": {"const": 0},
-                    "kind": {"const": "formal"},
-                    "formalVersion": {"type": "null"},
-                    "restoredFromRevisionId": {"type": "null"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "revisionOrdinal": {"const": 0},
+                        "kind": {"const": "formal"},
+                        "formalVersion": {"type": "null"},
+                        "restoredFromRevisionId": {"type": "null"},
+                    },
                 },
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "revisionOrdinal": {"type": "integer", "minimum": 1},
-                    "kind": {"const": "restore"},
-                    "formalVersion": {"type": "integer", "minimum": 1},
-                    "restoredFromRevisionId": uuid,
+                {
+                    "type": "object",
+                    "properties": {
+                        "revisionOrdinal": {"type": "integer", "minimum": 1},
+                        "kind": {"const": "restore"},
+                        "formalVersion": {"type": "integer", "minimum": 1},
+                        "restoredFromRevisionId": uuid,
+                    },
                 },
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "revisionOrdinal": {"const": 0},
-                    "kind": {"const": "restore"},
-                    "formalVersion": {"type": "null"},
-                    "restoredFromRevisionId": uuid,
+                {
+                    "type": "object",
+                    "properties": {
+                        "revisionOrdinal": {"const": 0},
+                        "kind": {"const": "restore"},
+                        "formalVersion": {"type": "null"},
+                        "restoredFromRevisionId": uuid,
+                    },
                 },
-            },
-        ]
-    }
+            ]
+        }
+    )
 
 
 def formal_revision_result(
     revision_id: str,
     revision_ordinal: int,
 ) -> ContractValue:
-    example = {
+    example: CatalogObject = {
         "revisionId": revision_id,
         "revisionOrdinal": nonnegative_integer(revision_ordinal),
         "localSequence": nullable_positive_integer(),
@@ -752,7 +974,6 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
                                 "m2o",
                                 "o2m",
                                 "m2m",
-                                "m2a",
                                 "file",
                             ),
                             "relatedCollection": nullable_string("customers"),
@@ -842,7 +1063,6 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
                         "m2o",
                         "o2m",
                         "m2m",
-                        "m2a",
                         "file",
                     ),
                     "relatedCollection": nullable_string("customers"),
@@ -960,24 +1180,35 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
         },
     ),
     Rpc(
-        "fileHistory.listDocuments",
+        "fileHistory.queryDocuments",
         "workspace",
-        "ListFileDocumentsParams",
-        "FileDocumentListResult",
-        {"includeDeleted": False},
+        "QueryFileDocumentsParams",
+        "FileDocumentQueryResult",
         {
-            "documents": [
+            "logic": enum_string("and", "and", "or"),
+            "filters": file_document_filter_array(),
+            "sort": file_document_sort_array(),
+            "limit": ContractValue(100, {"type": "integer", "minimum": 1, "maximum": 500}),
+            "cursor": nullable_string(),
+        },
+        {
+            "documents": typed_array(
                 {
                     "contractVersion": "2.0",
                     "documentId": "22222222-2222-4222-8222-222222222222",
-                    "workspaceId": WORKSPACE_ID,
                     "relativePath": "季度规划.docx",
-                    "status": "active",
-                    "effectiveRevisionId": nullable_string("33333333-3333-4333-8333-333333333333"),
-                    "nextRevisionOrdinal": 4,
-                    "nextFormalVersion": 4,
+                    "displayName": "季度规划.docx",
+                    "extension": "docx",
+                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "sizeBytes": nonnegative_integer(4096),
+                    "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+                    "effectiveRevisionCreatedAt": "2026-07-28T09:00:00Z",
+                    "formalVersion": nullable_positive_integer(3),
+                    "status": enum_string("active", "active", "deleted"),
                 }
-            ]
+            ),
+            "nextCursor": nullable_string(),
+            "topologyRevision": nonnegative_integer(42),
         },
     ),
     Rpc(
@@ -1000,6 +1231,110 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
                     "updatedAt": "2026-07-28T09:00:00Z",
                 }
             ]
+        },
+    ),
+    Rpc(
+        "workspaceSearch.query",
+        "workspace",
+        "WorkspaceSearchParams",
+        "WorkspaceSearchResult",
+        {
+            "contractVersion": "1.0",
+            "query": "quarterly report",
+            "logic": enum_string("and", "and", "or"),
+            "filters": workspace_search_filter_array(),
+            "sorts": workspace_search_sort_array(),
+            "scope": enum_string("current", "current", "history"),
+            "cursor": nullable_string(),
+            "limit": ContractValue(50, {"type": "integer", "minimum": 1, "maximum": 200}),
+        },
+        {
+            "hits": typed_array(
+                {
+                    "contractVersion": "1.0",
+                    "hitId": "file:22222222-2222-4222-8222-222222222222:33333333-3333-4333-8333-333333333333",
+                    "kind": enum_string("file", "record", "attachment", "file"),
+                    "canonicalId": "22222222-2222-4222-8222-222222222222",
+                    "title": "Quarterly report",
+                    "snippet": nullable_string("Quarterly report"),
+                    "highlights": string_array(),
+                    "sourceRevision": "33333333-3333-4333-8333-333333333333",
+                    "score": 1.25,
+                    "revisionTime": "2026-08-12T00:00:00Z",
+                    "metadata": typed_array(
+                        {"key": "relativePath", "value": json_value("reports/q1.md")}
+                    ),
+                    "openTarget": {
+                        "kind": enum_string("file", "record", "attachment", "file"),
+                        "tableId": nullable_string(),
+                        "recordId": nullable_string(),
+                        "fieldId": nullable_string(),
+                        "documentId": nullable_string("22222222-2222-4222-8222-222222222222"),
+                    },
+                }
+            ),
+            "nextCursor": nullable_string(),
+            "generation": nonnegative_integer(2),
+        },
+    ),
+    Rpc(
+        "workspaceSearch.resolveHit",
+        "workspace",
+        "WorkspaceSearchResolveHitParams",
+        "WorkspaceSearchResolveHitResult",
+        {
+            "contractVersion": "1.0",
+            "scope": enum_string("current", "current", "history"),
+            "hit": workspace_search_hit(),
+        },
+        {
+            "status": enum_string("stale", "current", "stale"),
+            "hit": workspace_search_hit(),
+        },
+    ),
+    Rpc(
+        "workspaceSearch.status",
+        "workspace",
+        "WorkspaceSearchStatusParams",
+        "WorkspaceSearchStatus",
+        {},
+        {
+            "state": enum_string("ready", "idle", "building", "ready", "degraded", "failed"),
+            "generation": nonnegative_integer(2),
+            "checkpoint": nullable_string(),
+            "processed": nonnegative_integer(42),
+            "total": nullable_integer(42),
+            "errorCode": nullable_string(),
+        },
+    ),
+    Rpc(
+        "workspaceSearch.rebuild",
+        "workspace",
+        "WorkspaceSearchRebuildParams",
+        "WorkspaceSearchStatus",
+        {},
+        {
+            "state": enum_string("ready", "idle", "building", "ready", "degraded", "failed"),
+            "generation": nonnegative_integer(3),
+            "checkpoint": nullable_string(),
+            "processed": nonnegative_integer(42),
+            "total": nullable_integer(42),
+            "errorCode": nullable_string(),
+        },
+    ),
+    Rpc(
+        "workspaceSearch.cancel",
+        "workspace",
+        "WorkspaceSearchCancelParams",
+        "WorkspaceSearchStatus",
+        {},
+        {
+            "state": enum_string("degraded", "idle", "building", "ready", "degraded", "failed"),
+            "generation": nonnegative_integer(2),
+            "checkpoint": nullable_string("cancelling"),
+            "processed": nonnegative_integer(20),
+            "total": nullable_integer(42),
+            "errorCode": nullable_string(),
         },
     ),
     Rpc(
@@ -1396,7 +1731,7 @@ RPC_REGISTRY: tuple[Rpc, ...] = (
     ),
 )
 
-EVENT_REGISTRY = (
+EVENT_REGISTRY: tuple[tuple[str, str, CatalogObject], ...] = (
     (
         "workspace.session.changed",
         "WorkspaceSessionChangedEvent",
@@ -1418,8 +1753,8 @@ EVENT_REGISTRY = (
 EVENT_TOPICS = tuple(item[0] for item in EVENT_REGISTRY)
 
 
-def _wire(scope: str, sequence: int) -> dict[str, Any]:
-    wire: dict[str, Any] = {
+def _wire(scope: str, sequence: int) -> JsonObject:
+    wire: JsonObject = {
         "scope": scope,
         "operationId": OPERATION_ID,
         "sequence": sequence,
@@ -1434,14 +1769,16 @@ def _error_code(method: str) -> str:
     prefix = method.split(".", 1)[0]
     if prefix == "fileHistory":
         prefix = "file_history"
+    elif prefix == "workspaceSearch":
+        prefix = "workspace_search"
     return f"{prefix}.request_invalid"
 
 
-def _closed_schema(value: Any) -> dict[str, Any]:
+def _closed_schema(value: CatalogValue) -> JsonValue:
     return _schema_from_example(value)
 
 
-def _example(value: Any) -> Any:
+def _example(value: CatalogValue) -> JsonValue:
     if isinstance(value, ContractValue):
         return _example(value.example)
     if isinstance(value, dict):
@@ -1451,66 +1788,72 @@ def _example(value: Any) -> Any:
     return value
 
 
-def build_catalog() -> dict[str, Any]:
-    rpc_cases: list[dict[str, Any]] = []
+def build_catalog() -> JsonObject:
+    rpc_cases: list[JsonObject] = []
     for sequence, rpc in enumerate(RPC_REGISTRY, start=1):
         wire = _wire(rpc.scope, sequence)
         request_id = f"v2-{sequence:03d}"
         params = _example(rpc.params)
-        result = _example(rpc.result)
-        rpc_cases.append(
-            {
+        rpc_result = _example(rpc.result)
+        rpc_case_source: dict[str, object] = {
+            "method": rpc.method,
+            "scope": rpc.scope,
+            "paramsModel": rpc.params_model,
+            "resultModel": rpc.result_model,
+            "paramsSchema": _closed_schema(rpc.params),
+            "resultSchema": _closed_schema(rpc.result),
+            "request": {
+                "jsonrpc": "2.0",
+                "id": request_id,
                 "method": rpc.method,
-                "scope": rpc.scope,
-                "paramsModel": rpc.params_model,
-                "resultModel": rpc.result_model,
-                "paramsSchema": _closed_schema(rpc.params),
-                "resultSchema": _closed_schema(rpc.result),
-                "request": {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "method": rpc.method,
-                    "wire": wire,
-                    "params": params,
-                },
-                "success": {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "wire": wire,
-                    "result": result,
-                },
+                "wire": wire,
+                "params": params,
+            },
+            "success": {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "wire": wire,
+                "result": rpc_result,
+            },
+            "error": {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "wire": wire,
                 "error": {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "wire": wire,
-                    "error": {
-                        "code": _error_code(rpc.method),
-                        "message": "request is invalid",
-                        "details": {"path": "params"},
-                        "retryable": False,
-                    },
+                    "code": _error_code(rpc.method),
+                    "message": "request is invalid",
+                    "details": {"path": "params"},
+                    "retryable": False,
                 },
-            }
-        )
+            },
+        }
+        rpc_case = _require_json_object(rpc_case_source)
+        rpc_cases.append(rpc_case)
 
-    event_cases = [
+    event_cases: list[JsonObject] = []
+    for index, (topic, payload_model, payload) in enumerate(EVENT_REGISTRY):
+        event_cases.append(
+            _require_json_object(
+                {
+                    "contractVersion": "2.0",
+                    "topic": topic,
+                    "wire": _wire("workspace", 100 + index),
+                    "payloadModel": payload_model,
+                    "payloadSchema": _closed_schema(payload),
+                    "payload": _example(payload),
+                }
+            )
+        )
+    catalog = _require_json_object(
         {
             "contractVersion": "2.0",
-            "topic": topic,
-            "wire": _wire("workspace", 100 + index),
-            "payloadModel": payload_model,
-            "payloadSchema": _closed_schema(payload),
-            "payload": payload,
+            "rpcMethods": [rpc.method for rpc in RPC_REGISTRY],
+            "eventTopics": list(EVENT_TOPICS),
+            "rpcCases": rpc_cases,
+            "eventCases": event_cases,
         }
-        for index, (topic, payload_model, payload) in enumerate(EVENT_REGISTRY)
-    ]
-    return {
-        "contractVersion": "2.0",
-        "rpcMethods": [rpc.method for rpc in RPC_REGISTRY],
-        "eventTopics": list(EVENT_TOPICS),
-        "rpcCases": rpc_cases,
-        "eventCases": event_cases,
-    }
+    )
+    return catalog
 
 
 def _encoded() -> str:

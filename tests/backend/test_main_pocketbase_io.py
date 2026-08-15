@@ -87,7 +87,7 @@ class _ImportTransport:
         expected_status: Sequence[int] = (200,),
     ) -> Any:
         del query, headers, expected_status
-        if method == "GET" and path == "/api/vibetable/v1/schema/tables":
+        if method == "GET" and path == "/api/vibetable/v2/schema/tables":
             return {
                 "tables": [
                     {
@@ -96,56 +96,52 @@ class _ImportTransport:
                     }
                 ]
             }
-        if method == "GET" and path == "/api/vibetable/v1/schema/tables/orders":
+        if method == "GET" and path == "/api/vibetable/v2/schema/tables/orders":
+            field = json.loads(
+                (
+                    Path(__file__).parents[2] / "contracts/schema-v2/fixtures/field-definition.json"
+                ).read_text(encoding="utf-8")
+            )
+            field["identity"] = {
+                "fieldId": "fld_payload01",
+                "physicalName": "f_payload01",
+                "providerFieldId": "pb_payload01",
+            }
+            field["displayName"] = "Payload"
+            field["logicalType"] = "json"
+            field["storage"]["kind"] = "pocketbase-json"
+            field["display"]["kind"] = "json"
             return {
-                "contractVersion": "2.0",
+                "contract": "vibetable.schema.v2",
                 "tableId": "orders",
-                "physicalName": "orders",
                 "displayName": "Orders",
                 "kind": "base",
                 "schemaRevision": "schema_1",
+                "dataRevision": 1,
                 "archivePolicy": {
                     "mode": "none",
                     "fieldId": None,
                     "archivedValue": None,
                 },
-                "fields": [
-                    {
-                        "fieldId": "payload_id",
-                        "physicalName": "payload",
-                        "displayName": "Payload",
-                        "kind": "scalar",
-                        "dataType": "json",
-                        "storageType": "json",
-                        "nullable": True,
-                        "defaultValue": None,
-                        "constraints": [],
-                        "editor": {"kind": "json", "config": {}},
-                        "readOnly": False,
-                        "formula": None,
-                        "relation": None,
-                        "lookup": None,
-                        "attachmentPolicy": None,
-                    }
-                ],
-                "indexes": [],
+                "fields": [field],
+                "capabilities": [],
             }
         if method == "POST" and path == "/api/vibetable/v2/import-preview":
             assert isinstance(json_body, dict)
-            raw_payload = json_body["rows"][0]["values"]["payload"]
+            raw_payload = json_body["rows"][0]["values"]["f_payload01"]
             assert isinstance(raw_payload, str)
             return {
                 "contract": "vibetable.import-preview.v1",
                 "rows": [
                     {
-                        "values": {"payload": json.loads(raw_payload)},
+                        "values": {"f_payload01": json.loads(raw_payload)},
                         "diagnostics": [],
                     }
                 ],
             }
         if method == "POST" and path == "/api/vibetable/v1/mutations/apply":
             assert isinstance(json_body, dict)
-            assert json_body["operations"][0]["values"]["payload"] == {
+            assert json_body["operations"][0]["values"]["f_payload01"] == {
                 "nested": {"value": 7},
                 "items": [1, 2, 3],
             }
@@ -175,7 +171,7 @@ async def test_product_import_task_round_trips_typed_json_through_real_task_runt
 ) -> None:
     source = tmp_path / "orders.csv"
     source.write_text(
-        'payload\n"{""nested"":{""value"":7},""items"":[1,2,3]}"\n',
+        'f_payload01\n"{""nested"":{""value"":7},""items"":[1,2,3]}"\n',
         encoding="utf-8",
     )
     client = PocketBaseClient(
@@ -207,7 +203,6 @@ async def test_product_import_task_round_trips_typed_json_through_real_task_runt
                 "collection": "orders",
                 "token": plan.token.token,
                 "mode": "create_only",
-                "chunkSize": 500,
                 "idempotencyPrefix": "import-json-task",
             },
         )
@@ -244,7 +239,7 @@ async def test_build_server_dispatches_import_task_without_internal_error(
 ) -> None:
     source = tmp_path / "orders.csv"
     source.write_text(
-        'payload\n"{""nested"":{""value"":7},""items"":[1,2,3]}"\n',
+        'f_payload01\n"{""nested"":{""value"":7},""items"":[1,2,3]}"\n',
         encoding="utf-8",
     )
     transport = _ImportTransport()
@@ -328,7 +323,6 @@ async def test_build_server_dispatches_import_task_without_internal_error(
                         "collection": "orders",
                         "token": token,
                         "mode": "create_only",
-                        "chunkSize": 500,
                         "idempotencyPrefix": "import-json-build-server",
                     },
                 },

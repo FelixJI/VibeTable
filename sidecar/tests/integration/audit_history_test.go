@@ -15,49 +15,53 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/lookup"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
 )
 
 func TestAuditHistoryRestoresRelationAndRecalculatesDependentFormula(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
+	authors := createV2IntegrationTable(
+		t, ctx, app, "History authors", "history_authors_table",
+	)
+	authorName := createV2IntegrationField(
+		t, ctx, app, authors.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "history_author_name",
+	)
+	articles := createV2IntegrationTable(
+		t, ctx, app, "History articles", "history_articles_table",
+	)
+	articleTitle := createV2IntegrationField(
+		t, ctx, app, articles.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "history_article_title",
+	)
+	author := createV2IntegrationRelation(
+		t, ctx, app, articles.TableID, articleTitle.FieldID,
+		authors.TableID, authorName.FieldID, "Author", "Articles", "one",
+		"history_article_author",
+	)
+	authorLabelDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Author label")
+	authorLabelDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: `concat({Author}.{Name}, "")`,
+	}
+	authorLabel := createV2IntegrationFormula(
+		t, ctx, app, articles.TableID, authorLabelDraft, "history_author_label",
+	)
+	if authorName.Definition == nil || author.Definition == nil || authorLabel.Definition == nil {
+		t.Fatal("V2 audit relation fixture omitted field definitions")
+	}
+	authorNamePhysical := authorName.Definition.Identity.PhysicalName
+	authorPhysical := author.Definition.Identity.PhysicalName
+	authorLabelPhysical := authorLabel.Definition.Identity.PhysicalName
 	catalog := schemaapi.New(app)
-	authors, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("history_authors", "history_authors", []schema.FieldDefinition{
-			field("author_name_id", "name", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
+	authorRuntime, err := catalog.Describe(ctx, authors.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	author := field("author_id", "author", schema.FieldKindRelation, schema.DataTypeRelation)
-	author.Relation = &schema.RelationSpec{
-		TargetTableID: authors.TableID, Cardinality: "one", DeletePolicy: "setNull",
-	}
-	author.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintRelation, TargetTableID: authors.TableID,
-		Cardinality: "one", DeletePolicy: "setNull",
-	}}
-	authorLabel := field(
-		"author_label_id", "author_label",
-		schema.FieldKindFormula, schema.DataTypeFormula,
-	)
-	authorLabel.ReadOnly = true
-	authorLabel.StorageType = schema.StorageText
-	authorLabel.Formula = &schema.FormulaSpec{
-		Language: "cel-v1", Source: "author.name",
-		ResultType: schema.DataTypeShortText, Version: 1, Status: "ready",
-	}
-	articles, err := catalog.ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable(
-			"history_articles", "history_articles",
-			[]schema.FieldDefinition{author, authorLabel},
-		),
-		ExpectedRevision: 0,
-	})
+	articleRuntime, err := catalog.Describe(ctx, articles.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,19 +90,21 @@ func TestAuditHistoryRestoresRelationAndRecalculatesDependentFormula(t *testing.
 		}
 		return receipt
 	}
-	apply("author_a", authors.TableID, authors.SchemaRevision, "historyauthora0", mutation.OperationInsert, map[string]any{"name": "Alpha"})
-	apply("author_b", authors.TableID, authors.SchemaRevision, "historyauthorb0", mutation.OperationInsert, map[string]any{"name": "Beta"})
+	apply("author_a", authors.TableID, authorRuntime.Snapshot.SchemaRevision, "historyauthora0", mutation.OperationInsert, map[string]any{authorNamePhysical: "Alpha"})
+	apply("author_b", authors.TableID, authorRuntime.Snapshot.SchemaRevision, "historyauthorb0", mutation.OperationInsert, map[string]any{authorNamePhysical: "Beta"})
 	articleID := "historyarticle1"
 	apply(
-		"article_create", articles.TableID, articles.SchemaRevision, articleID,
-		mutation.OperationInsert, map[string]any{"author": "historyauthora0"},
+		"article_create", articles.TableID, articleRuntime.Snapshot.SchemaRevision, articleID,
+		mutation.OperationInsert, map[string]any{authorPhysical: "historyauthora0"},
 	)
-	apply(
-		"article_update", articles.TableID, articles.SchemaRevision, articleID,
-		mutation.OperationUpdate, map[string]any{"author": "historyauthorb0"},
+	updated := apply(
+		"article_update", articles.TableID, articleRuntime.Snapshot.SchemaRevision, articleID,
+		mutation.OperationUpdate, map[string]any{authorPhysical: "historyauthorb0"},
 	)
-	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{})
+	if updated.ComputedFields[articleID][authorLabelPhysical] != "Beta" {
+		t.Fatalf("relation update computed fields = %#v", updated.ComputedFields)
+	}
+	service, err := audit.New(app, kernel)
 
 	if err != nil {
 		t.Fatal(err)
@@ -121,9 +127,9 @@ func TestAuditHistoryRestoresRelationAndRecalculatesDependentFormula(t *testing.
 	if !preview.CanApply ||
 		len(preview.RelationChanges) != 1 ||
 		len(preview.Restorable) != 1 ||
-		preview.Restorable[0] != "author" ||
+		preview.Restorable[0] != authorPhysical ||
 		len(preview.Diagnostics) != 1 ||
-		preview.Diagnostics[0].Field != "author_label" {
+		preview.Diagnostics[0].Field != authorLabelPhysical {
 		t.Fatalf("relation restore preview = %#v", preview)
 	}
 	result, err := service.ApplyRestore(ctx, audit.ApplyParams{
@@ -132,12 +138,12 @@ func TestAuditHistoryRestoresRelationAndRecalculatesDependentFormula(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Item["author"] != "historyauthora0" ||
-		result.Item["author_label"] != "Alpha" {
+	if result.Item[authorPhysical] != "historyauthora0" ||
+		result.Item[authorLabelPhysical] != "Alpha" {
 		t.Fatalf("relation restore result = %#v", result.Item)
 	}
 	apply(
-		"author_b_delete", authors.TableID, authors.SchemaRevision, "historyauthorb0",
+		"author_b_delete", authors.TableID, authorRuntime.Snapshot.SchemaRevision, "historyauthorb0",
 		mutation.OperationDelete, nil,
 	)
 	unavailable, err := service.PreviewRestore(ctx, audit.PreviewParams{
@@ -151,7 +157,7 @@ func TestAuditHistoryRestoresRelationAndRecalculatesDependentFormula(t *testing.
 		len(unavailable.RelationChanges) != 1 ||
 		unavailable.RelationChanges[0].TargetAvailable ||
 		!hasDiagnostic(
-			unavailable.Diagnostics, "author", "incompatible",
+			unavailable.Diagnostics, authorPhysical, "incompatible",
 		) {
 		t.Fatalf("unavailable relation restore preview = %#v", unavailable)
 	}
@@ -161,24 +167,27 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	title := field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText)
-	secret := field("secret_id", "secret", schema.FieldKindScalar, schema.DataTypeSecret)
-	computed := field(
-		"computed_id", "computed", schema.FieldKindFormula, schema.DataTypeFormula,
+	table := createV2IntegrationTable(t, ctx, app, "Audit notes", "audit_notes_table")
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "audit_notes_title",
 	)
-	computed.ReadOnly = true
-	computed.Formula = &schema.FormulaSpec{
-		Language: "cel-v1", Source: "upper(title)",
-		ResultType: schema.DataTypeShortText, Version: 1, Status: "ready",
+	computedDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Computed")
+	computedDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: "upper({Title})",
 	}
-	computed.StorageType = schema.StorageText
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition:       baseTable("audit_notes", "audit_notes", []schema.FieldDefinition{title, secret, computed}),
-		ExpectedRevision: 0,
-	})
+	computed := createV2IntegrationFormula(
+		t, ctx, app, table.TableID, computedDraft, "audit_notes_computed",
+	)
+	if title.Definition == nil || computed.Definition == nil {
+		t.Fatal("V2 audit notes fixture omitted field definitions")
+	}
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	titlePhysical := title.Definition.Identity.PhysicalName
+	computedPhysical := computed.Definition.Identity.PhysicalName
 	now := time.Date(2026, 7, 24, 8, 30, 0, 0, time.UTC)
 	var sequence atomic.Int64
 	kernel := mutation.New(
@@ -211,10 +220,11 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 		receipt, applyErr := kernel.Apply(ctx, mutation.Request{
 			ContractVersion: mutation.ContractVersion,
 			RequestID:       "request_" + key, IdempotencyKey: "idem_" + key,
-			TableID: definition.TableID, SchemaRevision: definition.SchemaRevision,
+			TableID:        definition.Snapshot.TableID,
+			SchemaRevision: definition.Snapshot.SchemaRevision,
 			Operations: []mutation.Operation{{
 				Kind: kind, RecordID: &recordID,
-				Values: map[string]any{"title": value, "secret": "private-" + value},
+				Values: map[string]any{titlePhysical: value},
 			}},
 			Actor: mutation.Actor{Type: "user", ID: "local-user"},
 		})
@@ -227,7 +237,7 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 	apply("second", "second")
 
 	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{},
+		app, kernel,
 
 		audit.WithClock(func() time.Time { return now }))
 
@@ -244,7 +254,7 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 	}
 	itemID := "auditrecord0001"
 	page, err := service.ReadChangeSets(ctx, audit.ReadParams{
-		TableID: definition.TableID, ItemID: &itemID,
+		TableID: definition.Snapshot.TableID, ItemID: &itemID,
 		Scope: "row", Limit: 50,
 	})
 	if err != nil {
@@ -258,33 +268,19 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 		*page.ChangeSets[0].Actor.UserID != "local-user" {
 		t.Fatalf("unexpected history page %#v", page)
 	}
-	for _, change := range page.ChangeSets[0].ScalarChanges {
-		if change.Field == "secret" {
-			t.Fatalf("sensitive field leaked through history: %#v", page.ChangeSets[0])
-		}
-	}
-	fieldName := "title_id"
+	fieldName := title.FieldID
 	cellPage, err := service.ReadChangeSets(ctx, audit.ReadParams{
-		TableID: definition.TableID, ItemID: &itemID, Field: &fieldName,
+		TableID: definition.Snapshot.TableID, ItemID: &itemID, Field: &fieldName,
 		Scope: "cell", Limit: 50,
 	})
 	if err != nil || cellPage.Total != 2 ||
 		len(cellPage.ChangeSets[0].ScalarChanges) != 1 ||
-		cellPage.ChangeSets[0].ScalarChanges[0].Field != "title" {
+		cellPage.ChangeSets[0].ScalarChanges[0].Field != titlePhysical {
 		t.Fatalf("cell history = %#v err=%v", cellPage, err)
-	}
-	secretField := "secret_id"
-	_, err = service.ReadChangeSets(ctx, audit.ReadParams{
-		TableID: definition.TableID, ItemID: &itemID, Field: &secretField,
-		Scope: "cell", Limit: 50,
-	})
-	if !errors.As(err, &historyErr) ||
-		historyErr.Code != "history.field_unreadable" {
-		t.Fatalf("sensitive cell history error = %#v", err)
 	}
 	targetRevision := page.ChangeSets[1].RecordChanges[0].RevisionID
 	expiredPreview, err := service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: itemID,
+		TableID: definition.Snapshot.TableID, ItemID: itemID,
 		TargetRevision: targetRevision, Scope: "row",
 	})
 	if err != nil {
@@ -292,7 +288,7 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 	}
 	now = now.Add(6 * time.Minute)
 	_, err = service.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: itemID, Token: expiredPreview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: itemID, Token: expiredPreview.Token,
 	})
 	if !errors.As(err, &historyErr) || historyErr.Code != "restore_token_expired" {
 		t.Fatalf("expired restore token error = %#v", err)
@@ -300,7 +296,7 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 	now = now.Add(-6 * time.Minute)
 
 	preview, err := service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: itemID,
+		TableID: definition.Snapshot.TableID, ItemID: itemID,
 		TargetRevision: targetRevision, Scope: "row",
 	})
 	if err != nil {
@@ -308,14 +304,13 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 	}
 	if !preview.CanApply ||
 		len(preview.Restorable) != 1 ||
-		preview.Restorable[0] != "title" ||
-		len(preview.Diagnostics) != 2 ||
-		!hasDiagnostic(preview.Diagnostics, "secret", "sensitive") ||
-		!hasDiagnostic(preview.Diagnostics, "computed", "derived") {
+		preview.Restorable[0] != titlePhysical ||
+		len(preview.Diagnostics) != 1 ||
+		!hasDiagnostic(preview.Diagnostics, computedPhysical, "derived") {
 		t.Fatalf("unexpected restore preview %#v", preview)
 	}
 	_, err = service.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: itemID, Token: preview.Token + "tampered",
+		TableID: definition.Snapshot.TableID, ItemID: itemID, Token: preview.Token + "tampered",
 	})
 	if !errors.As(err, &historyErr) || historyErr.Code != "restore_token_unknown" {
 		t.Fatalf("tampered restore token error = %#v", err)
@@ -323,14 +318,14 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 
 	apply("third", "third")
 	_, err = service.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: itemID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: itemID, Token: preview.Token,
 	})
 	if !errors.As(err, &historyErr) || historyErr.Code != "restore_conflict" {
 		t.Fatalf("stale restore error = %#v", err)
 	}
 
 	preview, err = service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: itemID,
+		TableID: definition.Snapshot.TableID, ItemID: itemID,
 		TargetRevision: targetRevision, Scope: "row",
 	})
 	if err != nil {
@@ -344,7 +339,7 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 		go func() {
 			defer wait.Done()
 			value, applyErr := service.ApplyRestore(ctx, audit.ApplyParams{
-				TableID: definition.TableID, ItemID: itemID, Token: preview.Token,
+				TableID: definition.Snapshot.TableID, ItemID: itemID, Token: preview.Token,
 			})
 			if applyErr != nil {
 				applyErrors <- applyErr
@@ -375,13 +370,13 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 		t.Fatalf("concurrent token claims: successes=%d unknowns=%d", successes, unknowns)
 	}
 	if result.NewRevisionID == nil ||
-		result.Item["title"] != "first" ||
-		result.Item["computed"] != "FIRST" ||
+		result.Item[titlePhysical] != "first" ||
+		result.Item[computedPhysical] != "FIRST" ||
 		result.Receipt.Status != mutation.StatusApplied {
 		t.Fatalf("restore result %#v", result)
 	}
 	_, err = service.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: itemID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: itemID, Token: preview.Token,
 	})
 	if !errors.As(err, &historyErr) || historyErr.Code != "restore_token_unknown" {
 		t.Fatalf("replayed restore token error = %#v", err)
@@ -391,10 +386,11 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 	_, err = kernel.Apply(ctx, mutation.Request{
 		ContractVersion: mutation.ContractVersion,
 		RequestID:       "request_batch", IdempotencyKey: "idem_batch",
-		TableID: definition.TableID, SchemaRevision: definition.SchemaRevision,
+		TableID:        definition.Snapshot.TableID,
+		SchemaRevision: definition.Snapshot.SchemaRevision,
 		Operations: []mutation.Operation{
-			{Kind: mutation.OperationInsert, RecordID: &recordA, Values: map[string]any{"title": "a"}},
-			{Kind: mutation.OperationInsert, RecordID: &recordB, Values: map[string]any{"title": "b"}},
+			{Kind: mutation.OperationInsert, RecordID: &recordA, Values: map[string]any{titlePhysical: "a"}},
+			{Kind: mutation.OperationInsert, RecordID: &recordB, Values: map[string]any{titlePhysical: "b"}},
 		},
 		Actor: mutation.Actor{Type: "import", ID: "batch-user"},
 	})
@@ -402,7 +398,7 @@ func TestAuditHistoryReadsPreviewsConflictsAndRestoresThroughMutationKernel(t *t
 		t.Fatal(err)
 	}
 	tablePage, err := service.ReadChangeSets(ctx, audit.ReadParams{
-		TableID: definition.TableID, Scope: "table", Limit: 50,
+		TableID: definition.Snapshot.TableID, Scope: "table", Limit: 50,
 	})
 	if err != nil || len(tablePage.ChangeSets) == 0 ||
 		tablePage.ChangeSets[0].AffectedRows != 2 ||
@@ -424,35 +420,64 @@ func TestAuditHistoryArchivedRestoreUsesHistoricalSnapshotAndRestoreAction(t *te
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	maxSelected := 1
-	status := field("status_id", "status", schema.FieldKindScalar, schema.DataTypeSelect)
-	status.Nullable = false
-	status.Constraints = []schema.FieldConstraint{{
-		Kind: schema.ConstraintEnum, Multiple: false, MinSelected: 1,
-		MaxSelected: &maxSelected,
-		Options: []schema.SelectOption{
-			{Value: "active", DisplayName: "Active"},
-			{Value: "archived", DisplayName: "Archived"},
-		},
-	}}
-	computed := formulaField(
-		"computed_id", "computed", schema.DataTypeShortText, "upper(title)",
+	table := createV2IntegrationTable(
+		t, ctx, app, "History archived", "history_archived_table",
 	)
-	definition := baseTable("history_archived", "history_archived", []schema.FieldDefinition{
-		field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-		status,
-		computed,
-	})
-	definition.ArchivePolicy = schema.ArchivePolicy{
-		Mode: schema.ArchiveModeStatus, FieldID: stringAddress("status_id"),
-		ArchivedValue: "archived",
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "history_archived_title",
+	)
+	maxSelected := 1
+	statusDraft := fieldDraftForIntegration(t, v2.LogicalSelect, "Status")
+	statusDraft.Constraints.Selection.Min = 1
+	statusDraft.Constraints.Selection.Max = &maxSelected
+	statusDraft.Select = &v2.SelectSpec{Options: []v2.SelectOption{
+		{OptionID: "opt_history_active", Label: "Active", State: v2.OptionActive},
+		{OptionID: "opt_history_archived", Label: "Archived", State: v2.OptionActive},
+	}}
+	status := createV2IntegrationField(
+		t, ctx, app, table.TableID, statusDraft, "history_archived_status",
+	)
+	computedDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Computed")
+	computedDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: "upper({Title})",
 	}
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: definition, ExpectedRevision: 0,
+	computed := createV2IntegrationFormula(
+		t, ctx, app, table.TableID, computedDraft, "history_archived_computed",
+	)
+	if title.Definition == nil || status.Definition == nil || computed.Definition == nil {
+		t.Fatal("V2 archived history fixture omitted field definitions")
+	}
+	lifecycle, err := schemacore.NewTableLifecycle(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusFieldID := status.FieldID
+	settings, err := lifecycle.Configure(ctx, v2.TableSettingsIntent{
+		TableID: table.TableID, ExpectedSchemaRev: computed.SchemaRevision,
+		ArchivePolicy: v2.ArchivePolicy{
+			Mode: "status", FieldID: &statusFieldID, ArchivedValue: "opt_history_archived",
+		},
+		OperationID: "history_archived_policy",
+		Actor:       v2.Actor{ID: "local-user", Kind: "user"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition.Snapshot.SchemaRevision != settings.SchemaRevision {
+		t.Fatalf(
+			"described revision = %q, settings = %q",
+			definition.Snapshot.SchemaRevision,
+			settings.SchemaRevision,
+		)
+	}
+	titlePhysical := title.Definition.Identity.PhysicalName
+	statusPhysical := status.Definition.Identity.PhysicalName
+	computedPhysical := computed.Definition.Identity.PhysicalName
 	var sequence atomic.Int64
 	kernel := mutation.New(
 		app, mutation.MetadataSchemaSource{},
@@ -467,7 +492,7 @@ func TestAuditHistoryArchivedRestoreUsesHistoricalSnapshotAndRestoreAction(t *te
 	apply := func(key string, operation mutation.Operation) {
 		t.Helper()
 		_, applyErr := kernel.Apply(ctx, mutationRequest(
-			definition.TableID, definition.SchemaRevision, key, operation,
+			definition.Snapshot.TableID, definition.Snapshot.SchemaRevision, key, operation,
 		))
 		if applyErr != nil {
 			t.Fatalf("%s: %#v", key, applyErr)
@@ -475,11 +500,13 @@ func TestAuditHistoryArchivedRestoreUsesHistoricalSnapshotAndRestoreAction(t *te
 	}
 	apply("archived-insert", mutation.Operation{
 		Kind: mutation.OperationInsert, RecordID: &recordID,
-		Values: map[string]any{"title": "first", "status": "active"},
+		Values: map[string]any{
+			titlePhysical: "first", statusPhysical: "opt_history_active",
+		},
 	})
 	apply("archived-update", mutation.Operation{
 		Kind: mutation.OperationUpdate, RecordID: &recordID,
-		Values: map[string]any{"title": "historical"},
+		Values: map[string]any{titlePhysical: "historical"},
 	})
 	target, err := app.FindFirstRecordByFilter(
 		"vibetable_audit_events", "request_id='req-archived-update'",
@@ -489,50 +516,49 @@ func TestAuditHistoryArchivedRestoreUsesHistoricalSnapshotAndRestoreAction(t *te
 	}
 	apply("archived-newer", mutation.Operation{
 		Kind: mutation.OperationUpdate, RecordID: &recordID,
-		Values: map[string]any{"title": "newer"},
+		Values: map[string]any{titlePhysical: "newer"},
 	})
 	apply("archived-archive", mutation.Operation{
 		Kind: mutation.OperationArchive, RecordID: &recordID,
 	})
 
-	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{})
+	service, err := audit.New(app, kernel)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 	preview, err := service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "archived",
 	})
 	if err != nil {
 		t.Fatalf("preview archived restore: %#v", err)
 	}
-	if !preview.CanApply || !containsString(preview.Restorable, "title") ||
-		!containsString(preview.Restorable, "status") {
+	if !preview.CanApply || !containsString(preview.Restorable, titlePhysical) ||
+		!containsString(preview.Restorable, statusPhysical) {
 		t.Fatalf("archived preview = %#v", preview)
 	}
 	result, err := service.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: recordID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	})
 	if err != nil {
 		t.Fatalf("apply archived restore: %#v", err)
 	}
-	if result.Item["title"] != "historical" ||
-		result.Item["status"] != "active" ||
-		result.Item["computed"] != "HISTORICAL" {
+	if result.Item[titlePhysical] != "historical" ||
+		result.Item[statusPhysical] != "opt_history_active" ||
+		result.Item[computedPhysical] != "HISTORICAL" {
 		t.Fatalf("archived restore result = %#v", result)
 	}
 	itemID := recordID
 	page, err := service.ReadChangeSets(ctx, audit.ReadParams{
-		TableID: definition.TableID, ItemID: &itemID, Scope: "row", Limit: 50,
+		TableID: definition.Snapshot.TableID, ItemID: &itemID, Scope: "row", Limit: 50,
 	})
 	if err != nil || len(page.ChangeSets) == 0 || page.ChangeSets[0].Action != "restore" {
 		t.Fatalf("restore history = %#v err=%v", page, err)
 	}
 
 	_, err = service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "archived",
 	})
 	var historyErr *audit.Error
@@ -545,15 +571,19 @@ func TestAuditHistoryRestoreReportsSchemaDriftBeforeDigestConflict(t *testing.T)
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("history_drift", "history_drift", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-		}),
-		ExpectedRevision: 0,
-	})
+	table := createV2IntegrationTable(t, ctx, app, "History drift", "history_drift_table")
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "history_drift_title",
+	)
+	if title.Definition == nil {
+		t.Fatal("V2 history drift fixture omitted title definition")
+	}
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	titlePhysical := title.Definition.Identity.PhysicalName
 	var sequence atomic.Int64
 	kernel := mutation.New(
 		app, mutation.MetadataSchemaSource{},
@@ -563,10 +593,10 @@ func TestAuditHistoryRestoreReportsSchemaDriftBeforeDigestConflict(t *testing.T)
 	)
 	recordID := "auditrecord0102"
 	_, err = kernel.Apply(ctx, mutationRequest(
-		definition.TableID, definition.SchemaRevision, "drift-insert",
+		definition.Snapshot.TableID, definition.Snapshot.SchemaRevision, "drift-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"title": "first"},
+			Values: map[string]any{titlePhysical: "first"},
 		},
 	))
 	if err != nil {
@@ -579,38 +609,33 @@ func TestAuditHistoryRestoreReportsSchemaDriftBeforeDigestConflict(t *testing.T)
 		t.Fatal(err)
 	}
 	_, err = kernel.Apply(ctx, mutationRequest(
-		definition.TableID, definition.SchemaRevision, "drift-update",
+		definition.Snapshot.TableID, definition.Snapshot.SchemaRevision, "drift-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &recordID,
-			Values: map[string]any{"title": "second"},
+			Values: map[string]any{titlePhysical: "second"},
 		},
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{})
+	service, err := audit.New(app, kernel)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 	preview, err := service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	definition.Fields = append(definition.Fields,
-		field("note_id", "note", schema.FieldKindScalar, schema.DataTypeShortText),
+	createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Note"), "history_drift_note",
 	)
-	if _, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: definition, ExpectedRevision: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
 	_, err = service.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: recordID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	})
 	var historyErr *audit.Error
 	if !errors.As(err, &historyErr) || historyErr.Code != "schema_drift" {
@@ -622,16 +647,27 @@ func TestAuditHistoryRestoresHardDeletedRecordAndRecalculatesFormula(t *testing.
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("history_deleted", "history_deleted", []schema.FieldDefinition{
-			field("title_id", "title", schema.FieldKindScalar, schema.DataTypeShortText),
-			formulaField("computed_id", "computed", schema.DataTypeShortText, "upper(title)"),
-		}),
-		ExpectedRevision: 0,
-	})
+	table := createV2IntegrationTable(t, ctx, app, "History deleted", "history_deleted_table")
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "history_deleted_title",
+	)
+	computedDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Computed")
+	computedDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: "upper({Title})",
+	}
+	computed := createV2IntegrationFormula(
+		t, ctx, app, table.TableID, computedDraft, "history_deleted_computed",
+	)
+	if title.Definition == nil || computed.Definition == nil {
+		t.Fatal("V2 hard delete fixture omitted field definitions")
+	}
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	titlePhysical := title.Definition.Identity.PhysicalName
+	computedPhysical := computed.Definition.Identity.PhysicalName
 	var sequence atomic.Int64
 	kernel := mutation.New(
 		app, mutation.MetadataSchemaSource{},
@@ -649,14 +685,17 @@ func TestAuditHistoryRestoresHardDeletedRecordAndRecalculatesFormula(t *testing.
 	}{
 		{"deleted-insert", mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"title": "recover me"},
+			Values: map[string]any{titlePhysical: "recover me"},
 		}},
 		{"deleted-delete", mutation.Operation{
 			Kind: mutation.OperationDelete, RecordID: &recordID,
 		}},
 	} {
 		if _, err := kernel.Apply(ctx, mutationRequest(
-			definition.TableID, definition.SchemaRevision, step.key, step.operation,
+			definition.Snapshot.TableID,
+			definition.Snapshot.SchemaRevision,
+			step.key,
+			step.operation,
 		)); err != nil {
 			t.Fatalf("%s: %#v", step.key, err)
 		}
@@ -667,27 +706,26 @@ func TestAuditHistoryRestoresHardDeletedRecordAndRecalculatesFormula(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{})
+	service, err := audit.New(app, kernel)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 	preview, err := service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	if err != nil || !preview.CanApply {
 		t.Fatalf("deleted preview = %#v err=%v", preview, err)
 	}
 	result, err := service.ApplyRestore(ctx, audit.ApplyParams{
-		TableID: definition.TableID, ItemID: recordID, Token: preview.Token,
+		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	})
 	if err != nil {
 		t.Fatalf("restore deleted record: %#v", err)
 	}
-	if result.Item["title"] != "recover me" ||
-		result.Item["computed"] != "RECOVER ME" ||
+	if result.Item[titlePhysical] != "recover me" ||
+		result.Item[computedPhysical] != "RECOVER ME" ||
 		result.NewRevisionID == nil ||
 		(result.Receipt.ChangeSetID != nil && *result.NewRevisionID == *result.Receipt.ChangeSetID) {
 		t.Fatalf("deleted restore result = %#v", result)
@@ -698,15 +736,19 @@ func TestAuditHistoryRejectsOversizedRestoreState(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
-	definition, err := schemaapi.New(app).ApplyChange(ctx, schemaapi.Change{
-		Definition: baseTable("history_large", "history_large", []schema.FieldDefinition{
-			field("payload_id", "payload", schema.FieldKindScalar, schema.DataTypeJSON),
-		}),
-		ExpectedRevision: 0,
-	})
+	table := createV2IntegrationTable(t, ctx, app, "History large", "history_large_table")
+	payload := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalJSON, "Payload"), "history_large_payload",
+	)
+	if payload.Definition == nil {
+		t.Fatal("V2 large history fixture omitted payload definition")
+	}
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	payloadPhysical := payload.Definition.Identity.PhysicalName
 	var sequence atomic.Int64
 	kernel := mutation.New(
 		app, mutation.MetadataSchemaSource{},
@@ -716,10 +758,10 @@ func TestAuditHistoryRejectsOversizedRestoreState(t *testing.T) {
 	)
 	recordID := "auditrecord0104"
 	_, err = kernel.Apply(ctx, mutationRequest(
-		definition.TableID, definition.SchemaRevision, "large-insert",
+		definition.Snapshot.TableID, definition.Snapshot.SchemaRevision, "large-insert",
 		mutation.Operation{
 			Kind: mutation.OperationInsert, RecordID: &recordID,
-			Values: map[string]any{"payload": map[string]any{
+			Values: map[string]any{payloadPhysical: map[string]any{
 				"value": strings.Repeat("x", 300<<10),
 			}},
 		},
@@ -733,31 +775,30 @@ func TestAuditHistoryRejectsOversizedRestoreState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := audit.New(
-		app, kernel, mutation.MetadataSchemaSource{})
+	service, err := audit.New(app, kernel)
 
 	if err != nil {
 		t.Fatal(err)
 	}
 	unchanged, err := service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	if err != nil || unchanged.CanApply {
 		t.Fatalf("unchanged JSON preview = %#v err=%v", unchanged, err)
 	}
 	_, err = kernel.Apply(ctx, mutationRequest(
-		definition.TableID, definition.SchemaRevision, "large-update",
+		definition.Snapshot.TableID, definition.Snapshot.SchemaRevision, "large-update",
 		mutation.Operation{
 			Kind: mutation.OperationUpdate, RecordID: &recordID,
-			Values: map[string]any{"payload": map[string]any{"value": "small"}},
+			Values: map[string]any{payloadPhysical: map[string]any{"value": "small"}},
 		},
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = service.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.TableID, ItemID: recordID,
+		TableID: definition.Snapshot.TableID, ItemID: recordID,
 		TargetRevision: target.Id, Scope: "row",
 	})
 	var historyErr *audit.Error

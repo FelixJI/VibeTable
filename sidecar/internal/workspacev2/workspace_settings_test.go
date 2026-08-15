@@ -17,9 +17,9 @@ func TestWorkspaceSettingsSnapshotUsesOnlyAuthoritativeRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings, legacy, err := decodeWorkspaceSettingsSnapshot(raw)
-	if err != nil || legacy {
-		t.Fatalf("decode settings = %#v, legacy=%v, err=%v", settings, legacy, err)
+	settings, err := decodeWorkspaceSettingsSnapshot(raw)
+	if err != nil {
+		t.Fatalf("decode settings = %#v, err=%v", settings, err)
 	}
 	if settings.FormatVersion != 1 ||
 		settings.Retention.SnapshotDays != 30 ||
@@ -37,16 +37,14 @@ func TestWorkspaceSettingsSnapshotUsesOnlyAuthoritativeRetention(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSettingsSnapshotIsStrictAndLegacyEmptyIsNoOp(t *testing.T) {
-	if _, legacy, err := decodeWorkspaceSettingsSnapshot([]byte(`{}`)); err != nil || !legacy {
-		t.Fatalf("legacy empty object = legacy=%v err=%v", legacy, err)
+func TestWorkspaceSettingsSnapshotRejectsUnversionedSettings(t *testing.T) {
+	for _, raw := range [][]byte{[]byte(`{}`), []byte(`{"theme":"dark"}`)} {
+		if _, err := decodeWorkspaceSettingsSnapshot(raw); err == nil ||
+			err.Error() != "workspace.settings_invalid" {
+			t.Fatalf("unversioned settings error = %v", err)
+		}
 	}
-	if _, legacy, err := decodeWorkspaceSettingsSnapshot(
-		[]byte(`{"theme":"dark"}`),
-	); err != nil || !legacy {
-		t.Fatalf("legacy object = legacy=%v err=%v", legacy, err)
-	}
-	if _, _, err := decodeWorkspaceSettingsSnapshot([]byte(
+	if _, err := decodeWorkspaceSettingsSnapshot([]byte(
 		`{"formatVersion":1,"retention":{"snapshotDays":30,` +
 			`"snapshotCount":50,"snapshotBuckets":["daily"],` +
 			`"fileRevisionDays":30,"fileRevisionCount":100,` +
@@ -65,13 +63,14 @@ func TestWorkspaceSettingsSnapshotIsStrictAndLegacyEmptyIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceWorkspaceSettings(
+	err = replaceWorkspaceSettings(
 		context.Background(),
 		store,
 		[]byte(`{}`),
 		99,
-	); err != nil {
-		t.Fatal(err)
+	)
+	if err == nil || err.Error() != "workspace.settings_invalid" {
+		t.Fatalf("direct settings load error = %v", err)
 	}
 	after, _, err := store.retention(context.Background())
 	if err != nil {

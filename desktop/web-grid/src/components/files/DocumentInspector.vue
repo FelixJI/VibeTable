@@ -13,6 +13,7 @@ defineProps<{
   entry: DocumentEntry | null;
   activeTab: InspectorTab;
   busy: boolean;
+  requestedRevisionId?: string | null;
   revisionTree?: FileRevisionTreeProjection | null;
   diffPhase?: DocumentDiffPhase;
   diffResult?: DocumentDiffCompletedPayload | null;
@@ -109,6 +110,7 @@ function unavailableHint(entry: DocumentEntry): string {
         <FileRevisionTree
           :tree="revisionTree ?? null"
           :busy="busy"
+          :requested-revision-id="requestedRevisionId"
           :can-compare="entry.capabilities.includes('diff')"
           :diff-phase="diffPhase"
           :diff-result="diffResult"

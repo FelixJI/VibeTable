@@ -6,6 +6,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/hook"
+	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 )
 
 const workspaceV2FieldCancelPrefix = "/api/vibetable/v2/field-change/cancel/"
@@ -21,14 +22,14 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 	"/api/vibetable/v1/lookups/query":            {},
 	"/api/vibetable/v1/lookups/preview":          {},
 	"/api/vibetable/v1/mutations/preview":        {},
-	"/api/vibetable/v1/schema/validate":          {},
 	"/api/vibetable/v1/events/reconcile":         {},
 	"/api/vibetable/v2/import-preview":           {},
 }
 
 var workspaceV2CoordinatedPosts = map[string]struct{}{
+	"/api/vibetable/v2/schema/tables":              {},
+	"/api/vibetable/v2/schema/table-settings":      {},
 	"/api/vibetable/v1/mutations/apply":            {},
-	"/api/vibetable/v1/schema/apply":               {},
 	"/api/vibetable/v1/schema/delete":              {},
 	"/api/vibetable/v1/relations/apply-delta":      {},
 	"/api/vibetable/v1/metadata/dashboards/commit": {},
@@ -75,11 +76,32 @@ func workspaceV2RequestAllowed(method string, path string) bool {
 		if allowed {
 			return true
 		}
+		if isCoordinatedMetadataMutationPath(path) {
+			return true
+		}
 		_, allowed = workspaceV2CoordinatedPosts[path]
 		return allowed
 	default:
 		return false
 	}
+}
+
+func isCoordinatedMetadataMutationPath(path string) bool {
+	const prefix = "/api/vibetable/v1/metadata/"
+	remainder, found := strings.CutPrefix(path, prefix)
+	if !found {
+		return false
+	}
+	parts := strings.Split(remainder, "/")
+	if len(parts) != 2 || (parts[1] != "upsert" && parts[1] != "delete") {
+		return false
+	}
+	for _, namespace := range metadata.Namespaces() {
+		if parts[0] == string(namespace) {
+			return true
+		}
+	}
+	return false
 }
 
 func isWorkspaceV2FieldCancelPath(path string) bool {

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar
+from typing import ClassVar, TypeAlias
 
-from pydantic import RootModel, model_validator
+from pydantic import JsonValue, RootModel, model_validator
 
 from backend.contracts.schema_v2 import ApplyRequestV2
 
@@ -21,17 +21,20 @@ _FORBIDDEN_KEYS = {
 }
 
 
-class ProductParams(RootModel[dict[str, Any]]):
+JsonObject: TypeAlias = dict[str, JsonValue]
+
+
+class ProductParams(RootModel[JsonObject]):
     """JSON-only product parameters with credential and resource guards."""
 
     _allowed_fields: ClassVar[frozenset[str] | None] = None
     _required_fields: ClassVar[frozenset[str]] = frozenset()
     _field_types: ClassVar[dict[str, tuple[type, ...]]] = {}
-    _catalog_example: ClassVar[dict[str, Any] | None] = None
+    _catalog_example: ClassVar[JsonObject | None] = None
 
     @model_validator(mode="before")
     @classmethod
-    def validate_product_params(cls, value: Any) -> Any:
+    def validate_product_params(cls, value: object) -> object:
         if not isinstance(value, dict):
             raise ValueError("product params must be an object")
         _validate_value(value, 0)
@@ -165,7 +168,6 @@ _RELATION_DELTA_FIELDS = (
     "expectedSchemaRevision",
     "expectedDateUpdated",
     "adds",
-    "updates",
     "removes",
     "idempotencyKey",
 )
@@ -200,21 +202,11 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
         required=("tableId",),
         field_types={"tableId": (str,)},
     ),
-    "schema.validate": _closed_params(
-        "SchemaValidateParams",
-        allowed=("definition", "expectedRevision"),
-        required=("definition", "expectedRevision"),
-        field_types={"definition": (dict,), "expectedRevision": (int,)},
-    ),
-    "schema.apply": _closed_params(
-        "SchemaApplyParams",
-        allowed=("definition", "expectedRevision", "operationId"),
-        required=("definition", "expectedRevision"),
-        field_types={
-            "definition": (dict,),
-            "expectedRevision": (int,),
-            "operationId": (str,),
-        },
+    "schema.table.create": _closed_params(
+        "SchemaTableCreateParams",
+        allowed=("displayName", "operationId", "actor"),
+        required=("displayName", "operationId", "actor"),
+        field_types={"displayName": (str,), "operationId": (str,), "actor": (dict,)},
     ),
     "schema.delete": _closed_params(
         "SchemaDeleteParams",
@@ -244,6 +236,18 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
         allowed=("tableId", "query"),
         required=("tableId", "query"),
         field_types={"tableId": (str,), "query": (dict,)},
+    ),
+    "query.cursorOpen": _closed_params(
+        "QueryCursorOpenParams",
+        allowed=("tableId", "query"),
+        required=("tableId", "query"),
+        field_types={"tableId": (str,), "query": (dict,)},
+    ),
+    "query.cursorFetch": _closed_params(
+        "QueryCursorFetchParams",
+        allowed=("cursor",),
+        required=("cursor",),
+        field_types={"cursor": (str,)},
     ),
     "query.view": _closed_params(
         "QueryViewParams",
@@ -297,9 +301,9 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
     ),
     "formula.validate": _closed_params(
         "FormulaValidateParams",
-        allowed=("definition",),
-        required=("definition",),
-        field_types={"definition": (dict,)},
+        allowed=("tableId", "field"),
+        required=("tableId", "field"),
+        field_types={"tableId": (str,), "field": (dict,)},
     ),
     "formula.draft.validate": _closed_params(
         "FormulaDraftValidateParams",
@@ -309,10 +313,11 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
     ),
     "formula.preview": _closed_params(
         "FormulaPreviewParams",
-        allowed=("definition", "row", "changedFieldIds"),
-        required=("definition", "row", "changedFieldIds"),
+        allowed=("tableId", "field", "row", "changedFieldIds"),
+        required=("tableId", "field", "row", "changedFieldIds"),
         field_types={
-            "definition": (dict,),
+            "tableId": (str,),
+            "field": (dict,),
             "row": (dict,),
             "changedFieldIds": (list,),
         },
@@ -409,23 +414,21 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
     ),
     "relation.searchTargets": _closed_params(
         "RelationSearchTargetsParams",
-        allowed=("relationId", "query", "collection", "offset", "limit"),
+        allowed=("relationId", "query", "offset", "limit"),
         required=("relationId",),
         field_types={
             "relationId": (str,),
             "query": (str,),
-            "collection": (str, type(None)),
             "offset": (int,),
             "limit": (int,),
         },
     ),
     "relation.createTarget": _closed_params(
         "RelationCreateTargetParams",
-        allowed=("relationId", "collection", "label", "values", "idempotencyKey"),
+        allowed=("relationId", "label", "values", "idempotencyKey"),
         required=("relationId", "idempotencyKey"),
         field_types={
             "relationId": (str,),
-            "collection": (str, type(None)),
             "label": (str,),
             "values": (dict,),
             "idempotencyKey": (str,),
@@ -472,48 +475,6 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
         allowed=("collection",),
         required=("collection",),
         field_types={"collection": (str,)},
-    ),
-    "lookup.validate": _closed_params(
-        "LookupValidateParams",
-        allowed=("definition", "existing"),
-        required=("definition", "existing"),
-        field_types={"definition": (dict,), "existing": (list,)},
-    ),
-    "lookup.preview": _closed_params(
-        "LookupPreviewParams",
-        allowed=(
-            "contract",
-            "collection",
-            "fieldRefs",
-            "query",
-            "requestGeneration",
-            "schemaRevision",
-            "permissionRevision",
-            "lookupRevision",
-            "definitions",
-        ),
-        required=(
-            "contract",
-            "collection",
-            "fieldRefs",
-            "query",
-            "requestGeneration",
-            "schemaRevision",
-            "permissionRevision",
-            "lookupRevision",
-            "definitions",
-        ),
-        field_types={
-            "contract": (str,),
-            "collection": (str,),
-            "fieldRefs": (list,),
-            "query": (dict,),
-            "requestGeneration": (int,),
-            "schemaRevision": (str,),
-            "permissionRevision": (str,),
-            "lookupRevision": (str,),
-            "definitions": (list,),
-        },
     ),
     "lookup.query": _closed_params(
         "LookupQueryParams",
@@ -612,7 +573,7 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
 }
 
 
-def _validate_value(value: Any, depth: int) -> None:
+def _validate_value(value: object, depth: int) -> None:
     if depth > _MAX_DEPTH:
         raise ValueError("product params are too deeply nested")
     if isinstance(value, dict):
@@ -631,5 +592,7 @@ __all__ = [
     "PRODUCT_RPC_REGISTRY",
     "FieldChangeApplyParams",
     "FieldChangePlanParams",
+    "JsonObject",
+    "JsonValue",
     "ProductParams",
 ]

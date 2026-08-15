@@ -97,4 +97,33 @@ describe("App startup gate", () => {
     expect(provider.props("placement")).toBe("bottom");
     expect(provider.props("max")).toBe(1);
   });
+
+  it("switches theme tokens and suppresses only native file navigation", async () => {
+    const bridge = createHostBridge({ webview: {
+      postMessage: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } });
+    setHostBridgeForTesting(bridge);
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const wrapper = mount(App, { global: { plugins: [pinia] } });
+    const provider = wrapper.getComponent(NConfigProvider);
+
+    useUiStore().setThemeMode("dark");
+    await wrapper.vm.$nextTick();
+    expect(provider.props("theme")).not.toBeNull();
+    expect(provider.props("themeOverrides")).toBeTruthy();
+
+    const dispatchDrop = (types?: string[]) => {
+      const event = new Event("drop", { bubbles: true, cancelable: true });
+      if (types) Object.defineProperty(event, "dataTransfer", { value: { types } });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(dispatchDrop()).toBe(false);
+    expect(dispatchDrop(["text/plain"])).toBe(false);
+    expect(dispatchDrop(["Files"])).toBe(true);
+    wrapper.unmount();
+  });
 });

@@ -32,16 +32,21 @@ _STATE_SCHEMA_VERSION: Final[int] = 1
 
 
 def default_state_db_path() -> Path:
-    """Return the default state DB path under ``%LOCALAPPDATA%``.
+    """Return the state DB path for the current process scope.
 
-    Falls back to a ``.vibetable`` directory in the user home when LOCALAPPDATA is
-    unset (non-Windows or headless test environments).
+    A host-provided ``VIBETABLE_STATE_DIR`` binds the backend to the active
+    workspace's device-local state. Otherwise the standalone default lives
+    under ``%LOCALAPPDATA%`` and falls back to the user home.
     """
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        base = Path(local_app_data) / STATE_DIR_NAME / STATE_SUBDIR
+    configured_state_dir = os.environ.get("VIBETABLE_STATE_DIR")
+    if configured_state_dir:
+        base = Path(configured_state_dir)
     else:
-        base = Path.home() / ".vibetable" / STATE_SUBDIR
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            base = Path(local_app_data) / STATE_DIR_NAME / STATE_SUBDIR
+        else:
+            base = Path.home() / ".vibetable" / STATE_SUBDIR
     base.mkdir(parents=True, exist_ok=True)
     return base / STATE_DB_NAME
 

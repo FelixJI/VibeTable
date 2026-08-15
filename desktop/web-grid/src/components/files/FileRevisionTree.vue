@@ -27,11 +27,13 @@ interface TreeRow {
 const props = withDefaults(defineProps<{
   tree: FileRevisionTreeProjection | null;
   busy: boolean;
+  requestedRevisionId?: string | null;
   canCompare?: boolean;
   diffPhase?: DocumentDiffPhase;
   diffResult?: DocumentDiffCompletedPayload | null;
 }>(), {
   canCompare: false,
+  requestedRevisionId: null,
   diffPhase: "idle",
   diffResult: null,
 });
@@ -80,6 +82,17 @@ const effectivePath = computed(() => {
   return path;
 });
 
+const requestedPath = computed(() => {
+  const path = new Set<string>();
+  const revisions = new Map((props.tree?.revisions ?? []).map((revision) => [revision.revisionId, revision]));
+  let cursor = props.requestedRevisionId;
+  while (cursor && revisions.has(cursor) && !path.has(cursor)) {
+    path.add(cursor);
+    cursor = revisions.get(cursor)?.parentRevisionId ?? null;
+  }
+  return path;
+});
+
 const hasBranch = computed(() =>
   [...childMap.value.values()].some((children) => children.length > 1));
 
@@ -90,10 +103,12 @@ const rows = computed<TreeRow[]>(() => {
     const forceVisible = isProvisional(revision)
       || revision.kind !== "autosave"
       || revision.revisionId === props.tree?.effectiveRevisionId
+      || requestedPath.value.has(revision.revisionId)
       || children.length > 1;
     if (showAutosaves.value || forceVisible) {
       const rowExpanded = expanded.value.has(revision.revisionId)
-        || effectivePath.value.has(revision.revisionId);
+        || effectivePath.value.has(revision.revisionId)
+        || requestedPath.value.has(revision.revisionId);
       const visibleExpanded = children.length > 0
         && rowExpanded
         && !collapsed.value.has(revision.revisionId);
@@ -124,6 +139,19 @@ watch(rows, (next) => {
       ?? null;
   }
 }, { immediate: true });
+
+watch(
+  [() => props.requestedRevisionId, rows],
+  async ([requestedRevisionId, next]) => {
+    if (!requestedRevisionId || !next.some((row) => row.revision.revisionId === requestedRevisionId)) return;
+    focusedRevisionId.value = requestedRevisionId;
+    await nextTick();
+    const target = document.querySelector<HTMLElement>(`[data-revision-id="${requestedRevisionId}"]`);
+    target?.focus();
+    target?.scrollIntoView?.({ block: "nearest" });
+  },
+  { immediate: true },
+);
 
 function toggle(revisionId: string): void {
   const nextExpanded = new Set(expanded.value);
@@ -269,6 +297,7 @@ const diffMessage = computed(() => {
         class="tree-row"
         :class="{
           effective: row.effective,
+          requested: row.revision.revisionId === requestedRevisionId,
           provisional: isProvisional(row.revision),
           'effective-path': row.onEffectivePath,
         }"
@@ -388,6 +417,10 @@ const diffMessage = computed(() => {
   min-height: 62px;
   padding: 8px 10px 8px calc(10px + (var(--tree-level) - 1) * 18px);
   outline: none;
+}
+.tree-row.requested {
+  background: color-mix(in srgb, var(--vt-color-primary-500) 10%, transparent);
+  box-shadow: inset 3px 0 var(--vt-color-primary-500);
 }
 .tree-row:focus-visible { box-shadow: inset 0 0 0 2px var(--vt-focus-ring); }
 .tree-row.effective { background: var(--vt-color-primary-50); }

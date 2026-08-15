@@ -29,8 +29,8 @@ import (
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 const (
@@ -187,7 +187,7 @@ func (manager *Manager) Drop(handles ...string) {
 func (manager *Manager) Prepare(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 	change mutation.AttachmentChange,
 ) (mutation.AttachmentFinalizer, error) {
@@ -198,7 +198,7 @@ func (manager *Manager) Prepare(
 	if err != nil {
 		return nil, err
 	}
-	policy := field.AttachmentPolicy
+	policy := field.File
 	if policy == nil {
 		return nil, attachmentError(
 			"mutation.attachment.invalid_policy", "attachment policy is unavailable", false,
@@ -223,7 +223,7 @@ func (manager *Manager) Prepare(
 	}
 	manager.mu.RUnlock()
 
-	currentNames := fileNames(record.GetRaw(field.PhysicalName))
+	currentNames := fileNames(record.GetRaw(field.Identity.PhysicalName))
 	currentSet := make(map[string]struct{}, len(currentNames))
 	for _, name := range currentNames {
 		currentSet[name] = struct{}{}
@@ -276,7 +276,7 @@ func (manager *Manager) Prepare(
 		files = append(files, file)
 		remaining = append(remaining, file)
 	}
-	record.Set(field.PhysicalName, remaining)
+	record.Set(field.Identity.PhysicalName, remaining)
 	if err := manager.fault("after_prepare"); err != nil {
 		return nil, attachmentError(
 			"mutation.attachment.failed", "attachment operation failed", true,
@@ -285,7 +285,7 @@ func (manager *Manager) Prepare(
 
 	finalize := func(txApp core.App, saved *core.Record) error {
 		if err := manager.updateMetadata(
-			txApp, definition.TableID, saved.Id, field,
+			txApp, definition.Snapshot.TableID, saved.Id, field,
 			change.RemoveStoredNames, uploads, files,
 		); err != nil {
 			return err
@@ -303,7 +303,7 @@ func (manager *Manager) Prepare(
 func (manager *Manager) CleanupRecord(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 ) error {
 	if err := ctx.Err(); err != nil {
@@ -313,7 +313,7 @@ func (manager *Manager) CleanupRecord(
 		"vibetable_attachment_meta",
 		"table_id={:table} && record_id={:record}",
 		"", 0, 0,
-		dbx.Params{"table": definition.TableID, "record": record.Id},
+		dbx.Params{"table": definition.Snapshot.TableID, "record": record.Id},
 	)
 	if err != nil {
 		return attachmentError(
@@ -323,24 +323,24 @@ func (manager *Manager) CleanupRecord(
 	metadataByIdentity := make(map[string]*core.Record, len(records))
 	for _, metadata := range records {
 		metadataByIdentity[attachmentIdentity(
-			definition.TableID,
+			definition.Snapshot.TableID,
 			record.Id,
 			metadata.GetString("field_id"),
 			metadata.GetString("stored_name"),
 		)] = metadata
 	}
 	referenced := map[string]struct{}{}
-	for _, field := range definition.Fields {
-		if field.Kind != schema.FieldKindAttachment {
+	for _, field := range definition.Snapshot.Fields {
+		if field.LogicalType != v2.LogicalFile || field.File == nil {
 			continue
 		}
 		for _, storedName := range fileNames(
-			record.GetRaw(field.PhysicalName),
+			record.GetRaw(field.Identity.PhysicalName),
 		) {
 			identity := attachmentIdentity(
-				definition.TableID,
+				definition.Snapshot.TableID,
 				record.Id,
-				field.FieldID,
+				field.Identity.FieldID,
 				storedName,
 			)
 			referenced[identity] = struct{}{}
@@ -396,9 +396,9 @@ func (manager *Manager) CleanupRecord(
 func (manager *Manager) archiveNames(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	names []string,
 ) error {
 	if len(names) == 0 {
@@ -409,9 +409,9 @@ func (manager *Manager) archiveNames(
 		"table_id={:table} && record_id={:record} && field_id={:field}",
 		"", 0, 0,
 		dbx.Params{
-			"table":  definition.TableID,
+			"table":  definition.Snapshot.TableID,
 			"record": record.Id,
-			"field":  field.FieldID,
+			"field":  field.Identity.FieldID,
 		},
 	)
 	if err != nil {
@@ -445,9 +445,9 @@ func (manager *Manager) archiveNames(
 func (manager *Manager) archiveMetadata(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	metadata []*core.Record,
 ) error {
 	if len(metadata) == 0 {
@@ -489,8 +489,8 @@ func (manager *Manager) archiveMetadata(
 			"vibetable_attachment_versions",
 			"table_id={:table} && record_id={:record} && field_id={:field} && stored_name={:name}",
 			dbx.Params{
-				"table": definition.TableID, "record": record.Id,
-				"field": field.FieldID, "name": storedName,
+				"table": definition.Snapshot.TableID, "record": record.Id,
+				"field": field.Identity.FieldID, "name": storedName,
 			},
 		)
 		if findErr == nil {
@@ -499,7 +499,7 @@ func (manager *Manager) archiveMetadata(
 				existing.GetString("original_name") !=
 					item.GetString("original_name") ||
 				existing.GetString("mime") != item.GetString("mime") ||
-				existing.GetString("field_name") != field.PhysicalName ||
+				existing.GetString("field_name") != field.Identity.PhysicalName ||
 				existing.GetString("blob") == "" {
 				return attachmentError(
 					"mutation.attachment.version_conflict",
@@ -548,10 +548,10 @@ func (manager *Manager) archiveMetadata(
 			)
 		}
 		version := core.NewRecord(collection)
-		version.Set("table_id", definition.TableID)
+		version.Set("table_id", definition.Snapshot.TableID)
 		version.Set("record_id", record.Id)
-		version.Set("field_id", field.FieldID)
-		version.Set("field_name", field.PhysicalName)
+		version.Set("field_id", field.Identity.FieldID)
+		version.Set("field_name", field.Identity.PhysicalName)
 		version.Set("stored_name", storedName)
 		version.Set("original_name", item.GetString("original_name"))
 		version.Set("mime", item.GetString("mime"))
@@ -579,7 +579,7 @@ func (manager *Manager) archiveMetadata(
 func (manager *Manager) PreviewRestore(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	recordID, fieldID string,
 	targetNames, currentNames []string,
 ) (RestorePlan, error) {
@@ -594,8 +594,7 @@ func (manager *Manager) PreviewRestore(
 			false,
 		)
 	}
-	if field.AttachmentPolicy == nil ||
-		len(targetNames) > field.AttachmentPolicy.MaxFiles {
+	if field.File == nil || len(targetNames) > field.File.MaxFiles {
 		return RestorePlan{}, attachmentError(
 			"attachment.history_policy_mismatch",
 			"historical attachments exceed the current field policy",
@@ -603,8 +602,8 @@ func (manager *Manager) PreviewRestore(
 		)
 	}
 	plan := RestorePlan{
-		TableID: definition.TableID, RecordID: recordID,
-		FieldID:      field.FieldID,
+		TableID: definition.Snapshot.TableID, RecordID: recordID,
+		FieldID:      field.Identity.FieldID,
 		CurrentNames: append([]string(nil), currentNames...),
 		Items:        make([]RestoreItem, 0, len(targetNames)),
 	}
@@ -617,9 +616,9 @@ func (manager *Manager) PreviewRestore(
 		"table_id={:table} && record_id={:record} && field_id={:field}",
 		"", 0, 0,
 		dbx.Params{
-			"table":  definition.TableID,
+			"table":  definition.Snapshot.TableID,
 			"record": recordID,
-			"field":  field.FieldID,
+			"field":  field.Identity.FieldID,
 		},
 	)
 	if err != nil {
@@ -637,7 +636,7 @@ func (manager *Manager) PreviewRestore(
 	if len(currentNames) > 0 {
 		meta, metaErr := app.FindFirstRecordByFilter(
 			"vibetable_tables", "table_id={:table}",
-			dbx.Params{"table": definition.TableID},
+			dbx.Params{"table": definition.Snapshot.TableID},
 		)
 		if metaErr != nil {
 			return RestorePlan{}, attachmentError(
@@ -726,8 +725,8 @@ func (manager *Manager) PreviewRestore(
 				"vibetable_attachment_versions",
 				"table_id={:table} && record_id={:record} && field_id={:field} && stored_name={:name}",
 				dbx.Params{
-					"table": definition.TableID, "record": recordID,
-					"field": field.FieldID, "name": storedName,
+					"table": definition.Snapshot.TableID, "record": recordID,
+					"field": field.Identity.FieldID, "name": storedName,
 				},
 			)
 			if versionErr != nil {
@@ -767,8 +766,8 @@ func (manager *Manager) PreviewRestore(
 				false,
 			)
 		}
-		if source.Size > field.AttachmentPolicy.MaxBytesPerFile ||
-			!mimeAllowed(source.MIMEType, field.AttachmentPolicy.AllowedMIMETypes) {
+		if source.Size > field.File.MaxBytesPerFile ||
+			!mimeAllowed(source.MIMEType, field.File.AllowedMIMETypes) {
 			return RestorePlan{}, attachmentError(
 				"attachment.history_policy_mismatch",
 				"historical attachment violates the current field policy",
@@ -832,7 +831,7 @@ func (manager *Manager) StageRestore(
 					return mutation.AttachmentChange{}, func() {}, resolveErr
 				}
 				liveRecord = record
-				liveFieldName = field.PhysicalName
+				liveFieldName = field.Identity.PhysicalName
 			}
 			if !contains(
 				fileNames(liveRecord.GetRaw(liveFieldName)),
@@ -943,7 +942,7 @@ func validRestoreItem(item RestoreItem, storedName string) bool {
 func (manager *Manager) updateMetadata(
 	app core.App,
 	tableID, recordID string,
-	field schema.FieldDefinition,
+	field v2.FieldDefinition,
 	removed []string,
 	uploads []stagedFile,
 	files []*filesystem.File,
@@ -956,7 +955,9 @@ func (manager *Manager) updateMetadata(
 		"vibetable_attachment_meta",
 		"table_id={:table} && record_id={:record} && field_id={:field}",
 		"", 0, 0,
-		dbx.Params{"table": tableID, "record": recordID, "field": field.FieldID},
+		dbx.Params{
+			"table": tableID, "record": recordID, "field": field.Identity.FieldID,
+		},
 	)
 	if err != nil {
 		return attachmentError(
@@ -982,7 +983,7 @@ func (manager *Manager) updateMetadata(
 		metadata := core.NewRecord(collection)
 		metadata.Set("table_id", tableID)
 		metadata.Set("record_id", recordID)
-		metadata.Set("field_id", field.FieldID)
+		metadata.Set("field_id", field.Identity.FieldID)
 		metadata.Set("stored_name", files[index].Name)
 		metadata.Set("original_name", upload.originalName)
 		metadata.Set("mime", upload.mime)
@@ -1005,7 +1006,7 @@ func (manager *Manager) updateMetadata(
 func (manager *Manager) Refs(
 	ctx context.Context,
 	app core.App,
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	record *core.Record,
 	fieldID string,
 ) ([]Ref, error) {
@@ -1017,7 +1018,10 @@ func (manager *Manager) Refs(
 		"vibetable_attachment_meta",
 		"table_id={:table} && record_id={:record} && field_id={:field}",
 		"", 0, 0,
-		dbx.Params{"table": definition.TableID, "record": record.Id, "field": field.FieldID},
+		dbx.Params{
+			"table": definition.Snapshot.TableID, "record": record.Id,
+			"field": field.Identity.FieldID,
+		},
 	)
 	if err != nil {
 		return nil, attachmentError(
@@ -1028,7 +1032,7 @@ func (manager *Manager) Refs(
 	for _, item := range metadata {
 		byName[item.GetString("stored_name")] = item
 	}
-	names := fileNames(record.GetRaw(field.PhysicalName))
+	names := fileNames(record.GetRaw(field.Identity.PhysicalName))
 	result := make([]Ref, 0, len(names))
 	for _, name := range names {
 		item := byName[name]
@@ -1038,7 +1042,7 @@ func (manager *Manager) Refs(
 			)
 		}
 		capability, err := manager.capability(
-			definition.TableID, record.Id, field.FieldID, name, "",
+			definition.Snapshot.TableID, record.Id, field.Identity.FieldID, name, "",
 		)
 		if err != nil {
 			return nil, err
@@ -1046,11 +1050,12 @@ func (manager *Manager) Refs(
 		thumbnails := []Thumbnail{}
 		if thumbnailSafeMIME(item.GetString("mime")) {
 			thumbnails = make(
-				[]Thumbnail, 0, len(field.AttachmentPolicy.ThumbnailVariants),
+				[]Thumbnail, 0, len(field.File.Thumbs),
 			)
-			for _, variant := range field.AttachmentPolicy.ThumbnailVariants {
+			for _, variant := range field.File.Thumbs {
 				token, err := manager.capability(
-					definition.TableID, record.Id, field.FieldID, name, variant,
+					definition.Snapshot.TableID, record.Id,
+					field.Identity.FieldID, name, variant,
 				)
 				if err != nil {
 					return nil, err
@@ -1062,7 +1067,8 @@ func (manager *Manager) Refs(
 		}
 		result = append(result, Ref{
 			ContractVersion: ContractVersion,
-			TableID:         definition.TableID, RecordID: record.Id, FieldID: field.FieldID,
+			TableID:         definition.Snapshot.TableID, RecordID: record.Id,
+			FieldID:    field.Identity.FieldID,
 			StoredName: name, OriginalName: item.GetString("original_name"),
 			MIMEType: item.GetString("mime"), Size: int64(item.GetFloat("size")),
 			SHA256: item.GetString("hash"), DownloadCapability: capability,
@@ -1103,13 +1109,13 @@ func (manager *Manager) Token(
 	if err != nil {
 		return "", err
 	}
-	if !contains(fileNames(record.GetRaw(field.PhysicalName)), storedName) {
+	if !contains(fileNames(record.GetRaw(field.Identity.PhysicalName)), storedName) {
 		return "", attachmentError(
 			"attachment.not_found", "managed attachment was not found", false,
 		)
 	}
 	if variant != "" && (!filesystem.ThumbSizeRegex.MatchString(variant) ||
-		!contains(field.AttachmentPolicy.ThumbnailVariants, variant)) {
+		!contains(field.File.Thumbs, variant)) {
 		return "", attachmentError(
 			"attachment.thumbnail_not_found", "attachment thumbnail variant was not found", false,
 		)
@@ -1119,7 +1125,7 @@ func (manager *Manager) Token(
 		"table_id={:table} && record_id={:record} && field_id={:field} && stored_name={:name}",
 		dbx.Params{
 			"table": tableID, "record": recordID,
-			"field": field.FieldID, "name": storedName,
+			"field": field.Identity.FieldID, "name": storedName,
 		},
 	)
 	if err != nil {
@@ -1132,7 +1138,9 @@ func (manager *Manager) Token(
 			"attachment.thumbnail_not_found", "attachment thumbnail variant was not found", false,
 		)
 	}
-	return manager.capability(tableID, recordID, field.FieldID, storedName, variant)
+	return manager.capability(
+		tableID, recordID, field.Identity.FieldID, storedName, variant,
+	)
 }
 
 type capabilityClaims struct {
@@ -1192,14 +1200,14 @@ func (manager *Manager) Open(
 		return nil, err
 	}
 	_ = definition
-	if !contains(fileNames(record.GetRaw(field.PhysicalName)), claims.StoredName) {
+	if !contains(fileNames(record.GetRaw(field.Identity.PhysicalName)), claims.StoredName) {
 		return nil, attachmentError(
 			"attachment.not_found", "managed attachment was not found", false,
 		)
 	}
 	if claims.Variant != "" &&
 		(!filesystem.ThumbSizeRegex.MatchString(claims.Variant) ||
-			!contains(field.AttachmentPolicy.ThumbnailVariants, claims.Variant)) {
+			!contains(field.File.Thumbs, claims.Variant)) {
 		return nil, attachmentError(
 			"attachment.thumbnail_not_found", "attachment thumbnail variant was not found", false,
 		)
@@ -1302,6 +1310,65 @@ func (manager *Manager) Open(
 	}, nil
 }
 
+// OpenForIndex returns the current protected original for a durable attachment
+// identity. It is intentionally capability-free because only the workspace
+// search producer calls it in-process; it still verifies the business-record
+// reference, metadata size, and digest before exposing bytes.
+func OpenForIndex(
+	ctx context.Context,
+	app core.App,
+	tableID, recordID, fieldID, storedName string,
+) (*Download, error) {
+	_, _, record, field, err := resolveRecordField(app, tableID, recordID, fieldID)
+	if err != nil {
+		return nil, err
+	}
+	if !contains(fileNames(record.GetRaw(field.Identity.PhysicalName)), storedName) {
+		return nil, attachmentError(
+			"attachment.not_found", "managed attachment was not found", false,
+		)
+	}
+	metadata, err := app.FindFirstRecordByFilter(
+		"vibetable_attachment_meta",
+		"table_id={:table} && record_id={:record} && field_id={:field} && stored_name={:name}",
+		dbx.Params{
+			"table": tableID, "record": recordID, "field": fieldID, "name": storedName,
+		},
+	)
+	if err != nil {
+		return nil, attachmentError(
+			"attachment.metadata_missing", "attachment metadata is missing", false,
+		)
+	}
+	fsys, err := app.NewFilesystem()
+	if err != nil {
+		return nil, attachmentError(
+			"attachment.storage_failed", "attachment storage is unavailable", true,
+		)
+	}
+	fsys.SetContext(ctx)
+	reader, attributes, err := snapshotVerifiedObject(
+		fsys,
+		record.BaseFilesPath()+"/"+storedName,
+		int64(metadata.GetFloat("size")),
+		metadata.GetString("hash"),
+	)
+	if err != nil {
+		_ = fsys.Close()
+		return nil, err
+	}
+	return &Download{
+		Reader: &filesystemReader{
+			ReadSeekCloser: reader,
+			filesystem:     fsys,
+			removeOnClose:  reader.Name(),
+		},
+		Name:        metadata.GetString("original_name"),
+		ContentType: attributes.contentType,
+		Size:        attributes.size,
+	}, nil
+}
+
 type filesystemReader struct {
 	io.ReadSeekCloser
 	filesystem    *filesystem.System
@@ -1387,7 +1454,9 @@ func (manager *Manager) Integrity(
 			app, issue.TableID, issue.RecordID, issue.FieldID,
 		)
 		if resolveErr != nil ||
-			!contains(fileNames(record.GetRaw(field.PhysicalName)), issue.StoredName) {
+			!contains(
+				fileNames(record.GetRaw(field.Identity.PhysicalName)), issue.StoredName,
+			) {
 			issue.Code = "attachment.metadata_without_reference"
 			report.MissingFiles = append(report.MissingFiles, issue)
 			continue
@@ -1520,9 +1589,10 @@ func (manager *Manager) Integrity(
 		if err != nil {
 			continue
 		}
-		raw, marshalErr := json.Marshal(table.GetRaw("definition_json"))
-		var definition schema.TableDefinition
-		if marshalErr != nil || json.Unmarshal(raw, &definition) != nil {
+		definition, describeErr := schemaexecution.Describe(
+			ctx, app, table.GetString("table_id"),
+		)
+		if describeErr != nil {
 			return report, attachmentError(
 				"attachment.integrity_failed", "table schema could not be decoded", true,
 			)
@@ -1534,18 +1604,21 @@ func (manager *Manager) Integrity(
 			)
 		}
 		for _, record := range records {
-			for _, field := range definition.Fields {
-				if field.Kind != schema.FieldKindAttachment {
+			for _, field := range definition.Snapshot.Fields {
+				if field.LogicalType != v2.LogicalFile || field.File == nil {
 					continue
 				}
-				for _, storedName := range fileNames(record.GetRaw(field.PhysicalName)) {
+				for _, storedName := range fileNames(
+					record.GetRaw(field.Identity.PhysicalName),
+				) {
 					issue := IntegrityIssue{
-						TableID: definition.TableID, RecordID: record.Id,
-						FieldID: field.FieldID, StoredName: storedName,
+						TableID: definition.Snapshot.TableID, RecordID: record.Id,
+						FieldID: field.Identity.FieldID, StoredName: storedName,
 					}
 					referencedStorage[record.BaseFilesPath()+"/"+storedName] = issue
 					if _, exists := metadataIdentity[attachmentIdentity(
-						definition.TableID, record.Id, field.FieldID, storedName,
+						definition.Snapshot.TableID, record.Id,
+						field.Identity.FieldID, storedName,
 					)]; !exists {
 						issue.Code = "attachment.reference_without_metadata"
 						report.MissingMetadata = append(report.MissingMetadata, issue)
@@ -1840,112 +1913,75 @@ func attachmentHistoryReferences(
 func resolveRecordField(
 	app core.App,
 	tableID, recordID, fieldID string,
-) (schema.TableDefinition, *core.Collection, *core.Record, schema.FieldDefinition, error) {
+) (schemaexecution.Table, *core.Collection, *core.Record, v2.FieldDefinition, error) {
 	meta, err := app.FindFirstRecordByFilter(
 		"vibetable_tables", "table_id={:table}", dbx.Params{"table": tableID},
 	)
 	if err != nil {
-		return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{},
+		return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
 			attachmentError("attachment.not_found", "table was not found", false)
 	}
-	raw, _ := json.Marshal(meta.GetRaw("definition_json"))
-	var definition schema.TableDefinition
-	if json.Unmarshal(raw, &definition) != nil {
-		return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{},
+	definition, describeErr := schemaexecution.Describe(
+		context.Background(), app, tableID,
+	)
+	if describeErr != nil {
+		return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
 			attachmentError("attachment.storage_failed", "table schema is invalid", true)
 	}
 	field, err := attachmentField(definition, fieldID)
 	if err != nil {
-		field, err = retiredAttachmentField(app, tableID, fieldID)
+		field, err = schemaexecution.RetiredField(
+			context.Background(), app, tableID, fieldID,
+		)
 		if err != nil {
-			return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{}, err
+			if errors.Is(err, schemaexecution.ErrRetiredFieldNotFound) {
+				return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
+					attachmentError(
+						"mutation.attachment.invalid_field",
+						"attachment field was not found", false,
+					)
+			}
+			return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
+				attachmentError(
+					"attachment.storage_failed", "retired attachment schema is invalid", true,
+				)
 		}
-		// Lossless backup integrity must continue to account for files owned by
-		// retired fields even though normal schema describe hides those fields.
-		definition.Fields = append(definition.Fields, field)
+		if field.LogicalType != v2.LogicalFile || field.File == nil {
+			return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
+				attachmentError(
+					"attachment.storage_failed", "retired attachment schema is invalid", true,
+				)
+		}
 	}
 	collection, err := app.FindCollectionByNameOrId(meta.GetString("collection_id"))
 	if err != nil {
-		return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{},
+		return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
 			attachmentError("attachment.not_found", "table storage was not found", false)
 	}
 	record, err := app.FindRecordById(collection, recordID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{},
+			return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
 				attachmentError("attachment.not_found", "record was not found", false)
 		}
-		return schema.TableDefinition{}, nil, nil, schema.FieldDefinition{},
+		return schemaexecution.Table{}, nil, nil, v2.FieldDefinition{},
 			attachmentError("attachment.storage_failed", "record could not be read", true)
 	}
 	return definition, collection, record, field, nil
 }
 
-func retiredAttachmentField(
-	app core.App,
-	tableID string,
-	fieldID string,
-) (schema.FieldDefinition, error) {
-	record, err := app.FindFirstRecordByFilter(
-		"vibetable_fields",
-		"table_id={:table} && field_id={:field} && lifecycle_state='retired'",
-		dbx.Params{"table": tableID, "field": fieldID},
-	)
-	if err != nil {
-		return schema.FieldDefinition{}, attachmentError(
-			"mutation.attachment.invalid_field",
-			"attachment field was not found",
-			false,
-		)
-	}
-	raw, err := json.Marshal(record.GetRaw("definition_v2_json"))
-	if err != nil {
-		return schema.FieldDefinition{}, attachmentError(
-			"attachment.storage_failed",
-			"retired attachment schema is invalid",
-			true,
-		)
-	}
-	var definition v2.FieldDefinition
-	if v2.StrictDecode(raw, &definition) != nil ||
-		definition.LogicalType != v2.LogicalFile ||
-		definition.File == nil {
-		return schema.FieldDefinition{}, attachmentError(
-			"attachment.storage_failed",
-			"retired attachment schema is invalid",
-			true,
-		)
-	}
-	return schema.FieldDefinition{
-		FieldID:      definition.Identity.FieldID,
-		PhysicalName: definition.Identity.PhysicalName,
-		DisplayName:  definition.DisplayName,
-		Kind:         schema.FieldKindAttachment,
-		DataType:     schema.DataTypeFile,
-		StorageType:  schema.StorageFile,
-		Nullable:     !definition.Value.Required,
-		AttachmentPolicy: &schema.AttachmentPolicy{
-			MaxFiles:          definition.File.MaxFiles,
-			MaxBytesPerFile:   definition.File.MaxBytesPerFile,
-			AllowedMIMETypes:  append([]string(nil), definition.File.AllowedMIMETypes...),
-			ThumbnailVariants: append([]string(nil), definition.File.Thumbs...),
-			Protected:         definition.File.Protected,
-		},
-	}, nil
-}
-
 func attachmentField(
-	definition schema.TableDefinition,
+	definition schemaexecution.Table,
 	fieldID string,
-) (schema.FieldDefinition, error) {
-	for _, field := range definition.Fields {
-		if (field.FieldID == fieldID || field.PhysicalName == fieldID) &&
-			field.Kind == schema.FieldKindAttachment &&
-			field.DataType == schema.DataTypeFile {
+) (v2.FieldDefinition, error) {
+	for _, field := range definition.Snapshot.Fields {
+		if (field.Identity.FieldID == fieldID ||
+			field.Identity.PhysicalName == fieldID) &&
+			field.LogicalType == v2.LogicalFile && field.File != nil {
 			return field, nil
 		}
 	}
-	return schema.FieldDefinition{}, attachmentError(
+	return v2.FieldDefinition{}, attachmentError(
 		"mutation.attachment.invalid_field", "attachment field was not found", false,
 	)
 }

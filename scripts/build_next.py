@@ -389,7 +389,7 @@ def render_manifest(
             },
         },
         "formats": {
-            "workspace": 1,
+            "workspace": 2,
             "repository": "kopia-v3",
             "snapshot": 2,
             "package": 2,
@@ -944,7 +944,7 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
         "schemaVersion": versions.schema,
         "migrationHash": versions.migration_hash,
         "protocolV2Version": "2.0",
-        "workspaceFormat": "1",
+        "workspaceFormat": "2",
         "repositoryFormat": "kopia-v3",
         "snapshotFormat": "2",
         "packageFormat": "2",

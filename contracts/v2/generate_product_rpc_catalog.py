@@ -9,7 +9,6 @@ import datetime as dt
 import enum
 import inspect
 import json
-import sys
 import types
 import typing
 from dataclasses import dataclass
@@ -17,35 +16,45 @@ from pathlib import Path
 
 from pydantic import BaseModel, RootModel, TypeAdapter
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-import backend.__main__ as composition  # noqa: E402
-from backend.contracts.product_rpc import (  # noqa: E402
+import backend.__main__ as composition
+from backend.contracts.product_rpc import (
     PRODUCT_RPC_REGISTRY as PRODUCT_PARAM_MODELS,
     ProductParams,
 )
-from backend.contracts.data_io import (  # noqa: E402
+from backend.contracts.data_io import (
     ApplyImportResult,
     ExportResult,
     ImportPlan,
     TemplateResult,
 )
-from backend.contracts.grid_state import GridStateResult  # noqa: E402
-from backend.contracts.history import (  # noqa: E402
+from backend.contracts.grid_state import GridStateResult
+from backend.contracts.generated_workbench import (
+    ContentProfileDeleteResult,
+    ContentProfileSnapshot,
+    InterfaceDeleteResult,
+    InterfaceListResult,
+    InterfaceSnapshot,
+    RecordDocumentLinkDeleteResult,
+    RecordDocumentLinkListResult,
+    RecordDocumentLinkSnapshot,
+)
+from backend.contracts.history import (
     HistoryPage,
     RestorePreview,
     RestoreResult,
 )
-from backend.contracts.lookup import (  # noqa: E402
+from backend.contracts.lookup import (
     LookupCellValue,
     LookupListResult,
     LookupQueryResult,
-    LookupValidationResult,
 )
-from backend.contracts.query import QueryPageResult, QueryViewResult  # noqa: E402
-from backend.contracts.paste import ApplyPasteResult, PastePlan  # noqa: E402
-from backend.contracts.plugin import (  # noqa: E402
+from backend.contracts.query import (
+    QueryCursorWindowResult,
+    QueryPageResult,
+    QueryViewResult,
+)
+from backend.contracts.paste import ApplyPasteResult, PastePlan
+from backend.contracts.plugin import (
     ActionAvailability,
     InstallPlan,
     InteractionResolveResult,
@@ -55,7 +64,7 @@ from backend.contracts.plugin import (  # noqa: E402
     PluginTaskSnapshot,
     UninstallResult,
 )
-from backend.contracts.presets_versions_dashboards import (  # noqa: E402
+from backend.contracts.presets_versions_dashboards import (
     ContentVersionEntry,
     DashboardQueryLimits,
     DashboardQueryResult,
@@ -68,7 +77,7 @@ from backend.contracts.presets_versions_dashboards import (  # noqa: E402
     VersionCompareResult,
     VersionsResult,
 )
-from backend.contracts.relation_admin import (  # noqa: E402
+from backend.contracts.relation_admin import (
     RelationCreateTargetResult,
     RelationDeltaPreview,
     RelationDeltaResult,
@@ -76,7 +85,8 @@ from backend.contracts.relation_admin import (  # noqa: E402
     RelationSingleUpdateResult,
     SchemaDescribeResult,
 )
-from backend.contracts.settings_commands import (  # noqa: E402
+from backend.contracts.schema_v2 import SchemaSnapshotV2
+from backend.contracts.settings_commands import (
     CommandResult,
     CommandsResult,
     DeviceSettings,
@@ -85,9 +95,10 @@ from backend.contracts.settings_commands import (  # noqa: E402
     ShortcutEntry,
     ShortcutsResult,
 )
-from backend.contracts.system import HandshakeResult  # noqa: E402
-from backend.contracts.table_admin import IdentifierMappingsResult  # noqa: E402
-from backend.contracts.task import SessionPathGrant, TaskStatus  # noqa: E402
+from backend.contracts.system import HandshakeResult
+from backend.contracts.task import SessionPathGrant, TaskStatus
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -101,6 +112,12 @@ class ResultSpec:
 
 
 def _text(name: str) -> str:
+    if name in {"field_id", "fieldId"}:
+        return "fld_00000001"
+    if name in {"provider_field_id", "providerFieldId"}:
+        return "pb_00000001"
+    if name in {"physical_name", "physicalName"}:
+        return "f_00000001"
     if name in {"created_at", "createdAt", "occurred_at", "occurredAt"}:
         return "2026-07-24T08:31:00Z"
     if name in {"started_at", "startedAt", "finished_at", "finishedAt"}:
@@ -136,24 +153,50 @@ def _text(name: str) -> str:
     return "sample-value"
 
 
-def _value(annotation: object, name: str) -> object:
+def _model_annotation(annotation: object) -> type[BaseModel] | None:
     origin = typing.get_origin(annotation)
     arguments = typing.get_args(annotation)
+    if origin is typing.Annotated:
+        return _model_annotation(arguments[0])
+    if origin in (typing.Union, types.UnionType):
+        for choice in arguments:
+            if choice is not type(None) and (model := _model_annotation(choice)) is not None:
+                return model
+        return None
+    if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def _value(
+    annotation: object,
+    name: str,
+    model_stack: tuple[type[BaseModel], ...] = (),
+) -> object:
+    if name == "archive_policy":
+        return {"mode": "none", "fieldId": None, "archivedValue": None}
+    origin = typing.get_origin(annotation)
+    arguments = typing.get_args(annotation)
+    if origin is typing.Annotated:
+        return _value(arguments[0], name, model_stack)
     if origin in (typing.Union, types.UnionType):
         choices = [item for item in arguments if item is not type(None)]
-        return _value(choices[0], name) if choices else None
+        return _value(choices[0], name, model_stack) if choices else None
     if origin is typing.Literal:
         return arguments[0]
     if origin is list:
-        return [_value(arguments[0] if arguments else typing.Any, name)]
+        item_type = arguments[0] if arguments else typing.Any
+        if (model := _model_annotation(item_type)) is not None and model in model_stack:
+            return []
+        return [_value(item_type, name, model_stack)]
     if origin is tuple:
-        return [_value(item, name) for item in arguments if item is not Ellipsis]
+        return [_value(item, name, model_stack) for item in arguments if item is not Ellipsis]
     if origin in (dict, typing.Mapping):
         return {}
     if annotation is typing.Any:
         return {}
     if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
-        return _model_payload(annotation)
+        return _model_payload(annotation, model_stack)
     if inspect.isclass(annotation) and issubclass(annotation, enum.Enum):
         return next(iter(annotation)).value
     if annotation is dt.datetime:
@@ -189,11 +232,15 @@ def _product_payload(model: type[ProductParams]) -> dict[str, object]:
     return model.model_validate(result).model_dump(mode="json")
 
 
-def _model_payload(model: type[BaseModel]) -> dict[str, object]:
+def _model_payload(
+    model: type[BaseModel],
+    model_stack: tuple[type[BaseModel], ...] = (),
+) -> dict[str, object]:
+    model_stack = (*model_stack, model)
     if issubclass(model, ProductParams):
         return _product_payload(model)
     if issubclass(model, RootModel):
-        value = _value(model.model_fields["root"].annotation, "root")
+        value = _value(model.model_fields["root"].annotation, "root", model_stack)
         return model.model_validate(value).model_dump(mode="json")
     raw: dict[str, object] = {}
     for name, field in model.model_fields.items():
@@ -203,7 +250,7 @@ def _model_payload(model: type[BaseModel]) -> dict[str, object]:
             elif model.__module__ == "backend.contracts.backup" and name == "sha256":
                 value = "a" * 64
             else:
-                value = _value(field.annotation, name)
+                value = _value(field.annotation, name, model_stack)
             raw[field.alias or name] = value
     return model.model_validate(raw).model_dump(mode="json", by_alias=True)
 
@@ -437,9 +484,6 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "history.applyRestore": _typed(RestoreResult),
         "history.previewRestore": _typed(RestorePreview),
         "history.read": _typed(HistoryPage),
-        "identifier.list": _typed(IdentifierMappingsResult),
-        "identifier.reconcile": _typed(IdentifierMappingsResult),
-        "identifier.updateAliases": _typed(IdentifierMappingsResult),
         "insights.dashboardQueryLimits": _typed(DashboardQueryLimits),
         "insights.deleteDashboardWorkspace": _manual(
             "DeleteDashboardWorkspaceResult",
@@ -450,11 +494,16 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "insights.panelManifest": _typed(PanelManifestResult),
         "insights.readDashboardWorkspace": _typed(DashboardWorkspaceResult),
         "insights.saveDashboardDraft": _typed(SaveDashboardDraftResult),
+        "interface.commit": _typed(InterfaceSnapshot),
+        "interface.delete": _typed(InterfaceDeleteResult),
+        "interface.list": _typed(InterfaceListResult),
+        "interface.load": _typed(InterfaceSnapshot),
+        "contentProfile.commit": _typed(ContentProfileSnapshot),
+        "contentProfile.delete": _typed(ContentProfileDeleteResult),
+        "contentProfile.load": _typed(ContentProfileSnapshot),
         "lookup.list": _typed(LookupListResult),
-        "lookup.preview": _typed(LookupQueryResult),
         "lookup.query": _typed(LookupQueryResult),
         "lookup.valuePage": _typed(LookupCellValue),
-        "lookup.validate": _typed(LookupValidationResult),
         "mutation.apply": _manual("MutationReceipt", mutation_receipt, receipt_schema),
         "mutation.preview": _manual(
             "MutationPreviewResult",
@@ -500,6 +549,30 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             query_page,
             TypeAdapter(QueryPageResult).json_schema(by_alias=True),
         ),
+        "query.cursorOpen": _manual(
+            "QueryCursorWindowResult",
+            {
+                "rows": [{"id": "row-1"}],
+                "nextCursor": "opaque-cursor",
+                "hasMore": True,
+                "filteredRows": 2,
+                "totalRows": 2,
+                "querySnapshot": query_page["snapshot"],
+            },
+            TypeAdapter(QueryCursorWindowResult).json_schema(by_alias=True),
+        ),
+        "query.cursorFetch": _manual(
+            "QueryCursorWindowResult",
+            {
+                "rows": [{"id": "row-2"}],
+                "nextCursor": None,
+                "hasMore": False,
+                "filteredRows": 2,
+                "totalRows": 2,
+                "querySnapshot": query_page["snapshot"],
+            },
+            TypeAdapter(QueryCursorWindowResult).json_schema(by_alias=True),
+        ),
         "query.view": _manual(
             "QueryViewResult",
             query_view,
@@ -518,58 +591,61 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 "currentDataRevision": 2,
             },
         ),
+        "recordDocumentLink.commit": _typed(RecordDocumentLinkSnapshot),
+        "recordDocumentLink.delete": _typed(RecordDocumentLinkDeleteResult),
+        "recordDocumentLink.list": _typed(RecordDocumentLinkListResult),
+        "recordDocumentLink.repair": _typed(RecordDocumentLinkSnapshot),
         "relation.applyDelta": _typed(RelationDeltaResult),
         "relation.createTarget": _typed(RelationCreateTargetResult),
         "relation.previewDelta": _typed(RelationDeltaPreview),
         "relation.searchTargets": _typed(RelationSearchResult),
         "relation.updateSingle": _typed(RelationSingleUpdateResult),
-        "schema.apply": _manual("TableDefinition", table, table_schema),
+        "schema.table.create": _manual(
+            "SchemaTableCreateReceipt",
+            {
+                "contract": "vibetable.schema.v2",
+                "operationId": "operation-create-table-12345678",
+                "tableId": "tbl_1234567890abcdefghij",
+                "displayName": "订单",
+                "schemaRevision": "schema_0001",
+            },
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["contract", "operationId", "tableId", "displayName", "schemaRevision"],
+                "properties": {
+                    "contract": {"const": "vibetable.schema.v2"},
+                    "operationId": {"type": "string", "minLength": 1},
+                    "tableId": {"type": "string", "minLength": 1},
+                    "displayName": {"type": "string", "minLength": 1},
+                    "schemaRevision": {"type": "string", "minLength": 1},
+                },
+            },
+        ),
         "schema.delete": _manual(
             "SchemaDeleteResult",
             {"deleted": True, "tableId": "orders"},
         ),
         "schema.describe": _typed(SchemaDescribeResult),
-        "schema.getTable": _manual("TableDefinition", table, table_schema),
+        "schema.getTable": _typed(SchemaSnapshotV2),
         "schema.list": _manual(
             "SchemaListResult",
-            {"tables": [table]},
+            {"tables": [{"tableId": "orders", "displayName": "Orders", "kind": "base"}]},
             {
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["tables"],
                 "properties": {
-                    "tables": {"type": "array", "items": table_schema},
-                },
-            },
-        ),
-        "schema.validate": _manual(
-            "SchemaValidationResult",
-            {
-                "definition": table,
-                "capabilities": {
-                    "text": {
-                        "storage": "text",
-                        "exact": True,
-                        "note": "provider-neutral text storage",
-                    }
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["definition", "capabilities"],
-                "properties": {
-                    "definition": table_schema,
-                    "capabilities": {
-                        "type": "object",
-                        "additionalProperties": {
+                    "tables": {
+                        "type": "array",
+                        "items": {
                             "type": "object",
                             "additionalProperties": False,
-                            "required": ["storage", "exact"],
+                            "required": ["tableId", "displayName", "kind"],
                             "properties": {
-                                "storage": {"type": "string"},
-                                "exact": {"type": "boolean"},
-                                "note": {"type": "string"},
+                                "tableId": {"type": "string", "minLength": 1},
+                                "displayName": {"type": "string", "minLength": 1},
+                                "kind": {"enum": ["base", "view"]},
                             },
                         },
                     },

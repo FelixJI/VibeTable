@@ -74,19 +74,6 @@ public sealed class C1DataIoContractsFixtureTests
         Assert.AreEqual(150, result.RowsWritten);
     }
 
-    [TestMethod]
-    public void RelationProjectionResultFixture_Deserializes_DeepFields()
-    {
-        var json = ReadFixture("table-c1-data-io-contracts.json");
-        using var doc = JsonDocument.Parse(json);
-        var resultElement = doc.RootElement.GetProperty("relationProjection").GetProperty("result");
-        var result = JsonSerializer.Deserialize<RelationProjectionResult>(resultElement.GetRawText(), Options);
-
-        Assert.IsNotNull(result);
-        Assert.AreEqual(2, result!.RelationColumns.Count);
-        Assert.AreEqual("project.code", result.RelationColumns[0].DisplayPath);
-    }
-
     private static string ReadFixture(string name)
     {
         var path = Path.Combine(AppContext.BaseDirectory, "fixtures", name);

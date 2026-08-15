@@ -1,6 +1,7 @@
 package query_test
 
 import (
+	stdsql "database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pocketbase/dbx"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
+	_ "modernc.org/sqlite"
 )
 
 func TestNormalizeEnforcesProductFilterTreeBudgets(t *testing.T) {
@@ -71,6 +74,51 @@ func TestCompilerMatchesGoldenOperatorsAndParameterizesValues(t *testing.T) {
 	if !strings.Contains(plan.SQL, `ORDER BY "amount" IS NULL ASC, "amount" DESC, "id" ASC`) {
 		t.Fatalf("stable sort is missing: %s", plan.SQL)
 	}
+}
+
+func TestKeysetCompilerUsesNullValueAndPrimaryKeyTupleWithoutOffset(t *testing.T) {
+	descriptor := descriptorFixture()
+	nullsLast := true
+	input := query.TableQuery{
+		Sorts: []query.SortCondition{{
+			Field: "amount", Direction: query.SortDescending, NullsLast: &nullsLast,
+		}},
+		Limit: 2,
+	}
+	plan, err := query.CompileKeyset(
+		descriptor,
+		input,
+		[]any{false, float64(100), "record-a"},
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.SQL, "OFFSET") ||
+		!strings.Contains(plan.SQL, `"amount" IS NULL >`) ||
+		!strings.Contains(plan.SQL, `"amount" <`) ||
+		!strings.Contains(plan.SQL, `"id" >`) ||
+		!strings.HasSuffix(plan.SQL, "LIMIT {:limit}") {
+		t.Fatalf("keyset SQL = %s", plan.SQL)
+	}
+	if plan.Params["limit"] != 3 {
+		t.Fatalf("keyset params = %#v", plan.Params)
+	}
+}
+
+func TestKeysetCompilerRejectsRelationPathSortInsteadOfFallingBack(t *testing.T) {
+	_, err := query.CompileKeyset(
+		descriptorFixture(),
+		query.TableQuery{
+			Sorts: []query.SortCondition{{
+				Field: "customer.name", Direction: query.SortAscending,
+			}},
+			Limit: 10,
+		},
+		nil,
+		11,
+	)
+	assertProductError(t, err, "query.cursor.unsupported_sort")
 }
 
 func TestPresenceCompanionControlsFilterSortAndAggregateSemantics(t *testing.T) {
@@ -466,6 +514,100 @@ func TestAggregateCompilerRejectsOutputCollisionsAndBoundsRows(t *testing.T) {
 	}
 	if !strings.HasSuffix(sql, " LIMIT {:aggregate_limit}") || params["aggregate_limit"] != 1000 {
 		t.Fatalf("aggregate limit missing: sql=%s params=%#v", sql, params)
+	}
+}
+
+func TestAggregateCompilerExecutesDistinctUtcBucketAndDeterministicTopN(t *testing.T) {
+	descriptor := descriptorFixture()
+	sql, params, err := query.CompileAggregate(descriptor, query.AggregateQuery{
+		GroupBy: []string{"status"},
+		Metrics: []query.AggregateMetric{{
+			Function: query.AggregateCountDistinct,
+			Field:    "name",
+			Alias:    "unique_names",
+		}},
+		TimeBucket: &query.AggregateTimeBucket{
+			Field: "created_at",
+			Unit:  query.GroupBucketMonth,
+		},
+		TopN:  5,
+		Limit: 100,
+	})
+	if err != nil {
+		t.Fatalf("CompileAggregate(semantic query): %v", err)
+	}
+	for _, expected := range []string{
+		`strftime({:p0}, "created_at") AS "created_at"`,
+		`COUNT(DISTINCT "name") AS "unique_names"`,
+		`ORDER BY "unique_names" DESC, "status" ASC, "created_at" ASC`,
+	} {
+		if !strings.Contains(sql, expected) {
+			t.Fatalf("aggregate SQL omitted %q: %s", expected, sql)
+		}
+	}
+	if params["aggregate_limit"] != 5 {
+		t.Fatalf("top N did not bind the effective limit: %#v", params)
+	}
+	if params["p0"] != "%Y-%m-01T00:00:00Z" {
+		t.Fatalf("month bucket format was not bound: %#v", params)
+	}
+}
+
+func TestAggregateCompilerBindsUtcMondayWeekBucketFormats(t *testing.T) {
+	descriptor := descriptorFixture()
+	sql, params, err := query.CompileAggregate(descriptor, query.AggregateQuery{
+		Metrics: []query.AggregateMetric{{Function: query.AggregateCount, Alias: "count"}},
+		TimeBucket: &query.AggregateTimeBucket{
+			Field: "created_at",
+			Unit:  query.GroupBucketWeek,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileAggregate(week bucket): %v", err)
+	}
+	want := `strftime({:p0}, julianday("created_at") - ((CAST(strftime({:p1}, "created_at") AS INTEGER) + 6) % 7))`
+	if !strings.Contains(sql, want) {
+		t.Fatalf("week bucket SQL = %s, want expression %s", sql, want)
+	}
+	if params["p0"] != "%Y-%m-%dT00:00:00Z" || params["p1"] != "%w" {
+		t.Fatalf("week bucket formats were not bound: %#v", params)
+	}
+
+	sqlDB, err := stdsql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	sqlDB.SetMaxOpenConns(1)
+	database := dbx.NewFromDB(sqlDB, "sqlite")
+	if _, err := database.NewQuery(`
+		CREATE TABLE orders (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+		INSERT INTO orders (id, created_at) VALUES
+			('sunday-before', '2026-08-09T23:59:59Z'),
+			('monday-start', '2026-08-10T00:00:00Z'),
+			('sunday-after', '2026-08-16T23:59:59Z');
+	`).Execute(); err != nil {
+		t.Fatalf("seed week bucket fixture: %v", err)
+	}
+	type bucketRow struct {
+		Week  string `db:"created_at"`
+		Count int    `db:"count"`
+	}
+	var rows []bucketRow
+	if err := database.NewQuery(sql).Bind(dbx.Params(params)).All(&rows); err != nil {
+		t.Fatalf("execute compiled week bucket query: %v", err)
+	}
+	wantRows := []bucketRow{
+		{Week: "2026-08-03T00:00:00Z", Count: 1},
+		{Week: "2026-08-10T00:00:00Z", Count: 2},
+	}
+	if len(rows) != len(wantRows) {
+		t.Fatalf("week bucket rows = %#v, want %#v", rows, wantRows)
+	}
+	for index := range wantRows {
+		if rows[index] != wantRows[index] {
+			t.Fatalf("week bucket rows = %#v, want %#v", rows, wantRows)
+		}
 	}
 }
 

@@ -110,7 +110,6 @@ public sealed record ApplyImportParams(
     string Collection,
     string Token,
     string Mode,
-    int ChunkSize,
     string IdempotencyPrefix);
 
 public sealed record ImportChunkResult(
@@ -154,24 +153,3 @@ public sealed record ExportResult(
 public sealed record GenerateTemplateParams(string Collection, string GrantId, string Format);
 
 public sealed record TemplateResult(string Collection, string GrantId, string DisplayName);
-
-// --- Relation workspace ---
-
-public sealed record RelationProjectionParams(
-    string Collection,
-    TableQuery Query,
-    IReadOnlyList<string> Relations,
-    int MaxDepth);
-
-public sealed record RelationColumn(
-    string Relation,
-    string Field,
-    string RelatedCollection,
-    string DisplayPath);
-
-public sealed record RelationProjectionResult(
-    string Collection,
-    IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows,
-    IReadOnlyList<RelationColumn> RelationColumns,
-    IReadOnlyList<string> RestrictedRelations,
-    string CapabilityHash);

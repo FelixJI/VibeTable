@@ -1,11 +1,19 @@
 import { BridgeOperationError } from "@/bridge/hostBridge";
 import {
+  BindingRuntime,
+  enforceManifestMinimum,
   getDashboardTemplate,
   type Dashboard,
   type DashboardPanel,
   type DashboardTemplateId,
+  validatePanelManifest,
 } from "@/dashboard";
-import { useDashboardDraftStore, useDashboardStore, type DashboardManagedConfig } from "@/stores/dashboardStore";
+import {
+  cloneDashboardData,
+  useDashboardDraftStore,
+  useDashboardStore,
+  type DashboardManagedConfig,
+} from "@/stores/dashboardStore";
 import type {
   DashboardManagedConfigPayload,
   DashboardPanelQueryPayload,
@@ -16,6 +24,7 @@ import type {
 import { useHostBridge } from "./bridgeContext";
 import { getLocale } from "@/i18n";
 import { inject, provide, toRaw, type InjectionKey } from "vue";
+import { DashboardQueryExecutor, DashboardSchemaCatalog } from "./dashboardBindingPorts";
 
 interface QueryResultWire {
   readonly rows?: readonly Record<string, unknown>[];
@@ -41,28 +50,29 @@ export function useDashboardService() {
   const store = useDashboardStore();
   const draft = useDashboardDraftStore();
   const queue = new DashboardQueryQueue(6);
+  const schemaCatalog = new DashboardSchemaCatalog(bridge);
+  const bindingRuntime = new BindingRuntime(schemaCatalog, new DashboardQueryExecutor(bridge));
   let generation = 0;
   let refreshTimer: number | null = null;
   let realtimeTimer: number | null = null;
   let disposed = false;
+  let visiblePanelIds: Set<string> | null = null;
   const unsubscribe: Array<() => void> = [];
   const activeQueryRequestIds = new Set<string>();
-  const activePanelRequestIds = new Map<string, string>();
+  const activePanelControllers = new Map<string, AbortController>();
   const panelGenerations = new Map<string, number>();
 
   function init(): void {
-    unsubscribe.push(bridge.on("database.opened", (payload) => {
-      const enabled = payload.features?.dashboards === true;
-      store.setFeatureEnabled(enabled);
-      if (enabled) {
-        void loadManifest();
-        void list();
-      }
-      else store.reset();
+    unsubscribe.push(bridge.on("database.opened", () => {
+      schemaCatalog.invalidate();
+      store.reset();
+      void loadManifest();
+      void list();
     }));
     unsubscribe.push(bridge.on("data.changed", (payload) => {
       if (!store.current || document.hidden) return;
       const collection = payload.tableId;
+      schemaCatalog.invalidate(collection);
       if (collection === "vibetable_dashboards" || collection === "vibetable_panels" ||
           collection === "vibetable_dashboard_configs" || dependsOnCollection(collection)) {
         store.markAllStale();
@@ -89,7 +99,6 @@ export function useDashboardService() {
   }
 
   async function list(): Promise<void> {
-    if (!store.featureEnabled) return;
     store.beginList();
     try {
       const result = await bridge.request("dashboard.listRequested", {});
@@ -100,7 +109,6 @@ export function useDashboardService() {
   }
 
   async function loadManifest(): Promise<void> {
-    if (!store.featureEnabled) return;
     try {
       const result = await bridge.request("dashboard.manifestRequested", {});
       if (!disposed) store.receiveManifest(result);
@@ -113,6 +121,7 @@ export function useDashboardService() {
     generation += 1;
     cancelActiveQueries();
     queue.clear();
+    visiblePanelIds = null;
     store.beginLoad();
     const selectedGeneration = generation;
     try {
@@ -128,17 +137,23 @@ export function useDashboardService() {
   }
 
   async function refresh(): Promise<void> {
-    if (!store.current || store.offline || document.hidden) return;
+    if (!store.current || (store.phase !== "ready" && store.phase !== "failed") ||
+        store.offline || document.hidden) return;
     generation += 1;
     cancelActiveQueries();
     queue.clear();
     const refreshGeneration = generation;
+    store.beginRefresh();
     store.markAllStale();
     await queryAllPanels(refreshGeneration);
   }
 
   function beginEdit(): void {
     if (store.current) draft.begin(store.current, store.config, store.revision);
+  }
+
+  function describeCollection(collectionId: string, signal: AbortSignal) {
+    return schemaCatalog.describe(collectionId, signal);
   }
 
   function discardEdit(): void {
@@ -162,7 +177,7 @@ export function useDashboardService() {
         rawType: item.type,
         productType: item.type,
         editable: true,
-        position: { ...item.position },
+        position: enforceManifestMinimum(item.position, store.panelManifest[item.type]),
         options: {},
         query: {},
         rawOptions: {},
@@ -189,13 +204,13 @@ export function useDashboardService() {
       const id = `draft:${crypto.randomUUID()}`;
       panelIds[panel.id] = id;
       return {
-        ...structuredClone(toRaw(panel)),
+        ...cloneDashboardData(toRaw(panel)),
         id,
         dashboardId,
       };
     });
-    const config = remapManagedConfig(structuredClone(toRaw(store.config)), panelIds);
-    draft.begin({ ...structuredClone(toRaw(store.current)), id: dashboardId, name, panels }, config, null);
+    const config = remapManagedConfig(cloneDashboardData(toRaw(store.config)), panelIds);
+    draft.begin({ ...cloneDashboardData(toRaw(store.current)), id: dashboardId, name, panels }, config, null);
     draft.dirty = true;
     return skipped;
   }
@@ -203,6 +218,14 @@ export function useDashboardService() {
   async function save(): Promise<void> {
     const source = draft.draft;
     if (!source || !draft.dirty) return;
+    const invalid = source.panels.filter((panel) => panel.editable).flatMap((panel) =>
+      panel.productType === "custom" || panel.productType === "unknown"
+        ? []
+        : validatePanelManifest(panel, store.panelManifest[panel.productType]));
+    if (invalid.length > 0) {
+      store.fail(invalid.map((item) => item.message).join(" "));
+      return;
+    }
     store.beginSave();
     const isNew = source.id.startsWith("draft:");
     const payload = {
@@ -256,7 +279,6 @@ export function useDashboardService() {
       stopRefreshTimer();
       draft.stop();
       store.reset();
-      store.setFeatureEnabled(true);
       await Promise.all([loadManifest(), list()]);
     } catch (error) {
       store.fail(errorMessage(error));
@@ -266,7 +288,10 @@ export function useDashboardService() {
   async function queryAllPanels(expectedGeneration = generation): Promise<void> {
     const dashboard = store.current;
     if (!dashboard || expectedGeneration !== generation) return;
-    const tasks = dashboard.panels.map((panel, index) => queue.enqueue(
+    const queryable = visiblePanelIds
+      ? dashboard.panels.filter((panel) => visiblePanelIds!.has(panel.id))
+      : dashboard.panels;
+    const tasks = queryable.map((panel, index) => queue.enqueue(
       () => queryPanel(panel, expectedGeneration, store.config),
       index,
     ));
@@ -285,61 +310,64 @@ export function useDashboardService() {
     const baseQuery = toWireDashboardQuery(panel);
     if (!baseQuery) return;
     store.setPanelState(panel.id, { state: "loading", error: null });
-    let requestId: string | null = null;
-    try {
-      const query = withRuntimeFilters(baseQuery, panel.id, runtimeConfig, store.sessionFilterValues);
-      const handle = bridge.requestWithHandle("dashboard.queryRequested", {
-        panelType: editableType(panel.productType),
-        query,
-      });
-      requestId = handle.requestId;
-      const previousRequestId = activePanelRequestIds.get(panel.id);
-      if (previousRequestId && previousRequestId !== handle.requestId) {
-        bridge.notify("dashboard.cancelRequested", { targetRequestId: previousRequestId });
-        activeQueryRequestIds.delete(previousRequestId);
-      }
-      activeQueryRequestIds.add(handle.requestId);
-      activePanelRequestIds.set(panel.id, handle.requestId);
-      const result = await handle.promise as QueryResultWire;
-      const activePanels = draft.editing ? draft.draft?.panels : store.current?.panels;
-      if (expectedGeneration !== generation ||
-          (expectedPanelGeneration !== undefined && panelGenerations.get(panel.id) !== expectedPanelGeneration) ||
-          activePanelRequestIds.get(panel.id) !== handle.requestId ||
-          !activePanels?.some((item) => item.id === panel.id)) return;
-      const occupied = Object.entries(store.panelData)
-        .filter(([id]) => id !== panel.id)
-        .reduce((count, [id, item]) => {
-          const occupiedPanel = activePanels.find((candidate) => candidate.id === id);
-          return count + item.rows.length * (occupiedPanel ? panelPointWeight(occupiedPanel) : 1);
-        }, 0);
-      const remainingPoints = Math.max(0, DASHBOARD_MEMORY_POINT_LIMIT - occupied);
-      const sourceRows = Array.isArray(result.rows) ? result.rows : [];
-      const rows = sourceRows.slice(0, Math.floor(remainingPoints / panelPointWeight(panel)));
+    const controller = new AbortController();
+    activePanelControllers.get(panel.id)?.abort(new DOMException("Superseded", "AbortError"));
+    activePanelControllers.set(panel.id, controller);
+    const filtered = withRuntimeFilters(baseQuery, panel.id, runtimeConfig, store.sessionFilterValues);
+    const baseFilterCount = baseQuery.filters?.length ?? 0;
+    const result = await bindingRuntime.evaluate({
+      panelId: panel.id,
+      panelType: editableType(panel.productType),
+      query: baseQuery,
+    }, {
+      limits: store.limits,
+      runtimeFilters: (filtered.filters ?? []).slice(baseFilterCount),
+    }, controller.signal);
+    const activePanels = draft.editing ? draft.draft?.panels : store.current?.panels;
+    if (expectedGeneration !== generation ||
+        (expectedPanelGeneration !== undefined && panelGenerations.get(panel.id) !== expectedPanelGeneration) ||
+        activePanelControllers.get(panel.id) !== controller ||
+        !activePanels?.some((item) => item.id === panel.id)) return;
+    activePanelControllers.delete(panel.id);
+    if (result.state === "cancelled") return;
+    if (result.state === "drift") {
       store.setPanelState(panel.id, {
-        state: "ready",
-        rows,
-        truncated: result.truncated === true || rows.length < sourceRows.length,
-        maxPoints: typeof result.maxPoints === "number" ? result.maxPoints : 1,
-        updatedAt: Date.now(),
-        error: null,
+        state: "failed",
+        error: result.diagnostics.map((item) => item.message).join(" "),
       });
-    } catch (error) {
-      if (expectedGeneration !== generation ||
-          (expectedPanelGeneration !== undefined && panelGenerations.get(panel.id) !== expectedPanelGeneration) ||
-          (requestId !== null && activePanelRequestIds.get(panel.id) !== requestId)) return;
-      store.setPanelState(panel.id, { state: "failed", error: errorMessage(error) });
-    } finally {
-      if (requestId) activeQueryRequestIds.delete(requestId);
-      if (requestId && activePanelRequestIds.get(panel.id) === requestId) activePanelRequestIds.delete(panel.id);
+      return;
     }
+    if (result.state === "error") {
+      store.setPanelState(panel.id, { state: "failed", error: result.error.message });
+      return;
+    }
+    const occupied = Object.entries(store.panelData)
+      .filter(([id]) => id !== panel.id)
+      .reduce((count, [id, item]) => {
+        const occupiedPanel = activePanels.find((candidate) => candidate.id === id);
+        return count + item.rows.length * (occupiedPanel ? panelPointWeight(occupiedPanel) : 1);
+      }, 0);
+    const remainingPoints = Math.max(0, DASHBOARD_MEMORY_POINT_LIMIT - occupied);
+    const rows = result.rows.slice(0, Math.floor(remainingPoints / panelPointWeight(panel)));
+    store.setPanelState(panel.id, {
+      state: "ready",
+      rows,
+      truncated: result.truncated || rows.length < result.rows.length,
+      maxPoints: result.maxPoints,
+      updatedAt: Date.now(),
+      error: null,
+    });
   }
 
   function cancelActiveQueries(): void {
+    for (const controller of activePanelControllers.values()) {
+      controller.abort(new DOMException("Cancelled", "AbortError"));
+    }
+    activePanelControllers.clear();
     for (const requestId of activeQueryRequestIds) {
       bridge.notify("dashboard.cancelRequested", { targetRequestId: requestId });
     }
     activeQueryRequestIds.clear();
-    activePanelRequestIds.clear();
   }
 
   function configureRefreshTimer(): void {
@@ -464,12 +492,7 @@ export function useDashboardService() {
   async function previewPanel(panel: DashboardPanel): Promise<void> {
     const panelGeneration = (panelGenerations.get(panel.id) ?? 0) + 1;
     panelGenerations.set(panel.id, panelGeneration);
-    const activeRequestId = activePanelRequestIds.get(panel.id);
-    if (activeRequestId) {
-      bridge.notify("dashboard.cancelRequested", { targetRequestId: activeRequestId });
-      activeQueryRequestIds.delete(activeRequestId);
-      activePanelRequestIds.delete(panel.id);
-    }
+    activePanelControllers.get(panel.id)?.abort(new DOMException("Superseded", "AbortError"));
     await queue.enqueue(
       () => queryPanel(panel, generation, draft.editing ? draft.config : store.config, panelGeneration),
       0,
@@ -482,16 +505,32 @@ export function useDashboardService() {
     cancelActiveQueries();
     queue.clear();
     const expectedGeneration = generation;
-    await Promise.allSettled(draft.draft.panels.map((panel, index) => queue.enqueue(
+    const queryable = visiblePanelIds
+      ? draft.draft.panels.filter((panel) => visiblePanelIds!.has(panel.id))
+      : draft.draft.panels;
+    await Promise.allSettled(queryable.map((panel, index) => queue.enqueue(
       () => queryPanel(panel, expectedGeneration, draft.config),
       index,
     )));
+  }
+
+  function setVisiblePanels(panelIds: readonly string[]): void {
+    const previous = visiblePanelIds;
+    visiblePanelIds = new Set(panelIds);
+    for (const panelId of visiblePanelIds) {
+      if (previous?.has(panelId)) continue;
+      const panel = (draft.editing ? draft.draft : store.current)?.panels.find((item) => item.id === panelId);
+      const data = store.panelData[panelId];
+      if (panel && (!data || data.state === "idle" || data.state === "stale")) void previewPanel(panel);
+    }
   }
 
   return {
     init, dispose, list, select, refresh, beginEdit, discardEdit,
     createFromTemplate, copyCurrent, save, deleteCurrent, queryAllPanels,
     previewPanel, refreshDraft, selectPanelValue, drilldown,
+    describeCollection,
+    setVisiblePanels,
   };
 }
 
@@ -701,9 +740,7 @@ function panelPointWeight(panel: DashboardPanel): number {
 
 function toWireDashboardQuery(panel: DashboardPanel): DashboardPanelQueryPayload | null {
   const query = panel.query;
-  const collection = typeof query.collection === "string"
-    ? query.collection
-    : typeof panel.options.collection === "string" ? panel.options.collection : "";
+  const collection = typeof query.collection === "string" ? query.collection : "";
   if (!collection) return null;
   if (query.kind === "records") {
     const fields = stringArray(query.fields);
@@ -744,36 +781,7 @@ function toWireDashboardQuery(panel: DashboardPanel): DashboardPanelQueryPayload
       topN: typeof query.topN === "number" ? boundedInteger(query.topN, 100, 1, 5_000) : null,
     };
   }
-
-  const legacyMetrics = Array.isArray(query.metrics) ? query.metrics : [];
-  if (panel.productType === "list") {
-    const fields = stringArray(query.fields ?? query.dimensions ?? panel.options.fields);
-    return fields.length === 0 ? null : {
-      kind: "records",
-      collection,
-      fields,
-      filters: filterConditions(query.filters),
-      sorts: sortConditions(query.sorts),
-      limit: boundedInteger(query.limit, 20, 1, 100),
-    };
-  }
-  const measures = legacyMetrics.flatMap((value, index) => {
-    if (!isRecord(value) || !aggregateOp(value.aggregate)) return [];
-    return [{
-      key: typeof value.alias === "string" ? value.alias : `measure${index + 1}`,
-      op: value.aggregate,
-      field: typeof value.field === "string" && value.field !== "*" ? value.field : null,
-    }];
-  });
-  if (measures.length === 0) return null;
-  return {
-    kind: "aggregate",
-    collection,
-    dimensions: stringArray(query.dimensions ?? query.groupBy),
-    measures,
-    filters: filterConditions(query.filters),
-    limit: boundedInteger(query.limit, 100, 1, 100_000),
-  };
+  return null;
 }
 
 function filterConditions(value: unknown): FilterCondition[] {
@@ -813,21 +821,16 @@ function aggregateOp(value: unknown): value is "count" | "countDistinct" | "sum"
     value === "avg" || value === "min" || value === "max";
 }
 
-function timeUnit(value: unknown): value is "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year" {
-  return value === "minute" || value === "hour" || value === "day" || value === "week" ||
-    value === "month" || value === "quarter" || value === "year";
+function timeUnit(value: unknown): value is "day" | "week" | "month" {
+  return value === "day" || value === "week" || value === "month";
 }
 
 function timeBucketFilters(field: string, unit: string, value: string): FilterCondition[] {
   const start = new Date(value);
   if (!Number.isFinite(start.getTime())) return [{ field, operator: "eq", value }];
   const end = new Date(start.getTime());
-  if (unit === "minute") end.setUTCMinutes(end.getUTCMinutes() + 1);
-  else if (unit === "hour") end.setUTCHours(end.getUTCHours() + 1);
-  else if (unit === "week") end.setUTCDate(end.getUTCDate() + 7);
+  if (unit === "week") end.setUTCDate(end.getUTCDate() + 7);
   else if (unit === "month") end.setUTCMonth(end.getUTCMonth() + 1);
-  else if (unit === "quarter") end.setUTCMonth(end.getUTCMonth() + 3);
-  else if (unit === "year") end.setUTCFullYear(end.getUTCFullYear() + 1);
   else end.setUTCDate(end.getUTCDate() + 1);
   return [
     { field, operator: "gte", value: start.toISOString() },

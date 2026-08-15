@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
 import type {
   CapabilityV2,
@@ -43,17 +43,17 @@ export interface RelationTableOption {
 export const useFieldSettingsStore = defineStore("field-settings", () => {
   const open = ref(false);
   const phase = ref<FieldSettingsPhase>("idle");
-  const result = ref<FieldSettingsDescribeResultV2 | null>(null);
-  const original = ref<FieldDraftV2 | null>(null);
-  const draft = ref<FieldDraftV2 | null>(null);
+  const result = shallowRef<FieldSettingsDescribeResultV2 | null>(null);
+  const original = shallowRef<FieldDraftV2 | null>(null);
+  const draft = shallowRef<FieldDraftV2 | null>(null);
   const action = ref<FieldChangeActionV2>("create");
   const conversionRule = ref("");
   const confirmation = ref("");
   const backupReceipt = ref("");
-  const plan = ref<FieldChangePlanV2 | null>(null);
-  const receipt = ref<FieldApplyReceiptV2 | null>(null);
-  const migration = ref<FieldMigrationStatusV2 | null>(null);
-  const recycled = ref<readonly FieldDefinitionV2[]>([]);
+  const plan = shallowRef<FieldChangePlanV2 | null>(null);
+  const receipt = shallowRef<FieldApplyReceiptV2 | null>(null);
+  const migration = shallowRef<FieldMigrationStatusV2 | null>(null);
+  const recycled = shallowRef<readonly FieldDefinitionV2[]>([]);
   const confirmations = ref<string[]>([]);
   const error = ref<string | null>(null);
   const errorCode = ref<string | null>(null);

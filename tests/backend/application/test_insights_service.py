@@ -12,6 +12,7 @@ from backend.contracts.presets_versions_dashboards import (
     DashboardAggregateQuery,
     DashboardMeasure,
     DashboardRecordQuery,
+    DashboardTimeBucket,
     PanelEntry,
     PanelSelection,
 )
@@ -72,6 +73,28 @@ def test_compile_aggregate_query_emits_product_metrics() -> None:
             "metrics": [{"function": "sum", "field": "amount", "alias": "total"}],
             "limit": 100,
         },
+    }
+
+
+def test_compile_aggregate_query_preserves_distinct_bucket_and_top_n() -> None:
+    compiled = compile_dashboard_query(
+        DashboardAggregateQuery(
+            collection="orders",
+            dimensions=["region"],
+            measures=[DashboardMeasure(key="buyers", op="countDistinct", field="buyer")],
+            time_bucket=DashboardTimeBucket(field="createdAt", unit="day"),
+            top_n=9,
+        ),
+        panel_type="bar",
+    )
+
+    assert compiled.params["aggregate"] == {
+        "filters": [],
+        "groupBy": ["region"],
+        "metrics": [{"function": "countDistinct", "field": "buyer", "alias": "buyers"}],
+        "timeBucket": {"field": "createdAt", "unit": "day", "timezone": "UTC"},
+        "topN": 9,
+        "limit": 100,
     }
 
 

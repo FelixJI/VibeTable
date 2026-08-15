@@ -20,8 +20,10 @@ import (
 )
 
 func (runtime *Runtime) registerHandlers() {
+	runtime.registerWorkspaceDiagnosticsHandler()
 	runtime.registerHistoryRestoreHandlers()
 	runtime.registerFileHistoryHandlers()
+	runtime.registerWorkspaceSearchHandlers()
 	runtime.registerSnapshotExportHandler()
 	runtime.registerSnapshotExtractHandlers()
 	runtime.registerSnapshotRestoreHandlers()

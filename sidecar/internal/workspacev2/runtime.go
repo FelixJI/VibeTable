@@ -22,11 +22,13 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	conflictresolution "github.com/vibetable/vibetable/sidecar/internal/conflict"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
+	workbenchcontracts "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/replica"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacesearch"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 	_ "modernc.org/sqlite"
 )
@@ -47,6 +49,9 @@ type Options struct {
 	ReplicaDeviceID          string
 	ReplicaDependencyScanner replica.ConflictDependencyScanner
 	DisableReplicaWorker     bool
+	// DeferBackgroundWorkers keeps every mutable background owner stopped
+	// until StartBackgroundWorkers is called after pending restore finalization.
+	DeferBackgroundWorkers bool
 }
 
 // WorkspaceRepository is the workspace-owned capability contract. Storage
@@ -74,6 +79,18 @@ type Runtime struct {
 	headStore                *filehistory.SQLiteHeadStore
 	materializer             *filehistory.Materializer
 	history                  *filehistory.Service
+	search                   *workspacesearch.Engine
+	searchMu                 sync.Mutex
+	searchStatus             workbenchcontracts.SearchStatus
+	searchTaskCancel         context.CancelFunc
+	searchTaskWG             sync.WaitGroup
+	searchTargetCheckpoint   workspacesearch.ProjectionCheckpoint
+	searchProjectionCancel   context.CancelFunc
+	searchProjectionWG       sync.WaitGroup
+	searchProjectionPaused   bool
+	restoreSearchRebuild     func(context.Context) error
+	backgroundMu             sync.Mutex
+	backgroundStarted        bool
 	retention                *productionRetention
 	replicaConflict          *productionReplicaConflict
 	ingestor                 *filehistory.Ingestor
@@ -211,6 +228,12 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 	if err != nil {
 		return nil, err
 	}
+	result.search, err = workspacesearch.Open(
+		filepath.Join(paths.coordination, "workspace-search.db"),
+	)
+	if err != nil {
+		return nil, err
+	}
 	if err := result.recoverPreparedMutation(ctx); err != nil {
 		return nil, err
 	}
@@ -303,7 +326,13 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		fileAuditOutbox: result.headStore,
 		repository:      result.repository,
 		history:         result.history,
-		state:           result.state,
+		search:          result.search,
+		searchStatus: func() workbenchcontracts.SearchStatus {
+			result.searchMu.Lock()
+			defer result.searchMu.Unlock()
+			return result.searchStatus
+		},
+		state: result.state,
 	}
 	result.frozenSource = source
 	barrier, err := snapshot.NewCoordinatedBarrier(
@@ -319,9 +348,6 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		barrier,
 		result.catalog,
 	)
-	if err := result.startSnapshotScheduler(ctx); err != nil {
-		return nil, err
-	}
 	result.ingestor, err = filehistory.NewIngestor(result.history, nil)
 	if err != nil {
 		return nil, err
@@ -336,9 +362,6 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		result.recordWatchEvent,
 	)
 	if err != nil {
-		return nil, err
-	}
-	if err := result.watcher.Start(ctx); err != nil {
 		return nil, err
 	}
 	sequence, err := result.state.sequence(
@@ -392,15 +415,46 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 		result.loadAuthorityOperationReceipt,
 	)
 	result.registerHandlers()
-	result.retention.start()
-	if result.replicaConflict != nil && !options.DisableReplicaWorker {
-		// The replica worker can capture a protection snapshot while
-		// reconciling selected files. Start it only after every Runtime
-		// dependency (snapshot coordinator, ingestor, watcher and dispatcher)
-		// is fully initialized.
-		result.replicaConflict.startWorker()
+	if !options.DeferBackgroundWorkers {
+		if err := result.StartBackgroundWorkers(ctx, options.DisableReplicaWorker); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
+}
+
+// StartBackgroundWorkers is the single post-restore resume seam. Production
+// startup constructs the complete runtime with workers deferred, finalizes any
+// staged Snapshot restore, then starts scheduler/watcher/search/replica owners
+// before durable jobs resume.
+func (runtime *Runtime) StartBackgroundWorkers(
+	ctx context.Context,
+	disableReplicaWorker bool,
+) error {
+	if runtime == nil {
+		return errors.New("workspace.background_runtime_required")
+	}
+	runtime.backgroundMu.Lock()
+	defer runtime.backgroundMu.Unlock()
+	if runtime.backgroundStarted {
+		return nil
+	}
+	if err := runtime.startSnapshotScheduler(ctx); err != nil {
+		return err
+	}
+	if err := runtime.watcher.Start(ctx); err != nil {
+		runtime.schedulerCancel()
+		runtime.schedulerWG.Wait()
+		runtime.schedulerCancel = nil
+		return err
+	}
+	runtime.retention.start()
+	runtime.startSearchProjectionWorker()
+	if runtime.replicaConflict != nil && !disableReplicaWorker {
+		runtime.replicaConflict.startWorker()
+	}
+	runtime.backgroundStarted = true
+	return nil
 }
 
 func (runtime *Runtime) Dispatcher() *protocolv2.Dispatcher {
@@ -572,6 +626,7 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 		return nil
 	}
 	var closeErrors []error
+	runtime.quiesceWorkspaceSearch()
 	if runtime.schedulerCancel != nil {
 		runtime.schedulerCancel()
 		runtime.schedulerWG.Wait()
@@ -599,6 +654,10 @@ func (runtime *Runtime) Close(ctx context.Context) error {
 		closeErrors = append(closeErrors, runtime.drainFileHistoryAudit(ctx))
 		closeErrors = append(closeErrors, runtime.headStore.Close())
 		runtime.headStore = nil
+	}
+	if runtime.search != nil {
+		closeErrors = append(closeErrors, runtime.search.Close())
+		runtime.search = nil
 	}
 	if runtime.catalog != nil {
 		closeErrors = append(closeErrors, runtime.catalog.Close())

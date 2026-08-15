@@ -24,6 +24,7 @@ type queryOperationRequest struct {
 	View      *query.ViewQuery      `json:"view,omitempty"`
 	RowIDs    []string              `json:"rowIds,omitempty"`
 	Aggregate *query.AggregateQuery `json:"aggregate,omitempty"`
+	Cursor    *string               `json:"cursor,omitempty"`
 }
 
 type snapshotValidationRequest struct {
@@ -40,7 +41,7 @@ func registerQueryRoutes(
 		if err := decodeQueryRequest(request.Request.Body, &input); err != nil {
 			return writeQueryError(request, err)
 		}
-		if strings.TrimSpace(input.TableID) == "" {
+		if input.Operation != "cursor.fetch" && strings.TrimSpace(input.TableID) == "" {
 			return writeQueryError(request, invalidQueryRequest(
 				"tableId", "tableId is required",
 			))
@@ -66,6 +67,20 @@ func registerQueryRoutes(
 				return writeQueryError(request, err)
 			}
 			return request.JSON(http.StatusOK, result)
+		case "cursor.open":
+			result, err := port.OpenCursor(
+				request.Request.Context(), input.TableID, *input.Query,
+			)
+			if err != nil {
+				return writeQueryError(request, err)
+			}
+			return request.JSON(http.StatusOK, result)
+		case "cursor.fetch":
+			result, err := port.FetchCursor(request.Request.Context(), *input.Cursor)
+			if err != nil {
+				return writeQueryError(request, err)
+			}
+			return request.JSON(http.StatusOK, result)
 		case "readRows":
 			result, err := port.ReadRows(
 				request.Request.Context(), input.TableID, input.RowIDs,
@@ -84,7 +99,7 @@ func registerQueryRoutes(
 			return request.JSON(http.StatusOK, result)
 		}
 		return writeQueryError(request, invalidQueryRequest(
-			"operation", "operation must be view, page, readRows, or aggregate",
+			"operation", "operation must be view, page, cursor.open, cursor.fetch, readRows, or aggregate",
 		))
 	})
 
@@ -109,24 +124,33 @@ func registerQueryRoutes(
 func validateQueryOperation(input queryOperationRequest) error {
 	switch input.Operation {
 	case "view":
-		if input.View == nil || input.Query != nil || input.Aggregate != nil || input.RowIDs != nil {
+		if input.View == nil || input.Query != nil || input.Aggregate != nil || input.RowIDs != nil || input.Cursor != nil {
 			return invalidQueryRequest("operation", "view requires only view")
 		}
 	case "page":
-		if input.Query == nil || input.View != nil || input.Aggregate != nil || input.RowIDs != nil {
+		if input.Query == nil || input.View != nil || input.Aggregate != nil || input.RowIDs != nil || input.Cursor != nil {
 			return invalidQueryRequest("operation", "page requires only query")
 		}
+	case "cursor.open":
+		if input.Query == nil || input.View != nil || input.Aggregate != nil || input.RowIDs != nil || input.Cursor != nil {
+			return invalidQueryRequest("operation", "cursor.open requires only query")
+		}
+	case "cursor.fetch":
+		if input.Cursor == nil || strings.TrimSpace(*input.Cursor) == "" || input.TableID != "" ||
+			input.Query != nil || input.View != nil || input.Aggregate != nil || input.RowIDs != nil {
+			return invalidQueryRequest("operation", "cursor.fetch requires only cursor")
+		}
 	case "readRows":
-		if input.Query != nil || input.View != nil || input.Aggregate != nil || input.RowIDs == nil {
+		if input.Query != nil || input.View != nil || input.Aggregate != nil || input.RowIDs == nil || input.Cursor != nil {
 			return invalidQueryRequest("operation", "readRows requires only rowIds")
 		}
 	case "aggregate":
-		if input.Query != nil || input.View != nil || input.Aggregate == nil || input.RowIDs != nil {
+		if input.Query != nil || input.View != nil || input.Aggregate == nil || input.RowIDs != nil || input.Cursor != nil {
 			return invalidQueryRequest("operation", "aggregate requires only aggregate")
 		}
 	default:
 		return invalidQueryRequest(
-			"operation", "operation must be view, page, readRows, or aggregate",
+			"operation", "operation must be view, page, cursor.open, cursor.fetch, readRows, or aggregate",
 		)
 	}
 	return nil

@@ -62,7 +62,7 @@ def _release_build_info() -> dict[str, str]:
         "schemaVersion": versions.schema,
         "migrationHash": versions.migration_hash,
         "protocolV2Version": "2.0",
-        "workspaceFormat": "1",
+        "workspaceFormat": "2",
         "repositoryFormat": "kopia-v3",
         "snapshotFormat": "2",
         "packageFormat": "2",
@@ -96,7 +96,7 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.pocketbase == "0.39.9"
     assert versions.cel == "0.29.0"
     assert versions.contract == "v1"
-    assert versions.schema == "7"
+    assert versions.schema == "10"
     assert len(versions.migration_hash) == 64
 
 
@@ -187,7 +187,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "pocketBaseVersion": "0.39.9",
         "celVersion": "0.29.0",
         "contractVersion": "2.0",
-        "schemaVersion": "7",
+        "schemaVersion": "10",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }
@@ -215,7 +215,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "ageKeygen": "resources/sidecar/tools/age-keygen.exe",
     }
     assert manifest["formats"] == {
-        "workspace": 1,
+        "workspace": 2,
         "repository": "kopia-v3",
         "snapshot": 2,
         "package": 2,

@@ -80,13 +80,14 @@ export const useRelationLookupStore = defineStore("relationLookup", () => {
     return true;
   }
 
-  function acceptLookup(result: LookupQueryResult): boolean {
+  function acceptLookup(result: LookupQueryResult, currentDataRevision: number): boolean {
     const current = schema.value;
     if (!current || !isCurrent(result.requestGeneration, result.collection)) return false;
     if (
       result.schemaRevision !== current.schemaRevision
       || result.permissionRevision !== current.permissionRevision
       || result.lookupRevision !== current.lookupRevision
+      || result.snapshot.dataRevision !== currentDataRevision
     ) return false;
     lookupResult.value = result;
     return true;
@@ -118,17 +119,6 @@ export const useRelationLookupStore = defineStore("relationLookup", () => {
       selected: found
         ? draft.value.selected.filter((item) => targetKey(item) !== key)
         : [...draft.value.selected, cloneTarget(target)],
-    };
-  }
-
-  function patchDraftJunction(target: RelationTargetRef, values: Readonly<Record<string, unknown>>): void {
-    if (!draft.value) return;
-    const key = targetKey(target);
-    draft.value = {
-      ...draft.value,
-      selected: draft.value.selected.map((item) =>
-        targetKey(item) === key ? { ...item, junctionValues: { ...values } } : item,
-      ),
     };
   }
 
@@ -169,7 +159,6 @@ export const useRelationLookupStore = defineStore("relationLookup", () => {
     relation,
     openDraft,
     toggleDraftTarget,
-    patchDraftJunction,
     closeDraft,
     reset,
   };
@@ -177,10 +166,10 @@ export const useRelationLookupStore = defineStore("relationLookup", () => {
 
 export function targetKey(target: RelationTargetRef): string {
   // A target is selected at most once even when the persisted value carries a
-  // junction id and a fresh search result does not.
+  // persisted relation metadata and a fresh search result may differ.
   return `${target.collection}\u0000${target.itemId}`;
 }
 
 function cloneTarget(target: RelationTargetRef): RelationTargetRef {
-  return { ...target, junctionValues: { ...target.junctionValues } };
+  return { ...target };
 }

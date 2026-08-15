@@ -3,7 +3,6 @@ import {
   buildQuery,
   isNullaryOperator,
   queryToTabulator,
-  shouldUseRemoteMode,
 } from "./queryAdapter";
 import type { TableQuery } from "@/contracts";
 
@@ -118,16 +117,6 @@ describe("queryToTabulator", () => {
     };
 
     expect(queryToTabulator(q).headerFilters).toEqual([]);
-  });
-});
-
-describe("shouldUseRemoteMode", () => {
-  it("returns false at the 25k threshold", () => {
-    expect(shouldUseRemoteMode(25_000)).toBe(false);
-  });
-
-  it("returns true above 25k", () => {
-    expect(shouldUseRemoteMode(25_001)).toBe(true);
   });
 });
 

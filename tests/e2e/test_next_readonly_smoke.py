@@ -24,6 +24,8 @@ from scripts._host_paths import host_bin_exe
 ROOT = Path(__file__).resolve().parents[2]
 HOST_PROJECT = ROOT / "desktop" / "src" / "VibeTable.Desktop"
 DESKTOP_SOURCE = ROOT / "desktop" / "src"
+WEB_GRID = ROOT / "desktop" / "web-grid"
+WEB_GRID_ENTRY = WEB_GRID / "dist" / "index.html"
 PACKAGED_HOST = os.environ.get("VIBETABLE_E2E_HOST")
 HOST_EXE = Path(PACKAGED_HOST).resolve() if PACKAGED_HOST else host_bin_exe(ROOT, config="Release")
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
@@ -58,7 +60,52 @@ def _host_is_stale(executable: Path) -> bool:
     return any(path.stat().st_mtime > built_at for path in inputs)
 
 
+def _ensure_web_grid_built() -> None:
+    if PACKAGED_HOST:
+        return
+    if WEB_GRID_ENTRY.is_file():
+        built_at = WEB_GRID_ENTRY.stat().st_mtime
+        inputs = [
+            path
+            for root in (WEB_GRID / "src", WEB_GRID / "public")
+            if root.is_dir()
+            for path in root.rglob("*")
+            if path.is_file()
+        ]
+        inputs.extend(
+            path
+            for path in (
+                WEB_GRID / "index.html",
+                WEB_GRID / "package.json",
+                WEB_GRID / "package-lock.json",
+                WEB_GRID / "vite.config.ts",
+            )
+            if path.is_file()
+        )
+        if all(path.stat().st_mtime <= built_at for path in inputs):
+            return
+
+    npm = shutil.which("npm")
+    if npm is None:
+        pytest.fail("npm not found; cannot build the web-grid smoke assets")
+    proc = subprocess.run(
+        [npm, "run", "build"],
+        cwd=WEB_GRID,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+        check=False,
+    )
+    if proc.returncode != 0:
+        pytest.fail(f"web-grid build failed:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+    if not WEB_GRID_ENTRY.is_file():
+        pytest.fail(f"web-grid entry not found after build: {WEB_GRID_ENTRY}")
+
+
 def _ensure_host_built() -> Path:
+    _ensure_web_grid_built()
     if not _host_is_stale(HOST_EXE):
         return HOST_EXE
     if not Path(DOTNET).is_file():

@@ -1,10 +1,11 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
-import type { FileDocumentV2, RetentionPolicyV2 } from "@/contracts/workspaceV2";
+import type { RetentionPolicyV2 } from "@/contracts/workspaceV2";
 import type {
   CleanupPlanResult,
   ConflictPlanResult,
   FileRevisionTreeProjection,
+  FileDocumentSummary,
   PendingFileChange,
   RepositoryKeyRotationPlan,
   RepositoryVerificationResult,
@@ -41,7 +42,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
   const conflictSets = ref<readonly WorkspaceConflictSummary[]>([]);
   const fileTrees = ref<Readonly<Record<string, FileRevisionTreeProjection>>>({});
   const pendingFileChanges = ref<readonly PendingFileChange[]>([]);
-  const documents = ref<readonly FileDocumentV2[]>([]);
+  const documents = ref<readonly FileDocumentSummary[]>([]);
   const restorePlan = ref<RestorePlanResult | null>(null);
   const extractPlan = ref<SnapshotExtractPlan | null>(null);
   const repositoryVerification = ref<RepositoryVerificationResult | null>(null);
@@ -168,7 +169,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     pendingFileChanges.value = [...next];
   }
 
-  function setDocuments(next: readonly FileDocumentV2[]): void {
+  function setDocuments(next: readonly FileDocumentSummary[]): void {
     documents.value = [...next];
   }
 

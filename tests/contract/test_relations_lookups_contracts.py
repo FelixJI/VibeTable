@@ -92,3 +92,23 @@ def test_lookup_source_pages_are_revision_bound_and_bounded() -> None:
                 "limit": 501,
             }
         )
+
+
+def test_lookup_query_rejects_more_than_two_server_side_groups() -> None:
+    with pytest.raises(ValueError, match="at most 2 items"):
+        LookupQueryParams.model_validate(
+            {
+                "collection": "orders",
+                "fieldRefs": ["orders.customer_name"],
+                "query": {
+                    "groups": [
+                        {"fieldRef": "orders.region"},
+                        {"fieldRef": "orders.customer_name"},
+                        {"fieldRef": "orders.status"},
+                    ]
+                },
+                "schemaRevision": "schema:1",
+                "permissionRevision": "permission:1",
+                "lookupRevision": "lookup:1",
+            }
+        )

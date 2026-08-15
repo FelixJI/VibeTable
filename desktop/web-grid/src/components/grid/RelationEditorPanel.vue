@@ -4,7 +4,7 @@ import { NButton, NEmpty, NInput, NInputNumber, NModal, NSelect, NSpin, NSwitch 
 import { Check, ExternalLink, Link2, Plus, Search, X } from "lucide-vue-next";
 import type {
   NormalizedRelationDescriptor,
-  ProductFieldDefinition,
+  FieldDefinitionV2,
   RelationTargetRef,
 } from "@/contracts";
 import { targetKey } from "@/stores/relationLookupStore";
@@ -21,8 +21,7 @@ const props = defineProps<{
   applying?: boolean;
   error?: string | null;
   query?: string;
-  m2aCollection?: string | null;
-  targetFields?: readonly ProductFieldDefinition[];
+  targetFields?: readonly FieldDefinitionV2[];
   targetRelations?: readonly NormalizedRelationDescriptor[];
   targetRelationOptions?: Readonly<Record<string, readonly RelationTargetRef[]>>;
   targetRelationLoading?: Readonly<Record<string, boolean>>;
@@ -32,12 +31,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  search: [query: string, collection?: string | null];
+  search: [query: string];
   select: [target: RelationTargetRef];
   clear: [];
-  patchJunction: [target: RelationTargetRef, field: string, value: string];
   apply: [];
-  collectionChange: [collection: string];
   loadMore: [];
   create: [label: string];
   createFull: [values: Readonly<Record<string, unknown>>];
@@ -50,14 +47,15 @@ const multi = computed(() => props.descriptor?.kind !== "m2o");
 const fullCreateOpen = ref(false);
 const fullValues = ref<Record<string, unknown>>({});
 const writableCreateFields = computed(() => (props.targetFields ?? []).filter(field =>
-  !field.readOnly && (field.kind === "scalar" || field.kind === "relation")));
+  field.lifecycle.state === "active"
+  && !["formula", "lookup", "autoDate", "file"].includes(field.logicalType)));
 const unsupportedRequiredFields = computed(() => (props.targetFields ?? []).filter(field =>
   isRequired(field) && !hasDefault(field)
-  && !field.readOnly
-  && (field.kind === "attachment" || (field.kind === "relation" && !relationFor(field)))));
+  && field.lifecycle.state === "active"
+  && (field.logicalType === "file" || (field.logicalType === "relation" && !relationFor(field)))));
 const canSubmitFull = computed(() => writableCreateFields.value
   .filter(field => isRequired(field) && !hasDefault(field))
-  .every(field => hasInputValue(fullValues.value[field.physicalName]))
+  .every(field => hasInputValue(fullValues.value[field.identity.physicalName]))
   && !!props.targetDisplayField
   && hasInputValue(fullValues.value[props.targetDisplayField]));
 const selectedKeys = computed(() => new Set(props.selected.map(targetKey)));
@@ -68,15 +66,9 @@ const title = computed(() => {
     m2o: t("relationEditor.kind.m2o"),
     o2m: t("relationEditor.kind.o2m"),
     m2m: t("relationEditor.kind.m2m"),
-    m2a: t("relationEditor.kind.m2a"),
   };
   return `${labels[descriptor.kind]} · ${props.fieldLabel || "关联字段"}`;
 });
-const collectionOptions = computed(() => (props.descriptor?.allowedCollections ?? []).map((value) => ({
-  label: value,
-  value,
-})));
-
 watch(() => props.show, show => {
   if (!show) {
     fullCreateOpen.value = false;
@@ -95,13 +87,12 @@ function updateFullValue(field: string, value: unknown): void {
   fullValues.value = { ...fullValues.value, [field]: value };
 }
 
-function isRequired(field: ProductFieldDefinition): boolean {
-  return !field.nullable || field.constraints.some(constraint =>
-    constraint.kind === "required" && constraint.value === true);
+function isRequired(field: FieldDefinitionV2): boolean {
+  return field.value.required;
 }
 
-function hasDefault(field: ProductFieldDefinition): boolean {
-  return field.defaultValue !== null && field.defaultValue !== undefined;
+function hasDefault(field: FieldDefinitionV2): boolean {
+  return field.value.default.enabled;
 }
 
 function hasInputValue(value: unknown): boolean {
@@ -115,48 +106,40 @@ interface SelectOptionEntry {
   readonly rawValue: unknown;
 }
 
-function selectOptionEntries(field: ProductFieldDefinition): SelectOptionEntry[] {
-  const constraint = field.constraints.find(item => item.kind === "enum");
-  const options = constraint?.options;
-  if (!Array.isArray(options)) return [];
-  return options.flatMap((option, index) => {
-    if (!option || typeof option !== "object") return [];
-    const item = option as {
-      label?: unknown; displayName?: unknown; value?: unknown; optionId?: unknown;
-    };
-    const rawValue = Object.hasOwn(item, "value") ? item.value : item.optionId;
-    const label = item.displayName ?? item.label;
-    return typeof label === "string" && rawValue !== undefined
-      ? [{ label, value: `select:${field.fieldId}:${index}`, rawValue }]
-      : [];
-  });
+function selectOptionEntries(field: FieldDefinitionV2): SelectOptionEntry[] {
+  return (field.select?.options ?? []).filter(option => option.state === "active")
+    .map((option, index) => ({
+      label: option.label,
+      value: `select:${field.identity.fieldId}:${index}`,
+      rawValue: option.optionId,
+    }));
 }
 
-function selectOptions(field: ProductFieldDefinition): Array<{ label: string; value: string }> {
+function selectOptions(field: FieldDefinitionV2): Array<{ label: string; value: string }> {
   return selectOptionEntries(field).map(({ label, value }) => ({ label, value }));
 }
 
-function relationFor(field: ProductFieldDefinition): NormalizedRelationDescriptor | undefined {
-  return props.targetRelations?.find(relation => relation.fieldRef === field.physicalName);
+function relationFor(field: FieldDefinitionV2): NormalizedRelationDescriptor | undefined {
+  return props.targetRelations?.find(relation => relation.fieldRef === field.identity.physicalName);
 }
 
-function relationOptions(field: ProductFieldDefinition): Array<{ label: string; value: string }> {
-  return (props.targetRelationOptions?.[field.physicalName] ?? []).map(target => ({
+function relationOptions(field: FieldDefinitionV2): Array<{ label: string; value: string }> {
+  return (props.targetRelationOptions?.[field.identity.physicalName] ?? []).map(target => ({
     label: target.secondaryLabel ? `${target.label} · ${target.secondaryLabel}` : target.label,
     value: target.itemId,
   }));
 }
 
-function relationInputValue(field: ProductFieldDefinition): string | string[] | null {
-  const value = fullValues.value[field.physicalName];
+function relationInputValue(field: FieldDefinitionV2): string | string[] | null {
+  const value = fullValues.value[field.identity.physicalName];
   if (relationFor(field)?.kind === "m2o") return typeof value === "string" ? value : null;
   return Array.isArray(value) ? value.filter(item => typeof item === "string") : [];
 }
 
-function selectInputValue(field: ProductFieldDefinition): string | string[] | null {
-  const value = fullValues.value[field.physicalName];
+function selectInputValue(field: FieldDefinitionV2): string | string[] | null {
+  const value = fullValues.value[field.identity.physicalName];
   const entries = selectOptionEntries(field);
-  if (field.dataType === "multiSelect") {
+  if (field.logicalType === "multiSelect") {
     if (!Array.isArray(value)) return [];
     return value.flatMap(raw => {
       const entry = entries.find(candidate => sameOptionValue(candidate.rawValue, raw));
@@ -166,16 +149,16 @@ function selectInputValue(field: ProductFieldDefinition): string | string[] | nu
   return entries.find(candidate => sameOptionValue(candidate.rawValue, value))?.value ?? null;
 }
 
-function updateSelectValue(field: ProductFieldDefinition, value: unknown): void {
+function updateSelectValue(field: FieldDefinitionV2, value: unknown): void {
   const byKey = new Map(selectOptionEntries(field).map(entry => [entry.value, entry.rawValue]));
-  if (field.dataType === "multiSelect") {
+  if (field.logicalType === "multiSelect") {
     const selected = Array.isArray(value)
       ? value.flatMap(key => typeof key === "string" && byKey.has(key) ? [byKey.get(key)] : [])
       : [];
-    updateFullValue(field.physicalName, selected);
+    updateFullValue(field.identity.physicalName, selected);
     return;
   }
-  updateFullValue(field.physicalName, typeof value === "string" && byKey.has(value)
+  updateFullValue(field.identity.physicalName, typeof value === "string" && byKey.has(value)
     ? byKey.get(value)
     : null);
 }
@@ -193,7 +176,7 @@ function sameOptionValue(left: unknown, right: unknown): boolean {
 }
 
 function onQuery(value: string): void {
-  emit("search", value, props.m2aCollection);
+  emit("search", value);
 }
 </script>
 
@@ -216,15 +199,6 @@ function onQuery(value: string): void {
         <span v-if="descriptor.selfRelation">{{ t("relationEditor.selfRelation") }}</span>
       </div>
 
-      <NSelect
-        v-if="descriptor.kind === 'm2a'"
-        :value="m2aCollection"
-        :options="collectionOptions"
-        :placeholder="t('relationEditor.collectionPlaceholder')"
-        :aria-label="t('relationEditor.collectionLabel')"
-        @update:value="(value) => emit('collectionChange', value)"
-      />
-
       <NInput
         :value="query"
         clearable
@@ -236,7 +210,7 @@ function onQuery(value: string): void {
       </NInput>
 
       <NButton
-        v-if="query?.trim() && descriptor.kind !== 'm2a' && !descriptor.junction && descriptor.quickCreateEligible"
+        v-if="query?.trim() && descriptor.quickCreateEligible"
         secondary
         type="primary"
         :loading="applying"
@@ -248,7 +222,7 @@ function onQuery(value: string): void {
       </NButton>
 
       <div
-        v-if="query?.trim() && descriptor.kind !== 'm2a' && !descriptor.junction && !descriptor.quickCreateEligible"
+        v-if="query?.trim() && !descriptor.quickCreateEligible"
         class="relation-editor__full-create"
       >
         <p>{{ descriptor.quickCreateReason || "目标表有其他必填字段，需要填写完整记录。" }}</p>
@@ -267,46 +241,46 @@ function onQuery(value: string): void {
           @click="beginFullCreate"
         >填写完整记录</NButton>
         <div v-if="fullCreateOpen" class="relation-editor__full-fields">
-          <label v-for="field in writableCreateFields" :key="field.fieldId">
+          <label v-for="field in writableCreateFields" :key="field.identity.fieldId">
             <span>{{ field.displayName }}<b v-if="isRequired(field)"> *</b></span>
             <NSelect
-              v-if="field.kind === 'relation'"
-              :data-testid="`relation-full-create-${field.physicalName}`"
+              v-if="field.logicalType === 'relation'"
+              :data-testid="`relation-full-create-${field.identity.physicalName}`"
               :value="relationInputValue(field)"
               :multiple="relationFor(field)?.kind !== 'm2o'"
               filterable
               remote
-              :loading="targetRelationLoading?.[field.physicalName] ?? false"
+              :loading="targetRelationLoading?.[field.identity.physicalName] ?? false"
               :options="relationOptions(field)"
               placeholder="选择关联记录"
-              @search="query => emit('searchCreateRelation', field.physicalName, query)"
-              @update:value="updateFullValue(field.physicalName, $event)"
+              @search="query => emit('searchCreateRelation', field.identity.physicalName, query)"
+              @update:value="updateFullValue(field.identity.physicalName, $event)"
             />
             <NSwitch
-              v-else-if="field.dataType === 'boolean'"
-              :data-testid="`relation-full-create-${field.physicalName}`"
-              :value="Boolean(fullValues[field.physicalName])"
-              @update:value="updateFullValue(field.physicalName, $event)"
+              v-else-if="field.logicalType === 'bool'"
+              :data-testid="`relation-full-create-${field.identity.physicalName}`"
+              :value="Boolean(fullValues[field.identity.physicalName])"
+              @update:value="updateFullValue(field.identity.physicalName, $event)"
             />
             <NInputNumber
-              v-else-if="['integer', 'float', 'decimal'].includes(field.dataType)"
-              :data-testid="`relation-full-create-${field.physicalName}`"
-              :value="typeof fullValues[field.physicalName] === 'number' ? Number(fullValues[field.physicalName]) : null"
-              @update:value="updateFullValue(field.physicalName, $event)"
+              v-else-if="field.logicalType === 'number'"
+              :data-testid="`relation-full-create-${field.identity.physicalName}`"
+              :value="typeof fullValues[field.identity.physicalName] === 'number' ? Number(fullValues[field.identity.physicalName]) : null"
+              @update:value="updateFullValue(field.identity.physicalName, $event)"
             />
             <NSelect
-              v-else-if="field.dataType === 'select' || field.dataType === 'multiSelect'"
-              :data-testid="`relation-full-create-${field.physicalName}`"
+              v-else-if="field.logicalType === 'select' || field.logicalType === 'multiSelect'"
+              :data-testid="`relation-full-create-${field.identity.physicalName}`"
               :value="selectInputValue(field)"
-              :multiple="field.dataType === 'multiSelect'"
+              :multiple="field.logicalType === 'multiSelect'"
               :options="selectOptions(field)"
               @update:value="updateSelectValue(field, $event)"
             />
             <NInput
               v-else
-              :data-testid="`relation-full-create-${field.physicalName}`"
-              :value="String(fullValues[field.physicalName] ?? '')"
-              @update:value="updateFullValue(field.physicalName, $event)"
+              :data-testid="`relation-full-create-${field.identity.physicalName}`"
+              :value="String(fullValues[field.identity.physicalName] ?? '')"
+              @update:value="updateFullValue(field.identity.physicalName, $event)"
             />
           </label>
           <NButton
@@ -322,19 +296,8 @@ function onQuery(value: string): void {
       <div v-if="selected.length" class="relation-editor__selected">
         <div v-for="target in selected" :key="targetKey(target)" class="relation-editor__selected-row">
           <span class="relation-editor__token">
-            <b v-if="descriptor.kind === 'm2a'">{{ target.collection }}</b>
             {{ target.label }}
           </span>
-          <div v-if="descriptor.junction?.contextFields.length" class="relation-editor__junction">
-            <NInput
-              v-for="field in descriptor.junction.contextFields"
-              :key="field"
-              size="small"
-              :value="String(target.junctionValues[field] ?? '')"
-              :placeholder="field"
-              @update:value="(value) => emit('patchJunction', target, field, value)"
-            />
-          </div>
           <NButton
             quaternary
             size="tiny"
@@ -363,7 +326,6 @@ function onQuery(value: string): void {
               <Link2 :size="14" />
               <span class="relation-editor__candidate-label">
                 <span>
-                  <b v-if="descriptor.kind === 'm2a'">{{ target.collection }}</b>
                   {{ target.label }}
                 </span>
                 <small v-if="target.secondaryLabel">{{ target.secondaryLabel }}</small>
@@ -434,16 +396,12 @@ function onQuery(value: string): void {
 .relation-editor__full-fields label { display: grid; gap: 5px; font-size: var(--vt-font-caption); }
 .relation-editor__full-fields > button { grid-column: 1 / -1; justify-self: end; }
 .relation-editor__selected-row {
-  display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 1.6fr) auto;
+  display: grid; grid-template-columns: minmax(120px, 1fr) auto;
   gap: var(--vt-space-2); align-items: center;
   padding: 6px 8px; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md);
   background: var(--vt-bg-subtle);
 }
 .relation-editor__token { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.relation-editor__token b, .relation-editor__candidate b {
-  margin-right: 6px; color: var(--vt-fg-accent-strong); font-size: 10px; text-transform: uppercase;
-}
-.relation-editor__junction { display: flex; gap: 5px; min-width: 0; }
 .relation-editor__results {
   display: grid; gap: 3px; min-height: 100px; max-height: 280px; padding: 2px; overflow: auto;
 }

@@ -3,27 +3,23 @@ package formula
 import (
 	"testing"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestCanonicalizeDisplaySourceUsesPermanentNamesAndRelationAggregates(t *testing.T) {
-	lines := scalarField("lines_id", "f_lines", schema.DataTypeRelation)
+	lines := relationField("lines_id", "f_lines", "line_items")
 	lines.DisplayName = "明细"
-	lines.Kind = schema.FieldKindRelation
-	lines.Relation = &schema.RelationSpec{
-		TargetTableID: "line_items", Cardinality: "many", DeletePolicy: "setNull",
-	}
-	shipping := scalarField("shipping_id", "f_shipping", schema.DataTypeFloat)
+	shipping := scalarField("shipping_id", "f_shipping", numberType)
 	shipping.DisplayName = "运费"
-	amount := scalarField("amount_id", "f_amount", schema.DataTypeFloat)
+	amount := scalarField("amount_id", "f_amount", numberType)
 	amount.DisplayName = "金额"
 	definition := formulaTable(lines, shipping)
 	target := formulaTable(amount)
-	target.TableID = "line_items"
+	target.Snapshot.TableID = "line_items"
 
-	canonical, formulaErr := CanonicalizeDisplaySource(
+	canonical, formulaErr := CanonicalizeExecutionDisplaySource(
 		definition,
-		map[string]schema.TableDefinition{"f_lines": target},
+		map[string]schemaexecution.Table{"f_lines": target},
 		`SUM({明细}.{金额}) + {运费}`,
 	)
 	if formulaErr != nil {
@@ -35,12 +31,12 @@ func TestCanonicalizeDisplaySourceUsesPermanentNamesAndRelationAggregates(t *tes
 }
 
 func TestCanonicalizeDisplaySourceRejectsAmbiguousDisplayName(t *testing.T) {
-	left := scalarField("left_id", "f_left", schema.DataTypeFloat)
-	right := scalarField("right_id", "f_right", schema.DataTypeFloat)
+	left := scalarField("left_id", "f_left", numberType)
+	right := scalarField("right_id", "f_right", numberType)
 	left.DisplayName = "金额"
 	right.DisplayName = "金额"
 
-	_, formulaErr := CanonicalizeDisplaySource(
+	_, formulaErr := CanonicalizeExecutionDisplaySource(
 		formulaTable(left, right), nil, `{金额} * 2.0`,
 	)
 	assertFormulaCode(t, formulaErr, "formula.dependency")

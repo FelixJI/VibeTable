@@ -3,6 +3,7 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
+import { useViewQueryStore } from "@/stores/viewQueryStore";
 import type {
   DataChangedEvent,
   DatasetReadyPayload,
@@ -22,19 +23,10 @@ import {
  * outbound `table.selected` notify (selectTable / refresh).
  *
  * Inbound flow (host -> web):
- *   - `table.pageLoaded` (payload type `TablePageLoadedPayload`): the host emits
- *     one of these per incremental page during a client-mode multi-page fetch.
- *     The payload is FLATTENED — it carries `table`/`columns`/`rows`/`offset`/
- *     `limit`/`totalRows`/`mode` directly (there is NO `.page` field). It adds a
- *     `loadedRows` cumulative counter that the store does not need, so we
- *     project the payload onto a plain `TablePage` and append it.
- *   - `table.datasetReady` (payload type `DatasetReadyPayload`): emitted ONCE
- *     when the full client-mode dataset has loaded. `DatasetReadyPayload extends
- *     TablePage`, so the payload itself is the authoritative final page — we
- *     forward it directly to `tableStore.setDatasetReady`, which replaces the
- *     accumulated incremental pages with this single page (mirrors the legacy
- *     `desktop/web-grid/src/tableFlow.ts` replacement behavior, avoiding
- *     double-counted rows).
+ *   - `table.pageLoaded` carries one completed bounded query window.
+ *   - `table.datasetReady` carries the initial revision-bound window.
+ *   - `table.windowLoaded` appends a bounded cursor window after an explicit
+ *     scroll-boundary request.
  *
  * Outbound flow (web -> host):
  *   - `table.selected` (notify, fire-and-forget): posted on selectTable/refresh.
@@ -46,12 +38,14 @@ export function useTableService(): {
   dispose: () => void;
   selectTable: (name: string) => void;
   refresh: (options?: TableRefreshOptions) => void;
+  loadNextWindow: () => void;
 } {
   const bridge = useHostBridge();
   const tableStore = useTableStore();
   const workspaceStore = useWorkspaceStore();
   const history = useHistoryStore();
   const realtimeStore = useRealtimeStore();
+  const viewQueryStore = useViewQueryStore();
   const taskTracker = new RealtimeTaskTracker();
   const unsubscribe: Array<() => void> = [];
   let initialized = false;
@@ -94,37 +88,13 @@ export function useTableService(): {
     if (initialized) return;
     initialized = true;
     unsubscribe.push(bridge.on("table.pageLoaded", (payload: TablePageLoadedPayload) => {
-      // The pageLoaded payload is flattened (no `.page` field); project it onto
-      // a `TablePage`, dropping the transport-only `loadedRows` counter.
-      const page: TablePage = {
-        table: payload.table,
-        columns: payload.columns,
-        rows: payload.rows,
-        offset: payload.offset,
-        limit: payload.limit,
-        totalRows: payload.totalRows,
-        mode: payload.mode,
-        filteredRows: payload.filteredRows,
-        querySnapshot: payload.querySnapshot,
-        revision: payload.revision,
-        groupRows: payload.groupRows,
-        groupOffset: payload.groupOffset,
-        groupLimit: payload.groupLimit,
-        hasMoreGroups: payload.hasMoreGroups,
-      };
-      const accepted = tableStore.appendPage(page);
-      if (!accepted && page.mode === "remote") {
+      const accepted = tableStore.appendPage(payload);
+      if (!accepted) {
         retryStaleSnapshot();
         return;
       }
-      // Remote mode deliberately never emits table.datasetReady: one page is
-      // the complete requested window. Finish the load here so realtime
-      // invalidations queued during the request can be reconciled.
-      if (page.mode === "remote") {
-        staleSnapshotRetries = 0;
-        tableStore.finishPageLoad();
-        completeLoad();
-      }
+      staleSnapshotRetries = 0;
+      completeLoad();
     }));
     unsubscribe.push(bridge.on("table.datasetReady", (payload: DatasetReadyPayload) => {
       // DatasetReadyPayload extends TablePage — it IS the authoritative page.
@@ -134,6 +104,23 @@ export function useTableService(): {
       }
       staleSnapshotRetries = 0;
       completeLoad();
+    }));
+    unsubscribe.push(bridge.on("table.windowLoaded", (payload: TablePage) => {
+      if (!tableStore.appendWindow(payload)) {
+        retryStaleSnapshot();
+      }
+    }));
+    unsubscribe.push(bridge.on("operation.failed", (payload) => {
+      if (payload.operation !== "query.cursor") return;
+      tableStore.cancelNextWindow();
+      if (payload.code !== "query.cursor_stale") return;
+      const table = workspaceStore.currentTable;
+      if (!table) return;
+      tableStore.beginCursorReopen();
+      bridge.notify("table.queryRequested", {
+        table,
+        query: viewQueryStore.toQuery(),
+      });
     }));
     unsubscribe.push(bridge.on("table.editSchemaLoaded", (payload: EditSchemaResult) => {
       // EditSchemaResult only carries schemaRevision; the full MutationRevision
@@ -210,6 +197,12 @@ export function useTableService(): {
     bridge.notify("table.selected", { table: current });
   }
 
+  function loadNextWindow(): void {
+    const cursor = tableStore.beginNextWindow();
+    if (!cursor) return;
+    bridge.notify("table.cursorRequested", { cursor });
+  }
+
   function reconcileDataChange(event: DataChangedEvent): void {
     const revision = tableStore.revision;
     if (!revision || event.tableId !== workspaceStore.currentTable) return;
@@ -249,7 +242,7 @@ export function useTableService(): {
     }
   }
 
-  return { init, dispose, selectTable, refresh };
+  return { init, dispose, selectTable, refresh, loadNextWindow };
 }
 
 export interface TableRefreshOptions {

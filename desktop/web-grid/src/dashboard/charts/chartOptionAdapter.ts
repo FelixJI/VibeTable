@@ -139,9 +139,6 @@ export function dashboardMeasureKeys(panel: DashboardPanel): string[] {
     const keys = panel.query.measures.flatMap((item) => isRecord(item) && typeof item.key === "string" ? [item.key] : []);
     if (keys.length > 0) return keys;
   }
-  if (Array.isArray(panel.query.metrics)) {
-    return panel.query.metrics.flatMap((item) => isRecord(item) && typeof item.alias === "string" ? [item.alias] : []);
-  }
   return [];
 }
 

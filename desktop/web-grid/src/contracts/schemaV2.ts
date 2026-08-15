@@ -1,3 +1,5 @@
+import type * as Wire from "./generated/schemaV2";
+
 export const SCHEMA_V2_CONTRACT = "vibetable.schema.v2" as const;
 
 export const SCHEMA_V2_LOGICAL_TYPES = [
@@ -21,354 +23,37 @@ export const SCHEMA_V2_LOGICAL_TYPES = [
   "lookup",
 ] as const;
 
-export type LogicalTypeV2 = (typeof SCHEMA_V2_LOGICAL_TYPES)[number];
+export type LogicalTypeV2 = Wire.LogicalType;
+export type JsonValueV2 = Wire.JsonValue;
+export type FieldIdentityV2 = Wire.FieldIdentity;
+export type LifecycleV2 = Wire.Lifecycle;
+export type DefaultSpecV2 = Wire.DefaultSpec;
+export type PresenceSpecV2 = Wire.PresenceSpec;
+export type ValueSpecV2 = Wire.ValueSpec;
+export type ConstraintSpecV2 = Wire.ConstraintSpec;
+export type StorageSpecV2 = Wire.StorageSpec;
+export type DisplaySpecV2 = Wire.DisplaySpec;
+export type SelectOptionV2 = Wire.SelectOption;
 
-export interface FieldIdentityV2 {
-  readonly fieldId: string;
-  readonly physicalName: string;
-  readonly providerFieldId: string;
-}
+export type FieldDefinitionV2 = Wire.FieldDefinition;
+export type RecommendedValuesV2 = Wire.RecommendedValues;
+export type FieldDraftV2 = Wire.FieldDraft;
+export type CapabilityV2 = Wire.Capability;
+export type SchemaSnapshotV2 = Wire.SchemaSnapshot;
+export type FormulaValidateRequestV2 = Wire.FormulaValidateRequest;
+export type FormulaPreviewRequestV2 = Wire.FormulaPreviewRequest;
 
-export interface LifecycleV2 {
-  readonly state: "active" | "retired";
-  readonly retiredAt: string | null;
-}
-
-export interface DefaultSpecV2 {
-  readonly enabled: boolean;
-  readonly value: unknown;
-  readonly source: "recommended" | "user";
-  readonly defaultsVersion: number;
-}
-
-export interface PresenceSpecV2 {
-  readonly mode: "companion" | "native" | "computed";
-  readonly providerFieldId?: string;
-  readonly physicalName?: string;
-}
-
-export interface ValueSpecV2 {
-  readonly required: boolean;
-  readonly default: DefaultSpecV2;
-  readonly presence: PresenceSpecV2;
-}
-
-export interface ConstraintSpecV2 {
-  readonly unique: {
-    readonly enabled: boolean;
-    readonly blankPolicy: "ignoreMissing";
-  };
-  readonly range: {
-    readonly min: number | string | null;
-    readonly max: number | string | null;
-  };
-  readonly length: { readonly min: number | null; readonly max: number | null };
-  readonly pattern: { readonly enabled: boolean; readonly value: string };
-  readonly domains: { readonly only: readonly string[]; readonly except: readonly string[] };
-  readonly selection: { readonly min: number; readonly max: number | null };
-}
-
-export interface StorageSpecV2 {
-  readonly kind:
-    | "pocketbase-text"
-    | "pocketbase-editor"
-    | "pocketbase-number"
-    | "pocketbase-bool"
-    | "pocketbase-date"
-    | "pocketbase-autodate"
-    | "pocketbase-email"
-    | "pocketbase-url"
-    | "pocketbase-select"
-    | "pocketbase-relation"
-    | "pocketbase-file"
-    | "pocketbase-geo-point"
-    | "pocketbase-json"
-    | "computed";
-  readonly options: {
-    readonly onlyInt: boolean;
-    readonly maxSize: number;
-    readonly convertURLs: boolean;
-    readonly presentable: boolean;
-  };
-}
-
-export interface DisplaySpecV2 {
-  readonly kind:
-    | "text"
-    | "editor"
-    | "number"
-    | "bool"
-    | "date"
-    | "dateTime"
-    | "time"
-    | "email"
-    | "url"
-    | "select"
-    | "relation"
-    | "file"
-    | "geoPoint"
-    | "json"
-    | "readonly";
-  readonly preset: string;
-  readonly displayScale: number;
-  readonly scaleMode: string;
-  readonly trimTrailingZeros: boolean;
-  readonly useGrouping: boolean;
-  readonly currency: string;
-  readonly percentStorage: string;
-  readonly unit: string | null;
-  readonly precision: string;
-  readonly timezone: string;
-  readonly mode: string;
-  readonly indent?: number;
-  readonly trueLabel: string;
-  readonly falseLabel: string;
-}
-
-export interface SelectOptionV2 {
-  readonly optionId: string;
-  readonly label: string;
-  readonly color: string;
-  readonly order: number;
-  readonly state: "active" | "retired";
-}
-
-export interface FieldDefinitionV2 {
-  readonly contract: typeof SCHEMA_V2_CONTRACT;
-  readonly identity: FieldIdentityV2;
-  readonly displayName: string;
-  readonly help: string;
-  readonly logicalType: LogicalTypeV2;
-  readonly lifecycle: LifecycleV2;
-  readonly value: ValueSpecV2;
-  readonly constraints: ConstraintSpecV2;
-  readonly storage: StorageSpecV2;
-  readonly display: DisplaySpecV2;
-  readonly select?: { readonly options: readonly SelectOptionV2[] };
-  readonly relation?: {
-    readonly targetTableId: string;
-    readonly cardinality: "one" | "many";
-    readonly deletePolicy: "setNull" | "restrict" | "cascade";
-    readonly displayFieldId: string;
-    readonly pairId?: string;
-    readonly reciprocalFieldId?: string;
-  };
-  readonly file?: {
-    readonly maxFiles: number;
-    readonly maxBytesPerFile: number;
-    readonly allowedMimeTypes: readonly string[];
-    readonly thumbs: readonly string[];
-    readonly protected: boolean;
-  };
-  readonly json?: {
-    readonly rootType: "any" | "object" | "array" | "string" | "number" | "boolean" | "null";
-    readonly maxSize: number;
-    readonly schema: Readonly<Record<string, unknown>>;
-  };
-  readonly autoDate?: { readonly role: "createdAt" | "updatedAt" };
-  readonly formula?: {
-    readonly language: "cel-v1";
-    readonly source: string;
-    readonly resultType: LogicalTypeV2;
-  };
-  readonly lookup?: {
-    readonly path: readonly { readonly relationFieldId: string }[];
-    readonly targetFieldId: string;
-  };
-}
-
-export interface RecommendedValuesV2 {
-  readonly defaultsVersion: number;
-  readonly value: ValueSpecV2;
-  readonly constraints: ConstraintSpecV2;
-  readonly storage: StorageSpecV2;
-  readonly display: DisplaySpecV2;
-  readonly file?: FieldDefinitionV2["file"];
-  readonly json?: FieldDefinitionV2["json"];
-}
-
-type FieldDraftBaseV2 = Omit<
-  FieldDefinitionV2,
-  "contract" | "identity" | "lifecycle" | "formula"
->;
-
-export type FieldDraftV2 = FieldDraftBaseV2 & {
-  readonly formula?: {
-    readonly language: "cel-v1";
-    readonly source: string;
-  };
-};
-
-export interface CapabilityV2 {
-  readonly logicalType: LogicalTypeV2;
-  readonly generalSettings: readonly string[];
-  readonly advancedSettings: readonly string[];
-  readonly dangerSettings: readonly string[];
-  readonly recommended: RecommendedValuesV2;
-  readonly supportsRequired: boolean;
-  readonly supportsDefault: boolean;
-  readonly supportsUnique: boolean;
-  readonly needsPresence: boolean;
-  readonly displayPresets: readonly string[];
-  readonly conversionTargets: readonly LogicalTypeV2[];
-  readonly conversionRules: readonly string[];
-  readonly compileStrategy: string;
-  readonly userCreatable: boolean;
-}
-
-export type FieldChangeActionV2 =
-  | "create"
-  | "update"
-  | "retire"
-  | "restore"
-  | "purge"
-  | "convert"
-  | "backfill";
-
-export interface ActorV2 {
-  readonly id: string;
-  readonly kind: string;
-}
-
-export interface FieldChangeIntentV2 {
-  readonly action: FieldChangeActionV2;
-  readonly tableId: string;
-  readonly fieldId: string;
-  readonly expectedSchemaRevision: string;
-  readonly expectedDataRevision: number | null;
-  readonly draft: FieldDraftV2 | null;
-  readonly actor: ActorV2;
-  readonly conversionRule: string;
-  readonly confirmation: string;
-  readonly backupReceipt: string;
-  readonly relationPair?: {
-    readonly reciprocalDisplayName: string;
-    readonly reciprocalCardinality: "one" | "many";
-    readonly sourceDisplayFieldId: string;
-  };
-}
-
-export interface RelatedFieldChangeV2 {
-  readonly tableId: string;
-  readonly fieldId: string;
-  readonly before: FieldDefinitionV2 | null;
-  readonly after: FieldDefinitionV2 | null;
-  readonly expectedSchemaRevision: string;
-}
-
-export interface FieldDiagnosticV2 {
-  readonly code: string;
-  readonly path: string;
-  readonly message: string;
-  readonly details: Readonly<Record<string, unknown>>;
-}
-
-export interface FieldChangePlanV2 {
-  readonly contract: typeof SCHEMA_V2_CONTRACT;
-  readonly planId: string;
-  readonly planHash: string;
-  readonly expiresAt: string;
-  readonly intent: FieldChangeIntentV2;
-  readonly before: FieldDefinitionV2 | null;
-  readonly after: FieldDefinitionV2 | null;
-  readonly classes: readonly (
-    | "display"
-    | "metadata"
-    | "constraint"
-    | "schema"
-    | "migration"
-    | "danger"
-  )[];
-  readonly expectedSchemaRevision: string;
-  readonly expectedDataRevision: number | null;
-  readonly impact: {
-    readonly records: number;
-    readonly missing: number;
-    readonly ambiguous: number;
-    readonly failures: readonly { readonly recordId: string; readonly reason: string }[];
-    readonly dependencies: readonly {
-      readonly kind: string;
-      readonly id: string;
-      readonly name: string;
-    }[];
-  };
-  readonly steps: readonly {
-    readonly kind: string;
-    readonly details: Readonly<Record<string, unknown>>;
-  }[];
-  readonly warnings: readonly FieldDiagnosticV2[];
-  readonly errors: readonly FieldDiagnosticV2[];
-  readonly confirmations: readonly string[];
-  readonly createsMigration: boolean;
-  readonly canApply: boolean;
-  readonly relatedChanges?: readonly RelatedFieldChangeV2[];
-}
-
-export interface FieldApplyReceiptV2 {
-  readonly contract: typeof SCHEMA_V2_CONTRACT;
-  readonly operationId: string;
-  readonly planId: string;
-  readonly action: FieldChangeActionV2;
-  readonly tableId: string;
-  readonly fieldId: string;
-  readonly schemaRevision: string;
-  readonly definition: FieldDefinitionV2 | null;
-  readonly migrationJobId: string;
-  readonly related?: readonly {
-    readonly tableId: string;
-    readonly fieldId: string;
-    readonly schemaRevision: string;
-    readonly definition: FieldDefinitionV2 | null;
-  }[];
-}
-
-export interface FieldMigrationStatusV2 {
-  readonly contract: typeof SCHEMA_V2_CONTRACT;
-  readonly jobId: string;
-  readonly planId: string;
-  readonly phase:
-    | "planned"
-    | "validating"
-    | "ready"
-    | "copying"
-    | "verifying"
-    | "switching"
-    | "completed"
-    | "cancelled"
-    | "failed"
-    | "cleaning"
-    | "rolled_back";
-  readonly processed: number;
-  readonly total: number;
-  readonly canCancel: boolean;
-  readonly error: FieldDiagnosticV2 | null;
-  readonly updatedAt: string;
-}
-
-export interface FieldSettingsDescribeResultV2 {
-  readonly contract: typeof SCHEMA_V2_CONTRACT;
-  readonly tableId: string;
-  readonly fieldId: string;
-  readonly schemaRevision: string;
-  readonly dataRevision: number;
-  readonly definition: FieldDefinitionV2 | null;
-  readonly capabilities: readonly CapabilityV2[];
-  readonly recommendedDefaultsVersion: number;
-}
-
-export interface FieldRecycleBinResultV2 {
-  readonly contract: typeof SCHEMA_V2_CONTRACT;
-  readonly fields: readonly FieldDefinitionV2[];
-}
-
-export interface FieldApplyRequestV2 {
-  readonly planId: string;
-  readonly planHash: string;
-  readonly operationId: string;
-  readonly actor: ActorV2;
-  readonly confirmations: readonly string[];
-  readonly protectionSnapshotId?: string;
-}
+export type FieldChangeActionV2 = Wire.FieldChangeIntent["action"];
+export type ActorV2 = Wire.Actor;
+export type FieldChangeIntentV2 = Wire.FieldChangeIntent;
+export type RelatedFieldChangeV2 = Wire.RelatedFieldChange;
+export type FieldDiagnosticV2 = Wire.Diagnostic;
+export type FieldChangePlanV2 = Wire.FieldChangePlan;
+export type FieldApplyReceiptV2 = Wire.ApplyReceipt;
+export type FieldMigrationStatusV2 = Wire.MigrationStatus;
+export type FieldSettingsDescribeResultV2 = Wire.FieldSettingsDescribeResult;
+export type FieldRecycleBinResultV2 = Wire.FieldRecycleBinResult;
+export type FieldApplyRequestV2 = Wire.ApplyRequest;
 
 const FIELD_KEYS = [
   "contract",
@@ -791,12 +476,16 @@ function parseCapabilityV2(value: unknown, index: number): void {
     "recommended", "supportsRequired", "supportsDefault", "supportsUnique",
     "needsPresence", "displayPresets", "conversionTargets", "conversionRules",
     "compileStrategy", "userCreatable",
+    "filterOperators", "groupable", "summaryOperations", "relationCardinalities",
+    "relationDeletePolicies", "lookupMaxDepth", "formulaResultTypeInferred",
+    "formulaRelationAggregates",
   ]);
   if (!SCHEMA_V2_LOGICAL_TYPES.includes(capability.logicalType as LogicalTypeV2)) {
     fail(`${path}.logicalType`, "unsupported logical type");
   }
   ["generalSettings", "advancedSettings", "dangerSettings", "displayPresets",
-    "conversionTargets", "conversionRules"].forEach((key) =>
+    "conversionTargets", "conversionRules", "filterOperators", "summaryOperations",
+    "relationCardinalities", "relationDeletePolicies", "formulaRelationAggregates"].forEach((key) =>
     expectStringArray(capability[key], `${path}.${key}`));
   (capability.conversionTargets as readonly unknown[]).forEach((item, targetIndex) =>
     expectEnum(
@@ -805,7 +494,9 @@ function parseCapabilityV2(value: unknown, index: number): void {
       SCHEMA_V2_LOGICAL_TYPES,
     ));
   ["supportsRequired", "supportsDefault", "supportsUnique", "needsPresence",
-    "userCreatable"].forEach((key) => expectBoolean(capability[key], `${path}.${key}`));
+    "userCreatable", "groupable", "formulaResultTypeInferred"].forEach((key) =>
+    expectBoolean(capability[key], `${path}.${key}`));
+  expectSafeInteger(capability.lookupMaxDepth, `${path}.lookupMaxDepth`);
   expectString(capability.compileStrategy, `${path}.compileStrategy`);
   const recommended = exactObject(capability.recommended, `${path}.recommended`, [
     "defaultsVersion", "value", "constraints", "storage", "display", "file", "json",

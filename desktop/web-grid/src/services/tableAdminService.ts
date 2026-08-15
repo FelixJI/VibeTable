@@ -16,10 +16,8 @@ import type {
 function toCollections(
   payload: DatabaseOpenedPayload,
 ): readonly CollectionSummary[] {
-  const labels = payload.displayNames ?? {};
   const tables = payload.tables.map((t) => ({
     collection: t,
-    displayName: labels[t],
     metadata: {},
   }));
   const views = payload.views.map((v) => ({
@@ -37,10 +35,8 @@ function toCollectionsFromChanged(
   payload: CollectionsChangedPayload,
 ): readonly CollectionSummary[] {
   const hashes = payload.capabilityHashes ?? {};
-  const labels = payload.displayNames ?? {};
   return payload.tables.map((t) => ({
     collection: t,
-    displayName: labels[t],
     metadata: t in hashes ? { capabilityHash: hashes[t] } : {},
   }));
 }
@@ -82,19 +78,16 @@ export function useTableAdminService(): {
   function resolveIfPending(
     collections: readonly CollectionSummary[],
     previousIds: ReadonlySet<string>,
+    displayNames: Readonly<Record<string, string>>,
   ): void {
     if (store.phase === "submitting") {
       const baseline = pendingExistingIds ?? previousIds;
       const additions = collections.filter(
         (item) => !baseline.has(item.collection),
       );
-      // The host may publish the new opaque ID before the display-name map is
-      // refreshed. A single added table is still an unambiguous response to
-      // this pending local create. Do not consume the submission on an
-      // unrelated refresh that contains no new table.
       const created = additions.find(
-        (item) => item.displayName === pendingDisplayName,
-      ) ?? (additions.length === 1 ? additions[0] : undefined);
+        (item) => displayNames[item.collection] === pendingDisplayName,
+      );
       if (!created) return;
       store.succeed();
       ui.closeCreate();
@@ -115,16 +108,15 @@ export function useTableAdminService(): {
       const previousIds = new Set(store.collections.map((item) => item.collection));
       const collections = toCollections(payload);
       store.setCollections(collections);
-      store.setAutoDateProducerEnabled(payload.features?.autoDateFields === true);
       // A `database.opened` after a create/delete also implies success: the
       // host re-announces the full collection list once the new schema lands.
-      resolveIfPending(collections, previousIds);
+      resolveIfPending(collections, previousIds, payload.displayNames);
     });
     bridge.on("database.collectionsChanged", (payload) => {
       const previousIds = new Set(store.collections.map((item) => item.collection));
       const collections = toCollectionsFromChanged(payload);
       store.setCollections(collections);
-      resolveIfPending(collections, previousIds);
+      resolveIfPending(collections, previousIds, payload.displayNames);
     });
   }
 

@@ -47,8 +47,6 @@ export function useRelationLookupService() {
         if (!snapshot) return;
         const relatedCollections = new Set(snapshot.normalizedRelations.flatMap((relation) => [
           relation.relatedCollection,
-          ...relation.allowedCollections,
-          relation.junction?.collection,
         ].filter((item): item is string => !!item)));
         if (change.tableId !== active && !relatedCollections.has(change.tableId)) return;
       }
@@ -116,7 +114,6 @@ export function useRelationLookupService() {
   async function createTarget(
     relationId: string,
     label: string,
-    collection?: string | null,
     values?: Readonly<Record<string, unknown>>,
   ): Promise<RelationCreateTargetResult> {
     requireRelationEdit();
@@ -124,7 +121,6 @@ export function useRelationLookupService() {
       relationId,
       label: label.trim(),
       ...(values ? { values } : {}),
-      collection,
       idempotencyKey: requestId(),
     }) as RelationCreateTargetResult;
   }
@@ -172,7 +168,7 @@ export function useRelationLookupService() {
     relationId: string,
     sourceItemId: string,
     target: RelationTargetRef,
-    kind: "m2o" | "o2m" | "m2m" | "m2a",
+    kind: "m2o" | "o2m" | "m2m",
     expectedSchemaRevision: string,
   ): Promise<RelationSingleUpdateResult | RelationDeltaResult> {
     if (kind === "m2o") {
@@ -189,7 +185,6 @@ export function useRelationLookupService() {
       sourceItemId,
       expectedSchemaRevision,
       adds: [{ target }],
-      updates: [],
       removes: [],
       idempotencyKey: requestId(),
     };
@@ -208,26 +203,13 @@ export function useRelationLookupService() {
     const before = new Map(draft.original.map((target) => [targetKey(target), target]));
     const after = new Map(draft.selected.map((target) => [targetKey(target), target]));
     const adds = [...after].filter(([key]) => !before.has(key)).map(([, target]) => ({ target }));
-    const removes = [...before].filter(([key]) => !after.has(key)).map(([, target]) => ({
-      target,
-      expectedRevision: target.junctionRevision,
-    }));
-    const updates = [...after].flatMap(([key, target]) => {
-      const previous = before.get(key);
-      if (!previous?.junctionId || sameRecord(previous.junctionValues, target.junctionValues)) return [];
-      return [{
-        junctionId: previous.junctionId,
-        values: target.junctionValues,
-        expectedRevision: previous.junctionRevision,
-      }];
-    });
+    const removes = [...before].filter(([key]) => !after.has(key)).map(([, target]) => ({ target }));
     return {
       relationId: draft.relationId,
       sourceItemId: draft.sourceItemId,
       expectedSchemaRevision: schema.schemaRevision,
       expectedDateUpdated,
       adds,
-      updates,
       removes,
       idempotencyKey: requestId(),
     };
@@ -237,6 +219,7 @@ export function useRelationLookupService() {
     relationId: string,
     sourceItemId: string,
     expectedDateUpdated?: string | null,
+    acceptResult: () => boolean = () => true,
   ): Promise<RelationDeltaPreview> {
     const schema = requireSchema();
     requireRelationEdit();
@@ -246,7 +229,6 @@ export function useRelationLookupService() {
       expectedSchemaRevision: schema.schemaRevision,
       expectedDateUpdated,
       adds: [],
-      updates: [],
       removes: [],
       idempotencyKey: requestId(),
     };
@@ -255,7 +237,7 @@ export function useRelationLookupService() {
       const reason = preview.diagnostics.map((item) => item.message).join("；");
       throw new Error(reason || "关系数据无法加载");
     }
-    store.openDraft(relationId, sourceItemId, preview.current);
+    if (acceptResult()) store.openDraft(relationId, sourceItemId, preview.current);
     return preview;
   }
 
@@ -288,33 +270,7 @@ export function useRelationLookupService() {
       lookupRevision: schema.lookupRevision,
     };
     const result = await bridge.request("lookup.query", request) as LookupQueryResult;
-    if (!store.acceptLookup(result)) throw new Error("Lookup 响应已过期");
     return result;
-  }
-
-  async function queryDataset(
-    params: Omit<LookupQueryParams, "contract" | "requestGeneration" | "schemaRevision" | "permissionRevision" | "lookupRevision" | "query"> & {
-      readonly query: Omit<LookupQueryParams["query"], "offset" | "limit">;
-    },
-  ): Promise<LookupQueryResult> {
-    // The authoritative backend intentionally caps one query page at 500.
-    // Fetch the complete client dataset through bounded pages instead of
-    // sending an oversized request that the closed RPC contract rejects.
-    const pageSize = 500;
-    const first = await queryLookups({
-      ...params,
-      query: { ...params.query, offset: 0, limit: pageSize },
-    });
-    if (first.rows.length >= first.filteredRows) return first;
-    const rows = [...first.rows];
-    for (let offset = pageSize; offset < first.filteredRows; offset += pageSize) {
-      const next = await queryLookups({
-        ...params,
-        query: { ...params.query, offset, limit: pageSize },
-      });
-      rows.push(...next.rows);
-    }
-    return { ...first, rows, offset: 0, limit: rows.length };
   }
 
 	async function readLookupValuePage(
@@ -355,18 +311,10 @@ export function useRelationLookupService() {
     buildDraftDelta,
     applyDraft,
     queryLookups,
-    queryDataset,
 	readLookupValuePage,
   };
 }
 
 function requestId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `relation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function sameRecord(left: Readonly<Record<string, unknown>>, right: Readonly<Record<string, unknown>>): boolean {
-  const leftKeys = Object.keys(left).sort();
-  const rightKeys = Object.keys(right).sort();
-  return leftKeys.length === rightKeys.length
-    && leftKeys.every((key, index) => key === rightKeys[index] && Object.is(left[key], right[key]));
 }

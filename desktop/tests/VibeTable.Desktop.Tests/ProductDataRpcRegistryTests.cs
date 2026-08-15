@@ -16,7 +16,10 @@ public sealed class ProductDataRpcRegistryTests
         [
             "field.settings.describe", "field.change.plan", "field.change.apply",
             "field.change.status", "field.change.cancel", "field.recycleBin.list",
-            "schema.getTable", "query.page", "query.view",
+            "schema.getTable", "query.page", "query.cursorOpen", "query.cursorFetch", "query.view",
+            "contentProfile.load", "contentProfile.commit", "contentProfile.delete",
+            "recordDocumentLink.list", "recordDocumentLink.commit",
+            "recordDocumentLink.repair", "recordDocumentLink.delete",
             "mutation.preview", "mutation.apply",
             "data.previewImport", "data.applyImport", "data.export",
             "task.create", "task.cancel", "task.status",
@@ -37,6 +40,28 @@ public sealed class ProductDataRpcRegistryTests
             Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint), type);
             Assert.AreEqual(type, endpoint.Type);
         }
+    }
+
+    [TestMethod]
+    public void ContentModelValidatorsAreClosedAndMutationsRequireProtection()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet(
+            "contentProfile.commit", out var profile));
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet(
+            "recordDocumentLink.repair", out var repair));
+        Assert.IsTrue(profile.IsValidPayload(JsonDocument.Parse(
+            """{"profile":{},"expectedRevision":null,"idempotencyKey":"op-1"}""")
+            .RootElement));
+        Assert.IsFalse(profile.IsValidPayload(JsonDocument.Parse(
+            """{"profile":{},"expectedRevision":null,"idempotencyKey":"op-1","rawSql":"select 1"}""")
+            .RootElement));
+        Assert.IsTrue(repair.IsValidPayload(JsonDocument.Parse(
+            """{"linkId":"link-1","documentId":"22222222-2222-4222-8222-222222222222","expectedRevision":"rev-1","idempotencyKey":"op-2"}""")
+            .RootElement));
+        Assert.IsTrue(profile.MutatesWorkspace);
+        Assert.IsTrue(profile.RequiresProtectionSnapshot);
+        Assert.IsTrue(repair.MutatesWorkspace);
+        Assert.IsTrue(repair.RequiresProtectionSnapshot);
     }
 
     [TestMethod]

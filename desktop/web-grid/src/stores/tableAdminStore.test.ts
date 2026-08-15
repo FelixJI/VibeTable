@@ -9,7 +9,6 @@ describe("tableAdminStore", () => {
     const store = useTableAdminStore();
     expect(store.phase).toBe("idle");
     expect(store.form.name).toBe("");
-    expect(store.autoDateProducerEnabled).toBe(false);
     expect(store.canSubmit).toBe(false);
   });
 
@@ -30,17 +29,14 @@ describe("tableAdminStore", () => {
     expect(store.canSubmit).toBe(true);
   });
 
-  it("tracks collection capabilities and host feature flags", () => {
+  it("tracks collection capabilities", () => {
     const store = useTableAdminStore();
     store.setCollections([{
       collection: "tbl_orders",
-      displayName: "Orders",
       metadata: { capabilityHash: "cap_1" },
     }]);
-    store.setAutoDateProducerEnabled(true);
     expect(store.collections).toHaveLength(1);
     expect(store.collections[0]?.collection).toBe("tbl_orders");
-    expect(store.autoDateProducerEnabled).toBe(true);
   });
 
   it("tracks delete, failure, success, and close lifecycle state", () => {

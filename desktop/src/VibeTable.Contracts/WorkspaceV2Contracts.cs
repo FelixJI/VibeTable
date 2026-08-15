@@ -11,6 +11,7 @@ public interface IWorkspaceV2Contract
 public static class WorkspaceV2Json
 {
     public const string ContractVersion = "2.0";
+    public const ulong WorkspaceFormatVersion = 2;
 
     public static JsonSerializerOptions StrictOptions { get; } = CreateOptions();
 
@@ -149,7 +150,9 @@ public sealed record WorkspaceManifestV2 : IWorkspaceV2Contract
     public void Validate()
     {
         WorkspaceV2Json.RequireVersion(ContractVersion);
-        if (FormatVersion == 0 || WorkspaceId == Guid.Empty ||
+        if (FormatVersion != WorkspaceV2Json.WorkspaceFormatVersion)
+            throw new JsonException("workspace.format_unsupported");
+        if (WorkspaceId == Guid.Empty ||
             string.IsNullOrWhiteSpace(DisplayName) ||
             string.IsNullOrWhiteSpace(RepositoryFormat) ||
             TopologySchemaVersion == 0 || BusinessSchemaVersion == 0)
@@ -234,6 +237,35 @@ public sealed record FileDocumentV2 : IWorkspaceV2Contract
             parts.Any(part => part is "" or "..") ||
             NextRevisionOrdinal == 0 || NextFormalVersion == 0)
             throw new JsonException("File document is invalid.");
+    }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record FileDocumentSummaryV2 : IWorkspaceV2Contract
+{
+    [JsonRequired] public required string ContractVersion { get; init; }
+    [JsonRequired] public required Guid DocumentId { get; init; }
+    [JsonRequired] public required string RelativePath { get; init; }
+    [JsonRequired] public required string DisplayName { get; init; }
+    [JsonRequired] public required string Extension { get; init; }
+    [JsonRequired] public required string MimeType { get; init; }
+    [JsonRequired] public required ulong SizeBytes { get; init; }
+    [JsonRequired] public required Guid EffectiveRevisionId { get; init; }
+    [JsonRequired] public required DateTimeOffset EffectiveRevisionCreatedAt { get; init; }
+    [JsonRequired] public required ulong? FormalVersion { get; init; }
+    [JsonRequired] public required FileDocumentStatus Status { get; init; }
+
+    public void Validate()
+    {
+        WorkspaceV2Json.RequireVersion(ContractVersion);
+        var parts = RelativePath.Replace('\\', '/').Split('/');
+        if (DocumentId == Guid.Empty || EffectiveRevisionId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(RelativePath) || Path.IsPathRooted(RelativePath) ||
+            parts.Any(part => part is "" or "..") ||
+            string.IsNullOrWhiteSpace(DisplayName) ||
+            string.IsNullOrWhiteSpace(MimeType) ||
+            Extension.StartsWith(".", StringComparison.Ordinal))
+            throw new JsonException("File document summary is invalid.");
     }
 }
 
@@ -561,7 +593,9 @@ public sealed record RpcGoldenCaseV2 : IWorkspaceV2Contract
                 "enum",
                 "const",
                 "minimum",
+                "maximum",
                 "minLength",
+                "maxItems",
                 "pattern",
                 "additionalProperties",
                 "required",
@@ -608,11 +642,23 @@ public sealed record RpcGoldenCaseV2 : IWorkspaceV2Contract
             minimum.ValueKind != JsonValueKind.Number)
             return false;
         if (schema.TryGetProperty(
+                "maximum",
+                out JsonElement maximum) &&
+            maximum.ValueKind != JsonValueKind.Number)
+            return false;
+        if (schema.TryGetProperty(
                 "minLength",
                 out JsonElement minLength) &&
             (minLength.ValueKind != JsonValueKind.Number ||
              !minLength.TryGetInt32(out int minLengthValue) ||
              minLengthValue < 0))
+            return false;
+        if (schema.TryGetProperty(
+                "maxItems",
+                out JsonElement maxItems) &&
+            (maxItems.ValueKind != JsonValueKind.Number ||
+             !maxItems.TryGetInt32(out int maxItemsValue) ||
+             maxItemsValue < 0))
             return false;
         if (schema.TryGetProperty(
                 "pattern",
@@ -713,6 +759,7 @@ public sealed record RpcGoldenCaseV2 : IWorkspaceV2Contract
         if (hasItems)
             return false;
         return hasType ||
+            schema.TryGetProperty("enum", out _) ||
             schema.TryGetProperty("const", out _) ||
             hasProperties ||
             schema.TryGetProperty("allOf", out _) ||

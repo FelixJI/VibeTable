@@ -1,12 +1,9 @@
 import type {
   LookupListResult,
 	LookupCellValue,
-  LookupPreviewParams,
   LookupQueryParams,
 	LookupValuePageParams,
   LookupQueryResult,
-  LookupValidateParams,
-  LookupValidationResult,
   RelationDelta,
   RelationDeltaPreview,
   RelationDeltaResult,
@@ -19,6 +16,21 @@ import type {
   SchemaDescribeParams,
   SchemaDescribeResult,
 } from "./relationsLookup";
+import type { FileDocumentQuery } from "./fileDocumentQuery";
+import type {
+  ContentProfileCommitRequest,
+  ContentProfileDeleteRequest,
+  ContentProfileDeleteResult,
+  ContentProfileLoadRequest,
+  ContentProfileSnapshot,
+  RecordDocumentLinkCommitRequest,
+  RecordDocumentLinkDeleteRequest,
+  RecordDocumentLinkDeleteResult,
+  RecordDocumentLinkListRequest,
+  RecordDocumentLinkListResult,
+  RecordDocumentLinkRepairRequest,
+  RecordDocumentLinkSnapshot,
+} from "./generated/workbench";
 import type {
   FieldApplyReceiptV2,
   FieldApplyRequestV2,
@@ -27,7 +39,9 @@ import type {
   FieldMigrationStatusV2,
   FieldRecycleBinResultV2,
   FieldSettingsDescribeResultV2,
+  FormulaPreviewRequestV2,
   LogicalTypeV2,
+  SchemaSnapshotV2,
 } from "./schemaV2";
 
 /**
@@ -38,7 +52,7 @@ import type {
  * WPF gateway boundary.
  *
  * Message flow:
- *   web -> host : app.ready, database.openRequested, table.selected, table.pageRequested
+ *   web -> host : app.ready, database.openRequested, table.selected, table.queryRequested
  *   host -> web : database.opened, table.pageLoaded, operation.failed
  *
  * `rowKey` is transport metadata: every row carries it, but the grid hides it
@@ -93,12 +107,20 @@ export interface ColumnSchema {
   readonly precision?: number | null;
 	/** Sidecar-compatible operators exposed by the authoritative host schema. */
 	readonly filterOperators?: readonly FilterOperator[];
+	/** Authoritative editor kind for filter operands; never inferred from row values. */
+	readonly filterInput?: "text" | "number" | "boolean" | "date" | "dateTime" | "time" | "select" | "multiSelect" | "relation";
+	/** Closed enum options published by SchemaCore for select-like fields. */
+	readonly filterOptions?: readonly { readonly value: string; readonly label: string }[];
+	/** Authoritative QueryPort grouping support; never inferred in a surface editor. */
+	readonly groupable?: boolean;
+	/** Authoritative aggregate operations accepted for this field. */
+	readonly summaryOperations?: readonly DashboardMeasurePayload["op"][];
 }
 
 export * from "./relationsLookup";
 export * from "./workspaceV2";
 
-export type TableMode = "client" | "remote";
+export type TableMode = "remote";
 
 /**
  * One page of rows. `rows` is a list of plain objects keyed by column name
@@ -120,46 +142,25 @@ export interface TablePage {
   readonly groupOffset?: number;
   readonly groupLimit?: number;
   readonly hasMoreGroups?: boolean;
+  readonly nextCursor?: string | null;
+  readonly hasMore?: boolean;
 }
 
-/**
- * One page of rows delivered incrementally by the host's multi-page client-mode
- * fetch. Same shape as `TablePage` plus `loadedRows` (cumulative count of rows
- * fetched so far) and `totalRows`. Mirrors the host-side
- * `TableNotification` payload for `table.pageLoaded`.
- */
-export interface TablePageLoadedPayload {
-  readonly table: string;
-  readonly columns: readonly ColumnSchema[];
-  readonly rows: ReadonlyArray<Record<string, unknown>>;
-  readonly offset: number;
-  readonly limit: number;
+/** Revision-bound keyset window returned by QueryPort cursor RPCs. */
+export interface QueryCursorWindow {
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+  readonly nextCursor: string | null;
+  readonly hasMore: boolean;
+  readonly filteredRows: number;
   readonly totalRows: number;
-  readonly mode: TableMode;
-  /** Cumulative rows fetched so far in the client-mode multi-page load. */
-  readonly loadedRows: number;
-  /** Product query metadata required by mutations and paste preview. */
-  readonly filteredRows?: number | null;
-  readonly querySnapshot?: QuerySnapshot | null;
-  readonly revision?: MutationRevision | null;
-  readonly groupRows?: readonly ViewGroupRow[] | null;
-  readonly groupOffset?: number;
-  readonly groupLimit?: number;
-  readonly hasMoreGroups?: boolean;
+  readonly querySnapshot: QuerySnapshot;
 }
 
-/**
- * Payload for `table.datasetReady` — the host emits this ONCE, after the full
- * client-mode dataset has loaded (loadedRows == totalRows). The renderer
- * renders the complete grid on this signal.
- */
-export interface DatasetReadyPayload extends TablePage {
-  /** Cumulative rows fetched; equals `totalRows` for client-mode tables. */
-  readonly loadedRows: number;
-  readonly filteredRows?: number | null;
-  readonly querySnapshot?: QuerySnapshot | null;
-  readonly revision?: MutationRevision | null;
-}
+/** One bounded authoritative window returned for `table.queryRequested`. */
+export type TablePageLoadedPayload = TablePage;
+
+/** Initial revision-bound cursor window for the selected table. */
+export type DatasetReadyPayload = TablePage;
 
 /** Result payload for `database.opened`. */
 export interface DatabaseOpenedPayload {
@@ -173,16 +174,8 @@ export interface DatabaseOpenedPayload {
   /** Safe display identity; session secrets are never included. */
   readonly currentUser?: Readonly<Record<string, unknown>>;
   readonly hostVersion?: string;
-  /** Physical collection -> user-facing label. Optional for old hosts. */
-  readonly displayNames?: Readonly<Record<string, string>>;
-  /** Runtime host gates. Missing means unsupported/disabled on older hosts. */
-  readonly features?: HostFeatureFlags;
-}
-
-export interface HostFeatureFlags {
-  readonly [key: string]: unknown;
-  readonly dashboards: boolean;
-  readonly autoDateFields?: boolean;
+  /** Physical collection -> user-facing label. */
+  readonly displayNames: Readonly<Record<string, string>>;
 }
 
 /** Payload produced by the web layer for `database.openRequested`. */
@@ -193,13 +186,6 @@ export interface DatabaseOpenRequestedPayload {
 /** Payload produced by the web layer for `table.selected`. */
 export interface TableSelectedPayload {
   readonly table: string;
-}
-
-/** Payload produced by the web layer for `table.pageRequested`. */
-export interface TablePageRequestedPayload {
-  readonly table: string;
-  readonly offset: number;
-  readonly limit: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +388,7 @@ export interface DeleteRowsRequestedPayload {
 export interface OperationFailedPayload {
   readonly message: string;
   readonly code?: string;
+  readonly operation?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -635,7 +622,7 @@ export interface ApplyPasteResult {
 }
 
 // ---------------------------------------------------------------------------
-// Table-admin contracts (mirror backend/contracts/table_admin.py)
+// Table-admin contracts
 // ---------------------------------------------------------------------------
 
 /** Frozen normalized product data types. No PocketBase storage names leak here. */
@@ -741,75 +728,7 @@ export interface AttachmentDownloadPayload {
   readonly originalName: string;
 }
 
-export interface ProductFieldDefinition {
-  readonly fieldId: string;
-  readonly physicalName: string;
-  readonly displayName: string;
-  readonly kind: ProductFieldKind;
-  readonly dataType: TableFieldType;
-  readonly storageType:
-    | "text"
-    | "editor"
-    | "bool"
-    | "number"
-    | "date"
-    | "autodate"
-    | "email"
-    | "url"
-    | "select"
-    | "json"
-    | "geoPoint"
-    | "file"
-    | "relation";
-  readonly nullable: boolean;
-  readonly defaultValue: unknown;
-  readonly constraints: readonly Readonly<Record<string, unknown>>[];
-  readonly editor: {
-    readonly kind: string;
-    readonly config: Readonly<Record<string, unknown>>;
-  };
-  readonly readOnly: boolean;
-  readonly autoDate?: {
-    readonly role: "createdAt" | "updatedAt";
-  };
-  readonly formula: FormulaDefinition | null;
-  readonly relation: Readonly<Record<string, unknown>> | null;
-  readonly lookup: Readonly<Record<string, unknown>> | null;
-  readonly attachmentPolicy: AttachmentPolicy | null;
-}
-
-export interface ProductTableDefinition {
-  readonly contractVersion: "2.0";
-  readonly tableId: string;
-  readonly physicalName: string;
-  readonly displayName: string;
-  readonly kind: "base" | "view";
-  readonly schemaRevision: string;
-  readonly archivePolicy: {
-    readonly mode: "none" | "status" | "deletedAt";
-    readonly fieldId: string | null;
-    readonly archivedValue: unknown;
-  };
-  /**
-   * Present only for read-only views. The sidecar compiles this normalized
-   * source projection; renderer code never supplies SQL or PB filters.
-   */
-  readonly view?: {
-    readonly sourceTableId: string;
-  };
-  readonly fields: readonly ProductFieldDefinition[];
-  readonly indexes: readonly {
-    readonly name: string;
-    readonly fieldIds: readonly string[];
-    readonly unique: boolean;
-  }[];
-}
-
-export interface FormulaPreviewRpcPayload {
-  readonly definition: ProductTableDefinition;
-  readonly row: Readonly<Record<string, unknown>>;
-  readonly changedFieldIds: readonly string[];
-}
+export type FormulaPreviewRpcPayload = FormulaPreviewRequestV2;
 
 export interface FormulaDraftValidateParams {
   readonly tableId: string;
@@ -840,7 +759,7 @@ export interface CollectionsChangedPayload {
   readonly tables: readonly string[];
   readonly capabilityHashes?: Readonly<Record<string, string>>;
   /** Physical collection -> user-facing label. */
-  readonly displayNames?: Readonly<Record<string, string>>;
+  readonly displayNames: Readonly<Record<string, string>>;
   readonly projectRevision?: string;
 }
 
@@ -867,7 +786,7 @@ export interface DashboardMeasurePayload {
 
 export interface DashboardTimeBucketPayload {
   readonly field: string;
-  readonly unit: "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year";
+  readonly unit: "day" | "week" | "month";
   readonly timezone?: string;
 }
 
@@ -1021,22 +940,6 @@ export interface DashboardSaveResultPayload {
   readonly workspace: DashboardWorkspacePayload;
   readonly clientPanelIds: Readonly<Record<string, string>>;
   readonly atomic: true;
-}
-
-export interface IdentifierMappingEntry {
-  readonly id: string;
-  readonly entityKind: "collection" | "field";
-  readonly parentPhysicalName?: string | null;
-  readonly physicalName: string;
-  readonly displayName: string;
-  readonly locale: string;
-  readonly aliases: readonly string[];
-  readonly origin: "vibetable" | "pocketbase";
-  readonly status: "pending" | "active";
-}
-
-export interface IdentifierMappingsResult {
-  readonly mappings: readonly IdentifierMappingEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,7 +1343,6 @@ export type WebMessageType =
   | "host.startupCancelRequested"
   | "database.openRequested"
   | "table.selected"
-  | "table.pageRequested"
   | "table.updateCellRequested"
   | "table.insertRowRequested"
   | "table.deleteRowsRequested"
@@ -1451,7 +1353,16 @@ export type WebMessageType =
   | "field.change.cancel"
   | "field.recycleBin.list"
   | "schema.getTable"
+  | "contentProfile.load"
+  | "contentProfile.commit"
+  | "contentProfile.delete"
+  | "recordDocumentLink.list"
+  | "recordDocumentLink.commit"
+  | "recordDocumentLink.repair"
+  | "recordDocumentLink.delete"
   | "query.page"
+  | "query.cursorOpen"
+  | "query.cursorFetch"
   | "mutation.preview"
   | "mutation.apply"
   | "formula.validate"
@@ -1472,8 +1383,6 @@ export type WebMessageType =
   | "relation.previewDelta"
   | "relation.applyDelta"
   | "lookup.list"
-  | "lookup.validate"
-  | "lookup.preview"
   | "lookup.query"
 	| "lookup.valuePage"
   | "preset.list"
@@ -1487,6 +1396,7 @@ export type WebMessageType =
   | "version.delete"
   // B3 query + state requests.
   | "table.queryRequested"
+  | "table.cursorRequested"
   | "gridState.saveRequested"
   // B2 paste preview + apply requests.
   | "table.previewPasteRequested"
@@ -1518,9 +1428,6 @@ export type WebMessageType =
   // Table-admin requests.
   | "tableAdmin.createRequested"
   | "tableAdmin.deleteRequested"
-  | "identifierMappings.listRequested"
-  | "identifierMappings.updateAliasesRequested"
-  | "identifierMappings.reconcileRequested"
   | "dashboard.listRequested"
   | "dashboard.readRequested"
   | "dashboard.manifestRequested"
@@ -1557,6 +1464,7 @@ export type HostMessageType =
   | "database.opened"
   | "table.pageLoaded"
   | "table.datasetReady"
+  | "table.windowLoaded"
   | "operation.failed"
   | "table.editSchemaLoaded"
   | "table.editCommitted"
@@ -1581,7 +1489,16 @@ export type HostMessageType =
   | "field.change.cancel"
   | "field.recycleBin.list"
   | "schema.getTable"
+  | "contentProfile.load"
+  | "contentProfile.commit"
+  | "contentProfile.delete"
+  | "recordDocumentLink.list"
+  | "recordDocumentLink.commit"
+  | "recordDocumentLink.repair"
+  | "recordDocumentLink.delete"
   | "query.page"
+  | "query.cursorOpen"
+  | "query.cursorFetch"
   | "mutation.preview"
   | "mutation.apply"
   | "formula.validate"
@@ -1600,8 +1517,6 @@ export type HostMessageType =
   | "relation.previewDelta"
   | "relation.applyDelta"
   | "lookup.list"
-  | "lookup.validate"
-  | "lookup.preview"
   | "lookup.query"
 	| "lookup.valuePage"
   | "preset.list"
@@ -1629,7 +1544,6 @@ export type HostMessageType =
   | "document.workspaceChanged"
   // Collections-changed notifications.
   | "database.collectionsChanged"
-  | "identifierMappings.result"
   | "dashboard.listLoaded"
   | "dashboard.loaded"
   | "dashboard.manifestLoaded"
@@ -1828,6 +1742,7 @@ export interface HostPayloadMap {
   "database.opened": DatabaseOpenedPayload;
   "table.pageLoaded": TablePageLoadedPayload;
   "table.datasetReady": DatasetReadyPayload;
+  "table.windowLoaded": TablePage;
   "operation.failed": OperationFailedPayload;
   "table.editSchemaLoaded": EditSchemaResult;
   "table.editCommitted": UpdateCellResult;
@@ -1851,8 +1766,17 @@ export interface HostPayloadMap {
   "field.change.status": FieldMigrationStatusV2;
   "field.change.cancel": FieldMigrationStatusV2;
   "field.recycleBin.list": FieldRecycleBinResultV2;
-  "schema.getTable": ProductTableDefinition;
+  "schema.getTable": SchemaSnapshotV2;
+  "contentProfile.load": ContentProfileSnapshot;
+  "contentProfile.commit": ContentProfileSnapshot;
+  "contentProfile.delete": ContentProfileDeleteResult;
+  "recordDocumentLink.list": RecordDocumentLinkListResult;
+  "recordDocumentLink.commit": RecordDocumentLinkSnapshot;
+  "recordDocumentLink.repair": RecordDocumentLinkSnapshot;
+  "recordDocumentLink.delete": RecordDocumentLinkDeleteResult;
   "query.page": Readonly<Record<string, unknown>>;
+  "query.cursorOpen": QueryCursorWindow;
+  "query.cursorFetch": QueryCursorWindow;
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": MutationReceipt;
   "formula.validate": Readonly<Record<string, unknown>>;
@@ -1871,8 +1795,6 @@ export interface HostPayloadMap {
   "relation.previewDelta": RelationDeltaPreview;
   "relation.applyDelta": RelationDeltaResult;
   "lookup.list": LookupListResult;
-  "lookup.validate": LookupValidationResult;
-  "lookup.preview": LookupQueryResult;
   "lookup.query": LookupQueryResult;
 	"lookup.valuePage": LookupCellValue;
   "preset.list": PresetsResult;
@@ -1897,7 +1819,6 @@ export interface HostPayloadMap {
   "document.workspaceChanged": DocumentWorkspaceChangedPayload;
   // Collections-changed notifications.
   "database.collectionsChanged": CollectionsChangedPayload;
-  "identifierMappings.result": IdentifierMappingsResult;
   "dashboard.listLoaded": { readonly dashboards: readonly DashboardEntryPayload[] };
   "dashboard.loaded": DashboardWorkspacePayload;
   "dashboard.manifestLoaded": DashboardManifestLoadedPayload;
@@ -1934,7 +1855,6 @@ export interface WebPayloadMap {
   "host.startupCancelRequested": Record<string, never>;
   "database.openRequested": DatabaseOpenRequestedPayload;
   "table.selected": TableSelectedPayload;
-  "table.pageRequested": TablePageRequestedPayload;
   "table.updateCellRequested": UpdateCellRequestedPayload;
   "table.insertRowRequested": InsertRowRequestedPayload;
   "table.deleteRowsRequested": DeleteRowsRequestedPayload;
@@ -1948,10 +1868,25 @@ export interface WebPayloadMap {
   "field.change.cancel": { readonly jobId: string };
   "field.recycleBin.list": { readonly tableId: string };
   "schema.getTable": { readonly tableId: string };
+  "contentProfile.load": ContentProfileLoadRequest;
+  "contentProfile.commit": ContentProfileCommitRequest;
+  "contentProfile.delete": ContentProfileDeleteRequest;
+  "recordDocumentLink.list": RecordDocumentLinkListRequest;
+  "recordDocumentLink.commit": RecordDocumentLinkCommitRequest;
+  "recordDocumentLink.repair": RecordDocumentLinkRepairRequest;
+  "recordDocumentLink.delete": RecordDocumentLinkDeleteRequest;
   "query.page": Readonly<Record<string, unknown>>;
+  "query.cursorOpen": {
+    readonly tableId: string;
+    readonly query: Readonly<Record<string, unknown>>;
+  };
+  "query.cursorFetch": { readonly cursor: string };
   "mutation.preview": Readonly<Record<string, unknown>>;
   "mutation.apply": Readonly<Record<string, unknown>>;
-  "formula.validate": { readonly definition: Readonly<Record<string, unknown>> };
+  "formula.validate": {
+    readonly tableId: string;
+    readonly field: import("./schemaV2").FieldDefinitionV2;
+  };
   "formula.draft.validate": FormulaDraftValidateParams;
   "formula.preview": FormulaPreviewRpcPayload;
   "file.list": {
@@ -1983,8 +1918,6 @@ export interface WebPayloadMap {
   "relation.previewDelta": RelationDelta;
   "relation.applyDelta": RelationDelta;
   "lookup.list": { readonly collection: string };
-  "lookup.validate": LookupValidateParams;
-  "lookup.preview": LookupPreviewParams;
   "lookup.query": LookupQueryParams;
 	"lookup.valuePage": LookupValuePageParams;
   "preset.list": { readonly collection: string };
@@ -2036,6 +1969,7 @@ export interface WebPayloadMap {
   };
   // B3 query + state requests.
   "table.queryRequested": TableQueryRequestedPayload;
+  "table.cursorRequested": TableCursorRequestedPayload;
   "gridState.saveRequested": GridStateSaveRequestedPayload;
   // B2 paste preview + apply requests.
   "table.previewPasteRequested": PreviewPasteRequestedPayload;
@@ -2057,7 +1991,6 @@ export interface WebPayloadMap {
     readonly collection: string;
     readonly token: string;
     readonly mode: "create_only" | "upsert";
-    readonly chunkSize: number;
     readonly idempotencyPrefix: string;
   };
   "data.export": {
@@ -2092,12 +2025,6 @@ export interface WebPayloadMap {
   // Table-admin requests.
   "tableAdmin.createRequested": TableAdminCreatePayload;
   "tableAdmin.deleteRequested": TableAdminDeletePayload;
-  "identifierMappings.listRequested": { readonly search?: string | null };
-  "identifierMappings.updateAliasesRequested": {
-    readonly mappingId: string;
-    readonly aliases: readonly string[];
-  };
-  "identifierMappings.reconcileRequested": Record<string, never>;
   "dashboard.listRequested": Record<string, never>;
   "dashboard.readRequested": { readonly dashboardId: string };
   "dashboard.manifestRequested": Record<string, never>;
@@ -2192,6 +2119,10 @@ export interface TableQueryRequestedPayload {
   readonly query: TableQuery;
 }
 
+export interface TableCursorRequestedPayload {
+  readonly cursor: string;
+}
+
 /** Payload produced by the web layer for `gridState.saveRequested`. */
 export interface GridStateSaveRequestedPayload {
   readonly databaseId: string;
@@ -2232,10 +2163,10 @@ export interface ScalarFieldChange {
   readonly after: unknown;
 }
 
-/** A relation field change (M2O, O2M, M2M, M2A, file). */
+/** A direct relation or file field change. */
 export interface RelationFieldChange {
   readonly field: string;
-  readonly kind: "m2o" | "o2m" | "m2m" | "m2a" | "file";
+  readonly kind: "m2o" | "o2m" | "m2m" | "file";
   readonly relatedCollection: string | null;
   readonly relatedItemId: string | null;
   readonly displayValue: string | null;
@@ -2372,7 +2303,9 @@ export type DocumentBridgeScope =
 export interface DocumentListRequestedPayload {
   readonly scope: DocumentBridgeScope;
   readonly authority: "workspace";
+  readonly query: FileDocumentQuery;
 }
+
 
 export interface DocumentImportRequestedPayload {
   readonly scope: DocumentBridgeScope;
@@ -2422,8 +2355,14 @@ export interface DocumentDiffCompletedPayload {
 export interface DocumentBridgeEntry {
   readonly documentId: string;
   readonly entryHandle: string;
+  readonly relativePath: string;
   readonly displayName: string;
-  readonly mimeType: string | null;
+  readonly extension: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly effectiveRevisionCreatedAt: string;
+  readonly formalVersion: number | null;
+  readonly status: "active" | "deleted";
   readonly availability: "available" | "missing" | "unmounted" | "unmanaged" | "unsafe" | "remote";
   readonly previewKind: "web" | "system" | "none";
   readonly currentRevision: string | null;
@@ -2436,6 +2375,8 @@ export interface DocumentListLoadedPayload {
   readonly collection: string | null;
   readonly itemId: string | null;
   readonly entries: readonly DocumentBridgeEntry[];
+  readonly nextCursor: string | null;
+  readonly topologyRevision: number;
 }
 
 export interface DocumentActionCompletedPayload {
@@ -2453,3 +2394,4 @@ export interface DocumentWorkspaceChangedPayload {
   readonly affectedCount: number;
 }
 export * from "./schemaV2";
+export * from "./fileDocumentQuery";

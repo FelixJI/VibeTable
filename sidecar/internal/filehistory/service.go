@@ -27,9 +27,8 @@ import (
 )
 
 const (
-	legacyRootFormatVersion = 2
-	rootFormatVersion       = 3
-	contractVersion         = "2.0"
+	rootFormatVersion = 3
+	contractVersion   = "2.0"
 
 	// A FileHistory root is part of the snapshot bundle closure. Keep its
 	// aggregate entry limits aligned with the bundle's 10,000-entry ceiling,
@@ -1188,6 +1187,47 @@ func (service *Service) Inspect(documentID string) (Document, error) {
 	return cloneDocument(document), nil
 }
 
+// OpenRevision exposes one immutable revision to derived consumers such as
+// WorkspaceSearch. It keeps repository object identities private and permits
+// historical reads for soft-deleted documents without changing the effective
+// leaf or materialized file.
+func (service *Service) OpenRevision(
+	ctx context.Context,
+	documentID string,
+	revisionID string,
+) (Revision, io.ReadCloser, error) {
+	if !validUUID(documentID) || !validUUID(revisionID) {
+		return Revision{}, nil, errors.New("file_history.request_invalid")
+	}
+	if err := ctx.Err(); err != nil {
+		return Revision{}, nil, err
+	}
+	service.mu.RLock()
+	defer service.mu.RUnlock()
+	document, exists := service.documents[documentID]
+	if !exists {
+		return Revision{}, nil, ErrDocumentNotFound
+	}
+	if document.WorkspaceID != service.coordinatorWorkspaceID() {
+		return Revision{}, nil, ErrStateCorrupt
+	}
+	for index := range document.Revisions {
+		revision := &document.Revisions[index]
+		if revision.DocumentID != documentID {
+			return Revision{}, nil, ErrStateCorrupt
+		}
+		if revision.RevisionID != revisionID {
+			continue
+		}
+		content, err := service.repository.Open(ctx, revision.ObjectID)
+		if err != nil {
+			return Revision{}, nil, err
+		}
+		return *cloneRevision(revision), content, nil
+	}
+	return Revision{}, nil, ErrRevisionNotFound
+}
+
 // OpenDiffPair validates the historical target and expected effective
 // revision against one authoritative document snapshot, then opens both
 // immutable objects before releasing the read lock.
@@ -2114,23 +2154,12 @@ func validatePaths(documents map[string]Document) error {
 }
 
 func supportedRootFormat(version int) bool {
-	return version == legacyRootFormatVersion || version == rootFormatVersion
+	return version == rootFormatVersion
 }
 
 func validateRootVersion(root rootPayload) error {
 	if !supportedRootFormat(root.FormatVersion) {
 		return ErrStateCorrupt
-	}
-	if root.FormatVersion != legacyRootFormatVersion {
-		return nil
-	}
-	for _, document := range root.Documents {
-		for _, revision := range document.Revisions {
-			if revision.RevisionOrdinal == 0 ||
-				revision.LocalSequence != nil {
-				return ErrStateCorrupt
-			}
-		}
 	}
 	return nil
 }

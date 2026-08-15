@@ -30,12 +30,14 @@ var (
 		`^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$`,
 	)
 	collectionByNamespace = map[Namespace]string{
-		NamespaceSharedSettings:     "vibetable_shared_settings",
-		NamespaceDashboards:         "vibetable_dashboards",
-		NamespacePanels:             "vibetable_panels",
-		NamespacePresets:            "vibetable_presets",
-		NamespaceIdentifierMappings: "vibetable_identifier_mappings",
-		NamespaceContentVersions:    "vibetable_content_versions",
+		NamespaceSharedSettings:      "vibetable_shared_settings",
+		NamespaceDashboards:          "vibetable_dashboards",
+		NamespacePanels:              "vibetable_panels",
+		NamespacePresets:             "vibetable_presets",
+		NamespaceContentVersions:     "vibetable_content_versions",
+		NamespaceInterfaces:          "vibetable_interfaces",
+		NamespaceContentProfiles:     "vibetable_content_profiles",
+		NamespaceRecordDocumentLinks: "vibetable_record_document_links",
 	}
 )
 
@@ -216,7 +218,7 @@ func (service *Service) Delete(
 				}
 				panelRecords, findErr := txApp.FindRecordsByFilter(
 					panelCollection,
-					"dashboard_id={:dashboard}",
+					"parent_id={:dashboard}",
 					"+logical_id",
 					0,
 					0,
@@ -431,7 +433,7 @@ func (service *Service) upsert(
 	if record != nil {
 		if namespace == NamespacePanels &&
 			dashboardID != "" &&
-			record.GetString("dashboard_id") != dashboardID {
+			record.GetString("parent_id") != dashboardID {
 			return Item{}, metadataChange{}, dashboardInvalid(
 				joinPath(pathPrefix, "logicalId"),
 				"panel belongs to another dashboard",
@@ -455,10 +457,9 @@ func (service *Service) upsert(
 	}
 	record.Set("logical_id", mutation.LogicalID)
 	record.Set("payload_json", pbtypes.JSONRaw(mutation.Payload))
-	setLegacyFields(
-		record, namespace, mutation.LogicalID,
-		mutation.Payload, dashboardID, service.now(),
-	)
+	if namespace == NamespacePanels && dashboardID != "" {
+		record.Set("parent_id", dashboardID)
+	}
 	if err := app.Save(record); err != nil {
 		return Item{}, metadataChange{}, storageError()
 	}
@@ -503,7 +504,7 @@ func (service *Service) delete(
 	}
 	if namespace == NamespacePanels &&
 		dashboardID != "" &&
-		record.GetString("dashboard_id") != dashboardID {
+		record.GetString("parent_id") != dashboardID {
 		return metadataChange{}, dashboardInvalid(
 			joinPath(pathPrefix, "logicalId"),
 			"panel belongs to another dashboard",
@@ -1055,60 +1056,6 @@ func stringsHasOnlyHex(value string) bool {
 		}
 	}
 	return true
-}
-
-func setLegacyFields(
-	record *core.Record,
-	namespace Namespace,
-	logicalID string,
-	payload json.RawMessage,
-	dashboardID string,
-	now time.Time,
-) {
-	nextRevision := record.GetInt("revision") + 1
-	if nextRevision < 1 {
-		nextRevision = 1
-	}
-	switch namespace {
-	case NamespaceSharedSettings:
-		record.Set("key", logicalID)
-		record.Set("value_json", pbtypes.JSONRaw(payload))
-		record.Set("revision", nextRevision)
-	case NamespaceDashboards:
-		record.Set("dashboard_id", logicalID)
-		record.Set("layout_json", pbtypes.JSONRaw(payload))
-		record.Set("revision", nextRevision)
-	case NamespacePanels:
-		record.Set("panel_id", logicalID)
-		if dashboardID == "" &&
-			record.GetString("dashboard_id") == "" {
-			dashboardID = "metadata"
-		}
-		if dashboardID != "" {
-			record.Set("dashboard_id", dashboardID)
-		}
-		record.Set("query_json", pbtypes.JSONRaw(payload))
-		record.Set("revision", nextRevision)
-	case NamespacePresets:
-		record.Set("preset_id", logicalID)
-		record.Set("scope", "metadata")
-		record.Set("projection_json", pbtypes.JSONRaw(payload))
-		record.Set("revision", nextRevision)
-	case NamespaceIdentifierMappings:
-		record.Set("entity_kind", "metadata")
-		record.Set("physical_name", logicalID)
-		record.Set("display_name", logicalID)
-		record.Set("origin", "metadata")
-		record.Set("status", "active")
-	case NamespaceContentVersions:
-		record.Set("table_id", "metadata")
-		record.Set("record_id", logicalID)
-		record.Set("name", logicalID)
-		record.Set("change_set_id", logicalID)
-		if record.GetString("created_at") == "" {
-			record.Set("created_at", now)
-		}
-	}
 }
 
 func revisionConflict(

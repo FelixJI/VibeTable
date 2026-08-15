@@ -10,18 +10,19 @@ import (
 
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestCompileAndEvaluateFormulaPlan(t *testing.T) {
 	definition := formulaTable(
-		scalarField("quantity_id", "quantity", schema.DataTypeFloat),
-		scalarField("unit_price_id", "unit_price", schema.DataTypeFloat),
-		scalarField("title_id", "title", schema.DataTypeShortText),
-		formulaField("subtotal_id", "subtotal", schema.DataTypeFloat, "quantity * unit_price"),
-		formulaField("label_id", "label", schema.DataTypeShortText, `concat(upper(trim(title)), ":", subtotal)`),
+		scalarField("quantity_id", "quantity", numberType),
+		scalarField("unit_price_id", "unit_price", numberType),
+		scalarField("title_id", "title", textType),
+		formulaField("subtotal_id", "subtotal", numberType, "quantity * unit_price"),
+		formulaField("label_id", "label", textType, `concat(upper(trim(title)), ":", subtotal)`),
 	)
-	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(definition)
+	plan, formulaErr := NewCompiler(DefaultLimits()).CompileExecutionTable(definition)
 	if formulaErr != nil {
 		t.Fatal(formulaErr)
 	}
@@ -47,11 +48,11 @@ func TestCompileAndEvaluateFormulaPlan(t *testing.T) {
 
 func TestSingleRecordFormulaPreviewRecordsP50AndP95(t *testing.T) {
 	definition := formulaTable(
-		scalarField("quantity_id", "quantity", schema.DataTypeFloat),
-		scalarField("unit_price_id", "unit_price", schema.DataTypeFloat),
+		scalarField("quantity_id", "quantity", numberType),
+		scalarField("unit_price_id", "unit_price", numberType),
 		formulaField(
 			"subtotal_id", "subtotal",
-			schema.DataTypeFloat, "quantity * unit_price",
+			numberType, "quantity * unit_price",
 		),
 	)
 	const (
@@ -62,7 +63,7 @@ func TestSingleRecordFormulaPreviewRecordsP50AndP95(t *testing.T) {
 	for index := 0; index < samples+5; index++ {
 		startedAt := time.Now()
 		for preview := 0; preview < previewsPerSample; preview++ {
-			plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(definition)
+			plan, formulaErr := NewCompiler(DefaultLimits()).CompileExecutionTable(definition)
 			if formulaErr != nil {
 				t.Fatal(formulaErr)
 			}
@@ -95,59 +96,49 @@ func TestFormulaTypeDependencyAndCycleErrors(t *testing.T) {
 	compiler := NewCompiler(DefaultLimits())
 	t.Run("type", func(t *testing.T) {
 		definition := formulaTable(
-			scalarField("title_id", "title", schema.DataTypeShortText),
-			formulaField("bad_id", "bad", schema.DataTypeFloat, "title"),
+			scalarField("title_id", "title", textType),
+			formulaField("bad_id", "bad", numberType, "title"),
 		)
-		_, err := compiler.CompileTable(definition)
+		_, err := compiler.CompileExecutionTable(definition)
 		assertFormulaCode(t, err, "formula.type")
 	})
 	t.Run("unknown identifier", func(t *testing.T) {
 		definition := formulaTable(
-			formulaField("bad_id", "bad", schema.DataTypeFloat, "missing + 1.0"),
+			formulaField("bad_id", "bad", numberType, "missing + 1.0"),
 		)
-		_, err := compiler.CompileTable(definition)
-		assertFormulaCode(t, err, "formula.dependency")
-	})
-	t.Run("hash identifier is sensitive", func(t *testing.T) {
-		definition := formulaTable(
-			scalarField("hash_id", "password_hash", schema.DataTypeHash),
-			formulaField(
-				"bad_id", "bad", schema.DataTypeShortText, "password_hash",
-			),
-		)
-		_, err := compiler.CompileTable(definition)
+		_, err := compiler.CompileExecutionTable(definition)
 		assertFormulaCode(t, err, "formula.dependency")
 	})
 	t.Run("invalid operation type", func(t *testing.T) {
 		definition := formulaTable(
-			formulaField("bad_id", "bad", schema.DataTypeInteger, "1 + true"),
+			formulaField("bad_id", "bad", integerType, "1 + true"),
 		)
-		_, err := compiler.CompileTable(definition)
+		_, err := compiler.CompileExecutionTable(definition)
 		assertFormulaCode(t, err, "formula.type")
 	})
 	t.Run("dynamic json indexing", func(t *testing.T) {
 		definition := formulaTable(
-			scalarField("metadata_id", "metadata", schema.DataTypeJSON),
-			scalarField("key_id", "key_name", schema.DataTypeShortText),
-			formulaField("bad_id", "bad", schema.DataTypeShortText, "metadata[key_name]"),
+			scalarField("metadata_id", "metadata", jsonType),
+			scalarField("key_id", "key_name", textType),
+			formulaField("bad_id", "bad", textType, "metadata[key_name]"),
 		)
-		_, err := compiler.CompileTable(definition)
+		_, err := compiler.CompileExecutionTable(definition)
 		assertFormulaCode(t, err, "formula.dependency")
 	})
 	t.Run("function outside whitelist", func(t *testing.T) {
 		definition := formulaTable(
-			scalarField("title_id", "title", schema.DataTypeShortText),
-			formulaField("bad_id", "bad", schema.DataTypeBoolean, `title.matches(".*")`),
+			scalarField("title_id", "title", textType),
+			formulaField("bad_id", "bad", boolType, `title.matches(".*")`),
 		)
-		_, err := compiler.CompileTable(definition)
+		_, err := compiler.CompileExecutionTable(definition)
 		assertFormulaCode(t, err, "formula.dependency")
 	})
 	t.Run("cycle", func(t *testing.T) {
 		definition := formulaTable(
-			formulaField("a_id", "a_value", schema.DataTypeFloat, "b_value + 1.0"),
-			formulaField("b_id", "b_value", schema.DataTypeFloat, "a_value + 1.0"),
+			formulaField("a_id", "a_value", numberType, "b_value + 1.0"),
+			formulaField("b_id", "b_value", numberType, "a_value + 1.0"),
 		)
-		_, err := compiler.CompileTable(definition)
+		_, err := compiler.CompileExecutionTable(definition)
 		assertFormulaCode(t, err, "formula.cycle")
 	})
 }
@@ -155,10 +146,10 @@ func TestFormulaTypeDependencyAndCycleErrors(t *testing.T) {
 func TestFormulaRuntimeErrorsAndIncrementalEvaluation(t *testing.T) {
 	compiler := NewCompiler(DefaultLimits())
 	t.Run("divide by zero", func(t *testing.T) {
-		plan, err := compiler.CompileTable(formulaTable(
-			scalarField("amount_id", "amount", schema.DataTypeFloat),
-			scalarField("divisor_id", "divisor", schema.DataTypeFloat),
-			formulaField("result_id", "result", schema.DataTypeFloat, "amount / divisor"),
+		plan, err := compiler.CompileExecutionTable(formulaTable(
+			scalarField("amount_id", "amount", numberType),
+			scalarField("divisor_id", "divisor", numberType),
+			formulaField("result_id", "result", numberType, "amount / divisor"),
 		))
 		if err != nil {
 			t.Fatal(err)
@@ -169,9 +160,9 @@ func TestFormulaRuntimeErrorsAndIncrementalEvaluation(t *testing.T) {
 		assertFormulaCode(t, evalErr, "formula.divide_by_zero")
 	})
 	t.Run("null", func(t *testing.T) {
-		plan, err := compiler.CompileTable(formulaTable(
-			scalarField("amount_id", "amount", schema.DataTypeFloat),
-			formulaField("result_id", "result", schema.DataTypeFloat, "amount + 1.0"),
+		plan, err := compiler.CompileExecutionTable(formulaTable(
+			scalarField("amount_id", "amount", numberType),
+			formulaField("result_id", "result", numberType, "amount + 1.0"),
 		))
 		if err != nil {
 			t.Fatal(err)
@@ -180,9 +171,9 @@ func TestFormulaRuntimeErrorsAndIncrementalEvaluation(t *testing.T) {
 		assertFormulaCode(t, evalErr, "formula.null")
 	})
 	t.Run("integer overflow", func(t *testing.T) {
-		plan, err := compiler.CompileTable(formulaTable(
-			scalarField("number_id", "number", schema.DataTypeInteger),
-			formulaField("result_id", "result", schema.DataTypeInteger, "number * 2"),
+		plan, err := compiler.CompileExecutionTable(formulaTable(
+			scalarField("number_id", "number", integerType),
+			formulaField("result_id", "result", integerType, "number * 2"),
 		))
 		if err != nil {
 			t.Fatal(err)
@@ -193,12 +184,12 @@ func TestFormulaRuntimeErrorsAndIncrementalEvaluation(t *testing.T) {
 		assertFormulaCode(t, evalErr, "formula.overflow")
 	})
 	t.Run("incremental downstream", func(t *testing.T) {
-		plan, err := compiler.CompileTable(formulaTable(
-			scalarField("a_id", "a_value", schema.DataTypeFloat),
-			scalarField("unrelated_id", "unrelated", schema.DataTypeFloat),
-			formulaField("b_id", "b_value", schema.DataTypeFloat, "a_value + 1.0"),
-			formulaField("c_id", "c_value", schema.DataTypeFloat, "b_value * 2.0"),
-			formulaField("d_id", "d_value", schema.DataTypeFloat, "unrelated + 1.0"),
+		plan, err := compiler.CompileExecutionTable(formulaTable(
+			scalarField("a_id", "a_value", numberType),
+			scalarField("unrelated_id", "unrelated", numberType),
+			formulaField("b_id", "b_value", numberType, "a_value + 1.0"),
+			formulaField("c_id", "c_value", numberType, "b_value * 2.0"),
+			formulaField("d_id", "d_value", numberType, "unrelated + 1.0"),
 		))
 		if err != nil {
 			t.Fatal(err)
@@ -214,9 +205,9 @@ func TestFormulaRuntimeErrorsAndIncrementalEvaluation(t *testing.T) {
 		}
 	})
 	t.Run("PocketBase number normalization", func(t *testing.T) {
-		plan, err := compiler.CompileTable(formulaTable(
-			scalarField("count_id", "count", schema.DataTypeInteger),
-			formulaField("next_id", "next", schema.DataTypeInteger, "count + 1"),
+		plan, err := compiler.CompileExecutionTable(formulaTable(
+			scalarField("count_id", "count", integerType),
+			formulaField("next_id", "next", integerType, "count + 1"),
 		))
 		if err != nil {
 			t.Fatal(err)
@@ -235,20 +226,20 @@ func TestFormulaResourceLimitsAndUTC(t *testing.T) {
 	t.Run("source", func(t *testing.T) {
 		limits := DefaultLimits()
 		limits.SourceBytes = 8
-		_, err := NewCompiler(limits).CompileTable(formulaTable(
-			formulaField("value_id", "value", schema.DataTypeFloat, "1.0 + 2.0"),
+		_, err := NewCompiler(limits).CompileExecutionTable(formulaTable(
+			formulaField("value_id", "value", numberType, "1.0 + 2.0"),
 		))
 		assertFormulaCode(t, err, "formula.resource_limit")
 	})
 	t.Run("comprehension", func(t *testing.T) {
-		_, err := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
-			formulaField("value_id", "value", schema.DataTypeInteger, "[1, 2].map(x, x + 1).size()"),
+		_, err := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
+			formulaField("value_id", "value", integerType, "[1, 2].map(x, x + 1).size()"),
 		))
 		assertFormulaCode(t, err, "formula.resource_limit")
 	})
 	t.Run("timestamp normalized UTC", func(t *testing.T) {
-		plan, err := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
-			formulaField("value_id", "value", schema.DataTypeDateTime, `timestamp("2026-07-24T08:30:00+08:00")`),
+		plan, err := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
+			formulaField("value_id", "value", dateTimeType, `timestamp("2026-07-24T08:30:00+08:00")`),
 		))
 		if err != nil {
 			t.Fatal(err)
@@ -268,16 +259,16 @@ func TestFormulaNormalizesWireAndPocketBaseValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
-		scalarField("count_id", "count", schema.DataTypeInteger),
-		scalarField("price_id", "price", schema.DataTypeFloat),
-		scalarField("payload_id", "payload", schema.DataTypeJSON),
-		scalarField("created_id", "created_at", schema.DataTypeDateTime),
-		formulaField("next_id", "next", schema.DataTypeInteger, "count + 1"),
-		formulaField("total_id", "total", schema.DataTypeFloat, "price * 2.0"),
-		formulaField("customer_id", "customer", schema.DataTypeShortText, "payload.customer.name"),
-		formulaField("payload_copy_id", "payload_copy", schema.DataTypeJSON, "payload"),
-		formulaField("created_copy_id", "created_copy", schema.DataTypeDateTime, "created_at"),
+	plan, formulaErr := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
+		scalarField("count_id", "count", integerType),
+		scalarField("price_id", "price", numberType),
+		scalarField("payload_id", "payload", jsonType),
+		scalarField("created_id", "created_at", dateTimeType),
+		formulaField("next_id", "next", integerType, "count + 1"),
+		formulaField("total_id", "total", numberType, "price * 2.0"),
+		formulaField("customer_id", "customer", textType, "payload.customer.name"),
+		formulaField("payload_copy_id", "payload_copy", jsonType, "payload"),
+		formulaField("created_copy_id", "created_copy", dateTimeType, "created_at"),
 	))
 	if formulaErr != nil {
 		t.Fatal(formulaErr)
@@ -304,7 +295,7 @@ func TestFormulaNormalizesWireAndPocketBaseValues(t *testing.T) {
 }
 
 func TestFormulaNormalizesUnsetPocketBaseJSONAsNull(t *testing.T) {
-	field := scalarField("payload_id", "payload", schema.DataTypeJSON)
+	field := scalarField("payload_id", "payload", jsonType)
 
 	normalized, formulaErr := normalizeInput(field, pbtypes.JSONRaw{}, DefaultLimits())
 
@@ -316,12 +307,12 @@ func TestFormulaNormalizesUnsetPocketBaseJSONAsNull(t *testing.T) {
 	}
 }
 
-func TestFormulaInputCollectionsAreRecursivelyBounded(t *testing.T) {
+func TestFormulaInputCollectionsAreRecursivelyByteBounded(t *testing.T) {
 	limits := DefaultLimits()
-	limits.CollectionSize = 2
-	plan, formulaErr := NewCompiler(limits).CompileTable(formulaTable(
-		scalarField("payload_id", "payload", schema.DataTypeJSON),
-		formulaField("value_id", "value", schema.DataTypeShortText, "payload.name"),
+	limits.CollectionBytes = 64
+	plan, formulaErr := NewCompiler(limits).CompileExecutionTable(formulaTable(
+		scalarField("payload_id", "payload", jsonType),
+		formulaField("value_id", "value", textType, "payload.name"),
 	))
 	if formulaErr != nil {
 		t.Fatal(formulaErr)
@@ -333,8 +324,8 @@ func TestFormulaInputCollectionsAreRecursivelyBounded(t *testing.T) {
 }
 
 func TestFormulaCollectionOutputIsProviderNeutral(t *testing.T) {
-	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
-		formulaField("values_id", "values", schema.DataTypeList, "[1, 2]"),
+	plan, formulaErr := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
+		formulaField("values_id", "values", listType, "[1, 2]"),
 	))
 	if formulaErr != nil {
 		t.Fatal(formulaErr)
@@ -350,15 +341,15 @@ func TestFormulaCollectionOutputIsProviderNeutral(t *testing.T) {
 }
 
 func TestFormulaDeterministicMathAndDateFunctions(t *testing.T) {
-	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
-		formulaField("low_id", "low", schema.DataTypeInteger, "min(8, 3)"),
-		formulaField("high_id", "high", schema.DataTypeFloat, "max(1.5, 2.25)"),
+	plan, formulaErr := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
+		formulaField("low_id", "low", integerType, "min(8, 3)"),
+		formulaField("high_id", "high", numberType, "max(1.5, 2.25)"),
 		formulaField(
-			"day_id", "day", schema.DataTypeShortText,
+			"day_id", "day", textType,
 			`formatDate(dateAdd(timestamp("2026-07-24T08:30:00+08:00"), duration("24h")), "yyyy-MM-dd")`,
 		),
 		formulaField(
-			"previous_id", "previous", schema.DataTypeDateTime,
+			"previous_id", "previous", dateTimeType,
 			`dateSubtract(timestamp("2026-07-25T00:30:00Z"), duration("24h"))`,
 		),
 	))
@@ -377,27 +368,22 @@ func TestFormulaDeterministicMathAndDateFunctions(t *testing.T) {
 }
 
 func TestFormulaAggregatesManyRelationWithoutLookupAndInfersType(t *testing.T) {
-	items := scalarField("items_id", "items", schema.DataTypeRelation)
-	items.Kind = schema.FieldKindRelation
-	items.StorageType = schema.StorageRelation
-	items.Relation = &schema.RelationSpec{
-		TargetTableID: "line_items", Cardinality: "many", DeletePolicy: "setNull",
-	}
+	items := relationField("items_id", "items", "line_items")
 	definition := formulaTable(
 		items,
 		formulaField(
-			"total_id", "total", schema.DataTypeFloat,
+			"total_id", "total", numberType,
 			`relationSum(items, "amount") + 2.0`,
 		),
 	)
 	compiler := NewCompiler(DefaultLimits())
-	inferred, formulaErr := compiler.InferSource(
+	inferred, formulaErr := compiler.InferExecutionSource(
 		definition, `relationSum(items, "amount") + 2.0`,
 	)
-	if formulaErr != nil || inferred != schema.DataTypeFloat {
-		t.Fatalf("inferred type = %s, error = %#v", inferred, formulaErr)
+	if formulaErr != nil || inferred != numberType {
+		t.Fatalf("inferred type = %#v, error = %#v", inferred, formulaErr)
 	}
-	plan, formulaErr := compiler.CompileTable(definition)
+	plan, formulaErr := compiler.CompileExecutionTable(definition)
 	if formulaErr != nil {
 		t.Fatal(formulaErr)
 	}
@@ -417,21 +403,16 @@ func TestFormulaAggregatesManyRelationWithoutLookupAndInfersType(t *testing.T) {
 }
 
 func TestFormulaEvaluatesEveryRelationAggregateFromPrecomputedCarrier(t *testing.T) {
-	items := scalarField("items_id", "items", schema.DataTypeRelation)
-	items.Kind = schema.FieldKindRelation
-	items.StorageType = schema.StorageRelation
-	items.Relation = &schema.RelationSpec{
-		TargetTableID: "line_items", Cardinality: "many", DeletePolicy: "setNull",
-	}
-	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
+	items := relationField("items_id", "items", "line_items")
+	plan, formulaErr := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
 		items,
-		formulaField("sum_id", "sum", schema.DataTypeFloat, `relationSum(items, "amount")`),
-		formulaField("avg_id", "avg", schema.DataTypeFloat, `relationAverage(items, "amount")`),
-		formulaField("min_id", "min", schema.DataTypeFloat, `relationMin(items, "amount")`),
-		formulaField("max_id", "max", schema.DataTypeFloat, `relationMax(items, "amount")`),
-		formulaField("count_id", "count", schema.DataTypeInteger, "relationCount(items)"),
+		formulaField("sum_id", "sum", numberType, `relationSum(items, "amount")`),
+		formulaField("avg_id", "avg", numberType, `relationAverage(items, "amount")`),
+		formulaField("min_id", "min", numberType, `relationMin(items, "amount")`),
+		formulaField("max_id", "max", numberType, `relationMax(items, "amount")`),
+		formulaField("count_id", "count", integerType, "relationCount(items)"),
 		formulaField(
-			"count_values_id", "count_values", schema.DataTypeInteger,
+			"count_values_id", "count_values", integerType,
 			`relationCountValues(items, "amount")`,
 		),
 	))
@@ -468,8 +449,8 @@ func TestFormulaEvaluatesEveryRelationAggregateFromPrecomputedCarrier(t *testing
 }
 
 func TestFormulaEvaluateRejectsUnknownPreviewInputs(t *testing.T) {
-	plan, formulaErr := NewCompiler(DefaultLimits()).CompileTable(formulaTable(
-		formulaField("value_id", "value", schema.DataTypeInteger, "1"),
+	plan, formulaErr := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
+		formulaField("value_id", "value", integerType, "1"),
 	))
 	if formulaErr != nil {
 		t.Fatal(formulaErr)
@@ -498,52 +479,85 @@ func TestFormulaErrorWireShape(t *testing.T) {
 	}
 }
 
-func formulaTable(fields ...schema.FieldDefinition) schema.TableDefinition {
-	return schema.TableDefinition{
-		ContractVersion: schema.ContractVersion,
-		TableID:         "orders_id",
-		PhysicalName:    "orders",
-		DisplayName:     "Orders",
-		Kind:            schema.TableKindBase,
-		SchemaRevision:  "schema_1",
-		ArchivePolicy:   schema.ArchivePolicy{Mode: schema.ArchiveModeNone},
-		Fields:          fields,
-		Indexes:         []schema.IndexDefinition{},
+func formulaTable(fields ...v2.FieldDefinition) schemaexecution.Table {
+	runtime := make(map[string]schemaexecution.FormulaRuntime)
+	for _, field := range fields {
+		if field.LogicalType == v2.LogicalFormula {
+			runtime[field.Identity.FieldID] = schemaexecution.FormulaRuntime{
+				Version: 1,
+				Status:  "ready",
+			}
+		}
+	}
+	return schemaexecution.Table{
+		Snapshot: v2.SchemaSnapshot{
+			Contract:       v2.Contract,
+			TableID:        "orders_id",
+			DisplayName:    "Orders",
+			SchemaRevision: "schema_1",
+			Fields:         fields,
+		},
+		PhysicalName:   "orders",
+		FormulaRuntime: runtime,
 	}
 }
 
-func scalarField(id, name string, dataType schema.DataType) schema.FieldDefinition {
-	storage := schema.StorageText
-	switch dataType {
-	case schema.DataTypeBoolean:
-		storage = schema.StorageBool
-	case schema.DataTypeInteger, schema.DataTypeFloat, schema.DataTypeDecimal:
-		storage = schema.StorageNumber
-	case schema.DataTypeDate, schema.DataTypeDateTime:
-		storage = schema.StorageDate
-	case schema.DataTypeJSON:
-		storage = schema.StorageJSON
+var (
+	boolType     = ValueType{LogicalType: v2.LogicalBool}
+	integerType  = ValueType{LogicalType: v2.LogicalNumber, OnlyInt: true}
+	numberType   = ValueType{LogicalType: v2.LogicalNumber}
+	textType     = ValueType{LogicalType: v2.LogicalText}
+	dateTimeType = ValueType{LogicalType: v2.LogicalDateTime}
+	jsonType     = ValueType{LogicalType: v2.LogicalJSON}
+	listType     = ValueType{LogicalType: v2.LogicalMultiSelect}
+)
+
+func scalarField(id, name string, valueType ValueType) v2.FieldDefinition {
+	storage := v2.StorageText
+	switch valueType.LogicalType {
+	case v2.LogicalBool:
+		storage = v2.StorageBool
+	case v2.LogicalNumber:
+		storage = v2.StorageNumber
+	case v2.LogicalDate, v2.LogicalDateTime:
+		storage = v2.StorageDate
+	case v2.LogicalJSON:
+		storage = v2.StorageJSON
+	case v2.LogicalMultiSelect:
+		storage = v2.StorageSelect
+	case v2.LogicalRelation:
+		storage = v2.StorageRelation
 	}
-	return schema.FieldDefinition{
-		FieldID: id, PhysicalName: name, DisplayName: name,
-		Kind: schema.FieldKindScalar, DataType: dataType, StorageType: storage,
-		Nullable: true, Constraints: []schema.FieldConstraint{},
-		Editor: schema.EditorDefinition{Kind: "text", Config: map[string]any{}},
+	return v2.FieldDefinition{
+		Contract:    v2.Contract,
+		Identity:    v2.FieldIdentity{FieldID: id, PhysicalName: name},
+		DisplayName: name,
+		LogicalType: valueType.LogicalType,
+		Lifecycle:   v2.Lifecycle{State: v2.LifecycleActive},
+		Storage: v2.StorageSpec{
+			Kind: storage, Options: v2.StorageOptions{OnlyInt: valueType.OnlyInt},
+		},
 	}
 }
 
-func formulaField(id, name string, resultType schema.DataType, source string) schema.FieldDefinition {
-	field := scalarField(id, name, schema.DataTypeFormula)
-	field.Kind = schema.FieldKindFormula
-	field.DataType = schema.DataTypeFormula
-	field.ReadOnly = true
-	field.Nullable = false
-	field.Formula = &schema.FormulaSpec{
-		Language: "cel-v1", Source: source, ResultType: resultType,
-		Version: 1, Status: "ready",
+func relationField(id, name, targetTableID string) v2.FieldDefinition {
+	field := scalarField(id, name, ValueType{LogicalType: v2.LogicalRelation})
+	field.Relation = &v2.RelationSpec{
+		TargetTableID: targetTableID, Cardinality: "many", DeletePolicy: "setNull",
 	}
-	storage, _ := schema.CapabilityFor(resultType)
-	field.StorageType = storage.Storage
+	return field
+}
+
+func formulaField(id, name string, resultType ValueType, source string) v2.FieldDefinition {
+	field := scalarField(id, name, resultType)
+	field.LogicalType = v2.LogicalFormula
+	field.Value.Required = true
+	field.Storage = v2.StorageSpec{
+		Kind: v2.StorageComputed, Options: v2.StorageOptions{OnlyInt: resultType.OnlyInt},
+	}
+	field.Formula = &v2.FormulaSpec{
+		Language: "cel-v1", Source: source, ResultType: resultType.LogicalType,
+	}
 	return field
 }
 

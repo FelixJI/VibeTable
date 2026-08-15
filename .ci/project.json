@@ -4,6 +4,28 @@
     "component": "vibetable",
     "repository": "FelixJI/VibeTable"
   },
+  "quality": {
+    "dotnet_coverage": {
+      "projects": {
+        "VibeTable.Desktop": {
+          "test_project": "desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj",
+          "msbuild_prefix": "VibeTableDesktop",
+          "minimum": {
+            "line": 51,
+            "branch": 43
+          }
+        },
+        "VibeTable.PreviewHost": {
+          "test_project": "desktop/tests/VibeTable.PreviewHost.Tests/VibeTable.PreviewHost.Tests.csproj",
+          "msbuild_prefix": "VibeTablePreviewHost",
+          "minimum": {
+            "line": 41,
+            "branch": 50
+          }
+        }
+      }
+    }
+  },
   "ci": {
     "bootstrap": [
       ["python", "scripts/automation_project.py", "bootstrap"]
@@ -11,7 +33,9 @@
     "quality": [
       ["uv", "run", "python", "scripts/automation_project.py", "quality"]
     ],
-    "e2e": [],
+    "e2e": [
+      ["uv", "run", "python", "scripts/automation_project.py", "pr-e2e"]
+    ],
     "release_build": [
       ["uv", "run", "python", "scripts/automation_project.py", "build"]
     ],

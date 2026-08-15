@@ -2,8 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import SettingsView from "./SettingsView.vue";
-import { useWorkspaceStore } from "@/stores/workspaceStore";
-import { useIdentifierMappingStore } from "@/stores/identifierMappingStore";
 import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 import { formatDateKey } from "@/calendar/workCalendar";
 import { useUiStore } from "@/stores/uiStore";
@@ -35,15 +33,19 @@ describe("SettingsView", () => {
       }
       if (type === "diagnostics.get") {
         return {
-          currentDirectory: "C:\\VibeTable",
-          programDirectory: "C:\\VibeTable",
-          dataDirectory: "C:\\VibeTable\\shell",
+          bundleVersion: "1.0",
+          generatedAt: "2026-08-12T00:00:00Z",
           operatingSystem: "Windows 11",
           programVersion: "0.1.0",
           dotnetVersion: "10.0.0",
           pocketBaseVersion: "0.39.9",
           memoryBytes: 64 * 1024 * 1024,
-          dataServiceState: "ready",
+          components: [{ component: "sidecar", state: "ready" }],
+          jobs: { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0 },
+          index: { state: "ready", generation: 2, processed: 3, total: 3, errorCode: null },
+          pendingMutationRevision: 0,
+          recentErrorCounts: [],
+          logs: [],
         };
       }
       if (type === "update.check") {
@@ -83,9 +85,9 @@ describe("SettingsView", () => {
 
   afterEach(() => setHostBridgeForTesting(null));
 
-  it("organizes discoverable settings into seven sections", () => {
+  it("organizes discoverable settings into six sections", () => {
     const wrapper = mount(SettingsView);
-    expect(wrapper.findAll(".settings-nav button")).toHaveLength(7);
+    expect(wrapper.findAll(".settings-nav button")).toHaveLength(6);
     expect(wrapper.text()).toContain("界面语言");
     expect(wrapper.text()).toContain("启动时进入");
     expect(wrapper.text()).toContain("上次使用的工作区");
@@ -219,30 +221,8 @@ describe("SettingsView", () => {
     expect(wrapper.get(`[data-date="${today}"]`).text()).toContain("休");
   });
 
-  it("shows searchable mapping tools while keeping physical keys read-only", async () => {
-    const workspace = useWorkspaceStore();
-    workspace.setOpened([{ collection: "vt_t_01" }], { vt_t_01: "客户清单" });
+  it("routes shortcuts through real emits", async () => {
     const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
-    const store = useIdentifierMappingStore();
-    store.succeed({ mappings: [{
-      id: "m1", entityKind: "collection", physicalName: "vt_t_01",
-      displayName: "客户清单", locale: "zh-CN", aliases: ["客户"],
-      origin: "vibetable", status: "active",
-    }] });
-    await wrapper.vm.$nextTick();
-    expect(wrapper.text()).toContain("客户清单");
-    expect(wrapper.text()).toContain("物理键只读");
-    expect(wrapper.find('input[placeholder*="物理键"]').exists()).toBe(true);
-    expect(wrapper.emitted("loadMappings")).toHaveLength(1);
-  });
-
-  it("routes advanced schema and shortcuts through real emits", async () => {
-    const wrapper = mount(SettingsView);
-    await wrapper.get('[data-testid="settings-nav-mapping"]').trigger("click");
-    await wrapper.find(".mapping-footer .n-button").trigger("click");
-    expect(wrapper.emitted("openAdmin")).toHaveLength(1);
-
     await wrapper.get('[data-testid="settings-nav-interaction"]').trigger("click");
     await wrapper.get(".setting-action").trigger("click");
     expect(wrapper.emitted("openHelp")).toHaveLength(1);

@@ -49,23 +49,72 @@ class Scenario:
     id: str
     title: str
     requirement: str
+    capabilities: tuple[str, ...] = ()
+
+
+_SCENARIO_FIELDS = frozenset({"id", "title", "requirement", "capabilities"})
+_CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$")
 
 
 def load_scenarios(path: Path = SCENARIO_MANIFEST) -> list[Scenario]:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    scenarios = [
-        Scenario(
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("scenario manifest must be a non-empty array")
+    scenarios: list[Scenario] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict) or set(item) != _SCENARIO_FIELDS:
+            raise ValueError(
+                f"scenario[{index}] must contain exactly: " + ", ".join(sorted(_SCENARIO_FIELDS))
+            )
+        capabilities = item["capabilities"]
+        if (
+            not isinstance(capabilities, list)
+            or not capabilities
+            or any(
+                not isinstance(capability, str) or _CAPABILITY_PATTERN.fullmatch(capability) is None
+                for capability in capabilities
+            )
+        ):
+            raise ValueError(f"scenario[{index}].capabilities must be non-empty stable names")
+        if len(set(capabilities)) != len(capabilities):
+            raise ValueError(f"scenario[{index}].capabilities must be unique")
+        scenario = Scenario(
             id=str(item["id"]),
             title=str(item["title"]),
             requirement=str(item["requirement"]),
+            capabilities=tuple(capabilities),
         )
-        for item in raw
-    ]
-    if len(scenarios) != 16:
-        raise ValueError(f"expected exactly 16 scenarios, found {len(scenarios)}")
+        if not scenario.id or not scenario.title or not scenario.requirement:
+            raise ValueError(f"scenario[{index}] identity, title and requirement are required")
+        scenarios.append(scenario)
     if len({item.id for item in scenarios}) != len(scenarios):
         raise ValueError("scenario ids must be unique")
     return scenarios
+
+
+def select_scenarios(
+    scenarios: Sequence[Scenario],
+    *,
+    scenario_ids: Sequence[str] = (),
+    capabilities: Sequence[str] = (),
+) -> list[Scenario]:
+    known_ids = {item.id for item in scenarios}
+    unknown_ids = sorted(set(scenario_ids) - known_ids)
+    if unknown_ids:
+        raise ValueError(f"unknown scenarios: {', '.join(unknown_ids)}")
+    known_capabilities = {capability for item in scenarios for capability in item.capabilities}
+    unknown_capabilities = sorted(set(capabilities) - known_capabilities)
+    if unknown_capabilities:
+        raise ValueError(f"unknown capabilities: {', '.join(unknown_capabilities)}")
+    if not scenario_ids and not capabilities:
+        return list(scenarios)
+    selected_ids = set(scenario_ids)
+    selected_capabilities = set(capabilities)
+    return [
+        item
+        for item in scenarios
+        if item.id in selected_ids or bool(selected_capabilities.intersection(item.capabilities))
+    ]
 
 
 def _sha256(path: Path) -> str:
@@ -1142,7 +1191,10 @@ def run_scenario(
         str(plugin_fixture.resolve()) + "\n",
         encoding="utf-8",
     )
-    attachment_base = "backup" if scenario.id == "12-backup-consistency" else "attachment"
+    attachment_base = {
+        "12-backup-consistency": "backup",
+        "18-workspace-search": "e2e-search-attachment",
+    }.get(scenario.id, "attachment")
     attachment_source = controls_dir / f"{attachment_base}-original.txt"
     attachment_source.write_text(f"{attachment_base}-original\n", encoding="utf-8")
     attachment_replacement = controls_dir / f"{attachment_base}-replacement.txt"
@@ -1165,6 +1217,20 @@ def run_scenario(
     )
     (controls_dir / "document-source.txt").write_text(
         str(document_source.resolve()) + "\n",
+        encoding="utf-8",
+    )
+    content_markdown_source = controls_dir / "content-reference-a.md"
+    content_markdown_source.write_text(
+        "# E2E content reference\n\nMarigold appears in visible Markdown text.\n",
+        encoding="utf-8",
+    )
+    content_json_source = controls_dir / "content-reference-b.json"
+    content_json_source.write_text(
+        json.dumps(
+            {"title": "E2E JSON reference", "body": "Cobalt appears in JSON content."},
+            ensure_ascii=False,
+        )
+        + "\n",
         encoding="utf-8",
     )
     workspace_root = controls_dir / "workspace-root"
@@ -1421,13 +1487,13 @@ def run_product_acceptance(
     package_root: Path = DEFAULT_PACKAGE,
     evidence_root: Path = DEFAULT_EVIDENCE,
     selected: Sequence[str] = (),
+    capabilities: Sequence[str] = (),
 ) -> tuple[int, dict[str, Any]]:
-    scenarios = load_scenarios()
-    if selected:
-        unknown = sorted(set(selected) - {item.id for item in scenarios})
-        if unknown:
-            raise ValueError(f"unknown scenarios: {', '.join(unknown)}")
-        scenarios = [item for item in scenarios if item.id in selected]
+    scenarios = select_scenarios(
+        load_scenarios(),
+        scenario_ids=selected,
+        capabilities=capabilities,
+    )
     audit = audit_package(package_root)
     run_root = evidence_root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     report_path = run_root / "product-e2e-report.json"
@@ -1485,6 +1551,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--package-root", type=Path, default=DEFAULT_PACKAGE)
     parser.add_argument("--evidence-root", type=Path, default=DEFAULT_EVIDENCE)
     parser.add_argument("--scenario", action="append", default=[])
+    parser.add_argument("--capability", action="append", default=[])
     return parser
 
 
@@ -1495,6 +1562,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             package_root=args.package_root,
             evidence_root=args.evidence_root,
             selected=args.scenario,
+            capabilities=args.capability,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"[FAIL] product E2E configuration: {exc}", file=sys.stderr)

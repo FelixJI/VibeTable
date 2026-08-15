@@ -10,9 +10,10 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/schema"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -38,40 +39,48 @@ func TestBusinessAuditEpochRotatesAcrossSnapshotRestoreAndHistoryContinues(
 		return app
 	}
 	app := openApp()
-	definition, err := schemaapi.New(app).ApplyChange(
-		ctx,
-		schemaapi.Change{
-			Definition: schema.TableDefinition{
-				ContractVersion: schema.ContractVersion,
-				TableID:         "audit_epoch_notes",
-				PhysicalName:    "audit_epoch_notes",
-				DisplayName:     "Audit epoch notes",
-				Kind:            schema.TableKindBase,
-				SchemaRevision:  schema.FormatSchemaRevision(0),
-				ArchivePolicy: schema.ArchivePolicy{
-					Mode: schema.ArchiveModeNone,
-				},
-				Fields: []schema.FieldDefinition{{
-					FieldID:      "title_id",
-					PhysicalName: "title",
-					DisplayName:  "Title",
-					Kind:         schema.FieldKindScalar,
-					DataType:     schema.DataTypeShortText,
-					StorageType:  schema.StorageText,
-					Nullable:     true,
-					Constraints:  []schema.FieldConstraint{},
-					Editor: schema.EditorDefinition{
-						Kind: "text", Config: map[string]any{},
-					},
-				}},
-				Indexes: []schema.IndexDefinition{},
-			},
-			ExpectedRevision: 0,
-		},
-	)
+	tableLifecycle, err := schemacore.NewTableLifecycle(app)
 	if err != nil {
 		t.Fatal(err)
 	}
+	table, err := tableLifecycle.Create(ctx, v2.TableCreateIntent{
+		DisplayName: "Audit epoch notes", OperationID: "audit-epoch-create-table",
+		Actor: v2.Actor{ID: "audit-epoch-test", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recommended, err := v2.RecommendedDefaults(v2.LogicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(app, store)
+	draft := v2.FieldDraft{
+		DisplayName: "Title", LogicalType: v2.LogicalText,
+		Value: recommended.Value, Constraints: recommended.Constraints,
+		Storage: recommended.Storage, Display: recommended.Display,
+	}
+	plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: table.TableID,
+		ExpectedSchemaRev: table.SchemaRevision, Draft: &draft,
+		Actor: v2.Actor{ID: "audit-epoch-test", Kind: "user"},
+	})
+	if err != nil || !plan.CanApply {
+		t.Fatalf("plan title field: %#v, %v", plan.Errors, err)
+	}
+	field, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: plan.PlanID, PlanHash: plan.PlanHash,
+		OperationID: "audit-epoch-create-title", Actor: plan.Intent.Actor,
+	})
+	if err != nil || field.Definition == nil {
+		t.Fatalf("apply title field: %#v, %v", field, err)
+	}
+	tableID := table.TableID
+	schemaRevision := field.SchemaRevision
+	titleField := field.Definition.Identity.PhysicalName
 	ledgerPath := filepath.Join(root, ".vibetable", "audit")
 	ledger, err := auditledger.Open(ledgerPath)
 	if err != nil {
@@ -85,7 +94,6 @@ func TestBusinessAuditEpochRotatesAcrossSnapshotRestoreAndHistoryContinues(
 		service, serviceErr := audit.New(
 			app,
 			kernel,
-			mutation.MetadataSchemaSource{},
 			audit.WithLedgerHistory(ledger),
 		)
 		if serviceErr != nil {
@@ -126,13 +134,13 @@ func TestBusinessAuditEpochRotatesAcrossSnapshotRestoreAndHistoryContinues(
 					ContractVersion: mutation.ContractVersion,
 					RequestID:       "request-" + key,
 					IdempotencyKey:  "idempotency-" + key,
-					TableID:         definition.TableID,
-					SchemaRevision:  definition.SchemaRevision,
+					TableID:         tableID,
+					SchemaRevision:  schemaRevision,
 					Operations: []mutation.Operation{{
 						Kind:     kind,
 						RecordID: &recordID,
 						Values: map[string]any{
-							"title": title,
+							titleField: title,
 						},
 					}},
 					Actor: mutation.Actor{
@@ -169,7 +177,7 @@ func TestBusinessAuditEpochRotatesAcrossSnapshotRestoreAndHistoryContinues(
 		t.Fatal(err)
 	}
 	beforeRestore := historyForRecord(
-		t, auditService, definition.TableID, recordID,
+		t, auditService, tableID, recordID,
 	)
 	if len(beforeRestore.ChangeSets) != 2 {
 		t.Fatalf("pre-restore history = %#v", beforeRestore)
@@ -246,7 +254,7 @@ func TestBusinessAuditEpochRotatesAcrossSnapshotRestoreAndHistoryContinues(
 		t.Fatal(err)
 	}
 	queryRaw, _ := json.Marshal(queryHistoryParams{
-		Collection: definition.TableID,
+		Collection: tableID,
 		Scope:      "row",
 		ItemID:     &recordID,
 		Search:     "",

@@ -146,6 +146,14 @@ async def _terminal(
     raise AssertionError("plugin task did not reach a terminal state")
 
 
+def test_constructor_rejects_unknown_adapters() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        PluginExecutionRuntime(
+            registry=FakeRegistry(None),
+            unknown_adapter=object(),
+        )
+
+
 def test_describe_centralizes_plugin_and_context_availability() -> None:
     runtime = PluginExecutionRuntime(
         registry=FakeRegistry(

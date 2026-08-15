@@ -28,9 +28,6 @@ export function relationFormatter(descriptor: NormalizedRelationDescriptor) {
     }
     for (const target of targets.slice(0, 3)) {
       const token = element("span", "vt-relation-token");
-      if (descriptor.kind === "m2a") {
-        token.append(element("span", "vt-relation-collection", target.collection));
-      }
       token.append(document.createTextNode(target.label || target.itemId));
       token.title = `${target.collection} · ${target.itemId}`;
       root.append(token);
@@ -138,7 +135,7 @@ export function normalizeTargets(value: unknown): RelationTargetRef[] {
   return candidates.flatMap((candidate) => {
     if (typeof candidate === "string" || typeof candidate === "number") {
       const raw = String(candidate);
-      return [{ collection: "", itemId: raw, label: raw, junctionValues: {} }];
+      return [{ collection: "", itemId: raw, label: raw }];
     }
     if (!candidate || typeof candidate !== "object") return [];
     const record = candidate as Record<string, unknown>;
@@ -148,11 +145,6 @@ export function normalizeTargets(value: unknown): RelationTargetRef[] {
       collection: typeof record.collection === "string" ? record.collection : "",
       itemId: String(itemId),
       label: typeof record.label === "string" ? record.label : String(itemId),
-      junctionId: typeof record.junctionId === "string" ? record.junctionId : null,
-      junctionRevision: typeof record.junctionRevision === "string"
-        ? record.junctionRevision
-        : null,
-      junctionValues: isRecord(record.junctionValues) ? record.junctionValues : {},
     }];
   });
 }

@@ -523,7 +523,7 @@ func validateCatalogRecord(record Record) error {
 		record.SealID == "" ||
 		record.RootPinID == "" ||
 		record.CatalogRevision == 0 ||
-		len(record.ObjectMap) == 0 {
+		record.ObjectMap["file-state-root"] == "" {
 		return errors.New("snapshot.catalog_record_invalid")
 	}
 	return nil

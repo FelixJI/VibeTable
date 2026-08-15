@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="VibeTable.Desktop.Tests" />
+    <InternalsVisibleTo Include="VibeTable.PreviewHost.Tests" />
   </ItemGroup>
 
 </Project>

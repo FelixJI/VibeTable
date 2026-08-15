@@ -519,25 +519,23 @@ func (materializer *Materializer) transactionPath(
 func (materializer *Materializer) writeJournal(
 	journal materializerJournal,
 ) error {
+	return materializer.writeJournalWithReplace(journal, replaceMaterializedFile)
+}
+
+func (materializer *Materializer) writeJournalWithReplace(
+	journal materializerJournal,
+	replaceFile func(source string, destination string) error,
+) error {
 	raw, err := json.Marshal(journal)
 	if err != nil {
 		return err
 	}
-	temp := materializer.journalPath + ".tmp"
-	file, err := os.OpenFile(
-		temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600,
-	)
-	if errors.Is(err, os.ErrExist) {
-		if removeErr := os.Remove(temp); removeErr != nil {
-			return errors.Join(err, removeErr)
-		}
-		file, err = os.OpenFile(
-			temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600,
-		)
-	}
+	file, err := os.CreateTemp(materializer.journalRoot, "journal.json.tmp-")
 	if err != nil {
 		return err
 	}
+	temp := file.Name()
+	defer os.Remove(temp)
 	_, writeErr := file.Write(raw)
 	syncErr := file.Sync()
 	closeErr := file.Close()
@@ -545,7 +543,7 @@ func (materializer *Materializer) writeJournal(
 		_ = os.Remove(temp)
 		return err
 	}
-	if err := replaceMaterializedFile(temp, materializer.journalPath); err != nil {
+	if err := replaceFile(temp, materializer.journalPath); err != nil {
 		_ = os.Remove(temp)
 		return err
 	}

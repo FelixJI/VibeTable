@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
-from backend.contracts.data_profile import JunctionProfile, RelationDeletePolicy
+from backend.contracts.data_profile import RelationDeletePolicy
 from backend.contracts.table import CamelModel, ColumnSchema
 
 
@@ -20,12 +20,10 @@ class NormalizedRelationDescriptor(CamelModel):
     relation_id: str = Field(min_length=1, max_length=128)
     field_ref: str = Field(min_length=1, max_length=128)
     source_collection: str = Field(min_length=1, max_length=128)
-    kind: Literal["m2o", "o2m", "m2m", "m2a"]
+    kind: Literal["m2o", "o2m", "m2m"]
     related_collection: str | None = Field(default=None, min_length=1, max_length=128)
-    allowed_collections: list[str] = Field(default_factory=list)
     many_field: str | None = Field(default=None, min_length=1, max_length=128)
     one_field: str | None = Field(default=None, min_length=1, max_length=128)
-    junction: JunctionProfile | None = None
     unique: bool = False
     nullable: bool = True
     on_delete: RelationDeletePolicy = "nullify"
@@ -88,15 +86,11 @@ class RelationTargetRef(CamelModel):
     item_id: str
     label: str
     secondary_label: str | None = None
-    junction_id: str | None = None
-    junction_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    junction_values: dict[str, Any] = Field(default_factory=dict)
 
 
 class RelationSearchParams(CamelModel):
     relation_id: str
     query: str = Field(default="", max_length=256)
-    collection: str | None = None
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=200)
 
@@ -132,15 +126,8 @@ class RelationAdd(CamelModel):
     target: RelationTargetRef
 
 
-class RelationJunctionPatch(CamelModel):
-    junction_id: str
-    values: dict[str, Any]
-    expected_revision: str | None = None
-
-
 class RelationRemove(CamelModel):
     target: RelationTargetRef
-    expected_revision: str | None = None
 
 
 class RelationDelta(CamelModel):
@@ -149,7 +136,6 @@ class RelationDelta(CamelModel):
     expected_schema_revision: str
     expected_date_updated: str | None = None
     adds: list[RelationAdd] = Field(default_factory=list)
-    updates: list[RelationJunctionPatch] = Field(default_factory=list)
     removes: list[RelationRemove] = Field(default_factory=list)
     idempotency_key: str = Field(min_length=1, max_length=128)
 
@@ -183,7 +169,6 @@ __all__ = [
     "RelationDeltaResult",
     "RelationDiagnostic",
     "RelationDiscoveryResult",
-    "RelationJunctionPatch",
     "RelationLookupCapabilities",
     "RelationRemove",
     "RelationSearchParams",

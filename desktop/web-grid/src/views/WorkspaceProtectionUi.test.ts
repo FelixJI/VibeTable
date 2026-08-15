@@ -646,12 +646,15 @@ describe("workspace protection UI capability gates", () => {
     protection.setDocuments([{
       contractVersion: "2.0",
       documentId: "22222222-2222-4222-8222-222222222222",
-      workspaceId: "11111111-1111-4111-8111-111111111111",
       relativePath: "归档/季度规划.docx",
+      displayName: "季度规划.docx",
+      extension: "docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      sizeBytes: 4096,
       status: "active",
       effectiveRevisionId: "33333333-3333-4333-8333-333333333333",
-      nextRevisionOrdinal: 4,
-      nextFormalVersion: 4,
+      effectiveRevisionCreatedAt: "2026-08-12T09:00:00Z",
+      formalVersion: 3,
     }]);
     protection.setSnapshots([{
       snapshotId: "77777777-7777-4777-8777-777777777777",

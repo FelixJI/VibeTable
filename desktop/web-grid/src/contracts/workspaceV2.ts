@@ -137,7 +137,7 @@ export function ensureCurrentWorkspaceScope(
 
 export interface WorkspaceManifestV2 {
   readonly contractVersion: "2.0";
-  readonly formatVersion: number;
+  readonly formatVersion: 2;
   readonly workspaceId: string;
   readonly displayName: string;
   readonly createdAt: string;
@@ -157,9 +157,10 @@ export function parseWorkspaceManifestV2(value: unknown): WorkspaceManifestV2 {
     "storageMode", "encryptionMode", "repositoryFormat", "topologySchemaVersion",
     "businessSchemaVersion", "importedFromWorkspaceId", "sourceSnapshotId",
   ], "workspace manifest");
+  if (source.formatVersion !== 2) throw new Error("workspace.format_unsupported");
   return {
     contractVersion: contractVersion(source.contractVersion),
-    formatVersion: integer(source.formatVersion, "formatVersion", 1),
+    formatVersion: 2,
     workspaceId: uuid(source.workspaceId, "workspaceId"),
     displayName: string(source.displayName, "displayName"),
     createdAt: string(source.createdAt, "createdAt"),
@@ -728,7 +729,7 @@ function parsePropertySchema(
   const property = record(value, label);
   if (Object.keys(property).length === 0) return property;
   const allowed = [
-    "type", "enum", "const", "minimum", "minLength", "pattern",
+    "type", "enum", "const", "minimum", "maximum", "minLength", "maxItems", "pattern",
     "additionalProperties", "required", "properties", "items", "allOf",
     "oneOf",
   ];
@@ -740,19 +741,24 @@ function parsePropertySchema(
     : [];
   if (
     types.length === 0
-    && !["const", "properties", "allOf", "oneOf"].some((key) => key in property)
+    && !["enum", "const", "properties", "allOf", "oneOf"].some((key) => key in property)
   ) throw new Error(`${label}.type is invalid`);
   if ("enum" in property) {
+    const enumValues = property.enum;
     if (
-      !Array.isArray(property.enum)
-      || property.enum.length === 0
-      || new Set(property.enum).size !== property.enum.length
+      !Array.isArray(enumValues)
+      || enumValues.length === 0
+      || new Set(enumValues.map((candidate) => JSON.stringify(candidate))).size !== enumValues.length
     ) {
       throw new Error(`${label}.enum is invalid`);
     }
-    for (const candidate of property.enum) {
+    for (const candidate of enumValues) {
       const candidateType = candidate === null ? "null" : typeof candidate;
-      if (!types.includes(candidateType)) {
+      if (
+        (types.length > 0 && !types.includes(candidateType))
+        || (types.length === 0 && !["null", "string", "number", "boolean"].includes(candidateType))
+        || (candidateType === "number" && !Number.isFinite(candidate))
+      ) {
         throw new Error(`${label}.enum is invalid`);
       }
     }
@@ -761,10 +767,19 @@ function parsePropertySchema(
     typeof property.minimum !== "number"
     || !Number.isFinite(property.minimum)
   )) throw new Error(`${label}.minimum is invalid`);
+  if ("maximum" in property && (
+    typeof property.maximum !== "number"
+    || !Number.isFinite(property.maximum)
+    || (typeof property.minimum === "number" && property.maximum < property.minimum)
+  )) throw new Error(`${label}.maximum is invalid`);
   if ("minLength" in property && (
     !Number.isInteger(property.minLength)
     || (property.minLength as number) < 0
   )) throw new Error(`${label}.minLength is invalid`);
+  if ("maxItems" in property && (
+    !Number.isInteger(property.maxItems)
+    || (property.maxItems as number) < 0
+  )) throw new Error(`${label}.maxItems is invalid`);
   if ("pattern" in property) {
     if (typeof property.pattern !== "string") {
       throw new Error(`${label}.pattern is invalid`);
