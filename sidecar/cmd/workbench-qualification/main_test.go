@@ -69,6 +69,9 @@ func TestQualificationProfilesAndBudgetsAreFailClosed(t *testing.T) {
 	if requiredLogicalCorpusBytes != int64(20)<<30 || maximumRSSBytes != uint64(1)<<30 {
 		t.Fatalf("qualification scale changed: logical=%d rss=%d", requiredLogicalCorpusBytes, maximumRSSBytes)
 	}
+	if maximumRebuildDuration != 3*time.Minute {
+		t.Fatalf("qualification rebuild budget changed: %v", maximumRebuildDuration)
+	}
 	if maximumWarmP95.Milliseconds() != 150 || maximumIncrementalP95.Seconds() != 2 {
 		t.Fatalf("qualification SLO changed: warm=%v incremental=%v", maximumWarmP95, maximumIncrementalP95)
 	}
