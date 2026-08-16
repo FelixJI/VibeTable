@@ -5269,6 +5269,20 @@ async function main() {
       probes: error?.probes,
       stack: error?.stack,
     };
+    // TEMPORARY E2E DEBUG - REVERT: surface the renderer's notification
+    // stream for failed scenarios; the lane evidence stays on the runner.
+    try {
+      const diagnostics = await page.evaluate(
+        () => window.__vibetableE2EBridgeDiagnostics ?? null,
+      );
+      console.error(
+        `[scenario-notifications:${args.scenario}]\n${
+          (diagnostics?.notifications ?? []).join("\n")
+        }`,
+      );
+    } catch {
+      // Diagnostics are best-effort on the failure path.
+    }
   } finally {
     result.finishedAt = new Date().toISOString();
     result.durationMs = Date.parse(result.finishedAt) - Date.parse(result.startedAt);

@@ -10,6 +10,7 @@ export function installBridgeDiagnosticsInPage() {
     pending: {},
     workspaceSession: null,
     maxWorkspaceSequence: 0,
+    notifications: [],
   };
   const webview = window.chrome.webview;
   const originalPostMessage = webview.postMessage.bind(webview);
@@ -82,13 +83,23 @@ export function installBridgeDiagnosticsInPage() {
       const session = message.payload?.session;
       diagnostics.workspaceSession =
         typeof session?.workspaceId === "string"
-        && Number.isSafeInteger(session?.sessionEpoch)
-        && session.sessionEpoch > 0
+          && Number.isInteger(session?.sessionEpoch)
+          && session.sessionEpoch > 0
           ? {
               workspaceId: session.workspaceId,
               sessionEpoch: session.sessionEpoch,
             }
           : null;
+    }
+    // TEMPORARY E2E DEBUG - REVERT: record every inbound notification so a
+    // failed scenario can show which recovery signals actually reached the
+    // renderer (database.opened / data.changed / operation.failed).
+    if (message?.type && diagnostics.notifications.length < 600) {
+      diagnostics.notifications.push([
+        new Date().toISOString(),
+        message.type,
+        message.payload?.table ?? message.payload?.topic ?? message.payload?.operation ?? "",
+      ].join(" "));
     }
     const request = message?.requestId
       ? diagnostics.pending[message.requestId]
