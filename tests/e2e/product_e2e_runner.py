@@ -1347,6 +1347,7 @@ def run_scenario(
             (scenario_dir / "runner-stderr.log").write_text(node_stderr, encoding="utf-8")
             # TEMPORARY CI DEBUG - REVERT: echo the backend debug log slice and
             # the host trace so the CI job log shows CI-time behavior.
+            debug_slice = ""
             with contextlib.suppress(OSError):
                 debug_slice = debug_log.read_text(encoding="utf-8", errors="replace")
             print(
