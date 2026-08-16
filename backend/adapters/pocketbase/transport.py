@@ -59,6 +59,20 @@ class PocketBaseConfig:
             raise ValueError("PocketBase timeout must be positive")
 
 
+def _dbg_request(message: str) -> None:  # TEMPORARY E2E DEBUG LOGGING - REVERT
+    import os
+    import time
+
+    target = os.environ.get("VIBETABLE_TRANSPORT_DEBUG_LOG")
+    if not target:
+        return
+    try:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(f"{time.time():.3f} pid={os.getpid()} transport {message}\n")
+    except OSError:
+        pass
+
+
 class StdlibPocketBaseTransport:
     def __init__(self, config: PocketBaseConfig) -> None:
         self._base_url = config.base_url.rstrip("/")
@@ -159,6 +173,9 @@ class StdlibPocketBaseTransport:
             headers=request_headers,
             method=method.upper(),
         )
+        import time as _t  # TEMPORARY E2E DEBUG LOGGING - REVERT
+
+        _t0 = _t.monotonic()
         try:
             with urlopen(request, timeout=self._timeout) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
@@ -176,7 +193,10 @@ class StdlibPocketBaseTransport:
             with exc:
                 error_body = exc.read(_MAX_RESPONSE_BYTES + 1)
             raise _http_error(exc.code, error_body) from None
-        except (URLError, TimeoutError, OSError):
+        except (URLError, TimeoutError, OSError) as exc:
+            _dbg_request(
+                f"request {method} {path} ms={(_t.monotonic() - _t0) * 1000:.0f} error={exc!r}"
+            )
             raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
         if not raw:
             return None
