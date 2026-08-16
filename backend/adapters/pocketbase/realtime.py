@@ -42,6 +42,20 @@ class SSEConnector(Protocol):
     async def connect(self, after_event_id: str | None) -> SSEConnection: ...
 
 
+def _dbg(message: str) -> None:  # TEMPORARY E2E DEBUG LOGGING - REVERT
+    import os
+    import time
+
+    target = os.environ.get("VIBETABLE_TRANSPORT_DEBUG_LOG")
+    if not target:
+        return
+    try:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(f"{time.time():.3f} pid={os.getpid()} realtime {message}\n")
+    except OSError:
+        pass
+
+
 class StdlibSSEConnector:
     """Opens only the validated private loopback origin from ``PocketBaseConfig``."""
 
@@ -51,6 +65,7 @@ class StdlibSSEConnector:
         self._timeout = config.timeout_seconds
 
     async def connect(self, after_event_id: str | None) -> SSEConnection:
+        _dbg(f"connect after={after_event_id!r}")
         return await asyncio.to_thread(self._connect_sync, after_event_id)
 
     def _connect_sync(self, after_event_id: str | None) -> SSEConnection:
@@ -72,7 +87,8 @@ class StdlibSSEConnector:
                 "PocketBase realtime subscription failed",
                 code=code,
             ) from None
-        except (URLError, TimeoutError, OSError):
+        except (URLError, TimeoutError, OSError) as exc:
+            _dbg(f"connect unavailable err={exc!r}")
             raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
         content_type = response.headers.get_content_type()
         if content_type != "text/event-stream":
@@ -81,6 +97,7 @@ class StdlibSSEConnector:
                 "PocketBase returned an invalid realtime response",
                 code="realtime.invalid_response",
             )
+        _dbg("connect ok")
         return _UrlopenSSEConnection(response)
 
 
@@ -107,12 +124,14 @@ class PocketBaseRealtimeSession:
         while True:
             try:
                 raw = await self._connection.readline(_MAX_LINE_BYTES + 1)
-            except (OSError, TimeoutError):
+            except (OSError, TimeoutError) as exc:
+                _dbg(f"readline error {exc!r}")
                 raise PocketBaseTransportError(
                     "PocketBase realtime stream disconnected",
                     code="realtime.disconnected",
                 ) from None
             if not raw:
+                _dbg("readline eof")
                 raise PocketBaseTransportError(
                     "PocketBase realtime stream closed",
                     code="realtime.disconnected",
@@ -190,7 +209,9 @@ class PocketBaseRealtimeSupervisor:
                         continue
                     await emit(event)
                     self._remember(event)
+                    _dbg(f"supervisor emitted {event.event_id} last={self._last_event_id!r}")
             except PocketBaseTransportError as exc:
+                _dbg(f"supervisor error code={exc.code}")
                 if stop.is_set():
                     break
                 if exc.code in {
