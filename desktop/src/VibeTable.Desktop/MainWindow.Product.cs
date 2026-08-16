@@ -474,7 +474,17 @@ public partial class MainWindow : Window
     private void OnRuntimeClientReady()
     {
         if (Volatile.Read(ref _closing) != 0) return;
-        Dispatcher.Invoke(ConfigureRpcGateways);
+        _readiness?.Trace("RuntimeClientReady: configuring product gateways");
+        try
+        {
+            Dispatcher.Invoke(ConfigureRpcGateways);
+            _readiness?.Trace("RuntimeClientReady: product gateways configured");
+        }
+        catch (Exception exception)
+        {
+            _readiness?.Trace(
+                $"RuntimeClientReady: configure failed; exception={exception.GetType().Name}");
+        }
     }
 
     private void ConfigureRpcGateways()
@@ -594,6 +604,8 @@ public partial class MainWindow : Window
 
     private void OnRuntimeBindingChanged()
     {
+        _readiness?.Trace(
+            $"RuntimeBindingChanged: backendBound={_runtime.CurrentBackend is not null}");
         if (Volatile.Read(ref _closing) != 0)
             return;
         Dispatcher.BeginInvoke(() =>
@@ -747,6 +759,7 @@ public partial class MainWindow : Window
 
     private void OnProductDataChanged(DataChangedEvent change)
     {
+        _readiness?.Trace($"ProductDataChanged: table={change.TableId}");
         _webBridge.PostNotification("data.changed", change);
     }
 
