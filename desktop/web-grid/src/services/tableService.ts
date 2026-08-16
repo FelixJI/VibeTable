@@ -5,6 +5,7 @@ import { useHistoryStore } from "@/stores/historyStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { useViewQueryStore } from "@/stores/viewQueryStore";
 import type {
+  DatabaseOpenedPayload,
   DataChangedEvent,
   DatasetReadyPayload,
   EditSchemaResult,
@@ -57,6 +58,11 @@ export function useTableService(): {
   // `operation.failed` without any load-scoped handler: a load that dies
   // inside a sidecar-crash session recycle would leave the grid in a
   // permanent loading state with no retry. Supervise the notify instead.
+  // A sidecar-crash session recycle rotates the renderer session epoch: all
+  // stores are cleared while the host rebuilds the runtime. Realtime backlog
+  // replayed before the host re-attaches the notification gateway is lost, so
+  // the last user-selected table must be restored from the rebuilt catalog.
+  let lastSelectedTable: string | null = null;
   let loadWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   let loadWatchdogTable: string | null = null;
   let loadWatchdogRetries = 0;
@@ -127,6 +133,16 @@ export function useTableService(): {
   function init(): void {
     if (initialized) return;
     initialized = true;
+    unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
+      const remembered = lastSelectedTable;
+      if (!remembered || workspaceStore.currentTable) return;
+      if (
+        payload.tables.includes(remembered)
+        || payload.views.includes(remembered)
+      ) {
+        selectTable(remembered);
+      }
+    }));
     unsubscribe.push(bridge.on("table.pageLoaded", (payload: TablePageLoadedPayload) => {
       const accepted = tableStore.appendPage(payload);
       if (!accepted) {
@@ -201,6 +217,7 @@ export function useTableService(): {
 
   function selectTable(name: string): void {
     if (!name) return;
+    lastSelectedTable = name;
     pendingDataChange = null;
     refreshAfterLoad = null;
     staleSnapshotRetries = 0;

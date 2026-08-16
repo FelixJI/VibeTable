@@ -201,6 +201,53 @@ describe("tableService realtime product wiring", () => {
     }
   });
 
+  it("restores the last selected table when database.opened rebuilds the catalog", async () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+
+    service.selectTable("orders");
+    workspace.clear();
+    table.reset();
+    harness.notify.mockClear();
+
+    harness.emit("database.opened", {
+      tables: ["orders"],
+      views: [],
+      displayNames: {},
+    });
+    expect(harness.notify).toHaveBeenCalledWith(
+      "table.selected",
+      { table: "orders" },
+    );
+    service.dispose();
+  });
+
+  it("does not restore a table that no longer exists after a recycle", async () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+
+    service.selectTable("orders");
+    workspace.clear();
+    table.reset();
+    harness.notify.mockClear();
+
+    harness.emit("database.opened", {
+      tables: ["other"],
+      views: [],
+      displayNames: {},
+    });
+    expect(harness.notify).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
   it("stops re-issuing table.selected after the bounded retry budget", async () => {
     vi.useFakeTimers();
     try {
