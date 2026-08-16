@@ -5272,10 +5272,11 @@ async function main() {
     // TEMPORARY E2E DEBUG - REVERT: surface the renderer's notification
     // stream for failed scenarios; the lane evidence stays on the runner.
     try {
-      const diagnostics = await page.evaluate(
-        () => window.__vibetableE2EBridgeDiagnostics ?? null,
-      );
-      console.error(
+      const diagnostics = await Promise.race([
+        page.evaluate(() => window.__vibetableE2EBridgeDiagnostics ?? null),
+        new Promise((resolve) => setTimeout(() => resolve(null), 5_000)),
+      ]);
+      console.log(
         `[scenario-notifications:${args.scenario}]\n${
           (diagnostics?.notifications ?? []).join("\n")
         }`,
