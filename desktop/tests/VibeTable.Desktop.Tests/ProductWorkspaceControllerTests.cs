@@ -43,7 +43,8 @@ public sealed class ProductWorkspaceControllerTests
                 () => true,
                 message => Traces.Add(message),
                 "test-host",
-                retryDelay: _ => TimeSpan.Zero);
+                retryDelay: _ => TimeSpan.Zero,
+                guards: () => GuardsResult());
         }
 
         public string Root { get; }
@@ -52,6 +53,7 @@ public sealed class ProductWorkspaceControllerTests
         public ProductionWorkspaceRuntimeFactory RuntimeFactory { get; }
         public WorkspaceSessionManager Sessions { get; }
         public List<string> Traces { get; }
+        public Func<bool> GuardsResult { get; set; } = () => true;
         public ProductWorkspaceController Controller { get; }
 
         public void Dispose()
@@ -99,7 +101,7 @@ public sealed class ProductWorkspaceControllerTests
                 : Task.FromResult(OpenResult());
         };
 
-        await fixture.Controller.OpenAsync();
+        await fixture.Controller.SuperviseOpenAsync();
 
         Assert.AreEqual(3, attempts);
         Assert.AreEqual(3, fixture.Gateway.OpenDatabaseCalls.Count);
@@ -111,6 +113,28 @@ public sealed class ProductWorkspaceControllerTests
     }
 
     [TestMethod]
+    public async Task SupervisedOpenWaitsForGuardsDuringSessionRecycle()
+    {
+        using var fixture = new Fixture();
+        fixture.Gateway.DatabaseOpenResults["local://workspace/test"] = OpenResult();
+        int guardChecks = 0;
+        fixture.GuardsResult = () =>
+        {
+            guardChecks++;
+            // The recycled session generation is not projectable for the
+            // first polls: the backend is still rebinding.
+            return guardChecks > 2;
+        };
+
+        await fixture.Controller.SuperviseOpenAsync();
+
+        Assert.IsTrue(guardChecks >= 3);
+        Assert.AreEqual(1, fixture.Gateway.OpenDatabaseCalls.Count);
+        Assert.IsNotNull(fixture.Reply.Replies.Single(
+            reply => reply.Type == "database.opened"));
+    }
+
+    [TestMethod]
     public async Task OpenAsyncPostsOperationFailedAfterRetryBudget()
     {
         using var fixture = new Fixture();
@@ -118,10 +142,10 @@ public sealed class ProductWorkspaceControllerTests
             Task.FromException<DatabaseOpenResult>(
                 new InvalidOperationException("sidecar unavailable"));
 
-        await fixture.Controller.OpenAsync();
+        await fixture.Controller.SuperviseOpenAsync();
 
         Assert.AreEqual(
-            8,
+            12,
             fixture.Gateway.OpenDatabaseCalls.Count,
             "the retry budget must stay bounded so genuine failures surface");
         var failed = fixture.Reply.Replies.Single(
