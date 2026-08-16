@@ -8,6 +8,7 @@ Chromium/Edge process itself.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import hashlib
 import ipaddress
@@ -1252,6 +1253,10 @@ def run_scenario(
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
     environment = os.environ.copy()
+    # TEMPORARY CI DEBUG - REVERT: surface backend transport/realtime behavior
+    # in the CI job log because lane evidence directories stay on the runner.
+    debug_log = evidence_root / "transport-debug.log"
+    environment["VIBETABLE_TRANSPORT_DEBUG_LOG"] = str(debug_log)
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"--remote-debugging-port={port} --disable-gpu"
     )
@@ -1340,6 +1345,23 @@ def run_scenario(
             )
             (scenario_dir / "runner-stdout.log").write_text(node_stdout, encoding="utf-8")
             (scenario_dir / "runner-stderr.log").write_text(node_stderr, encoding="utf-8")
+            # TEMPORARY CI DEBUG - REVERT: echo the backend debug log slice and
+            # the host trace so the CI job log shows CI-time behavior.
+            with contextlib.suppress(OSError):
+                debug_slice = debug_log.read_text(encoding="utf-8", errors="replace")
+            print(
+                f"[debug-dump:{scenario.id}:transport]\n{debug_slice}",
+                flush=True,
+            )
+            with contextlib.suppress(OSError):
+                debug_log.write_text("", encoding="utf-8")
+            try:
+                host_trace = (readiness_dir / "vibetable-trace.log").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                host_trace = ""
+            print(f"[debug-dump:{scenario.id}:host-trace]\n{host_trace}", flush=True)
             readiness = _wait_for_readiness(readiness_dir, process)
             result_path = scenario_dir / f"{scenario.id}-result.json"
             result = _read_json(result_path) or _failure_result(

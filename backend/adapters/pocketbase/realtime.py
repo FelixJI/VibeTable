@@ -42,6 +42,20 @@ class SSEConnector(Protocol):
     async def connect(self, after_event_id: str | None) -> SSEConnection: ...
 
 
+def _dbg(message: str) -> None:  # TEMPORARY E2E DEBUG LOGGING - REVERT
+    import os
+    import time
+
+    target = os.environ.get("VIBETABLE_TRANSPORT_DEBUG_LOG")
+    if not target:
+        return
+    try:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(f"{time.time():.3f} pid={os.getpid()} realtime {message}\n")
+    except OSError:
+        pass
+
+
 class StdlibSSEConnector:
     """HTTPX-SSE connector kept under the stable adapter class name."""
 
@@ -57,6 +71,7 @@ class StdlibSSEConnector:
         self._http_transport = http_transport
 
     async def connect(self, after_event_id: str | None) -> SSEConnection:
+        _dbg(f"connect after={after_event_id!r}")
         headers = {
             "Cache-Control": "no-cache",
             "User-Agent": "VibeTable-Next/pocketbase.realtime.v1",
@@ -101,13 +116,16 @@ class StdlibSSEConnector:
                     code="realtime.invalid_response",
                 )
             response.stream = _BoundedSSEStream(response.stream)
+            _dbg(f"connect ok status={response.status_code} after={after_event_id!r}")
             return _HttpxSSEConnection(client, manager, event_source.aiter_sse())
-        except PocketBaseTransportError:
+        except PocketBaseTransportError as exc:
+            _dbg(f"connect pbt={exc.code} {exc!r}")
             if entered:
                 await manager.__aexit__(None, None, None)
             await client.aclose()
             raise
-        except (httpx.TransportError, SSEError):
+        except (httpx.TransportError, SSEError) as exc:
+            _dbg(f"connect transport_error={exc!r}")
             if entered:
                 await manager.__aexit__(None, None, None)
             await client.aclose()
@@ -172,18 +190,23 @@ class _HttpxSSEConnection:
 
     async def receive(self) -> ServerSentEvent:
         try:
-            return await anext(self._events)
+            event = await anext(self._events)
+            _dbg(f"receive id={event.id!r} event={event.event!r} data_len={len(event.data)}")
+            return event
         except StopAsyncIteration:
+            _dbg("receive stream closed")
             raise PocketBaseTransportError(
                 "PocketBase realtime stream closed",
                 code="realtime.disconnected",
             ) from None
-        except SSEError:
+        except SSEError as exc:
+            _dbg(f"receive sse_error={exc!r}")
             raise PocketBaseTransportError(
                 "PocketBase returned an invalid realtime response",
                 code="realtime.invalid_response",
             ) from None
-        except httpx.TransportError:
+        except httpx.TransportError as exc:
+            _dbg(f"receive transport_error={exc!r}")
             raise PocketBaseTransportError(
                 "PocketBase realtime stream disconnected",
                 code="realtime.disconnected",
@@ -226,7 +249,16 @@ class PocketBaseRealtimeSession:
                 "PocketBase realtime event exceeded the safe size limit",
                 code="realtime.event_too_large",
             )
-        return _decode_event(event.id, event.event, event.data.encode())
+        try:
+            decoded = _decode_event(event.id, event.event, event.data.encode())
+        except PocketBaseTransportError as exc:
+            _dbg(
+                f"session reject id={event.id!r} topic={event.event!r} "
+                f"code={exc.code} data={event.data[:600]!r}"
+            )
+            raise
+        _dbg(f"session decoded event_id={decoded.event_id} cursor={decoded.cursor!r}")
+        return decoded
 
     async def close(self) -> None:
         await self._connection.close()
@@ -271,7 +303,9 @@ class PocketBaseRealtimeSupervisor:
                         continue
                     await emit(event)
                     self._remember(event)
+                    _dbg(f"supervisor emitted {event.event_id} last={self._last_event_id!r}")
             except PocketBaseTransportError as exc:
+                _dbg(f"supervisor error code={exc.code} {exc!r}")
                 if stop.is_set():
                     break
                 if exc.code in {
@@ -279,6 +313,7 @@ class PocketBaseRealtimeSupervisor:
                     "realtime.cursor_expired",
                     "realtime.catchup_limit",
                 }:
+                    _dbg(f"supervisor cursor gap code={exc.code} last={self._last_event_id!r}")
                     if self._reconcile_cursor_gap is None:
                         raise
                     await self._reconcile_cursor_gap()
