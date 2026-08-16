@@ -5239,29 +5239,6 @@ async function main() {
     page = await locateProductPage(browser);
     observePage(page);
     await installBridgeDiagnostics(page);
-    // TEMPORARY E2E DEBUG - REVERT: periodically echo the renderer's inbound
-    // notification stream so the trail survives even when the scenario runner
-    // is killed by the orchestrator timeout.
-    let notificationCursor = 0;
-    const notificationPrinter = setInterval(async () => {
-      try {
-        const diagnostics = await Promise.race([
-          page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.notifications ?? []),
-          new Promise((resolve) => setTimeout(() => resolve(null), 4_000)),
-        ]);
-        if (Array.isArray(diagnostics) && diagnostics.length > notificationCursor) {
-          console.log(
-            `[scenario-notifications:${args.scenario}]\n${
-              diagnostics.slice(notificationCursor).join("\n")
-            }`,
-          );
-          notificationCursor = diagnostics.length;
-        }
-      }
-      catch {
-        // Best-effort diagnostics on a possibly wedged renderer.
-      }
-    }, 15_000);
     const implementation = scenarios[args.scenario];
     if (implementation) {
       await implementation(page, recorder, network, {
@@ -5292,23 +5269,7 @@ async function main() {
       probes: error?.probes,
       stack: error?.stack,
     };
-    // TEMPORARY E2E DEBUG - REVERT: surface the renderer's notification
-    // stream for failed scenarios; the lane evidence stays on the runner.
-    try {
-      const diagnostics = await Promise.race([
-        page.evaluate(() => window.__vibetableE2EBridgeDiagnostics ?? null),
-        new Promise((resolve) => setTimeout(() => resolve(null), 5_000)),
-      ]);
-      console.log(
-        `[scenario-notifications:${args.scenario}]\n${
-          (diagnostics?.notifications ?? []).join("\n")
-        }`,
-      );
-    } catch {
-      // Diagnostics are best-effort on the failure path.
-    }
   } finally {
-    clearInterval(notificationPrinter);
     result.finishedAt = new Date().toISOString();
     result.durationMs = Date.parse(result.finishedAt) - Date.parse(result.startedAt);
     if (page) {

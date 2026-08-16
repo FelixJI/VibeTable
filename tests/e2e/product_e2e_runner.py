@@ -1364,6 +1364,19 @@ def run_scenario(
                 code="RUNNER_RESULT_MISSING",
                 message="Playwright runner did not write a structured result",
             )
+            # TEMPORARY CI DEBUG - REVERT: the lane evidence stays on the
+            # runner, so echo the failed scenario's renderer notification
+            # stream into the job log while diagnosing the recovery strand.
+            if result.get("status") == "failed":
+                diagnostics = result.get("bridgeDiagnostics")
+                notifications = (
+                    diagnostics.get("notifications") if isinstance(diagnostics, dict) else None
+                )
+                print(
+                    f"[debug-dump:{scenario.id}:notifications]\n"
+                    + "\n".join(str(entry) for entry in (notifications or [])),
+                    flush=True,
+                )
             process_network_report = _read_json(scenario_dir / "process-network-observations.json")
             result.update(
                 {
