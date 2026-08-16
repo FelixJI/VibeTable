@@ -65,6 +65,13 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     /// </summary>
     public TableSummary? ListTablesResult { get; set; }
 
+    /// <summary>
+    /// Optional scripted open used by workspace-recovery tests. When set it
+    /// replaces the dictionary lookup entirely, so a test can fail the first
+    /// attempts (sidecar recycling) and then succeed.
+    /// </summary>
+    public Func<string, Task<DatabaseOpenResult>>? OpenDatabaseOverride { get; set; }
+
     private readonly Dictionary<string, Task> _readGates = new(StringComparer.Ordinal);
 
     public void SetWindowReadGate(string table, Task gate)
@@ -75,6 +82,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Task<DatabaseOpenResult> OpenDatabaseAsync(string path, CancellationToken token)
     {
         OpenDatabaseCalls.Add(path);
+        if (OpenDatabaseOverride is { } scripted)
+        {
+            return scripted(path);
+        }
         if (!DatabaseOpenResults.TryGetValue(path, out var result))
         {
             return Task.FromException<DatabaseOpenResult>(

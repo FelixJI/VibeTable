@@ -22,8 +22,14 @@ internal sealed class ProductWorkspaceController : IDisposable
     private readonly Action<string> _trace;
     private readonly string _hostVersion;
     private readonly SemaphoreSlim _openGate = new(1, 1);
+    private readonly Func<int, TimeSpan> _retryDelay;
     private DatabaseOpenResult? _snapshot;
     private int _disposed;
+
+    private const int OpenRetryLimit = 8;
+
+    private static TimeSpan DefaultOpenRetryDelay(int attempt) => TimeSpan.FromMilliseconds(
+        Math.Min(4000, 500 * (1 << Math.Min(Math.Max(attempt - 1, 0), 3))));
 
     public ProductWorkspaceController(
         IWebReplySink reply,
@@ -36,7 +42,8 @@ internal sealed class ProductWorkspaceController : IDisposable
         Func<bool> isClosing,
         Func<bool> hasProductGateway,
         Action<string> trace,
-        string hostVersion)
+        string hostVersion,
+        Func<int, TimeSpan>? retryDelay = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
@@ -51,6 +58,7 @@ internal sealed class ProductWorkspaceController : IDisposable
             ?? throw new ArgumentNullException(nameof(hasProductGateway));
         _trace = trace ?? throw new ArgumentNullException(nameof(trace));
         _hostVersion = string.IsNullOrWhiteSpace(hostVersion) ? "unknown" : hostVersion;
+        _retryDelay = retryDelay ?? DefaultOpenRetryDelay;
     }
 
     public void ResetBinding() => _snapshot = null;
@@ -74,37 +82,39 @@ internal sealed class ProductWorkspaceController : IDisposable
     public void OnNotification(TableNotification notification)
         => TableNotificationPresenter.Post(_reply, notification);
 
-    private async Task OpenAsync()
+    internal async Task OpenAsync()
     {
         if (!await _openGate.WaitAsync(0))
             return;
         try
         {
-            string? source = await _databasePicker.PickDatabaseAsync();
-            if (source is null)
-                return;
-            DatabaseOpenResult result = _snapshot
-                ?? await _workspace.OpenDatabaseAsync(source);
-            _snapshot = result;
-            if (_isClosing() || Volatile.Read(ref _disposed) != 0)
-                return;
-            _coordinator.SetDatabase("local");
-            _reply.PostNotification(
-                "database.opened",
-                new
+            // A sidecar crash recycles the session generation: the backend is
+            // rebound while the replacement sidecar is still becoming healthy,
+            // and the single open attempt that lands inside that window fails
+            // against the retiring generation. Nothing else re-invokes this
+            // projection, so a permanently stranded empty renderer would be
+            // the user-visible outcome. Retry the transient window instead.
+            for (int attempt = 1; ; attempt += 1)
+            {
+                if (_isClosing() || Volatile.Read(ref _disposed) != 0)
+                    return;
+                try
                 {
-                    tables = result.Tables,
-                    views = result.Views,
-                    displayNames = result.DisplayNames,
-                    projectKey = "local:default",
-                    projectRevision = "1",
-                    currentUser = new
-                    {
-                        id = "local-user",
-                        displayName = "本地用户",
-                    },
-                    hostVersion = _hostVersion,
-                });
+                    await OpenOnceAsync();
+                    return;
+                }
+                catch (Exception exception) when (
+                    attempt < OpenRetryLimit
+                    && !_isClosing()
+                    && Volatile.Read(ref _disposed) == 0)
+                {
+                    _trace(
+                        $"Product workspace open failed transiently; " +
+                        $"attempt={attempt}; " +
+                        $"exception={exception.GetType().Name}");
+                    await Task.Delay(_retryDelay(attempt));
+                }
+            }
         }
         catch (Exception exception)
         {
@@ -120,6 +130,35 @@ internal sealed class ProductWorkspaceController : IDisposable
         {
             _openGate.Release();
         }
+    }
+
+    private async Task OpenOnceAsync()
+    {
+        string? source = await _databasePicker.PickDatabaseAsync();
+        if (source is null)
+            return;
+        DatabaseOpenResult result = _snapshot
+            ?? await _workspace.OpenDatabaseAsync(source);
+        _snapshot = result;
+        if (_isClosing() || Volatile.Read(ref _disposed) != 0)
+            return;
+        _coordinator.SetDatabase("local");
+        _reply.PostNotification(
+            "database.opened",
+            new
+            {
+                tables = result.Tables,
+                views = result.Views,
+                displayNames = result.DisplayNames,
+                projectKey = "local:default",
+                projectRevision = "1",
+                currentUser = new
+                {
+                    id = "local-user",
+                    displayName = "本地用户",
+                },
+                hostVersion = _hostVersion,
+            });
     }
 
     public void Dispose()

@@ -26,20 +26,6 @@ _UPLOAD_HANDLE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _USER_AGENT = "VibeTable-Next/pocketbase.adapter.v1"
 
 
-def _dbg(message: str) -> None:  # TEMPORARY E2E DEBUG LOGGING - REVERT
-    import os
-    import time
-
-    target = os.environ.get("VIBETABLE_TRANSPORT_DEBUG_LOG")
-    if not target:
-        return
-    try:
-        with open(target, "a", encoding="utf-8") as handle:
-            handle.write(f"{time.time():.3f} pid={os.getpid()} transport {message}\n")
-    except OSError:
-        pass
-
-
 class PocketBaseTransportError(Exception):
     def __init__(self, message: str, *, code: str = "sidecar.unavailable") -> None:
         super().__init__(message)
@@ -105,9 +91,6 @@ class StdlibPocketBaseTransport:
         if json_body is not None:
             request_headers["Content-Type"] = "application/json"
             body = _encode_json(json_body)
-        import time as _t  # TEMPORARY E2E DEBUG LOGGING - REVERT
-
-        _t0 = _t.monotonic()
         try:
             async with (
                 self._client() as client,
@@ -120,17 +103,9 @@ class StdlibPocketBaseTransport:
                 ) as response,
             ):
                 raw = await _read_limited(response, _MAX_RESPONSE_BYTES)
-        except PocketBaseTransportError as exc:
-            _dbg(
-                f"request {method} {path} query={dict(query or {})!r} "
-                f"ms={(_t.monotonic() - _t0) * 1000:.0f} pbt={exc.code} {exc!r}"
-            )
+        except PocketBaseTransportError:
             raise
-        except httpx.TransportError as exc:
-            _dbg(
-                f"request {method} {path} query={dict(query or {})!r} "
-                f"ms={(_t.monotonic() - _t0) * 1000:.0f} transport_error={exc!r}"
-            )
+        except httpx.TransportError:
             raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
         return _decode_response(response.status_code, raw, tuple(expected_status))
 
@@ -225,10 +200,6 @@ class StdlibPocketBaseTransport:
             **dict(headers or {}),
         }
         temporary: str | None = None
-        import time as _t  # TEMPORARY E2E DEBUG LOGGING - REVERT
-
-        _t0 = _t.monotonic()
-        _dbg(f"download {path} query={dict(query or {})!r} target={target_path}")
         try:
             async with (
                 self._client() as client,
@@ -239,25 +210,14 @@ class StdlibPocketBaseTransport:
                     headers=request_headers,
                 ) as response,
             ):
-                _dbg(
-                    f"download headers status={response.status_code} "
-                    f"ms={(_t.monotonic() - _t0) * 1000:.0f} "
-                    f"resp_headers={dict(response.headers)!r}"
-                )
                 if response.status_code not in expected_status:
                     raw = await _read_limited(response, _MAX_RESPONSE_BYTES)
                     raise _status_error(response.status_code, raw)
-                import os as _os  # TEMPORARY E2E DEBUG LOGGING - REVERT
-
-                _dbg(
-                    f"download mkstemp dir={target.parent!r} isdir={_os.path.isdir(target.parent)}"
-                )
                 descriptor, temporary = tempfile.mkstemp(
                     prefix=".vibetable-attachment-",
                     suffix=".part",
                     dir=str(target.parent),
                 )
-                _dbg(f"download mkstemp ok temp={temporary!r} exists={_os.path.exists(temporary)}")
                 total = 0
                 with os.fdopen(descriptor, "wb") as output:
                     async for chunk in response.aiter_bytes(1024 * 1024):
@@ -270,25 +230,14 @@ class StdlibPocketBaseTransport:
                         output.write(chunk)
                     output.flush()
                     os.fsync(output.fileno())
-                _dbg(f"download streamed total={total} temp_exists={_os.path.exists(temporary)}")
-            import os as _os2  # TEMPORARY E2E DEBUG LOGGING - REVERT
-
-            _dbg(
-                f"download pre-replace temp={temporary!r} exists={_os2.path.exists(temporary)} "
-                f"target={target!r} parent_isdir={_os2.path.isdir(target.parent)}"
-            )
             os.replace(temporary, target)
             temporary = None
-            _dbg(f"download ok bytes={total} ms={(_t.monotonic() - _t0) * 1000:.0f}")
             return total
-        except PocketBaseTransportError as exc:
-            _dbg(f"download pbt={exc.code} {exc!r} ms={(_t.monotonic() - _t0) * 1000:.0f}")
+        except PocketBaseTransportError:
             raise
-        except httpx.TransportError as exc:
-            _dbg(f"download transport_error={exc!r} ms={(_t.monotonic() - _t0) * 1000:.0f}")
+        except httpx.TransportError:
             raise PocketBaseTransportError("PocketBase sidecar is unavailable") from None
-        except OSError as exc:
-            _dbg(f"download os_error={exc!r} ms={(_t.monotonic() - _t0) * 1000:.0f}")
+        except OSError:
             raise PocketBaseTransportError(
                 "Managed attachment could not be saved",
                 code="attachment.host_target_unwritable",
