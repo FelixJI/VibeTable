@@ -623,6 +623,7 @@ def _read_sse_event(
     result: queue.Queue[dict[str, Any]],
     expected_record_id: str,
     expected_data_revision: str,
+    expected_task_type: str | None = None,
 ) -> None:
     request = urllib.request.Request(
         f"http://{sidecar.address}/api/vibetable/v1/events",
@@ -633,6 +634,9 @@ def _read_sse_event(
             assert response.status == 200
             ready.set()
             event: dict[str, str] = {}
+            data_event: dict[str, Any] | None = None
+            # The batch event commits row data before the job marks the formula globally ready.
+            task_succeeded = expected_task_type is None
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 line = response.readline().decode().strip()
@@ -645,7 +649,15 @@ def _read_sse_event(
                             and payload.get("operation") == "update"
                             and payload.get("dataRevision") == expected_data_revision
                         ):
-                            result.put(payload)
+                            data_event = payload
+                        elif (
+                            payload.get("topic") == "task.changed"
+                            and payload.get("taskType") == expected_task_type
+                            and payload.get("state") == "succeeded"
+                        ):
+                            task_succeeded = True
+                        if data_event is not None and task_succeeded:
+                            result.put(data_event)
                             return
                         event = {}
                     continue
@@ -784,6 +796,7 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
                 backfill_result,
                 order_id,
                 expected_backfill_revision,
+                "formulaBackfill",
             ),
             daemon=True,
         )
