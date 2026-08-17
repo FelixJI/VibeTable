@@ -70,6 +70,7 @@ import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
 import { useDataIoService } from "@/services/dataIoService";
 import { useMutationService } from "@/services/mutationService";
+import { createStructuredDialogFocus } from "@/services/dialogFocus";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { usePluginService } from "@/services/pluginService";
@@ -247,6 +248,23 @@ function onBeforeUnload(event: BeforeUnloadEvent): void {
 const relationLookup = useRelationLookupStore();
 const tabulator = ref<TabulatorFull | null>(null);
 provide(TABULATOR_INJECTION_KEY, tabulator);
+const structuredDialogFocus = createStructuredDialogFocus({
+  getGrid: () => tabulator.value,
+  getScope: () => ({
+    workspaceId: workspaceSession.activeWorkspaceId,
+    sessionEpoch: workspaceSession.sessionEpoch,
+    tableId: workspace.currentTable,
+  }),
+  subscribeScope: listener => watch(
+    () => [
+      workspaceSession.activeWorkspaceId,
+      workspaceSession.sessionEpoch,
+      workspace.currentTable,
+    ] as const,
+    listener,
+    { flush: "sync" },
+  ),
+});
 const tableInteractions = createWorkspaceTableInteractionController({
   workspace,
   table: tableStore,
@@ -278,7 +296,7 @@ const structuredCellDialogs = createStructuredCellDialogController({
     edit.value,
     edit.expectedDigest,
   ),
-  getGrid: () => tabulator.value,
+  dialogFocus: structuredDialogFocus,
   translate: t,
   reportError: error => message.error(error),
 });
@@ -643,6 +661,7 @@ onBeforeUnmount(() => {
   dashboardService.dispose();
   surfaceService.dispose();
   fieldSettingsService.dispose();
+  structuredDialogFocus.dispose();
   window.removeEventListener("beforeunload", onBeforeUnload);
 });
 

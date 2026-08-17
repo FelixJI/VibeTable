@@ -1,7 +1,18 @@
+import { nextTick } from "vue";
 import { describe, expect, it, vi } from "vitest";
 
 import type { HostBridge } from "@/bridge/hostBridge";
-import type { ColumnSchema, ManagedAttachmentRef } from "@/contracts";
+import type {
+  ColumnEditSchema,
+  ColumnSchema,
+  ManagedAttachmentRef,
+  TablePage,
+} from "@/contracts";
+import { createGrid } from "@/grid/createGrid";
+import {
+  createStructuredDialogFocus,
+  type StructuredDialogFocus,
+} from "@/services/dialogFocus";
 import {
   createStructuredCellDialogController,
   type StructuredCellBridge,
@@ -43,7 +54,14 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function setup(request: HostBridge["request"]) {
+function setup(
+  request: HostBridge["request"],
+  dialogFocus: StructuredDialogFocus = createStructuredDialogFocus({
+    getGrid: () => null,
+    getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+    subscribeScope: () => () => undefined,
+  }),
+) {
   const notify = vi.fn();
   const commitJson = vi.fn();
   const bridge: StructuredCellBridge = {
@@ -58,12 +76,117 @@ function setup(request: HostBridge["request"]) {
       expectedDigest: `sha256:${"a".repeat(64)}`,
     }),
     commitJson,
-    getGrid: () => null,
+    dialogFocus,
     translate: key => key,
     reportError: vi.fn(),
     activeElement: () => null,
   });
-  return { controller, notify, commitJson };
+  return { controller, notify, commitJson, dialogFocus };
+}
+
+interface RealTabulatorDomFixture {
+  readonly host: HTMLDivElement;
+  restore(): void;
+}
+
+function installRealTabulatorDomFixture(): RealTabulatorDomFixture {
+  const host = document.createElement("div");
+  host.style.width = "800px";
+  host.style.height = "400px";
+  document.body.append(host);
+
+  const restorers: Array<() => void> = [];
+  const frameTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  let nextFrameId = 1;
+
+  function replaceProperty(
+    target: object,
+    key: PropertyKey,
+    descriptor: PropertyDescriptor,
+  ): void {
+    const previous = Object.getOwnPropertyDescriptor(target, key);
+    Object.defineProperty(target, key, { configurable: true, ...descriptor });
+    restorers.push(() => {
+      if (previous) Object.defineProperty(target, key, previous);
+      else Reflect.deleteProperty(target, key);
+    });
+  }
+
+  const belongsToFixture = (element: HTMLElement): boolean =>
+    element === host || host.contains(element);
+
+  for (const property of ["offsetWidth", "clientWidth", "scrollWidth"] as const) {
+    replaceProperty(HTMLElement.prototype, property, {
+      get(this: HTMLElement): number {
+        return belongsToFixture(this) ? 800 : 0;
+      },
+    });
+  }
+  for (const property of ["offsetHeight", "clientHeight", "scrollHeight"] as const) {
+    replaceProperty(HTMLElement.prototype, property, {
+      get(this: HTMLElement): number {
+        return belongsToFixture(this) ? 400 : 0;
+      },
+    });
+  }
+
+  const nativeGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+  replaceProperty(HTMLElement.prototype, "getBoundingClientRect", {
+    writable: true,
+    value(this: HTMLElement): DOMRect {
+      if (!belongsToFixture(this)) return nativeGetBoundingClientRect.call(this);
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 800,
+        bottom: 400,
+        width: 800,
+        height: 400,
+        toJSON: () => ({}),
+      } as DOMRect;
+    },
+  });
+
+  class FixtureResizeObserver implements ResizeObserver {
+    readonly observe = () => undefined;
+    readonly unobserve = () => undefined;
+    readonly disconnect = () => undefined;
+  }
+
+  const requestFrame = (callback: FrameRequestCallback): number => {
+    const frameId = nextFrameId++;
+    const timer = setTimeout(() => {
+      frameTimers.delete(frameId);
+      callback(performance.now());
+    }, 0);
+    frameTimers.set(frameId, timer);
+    return frameId;
+  };
+  const cancelFrame = (frameId: number): void => {
+    const timer = frameTimers.get(frameId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    frameTimers.delete(frameId);
+  };
+
+  replaceProperty(globalThis, "ResizeObserver", { writable: true, value: FixtureResizeObserver });
+  replaceProperty(window, "ResizeObserver", { writable: true, value: FixtureResizeObserver });
+  replaceProperty(globalThis, "requestAnimationFrame", { writable: true, value: requestFrame });
+  replaceProperty(window, "requestAnimationFrame", { writable: true, value: requestFrame });
+  replaceProperty(globalThis, "cancelAnimationFrame", { writable: true, value: cancelFrame });
+  replaceProperty(window, "cancelAnimationFrame", { writable: true, value: cancelFrame });
+
+  return {
+    host,
+    restore(): void {
+      for (const timer of frameTimers.values()) clearTimeout(timer);
+      frameTimers.clear();
+      host.remove();
+      for (const restore of restorers.reverse()) restore();
+    },
+  };
 }
 
 describe("structured cell dialog controller", () => {
@@ -83,6 +206,27 @@ describe("structured cell dialog controller", () => {
 
     expect(controller.state.attachment.show).toBe(true);
     expect(document.activeElement).not.toBe(trigger);
+    trigger.remove();
+  });
+
+  it("restores the attachment trigger through the shared focus lease", async () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const request = vi.fn().mockResolvedValue({ attachments: [] });
+    const { controller, dialogFocus } = setup(request as HostBridge["request"]);
+
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+      trigger,
+    });
+    await controller.dispatch({ type: "attachment.close" });
+    await controller.dispatch({ type: "attachment.closed" });
+
+    expect(document.activeElement).toBe(trigger);
+    dialogFocus.dispose();
     trigger.remove();
   });
 
@@ -207,10 +351,20 @@ describe("structured cell dialog controller", () => {
   it("restores JSON focus after transition cleanup releases the browser focus owner", async () => {
     const trigger = document.createElement("button");
     document.body.append(trigger);
-    const scheduledFrames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      scheduledFrames.push(callback);
-      return scheduledFrames.length;
+    let renderComplete: (() => void) | null = null;
+    const grid = {
+      getRows: () => [],
+      on: (event: string, handler: () => void) => {
+        if (event === "renderComplete") renderComplete = handler;
+      },
+      off: () => {
+        renderComplete = null;
+      },
+    };
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
     });
     const nativeFocus = trigger.focus.bind(trigger);
     let focusAttempts = 0;
@@ -218,7 +372,7 @@ describe("structured cell dialog controller", () => {
       focusAttempts += 1;
       if (focusAttempts > 1) nativeFocus(options);
     });
-    const { controller } = setup(vi.fn() as HostBridge["request"]);
+    const { controller } = setup(vi.fn() as HostBridge["request"], dialogFocus);
     const jsonColumn: ColumnSchema = {
       name: "metadata",
       title: "Metadata",
@@ -238,14 +392,105 @@ describe("structured cell dialog controller", () => {
       });
       await controller.dispatch({ type: "json.close" });
       await controller.dispatch({ type: "json.closed" });
-      await vi.waitFor(() => expect(focusAttempts).toBe(1));
+      expect(focusAttempts).toBe(1);
 
-      expect(scheduledFrames).toHaveLength(1);
-      scheduledFrames[0]?.(0);
+      expect(renderComplete).not.toBeNull();
+      (renderComplete as (() => void) | null)?.();
       expect(document.activeElement).toBe(trigger);
     } finally {
+      dialogFocus.dispose();
       trigger.remove();
-      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps focus on the live structured cell when Tabulator replaces its row after close", async () => {
+    const fixture = installRealTabulatorDomFixture();
+    const jsonColumn: ColumnSchema = {
+      name: "payload",
+      title: "Payload",
+      dataType: "json",
+      editable: true,
+      nullable: true,
+    };
+    const editSchema: readonly ColumnEditSchema[] = [{
+      name: "payload",
+      storageName: "payload",
+      dataType: "json",
+      editable: true,
+      nullable: true,
+      primaryKey: false,
+      editor: { kind: "json" },
+      validation: [],
+    }];
+    const page: TablePage = {
+      table: "items",
+      columns: [jsonColumn],
+      rows: [{ rowKey: "row-1", payload: { version: "before" } }],
+      offset: 0,
+      limit: 100,
+      totalRows: 1,
+      mode: "remote",
+    };
+    const grid = createGrid(fixture.host, page, { editSchema });
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+    const currentPayloadCell = (): HTMLElement => {
+      const row = (grid.getRows() as unknown as Array<{
+        getCell: (field: string) => { getElement: () => HTMLElement } | false;
+      }>)[0];
+      const cell = row?.getCell("payload");
+      if (!cell) throw new Error("real Tabulator payload cell is unavailable");
+      return cell.getElement();
+    };
+    const controller = createStructuredCellDialogController({
+      bridge: {
+        request: vi.fn() as unknown as HostBridge["request"],
+        notify: vi.fn() as unknown as HostBridge["notify"],
+      },
+      resolveAttachmentAuthority: () => ({
+        tableId: null,
+        schemaRevision: null,
+        expectedDigest: null,
+      }),
+      commitJson: vi.fn(),
+      dialogFocus,
+      translate: key => key,
+      reportError: vi.fn(),
+    });
+
+    try {
+      await vi.waitFor(() => expect(currentPayloadCell().isConnected).toBe(true));
+      const trigger = currentPayloadCell();
+      trigger.focus();
+      expect(document.activeElement).toBe(trigger);
+
+      await controller.dispatch({
+        type: "json.open",
+        rowKey: "row-1",
+        column: jsonColumn,
+        value: { version: "before" },
+        expectedDigest: null,
+        trigger,
+      });
+      await controller.dispatch({ type: "json.close" });
+      await controller.dispatch({ type: "json.closed" });
+      await nextTick();
+      await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
+
+      await grid.setData([{ rowKey: "row-1", payload: { version: "after" } }]);
+      const currentCell = currentPayloadCell();
+      expect(trigger.isConnected).toBe(false);
+      expect(currentCell.isConnected).toBe(true);
+      expect(currentCell).not.toBe(trigger);
+      expect(document.activeElement).toBe(currentCell);
+    } finally {
+      dialogFocus.dispose();
+      grid.destroy?.();
+      fixture.restore();
+      document.body.innerHTML = "";
     }
   });
 });
