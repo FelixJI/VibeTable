@@ -1,6 +1,31 @@
 {
   "entries": [
     {
+      "subject": "fix(recovery): 修复恢复重试与错误保留 (#60)",
+      "commit": "0149afe7",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 对话框焦点恢复改用枚举行快照定位 (#57)",
+      "commit": "c19bd5aa",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(sidecar): 保留恢复校验失败的底层诊断信息 (#56)",
+      "commit": "9038f986",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(workbench): 完成离线数据工作台闭环 (#55)",
+      "commit": "b8c7833f",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(deps): 升级 nanoid 修复拒绝服务漏洞 (#52)",
+      "commit": "61017fc9",
+      "category": "dependencies"
+    },
+    {
       "subject": "fix(data-io): 完善批量导入预检与变化摘要 (#48)",
       "commit": "bf0e3c3c",
       "category": "changes"
