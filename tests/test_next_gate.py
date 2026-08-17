@@ -1126,6 +1126,38 @@ def test_product_e2e_failure_evidence_skips_passing_run(tmp_path: Path) -> None:
     assert not (tmp_path / "destination").exists()
 
 
+def test_product_e2e_failure_evidence_finds_nested_fault_injection_run(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "fault-injection"
+    product_run = source_root / "20260817T010000Z" / "real-product" / "20260817T010203Z"
+    scenario_id = "10-sse-reconnect"
+    scenario_root = product_run / scenario_id
+    scenario_root.mkdir(parents=True)
+    (product_run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "scenarios": [{"scenario": scenario_id, "status": "failed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (scenario_root / f"{scenario_id}-result.json").write_text(
+        "result",
+        encoding="utf-8",
+    )
+
+    destination = next_gate.persist_product_e2e_failure_evidence(
+        source_root,
+        tmp_path / "destination",
+    )
+
+    assert destination == tmp_path / "destination" / product_run.name
+    assert (destination / "product-e2e-report.json").is_file()
+    assert (destination / scenario_id / f"{scenario_id}-result.json").is_file()
+
+
 def test_full_ci_report_rejects_source_change_while_gate_is_running(
     monkeypatch,
     tmp_path: Path,
@@ -1283,9 +1315,15 @@ def test_lane_report_is_candidate_bound_but_never_release_eligible(
     assert payload["releaseCandidate"]["archive"]["sha256"]
 
 
-def test_failed_product_e2e_lane_persists_diagnostics_outside_lane_reports(
+@pytest.mark.parametrize(
+    ("stage", "source_directory"),
+    [("product-e2e", "p"), ("fault-injection", "fault-injection")],
+)
+def test_failed_product_lane_persists_product_diagnostics(
     monkeypatch,
     tmp_path: Path,
+    stage: str,
+    source_directory: str,
 ) -> None:
     qa_temp = tmp_path / "qa-failure"
     qa_temp.mkdir()
@@ -1309,7 +1347,7 @@ def test_failed_product_e2e_lane_persists_diagnostics_outside_lane_reports(
             1,
             [
                 next_gate.StageResult(
-                    stage="product-e2e",
+                    stage=stage,
                     command=["test"],
                     returncode=1,
                     elapsed=0.01,
@@ -1343,7 +1381,7 @@ def test_failed_product_e2e_lane_persists_diagnostics_outside_lane_reports(
     )
     assert observed == [
         (
-            qa_temp / "p",
+            qa_temp / source_directory,
             next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / "resilience",
         )
     ]

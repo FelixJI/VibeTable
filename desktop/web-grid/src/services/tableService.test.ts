@@ -297,6 +297,48 @@ describe("tableService realtime product wiring", () => {
     }
   });
 
+  it("starts a fresh bounded watchdog cycle when database.opened follows an exhausted session", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = bridgeHarness({ action: "none" });
+      setHostBridgeForTesting(harness.bridge);
+      const table = useTableStore();
+      const service = useTableService();
+      service.init();
+
+      service.selectTable("orders");
+      harness.notify.mockClear();
+      for (let i = 0; i < 8; i += 1) {
+        await vi.advanceTimersByTimeAsync(3_100);
+      }
+      expect(harness.notify).toHaveBeenCalledTimes(5);
+
+      // A sidecar session recycle clears the projection before it re-announces
+      // the catalog. The recovered load is a new bounded supervision cycle,
+      // even though it is for the same table.
+      table.reset();
+      harness.notify.mockClear();
+      harness.emit("database.opened", {
+        tables: ["orders"],
+        views: [],
+        displayNames: {},
+      });
+      expect(harness.notify).toHaveBeenCalledWith("table.selected", { table: "orders" });
+
+      harness.notify.mockClear();
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect(harness.notify).toHaveBeenCalledTimes(1);
+
+      for (let i = 0; i < 7; i += 1) {
+        await vi.advanceTimersByTimeAsync(3_100);
+      }
+      expect(harness.notify).toHaveBeenCalledTimes(5);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reopens the current canonical query after query.cursor_stale", () => {
     const harness = bridgeHarness({ action: "none" });
     setHostBridgeForTesting(harness.bridge);

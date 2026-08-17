@@ -224,6 +224,12 @@ export const usePluginStore = defineStore("plugins", () => {
     busy.value = false;
     lastError.value = error instanceof Error ? error.message : String(error);
   }
+  function failIfNoError(error: unknown): void {
+    busy.value = false;
+    if (lastError.value === null) {
+      lastError.value = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   return {
     projectKey,
@@ -256,5 +262,6 @@ export const usePluginStore = defineStore("plugins", () => {
     startBusy,
     finishBusy,
     fail,
+    failIfNoError,
   };
 });

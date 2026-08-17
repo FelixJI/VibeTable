@@ -1413,6 +1413,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
     ]
     completed = subprocess.run(
         [str(ensure_node(runner.ROOT)), "--test", *(str(path) for path in test_files)],

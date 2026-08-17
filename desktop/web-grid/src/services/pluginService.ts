@@ -106,18 +106,25 @@ export function usePluginService(): PluginService {
     initialized = false;
   }
 
+  type RequestErrorPolicy = "foreground" | "background";
+
   async function call<K extends WebMessageType, T>(
     type: K,
     payload: WebPayloadMap[K],
-    options: { readonly clearError?: boolean } = {},
+    options: { readonly errorPolicy?: RequestErrorPolicy } = {},
   ): Promise<T> {
-    store.startBusy(options.clearError !== false);
+    const errorPolicy = options.errorPolicy ?? "foreground";
+    store.startBusy(errorPolicy === "foreground");
     try {
       const result = await bridge.request(type, payload);
       store.finishBusy();
       return result as T;
     } catch (error) {
-      store.fail(error);
+      if (errorPolicy === "foreground") {
+        store.fail(error);
+      } else {
+        store.failIfNoError(error);
+      }
       throw error;
     }
   }
@@ -127,7 +134,7 @@ export function usePluginService(): PluginService {
     const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
       "plugin.catalog.list",
       { projectKey },
-      { clearError: false },
+      { errorPolicy: "background" },
     );
     if (store.projectKey !== projectKey) return snapshots;
     store.replaceCatalog(projectKey, snapshots);
@@ -189,7 +196,7 @@ export function usePluginService(): PluginService {
     const task = await call<"plugin.task.get", PluginTaskSnapshot>(
       "plugin.task.get",
       { taskId },
-      { clearError: false },
+      { errorPolicy: "background" },
     );
     return store.applyTask(task);
   }
@@ -247,12 +254,12 @@ export function usePluginService(): PluginService {
     listAudit: (pluginId) => call(
       "plugin.audit.list",
       { projectKey: store.projectKey, pluginId },
-      { clearError: false },
+      { errorPolicy: "background" },
     ),
     listPendingCleanup: () => call(
       "plugin.cleanup.listPending",
       { projectKey: store.projectKey },
-      { clearError: false },
+      { errorPolicy: "background" },
     ),
     retryCleanup: (pluginId) => call("plugin.lifecycle.uninstall", {
       projectKey: store.projectKey,
