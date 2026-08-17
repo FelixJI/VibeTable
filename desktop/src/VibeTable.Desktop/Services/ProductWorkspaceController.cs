@@ -22,8 +22,15 @@ internal sealed class ProductWorkspaceController : IDisposable
     private readonly Action<string> _trace;
     private readonly string _hostVersion;
     private readonly SemaphoreSlim _openGate = new(1, 1);
+    private readonly Func<int, TimeSpan> _retryDelay;
+    private readonly Func<bool> _guards;
     private DatabaseOpenResult? _snapshot;
     private int _disposed;
+
+    private const int OpenRetryLimit = 12;
+
+    private static TimeSpan DefaultOpenRetryDelay(int attempt) => TimeSpan.FromMilliseconds(
+        Math.Min(4000, 500 * (1 << Math.Min(Math.Max(attempt - 1, 0), 3))));
 
     public ProductWorkspaceController(
         IWebReplySink reply,
@@ -36,7 +43,9 @@ internal sealed class ProductWorkspaceController : IDisposable
         Func<bool> isClosing,
         Func<bool> hasProductGateway,
         Action<string> trace,
-        string hostVersion)
+        string hostVersion,
+        Func<int, TimeSpan>? retryDelay = null,
+        Func<bool>? guards = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
@@ -51,70 +60,111 @@ internal sealed class ProductWorkspaceController : IDisposable
             ?? throw new ArgumentNullException(nameof(hasProductGateway));
         _trace = trace ?? throw new ArgumentNullException(nameof(trace));
         _hostVersion = string.IsNullOrWhiteSpace(hostVersion) ? "unknown" : hostVersion;
+        _retryDelay = retryDelay ?? DefaultOpenRetryDelay;
+        _guards = guards ?? GuardsSatisfied;
     }
 
     public void ResetBinding() => _snapshot = null;
 
     public void OpenWhenReady()
     {
-        WorkspaceSessionV2 session = _sessions.Current;
-        if (Volatile.Read(ref _disposed) != 0
-            || _isClosing()
-            || !_isRendererReady()
-            || _runtime.CurrentBackend?.State != BackendState.Ready
-            || !_hasProductGateway()
-            || _runtime.CurrentWorkspace?.WorkspaceId != session.WorkspaceId
-            || !ProductWorkspaceOpenPolicy.CanProject(session))
-        {
+        if (Volatile.Read(ref _disposed) != 0 || _isClosing())
             return;
-        }
-        _ = OpenAsync();
+        if (!WorkspaceExpected())
+            return;
+        _ = SuperviseOpenAsync();
     }
 
     public void OnNotification(TableNotification notification)
         => TableNotificationPresenter.Post(_reply, notification);
 
-    private async Task OpenAsync()
+    private bool WorkspaceExpected()
+        => _sessions.Current.WorkspaceId is not null
+            || _runtime.CurrentWorkspace is not null;
+
+    private bool GuardsSatisfied()
+    {
+        WorkspaceSessionV2 session = _sessions.Current;
+        return _isRendererReady()
+            && _runtime.CurrentBackend?.State == BackendState.Ready
+            && _hasProductGateway()
+            && _runtime.CurrentWorkspace?.WorkspaceId == session.WorkspaceId
+            && ProductWorkspaceOpenPolicy.CanProject(session);
+    }
+
+    internal async Task SuperviseOpenAsync()
     {
         if (!await _openGate.WaitAsync(0))
             return;
         try
         {
-            string? source = await _databasePicker.PickDatabaseAsync();
-            if (source is null)
-                return;
-            DatabaseOpenResult result = _snapshot
-                ?? await _workspace.OpenDatabaseAsync(source);
-            _snapshot = result;
-            if (_isClosing() || Volatile.Read(ref _disposed) != 0)
-                return;
-            _coordinator.SetDatabase("local");
-            _reply.PostNotification(
-                "database.opened",
-                new
+            // A sidecar crash recycles the session generation: the backend is
+            // rebound while the replacement sidecar is still becoming healthy,
+            // and any single open attempt that lands inside that window either
+            // fails its guards, resolves no source, or throws against the
+            // retiring generation. Nothing else re-invokes this projection, so
+            // a permanently stranded empty renderer would be the user-visible
+            // outcome. Supervise the transient window instead of attempting
+            // exactly once.
+            bool attempted = false;
+            for (int attempt = 1; attempt <= OpenRetryLimit; attempt += 1)
+            {
+                if (_isClosing() || Volatile.Read(ref _disposed) != 0)
+                    return;
+                if (_guards())
                 {
-                    tables = result.Tables,
-                    views = result.Views,
-                    displayNames = result.DisplayNames,
-                    projectKey = "local:default",
-                    projectRevision = "1",
-                    currentUser = new
+                    attempted = true;
+                    try
                     {
-                        id = "local-user",
-                        displayName = "本地用户",
-                    },
-                    hostVersion = _hostVersion,
-                });
-        }
-        catch (Exception exception)
-        {
-            _trace(
-                $"Product workspace open failed; " +
-                $"exception={exception.GetType().Name}");
-            _reply.PostOperationFailed(
-                null,
-                "本地工作区启动失败，请重试。",
-                "PRODUCT_WORKSPACE_OPEN_FAILED");
+                        string? source = await _databasePicker.PickDatabaseAsync();
+                        if (source is not null)
+                        {
+                            DatabaseOpenResult result = _snapshot
+                                ?? await _workspace.OpenDatabaseAsync(source);
+                            _snapshot = result;
+                            if (_isClosing() || Volatile.Read(ref _disposed) != 0)
+                                return;
+                            _coordinator.SetDatabase("local");
+                            _reply.PostNotification(
+                                "database.opened",
+                                new
+                                {
+                                    tables = result.Tables,
+                                    views = result.Views,
+                                    displayNames = result.DisplayNames,
+                                    projectKey = "local:default",
+                                    projectRevision = "1",
+                                    currentUser = new
+                                    {
+                                        id = "local-user",
+                                        displayName = "本地用户",
+                                    },
+                                    hostVersion = _hostVersion,
+                                });
+                            return;
+                        }
+                        _trace(
+                            $"Product workspace source unresolved yet; " +
+                            $"attempt={attempt}");
+                    }
+                    catch (Exception exception)
+                    {
+                        _trace(
+                            $"Product workspace open failed transiently; " +
+                            $"attempt={attempt}; " +
+                            $"exception={exception.GetType().Name}");
+                    }
+                }
+                await Task.Delay(_retryDelay(attempt));
+            }
+            if (attempted)
+            {
+                _trace("Product workspace open failed; budget exhausted");
+                _reply.PostOperationFailed(
+                    null,
+                    "本地工作区启动失败，请重试。",
+                    "PRODUCT_WORKSPACE_OPEN_FAILED");
+            }
         }
         finally
         {

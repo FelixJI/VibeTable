@@ -149,9 +149,11 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ci-lane-${{ matrix.name }}
-          path: build/automation/lane-reports/${{ matrix.name }}.json
+          path: |
+            build/automation/lane-reports/${{ matrix.name }}.json
+            build/automation/lane-evidence/${{ matrix.name }}
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 3
 
   required:
     needs: [plan, prepare, shard]

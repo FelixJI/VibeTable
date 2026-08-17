@@ -215,7 +215,10 @@ export const usePluginStore = defineStore("plugins", () => {
   function setInstallPlan(plan: PluginInstallPlan | null): void {
     installPlan.value = plan;
   }
-  function startBusy(): void { busy.value = true; lastError.value = null; }
+  function startBusy(clearError = true): void {
+    busy.value = true;
+    if (clearError) lastError.value = null;
+  }
   function finishBusy(): void { busy.value = false; }
   function fail(error: unknown): void {
     busy.value = false;

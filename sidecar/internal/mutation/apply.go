@@ -428,7 +428,7 @@ func refreshComputedVersions(
 	}
 	if changed {
 		if err := app.Save(record); err != nil {
-			return storageValidationFailure(err)
+			return storageSaveFailure(err)
 		}
 	}
 	return nil
@@ -709,7 +709,7 @@ func (kernel *Kernel) applyOperation(
 		}
 	}
 	if err := app.Save(record); err != nil {
-		return nil, storageValidationFailure(err)
+		return nil, storageSaveFailure(err)
 	}
 	if finalizeAttachments != nil {
 		if err := finalizeAttachments(app, record); err != nil {
@@ -859,7 +859,7 @@ func (kernel *Kernel) syncReciprocalRelations(
 				return nil, err
 			}
 			if err := app.Save(targetRecord); err != nil {
-				return nil, storageValidationFailure(err)
+				return nil, storageSaveFailure(err)
 			}
 			changes = append(changes, reciprocalRecordChange{
 				definition: targetDefinition,
@@ -1063,13 +1063,10 @@ func wireValue(value any) any {
 	return normalized
 }
 
-func storageValidationFailure(err error) *ProductError {
+func storageSaveFailure(err error) *ProductError {
 	var validationErrors validation.Errors
 	if !errors.As(err, &validationErrors) {
-		return mutationError(
-			"mutation.validation.failed", nil,
-			"record failed product validation", nil, false,
-		)
+		return storageFailure()
 	}
 	path, message := firstStorageValidationError(validationErrors, "")
 	return mutationError(

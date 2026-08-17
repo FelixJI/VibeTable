@@ -5,6 +5,8 @@ description = "VibeTable — 通用建表与文件管理桌面工具"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
+    "httpx>=0.28.1",
+    "httpx-sse>=0.4.3",
     "openpyxl>=3.1.5",
     "pydantic>=2.13.4",
     "websockets>=16.0",

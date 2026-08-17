@@ -1555,6 +1555,39 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _format_failed_scenario(item: dict[str, Any]) -> str:
+    error = item.get("error")
+    if not isinstance(error, dict):
+        error = {}
+    summary = (
+        f"  - {item.get('scenario', '<unknown>')}: "
+        f"{error.get('code', 'FAILED')} {error.get('message', '')}"
+    )
+    diagnostics = item.get("bridgeDiagnostics")
+    if isinstance(diagnostics, dict):
+        failures = diagnostics.get("failures")
+        pending = diagnostics.get("pending")
+        round_trips = diagnostics.get("roundTrips")
+        compact_diagnostics: dict[str, Any] = {}
+        if isinstance(failures, list) and failures:
+            compact_diagnostics["failures"] = failures
+        if isinstance(pending, list) and pending:
+            compact_diagnostics["pending"] = pending
+        if isinstance(round_trips, list) and round_trips:
+            compact_diagnostics["recentRoundTrips"] = round_trips[-12:]
+        if compact_diagnostics:
+            compact = json.dumps(
+                compact_diagnostics,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            summary += f" bridgeDiagnostics={compact}"
+    max_chars = 4_000
+    if len(summary) > max_chars:
+        return f"{summary[: max_chars - 3]}..."
+    return summary
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -1576,10 +1609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("report:", report["reportPath"])
     for item in report["scenarios"]:
         if item["status"] != "passed":
-            error = item.get("error", {})
-            print(
-                f"  - {item['scenario']}: {error.get('code', 'FAILED')} {error.get('message', '')}"
-            )
+            print(_format_failed_scenario(item))
     return code
 
 

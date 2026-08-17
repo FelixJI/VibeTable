@@ -2793,6 +2793,12 @@ async function waitForTableRecovery(
         && Array.isArray(backend.payload?.rows)
         ? backend.payload.rows.length
         : null;
+      if (backend.type !== "query.page") {
+        await acknowledgeExpectedSidecarRecoveryFailure(
+          backend,
+          response => acknowledgeExpectedBridgeFailure(page, response),
+        );
+      }
       if (
         count === expectedRows
         && backendRows === expectedRows

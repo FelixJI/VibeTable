@@ -163,6 +163,140 @@ describe("tableService realtime product wiring", () => {
     service.dispose();
   });
 
+  it("re-issues table.selected when a load dies inside a session recycle", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = bridgeHarness({ action: "none" });
+      setHostBridgeForTesting(harness.bridge);
+      const table = useTableStore();
+      const service = useTableService();
+      service.init();
+
+      service.selectTable("orders");
+      // selectTable itself notifies once; the load never completes because the
+      // backend pipeline failed during the sidecar session recycle.
+      expect(harness.notify).toHaveBeenCalledWith(
+        "table.selected",
+        { table: "orders" },
+      );
+      expect(table.loading).toBe(true);
+      harness.notify.mockClear();
+
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect(harness.notify).toHaveBeenCalledWith(
+        "table.selected",
+        { table: "orders" },
+      );
+      expect(table.loading).toBe(true);
+
+      // The recycled backend serves the re-issued load and the watchdog stops.
+      harness.emit("table.datasetReady", dataset(12));
+      expect(table.loading).toBe(false);
+      harness.notify.mockClear();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(harness.notify).not.toHaveBeenCalled();
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restores the last selected table when database.opened rebuilds the catalog", async () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+
+    service.selectTable("orders");
+    workspace.clear();
+    table.reset();
+    harness.notify.mockClear();
+
+    harness.emit("database.opened", {
+      tables: ["orders"],
+      views: [],
+      displayNames: {},
+    });
+    expect(harness.notify).toHaveBeenCalledWith(
+      "table.selected",
+      { table: "orders" },
+    );
+    service.dispose();
+  });
+
+  it("reselects the current table when a recycled session lost its dataset revision", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+
+    service.selectTable("orders");
+    harness.emit("table.datasetReady", dataset(12));
+    expect(table.revision?.dataRevision).toBe(12);
+
+    // A session recycle clears the dataset projection before the rebuilt
+    // catalog arrives, but the user's selected table remains current.
+    table.reset();
+    harness.notify.mockClear();
+    harness.emit("database.opened", {
+      tables: ["orders"],
+      views: [],
+      displayNames: {},
+    });
+
+    expect(harness.notify).toHaveBeenCalledWith(
+      "table.selected",
+      { table: "orders" },
+    );
+    service.dispose();
+  });
+
+  it("does not restore a table that no longer exists after a recycle", async () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+
+    service.selectTable("orders");
+    workspace.clear();
+    table.reset();
+    harness.notify.mockClear();
+
+    harness.emit("database.opened", {
+      tables: ["other"],
+      views: [],
+      displayNames: {},
+    });
+    expect(harness.notify).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it("stops re-issuing table.selected after the bounded retry budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = bridgeHarness({ action: "none" });
+      setHostBridgeForTesting(harness.bridge);
+      useWorkspaceStore().selectTable("orders");
+      const service = useTableService();
+      service.init();
+
+      service.selectTable("orders");
+      harness.notify.mockClear();
+      for (let i = 0; i < 8; i += 1) {
+        await vi.advanceTimersByTimeAsync(3_100);
+      }
+      expect(harness.notify).toHaveBeenCalledTimes(5);
+      service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reopens the current canonical query after query.cursor_stale", () => {
     const harness = bridgeHarness({ action: "none" });
     setHostBridgeForTesting(harness.bridge);

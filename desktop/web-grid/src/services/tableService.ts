@@ -5,6 +5,7 @@ import { useHistoryStore } from "@/stores/historyStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { useViewQueryStore } from "@/stores/viewQueryStore";
 import type {
+  DatabaseOpenedPayload,
   DataChangedEvent,
   DatasetReadyPayload,
   EditSchemaResult,
@@ -53,6 +54,20 @@ export function useTableService(): {
   let refreshAfterLoad: TableRefreshOptions | null = null;
   let staleSnapshotRetries = 0;
   const maxStaleSnapshotRetries = 3;
+  // `table.selected` is a fire-and-forget notify whose failure path posts
+  // `operation.failed` without any load-scoped handler: a load that dies
+  // inside a sidecar-crash session recycle would leave the grid in a
+  // permanent loading state with no retry. Supervise the notify instead.
+  // A sidecar-crash session recycle rotates the renderer session epoch: all
+  // stores are cleared while the host rebuilds the runtime. Realtime backlog
+  // replayed before the host re-attaches the notification gateway is lost, so
+  // the last user-selected table must be restored from the rebuilt catalog.
+  let lastSelectedTable: string | null = null;
+  let loadWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  let loadWatchdogTable: string | null = null;
+  let loadWatchdogRetries = 0;
+  const loadWatchdogTimeoutMs = 3_000;
+  const maxLoadWatchdogRetries = 5;
   const realtime = new RealtimeReconciler(
     createBridgeRealtimeReconcilePort(bridge),
     {
@@ -61,7 +76,38 @@ export function useTableService(): {
     },
   );
 
+  function disarmLoadWatchdog(): void {
+    if (loadWatchdogTimer !== null) {
+      clearTimeout(loadWatchdogTimer);
+      loadWatchdogTimer = null;
+    }
+    loadWatchdogTable = null;
+    loadWatchdogRetries = 0;
+  }
+
+  function armLoadWatchdog(table: string): void {
+    if (loadWatchdogTimer !== null) clearTimeout(loadWatchdogTimer);
+    if (loadWatchdogTable !== table) loadWatchdogRetries = 0;
+    loadWatchdogTable = table;
+    loadWatchdogTimer = setTimeout(() => {
+      loadWatchdogTimer = null;
+      const supervised = loadWatchdogTable;
+      if (
+        supervised === null
+        || !tableStore.loading
+        || workspaceStore.currentTable !== supervised
+        || loadWatchdogRetries >= maxLoadWatchdogRetries
+      ) {
+        return;
+      }
+      loadWatchdogRetries += 1;
+      bridge.notify("table.selected", { table: supervised });
+      armLoadWatchdog(supervised);
+    }, loadWatchdogTimeoutMs);
+  }
+
   function completeLoad(): void {
+    disarmLoadWatchdog();
     if (refreshAfterLoad) {
       const options = refreshAfterLoad;
       refreshAfterLoad = null;
@@ -87,6 +133,23 @@ export function useTableService(): {
   function init(): void {
     if (initialized) return;
     initialized = true;
+    unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
+      // After a sidecar-crash session recycle the host rebuilds the catalog
+      // and re-posts it; the previously selected table must be re-driven
+      // whenever its dataset never completed (lost replay, failed load).
+      const current = workspaceStore.currentTable;
+      const remembered = current ?? lastSelectedTable;
+      if (!remembered) return;
+      if (
+        !payload.tables.includes(remembered)
+        && !payload.views.includes(remembered)
+      ) {
+        return;
+      }
+      if (!current || !tableStore.revision) {
+        selectTable(remembered);
+      }
+    }));
     unsubscribe.push(bridge.on("table.pageLoaded", (payload: TablePageLoadedPayload) => {
       const accepted = tableStore.appendPage(payload);
       if (!accepted) {
@@ -156,10 +219,12 @@ export function useTableService(): {
     pendingDataChange = null;
     refreshAfterLoad = null;
     staleSnapshotRetries = 0;
+    disarmLoadWatchdog();
   }
 
   function selectTable(name: string): void {
     if (!name) return;
+    lastSelectedTable = name;
     pendingDataChange = null;
     refreshAfterLoad = null;
     staleSnapshotRetries = 0;
@@ -172,6 +237,7 @@ export function useTableService(): {
     history.clear();
     tableStore.beginLoad();
     bridge.notify("table.selected", { table: name });
+    armLoadWatchdog(name);
   }
 
   function refresh(options: TableRefreshOptions = {}): void {
@@ -195,6 +261,7 @@ export function useTableService(): {
     if (!options.preserveHistory) history.clear();
     tableStore.beginLoad();
     bridge.notify("table.selected", { table: current });
+    armLoadWatchdog(current);
   }
 
   function loadNextWindow(): void {

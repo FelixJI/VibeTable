@@ -305,7 +305,8 @@ public partial class MainWindow : Window
             new WindowsPluginFilePicker(),
             new GitHubPluginPackageSource(
                 Path.Combine(_productDataRoot, "plugin-downloads"),
-                () => _appPreferencesService.Read()));
+                () => _appPreferencesService.Read()),
+            message => _readiness?.Trace(message));
         var dailyQuotes = new DailyQuoteHostClient();
         _tableGateway = new LazyProductTableGateway();
         _workspace = new TableWorkspaceService(_tableGateway);
@@ -474,18 +475,56 @@ public partial class MainWindow : Window
     private void OnRuntimeClientReady()
     {
         if (Volatile.Read(ref _closing) != 0) return;
-        Dispatcher.Invoke(ConfigureRpcGateways);
+        _ = ConfigureRpcGatewaysWithRecoveryAsync();
     }
 
-    private void ConfigureRpcGateways()
+    /// <summary>
+    /// A sidecar crash recycles the session generation: ClientReady can fire
+    /// while the replacement backend is still starting, and a single throwing
+    /// configure attempt would leave the renderer without its backend
+    /// notification channel (data.changed / table.datasetReady) even though
+    /// request routing recovers. Retry the transient window instead.
+    /// </summary>
+    private async Task ConfigureRpcGatewaysWithRecoveryAsync()
     {
-        PythonBackendSupervisor backend = _runtime.CurrentBackend
-            ?? throw new InvalidOperationException(
-                "No workspace runtime is bound.");
+        for (int attempt = 1; attempt <= GatewayConfigureRetryLimit; attempt += 1)
+        {
+            if (Volatile.Read(ref _closing) != 0) return;
+            bool configured = false;
+            try
+            {
+                configured = await Dispatcher.InvokeAsync(TryConfigureRpcGateways)
+                    .Task
+                    .ConfigureAwait(true);
+            }
+            catch (Exception)
+            {
+                // Runtime binding is transient during sidecar recycle; retry within the bounded budget.
+            }
+            if (configured)
+            {
+                return;
+            }
+            await Task.Delay(GatewayConfigureRetryDelay).ConfigureAwait(true);
+        }
+    }
+
+    private bool TryConfigureRpcGateways()
+    {
+        PythonBackendSupervisor? backend = _runtime.CurrentBackend;
+        if (backend?.Client is not { } client)
+        {
+            return false;
+        }
+        ConfigureRpcGateways(backend, client);
+        return true;
+    }
+
+    private void ConfigureRpcGateways(
+        PythonBackendSupervisor backend,
+        JsonRpcClient client)
+    {
         _tableGateway.Bind(backend);
-        JsonRpcClient client = backend.Client
-            ?? throw new InvalidOperationException(
-                "The product RPC client is not ready.");
 
         if (_productGateway is not null)
         {
@@ -591,6 +630,10 @@ public partial class MainWindow : Window
         object? sender,
         WorkspaceSessionChangedEventArgs args)
         => _workspaceProduct.OnSessionChanged(args);
+
+    private const int GatewayConfigureRetryLimit = 30;
+    private static readonly TimeSpan GatewayConfigureRetryDelay =
+        TimeSpan.FromSeconds(1);
 
     private void OnRuntimeBindingChanged()
     {

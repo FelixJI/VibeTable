@@ -31,6 +31,43 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task UnexpectedCommitFailureWritesContentFreeScenarioDiagnostic()
+    {
+        var reply = new RecordingReplySink();
+        var traces = new List<string>();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway
+        {
+            CommitFailure = new InvalidOperationException("native path must not escape"),
+        };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: null,
+            diagnosticTrace: traces.Add);
+        dispatcher.SetGateway(gateway);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.commit",
+            "commit-failed",
+            """{"planId":"plan-1","projectRevision":"r1"}"""));
+
+        Assert.AreEqual("PLUGIN_OPERATION_FAILED", reply.FailureCode);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "Plugin request failed; type=plugin.install.commit; " +
+                "exception=InvalidOperationException",
+            },
+            traces);
+        Assert.IsFalse(traces[0].Contains("native path", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task SurfaceEventStaysLocalAndClosingEventRevokesToken()
     {
         const string hash =
@@ -365,6 +402,7 @@ public sealed class PluginRequestDispatcherTests
         public int ListCalls { get; private set; }
         public PluginInspectInstallParams? InspectRequest { get; private set; }
         public PluginRuntimeSnapshot CatalogSnapshot { get; set; } = DefaultSnapshot;
+        public Exception? CommitFailure { get; init; }
         public TaskCompletionSource<PluginResolveFileParams> FileResolution { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         private Action<PluginEventEnvelope>? _catalogChanged;
@@ -437,7 +475,9 @@ public sealed class PluginRequestDispatcherTests
                 new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>()));
         }
         public Task<PluginRuntimeSnapshot> CommitInstallAsync(PluginCommitInstallParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+            => CommitFailure is null
+                ? System.Threading.Tasks.Task.FromResult(CatalogSnapshot)
+                : System.Threading.Tasks.Task.FromException<PluginRuntimeSnapshot>(CommitFailure);
         public Task<PluginRuntimeSnapshot> SetEnabledAsync(PluginSetEnabledParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
         public Task<PluginRuntimeSnapshot> UpgradeAsync(PluginUpgradeParams request, CancellationToken token)

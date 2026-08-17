@@ -875,6 +875,53 @@ def test_expected_bridge_rejection_is_acknowledged_only_after_the_scenario_asser
     assert "diagnostics.failures.splice(index, 1)" in source
 
 
+def test_table_recovery_acknowledges_only_correlated_backend_unavailable_reads() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    helper = source[
+        source.index("async function waitForTableRecovery") : source.index(
+            "async function waitForStableGridState"
+        )
+    ]
+
+    assert "await acknowledgeExpectedSidecarRecoveryFailure(" in helper
+    assert "backend," in helper
+    assert "response => acknowledgeExpectedBridgeFailure(page, response)" in helper
+
+
+def test_failed_scenario_summary_includes_bounded_bridge_diagnostics() -> None:
+    summary = runner._format_failed_scenario(
+        {
+            "scenario": "04-json-round-trip",
+            "status": "failed",
+            "error": {"code": "SCENARIO_FAILED", "message": "preview timed out"},
+            "bridgeDiagnostics": {
+                "failures": [
+                    {
+                        "requestType": "data.previewImport",
+                        "code": "IMPORT_INVALID",
+                    }
+                ],
+                "pending": [{"requestType": "data.importSourceRequested"}],
+                "roundTrips": [
+                    {"requestType": f"request.{index}", "responseType": "response"}
+                    for index in range(15)
+                ],
+            },
+        }
+    )
+
+    assert summary.startswith("  - 04-json-round-trip: SCENARIO_FAILED preview timed out")
+    assert '"requestType":"data.previewImport"' in summary
+    assert '"code":"IMPORT_INVALID"' in summary
+    assert '"requestType":"data.importSourceRequested"' in summary
+    assert '"recentRoundTrips"' in summary
+    assert '"requestType":"request.14"' in summary
+    assert '"requestType":"request.0"' not in summary
+    assert '"requestType":"request.2"' not in summary
+    assert '"requestType":"request.3"' in summary
+    assert len(summary) <= 4_500
+
+
 def test_invalid_field_assertion_matches_typed_v2_diagnostic_contract() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
