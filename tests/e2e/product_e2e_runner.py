@@ -1567,9 +1567,17 @@ def _format_failed_scenario(item: dict[str, Any]) -> str:
     if isinstance(diagnostics, dict):
         failures = diagnostics.get("failures")
         pending = diagnostics.get("pending")
-        if isinstance(failures, list) and isinstance(pending, list) and (failures or pending):
+        round_trips = diagnostics.get("roundTrips")
+        compact_diagnostics: dict[str, Any] = {}
+        if isinstance(failures, list) and failures:
+            compact_diagnostics["failures"] = failures
+        if isinstance(pending, list) and pending:
+            compact_diagnostics["pending"] = pending
+        if isinstance(round_trips, list) and round_trips:
+            compact_diagnostics["recentRoundTrips"] = round_trips[-12:]
+        if compact_diagnostics:
             compact = json.dumps(
-                {"failures": failures, "pending": pending},
+                compact_diagnostics,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )

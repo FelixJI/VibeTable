@@ -902,6 +902,10 @@ def test_failed_scenario_summary_includes_bounded_bridge_diagnostics() -> None:
                     }
                 ],
                 "pending": [{"requestType": "data.importSourceRequested"}],
+                "roundTrips": [
+                    {"requestType": f"request.{index}", "responseType": "response"}
+                    for index in range(15)
+                ],
             },
         }
     )
@@ -910,6 +914,11 @@ def test_failed_scenario_summary_includes_bounded_bridge_diagnostics() -> None:
     assert '"requestType":"data.previewImport"' in summary
     assert '"code":"IMPORT_INVALID"' in summary
     assert '"requestType":"data.importSourceRequested"' in summary
+    assert '"recentRoundTrips"' in summary
+    assert '"requestType":"request.14"' in summary
+    assert '"requestType":"request.0"' not in summary
+    assert '"requestType":"request.2"' not in summary
+    assert '"requestType":"request.3"' in summary
     assert len(summary) <= 4_500
 
 

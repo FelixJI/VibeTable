@@ -1047,6 +1047,85 @@ def test_main_reports_retained_evidence_when_a_stage_raises(
     assert f"QA failure evidence retained at {qa_temp}" in capsys.readouterr().err
 
 
+def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    passed_id = "16-healthy-scenario"
+    failed_root = run_root / failed_id
+    passed_root = run_root / passed_id
+    failed_root.mkdir(parents=True)
+    passed_root.mkdir()
+    report = {
+        "status": "failed",
+        "scenarios": [
+            {"scenario": failed_id, "status": "failed"},
+            {"scenario": passed_id, "status": "passed"},
+        ],
+    }
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(report),
+        encoding="utf-8",
+    )
+    for filename in (
+        f"{failed_id}-result.json",
+        f"{failed_id}-trace.zip",
+        f"{failed_id}.png",
+        "host-stderr.log",
+        "runner-stdout.log",
+    ):
+        (failed_root / filename).write_text(filename, encoding="utf-8")
+    (failed_root / "workspace.db").write_text("do not copy", encoding="utf-8")
+    (passed_root / f"{passed_id}-result.json").write_text("passed", encoding="utf-8")
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
+    workspace_logs = (
+        runtime_root / "local-data" / "workspaces" / "workspace-id" / ".vibetable" / "temp" / "logs"
+    )
+    workspace_logs.mkdir(parents=True)
+    (workspace_logs / "backend.log").write_text("backend", encoding="utf-8")
+    (workspace_logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
+
+    destination = next_gate.persist_product_e2e_failure_evidence(
+        source_root,
+        tmp_path / "destination",
+    )
+
+    assert destination == tmp_path / "destination" / run_root.name
+    assert (destination / "product-e2e-report.json").is_file()
+    assert (destination / failed_id / f"{failed_id}-result.json").is_file()
+    assert (destination / failed_id / f"{failed_id}-trace.zip").is_file()
+    assert (destination / failed_id / f"{failed_id}.png").is_file()
+    assert (destination / failed_id / "host-stderr.log").is_file()
+    assert (destination / failed_id / "runner-stdout.log").is_file()
+    assert not (destination / failed_id / "workspace.db").exists()
+    assert not (destination / passed_id).exists()
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert (copied_runtime / "vibetable-trace.log").is_file()
+    assert (copied_runtime / "workspace-logs" / "workspace-id" / "backend.log").is_file()
+    assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
+
+
+def test_product_e2e_failure_evidence_skips_passing_run(tmp_path: Path) -> None:
+    run_root = tmp_path / "source" / "20260817T010203Z"
+    run_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps({"status": "passed", "scenarios": [{"status": "passed"}]}),
+        encoding="utf-8",
+    )
+
+    destination = next_gate.persist_product_e2e_failure_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+    )
+
+    assert destination is None
+    assert not (tmp_path / "destination").exists()
+
+
 def test_full_ci_report_rejects_source_change_while_gate_is_running(
     monkeypatch,
     tmp_path: Path,
@@ -1202,6 +1281,73 @@ def test_lane_report_is_candidate_bound_but_never_release_eligible(
     assert payload["ok"] is True
     assert payload["releaseEligible"] is False
     assert payload["releaseCandidate"]["archive"]["sha256"]
+
+
+def test_failed_product_e2e_lane_persists_diagnostics_outside_lane_reports(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    qa_temp = tmp_path / "qa-failure"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    monkeypatch.setattr(
+        next_gate,
+        "run_lane",
+        lambda lane, package_root, package_archive: (
+            1,
+            [
+                next_gate.StageResult(
+                    stage="product-e2e",
+                    command=["test"],
+                    returncode=1,
+                    elapsed=0.01,
+                    stdout="",
+                    stderr="",
+                    cwd=str(next_gate.REPO_ROOT),
+                )
+            ],
+        ),
+    )
+    observed: list[tuple[Path, Path]] = []
+
+    def persist(source: Path, destination: Path) -> Path:
+        observed.append((source, destination))
+        return destination / "20260817T010203Z"
+
+    monkeypatch.setattr(next_gate, "persist_product_e2e_failure_evidence", persist)
+    report = tmp_path / "lane-reports" / "resilience.json"
+
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "resilience",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == 1
+    )
+    assert observed == [
+        (
+            qa_temp / "p",
+            next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / "resilience",
+        )
+    ]
+    assert report.is_file()
 
 
 def test_full_ci_report_rejects_candidate_mutation(

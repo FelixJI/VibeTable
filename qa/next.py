@@ -121,6 +121,15 @@ TIMEOUT_RETURNCODE = 124
 WINDOWS_TEMPDIR_CLEANUP_MAX_ATTEMPTS = 3
 QA_TEMP_PARENT_ENV = "VIBETABLE_QA_TEMP_PARENT"
 QA_RUN_TEMP_DIR: Path | None = None
+PRODUCT_E2E_EVIDENCE_FILES = (
+    "host-stderr.log",
+    "host-stdout.log",
+    "launch.json",
+    "process-network-observations.json",
+    "runner-stderr.log",
+    "runner-stdout.log",
+)
+PRODUCT_E2E_RUNTIME_LOGS = ("backend.log", "pocketbase.log")
 
 
 def _qa_temp_dir() -> Path:
@@ -1108,6 +1117,72 @@ def has_required_webview2_evidence(results: list[StageResult]) -> bool:
     return len(smoke_results) == 1 and smoke_results[0].webview2_evidence == "required-passed"
 
 
+def _copy_if_file(source: Path, destination: Path) -> bool:
+    if not source.is_file():
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return True
+
+
+def persist_product_e2e_failure_evidence(source_root: Path, destination_root: Path) -> Path | None:
+    """Persist a bounded diagnostic bundle for the newest failed product E2E run."""
+
+    reports = sorted(source_root.glob("*/product-e2e-report.json"), reverse=True)
+    if not reports:
+        return None
+    report_path = reports[0]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        raise ValueError(f"product E2E report has invalid scenarios: {report_path}")
+    failed_scenarios = [
+        item for item in scenarios if isinstance(item, dict) and item.get("status") != "passed"
+    ]
+    if not failed_scenarios:
+        return None
+
+    run_source = report_path.parent
+    run_destination = destination_root / run_source.name
+    _copy_if_file(report_path, run_destination / report_path.name)
+    for item in failed_scenarios:
+        scenario_id = item.get("scenario")
+        if (
+            not isinstance(scenario_id, str)
+            or re.fullmatch(r"\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*", scenario_id) is None
+        ):
+            continue
+        scenario_source = run_source / scenario_id
+        scenario_destination = run_destination / scenario_id
+        for filename in PRODUCT_E2E_EVIDENCE_FILES:
+            _copy_if_file(scenario_source / filename, scenario_destination / filename)
+        for filename in (
+            f"{scenario_id}-result.json",
+            f"{scenario_id}-trace.zip",
+            f"{scenario_id}.png",
+            "fault-result.json",
+            "storage-proof-result.json",
+        ):
+            _copy_if_file(scenario_source / filename, scenario_destination / filename)
+
+        scenario_number = scenario_id.partition("-")[0]
+        runtime_source = run_source / "_runtime" / scenario_number / "host"
+        runtime_destination = run_destination / "_runtime" / scenario_number / "host"
+        _copy_if_file(
+            runtime_source / "vibetable-trace.log",
+            runtime_destination / "vibetable-trace.log",
+        )
+        workspace_root = runtime_source / "local-data" / "workspaces"
+        for log_name in PRODUCT_E2E_RUNTIME_LOGS:
+            for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
+                workspace_id = log_path.parents[3].name
+                _copy_if_file(
+                    log_path,
+                    runtime_destination / "workspace-logs" / workspace_id / log_name,
+                )
+    return run_destination
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
@@ -1212,6 +1287,18 @@ def _main(argv: list[str] | None = None) -> int:
         and ending_candidate is not None
         and has_required_webview2_evidence(results)
     )
+    if args.lane and any(
+        result.stage == "product-e2e" and result.returncode != 0 for result in results
+    ):
+        try:
+            evidence_path = persist_product_e2e_failure_evidence(
+                _qa_temp_dir() / "p",
+                REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane,
+            )
+            if evidence_path is not None:
+                print(f"product E2E failure evidence persisted at {evidence_path}", file=sys.stderr)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"could not persist product E2E failure evidence: {exc}", file=sys.stderr)
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)
         args.json_report.write_text(
