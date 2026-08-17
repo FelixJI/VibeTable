@@ -1,4 +1,4 @@
-import { nextTick, reactive, readonly } from "vue";
+import { reactive, readonly } from "vue";
 
 import {
   BridgeOperationError,
@@ -12,9 +12,8 @@ import type {
   ManagedAttachmentRef,
 } from "@/contracts";
 import {
-  restoreStructuredDialogFocus,
-  type StructuredDialogFocusTarget,
-  type StructuredGridLike,
+  type StructuredDialogFocus,
+  type StructuredDialogFocusLease,
 } from "@/services/dialogFocus";
 
 export interface AttachmentAuthority {
@@ -110,7 +109,7 @@ export interface StructuredCellDialogDependencies {
     readonly value: unknown;
     readonly expectedDigest: string | null;
   }) => void;
-  readonly getGrid: () => unknown;
+  readonly dialogFocus: StructuredDialogFocus;
   readonly translate: (key: string) => string;
   readonly reportError: (message: string) => void;
   readonly activeElement?: () => HTMLElement | null;
@@ -175,9 +174,8 @@ export function createStructuredCellDialogController(
     },
   });
   let attachmentEpoch = 0;
-  let attachmentTrigger: HTMLElement | null = null;
-  let jsonTrigger: StructuredDialogFocusTarget | null = null;
-  let jsonFocusEpoch = 0;
+  let attachmentFocus: StructuredDialogFocusLease | null = null;
+  let jsonFocus: StructuredDialogFocusLease | null = null;
 
   const activeElement = (): HTMLElement | null =>
     dependencies.activeElement?.() ?? currentActiveElement();
@@ -188,8 +186,8 @@ export function createStructuredCellDialogController(
   }
 
   function finishAttachmentClose(): void {
-    if (attachmentTrigger?.isConnected) attachmentTrigger.focus({ preventScroll: true });
-    attachmentTrigger = null;
+    attachmentFocus?.restore();
+    attachmentFocus = null;
   }
 
   async function openAttachment(
@@ -206,7 +204,11 @@ export function createStructuredCellDialogController(
     }
     const focused = activeElement();
     const trigger = triggerElement ?? focused;
-    attachmentTrigger = trigger;
+    attachmentFocus = dependencies.dialogFocus.capture({
+      element: trigger,
+      rowKey,
+      field: column.name,
+    });
     focused?.blur();
     if (trigger !== focused) trigger?.blur();
     const epoch = ++attachmentEpoch;
@@ -317,13 +319,12 @@ export function createStructuredCellDialogController(
   }
 
   function openJson(intent: Extract<StructuredCellDialogIntent, { type: "json.open" }>): void {
-    jsonFocusEpoch += 1;
     const focused = activeElement();
-    jsonTrigger = {
+    jsonFocus = dependencies.dialogFocus.capture({
       element: intent.trigger ?? focused,
       rowKey: intent.rowKey,
       field: intent.column.name,
-    };
+    });
     focused?.blur();
     Object.assign(state.json, {
       show: true,
@@ -341,18 +342,9 @@ export function createStructuredCellDialogController(
   }
 
   function finishJsonClose(): void {
-    const target = jsonTrigger;
-    jsonTrigger = null;
-    const focusEpoch = ++jsonFocusEpoch;
-    const grid = dependencies.getGrid() as StructuredGridLike | null;
-    void nextTick(() => {
-      if (state.json.show || jsonFocusEpoch !== focusEpoch) return;
-      if (restoreStructuredDialogFocus(grid, target)) return;
-      requestAnimationFrame(() => {
-        if (state.json.show || jsonFocusEpoch !== focusEpoch) return;
-        restoreStructuredDialogFocus(grid, target);
-      });
-    });
+    if (state.json.show) return;
+    jsonFocus?.restore();
+    jsonFocus = null;
   }
 
   async function dispatch(intent: StructuredCellDialogIntent): Promise<void> {
