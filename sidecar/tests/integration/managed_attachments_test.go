@@ -503,7 +503,8 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	})
 	failAfterMetadata = false
 	if !errors.As(err, &historyErr) ||
-		historyErr.Code != "restore_validation_failed" {
+		historyErr.Code != "history.storage_failed" ||
+		!historyErr.Retryable {
 		t.Fatalf("attachment restore fault %#v", err)
 	}
 	if gotCode, _ := historyErr.Details["mutationCode"].(string); gotCode != "mutation.attachment.failed" {
@@ -519,13 +520,8 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	}
 	assertRecordCount(t, app, "vibetable_attachment_versions", 1)
 
-	preview, err = history.PreviewRestore(ctx, audit.PreviewParams{
-		TableID: definition.Snapshot.TableID, ItemID: recordID,
-		TargetRevision: target.Id, Scope: "row",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The failed transaction returned the claimed token, so retry the same
+	// idempotent restore instead of creating a second preview state.
 	if _, err := history.ApplyRestore(ctx, audit.ApplyParams{
 		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
 	}); err != nil {
@@ -602,9 +598,20 @@ func TestManagedAttachmentsUploadReplaceDownloadIntegrityRollbackAndDelete(t *te
 	if err != nil || !preview.CanApply {
 		t.Fatalf("deleted attachment preview %#v err=%v", preview, err)
 	}
-	if _, err := history.ApplyRestore(ctx, audit.ApplyParams{
+	deletedRestore := audit.ApplyParams{
 		TableID: definition.Snapshot.TableID, ItemID: recordID, Token: preview.Token,
-	}); err != nil {
+	}
+	_, err = history.ApplyRestore(ctx, deletedRestore)
+	var retryableRestoreErr *audit.Error
+	if errors.As(err, &retryableRestoreErr) &&
+		retryableRestoreErr.Code == "history.storage_failed" &&
+		retryableRestoreErr.Retryable {
+		// The restore token is returned only when the mutation transaction did
+		// not commit. Exercise that bounded idempotent retry contract for the
+		// Windows file-storage seam while all other failures remain fail-closed.
+		_, err = history.ApplyRestore(ctx, deletedRestore)
+	}
+	if err != nil {
 		t.Fatalf("restore hard-deleted attachment record: %#v", err)
 	}
 	record, err = app.FindRecordById(collection, recordID)

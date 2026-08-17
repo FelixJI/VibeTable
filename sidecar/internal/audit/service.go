@@ -518,42 +518,7 @@ func (service *Service) ApplyRestore(
 		ExpectedDigest:  expectedDigest,
 	})
 	if err != nil {
-		var productErr *mutation.ProductError
-		if errors.As(err, &productErr) {
-			if productErr.Code == "mutation.digest_conflict" ||
-				productErr.Code == "mutation.revision_conflict" ||
-				productErr.Code == "mutation.schema_revision_conflict" ||
-				productErr.Code == "mutation.record.already_exists" ||
-				productErr.Code == "mutation.record.not_found" {
-				return RestoreResult{}, historyError("restore_conflict", "record changed after restore preview", false)
-			}
-			if productErr.Code == "mutation.storage.failed" ||
-				productErr.Code == "mutation.internal.failed" {
-				return RestoreResult{}, historyError(
-					"history.storage_failed",
-					"restore could not be committed",
-					true,
-				)
-			}
-			// Keep the underlying mutation diagnostics: PocketBase validation
-			// failures surface their field path and message only here, and
-			// dropping them makes apply-time fail-closed rejections (for
-			// example a preview/apply race on shared state) undiagnosable.
-			details := map[string]any{"mutationCode": productErr.Code}
-			if productErr.Path != nil && *productErr.Path != "" {
-				details["mutationField"] = *productErr.Path
-			}
-			if productErr.Message != "" {
-				details["mutationMessage"] = productErr.Message
-			}
-			return RestoreResult{}, &Error{
-				Code:      "restore_validation_failed",
-				Message:   "restore no longer satisfies current table constraints",
-				Details:   details,
-				Retryable: false,
-			}
-		}
-		return RestoreResult{}, err
+		return RestoreResult{}, service.restoreMutationError(params.Token, state, err)
 	}
 	newRevisionID, err := service.restoreRevisionID(receipt, state.recordID)
 	if err != nil {
@@ -572,6 +537,59 @@ func (service *Service) ApplyRestore(
 		RestoredToRevision: state.targetRevision,
 		NewRevisionID:      newRevisionID, Item: item, Receipt: receipt,
 	}, nil
+}
+
+func (service *Service) restoreMutationError(
+	token string,
+	state restoreState,
+	err error,
+) error {
+	var productErr *mutation.ProductError
+	if !errors.As(err, &productErr) {
+		return err
+	}
+	if productErr.Code == "mutation.digest_conflict" ||
+		productErr.Code == "mutation.revision_conflict" ||
+		productErr.Code == "mutation.schema_revision_conflict" ||
+		productErr.Code == "mutation.record.already_exists" ||
+		productErr.Code == "mutation.record.not_found" {
+		return historyError("restore_conflict", "record changed after restore preview", false)
+	}
+	if productErr.Code == "mutation.storage.failed" ||
+		productErr.Code == "mutation.internal.failed" ||
+		productErr.Retryable {
+		// Kernel.Apply failed before commit, so returning the claimed token lets
+		// callers retry the same idempotent restore after transient storage or
+		// attachment failures without creating a second preview state.
+		service.restoreClaim(token, state)
+		return &Error{
+			Code:      "history.storage_failed",
+			Message:   "restore could not be committed",
+			Details:   restoreMutationDetails(productErr),
+			Retryable: true,
+		}
+	}
+	// Keep the underlying mutation diagnostics: PocketBase validation
+	// failures surface their field path and message only here, and dropping
+	// them makes apply-time fail-closed rejections undiagnosable.
+	details := restoreMutationDetails(productErr)
+	return &Error{
+		Code:      "restore_validation_failed",
+		Message:   "restore no longer satisfies current table constraints",
+		Details:   details,
+		Retryable: false,
+	}
+}
+
+func restoreMutationDetails(productErr *mutation.ProductError) map[string]any {
+	details := map[string]any{"mutationCode": productErr.Code}
+	if productErr.Path != nil && *productErr.Path != "" {
+		details["mutationField"] = *productErr.Path
+	}
+	if productErr.Message != "" {
+		details["mutationMessage"] = productErr.Message
+	}
+	return details
 }
 
 func (service *Service) restoreRevisionID(

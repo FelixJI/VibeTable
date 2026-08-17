@@ -105,12 +105,23 @@ func TestStorageValidationFailureExposesOnlyStableFieldPathAndTemplate(t *testin
 			"Invalid JSON value.",
 		).SetParams(map[string]interface{}{"value": "must-not-leak"}),
 	}
-	productErr := storageValidationFailure(err)
+	productErr := storageSaveFailure(err)
 	if productErr.Code != "mutation.validation.failed" ||
 		productErr.Path == nil || *productErr.Path != "payload" ||
 		productErr.Message != "Invalid JSON value." ||
 		len(productErr.Details) != 0 {
 		t.Fatalf("storage validation error = %#v", productErr)
+	}
+}
+
+func TestStorageSaveFailureDoesNotMisclassifyNonValidationErrors(t *testing.T) {
+	productErr := storageSaveFailure(errors.New("filesystem unavailable"))
+	if productErr.Code != "mutation.storage.failed" ||
+		productErr.Path != nil ||
+		productErr.Message != "mutation storage operation failed" ||
+		len(productErr.Details) != 0 ||
+		!productErr.Retryable {
+		t.Fatalf("non-validation storage error = %#v", productErr)
 	}
 }
 
