@@ -131,6 +131,119 @@ describe("pluginService canonical wire", () => {
     expect(store.lastError).toBe("invalid manifest");
   });
 
+  it("does not let a failed background audit refresh replace a foreground install error", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `error-race-failure-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({
+            data: request.type === "plugin.install.inspect"
+              ? {
+                  type: "operation.failed",
+                  requestId: request.requestId,
+                  payload: { code: "PLUGIN_MANIFEST_INVALID", message: "invalid manifest" },
+                }
+              : {
+                  type: "operation.failed",
+                  requestId: request.requestId,
+                  payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+                },
+          }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+
+    await expect(service.inspectInstall("host-picker:folder")).rejects.toThrow(
+      "invalid manifest",
+    );
+    await expect(service.listAudit(snapshot.pluginId)).rejects.toThrow("audit unavailable");
+
+    expect(store.lastError).toBe("invalid manifest");
+    expect(store.busy).toBe(false);
+  });
+
+  it("records a failed background audit refresh when no foreground error is visible", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "background-only",
+      webview: {
+        postMessage: (message) => {
+          const request = message as { requestId: string };
+          queueMicrotask(() => listener?.({
+            data: {
+              type: "operation.failed",
+              requestId: request.requestId,
+              payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+            },
+          }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+
+    await expect(usePluginService().listAudit(snapshot.pluginId)).rejects.toThrow(
+      "audit unavailable",
+    );
+
+    expect(store.lastError).toBe("audit unavailable");
+    expect(store.busy).toBe(false);
+  });
+
+  it("keeps a foreground failure when it settles while a background audit refresh is in flight", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const posted: Array<{ type: string; requestId: string }> = [];
+    const bridge = createHostBridge({
+      generateRequestId: () => `race-${++sequence}`,
+      webview: {
+        postMessage: (message) => posted.push(message as { type: string; requestId: string }),
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const service = usePluginService();
+    const background = service.listAudit(snapshot.pluginId);
+    const foreground = service.inspectInstall("host-picker:folder");
+    const auditRequest = posted.find((request) => request.type === "plugin.audit.list");
+    const inspectRequest = posted.find((request) => request.type === "plugin.install.inspect");
+    expect(auditRequest).toBeDefined();
+    expect(inspectRequest).toBeDefined();
+
+    listener?.({
+      data: {
+        type: "operation.failed",
+        requestId: inspectRequest?.requestId,
+        payload: { code: "PLUGIN_MANIFEST_INVALID", message: "invalid manifest" },
+      },
+    });
+    await expect(foreground).rejects.toThrow("invalid manifest");
+    listener?.({
+      data: {
+        type: "operation.failed",
+        requestId: auditRequest?.requestId,
+        payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+      },
+    });
+    await expect(background).rejects.toThrow("audit unavailable");
+
+    expect(usePluginStore().lastError).toBe("invalid manifest");
+  });
+
   it("discards a late catalog response after the active project changes", async () => {
     let listener: ((event: { data: unknown }) => void) | undefined;
     const bridge = createHostBridge({

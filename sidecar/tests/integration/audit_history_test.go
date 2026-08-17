@@ -807,6 +807,133 @@ func TestAuditHistoryRejectsOversizedRestoreState(t *testing.T) {
 	}
 }
 
+func TestAuditHistoryPreservesClaimedRestoreTokenDuringConcurrentPreviewCapacityPressure(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	table := createV2IntegrationTable(t, ctx, app, "Restore capacity", "restore_capacity_table")
+	title := createV2IntegrationField(
+		t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "restore_capacity_title",
+	)
+	if title.Definition == nil {
+		t.Fatal("restore capacity fixture omitted title definition")
+	}
+	definition, err := schemaapi.New(app).Describe(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realKernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	recordID := "restcap00000001"
+	apply := func(key, value string, kind mutation.OperationKind) {
+		t.Helper()
+		_, applyErr := realKernel.Apply(ctx, mutation.Request{
+			ContractVersion: mutation.ContractVersion,
+			RequestID:       "restore_capacity_" + key,
+			IdempotencyKey:  "restore_capacity_" + key,
+			TableID:         definition.Snapshot.TableID,
+			SchemaRevision:  definition.Snapshot.SchemaRevision,
+			Operations: []mutation.Operation{{
+				Kind: kind, RecordID: &recordID,
+				Values: map[string]any{title.Definition.Identity.PhysicalName: value},
+			}},
+			Actor: mutation.Actor{Type: "user", ID: "local-user"},
+		})
+		if applyErr != nil {
+			t.Fatalf("seed %s: %#v", key, applyErr)
+		}
+	}
+	apply("insert", "first", mutation.OperationInsert)
+	apply("update", "second", mutation.OperationUpdate)
+
+	kernel := &failFirstRestoreKernel{
+		delegate: realKernel,
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	service, err := audit.New(app, kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ReadChangeSets(ctx, audit.ReadParams{
+		TableID: table.TableID, ItemID: &recordID, Scope: "row", Limit: 10,
+	})
+	if err != nil || len(page.ChangeSets) != 2 {
+		t.Fatalf("restore capacity history = %#v err=%v", page, err)
+	}
+	targetRevision := page.ChangeSets[len(page.ChangeSets)-1].RecordChanges[0].RevisionID
+	previewParams := audit.PreviewParams{
+		TableID: table.TableID, ItemID: recordID, TargetRevision: targetRevision, Scope: "row",
+	}
+	claimedPreview, err := service.PreviewRestore(ctx, previewParams)
+	if err != nil || !claimedPreview.CanApply {
+		t.Fatalf("claimed restore preview = %#v err=%v", claimedPreview, err)
+	}
+
+	firstApply := make(chan error, 1)
+	go func() {
+		_, applyErr := service.ApplyRestore(ctx, audit.ApplyParams{
+			TableID: table.TableID, ItemID: recordID, Token: claimedPreview.Token,
+		})
+		firstApply <- applyErr
+	}()
+	<-kernel.started
+
+	capacityFailures := 0
+	for range 256 {
+		_, previewErr := service.PreviewRestore(ctx, previewParams)
+		if previewErr == nil {
+			continue
+		}
+		var historyErr *audit.Error
+		if !errors.As(previewErr, &historyErr) ||
+			historyErr.Code != "restore.capacity_exhausted" {
+			t.Fatalf("concurrent preview error = %#v", previewErr)
+		}
+		capacityFailures++
+	}
+	close(kernel.release)
+
+	applyErr := <-firstApply
+	var historyErr *audit.Error
+	if !errors.As(applyErr, &historyErr) ||
+		historyErr.Code != "history.storage_failed" || !historyErr.Retryable {
+		t.Fatalf("first restore apply = %#v", applyErr)
+	}
+	result, err := service.ApplyRestore(ctx, audit.ApplyParams{
+		TableID: table.TableID, ItemID: recordID, Token: claimedPreview.Token,
+	})
+	if err != nil || result.Item[title.Definition.Identity.PhysicalName] != "first" {
+		t.Fatalf("same-token restore retry = %#v err=%v", result, err)
+	}
+	if capacityFailures != 1 {
+		t.Fatalf("reserved claimed token should leave one preview unavailable, got %d failures", capacityFailures)
+	}
+}
+
+type failFirstRestoreKernel struct {
+	delegate audit.MutationKernel
+	started  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (kernel *failFirstRestoreKernel) Apply(
+	ctx context.Context,
+	request mutation.Request,
+) (mutation.Receipt, error) {
+	first := false
+	kernel.once.Do(func() { first = true })
+	if !first {
+		return kernel.delegate.Apply(ctx, request)
+	}
+	close(kernel.started)
+	<-kernel.release
+	return mutation.Receipt{}, &mutation.ProductError{
+		Code: "mutation.storage.failed", Message: "injected retryable storage failure", Retryable: true,
+	}
+}
+
 func containsString(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {

@@ -58,6 +58,8 @@ type Service struct {
 	mu         sync.Mutex
 	tokens     map[string]restoreState
 	tokenBytes int
+	claims     map[string]restoreState
+	claimBytes int
 }
 
 type restoreState struct {
@@ -128,6 +130,7 @@ func New(
 		app: app, kernel: kernel,
 		now:    func() time.Time { return time.Now().UTC() },
 		tokens: map[string]restoreState{},
+		claims: map[string]restoreState{},
 	}
 	for _, option := range options {
 		option(service)
@@ -432,6 +435,7 @@ func (service *Service) ApplyRestore(
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	defer service.discardClaim(params.Token)
 	if len(state.patch) == 0 && len(state.attachments) == 0 {
 		return RestoreResult{}, historyError("restore_no_fields", "restore preview has no writable changes", false)
 	}
@@ -729,18 +733,39 @@ func (service *Service) claimToken(params ApplyParams) (restoreState, error) {
 	if state.tableID != params.TableID || state.recordID != params.ItemID {
 		return restoreState{}, historyError("restore_scope_mismatch", "restore token scope does not match", false)
 	}
+	if service.claims == nil {
+		service.claims = map[string]restoreState{}
+	}
+	service.claims[params.Token] = state
+	service.claimBytes += state.size
 	return state, nil
 }
 
 func (service *Service) restoreClaim(token string, state restoreState) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
+	service.discardClaimLocked(token)
 	if service.now().Before(state.expiresAt) &&
 		len(service.tokens) < maxRestoreToken &&
 		service.tokenBytes+state.size <= maxRestoreTokenBytes {
 		service.tokens[token] = state
 		service.tokenBytes += state.size
 	}
+}
+
+func (service *Service) discardClaim(token string) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	service.discardClaimLocked(token)
+}
+
+func (service *Service) discardClaimLocked(token string) {
+	state, found := service.claims[token]
+	if !found {
+		return
+	}
+	delete(service.claims, token)
+	service.claimBytes -= state.size
 }
 
 func (service *Service) issueToken(state restoreState) (string, error) {
@@ -753,8 +778,8 @@ func (service *Service) issueToken(state restoreState) (string, error) {
 			service.tokenBytes -= stored.size
 		}
 	}
-	if len(service.tokens) >= maxRestoreToken ||
-		service.tokenBytes+state.size > maxRestoreTokenBytes {
+	if len(service.tokens)+len(service.claims) >= maxRestoreToken ||
+		service.tokenBytes+service.claimBytes+state.size > maxRestoreTokenBytes {
 		return "", historyError(
 			"restore.capacity_exhausted",
 			"restore preview capacity is temporarily exhausted",

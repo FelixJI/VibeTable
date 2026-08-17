@@ -85,9 +85,13 @@ export function useTableService(): {
     loadWatchdogRetries = 0;
   }
 
-  function armLoadWatchdog(table: string): void {
+  function startLoadWatchdogCycle(table: string): void {
+    loadWatchdogRetries = 0;
+    rearmLoadWatchdog(table);
+  }
+
+  function rearmLoadWatchdog(table: string): void {
     if (loadWatchdogTimer !== null) clearTimeout(loadWatchdogTimer);
-    if (loadWatchdogTable !== table) loadWatchdogRetries = 0;
     loadWatchdogTable = table;
     loadWatchdogTimer = setTimeout(() => {
       loadWatchdogTimer = null;
@@ -102,7 +106,7 @@ export function useTableService(): {
       }
       loadWatchdogRetries += 1;
       bridge.notify("table.selected", { table: supervised });
-      armLoadWatchdog(supervised);
+      rearmLoadWatchdog(supervised);
     }, loadWatchdogTimeoutMs);
   }
 
@@ -237,7 +241,7 @@ export function useTableService(): {
     history.clear();
     tableStore.beginLoad();
     bridge.notify("table.selected", { table: name });
-    armLoadWatchdog(name);
+    startLoadWatchdogCycle(name);
   }
 
   function refresh(options: TableRefreshOptions = {}): void {
@@ -261,7 +265,7 @@ export function useTableService(): {
     if (!options.preserveHistory) history.clear();
     tableStore.beginLoad();
     bridge.notify("table.selected", { table: current });
-    armLoadWatchdog(current);
+    startLoadWatchdogCycle(current);
   }
 
   function loadNextWindow(): void {
