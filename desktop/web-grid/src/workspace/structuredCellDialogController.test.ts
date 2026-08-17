@@ -203,4 +203,49 @@ describe("structured cell dialog controller", () => {
     });
     expect(controller.state.json.show).toBe(false);
   });
+
+  it("restores JSON focus after transition cleanup releases the browser focus owner", async () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    const scheduledFrames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      scheduledFrames.push(callback);
+      return scheduledFrames.length;
+    });
+    const nativeFocus = trigger.focus.bind(trigger);
+    let focusAttempts = 0;
+    vi.spyOn(trigger, "focus").mockImplementation((options?: FocusOptions) => {
+      focusAttempts += 1;
+      if (focusAttempts > 1) nativeFocus(options);
+    });
+    const { controller } = setup(vi.fn() as HostBridge["request"]);
+    const jsonColumn: ColumnSchema = {
+      name: "metadata",
+      title: "Metadata",
+      dataType: "json",
+      editable: true,
+      nullable: true,
+    };
+
+    try {
+      await controller.dispatch({
+        type: "json.open",
+        rowKey: "row-1",
+        column: jsonColumn,
+        value: { approved: true },
+        expectedDigest: "digest-1",
+        trigger,
+      });
+      await controller.dispatch({ type: "json.close" });
+      await controller.dispatch({ type: "json.closed" });
+      await vi.waitFor(() => expect(focusAttempts).toBe(1));
+
+      expect(scheduledFrames).toHaveLength(1);
+      scheduledFrames[0]?.(0);
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      trigger.remove();
+      vi.unstubAllGlobals();
+    }
+  });
 });

@@ -37,8 +37,13 @@ export function restoreStructuredDialogFocus(
     .find((row) => String(row.getIndex?.()) === String(target.rowKey))
     ?.getCell?.(target.field)
     ?.getElement?.();
-  const element = target.element?.isConnected ? target.element : fallback;
-  if (!element?.isConnected) return false;
-  element.focus({ preventScroll: true });
-  return document.activeElement === element;
+  const candidates = [target.element, fallback];
+  const attempted = new Set<HTMLElement>();
+  for (const element of candidates) {
+    if (!element?.isConnected || attempted.has(element)) continue;
+    attempted.add(element);
+    element.focus({ preventScroll: true });
+    if (document.activeElement === element) return true;
+  }
+  return false;
 }

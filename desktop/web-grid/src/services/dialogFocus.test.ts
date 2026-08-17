@@ -41,6 +41,24 @@ describe("restoreStructuredDialogFocus", () => {
     expect(document.activeElement).toBe(currentCell);
   });
 
+  it("falls back to the current cell when a connected trigger no longer accepts focus", () => {
+    const staleTrigger = document.createElement("button");
+    const currentCell = document.createElement("button");
+    document.body.append(staleTrigger, currentCell);
+    vi.spyOn(staleTrigger, "focus").mockImplementation(() => undefined);
+
+    expect(restoreStructuredDialogFocus(
+      {
+        getRows: () => [{
+          getIndex: () => "row-7",
+          getCell: () => ({ getElement: () => currentCell }),
+        }],
+      },
+      { element: staleTrigger, rowKey: "row-7", field: "payload" },
+    )).toBe(true);
+    expect(document.activeElement).toBe(currentCell);
+  });
+
   it("fails closed without warnings when the row is not in the snapshot", () => {
     const detachedTrigger = document.createElement("button");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

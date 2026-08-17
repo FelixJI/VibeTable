@@ -177,6 +177,7 @@ export function createStructuredCellDialogController(
   let attachmentEpoch = 0;
   let attachmentTrigger: HTMLElement | null = null;
   let jsonTrigger: StructuredDialogFocusTarget | null = null;
+  let jsonFocusEpoch = 0;
 
   const activeElement = (): HTMLElement | null =>
     dependencies.activeElement?.() ?? currentActiveElement();
@@ -316,6 +317,7 @@ export function createStructuredCellDialogController(
   }
 
   function openJson(intent: Extract<StructuredCellDialogIntent, { type: "json.open" }>): void {
+    jsonFocusEpoch += 1;
     const focused = activeElement();
     jsonTrigger = {
       element: intent.trigger ?? focused,
@@ -341,8 +343,16 @@ export function createStructuredCellDialogController(
   function finishJsonClose(): void {
     const target = jsonTrigger;
     jsonTrigger = null;
+    const focusEpoch = ++jsonFocusEpoch;
     const grid = dependencies.getGrid() as StructuredGridLike | null;
-    void nextTick(() => restoreStructuredDialogFocus(grid, target));
+    void nextTick(() => {
+      if (state.json.show || jsonFocusEpoch !== focusEpoch) return;
+      if (restoreStructuredDialogFocus(grid, target)) return;
+      requestAnimationFrame(() => {
+        if (state.json.show || jsonFocusEpoch !== focusEpoch) return;
+        restoreStructuredDialogFocus(grid, target);
+      });
+    });
   }
 
   async function dispatch(intent: StructuredCellDialogIntent): Promise<void> {

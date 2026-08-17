@@ -11,6 +11,7 @@ import {
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
+import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -234,20 +235,21 @@ async function waitForShell(page, recorder) {
     "fresh-device workspace creation is projected into Workspace Center",
     await openCreatedWorkspace.isVisible(),
   );
-  await openCreatedWorkspace.click();
-  const activationOutcome = await Promise.race([
-    workspaceCenter.waitFor({ state: "hidden", timeout: 60_000 })
-      .then(() => ({ kind: "opened" })),
-    page.getByTestId("workspace-operation-error")
-      .waitFor({ state: "visible", timeout: 60_000 })
-      .then(async () => ({
-        kind: "failed",
-        message: await page.getByTestId("workspace-operation-error").innerText(),
-      })),
-  ]);
-  if (activationOutcome.kind === "failed") {
-    throw new Error(`workspace activation failed: ${activationOutcome.message}`);
-  }
+  await activateWorkspaceAndWaitForDatabaseOpened({
+    beginCapture: (types) => beginBridgeMessageCapture(page, types),
+    activate: () => openCreatedWorkspace.click(),
+    waitForActivation: (timeoutMs) => Promise.race([
+      workspaceCenter.waitFor({ state: "hidden", timeout: timeoutMs })
+        .then(() => ({ kind: "opened" })),
+      page.getByTestId("workspace-operation-error")
+        .waitFor({ state: "visible", timeout: timeoutMs })
+        .then(async () => ({
+          kind: "failed",
+          message: await page.getByTestId("workspace-operation-error").innerText(),
+        })),
+    ]),
+    waitForDatabaseOpened: (timeoutMs) => waitForCapturedBridgeMessage(page, timeoutMs),
+  });
   await page.getByTestId("home-view").waitFor({ state: "visible" });
   await page.getByTestId("workspace-switcher").waitFor({ state: "visible" });
   recorder.check("real WebView2 renderer reached the home workspace",
