@@ -191,7 +191,9 @@ async def test_notification_without_id_returns_none(dispatcher: RpcDispatcher) -
 
 
 @pytest.mark.asyncio
-async def test_generic_handler_exception_maps_to_internal_error() -> None:
+async def test_generic_handler_exception_maps_to_internal_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Any handler exception not in the typed error map must surface as
     ``-32603`` internal error (the dispatcher must never raise)."""
     from pydantic import BaseModel
@@ -209,12 +211,17 @@ async def test_generic_handler_exception_maps_to_internal_error() -> None:
 
     disp = RpcDispatcher()
     disp.register("test.boom", _handler, _Params)
-    response = await disp.dispatch(
-        {"jsonrpc": "2.0", "id": "x", "method": "test.boom", "params": {}}
-    )
+    with caplog.at_level("ERROR", logger="backend.rpc.dispatcher"):
+        response = await disp.dispatch(
+            {"jsonrpc": "2.0", "id": "x", "method": "test.boom", "params": {}}
+        )
     assert response is not None
     assert response["error"]["code"] == -32603
     assert "data" not in response["error"]  # internal errors carry no data
+    record = caplog.records[-1]
+    assert record.msg == "rpc.handler_failed"
+    assert record.__dict__["errorCode"] == "_BoomError"
+    assert record.__dict__["operationId"] == "test.boom"
 
 
 @pytest.mark.asyncio

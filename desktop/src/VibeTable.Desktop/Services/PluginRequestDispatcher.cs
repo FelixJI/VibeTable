@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Diagnostics;
 
 namespace VibeTable.Desktop.Services;
 
@@ -26,6 +27,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly PluginWebViewResourceHost _resourceHost;
     private readonly IPluginFilePicker? _filePicker;
     private readonly IGitHubPluginPackageSource? _githubSource;
+    private readonly Action<string>? _diagnosticTrace;
     private readonly Dictionary<string, DownloadedPluginPackage> _remotePlans =
         new(StringComparer.Ordinal);
     private IPluginRpcGateway? _gateway;
@@ -37,7 +39,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         IPluginPackageSourcePicker packagePicker,
         PluginWebViewResourceHost resourceHost,
         IPluginFilePicker? filePicker = null)
-        : this(reply, surfaces, packagePicker, resourceHost, filePicker, null)
+        : this(reply, surfaces, packagePicker, resourceHost, filePicker, null, null)
     {
     }
 
@@ -47,7 +49,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         IPluginPackageSourcePicker packagePicker,
         PluginWebViewResourceHost resourceHost,
         IPluginFilePicker? filePicker,
-        IGitHubPluginPackageSource? githubSource)
+        IGitHubPluginPackageSource? githubSource,
+        Action<string>? diagnosticTrace = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
@@ -55,6 +58,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         _resourceHost = resourceHost ?? throw new ArgumentNullException(nameof(resourceHost));
         _filePicker = filePicker;
         _githubSource = githubSource;
+        _diagnosticTrace = diagnosticTrace;
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
@@ -166,7 +170,13 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
         catch (Exception ex)
         {
-            Trace.TraceError($"Plugin request failed: {ex}");
+            Trace.TraceError(DiagnosticEvent.Failure(
+                "VibeTable.Desktop.PluginRequestDispatcher",
+                request.Type,
+                ex.GetType().Name));
+            _diagnosticTrace?.Invoke(
+                $"Plugin request failed; type={request.Type}; " +
+                $"exception={ex.GetType().Name}");
             _reply.PostOperationFailed(
                 request.RequestId,
                 "Plugin operation failed.",

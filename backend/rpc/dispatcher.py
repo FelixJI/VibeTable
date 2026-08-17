@@ -171,9 +171,11 @@ class RpcDispatcher:
                     data=mapped.data,
                 )
             logger.exception(
-                "rpc handler failed: method=%s exception=%s",
-                request.method,
-                type(exc).__name__,
+                "rpc.handler_failed",
+                extra={
+                    "errorCode": type(exc).__name__,
+                    "operationId": request.method,
+                },
             )
             return self._error_response(
                 request.id,
@@ -194,10 +196,11 @@ class RpcDispatcher:
             serialized = to_jsonable_python(result, by_alias=True)
         except Exception as exc:
             logger.exception(
-                "rpc result serialization failed: method=%s result=%s exception=%s",
-                request.method,
-                type(result).__name__,
-                type(exc).__name__,
+                "rpc.result_serialization_failed",
+                extra={
+                    "errorCode": type(exc).__name__,
+                    "operationId": request.method,
+                },
             )
             return self._error_response(
                 request.id,

@@ -305,7 +305,8 @@ public partial class MainWindow : Window
             new WindowsPluginFilePicker(),
             new GitHubPluginPackageSource(
                 Path.Combine(_productDataRoot, "plugin-downloads"),
-                () => _appPreferencesService.Read()));
+                () => _appPreferencesService.Read()),
+            message => _readiness?.Trace(message));
         var dailyQuotes = new DailyQuoteHostClient();
         _tableGateway = new LazyProductTableGateway();
         _workspace = new TableWorkspaceService(_tableGateway);
