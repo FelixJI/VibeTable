@@ -1128,7 +1128,13 @@ def _copy_if_file(source: Path, destination: Path) -> bool:
 def persist_product_e2e_failure_evidence(source_root: Path, destination_root: Path) -> Path | None:
     """Persist a bounded diagnostic bundle for the newest failed product E2E run."""
 
-    reports = sorted(source_root.glob("*/product-e2e-report.json"), reverse=True)
+    reports = sorted(
+        (
+            *source_root.glob("*/product-e2e-report.json"),
+            *source_root.glob("*/real-product/*/product-e2e-report.json"),
+        ),
+        reverse=True,
+    )
     if not reports:
         return None
     report_path = reports[0]
@@ -1287,18 +1293,28 @@ def _main(argv: list[str] | None = None) -> int:
         and ending_candidate is not None
         and has_required_webview2_evidence(results)
     )
-    if args.lane and any(
-        result.stage == "product-e2e" and result.returncode != 0 for result in results
-    ):
-        try:
-            evidence_path = persist_product_e2e_failure_evidence(
-                _qa_temp_dir() / "p",
-                REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane,
+    if args.lane:
+        failed_product_sources = [
+            source_root
+            for stage, source_root in (
+                ("product-e2e", _qa_temp_dir() / "p"),
+                ("fault-injection", _qa_temp_dir() / "fault-injection"),
             )
-            if evidence_path is not None:
-                print(f"product E2E failure evidence persisted at {evidence_path}", file=sys.stderr)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print(f"could not persist product E2E failure evidence: {exc}", file=sys.stderr)
+            if any(result.stage == stage and result.returncode != 0 for result in results)
+        ]
+        for source_root in failed_product_sources:
+            try:
+                evidence_path = persist_product_e2e_failure_evidence(
+                    source_root,
+                    REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane,
+                )
+                if evidence_path is not None:
+                    print(
+                        f"product E2E failure evidence persisted at {evidence_path}",
+                        file=sys.stderr,
+                    )
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                print(f"could not persist product E2E failure evidence: {exc}", file=sys.stderr)
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)
         args.json_report.write_text(
