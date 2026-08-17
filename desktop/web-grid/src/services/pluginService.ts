@@ -106,8 +106,12 @@ export function usePluginService(): PluginService {
     initialized = false;
   }
 
-  async function call<K extends WebMessageType, T>(type: K, payload: WebPayloadMap[K]): Promise<T> {
-    store.startBusy();
+  async function call<K extends WebMessageType, T>(
+    type: K,
+    payload: WebPayloadMap[K],
+    options: { readonly clearError?: boolean } = {},
+  ): Promise<T> {
+    store.startBusy(options.clearError !== false);
     try {
       const result = await bridge.request(type, payload);
       store.finishBusy();
@@ -123,6 +127,7 @@ export function usePluginService(): PluginService {
     const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
       "plugin.catalog.list",
       { projectKey },
+      { clearError: false },
     );
     if (store.projectKey !== projectKey) return snapshots;
     store.replaceCatalog(projectKey, snapshots);
@@ -181,7 +186,11 @@ export function usePluginService(): PluginService {
   }
 
   async function getTask(taskId: string): Promise<PluginTaskViewSnapshot> {
-    const task = await call<"plugin.task.get", PluginTaskSnapshot>("plugin.task.get", { taskId });
+    const task = await call<"plugin.task.get", PluginTaskSnapshot>(
+      "plugin.task.get",
+      { taskId },
+      { clearError: false },
+    );
     return store.applyTask(task);
   }
 
@@ -235,13 +244,16 @@ export function usePluginService(): PluginService {
     init,
     dispose,
     list,
-    listAudit: (pluginId) => call("plugin.audit.list", {
-      projectKey: store.projectKey,
-      pluginId,
-    }),
-    listPendingCleanup: () => call("plugin.cleanup.listPending", {
-      projectKey: store.projectKey,
-    }),
+    listAudit: (pluginId) => call(
+      "plugin.audit.list",
+      { projectKey: store.projectKey, pluginId },
+      { clearError: false },
+    ),
+    listPendingCleanup: () => call(
+      "plugin.cleanup.listPending",
+      { projectKey: store.projectKey },
+      { clearError: false },
+    ),
     retryCleanup: (pluginId) => call("plugin.lifecycle.uninstall", {
       projectKey: store.projectKey,
       pluginId,

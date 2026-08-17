@@ -134,12 +134,19 @@ export function useTableService(): {
     if (initialized) return;
     initialized = true;
     unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
-      const remembered = lastSelectedTable;
-      if (!remembered || workspaceStore.currentTable) return;
+      // After a sidecar-crash session recycle the host rebuilds the catalog
+      // and re-posts it; the previously selected table must be re-driven
+      // whenever its dataset never completed (lost replay, failed load).
+      const current = workspaceStore.currentTable;
+      const remembered = current ?? lastSelectedTable;
+      if (!remembered) return;
       if (
-        payload.tables.includes(remembered)
-        || payload.views.includes(remembered)
+        !payload.tables.includes(remembered)
+        && !payload.views.includes(remembered)
       ) {
+        return;
+      }
+      if (!current || !tableStore.revision) {
         selectTable(remembered);
       }
     }));

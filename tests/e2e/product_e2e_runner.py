@@ -8,7 +8,6 @@ Chromium/Edge process itself.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import ctypes
 import hashlib
 import ipaddress
@@ -1341,22 +1340,6 @@ def run_scenario(
             )
             (scenario_dir / "runner-stdout.log").write_text(node_stdout, encoding="utf-8")
             (scenario_dir / "runner-stderr.log").write_text(node_stderr, encoding="utf-8")
-            # TEMPORARY CI DEBUG - REVERT: the lane evidence stays on the
-            # runner, so echo the host trace and node runner output for the
-            # job log while diagnosing the recovery strand.
-            host_trace = ""
-            with contextlib.suppress(OSError):
-                host_trace = (readiness_dir / "vibetable-trace.log").read_text(
-                    encoding="utf-8", errors="replace"
-                )
-            print(
-                f"[debug-dump:{scenario.id}:host-trace]\n{host_trace}",
-                flush=True,
-            )
-            print(
-                f"[debug-dump:{scenario.id}:runner-stdout]\n{node_stdout[-6000:]}",
-                flush=True,
-            )
             readiness = _wait_for_readiness(readiness_dir, process)
             result_path = scenario_dir / f"{scenario.id}-result.json"
             result = _read_json(result_path) or _failure_result(
@@ -1364,19 +1347,6 @@ def run_scenario(
                 code="RUNNER_RESULT_MISSING",
                 message="Playwright runner did not write a structured result",
             )
-            # TEMPORARY CI DEBUG - REVERT: the lane evidence stays on the
-            # runner, so echo the failed scenario's renderer notification
-            # stream into the job log while diagnosing the recovery strand.
-            if result.get("status") == "failed":
-                diagnostics = result.get("bridgeDiagnostics")
-                notifications = (
-                    diagnostics.get("notifications") if isinstance(diagnostics, dict) else None
-                )
-                print(
-                    f"[debug-dump:{scenario.id}:notifications]\n"
-                    + "\n".join(str(entry) for entry in (notifications or [])),
-                    flush=True,
-                )
             process_network_report = _read_json(scenario_dir / "process-network-observations.json")
             result.update(
                 {

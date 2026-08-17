@@ -496,25 +496,16 @@ public partial class MainWindow : Window
                     .Task
                     .ConfigureAwait(true);
             }
-            catch (Exception exception)
+            catch (Exception)
             {
-                _readiness?.Trace(
-                    $"RuntimeClientReady: configure failed; " +
-                    $"attempt={attempt}; " +
-                    $"exception={exception.GetType().Name}");
+                // Runtime binding is transient during sidecar recycle; retry within the bounded budget.
             }
             if (configured)
             {
-                _readiness?.Trace(
-                    $"RuntimeClientReady: product gateways configured; " +
-                    $"attempt={attempt}");
                 return;
             }
             await Task.Delay(GatewayConfigureRetryDelay).ConfigureAwait(true);
         }
-        _readiness?.Trace(
-            "RuntimeClientReady: product gateways not configured; " +
-            "budget exhausted");
     }
 
     private bool TryConfigureRpcGateways()
@@ -645,8 +636,6 @@ public partial class MainWindow : Window
 
     private void OnRuntimeBindingChanged()
     {
-        _readiness?.Trace(
-            $"RuntimeBindingChanged: backendBound={_runtime.CurrentBackend is not null}");
         if (Volatile.Read(ref _closing) != 0)
             return;
         Dispatcher.BeginInvoke(() =>
@@ -800,7 +789,6 @@ public partial class MainWindow : Window
 
     private void OnProductDataChanged(DataChangedEvent change)
     {
-        _readiness?.Trace($"ProductDataChanged: table={change.TableId}");
         _webBridge.PostNotification("data.changed", change);
     }
 

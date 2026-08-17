@@ -90,6 +90,47 @@ describe("pluginService canonical wire", () => {
     expect(usePluginStore().plugins[0]?.pluginId).toBe("com.acme.clean");
   });
 
+  it("does not let a background audit refresh clear a foreground install error", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `error-race-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({
+            data: request.type === "plugin.install.inspect"
+              ? {
+                  type: "operation.failed",
+                  requestId: request.requestId,
+                  payload: { code: "PLUGIN_MANIFEST_INVALID", message: "invalid manifest" },
+                }
+              : {
+                  type: request.type,
+                  requestId: request.requestId,
+                  payload: [],
+                },
+          }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+
+    await expect(service.inspectInstall("host-picker:folder")).rejects.toThrow(
+      "invalid manifest",
+    );
+    expect(store.lastError).toBe("invalid manifest");
+
+    await service.listAudit(snapshot.pluginId);
+
+    expect(store.lastError).toBe("invalid manifest");
+  });
+
   it("discards a late catalog response after the active project changes", async () => {
     let listener: ((event: { data: unknown }) => void) | undefined;
     const bridge = createHostBridge({

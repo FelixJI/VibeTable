@@ -226,6 +226,34 @@ describe("tableService realtime product wiring", () => {
     service.dispose();
   });
 
+  it("reselects the current table when a recycled session lost its dataset revision", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+
+    service.selectTable("orders");
+    harness.emit("table.datasetReady", dataset(12));
+    expect(table.revision?.dataRevision).toBe(12);
+
+    // A session recycle clears the dataset projection before the rebuilt
+    // catalog arrives, but the user's selected table remains current.
+    table.reset();
+    harness.notify.mockClear();
+    harness.emit("database.opened", {
+      tables: ["orders"],
+      views: [],
+      displayNames: {},
+    });
+
+    expect(harness.notify).toHaveBeenCalledWith(
+      "table.selected",
+      { table: "orders" },
+    );
+    service.dispose();
+  });
+
   it("does not restore a table that no longer exists after a recycle", async () => {
     const harness = bridgeHarness({ action: "none" });
     setHostBridgeForTesting(harness.bridge);

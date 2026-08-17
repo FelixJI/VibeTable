@@ -1261,7 +1261,6 @@ async function readBridgeDiagnostics(page) {
       roundTrips: diagnostics.roundTrips,
       failures: diagnostics.failures,
       acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
-      notifications: diagnostics.notifications ?? [],
       pending: Object.values(diagnostics.pending).map((request) => ({
         requestId: request.requestId,
         requestType: request.requestType,
