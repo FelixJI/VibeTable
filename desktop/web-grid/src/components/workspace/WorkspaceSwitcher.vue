@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { NButton, NDropdown, NIcon, NTag } from "naive-ui";
 import type { DropdownOption } from "naive-ui";
 import { ChevronDown, CircleDotDashed, FolderKanban } from "lucide-vue-next";
+import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { t } from "@/i18n";
 
@@ -12,6 +13,7 @@ const emit = defineEmits<{
 }>();
 
 const session = useWorkspaceSessionStore();
+const protection = useWorkspaceProtectionStore();
 const announceStage = ref(false);
 const root = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
@@ -41,6 +43,8 @@ const statusType = computed<"success" | "warning" | "default">(() => {
   if (!session.writable) return "default";
   return "success";
 });
+const switchDisabled = computed(() =>
+  session.isTransitioning || protection.busyOperation !== null);
 
 const options = computed<DropdownOption[]>(() => [
   ...session.workspaces.map((workspace) => ({
@@ -70,12 +74,13 @@ onBeforeUnmount(() => {
 });
 
 function select(key: string | number): void {
+  if (switchDisabled.value) return;
   if (key === "__center__") {
     emit("center");
     return;
   }
   const workspaceId = String(key);
-  if (session.beginSwitch(workspaceId)) emit("switch", workspaceId);
+  if (workspaceId !== session.activeWorkspaceId) emit("switch", workspaceId);
 }
 </script>
 
@@ -85,7 +90,7 @@ function select(key: string | number): void {
       trigger="click"
       placement="bottom-start"
       :options="options"
-      :disabled="session.isTransitioning"
+      :disabled="switchDisabled"
       :show="menuOpen"
       @update:show="menuOpen = $event"
       @select="select"
@@ -94,6 +99,7 @@ function select(key: string | number): void {
         quaternary
         size="small"
         class="switcher-trigger"
+        :disabled="switchDisabled"
         :aria-label="t('workspaceV2.switch.aria', { name: session.activeWorkspace?.displayName ?? t('workspaceV2.switch.none') })"
         :aria-expanded="menuOpen"
       >

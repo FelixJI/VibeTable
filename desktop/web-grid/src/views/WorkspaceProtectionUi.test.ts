@@ -538,8 +538,12 @@ describe("workspace protection UI capability gates", () => {
       props: { mode: "versions" },
     });
 
-    expect(protection.beginOperation("snapshot.inspectPackage")).toBe(true);
-    protection.finishOperation("The Sidecar rejected the snapshot package operation.");
+    const lease = protection.beginOperation("snapshot.inspectPackage");
+    expect(lease).not.toBeNull();
+    protection.finishOperation(
+      lease!,
+      "The Sidecar rejected the snapshot package operation.",
+    );
     await wrapper.vm.$nextTick();
 
     expect(wrapper.get('[data-testid="snapshot-operation-error"]').text()).toContain(
@@ -1160,7 +1164,8 @@ describe("workspace protection UI capability gates", () => {
     expect(settings.emitted("action")?.map((event) => event[0])).toEqual([
       { method: "retention.get", params: {} },
     ]);
-    expect(protection.beginOperation("retention.get")).toBe(true);
+    const lease = protection.beginOperation("retention.get");
+    expect(lease).not.toBeNull();
     protection.setRetention({
       contractVersion: "2.0",
       policyRevision: 1,
@@ -1173,7 +1178,7 @@ describe("workspace protection UI capability gates", () => {
       trashMonths: 3,
       repositoryLimitBytes: null,
     });
-    protection.finishOperation();
+    protection.finishOperation(lease!);
     await settings.vm.$nextTick();
 
     expect(settings.emitted("action")?.map((event) => event[0])).toEqual([
