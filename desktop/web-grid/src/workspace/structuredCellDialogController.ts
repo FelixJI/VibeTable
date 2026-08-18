@@ -186,6 +186,7 @@ export function createStructuredCellDialogController(
   }
 
   function finishAttachmentClose(): void {
+    if (state.attachment.show) return;
     attachmentFocus?.restore();
     attachmentFocus = null;
   }
