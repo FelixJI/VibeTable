@@ -709,6 +709,61 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("drops a late correlated failure instead of broadcasting it globally", async () => {
+    const onDiagnostic = vi.fn();
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "field-apply-1",
+      onDiagnostic,
+    });
+    const failedHandler = vi.fn();
+    bridge.on("operation.failed", failedHandler);
+    bridge.start();
+
+    const pending = bridge.request("field.change.apply", {
+      planId: "plan-1",
+      planHash: "hash-1",
+      operationId: "operation-1",
+      actor: { id: "tester", kind: "user" },
+      confirmations: [],
+    });
+    webview.emit({
+      type: "field.change.apply",
+      requestId: "field-apply-1",
+      payload: {
+        contract: "vibetable.schema.v2",
+        operationId: "operation-1",
+        planId: "plan-1",
+        action: "update",
+        tableId: "tbl_orders",
+        fieldId: "fld_title",
+        schemaRevision: "schema_2",
+        definition: null,
+        migrationJobId: "",
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ operationId: "operation-1" });
+
+    webview.emit({
+      type: "operation.failed",
+      requestId: "field-apply-1",
+      payload: {
+        message: "Workspace operation failed.",
+        code: "WORKSPACE_ERROR",
+        operation: "field.change.apply",
+      },
+    });
+
+    expect(failedHandler).not.toHaveBeenCalled();
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "orphaned-response",
+      type: "operation.failed",
+      reason: expect.stringContaining("field-apply-1"),
+    }));
+    bridge.stop();
+  });
+
   it("fans out operation.failed with null requestId (PostReply production shape)", () => {
     // Regression: the C# host serializes a null RequestId as `"requestId":null`
     // when a notify-based request (e.g. table-admin create/delete, which use

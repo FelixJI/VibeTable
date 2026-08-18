@@ -234,9 +234,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await using var staleClient = new JsonRpcClient(new QueryTransport());
         using var staleGateway = new JsonRpcProductDataGateway(staleClient);
         var sink = new FakeWebReplySink();
-        var controller = new ProductDataRequestController(
-            new TableWorkspaceService(new FakeTableRpcGateway()),
-            sink);
+        var controller = new ProductDataRequestController(sink);
         controller.SetGateway(staleGateway);
         staleGateway.Dispose();
 
@@ -267,7 +265,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         using var staleGateway = new JsonRpcProductDataGateway(staleClient);
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(
-            new TableWorkspaceService(new FakeTableRpcGateway()),
             sink,
             readRecoveryTimeout: TimeSpan.FromMilliseconds(75));
         controller.SetGateway(staleGateway);
@@ -294,9 +291,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await using var staleClient = new JsonRpcClient(new QueryTransport());
         using var staleGateway = new JsonRpcProductDataGateway(staleClient);
         var sink = new FakeWebReplySink();
-        var controller = new ProductDataRequestController(
-            new TableWorkspaceService(new FakeTableRpcGateway()),
-            sink);
+        var controller = new ProductDataRequestController(sink);
         controller.SetGateway(staleGateway);
         staleGateway.Dispose();
 
@@ -315,6 +310,38 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         Assert.IsFalse(sink.Replies.Any(item => item.Type == "mutation.apply"));
     }
 
+    [TestMethod]
+    public async Task FieldApply_PublishesExactlyOneTerminalSuccess()
+    {
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        await using var client = new JsonRpcClient(new QueryTransport());
+        using var gateway = new JsonRpcProductDataGateway(client);
+        controller.SetGateway(gateway);
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "planId": "plan-1",
+              "planHash": "hash-1",
+              "operationId": "operation-1",
+              "actor": {"id": "tester", "kind": "user"},
+              "confirmations": []
+            }
+            """);
+
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "field.change.apply",
+            "field-apply-1",
+            document.RootElement.Clone(),
+            string.Empty));
+
+        FakeWebReplySink.Reply[] terminalReplies = sink.Replies
+            .Where(reply => reply.RequestId == "field-apply-1")
+            .ToArray();
+        Assert.HasCount(1, terminalReplies);
+        Assert.AreEqual("field.change.apply", terminalReplies[0].Type);
+    }
+
     private sealed class QueryTransport : IJsonLineTransport
     {
         private readonly Channel<JsonElement?> _incoming =
@@ -327,16 +354,34 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         {
             using var request = JsonDocument.Parse(line);
             string id = request.RootElement.GetProperty("id").GetString()!;
+            string method = request.RootElement.GetProperty("method").GetString()!;
+            string result = method == "field.change.apply"
+                ? """
+                  {
+                    "contract": "vibetable.schema.v2",
+                    "operationId": "operation-1",
+                    "planId": "plan-1",
+                    "action": "update",
+                    "tableId": "tbl_records",
+                    "fieldId": "fld_title",
+                    "schemaRevision": "schema_0002",
+                    "definition": null,
+                    "migrationJobId": ""
+                  }
+                  """
+                : """
+                  {
+                    "rows": [],
+                    "total": 0,
+                    "snapshot": {"schemaRevision": "schema_0001"}
+                  }
+                  """;
             using var response = JsonDocument.Parse(
                 $$"""
                 {
                   "jsonrpc": "2.0",
                   "id": "{{id}}",
-                  "result": {
-                    "rows": [],
-                    "total": 0,
-                    "snapshot": {"schemaRevision": "schema_0001"}
-                  }
+                  "result": {{result}}
                 }
                 """);
             _incoming.Writer.TryWrite(response.RootElement.Clone());

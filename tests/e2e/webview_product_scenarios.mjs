@@ -5,7 +5,10 @@ import path from "node:path";
 import process from "node:process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import { acknowledgeExpectedSidecarRecoveryFailure } from "./bridge_failure_policy.mjs";
-import { installBridgeDiagnosticsInPage } from "./bridge_diagnostics_instrumentation.mjs";
+import {
+  installBridgeDiagnosticsInPage,
+  readBridgeDiagnosticsInPage,
+} from "./bridge_diagnostics_instrumentation.mjs";
 import {
   beginRawBridgeRequestInPage,
   requestLifecycleWorkspaceV2InPage,
@@ -1258,30 +1261,7 @@ async function installBridgeDiagnostics(page) {
 }
 
 async function readBridgeDiagnostics(page) {
-  return page.evaluate(() => {
-    const diagnostics = window.__vibetableE2EBridgeDiagnostics;
-    if (!diagnostics) return null;
-    const now = performance.now();
-    return {
-      installedAt: diagnostics.installedAt,
-      requests: diagnostics.requests.map((request) => ({
-        requestId: request.requestId,
-        requestType: request.requestType,
-        payloadShape: request.payloadShape,
-        startedAt: request.startedAt,
-      })),
-      roundTrips: diagnostics.roundTrips,
-      failures: diagnostics.failures,
-      acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
-      pending: Object.values(diagnostics.pending).map((request) => ({
-        requestId: request.requestId,
-        requestType: request.requestType,
-        payloadShape: request.payloadShape,
-        startedAt: request.startedAt,
-        pendingMs: Math.round((now - request.startedMonotonicMs) * 100) / 100,
-      })),
-    };
-  });
+  return page.evaluate(readBridgeDiagnosticsInPage);
 }
 
 async function waitForBridgeDiagnosticsToSettle(

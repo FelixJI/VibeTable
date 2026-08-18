@@ -37,7 +37,6 @@ public sealed class WorkspaceRequestDispatcher
         TimeSpan correlatedRequestTimeout =
             dashboardRequestTimeout ?? TimeSpan.FromSeconds(60);
         _productController = new ProductDataRequestController(
-            workspace,
             _reply,
             readRecoveryTimeout,
             sessionEnvelopeFilter);

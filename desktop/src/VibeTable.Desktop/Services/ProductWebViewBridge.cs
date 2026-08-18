@@ -460,24 +460,25 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         CoreWebView2 core,
         HostReplyMessage reply)
     {
+        core.PostWebMessageAsString(SerializeRouterReply(reply));
+    }
+
+    internal static string SerializeRouterReply(HostReplyMessage reply)
+    {
+        ArgumentNullException.ThrowIfNull(reply);
         var envelope = new Dictionary<string, object?>
         {
             ["type"] = reply.Type,
             ["requestId"] = reply.RequestId,
             ["payload"] = reply.Payload is null
                 ? null
-                : new
-                {
-                    message = reply.Payload.Message,
-                    code = reply.Payload.Code,
-                },
+                : reply.Payload,
         };
         if (reply.Wire.ValueKind != JsonValueKind.Undefined)
             envelope["wire"] = reply.Wire;
-        string json = JsonSerializer.Serialize(
+        return JsonSerializer.Serialize(
             envelope,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        core.PostWebMessageAsString(json);
     }
 
     private const string OfflineBrowserArguments =

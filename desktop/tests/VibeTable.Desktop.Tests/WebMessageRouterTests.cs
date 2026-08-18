@@ -425,6 +425,25 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void SerializeRouterReply_PreservesOperationForTheWebViewBoundary()
+    {
+        HostReplyMessage reply = WebMessageRouter.BuildOperationFailed(
+            requestId: "late-field-apply",
+            message: "Workspace operation failed.",
+            code: "WORKSPACE_ERROR",
+            operation: "field.change.apply");
+
+        using JsonDocument document = JsonDocument.Parse(
+            ProductWebViewBridge.SerializeRouterReply(reply));
+
+        JsonElement root = document.RootElement;
+        Assert.AreEqual("late-field-apply", root.GetProperty("requestId").GetString());
+        Assert.AreEqual(
+            "field.change.apply",
+            root.GetProperty("payload").GetProperty("operation").GetString());
+    }
+
+    [TestMethod]
     public void Whitelists_AcceptOnlyOpaqueDocumentOsAdapterMessages()
     {
         var dispatched = new List<RoutedWebRequest>();

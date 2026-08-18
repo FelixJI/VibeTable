@@ -17,19 +17,16 @@ public sealed class ProductDataRequestController
     private static readonly TimeSpan RecoveryReadPollInterval =
         TimeSpan.FromMilliseconds(25);
 
-    private readonly TableWorkspaceService _workspace;
     private readonly IWebReplySink _reply;
     private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly TimeSpan _readRecoveryTimeout;
     private IProductDataRpcGateway? _gateway;
 
     public ProductDataRequestController(
-        TableWorkspaceService workspace,
         IWebReplySink reply,
         TimeSpan? readRecoveryTimeout = null,
         WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
     {
-        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _readRecoveryTimeout = readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
         _sessionEnvelopeFilter = sessionEnvelopeFilter;
@@ -187,13 +184,6 @@ public sealed class ProductDataRequestController
             if (!IsRequestCurrent(epochLease))
                 return;
             _reply.PostResponse(request.Type, request.RequestId, result);
-            if (string.Equals(
-                request.Type,
-                "field.change.apply",
-                StringComparison.Ordinal))
-            {
-                await RefreshCollectionListAsync().ConfigureAwait(false);
-            }
         }
         catch (OperationCanceledException)
             when (epochLease?.CancellationToken.IsCancellationRequested == true)
@@ -344,19 +334,6 @@ public sealed class ProductDataRequestController
                 epochLease?.CancellationToken
                     ?? CancellationToken.None).ConfigureAwait(false);
         }
-    }
-
-    private async Task RefreshCollectionListAsync()
-    {
-        TableSummary summary = await _workspace.Gateway.ListTablesAsync(
-            CancellationToken.None).ConfigureAwait(false);
-        _workspace.UpdateKnownTables(summary.Tables);
-        _reply.PostNotification("database.collectionsChanged", new
-        {
-            tables = summary.Tables,
-            displayNames = summary.DisplayNames
-                ?? new Dictionary<string, string>(),
-        });
     }
 
     private bool IsRequestCurrent(WorkspaceRequestEpochLease? epochLease)

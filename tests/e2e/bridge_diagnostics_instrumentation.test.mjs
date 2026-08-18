@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installBridgeDiagnosticsInPage } from "./bridge_diagnostics_instrumentation.mjs";
+import {
+  installBridgeDiagnosticsInPage,
+  readBridgeDiagnosticsInPage,
+} from "./bridge_diagnostics_instrumentation.mjs";
 
 test("diagnostics observes workspace sequences without injecting or rewriting them", () => {
   const posted = [];
@@ -115,8 +118,8 @@ test("records fire-and-forget notifications and uncorrelated host failures", () 
   try {
     installBridgeDiagnosticsInPage();
     webview.postMessage({
-      type: "tableAdmin.createRequested",
-      payload: { displayName: "Orders" },
+      type: "table.selected",
+      payload: { table: "Orders" },
     });
     listeners[0]({
       data: {
@@ -134,7 +137,7 @@ test("records fire-and-forget notifications and uncorrelated host failures", () 
     assert.equal(window.__vibetableE2EBridgeDiagnostics.notifications.length, 1);
     assert.equal(
       window.__vibetableE2EBridgeDiagnostics.notifications[0].requestType,
-      "tableAdmin.createRequested",
+      "table.selected",
     );
     assert.deepEqual(
       window.__vibetableE2EBridgeDiagnostics.failures.map((failure) => ({
@@ -221,6 +224,112 @@ test("drops code and operation names outside the protocol diagnostic catalog", (
     assert.equal(failure.operation, null);
     assert.equal(JSON.stringify(failure).includes("CUSTOMER_SECRET"), false);
     assert.equal(JSON.stringify(failure).includes("Orders"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("accepts an observed protocol operation without a duplicated static catalog", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    webview.postMessage({
+      type: "plugin.catalog.list",
+      requestId: "plugin-list-1",
+      payload: { projectKey: "private-project" },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: "plugin-list-1",
+        payload: {
+          code: "WORKSPACE_ERROR",
+          message: "Workspace operation failed.",
+          operation: "plugin.catalog.list",
+        },
+      },
+    });
+
+    const [failure] = window.__vibetableE2EBridgeDiagnostics.failures;
+    assert.equal(failure.operation, "plugin.catalog.list");
+    assert.equal(JSON.stringify(failure).includes("private-project"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("late failure reconnects to an already completed request without losing identity", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    webview.postMessage({
+      type: "field.change.apply",
+      requestId: "field-apply-1",
+      payload: { planId: "private-plan" },
+    });
+    listeners[0]({
+      data: {
+        type: "field.change.apply",
+        requestId: "field-apply-1",
+        payload: { status: "applied" },
+      },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: "field-apply-1",
+        payload: {
+          code: "WORKSPACE_ERROR",
+          message: "Workspace operation failed.",
+          operation: "field.change.apply",
+        },
+      },
+    });
+
+    const [failure] = window.__vibetableE2EBridgeDiagnostics.failures;
+    assert.equal(failure.requestId, "field-apply-1");
+    assert.equal(failure.requestType, "field.change.apply");
+    assert.equal(failure.operation, "field.change.apply");
+    assert.equal(typeof failure.startedAt, "string");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("artifact snapshot includes bounded sanitized notifications", () => {
+  const webview = {
+    postMessage() {},
+    addEventListener() {},
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    webview.postMessage({
+      type: "table.selected",
+      payload: { table: "private-orders" },
+    });
+
+    const snapshot = readBridgeDiagnosticsInPage();
+    assert.deepEqual(snapshot.notifications, [{
+      requestType: "table.selected",
+      payloadShape: { table: { kind: "string", length: 14 } },
+      startedAt: snapshot.notifications[0].startedAt,
+    }]);
+    assert.equal(JSON.stringify(snapshot).includes("private-orders"), false);
   } finally {
     delete globalThis.window;
   }

@@ -127,7 +127,8 @@ type WebPayloadMap =
 export type DiagnosticKind =
   | "unknown-type"
   | "malformed"
-  | "mismatched-response";
+  | "mismatched-response"
+  | "orphaned-response";
 
 export interface Diagnostic {
   readonly kind: DiagnosticKind;
@@ -801,8 +802,9 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     }
 
     // --- Resolve pending request (if any) --------------------------------
-    // Only a real string requestId can match a pending request(). null (the
-    // PostReply-with-null shape) and undefined (PostNotification shape) fall
+    // A real string requestId belongs exclusively to the correlated RPC
+    // domain. null (the PostReply-with-null shape) and undefined
+    // (PostNotification shape) belong to the notification domain and fall
     // through to the handler fan-out below.
     if (typeof requestId === "string") {
       const entry = pending.get(requestId);
@@ -839,6 +841,17 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         // branch has a requestId, we return after resolving the request.
         return;
       }
+      // A response for an already-settled or unknown request must never be
+      // reinterpreted as a global notification. In particular, a late
+      // operation.failed would otherwise contaminate unrelated UI stores.
+      onDiagnostic({
+        kind: "orphaned-response",
+        type,
+        reason:
+          `inbound response has no pending request ` +
+          `(requestId=${requestId})`,
+      });
+      return;
     }
 
     // --- Fan out to typed handlers ---------------------------------------

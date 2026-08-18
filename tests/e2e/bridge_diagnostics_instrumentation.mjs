@@ -7,6 +7,7 @@ export function installBridgeDiagnosticsInPage() {
     requests: [],
     notifications: [],
     roundTrips: [],
+    recentCompleted: [],
     failures: [],
     pending: {},
     workspaceSession: null,
@@ -41,22 +42,16 @@ export function installBridgeDiagnosticsInPage() {
     "workspace.operation_failed",
     "workspace.session_stale",
   ]);
-  const diagnosticOperations = new Set([
-    "database.openRequested",
-    "history.applyRestoreRequested",
-    "history.previewRestoreRequested",
-    "history.queryRequested",
-    "table.applyPasteRequested",
-    "table.deleteRowsRequested",
-    "table.insertRowRequested",
-    "table.previewPasteRequested",
-    "table.selected",
-    "table.updateCellRequested",
-    "tableAdmin.createRequested",
-    "tableAdmin.deleteRequested",
-  ]);
   const stableCode = (value) => diagnosticCodes.has(value) ? value : null;
-  const stableOperation = (value) => diagnosticOperations.has(value)
+  // The outbound bridge is the authority for request type names. Reuse the
+  // bounded, sanitized observation ledger as a dynamic closed catalog so new
+  // protocol operations remain diagnosable without accepting arbitrary host
+  // strings into artifacts.
+  const stableOperation = (value) => typeof value === "string"
+    && (
+      diagnostics.requests.some(request => request.requestType === value)
+      || diagnostics.notifications.some(notification => notification.requestType === value)
+    )
     ? value
     : null;
   const describePayload = (requestPayload) => requestPayload
@@ -147,22 +142,32 @@ export function installBridgeDiagnosticsInPage() {
             }
           : null;
     }
-    const request = message?.requestId
-      ? diagnostics.pending[message.requestId]
+    const rawRequestId = typeof message?.requestId === "string"
+      ? message.requestId
+      : null;
+    const request = rawRequestId
+      ? diagnostics.pending[rawRequestId]
       : null;
     const isFailure = message?.type === "operation.failed"
       || message?.ok === false
       || message?.payload?.ok === false;
     if (!request) {
       if (isFailure) {
+        let completedRequest = null;
+        for (let index = diagnostics.recentCompleted.length - 1; index >= 0; index -= 1) {
+          if (diagnostics.recentCompleted[index].requestId === rawRequestId) {
+            completedRequest = diagnostics.recentCompleted[index];
+            break;
+          }
+        }
         const rawMessage = message?.payload?.message
           ?? message?.payload?.error?.message
           ?? message?.error?.message
           ?? null;
         pushBounded(diagnostics.failures, {
-          requestId: null,
-          requestType: null,
-          payloadShape: null,
+          requestId: rawRequestId,
+          requestType: completedRequest?.requestType ?? null,
+          payloadShape: completedRequest?.payloadShape ?? null,
           responseType: message?.type ?? null,
           code: stableCode(message?.payload?.code
             ?? message?.payload?.error?.code
@@ -170,9 +175,11 @@ export function installBridgeDiagnosticsInPage() {
             ?? null),
           messageLength: messageLength(rawMessage),
           operation: stableOperation(message?.payload?.operation),
-          startedAt: null,
+          startedAt: completedRequest?.startedAt ?? null,
           finishedAt: new Date().toISOString(),
-          durationMs: null,
+          durationMs: completedRequest === null
+            ? null
+            : Math.round((performance.now() - completedRequest.startedMonotonicMs) * 100) / 100,
         });
       }
       return;
@@ -198,10 +205,41 @@ export function installBridgeDiagnosticsInPage() {
       durationMs: Math.round((performance.now() - request.startedMonotonicMs) * 100) / 100,
     };
     pushBounded(diagnostics.roundTrips, roundTrip);
+    pushBounded(diagnostics.recentCompleted, request);
     if (isFailure) {
       pushBounded(diagnostics.failures, roundTrip);
     }
     delete diagnostics.pending[message.requestId];
   });
   window.__vibetableE2EBridgeDiagnostics = diagnostics;
+}
+
+export function readBridgeDiagnosticsInPage() {
+  const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+  if (!diagnostics) return null;
+  const now = performance.now();
+  return {
+    installedAt: diagnostics.installedAt,
+    requests: diagnostics.requests.map((request) => ({
+      requestId: request.requestId,
+      requestType: request.requestType,
+      payloadShape: request.payloadShape,
+      startedAt: request.startedAt,
+    })),
+    notifications: diagnostics.notifications.map((notification) => ({
+      requestType: notification.requestType,
+      payloadShape: notification.payloadShape,
+      startedAt: notification.startedAt,
+    })),
+    roundTrips: diagnostics.roundTrips,
+    failures: diagnostics.failures,
+    acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
+    pending: Object.values(diagnostics.pending).map((request) => ({
+      requestId: request.requestId,
+      requestType: request.requestType,
+      payloadShape: request.payloadShape,
+      startedAt: request.startedAt,
+      pendingMs: Math.round((now - request.startedMonotonicMs) * 100) / 100,
+    })),
+  };
 }
