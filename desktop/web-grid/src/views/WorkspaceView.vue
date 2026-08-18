@@ -70,7 +70,10 @@ import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
 import { useDataIoService } from "@/services/dataIoService";
 import { useMutationService } from "@/services/mutationService";
-import { createStructuredDialogFocus } from "@/services/dialogFocus";
+import {
+  createStructuredDialogFocus,
+  type StructuredGridLike,
+} from "@/services/dialogFocus";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { usePluginService } from "@/services/pluginService";
@@ -249,7 +252,7 @@ const relationLookup = useRelationLookupStore();
 const tabulator = ref<TabulatorFull | null>(null);
 provide(TABULATOR_INJECTION_KEY, tabulator);
 const structuredDialogFocus = createStructuredDialogFocus({
-  getGrid: () => tabulator.value,
+  getGrid: () => tabulator.value as unknown as StructuredGridLike | null,
   getScope: () => ({
     workspaceId: workspaceSession.activeWorkspaceId,
     sessionEpoch: workspaceSession.sessionEpoch,

@@ -12,6 +12,7 @@ import { createGrid } from "@/grid/createGrid";
 import {
   createStructuredDialogFocus,
   type StructuredDialogFocus,
+  type StructuredGridLike,
 } from "@/services/dialogFocus";
 import {
   createStructuredCellDialogController,
@@ -57,7 +58,11 @@ function deferred<T>() {
 function setup(
   request: HostBridge["request"],
   dialogFocus: StructuredDialogFocus = createStructuredDialogFocus({
-    getGrid: () => null,
+    getGrid: () => ({
+      getRows: () => ["row-1", "row-2"].map(rowKey => ({
+        getIndex: () => rowKey,
+      })),
+    }),
     getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
     subscribeScope: () => () => undefined,
   }),
@@ -386,7 +391,10 @@ describe("structured cell dialog controller", () => {
     document.body.append(trigger);
     let renderComplete: (() => void) | null = null;
     const grid = {
-      getRows: () => [],
+      getRows: () => [{
+        getIndex: () => "row-1",
+        getCell: () => ({ getElement: () => trigger }),
+      }],
       on: (event: string, handler: () => void) => {
         if (event === "renderComplete") renderComplete = handler;
       },
@@ -466,7 +474,7 @@ describe("structured cell dialog controller", () => {
     };
     const grid = createGrid(fixture.host, page, { editSchema });
     const dialogFocus = createStructuredDialogFocus({
-      getGrid: () => grid,
+      getGrid: () => grid as unknown as StructuredGridLike,
       getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
       subscribeScope: () => () => undefined,
     });
