@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   beginRawBridgeRequestInPage,
+  postRawBridgeNotificationInPage,
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
@@ -54,6 +55,47 @@ test("async raw bridge requests reserve a formal workspace scope", () => {
       window.__vibetableE2ERawRequests[requestId].message.payload.status,
       "applied",
     );
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("raw UI notifications keep formal scope without inventing a correlated request", () => {
+  const posted = [];
+  const reserved = [];
+  globalThis.window = {
+    chrome: {
+      webview: {
+        postMessage(message) {
+          posted.push(message);
+        },
+      },
+    },
+    __vibetableE2EWorkspaceWirePort: {
+      reserve(operationId) {
+        reserved.push(operationId);
+        return {
+          scope: "workspace",
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          sessionEpoch: 7,
+          operationId,
+          sequence: 124,
+        };
+      },
+    },
+  };
+  try {
+    postRawBridgeNotificationInPage({
+      requestType: "table.updateCellRequested",
+      requestPayload: { table: "tbl_orders" },
+    });
+
+    assert.equal(reserved.length, 1);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].type, "table.updateCellRequested");
+    assert.equal(posted[0].scope.operationId, reserved[0]);
+    assert.equal(posted[0].requestId, undefined);
+    assert.equal(window.__vibetableE2ERawRequests, undefined);
   } finally {
     delete globalThis.window;
   }

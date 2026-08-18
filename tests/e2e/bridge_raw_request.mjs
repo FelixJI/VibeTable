@@ -34,6 +34,23 @@ export function beginRawBridgeRequestInPage({
   return requestId;
 }
 
+export function postRawBridgeNotificationInPage({
+  requestType,
+  requestPayload,
+}) {
+  const operationId = crypto.randomUUID();
+  const wirePort = window.__vibetableE2EWorkspaceWirePort;
+  if (!wirePort) {
+    throw new Error(`workspace wire E2E port unavailable for ${requestType}`);
+  }
+  const scope = wirePort.reserve(operationId);
+  window.chrome.webview.postMessage({
+    type: requestType,
+    payload: requestPayload,
+    scope,
+  });
+}
+
 export async function requestWorkspaceV2InPage({ method, params }) {
   const wirePort = window.__vibetableE2EWorkspaceWirePort;
   if (!wirePort) {

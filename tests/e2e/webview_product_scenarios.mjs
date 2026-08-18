@@ -11,6 +11,7 @@ import {
 } from "./bridge_diagnostics_instrumentation.mjs";
 import {
   beginRawBridgeRequestInPage,
+  postRawBridgeNotificationInPage,
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
@@ -1409,6 +1410,16 @@ async function beginRawBridgeRequest(
   );
 }
 
+async function postRawBridgeNotification(page, type, payload) {
+  await page.evaluate(
+    postRawBridgeNotificationInPage,
+    {
+      requestType: type,
+      requestPayload: payload,
+    },
+  );
+}
+
 async function waitForRawBridgeRequest(page, requestId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -2636,11 +2647,11 @@ async function scenario08(page, recorder) {
     { timeout: 30_000 },
   );
   await beginBridgeMessageCapture(page, ["table.editRejected"]);
-  await beginRawBridgeRequest(page, "table.updateCellRequested", {
+  await postRawBridgeNotification(page, "table.updateCellRequested", {
     table: tableId,
     rowKey: row.id,
     column: valueField,
-    oldValue: "",
+    oldValue: row[valueField],
     newValue: "stale-user-write",
     expectedDigest: row.__vibetableDigest,
     schemaRevision: pageResult.snapshot.schemaRevision,
@@ -2649,6 +2660,7 @@ async function scenario08(page, recorder) {
   recorder.check(
     "stale renderer mutation was rejected by the product table boundary",
     rejected.type === "table.editRejected"
+      && rejected.requestId === null
       && rejected.payload?.kind === "edit_conflict",
     { rejected },
   );
