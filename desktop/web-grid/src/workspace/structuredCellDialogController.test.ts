@@ -284,6 +284,39 @@ describe("structured cell dialog controller", () => {
     expect(controller.state.attachment.loading).toBe(false);
   });
 
+  it("ignores a late attachment after-leave from a superseded dialog", async () => {
+    const firstTrigger = document.createElement("button");
+    const secondTrigger = document.createElement("button");
+    document.body.append(firstTrigger, secondTrigger);
+    const request = vi.fn().mockResolvedValue({ attachments: [] });
+    const { controller, dialogFocus } = setup(request as HostBridge["request"]);
+
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+      trigger: firstTrigger,
+    });
+    await controller.dispatch({ type: "attachment.close" });
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-2",
+      column: attachmentColumn,
+      trigger: secondTrigger,
+    });
+
+    await controller.dispatch({ type: "attachment.closed" });
+    expect(document.activeElement).not.toBe(secondTrigger);
+
+    await controller.dispatch({ type: "attachment.close" });
+    await controller.dispatch({ type: "attachment.closed" });
+    expect(document.activeElement).toBe(secondTrigger);
+
+    dialogFocus.dispose();
+    firstTrigger.remove();
+    secondTrigger.remove();
+  });
+
   it("binds mutations and notifications to the current authority revision", async () => {
     const request = vi.fn(async (type: string) => {
       if (type === "file.list") return { attachments: [file("stored")] };
