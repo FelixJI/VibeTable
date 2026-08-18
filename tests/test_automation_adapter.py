@@ -94,6 +94,7 @@ def test_ci_prepare_failure_preserves_product_e2e_evidence() -> None:
     evidence_step = evidence_step.split("- name: Upload immutable candidate handoff", 1)[0]
 
     assert "if: failure()" in evidence_step
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in evidence_step
     assert "name: ci-prepare-evidence" in evidence_step
     assert "build/qa/pr-product-e2e" in evidence_step
     assert "build/qa/workbench-qualification-pr.json" in evidence_step
