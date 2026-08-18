@@ -3,7 +3,7 @@ name = "VibeTable"
 dynamic = ["version"]
 description = "VibeTable — 通用建表与文件管理桌面工具"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28.1",
     "httpx-sse>=0.4.3",
@@ -47,7 +47,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 exclude = [".venv", "build", "dist", "*.egg-info"]
 
 [tool.ruff.format]
@@ -88,7 +88,7 @@ ignore = [
 "contracts/v2/generate_product_rpc_catalog.py" = ["I001"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 ignore_missing_imports = true
 # 库（sqlite3/json/subprocess 等）返回 Any 大量误报，按需放宽；
 # 真实类型 bug（attr-defined/override/var-annotated）不受影响。
@@ -146,7 +146,7 @@ exclude_lines = [
 extraPaths = ["."]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 typeCheckingMode = "standard"
 reportMissingImports = true
 reportMissingModuleSource = false

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
@@ -21,7 +21,7 @@ class SchemaV2WireModel(BaseModel):
     )
 
 
-LogicalType: TypeAlias = Literal[
+type LogicalType = Literal[
     "text",
     "editor",
     "number",
@@ -550,7 +550,7 @@ class FieldValueEntryCorpus(SchemaV2WireModel):
     cases: Annotated[list[FieldValueCorpusCase], Field(min_length=1)]
 
 
-SchemaV2Document: TypeAlias = (
+type SchemaV2Document = (
     FieldDefinition
     | Capability
     | FieldChangeIntent
