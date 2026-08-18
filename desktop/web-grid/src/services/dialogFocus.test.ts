@@ -157,8 +157,14 @@ describe("structured dialog focus", () => {
     document.body.append(staleCell);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const handlers = new Map<string, () => void>();
+    let targetRowExists = false;
     const grid = {
-      getRows: () => [{ getIndex: () => "another-row", getCell: vi.fn() }],
+      getRows: () => targetRowExists
+        ? [{
+            getIndex: () => "row-7",
+            getCell: () => ({ getElement: () => staleCell }),
+          }]
+        : [{ getIndex: () => "another-row", getCell: vi.fn() }],
       on: (event: string, handler: () => void) => handlers.set(event, handler),
       off: (event: string) => handlers.delete(event),
     };
@@ -173,6 +179,7 @@ describe("structured dialog focus", () => {
       rowKey: "row-7",
       field: "payload",
     }).restore();
+    targetRowExists = true;
     handlers.get("renderComplete")?.();
 
     expect(document.activeElement).toBe(document.body);
@@ -204,6 +211,28 @@ describe("structured dialog focus", () => {
     document.body.append(replacementCell);
     currentCell = replacementCell;
     emit("renderComplete");
+
+    expect(document.activeElement).toBe(document.body);
+    dialogFocus.dispose();
+  });
+
+  it("does not restore when the application window loses focus before release", () => {
+    const cell = document.createElement("button");
+    document.body.append(cell);
+    const { grid } = createGridHarness(() => cell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+    const lease = dialogFocus.capture({
+      element: cell,
+      rowKey: "row-7",
+      field: "payload",
+    });
+
+    window.dispatchEvent(new Event("blur"));
+    lease.restore();
 
     expect(document.activeElement).toBe(document.body);
     dialogFocus.dispose();
