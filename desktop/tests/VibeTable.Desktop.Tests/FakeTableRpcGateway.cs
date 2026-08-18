@@ -65,6 +65,8 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     /// </summary>
     public TableSummary? ListTablesResult { get; set; }
 
+    public Func<CancellationToken, Task<TableSummary>>? ListTablesOverride { get; set; }
+
     /// <summary>
     /// Optional scripted open used by workspace-recovery tests. When set it
     /// replaces the dictionary lookup entirely, so a test can fail the first
@@ -96,6 +98,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     public Task<TableSummary> ListTablesAsync(CancellationToken token)
     {
+        if (ListTablesOverride is { } scripted)
+        {
+            return scripted(token);
+        }
         // table.list reuses the same object catalog as database.open in Phase A.
         // Tests key on the open result; list returns the same tables/views.
         // When ListTablesResult is set explicitly, prefer it (used by the

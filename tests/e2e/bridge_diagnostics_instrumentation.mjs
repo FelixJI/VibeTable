@@ -5,6 +5,7 @@ export function installBridgeDiagnosticsInPage() {
     installed: true,
     installedAt: new Date().toISOString(),
     requests: [],
+    notifications: [],
     roundTrips: [],
     failures: [],
     pending: {},
@@ -12,6 +13,64 @@ export function installBridgeDiagnosticsInPage() {
     maxWorkspaceSequence: 0,
   };
   const webview = window.chrome.webview;
+  const maxEntries = 200;
+  const pushBounded = (items, value, onEvicted) => {
+    items.push(value);
+    if (items.length <= maxEntries) return;
+    const evicted = items.shift();
+    onEvicted?.(evicted);
+  };
+  const messageLength = (message) => typeof message === "string"
+    ? message.length
+    : null;
+  const diagnosticCodes = new Set([
+    "BACKEND_UNAVAILABLE",
+    "BAD_PAYLOAD",
+    "CANCELLED",
+    "DASHBOARD_CANCELLED",
+    "PRODUCT_DATA_FAILED",
+    "SCHEMA_LIFECYCLE_CANCELLED",
+    "SCHEMA_LIFECYCLE_TIMEOUT",
+    "UNKNOWN_TYPE",
+    "UNKNOWN_V2_METHOD",
+    "WORKSPACE_ERROR",
+    "dashboard_edit_conflict",
+    "history.field_not_found",
+    "retention.policy_revision_stale",
+    "snapshot.package_invalid",
+    "workspace.operation_failed",
+    "workspace.session_stale",
+  ]);
+  const diagnosticOperations = new Set([
+    "database.openRequested",
+    "history.applyRestoreRequested",
+    "history.previewRestoreRequested",
+    "history.queryRequested",
+    "table.applyPasteRequested",
+    "table.deleteRowsRequested",
+    "table.insertRowRequested",
+    "table.previewPasteRequested",
+    "table.selected",
+    "table.updateCellRequested",
+    "tableAdmin.createRequested",
+    "tableAdmin.deleteRequested",
+  ]);
+  const stableCode = (value) => diagnosticCodes.has(value) ? value : null;
+  const stableOperation = (value) => diagnosticOperations.has(value)
+    ? value
+    : null;
+  const describePayload = (requestPayload) => requestPayload
+    && typeof requestPayload === "object"
+    && !Array.isArray(requestPayload)
+    ? Object.fromEntries(Object.entries(requestPayload).map(([key, value]) => [
+      key,
+      typeof value === "string"
+        ? { kind: "string", length: value.length }
+        : Array.isArray(value)
+          ? { kind: "array", length: value.length }
+          : { kind: value === null ? "null" : typeof value },
+    ]))
+    : null;
   const originalPostMessage = webview.postMessage.bind(webview);
   webview.postMessage = (...args) => {
     const candidate = args[0];
@@ -35,19 +94,7 @@ export function installBridgeDiagnosticsInPage() {
       );
     }
     if (message?.requestId && message?.type) {
-      const requestPayload = message.payload;
-      const payloadShape = requestPayload
-        && typeof requestPayload === "object"
-        && !Array.isArray(requestPayload)
-        ? Object.fromEntries(Object.entries(requestPayload).map(([key, value]) => [
-          key,
-          typeof value === "string"
-            ? { kind: "string", length: value.length }
-            : Array.isArray(value)
-              ? { kind: "array", length: value.length }
-              : { kind: value === null ? "null" : typeof value },
-        ]))
-        : null;
+      const payloadShape = describePayload(message.payload);
       const request = {
         requestId: message.requestId,
         requestType: message.type === "workspace.v2.request"
@@ -58,8 +105,18 @@ export function installBridgeDiagnosticsInPage() {
         startedAt: new Date().toISOString(),
         startedMonotonicMs: performance.now(),
       };
-      diagnostics.requests.push(request);
+      pushBounded(diagnostics.requests, request, (evicted) => {
+        if (diagnostics.pending[evicted.requestId] === evicted) {
+          delete diagnostics.pending[evicted.requestId];
+        }
+      });
       diagnostics.pending[message.requestId] = request;
+    } else if (message?.type) {
+      pushBounded(diagnostics.notifications, {
+        requestType: message.type,
+        payloadShape: describePayload(message.payload),
+        startedAt: new Date().toISOString(),
+      });
     }
     return originalPostMessage(...args);
   };
@@ -93,31 +150,56 @@ export function installBridgeDiagnosticsInPage() {
     const request = message?.requestId
       ? diagnostics.pending[message.requestId]
       : null;
-    if (!request) return;
+    const isFailure = message?.type === "operation.failed"
+      || message?.ok === false
+      || message?.payload?.ok === false;
+    if (!request) {
+      if (isFailure) {
+        const rawMessage = message?.payload?.message
+          ?? message?.payload?.error?.message
+          ?? message?.error?.message
+          ?? null;
+        pushBounded(diagnostics.failures, {
+          requestId: null,
+          requestType: null,
+          payloadShape: null,
+          responseType: message?.type ?? null,
+          code: stableCode(message?.payload?.code
+            ?? message?.payload?.error?.code
+            ?? message?.error?.code
+            ?? null),
+          messageLength: messageLength(rawMessage),
+          operation: stableOperation(message?.payload?.operation),
+          startedAt: null,
+          finishedAt: new Date().toISOString(),
+          durationMs: null,
+        });
+      }
+      return;
+    }
     const roundTrip = {
       requestId: request.requestId,
       requestType: request.requestType,
       payloadShape: request.payloadShape,
       responseType: message.type ?? null,
-      code: message.payload?.code
+      code: stableCode(message.payload?.code
         ?? message.payload?.error?.code
         ?? message.error?.code
-        ?? null,
-      message: message.payload?.message
-        ?? message.payload?.error?.message
-        ?? message.error?.message
-        ?? null,
+        ?? null),
+      messageLength: messageLength(
+        message.payload?.message
+          ?? message.payload?.error?.message
+          ?? message.error?.message
+          ?? null,
+      ),
+      operation: stableOperation(message.payload?.operation),
       startedAt: request.startedAt,
       finishedAt: new Date().toISOString(),
       durationMs: Math.round((performance.now() - request.startedMonotonicMs) * 100) / 100,
     };
-    diagnostics.roundTrips.push(roundTrip);
-    if (
-      message.type === "operation.failed"
-      || message.ok === false
-      || message.payload?.ok === false
-    ) {
-      diagnostics.failures.push(roundTrip);
+    pushBounded(diagnostics.roundTrips, roundTrip);
+    if (isFailure) {
+      pushBounded(diagnostics.failures, roundTrip);
     }
     delete diagnostics.pending[message.requestId];
   });

@@ -413,13 +413,15 @@ public sealed class WebMessageRouterTests
         var envelope = WebMessageRouter.BuildOperationFailed(
             requestId: "abc",
             message: "bad",
-            code: "BAD");
+            code: "BAD",
+            operation: "table.selected");
 
         Assert.AreEqual("operation.failed", envelope.Type);
         Assert.AreEqual("abc", envelope.RequestId);
         Assert.IsNotNull(envelope.Payload);
         Assert.AreEqual("bad", envelope.Payload!.Message);
         Assert.AreEqual("BAD", envelope.Payload.Code);
+        Assert.AreEqual("table.selected", envelope.Payload.Operation);
     }
 
     [TestMethod]

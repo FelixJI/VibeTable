@@ -46,11 +46,12 @@ internal sealed class FakeWebReplySink : IWebReplySink
     public void PostOperationFailed(
         string? requestId,
         string message,
-        string? code = null)
+        string? code = null,
+        string? operation = null)
         => Add(new Reply(
             "operation.failed",
             requestId,
-            new { message, code }));
+            new { message, code, operation }));
 
     public async Task<Reply?> WaitForAsync(
         string type,

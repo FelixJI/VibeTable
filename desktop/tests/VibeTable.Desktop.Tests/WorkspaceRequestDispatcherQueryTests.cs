@@ -10,6 +10,18 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceRequestDispatcherQueryTests
 {
     [TestMethod]
+    public void SchemaLifecycleTimeoutDoesNotReuseDashboardPolicy()
+    {
+        TimeSpan dashboardTimeout = TimeSpan.FromMilliseconds(30);
+
+        TimeSpan schemaTimeout =
+            WorkspaceRequestDispatcher.ResolveSchemaLifecycleTimeout(null);
+
+        Assert.AreEqual(SchemaLifecycleBudget.DefaultTimeout, schemaTimeout);
+        Assert.AreNotEqual(dashboardTimeout, schemaTimeout);
+    }
+
+    [TestMethod]
     public void DispatcherComposesControllerOwnedRoutesWithoutFallbackUnion()
     {
         var dispatcher = new WorkspaceRequestDispatcher(
@@ -23,6 +35,30 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         Assert.IsTrue(dispatcher.Handles("document.listRequested"));
         Assert.IsFalse(dispatcher.Handles("plugin.catalog.list"));
         Assert.IsFalse(dispatcher.Handles("unknown.request"));
+    }
+
+    [TestMethod]
+    public async Task UnhandledFailureNamesTheOriginatingOperationWithoutLeakingDetails()
+    {
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(new FakeTableRpcGateway()),
+            new FakeDatabasePicker("local://configured"),
+            sink);
+        using var document = JsonDocument.Parse("""{"table":"missing"}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "table.selected",
+            null,
+            document.RootElement.Clone(),
+            string.Empty));
+
+        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        JsonElement payload = JsonSerializer.SerializeToElement(failure.Payload);
+        Assert.AreEqual("WORKSPACE_ERROR", payload.GetProperty("code").GetString());
+        Assert.AreEqual("Workspace operation failed.", payload.GetProperty("message").GetString());
+        Assert.AreEqual("table.selected", payload.GetProperty("operation").GetString());
     }
 
     [TestMethod]

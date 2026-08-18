@@ -91,7 +91,8 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     public void PostOperationFailed(
         string? requestId,
         string message,
-        string? code = null)
+        string? code = null,
+        string? operation = null)
     {
         _owner.Dispatcher.BeginInvoke(() =>
         {
@@ -99,7 +100,11 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             if (core is null) return;
             PostRouterReply(
                 core,
-                WebMessageRouter.BuildOperationFailed(requestId, message, code));
+                WebMessageRouter.BuildOperationFailed(
+                    requestId,
+                    message,
+                    code,
+                    operation));
         });
     }
 

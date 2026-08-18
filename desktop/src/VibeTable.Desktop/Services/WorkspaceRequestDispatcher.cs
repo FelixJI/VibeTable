@@ -27,7 +27,9 @@ public sealed class WorkspaceRequestDispatcher
         GridStateCoordinator? coordinator = null,
         TimeSpan? dashboardRequestTimeout = null,
         TimeSpan? readRecoveryTimeout = null,
-        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null,
+        TimeSpan? schemaLifecycleTimeout = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(picker);
@@ -44,7 +46,10 @@ public sealed class WorkspaceRequestDispatcher
             picker,
             _reply,
             () => _productController.CurrentGateway,
-            readRecoveryTimeout);
+            readRecoveryTimeout,
+            ResolveSchemaLifecycleTimeout(schemaLifecycleTimeout),
+            () => _workspaceSessionToken,
+            timeProvider);
         _gridController = new GridRequestController(coordinator, _reply);
         _dashboardController = new DashboardRequestController(
             _reply,
@@ -96,6 +101,9 @@ public sealed class WorkspaceRequestDispatcher
 
     public bool Handles(string requestType) =>
         _routes.Any(route => route.Handles(requestType));
+
+    internal static TimeSpan ResolveSchemaLifecycleTimeout(TimeSpan? configured)
+        => configured ?? SchemaLifecycleBudget.DefaultTimeout;
 
     private async Task DispatchAsync(RoutedWebRequest request)
     {
@@ -152,7 +160,8 @@ public sealed class WorkspaceRequestDispatcher
         _reply.PostOperationFailed(
             request.RequestId,
             "Workspace operation failed.",
-            "WORKSPACE_ERROR");
+            "WORKSPACE_ERROR",
+            request.Type);
     }
 
     private sealed record RequestRoute(

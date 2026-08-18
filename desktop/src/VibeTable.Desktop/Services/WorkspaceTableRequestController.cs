@@ -21,13 +21,19 @@ public sealed class WorkspaceTableRequestController
     private readonly IWebReplySink _reply;
     private readonly Func<IProductDataRpcGateway?> _productGateway;
     private readonly TimeSpan _readRecoveryTimeout;
+    private readonly TimeSpan _schemaLifecycleTimeout;
+    private readonly Func<CancellationToken> _sessionToken;
+    private readonly TimeProvider _timeProvider;
 
     public WorkspaceTableRequestController(
         TableWorkspaceService workspace,
         IDatabasePicker picker,
         IWebReplySink reply,
         Func<IProductDataRpcGateway?> productGateway,
-        TimeSpan? readRecoveryTimeout = null)
+        TimeSpan? readRecoveryTimeout = null,
+        TimeSpan? schemaLifecycleTimeout = null,
+        Func<CancellationToken>? sessionToken = null,
+        TimeProvider? timeProvider = null)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
@@ -35,6 +41,12 @@ public sealed class WorkspaceTableRequestController
         _productGateway = productGateway
             ?? throw new ArgumentNullException(nameof(productGateway));
         _readRecoveryTimeout = readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
+        _schemaLifecycleTimeout = schemaLifecycleTimeout
+            ?? SchemaLifecycleBudget.DefaultTimeout;
+        if (_schemaLifecycleTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(schemaLifecycleTimeout));
+        _sessionToken = sessionToken ?? (() => CancellationToken.None);
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public static bool Handles(string requestType)
@@ -429,16 +441,23 @@ public sealed class WorkspaceTableRequestController
         IProductDataRpcGateway? gateway = RequireProductGateway(request);
         if (gateway is null)
             return;
+        CancellationToken sessionToken = _sessionToken();
         try
         {
-            JsonElement applied = await gateway.CreateTableAsync(
-                JsonSerializer.SerializeToElement(new
-                {
-                    displayName,
-                    operationId = "table-create-" + Guid.NewGuid().ToString("N"),
-                    actor = new { id = "desktop-host", kind = "host" },
-                }),
-                CancellationToken.None).ConfigureAwait(false);
+            using var budget = SchemaLifecycleBudget.Begin(
+                _schemaLifecycleTimeout,
+                sessionToken,
+                _timeProvider);
+            JsonElement applied = await budget.RunAsync(
+                SchemaLifecycleStage.Apply,
+                token => gateway.CreateTableAsync(
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        displayName,
+                        operationId = "table-create-" + Guid.NewGuid().ToString("N"),
+                        actor = new { id = "desktop-host", kind = "host" },
+                    }),
+                    token)).ConfigureAwait(false);
             if (applied.ValueKind != JsonValueKind.Object
                 || !applied.TryGetProperty("tableId", out JsonElement tableId)
                 || tableId.ValueKind != JsonValueKind.String
@@ -447,7 +466,30 @@ public sealed class WorkspaceTableRequestController
                 throw new InvalidOperationException(
                     "SchemaCore create returned no table identity.");
             }
-            await RefreshCollectionListAsync().ConfigureAwait(false);
+            TableSummary summary = await budget.RunAsync(
+                SchemaLifecycleStage.Refresh,
+                token => LoadCollectionListAsync(token)).ConfigureAwait(false);
+            budget.Complete(SchemaLifecycleStage.Refresh);
+            PublishCollectionList(
+                request.RequestId,
+                summary,
+                createdTableId: tableId.GetString());
+        }
+        catch (SchemaLifecycleTimeoutException)
+        {
+            TraceFailure("table.create", "SCHEMA_LIFECYCLE_TIMEOUT");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "数据表操作超时，完成状态尚未确认。",
+                "SCHEMA_LIFECYCLE_TIMEOUT");
+        }
+        catch (OperationCanceledException) when (sessionToken.IsCancellationRequested)
+        {
+            TraceFailure("table.create", "SCHEMA_LIFECYCLE_CANCELLED");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "工作区已关闭，数据表操作已取消。",
+                "SCHEMA_LIFECYCLE_CANCELLED");
         }
         catch (Exception)
         {
@@ -470,26 +512,58 @@ public sealed class WorkspaceTableRequestController
         IProductDataRpcGateway? gateway = RequireProductGateway(request);
         if (gateway is null)
             return;
+        CancellationToken sessionToken = _sessionToken();
         try
         {
-            JsonElement schema = await gateway.GetTableSchemaAsync(
-                JsonSerializer.SerializeToElement(new { tableId = collection }),
-                CancellationToken.None).ConfigureAwait(false);
+            using var budget = SchemaLifecycleBudget.Begin(
+                _schemaLifecycleTimeout,
+                sessionToken,
+                _timeProvider);
+            JsonElement schema = await budget.RunAsync(
+                SchemaLifecycleStage.Inspect,
+                token => gateway.GetTableSchemaAsync(
+                    JsonSerializer.SerializeToElement(new { tableId = collection }),
+                    token)).ConfigureAwait(false);
             string? revision = GetString(schema, "schemaRevision");
             if (string.IsNullOrWhiteSpace(revision))
                 throw new InvalidOperationException("结构版本不可用。");
-            await gateway.DeleteSchemaAsync(
-                JsonSerializer.SerializeToElement(new
-                {
-                    tableId = collection,
-                    expectedRevision = revision,
-                }),
-                CancellationToken.None).ConfigureAwait(false);
-            await RefreshCollectionListAsync().ConfigureAwait(false);
+            await budget.RunAsync(
+                SchemaLifecycleStage.Apply,
+                token => gateway.DeleteSchemaAsync(
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        tableId = collection,
+                        expectedRevision = revision,
+                    }),
+                    token)).ConfigureAwait(false);
+            TableSummary summary = await budget.RunAsync(
+                SchemaLifecycleStage.Refresh,
+                token => LoadCollectionListAsync(token)).ConfigureAwait(false);
+            budget.Complete(SchemaLifecycleStage.Refresh);
+            PublishCollectionList(
+                request.RequestId,
+                summary,
+                deletedTableId: collection);
         }
         catch (RpcRemoteException exception) when (exception.Code == -32602)
         {
             Reject(request, "删除数据表的请求无效。");
+        }
+        catch (SchemaLifecycleTimeoutException)
+        {
+            TraceFailure("schema.delete", "SCHEMA_LIFECYCLE_TIMEOUT");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "数据表操作超时，完成状态尚未确认。",
+                "SCHEMA_LIFECYCLE_TIMEOUT");
+        }
+        catch (OperationCanceledException) when (sessionToken.IsCancellationRequested)
+        {
+            TraceFailure("schema.delete", "SCHEMA_LIFECYCLE_CANCELLED");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "工作区已关闭，数据表操作已取消。",
+                "SCHEMA_LIFECYCLE_CANCELLED");
         }
         catch (Exception)
         {
@@ -501,16 +575,49 @@ public sealed class WorkspaceTableRequestController
         }
     }
 
-    private async Task RefreshCollectionListAsync()
+    private async Task<TableSummary> LoadCollectionListAsync(
+        CancellationToken cancellationToken)
     {
         TableSummary summary = await _workspace.Gateway.ListTablesAsync(
-            CancellationToken.None).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
+        return summary;
+    }
+
+    private void PublishCollectionList(
+        string? requestId,
+        TableSummary summary,
+        string? createdTableId = null,
+        string? deletedTableId = null)
+    {
         _workspace.UpdateKnownTables(summary.Tables);
-        _reply.PostNotification("database.collectionsChanged", new
+        var broadcast = new
         {
             tables = summary.Tables,
             displayNames = summary.DisplayNames,
-        });
+        };
+        if (requestId is not null)
+        {
+            object response = createdTableId is not null
+                ? new
+                {
+                    tables = summary.Tables,
+                    displayNames = summary.DisplayNames,
+                    createdTableId,
+                }
+                : deletedTableId is not null
+                    ? new
+                    {
+                        tables = summary.Tables,
+                        displayNames = summary.DisplayNames,
+                        deletedTableId,
+                    }
+                    : broadcast;
+            _reply.PostResponse(
+                "database.collectionsChanged",
+                requestId,
+                response);
+        }
+        _reply.PostNotification("database.collectionsChanged", broadcast);
     }
 
     private IProductDataRpcGateway? RequireProductGateway(

@@ -443,6 +443,33 @@ describe("HostBridge", () => {
     },
   );
 
+  it.each([
+    ["tableAdmin.createRequested", { displayName: "Orders" }],
+    ["tableAdmin.deleteRequested", { collection: "tbl_orders" }],
+  ] as const)(
+    "leaves %s schema lifecycle deadline ownership to the native host",
+    async (type, payload) => {
+      vi.useFakeTimers();
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1_000,
+        generateRequestId: () => `schema-${type}`,
+      });
+      bridge.start();
+      const pending = bridge.request(type, payload);
+      let settled = false;
+      void pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+      expect(settled).toBe(false);
+      bridge.stop();
+    },
+  );
+
   it("adds a strictly scoped workspace envelope to product requests", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);

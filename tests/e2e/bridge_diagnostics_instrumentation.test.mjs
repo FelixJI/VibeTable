@@ -99,3 +99,129 @@ test("observes every workspace wire copy without normalizing the envelope", () =
     delete globalThis.window;
   }
 });
+
+test("records fire-and-forget notifications and uncorrelated host failures", () => {
+  const posted = [];
+  const listeners = [];
+  const webview = {
+    postMessage(message) {
+      posted.push(message);
+    },
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    webview.postMessage({
+      type: "tableAdmin.createRequested",
+      payload: { displayName: "Orders" },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
+          code: "WORKSPACE_ERROR",
+          message: "Workspace operation failed at C:\\Users\\secret\\Orders.db.",
+          operation: "table.selected",
+        },
+      },
+    });
+
+    assert.equal(posted.length, 1);
+    assert.equal(window.__vibetableE2EBridgeDiagnostics.notifications.length, 1);
+    assert.equal(
+      window.__vibetableE2EBridgeDiagnostics.notifications[0].requestType,
+      "tableAdmin.createRequested",
+    );
+    assert.deepEqual(
+      window.__vibetableE2EBridgeDiagnostics.failures.map((failure) => ({
+        requestId: failure.requestId,
+        responseType: failure.responseType,
+        code: failure.code,
+        messageLength: failure.messageLength,
+        operation: failure.operation,
+      })),
+      [{
+        requestId: null,
+        responseType: "operation.failed",
+        code: "WORKSPACE_ERROR",
+        messageLength: 56,
+        operation: "table.selected",
+      }],
+    );
+    const artifact = JSON.stringify(window.__vibetableE2EBridgeDiagnostics);
+    assert.equal(artifact.includes("Orders"), false);
+    assert.equal(artifact.includes("C:\\Users\\secret"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("keeps bridge diagnostic history bounded", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    for (let index = 0; index < 250; index += 1) {
+      listeners[0]({
+        data: {
+          type: "operation.failed",
+          requestId: null,
+          payload: {
+            code: "WORKSPACE_ERROR",
+            message: `private-${index}`,
+            operation: "table.selected",
+          },
+        },
+      });
+    }
+
+    const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+    assert.equal(diagnostics.failures.length, 200);
+    assert.equal(JSON.stringify(diagnostics).includes("private-249"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("drops code and operation names outside the protocol diagnostic catalog", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
+          code: "CUSTOMER_SECRET",
+          message: "hidden",
+          operation: "Orders",
+        },
+      },
+    });
+
+    const [failure] = window.__vibetableE2EBridgeDiagnostics.failures;
+    assert.equal(failure.code, null);
+    assert.equal(failure.operation, null);
+    assert.equal(JSON.stringify(failure).includes("CUSTOMER_SECRET"), false);
+    assert.equal(JSON.stringify(failure).includes("Orders"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});

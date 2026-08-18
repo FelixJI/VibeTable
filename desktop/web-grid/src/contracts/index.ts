@@ -761,6 +761,10 @@ export interface CollectionsChangedPayload {
   /** Physical collection -> user-facing label. */
   readonly displayNames: Readonly<Record<string, string>>;
   readonly projectRevision?: string;
+  /** Present only on the correlated create response. */
+  readonly createdTableId?: string;
+  /** Present only on the correlated delete response. */
+  readonly deletedTableId?: string;
 }
 
 // ---------------------------------------------------------------------------

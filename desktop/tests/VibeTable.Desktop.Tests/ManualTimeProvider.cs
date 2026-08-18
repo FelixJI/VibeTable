@@ -6,7 +6,20 @@ internal sealed class ManualTimeProvider : TimeProvider
     private readonly List<ManualTimer> _timers = [];
     private long _timestamp;
 
+    public Action? BeforeTimerFire { get; set; }
+
+    public Action? AfterTimerFire { get; set; }
+
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public int ScheduledTimerCount
+    {
+        get
+        {
+            lock (_gate)
+                return _timers.Count(timer => timer.DueTimestamp is not null);
+        }
+    }
 
     public override DateTimeOffset GetUtcNow()
     {
@@ -56,7 +69,9 @@ internal sealed class ManualTimeProvider : TimeProvider
                 _timestamp = next.DueTimestamp!.Value;
                 next.RescheduleAfterFire();
             }
+            BeforeTimerFire?.Invoke();
             next.Fire();
+            AfterTimerFire?.Invoke();
         }
     }
 

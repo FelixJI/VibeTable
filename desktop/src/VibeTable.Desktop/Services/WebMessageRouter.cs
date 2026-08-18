@@ -525,12 +525,13 @@ public sealed class WebMessageRouter
     public static HostReplyMessage BuildOperationFailed(
         string? requestId,
         string message,
-        string? code = null)
+        string? code = null,
+        string? operation = null)
     {
         return new HostReplyMessage(
             Type: "operation.failed",
             RequestId: requestId,
-            Payload: new OperationFailedPayload(message, code));
+            Payload: new OperationFailedPayload(message, code, operation));
     }
 
     /// <summary>
@@ -587,4 +588,7 @@ public sealed record HostReplyMessage(
 /// Payload for the <c>operation.failed</c> notification. Mirrors
 /// <c>desktop/web-grid/src/contracts.ts:OperationFailedPayload</c>.
 /// </summary>
-public sealed record OperationFailedPayload(string Message, string? Code);
+public sealed record OperationFailedPayload(
+    string Message,
+    string? Code,
+    string? Operation = null);

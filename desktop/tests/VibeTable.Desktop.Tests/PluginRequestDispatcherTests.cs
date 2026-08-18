@@ -339,7 +339,11 @@ public sealed class PluginRequestDispatcherTests
             Payload = payload;
         }
 
-        public void PostOperationFailed(string? requestId, string message, string? code = null)
+        public void PostOperationFailed(
+            string? requestId,
+            string message,
+            string? code = null,
+            string? operation = null)
         {
             RequestId = requestId;
             FailureCode = code;

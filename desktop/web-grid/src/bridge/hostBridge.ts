@@ -529,6 +529,10 @@ const HOST_OWNED_WORKSPACE_LIFECYCLE_METHODS = new Set([
   "workspace.close",
   "snapshot.openAsNewWorkspace",
 ]);
+const HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+  "tableAdmin.createRequested",
+  "tableAdmin.deleteRequested",
+]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
   if (typeof value === "string") return value.startsWith(HOST_PICKER_PREFIX);
@@ -964,6 +968,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           ? nativePickerTimeoutMs
           : type === "workspace.v2.request"
               && isHostOwnedWorkspaceLifecycleRequest(payload)
+            ? null
+          : HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES.has(type)
             ? null
           : type === "workspace.v2.request" && isWorkspaceBootstrapRequest(payload)
             ? workspaceBootstrapTimeoutMs
