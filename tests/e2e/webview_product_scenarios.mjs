@@ -11,6 +11,7 @@ import {
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
+import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 
 function parseArgs(argv) {
@@ -1410,25 +1411,6 @@ async function beginWritableWorkspaceBootstrapCapture(
       window.chrome.webview.removeEventListener("message", handler);
     });
   }, { minimumEpoch: minimumExclusiveEpoch, expectedFailureMethod: failureMethod });
-}
-
-async function waitForCapturedBridgeMessage(page, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const captured = await page.evaluate(() => ({
-      message: window.__vibetableE2EBridgeCapture?.message ?? null,
-      error: window.__vibetableE2EBridgeCapture?.error ?? null,
-    }));
-    if (captured.error) {
-      throw new Error(
-        `captured ${captured.error.method} failure: `
-        + `${captured.error.code}: ${captured.error.message}`,
-      );
-    }
-    if (captured.message) return captured.message;
-    await page.waitForTimeout(50);
-  }
-  throw new Error("captured bridge response timed out");
 }
 
 async function beginRawBridgeRequest(

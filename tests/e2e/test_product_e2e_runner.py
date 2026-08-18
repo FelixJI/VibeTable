@@ -1411,6 +1411,7 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
 def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime() -> None:
     test_files = [
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
+        runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
