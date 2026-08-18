@@ -394,7 +394,11 @@ describe("tableStore", () => {
 
     expect(s.editSchema).toEqual(editSchema);
     expect(s.revision).toBeNull();
+    expect(s.schemaRevision).toBe("schema");
     expect(s.loading).toBe(true);
+
+    s.reset();
+    expect(s.schemaRevision).toBeNull();
   });
 
   it("drops retained edit schema when the refreshed page has a new schema revision", () => {

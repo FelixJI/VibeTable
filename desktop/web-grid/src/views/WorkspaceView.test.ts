@@ -800,6 +800,56 @@ describe("WorkspaceView", () => {
     expect(document.body.textContent).toContain("已导出 3 行至 orders-export.csv。");
   });
 
+  it("starts import from the retained edit schema during a data-only refresh", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    table.setEditSchema([{
+      name: "region",
+      storageName: "region",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+      primaryKey: false,
+      editor: { kind: "text" },
+      validation: [],
+    }], {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    });
+    table.reset({ preserveEditSchema: true });
+    const wrapper = mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    const toolbar = wrapper.findComponent(AppToolbar);
+    expect(toolbar.props("dataIoImportDisabled")).toBe(false);
+    toolbar.vm.$emit("importData");
+    await flushPromises();
+
+    expect(posted.filter((item) => item.type === "data.importSourceRequested")).toHaveLength(1);
+  });
+
+  it("disables only import after a table switch clears the schema context", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    table.reset();
+    const wrapper = mountView();
+    await flushPromises();
+
+    const toolbar = wrapper.findComponent(AppToolbar);
+    expect(toolbar.props("dataIoImportDisabled")).toBe(true);
+    expect(toolbar.props("dataIoExportDisabled")).toBe(false);
+  });
+
   it("runs a validated import and refreshes the active table", async () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);

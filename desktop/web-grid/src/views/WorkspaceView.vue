@@ -188,7 +188,8 @@ const {
   applying: importApplying,
   cancelling: importCancelling,
   applyError: importApplyError,
-  locked: dataIoLocked,
+  canPreviewImport: canImportTableData,
+  canExport: canExportTableData,
   previewImport: importTableData,
   applyImport: confirmTableImport,
   cancelImport: cancelActiveImport,
@@ -199,7 +200,7 @@ const {
   service: dataIoService,
   resolveContext: () => ({
     collection: workspace.currentTable,
-    schemaRevision: tableStore.revision?.schemaRevision,
+    schemaRevision: tableStore.schemaRevision,
   }),
   importSucceeded: (count) => message.success(t("dataIo.import.success", { count })),
   exportSucceeded: (result) => message.success(t("dataIo.export.success", {
@@ -870,7 +871,8 @@ useKeyboard({
               :history-disabled="revisionHistory.selection.scope === 'multiple'"
               :insert-row-disabled="insertRowDisabled"
               :data-io-busy="dataIoBusy"
-              :data-io-locked="dataIoLocked"
+              :data-io-import-disabled="!canImportTableData"
+              :data-io-export-disabled="!canExportTableData"
               @select-table="onSelect"
               @refresh="refreshTable"
               @insert-row="mutationService.insertRow({})"

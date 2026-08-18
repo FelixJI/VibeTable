@@ -37,7 +37,11 @@ function previewSession(): ImportPreviewSession {
   };
 }
 
-function setup(overrides: Partial<DataIoTaskPort> = {}) {
+function setup(
+  overrides: Partial<DataIoTaskPort> = {},
+  resolveContext: () => { readonly collection?: string | null; readonly schemaRevision?: string | null }
+    = () => ({ collection: "orders", schemaRevision: "schema_0001" }),
+) {
   const session = previewSession();
   const service: DataIoTaskPort = {
     busy: ref(false),
@@ -67,7 +71,7 @@ function setup(overrides: Partial<DataIoTaskPort> = {}) {
   const refresh = vi.fn();
   const task = useDataIoTask({
     service,
-    resolveContext: () => ({ collection: "orders", schemaRevision: "schema_0001" }),
+    resolveContext,
     importSucceeded,
     exportSucceeded,
     reportError,
@@ -77,6 +81,28 @@ function setup(overrides: Partial<DataIoTaskPort> = {}) {
 }
 
 describe("useDataIoTask", () => {
+  it("uses one reactive admission contract for import and export commands", async () => {
+    const context = ref<{ collection: string | null; schemaRevision: string | null }>({
+      collection: "orders",
+      schemaRevision: null,
+    });
+    const { task, service } = setup({}, () => context.value);
+
+    expect(task.canPreviewImport.value).toBe(false);
+    expect(task.canExport.value).toBe(true);
+    await task.previewImport();
+    expect(service.previewImport).not.toHaveBeenCalled();
+
+    context.value = { collection: "orders", schemaRevision: "schema_0001" };
+    expect(task.canPreviewImport.value).toBe(true);
+    await task.previewImport();
+    expect(service.previewImport).toHaveBeenCalledOnce();
+
+    context.value = { collection: null, schemaRevision: null };
+    expect(task.canPreviewImport.value).toBe(false);
+    expect(task.canExport.value).toBe(false);
+  });
+
   it("owns the preview/apply lifecycle and refreshes only after a successful apply", async () => {
     const { task, service, session, importSucceeded, refresh } = setup();
 
@@ -141,5 +167,31 @@ describe("useDataIoTask", () => {
     await task.exportData();
     expect(exportSucceeded).not.toHaveBeenCalled();
     expect(reportError).toHaveBeenCalledWith("disk full");
+  });
+
+  it("admits only one export while the target picker is pending", async () => {
+    let resolveExport!: (result: ExportResult) => void;
+    const pendingExport = new Promise<ExportResult>((resolve) => { resolveExport = resolve; });
+    const { task, service } = setup({
+      exportData: vi.fn(() => pendingExport),
+    });
+
+    const first = task.exportData();
+    const second = task.exportData();
+    expect(service.exportData).toHaveBeenCalledOnce();
+    expect(task.canPreviewImport.value).toBe(false);
+    expect(task.canExport.value).toBe(false);
+
+    resolveExport({
+      collection: "orders",
+      format: "csv",
+      rowsWritten: 3,
+      schemaRevision: "schema_0001",
+      capabilityHash: "capability-1",
+      outputDisplayName: "orders-export.csv",
+    });
+    await Promise.all([first, second]);
+    expect(task.canPreviewImport.value).toBe(true);
+    expect(task.canExport.value).toBe(true);
   });
 });
