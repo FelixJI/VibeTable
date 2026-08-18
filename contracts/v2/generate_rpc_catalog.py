@@ -11,7 +11,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Literal
 
 ROOT = Path(__file__).parents[2]
 OUTPUT = ROOT / "contracts" / "v2" / "fixtures" / "rpc-catalog.json"
@@ -19,9 +19,9 @@ OUTPUT = ROOT / "contracts" / "v2" / "fixtures" / "rpc-catalog.json"
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 OPERATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+type JsonObject = dict[str, JsonValue]
 
 
 @dataclass(frozen=True)
@@ -32,10 +32,8 @@ class ContractValue:
     schema: JsonValue
 
 
-CatalogValue: TypeAlias = (
-    JsonScalar | ContractValue | list["CatalogValue"] | dict[str, "CatalogValue"]
-)
-CatalogObject: TypeAlias = dict[str, CatalogValue]
+type CatalogValue = JsonScalar | ContractValue | list["CatalogValue"] | dict[str, "CatalogValue"]
+type CatalogObject = dict[str, CatalogValue]
 
 
 @dataclass(frozen=True)

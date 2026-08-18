@@ -6,9 +6,9 @@ import json
 import logging
 import math
 from datetime import UTC, datetime
-from typing import TextIO, TypeAlias
+from typing import TextIO
 
-LogValue: TypeAlias = str | int | float | None
+type LogValue = str | int | float | None
 
 _STANDARD = {
     "timestamp",
