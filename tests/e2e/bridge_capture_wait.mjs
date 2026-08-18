@@ -5,14 +5,17 @@ function readCaptureInPage() {
   };
 }
 
-function captureCompletedInPage() {
+export function captureCompletedInPage() {
   const capture = window.__vibetableE2EBridgeCapture;
   return Boolean(capture?.message || capture?.error);
 }
 
 export async function waitForCapturedBridgeMessage(page, timeoutMs = 20_000) {
   try {
-    await page.waitForFunction(captureCompletedInPage, undefined, { timeout: timeoutMs });
+    await page.waitForFunction(captureCompletedInPage, undefined, {
+      polling: 50,
+      timeout: timeoutMs,
+    });
   } catch (error) {
     if (error?.name === "TimeoutError") {
       throw new Error("captured bridge response timed out", { cause: error });

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
+import {
+  captureCompletedInPage,
+  waitForCapturedBridgeMessage,
+} from "./bridge_capture_wait.mjs";
 
 function makePage(captured, overrides = {}) {
   const calls = [];
@@ -30,8 +33,24 @@ test("waits once in the renderer and reads the captured message once", async () 
   assert.equal(calls.length, 2);
   assert.equal(calls[0][0], "waitForFunction");
   assert.equal(calls[0][2], undefined);
-  assert.deepEqual(calls[0][3], { timeout: 60_000 });
+  assert.deepEqual(calls[0][3], { polling: 50, timeout: 60_000 });
   assert.equal(calls[1][0], "evaluate");
+});
+
+test("renderer wait completes for either a message or an error", () => {
+  globalThis.window = { __vibetableE2EBridgeCapture: { message: null, error: null } };
+  try {
+    assert.equal(captureCompletedInPage(), false);
+    window.__vibetableE2EBridgeCapture.message = { type: "database.opened" };
+    assert.equal(captureCompletedInPage(), true);
+    window.__vibetableE2EBridgeCapture = {
+      message: null,
+      error: { method: "workspace.switch", code: "busy", message: "busy" },
+    };
+    assert.equal(captureCompletedInPage(), true);
+  } finally {
+    delete globalThis.window;
+  }
 });
 
 test("surfaces a captured workspace failure", async () => {
