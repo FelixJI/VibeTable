@@ -31,6 +31,7 @@ import {
   type WorkspaceV2UiPort,
 } from "@/services/workspaceV2UiPort";
 import type {
+  ColumnSchema,
   NormalizedRelationDescriptor,
   PastePlan,
   PasteSummary,
@@ -111,6 +112,7 @@ const mockTabulatorRef: {
     setColumns: ReturnType<typeof vi.fn>;
     destroy: ReturnType<typeof vi.fn>;
     getRanges: () => unknown[];
+    getRows?: () => unknown[];
   };
 } = {
   current: {
@@ -120,6 +122,33 @@ const mockTabulatorRef: {
     getRanges: () => [],
   },
 };
+
+function exposeStructuredGridCell(
+  rowKey: string | number,
+  field: string,
+  element: HTMLElement,
+): void {
+  mockTabulatorRef.current.getRows = () => [{
+    getIndex: () => rowKey,
+    getCell: (candidateField: string) => candidateField === field
+      ? { getElement: () => element }
+      : null,
+  }];
+}
+
+function seedStructuredTablePage(column: ColumnSchema): void {
+  const table = useTableStore();
+  table.beginLoad();
+  table.appendPage({
+    table: "items",
+    columns: [column],
+    rows: [{ rowKey: "row-1", [column.name]: null }],
+    offset: 0,
+    limit: 1,
+    totalRows: 1,
+    mode: "remote",
+  });
+}
 
 vi.mock("@/grid/createGrid", () => ({
   createGrid: () => mockTabulatorRef.current,
@@ -1723,6 +1752,14 @@ describe("WorkspaceView", () => {
     trigger.textContent = "Open JSON";
     document.body.append(trigger);
     trigger.focus();
+    seedStructuredTablePage({
+      name: "metadata",
+      title: "Metadata",
+      dataType: "json",
+      editable: true,
+      nullable: true,
+    });
+    exposeStructuredGridCell("row-1", "metadata", trigger);
 
     const wrapper = mountView({ realTransitions: true });
     await flushPromises();
@@ -1780,6 +1817,21 @@ describe("WorkspaceView", () => {
     workspace.setOpened([{ collection: "items" }], { items: "Items" });
     workspace.selectTable("items");
     useUiStore().navigate("tables");
+    seedStructuredTablePage({
+      name: "photos",
+      title: "Photos",
+      fieldId: "photos-id",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+      attachmentPolicy: {
+        maxFiles: 3,
+        maxBytesPerFile: 1024,
+        allowedMimeTypes: ["image/png"],
+        thumbnailVariants: [],
+        protected: false,
+      },
+    });
 
     const wrapper = mountView({ realTransitions: true });
     await flushPromises();
@@ -1788,6 +1840,7 @@ describe("WorkspaceView", () => {
     trigger.setAttribute("role", "gridcell");
     document.body.append(trigger);
     trigger.focus();
+    exposeStructuredGridCell("row-1", "photos", trigger);
 
     wrapper.findComponent(GridHost).vm.$emit("attachmentOpen", {
       rowKey: "row-1",

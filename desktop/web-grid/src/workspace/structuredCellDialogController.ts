@@ -185,10 +185,17 @@ export function createStructuredCellDialogController(
     state.attachment.show = false;
   }
 
+  function finishDialogClose(
+    dialogRemainsOpen: boolean,
+    focus: StructuredDialogFocusLease | null,
+  ): StructuredDialogFocusLease | null {
+    if (dialogRemainsOpen) return focus;
+    focus?.restore();
+    return null;
+  }
+
   function finishAttachmentClose(): void {
-    if (state.attachment.show) return;
-    attachmentFocus?.restore();
-    attachmentFocus = null;
+    attachmentFocus = finishDialogClose(state.attachment.show, attachmentFocus);
   }
 
   async function openAttachment(
@@ -343,9 +350,7 @@ export function createStructuredCellDialogController(
   }
 
   function finishJsonClose(): void {
-    if (state.json.show) return;
-    jsonFocus?.restore();
-    jsonFocus = null;
+    jsonFocus = finishDialogClose(state.json.show, jsonFocus);
   }
 
   async function dispatch(intent: StructuredCellDialogIntent): Promise<void> {
