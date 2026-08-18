@@ -10,6 +10,8 @@ namespace VibeTable.Infrastructure.PocketBase;
 /// <summary>Resolves the installed/development sidecar without provider flags.</summary>
 public static class PocketBaseHostOptions
 {
+    public static readonly TimeSpan PackagedStartupTimeout = TimeSpan.FromSeconds(60);
+
     public static PocketBaseLaunchOptions Resolve(
         string baseDirectory,
         string localAppData)
@@ -24,13 +26,17 @@ public static class PocketBaseHostOptions
             Path.GetDirectoryName(executable) ?? root,
             dataDirectory);
         IdentityFile identity = ReadIdentity(root);
+        bool developmentMode = !IsPackaged(root, executable);
         return new PocketBaseLaunchOptions
         {
             ExecutablePath = executable,
             WorkingDirectory = Path.GetDirectoryName(executable),
             DataDirectory = dataDirectory,
             LogPath = Path.Combine(dataRoot, "logs", "pocketbase.log"),
-            DevelopmentMode = !IsPackaged(root, executable),
+            DevelopmentMode = developmentMode,
+            StartupTimeout = developmentMode
+                ? PocketBaseLaunchOptions.DefaultStartupTimeout
+                : PackagedStartupTimeout,
             ExpectedIdentity = new PocketBaseExpectedIdentity(
                 "vibetable.sidecar.ready.v1",
                 identity.ContractVersion,

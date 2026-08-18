@@ -30,6 +30,64 @@ public sealed class WorkspaceProductControllerInterfaceTests
     }
 
     [TestMethod]
+    public async Task DispatchPreservesTheStableWorkspaceActivationTimeoutCode()
+    {
+        using var fixture = new Fixture();
+        Guid workspaceId = Guid.NewGuid();
+        fixture.RegistryTopology.Open = (_, _, _, _) =>
+            Task.FromException<WorkspaceSessionV2>(
+                new WorkspaceActivationTimeoutException(
+                    WorkspaceActivationStage.Sidecar,
+                    TimeSpan.FromSeconds(60)));
+
+        await fixture.Controller.DispatchAsync(Request(
+            "workspace.open",
+            "open-timeout",
+            new
+            {
+                workspaceId = workspaceId.ToString("D"),
+                openMode = "writable",
+            }));
+
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.IsFalse(response.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            WorkspaceActivationTimeoutException.ErrorCode,
+            response.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    public async Task DispatchPreservesActivationTimeoutThroughSwitchRollback()
+    {
+        using var fixture = new Fixture();
+        Guid workspaceId = Guid.NewGuid();
+        var timeout = new WorkspaceActivationTimeoutException(
+            WorkspaceActivationStage.Backend,
+            TimeSpan.FromSeconds(90));
+        fixture.RegistryTopology.Open = (_, _, _, _) =>
+            Task.FromException<WorkspaceSessionV2>(
+                new WorkspaceSwitchException(
+                    "target activation failed",
+                    timeout,
+                    OpenSession(Guid.NewGuid(), 21)));
+
+        await fixture.Controller.DispatchAsync(Request(
+            "workspace.switch",
+            "switch-timeout",
+            new
+            {
+                targetWorkspaceId = workspaceId.ToString("D"),
+                openMode = "writable",
+            }));
+
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.IsFalse(response.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            WorkspaceActivationTimeoutException.ErrorCode,
+            response.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [TestMethod]
     public async Task OpenUsesOneSessionPortForSuccessFailureAndCancellation()
     {
         using var fixture = new Fixture();
@@ -88,11 +146,14 @@ public sealed class WorkspaceProductControllerInterfaceTests
         Assert.AreEqual(2, fixture.Bootstrap.PostCount);
     }
 
-    private static RoutedWebRequest Request(string method, string requestId)
+    private static RoutedWebRequest Request(
+        string method,
+        string requestId,
+        object? parameters = null)
     {
         JsonElement payload = JsonSerializer.SerializeToElement(new
         {
-            @params = new { },
+            @params = parameters ?? new { },
         });
         JsonElement wire = JsonSerializer.SerializeToElement(new
         {

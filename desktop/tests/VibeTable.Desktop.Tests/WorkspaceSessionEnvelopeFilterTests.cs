@@ -537,12 +537,12 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         public ulong SessionEpoch { get; } = sessionEpoch;
         public Task StartAsync(
             WorkspaceOpenMode mode,
-            CancellationToken cancellationToken)
+            WorkspaceActivationBudget budget)
             => failStart
                 ? Task.FromException(
                     new InvalidOperationException("injected start failure"))
                 : Task.CompletedTask;
-        public Task VerifyAsync(CancellationToken cancellationToken)
+        public Task VerifyAsync(WorkspaceActivationBudget budget)
             => Task.CompletedTask;
         public Task DrainAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;

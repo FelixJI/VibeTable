@@ -8,6 +8,7 @@ import type {
   DatabaseOpenedPayload,
   TablePage,
 } from "@/contracts";
+import type { WorkspaceV2RequestPayload } from "@/contracts/workspaceV2Bridge";
 
 /**
  * Minimal shape of `window.chrome.webview` used by HostBridge. Only the
@@ -361,6 +362,86 @@ describe("HostBridge", () => {
     await expect(pending).resolves.toMatchObject({ method: "workspace.create", ok: true });
     bridge.stop();
   });
+
+  it.each([
+    {
+      method: "workspace.open",
+      params: {
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        openMode: "writable",
+      },
+      wire: {
+        scope: "global",
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        sequence: 1,
+      },
+    },
+    {
+      method: "workspace.switch",
+      params: {
+        targetWorkspaceId: "22222222-2222-4222-8222-222222222222",
+        openMode: "writable",
+      },
+      wire: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+        operationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        sequence: 2,
+      },
+    },
+    {
+      method: "workspace.close",
+      params: { reason: "user" },
+      wire: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+        operationId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        sequence: 3,
+      },
+    },
+    {
+      method: "snapshot.openAsNewWorkspace",
+      params: {
+        snapshotId: "33333333-3333-4333-8333-333333333333",
+      },
+      wire: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+        operationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        sequence: 4,
+      },
+    },
+  ] satisfies readonly WorkspaceV2RequestPayload<
+    | "workspace.open"
+    | "workspace.switch"
+    | "workspace.close"
+    | "snapshot.openAsNewWorkspace"
+  >[])(
+    "leaves $method lifecycle deadline ownership to the native host",
+    async (payload) => {
+      vi.useFakeTimers();
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1_000,
+        generateRequestId: () => `activation-${payload.method}`,
+      });
+      bridge.start();
+      const pending = bridge.request("workspace.v2.request", payload);
+      let settled = false;
+      void pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+      expect(settled).toBe(false);
+      bridge.stop();
+    },
+  );
 
   it("adds a strictly scoped workspace envelope to product requests", async () => {
     const session = useWorkspaceSessionStore();
