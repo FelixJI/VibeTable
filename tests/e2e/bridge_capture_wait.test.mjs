@@ -32,6 +32,7 @@ test("waits once in the renderer and reads the captured message once", async () 
   assert.equal(result, message);
   assert.equal(calls.length, 2);
   assert.equal(calls[0][0], "waitForFunction");
+  assert.equal(calls[0][1], captureCompletedInPage);
   assert.equal(calls[0][2], undefined);
   assert.deepEqual(calls[0][3], { polling: 50, timeout: 60_000 });
   assert.equal(calls[1][0], "evaluate");
