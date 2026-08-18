@@ -563,12 +563,12 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
             [target]);
         ulong epoch = checked(factory.InitialSessionEpoch + 1);
         await using IWorkspaceRuntime runtime = factory.Create(target, epoch);
-        await runtime.StartAsync(
+        await ActivateRuntimeAsync(
+            runtime,
             WorkspaceOpenMode.Writable,
             cancellationToken).ConfigureAwait(false);
         try
         {
-            await runtime.VerifyAsync(cancellationToken).ConfigureAwait(false);
             WorkspaceV2HttpGateway gateway =
                 factory.CurrentV2Gateway
                 ?? throw new WorkspaceRegistryException(
@@ -716,13 +716,12 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         await using (IWorkspaceRuntime runtime =
                      factory.Create(target, importEpoch))
         {
-            await runtime.StartAsync(
+            await ActivateRuntimeAsync(
+                runtime,
                 WorkspaceOpenMode.Writable,
                 cancellationToken).ConfigureAwait(false);
             try
             {
-                await runtime.VerifyAsync(cancellationToken)
-                    .ConfigureAwait(false);
                 RequireRuntimeMethods(
                     factory,
                     "snapshot.import",
@@ -837,15 +836,14 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         await using (IWorkspaceRuntime runtime =
                      factory.Create(target, verifyEpoch))
         {
-            await runtime.StartAsync(
+            await ActivateRuntimeAsync(
+                runtime,
                 WorkspaceOpenMode.Writable,
                 cancellationToken).ConfigureAwait(false);
             try
             {
                 // Startup atomically installs the pending restore, completes
                 // its audit/recovery snapshot, and rolls it back on failure.
-                await runtime.VerifyAsync(cancellationToken)
-                    .ConfigureAwait(false);
                 RequireRuntimeMethods(factory, "repository.verify");
                 JsonElement verifyWire = CreateWorkspaceWire(
                     target.WorkspaceId,
@@ -888,6 +886,29 @@ public sealed class SnapshotPackageBroker : IAsyncDisposable
         }
 
         return importedResult;
+    }
+
+    private static async Task ActivateRuntimeAsync(
+        IWorkspaceRuntime runtime,
+        WorkspaceOpenMode mode,
+        CancellationToken cancellationToken)
+    {
+        using var activation = WorkspaceActivationBudget.Begin(
+            runtime.WorkspaceId,
+            runtime.SessionEpoch,
+            runtime.ActivationPolicy,
+            cancellationToken);
+        try
+        {
+            await runtime.StartAsync(mode, activation).ConfigureAwait(false);
+            await runtime.VerifyAsync(activation).ConfigureAwait(false);
+            activation.Complete();
+        }
+        catch (Exception error)
+        {
+            activation.Fail(error);
+            throw;
+        }
     }
 
     private async Task OpenImportedWorkspaceAsync(

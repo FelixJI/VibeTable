@@ -51,7 +51,7 @@ public sealed class WorkspaceSessionManagerTests
         var workspace = fixture.AddWorkspace("故障", "Failure");
         fixture.RuntimeFactory.FailNextStartFor = workspace.WorkspaceId;
 
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        await Assert.ThrowsExactlyAsync<WorkspaceActivationTimeoutException>(
             () => fixture.Manager.OpenAsync(
                 workspace.WorkspaceId,
                 WorkspaceOpenMode.Writable));
@@ -60,6 +60,36 @@ public sealed class WorkspaceSessionManagerTests
         Assert.AreEqual(WorkspaceSessionState.Closed, fixture.Manager.Current.State);
         Assert.IsFalse(fixture.Manager.Current.Writable);
         Assert.AreEqual(0, fixture.RuntimeFactory.Active);
+        Assert.AreEqual(1, fixture.RuntimeFactory.StopCalls);
+        Assert.AreEqual(1, fixture.RuntimeFactory.DisposeCalls);
+        Assert.AreEqual(1, fixture.RuntimeFactory.Created);
+        Assert.AreEqual(0, fixture.Lease.Active);
+        Assert.AreEqual(
+            WorkspaceActivationOutcome.TimedOut,
+            fixture.Manager.LastActivationReport!.Outcome);
+    }
+
+    [TestMethod]
+    public async Task OpenTimeoutPublishesClosedEvenWhenRuntimeCleanupFails()
+    {
+        using var fixture = new SessionFixture();
+        var workspace = fixture.AddWorkspace("清理失败", "CleanupFailure");
+        fixture.RuntimeFactory.FailNextStartFor = workspace.WorkspaceId;
+        fixture.RuntimeFactory.FailNextStopFor = workspace.WorkspaceId;
+
+        AggregateException error =
+            await Assert.ThrowsExactlyAsync<AggregateException>(() =>
+                fixture.Manager.OpenAsync(
+                    workspace.WorkspaceId,
+                    WorkspaceOpenMode.Writable));
+
+        Assert.IsInstanceOfType<WorkspaceActivationTimeoutException>(
+            error.InnerExceptions[0]);
+        Assert.AreEqual(WorkspaceSessionState.Closed, fixture.Manager.Current.State);
+        Assert.AreEqual(WorkspaceSessionPhase.Idle, fixture.Manager.Current.Phase);
+        Assert.IsNull(fixture.Manager.Current.WorkspaceId);
+        Assert.AreEqual(1, fixture.RuntimeFactory.StopCalls);
+        Assert.AreEqual(1, fixture.RuntimeFactory.DisposeCalls);
         Assert.AreEqual(0, fixture.Lease.Active);
     }
 
@@ -308,6 +338,8 @@ public sealed class WorkspaceSessionManagerTests
         public int Active { get; private set; }
         public int MaximumActive { get; private set; }
         public int Created { get; private set; }
+        public int StopCalls { get; private set; }
+        public int DisposeCalls { get; private set; }
         public Guid? FailNextStartFor { get; set; }
         public Guid? FailNextDrainFor { get; set; }
         public Guid? FailNextStopFor { get; set; }
@@ -333,17 +365,23 @@ public sealed class WorkspaceSessionManagerTests
             public Guid WorkspaceId { get; } = workspaceId;
             public ulong SessionEpoch { get; } = sessionEpoch;
 
-            public Task StartAsync(WorkspaceOpenMode mode, CancellationToken cancellationToken)
+            public Task StartAsync(
+                WorkspaceOpenMode mode,
+                WorkspaceActivationBudget budget)
             {
                 if (failStart)
-                    throw new InvalidOperationException("injected start failure");
+                {
+                    throw new WorkspaceActivationTimeoutException(
+                        WorkspaceActivationStage.Sidecar,
+                        TimeSpan.FromSeconds(31));
+                }
                 _started = true;
                 owner.Active++;
                 owner.MaximumActive = Math.Max(owner.MaximumActive, owner.Active);
                 return Task.CompletedTask;
             }
 
-            public Task VerifyAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+            public Task VerifyAsync(WorkspaceActivationBudget budget) => Task.CompletedTask;
             public Task DrainAsync(CancellationToken cancellationToken)
             {
                 if (owner.FailNextDrainFor == WorkspaceId)
@@ -356,6 +394,7 @@ public sealed class WorkspaceSessionManagerTests
 
             public Task StopAsync(CancellationToken cancellationToken)
             {
+                owner.StopCalls++;
                 if (_started)
                 {
                     _started = false;
@@ -370,7 +409,11 @@ public sealed class WorkspaceSessionManagerTests
                 return Task.CompletedTask;
             }
 
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public ValueTask DisposeAsync()
+            {
+                owner.DisposeCalls++;
+                return ValueTask.CompletedTask;
+            }
         }
     }
 

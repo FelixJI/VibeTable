@@ -225,7 +225,8 @@ public partial class MainWindow : Window
             new WorkspaceReplicaPreOpenHook(
                 _replicaRecovery,
                 _repositoryOnboarding,
-                _repositoryRecoveryUi));
+                _repositoryRecoveryUi),
+            activationTrace: message => _readiness?.Trace(message));
         _workspaceSessionFilter = new WorkspaceSessionEnvelopeFilter(
             _workspaceSessions);
         productionEnvelopeFilter = _workspaceSessionFilter;
