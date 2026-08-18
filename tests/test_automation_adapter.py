@@ -88,6 +88,19 @@ def test_ci_prepare_scopes_candidate_mode_to_the_prepare_step() -> None:
     assert ci.count("VIBETABLE_CI_PREPARE_MODE: candidate") == 1
 
 
+def test_ci_prepare_failure_preserves_product_e2e_evidence() -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    evidence_step = ci.split("- name: Upload failed prepare evidence", 1)[1]
+    evidence_step = evidence_step.split("- name: Upload immutable candidate handoff", 1)[0]
+
+    assert "if: failure()" in evidence_step
+    assert "name: ci-prepare-evidence" in evidence_step
+    assert "build/qa/pr-product-e2e" in evidence_step
+    assert "build/qa/workbench-qualification-pr.json" in evidence_step
+    assert "if-no-files-found: warn" in evidence_step
+    assert "retention-days: 3" in evidence_step
+
+
 def test_candidate_prepare_bootstraps_only_release_build_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
