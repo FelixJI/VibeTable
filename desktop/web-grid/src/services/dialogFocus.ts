@@ -41,6 +41,8 @@ export interface StructuredDialogFocusDependencies {
   readonly subscribeScope: (listener: () => void) => () => void;
 }
 
+type StructuredDialogFocusAttempt = "restored" | "pending" | "missing";
+
 function sameScope(left: StructuredGridFocusScope, right: StructuredGridFocusScope): boolean {
   return left.workspaceId === right.workspaceId
     && left.sessionEpoch === right.sessionEpoch
@@ -60,13 +62,14 @@ export function createStructuredDialogFocus(
     let cancelled = false;
     let restoreRequested = false;
     let boundGrid: StructuredGridLike | null = null;
-    let observingFocusOwnership = false;
+    let observingDocumentFocus = false;
+    let observingWindowFocus = false;
     let restoringFocus = false;
 
     const attemptRestore = (grid: StructuredGridLike | null): void => {
       restoringFocus = true;
       try {
-        restoreStructuredDialogFocus(grid, target);
+        if (attemptStructuredDialogFocus(grid, target) === "missing") lease.cancel();
       } finally {
         restoringFocus = false;
       }
@@ -98,16 +101,18 @@ export function createStructuredDialogFocus(
         boundGrid = dependencies.getGrid();
         boundGrid?.on?.("renderComplete", onRenderComplete);
         attemptRestore(boundGrid);
+        if (cancelled) return;
         document.addEventListener("focusin", onDocumentFocusIn);
-        window.addEventListener("blur", onWindowBlur);
-        observingFocusOwnership = true;
+        observingDocumentFocus = true;
       },
       cancel(): void {
         if (cancelled) return;
         cancelled = true;
         boundGrid?.off?.("renderComplete", onRenderComplete);
-        if (observingFocusOwnership) {
+        if (observingDocumentFocus) {
           document.removeEventListener("focusin", onDocumentFocusIn);
+        }
+        if (observingWindowFocus) {
           window.removeEventListener("blur", onWindowBlur);
         }
         boundGrid = null;
@@ -115,6 +120,8 @@ export function createStructuredDialogFocus(
       },
     };
     current = lease;
+    window.addEventListener("blur", onWindowBlur);
+    observingWindowFocus = true;
     return lease;
   }
 
@@ -142,10 +149,17 @@ export function restoreStructuredDialogFocus(
   grid: StructuredGridLike | null,
   target: StructuredDialogFocusTarget | null,
 ): boolean {
-  if (!target) return false;
+  return attemptStructuredDialogFocus(grid, target) === "restored";
+}
+
+function attemptStructuredDialogFocus(
+  grid: StructuredGridLike | null,
+  target: StructuredDialogFocusTarget | null,
+): StructuredDialogFocusAttempt {
+  if (!target) return "missing";
   const rows = grid?.getRows?.() ?? [];
   const row = rows.find((candidate) => String(candidate.getIndex?.()) === String(target.rowKey));
-  if (!row) return false;
+  if (!row) return "missing";
   const fallback = row.getCell?.(target.field)?.getElement?.();
   const candidates = [target.element, fallback];
   const attempted = new Set<HTMLElement>();
@@ -153,7 +167,7 @@ export function restoreStructuredDialogFocus(
     if (!element?.isConnected || attempted.has(element)) continue;
     attempted.add(element);
     element.focus({ preventScroll: true });
-    if (document.activeElement === element) return true;
+    if (document.activeElement === element) return "restored";
   }
-  return false;
+  return "pending";
 }
