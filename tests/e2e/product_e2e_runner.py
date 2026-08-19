@@ -508,10 +508,16 @@ def _descendants(parent_pid: int) -> list[tuple[int, str]]:
     for pid, parent, name in processes:
         children.setdefault(parent, []).append((pid, name))
     result: list[tuple[int, str]] = []
+    # PID 复用会让同一快照内出现父子环（resilience 故障注入高频重启时尤甚），
+    # 访问集去重防止成环后无界增长（CI 曾因此 MemoryError）。
+    seen = {parent_pid}
     pending = [parent_pid]
     while pending:
         parent = pending.pop()
         for child in children.get(parent, []):
+            if child[0] in seen:
+                continue
+            seen.add(child[0])
             result.append(child)
             pending.append(child[0])
     return result

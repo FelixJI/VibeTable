@@ -292,6 +292,29 @@ def test_backend_fault_controller_fails_closed_when_target_is_not_unique(
     }
 
 
+def test_descendants_terminates_when_pid_reuse_closes_a_cycle(monkeypatch) -> None:
+    # PID 复用可令同一快照内出现父子环：42 -> 7 -> 8 -> 7。
+    monkeypatch.setattr(
+        runner,
+        "_windows_processes",
+        lambda: [
+            (42, 41, "VibeTable.Next.exe"),
+            (7, 42, "vibetable-pb.exe"),
+            (8, 7, "vibetable-backend.exe"),
+            (9, 8, "python.exe"),
+            (10, 7, "python.exe"),
+        ],
+    )
+
+    # pending 为栈，遍历呈深度优先序。
+    assert runner._descendants(42) == [
+        (7, "vibetable-pb.exe"),
+        (8, "vibetable-backend.exe"),
+        (10, "python.exe"),
+        (9, "python.exe"),
+    ]
+
+
 def test_normal_exit_tracks_children_started_while_the_host_is_closing(
     monkeypatch,
     tmp_path: Path,

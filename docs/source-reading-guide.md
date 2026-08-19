@@ -35,7 +35,7 @@ flowchart LR
 ### 环境
 
 - Windows 10/11 x64
-- Python 3.11+ 与 `uv`
+- Python 3.13+ 与 `uv`
 - Node.js 24.x（仓库锁定 24.18.0）
 - .NET SDK 10.0.100
 - Go 1.25.8

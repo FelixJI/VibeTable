@@ -11,7 +11,6 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import TypeAlias
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = Path(__file__).with_name("schema.schema.json")
@@ -27,9 +26,9 @@ OUTPUTS = {
     "typescript": ROOT / "desktop" / "web-grid" / "src" / "contracts" / "generated" / "schemaV2.ts",
 }
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+type JsonObject = dict[str, JsonValue]
 
 CSHARP_NAMES = {
     "FieldIdentity": "FieldIdentityV2",
@@ -363,7 +362,7 @@ def _generate_python(definitions: list[tuple[str, JsonObject]], root: JsonObject
         "",
         "from __future__ import annotations",
         "",
-        "from typing import Annotated, Literal, TypeAlias",
+        "from typing import Annotated, Literal",
         "",
         "from pydantic import BaseModel, ConfigDict, Field, JsonValue",
         "",
@@ -384,7 +383,7 @@ def _generate_python(definitions: list[tuple[str, JsonObject]], root: JsonObject
     ]
     for name, definition in definitions:
         if definition.get("type") != "object":
-            lines.extend([f"{name}: TypeAlias = {_python_type(definition)}", "", ""])
+            lines.extend([f"type {name} = {_python_type(definition)}", "", ""])
             continue
         lines.append(f"class {name}(SchemaV2WireModel):")
         properties = definition["properties"]
@@ -395,7 +394,7 @@ def _generate_python(definitions: list[tuple[str, JsonObject]], root: JsonObject
             lines.append(_python_property(field, node, required=field in required))
         lines.extend(["", ""])
     root_union = _python_type({"oneOf": root["oneOf"]})
-    lines.extend([f"SchemaV2Document: TypeAlias = {root_union}", ""])
+    lines.extend([f"type SchemaV2Document = {root_union}", ""])
     raw = "\n".join(lines).rstrip() + "\n"
     formatted = subprocess.run(
         [

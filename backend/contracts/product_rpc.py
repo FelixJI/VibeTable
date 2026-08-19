@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import ClassVar, TypeAlias
+from typing import ClassVar
 
 from pydantic import JsonValue, RootModel, model_validator
 
@@ -21,7 +21,7 @@ _FORBIDDEN_KEYS = {
 }
 
 
-JsonObject: TypeAlias = dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
 
 
 class ProductParams(RootModel[JsonObject]):
