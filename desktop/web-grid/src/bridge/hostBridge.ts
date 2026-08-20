@@ -203,9 +203,11 @@ export class BridgeTimeoutError extends Error {
 export class BridgeOperationError extends Error {
   public override readonly name = "BridgeOperationError";
   public readonly code?: string;
+  public readonly operation?: string;
   public constructor(payload: OperationFailedPayload) {
     super(payload.message);
     this.code = payload.code;
+    this.operation = payload.operation;
   }
 }
 
@@ -266,6 +268,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "file.uploadRequested",
   "file.replaceRequested",
   "file.removeRequested",
+  "file.previewRequested",
+  "file.downloadRequested",
   "events.reconcile",
   "schema.describe",
   "relation.searchTargets",
@@ -533,6 +537,10 @@ const HOST_OWNED_WORKSPACE_LIFECYCLE_METHODS = new Set([
 const HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES: ReadonlySet<WebMessageType> = new Set([
   "tableAdmin.createRequested",
   "tableAdmin.deleteRequested",
+]);
+const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+  "file.previewRequested",
+  "file.downloadRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
@@ -984,6 +992,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
             ? null
           : HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES.has(type)
             ? null
+          : HOST_OWNED_NATIVE_ACTION_MESSAGES.has(type)
+            ? null
           : type === "workspace.v2.request" && isWorkspaceBootstrapRequest(payload)
             ? workspaceBootstrapTimeoutMs
           : timeoutMs;
@@ -1162,6 +1172,9 @@ function normalizeFailure(payload: unknown): OperationFailedPayload {
       message: payload.message,
       ...(typeof payload.code === "string"
         ? { code: payload.code }
+        : {}),
+      ...(typeof payload.operation === "string"
+        ? { operation: payload.operation }
         : {}),
     };
   }

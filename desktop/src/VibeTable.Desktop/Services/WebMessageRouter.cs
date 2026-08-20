@@ -224,6 +224,8 @@ public sealed class WebMessageRouter
         "file.uploadRequested",
         "file.replaceRequested",
         "file.removeRequested",
+        "file.previewRequested",
+        "file.downloadRequested",
         // Versioned plugin domain events and local surface messages.
         "plugin.catalog.changed",
         "plugin.task.changed",

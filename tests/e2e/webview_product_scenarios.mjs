@@ -2444,24 +2444,13 @@ async function scenario07(page, recorder, _network, runtime) {
   await cell.dblclick();
   await panel.waitFor({ state: "visible", timeout: 30_000 });
   await page.getByTestId("attachment-preview-0").waitFor({ timeout: 30_000 });
-  await beginBridgeMessageCapture(page, ["operation.failed"]);
+  await beginBridgeMessageCapture(page, ["file.previewRequested"]);
   await page.getByTestId("attachment-preview-0").click();
-  let previewArtifact;
-  try {
-    previewArtifact = await waitForPreviewArtifact(
-      runtime,
-      expectedOriginalHash,
-      originalBytes.length,
-    );
-  } catch (error) {
-    const previewFailure = await page.evaluate(
-      () => window.__vibetableE2EBridgeCapture?.message ?? null,
-    );
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}; `
-      + `bridgeFailure=${JSON.stringify(previewFailure)}`,
-    );
-  }
+  const previewArtifact = await waitForPreviewArtifact(
+    runtime,
+    expectedOriginalHash,
+    originalBytes.length,
+  );
   const preservedPreviewPath = path.join(
     runtime.evidenceDir,
     "attachment-preview-verified.txt",
@@ -2482,6 +2471,16 @@ async function scenario07(page, recorder, _network, runtime) {
       expectedOriginalHash,
       expectedSize: originalBytes.length,
     },
+  );
+  const previewResult = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check(
+    "native attachment preview reaches one correlated capability outcome",
+    previewResult.type === "file.previewRequested"
+      && typeof previewResult.requestId === "string"
+      && (previewResult.payload?.outcome === "opened"
+        || (previewResult.payload?.outcome === "unavailable"
+          && previewResult.payload?.reason === "PREVIEW_HANDLER_UNAVAILABLE")),
+    { previewResult },
   );
   await page.getByTestId("attachment-replace-0").click();
   await panel.waitFor({ state: "hidden", timeout: 30_000 });

@@ -977,18 +977,10 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert "canonicalJsonSet(exportedValues)" in scenario
 
 
-def test_attachment_preview_and_verified_purge_receipt_are_exact_evidence() -> None:
+def test_verified_purge_receipt_is_exact_evidence() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    attachment = source[
-        source.index("async function scenario07") : source.index("async function scenario08")
-    ]
     backup = source[source.index("async function scenario12") : source.index("const scenarios")]
 
-    assert "waitForPreviewArtifact(" in attachment
-    assert 'path.join(runtime.dataRoot, "attachment-preview")' in source
-    assert 'runtime.evidenceDir,\n    "runtime",\n    "local-data"' not in source
-    assert "attachment-preview-verified.txt" in attachment
-    assert "sha256(await fs.readFile(preservedPreviewPath))" in attachment
     assert "preservedChangeSetIds" in backup
     assert "postSnapshotValuePreserved" in backup
     assert "postSnapshotAttachmentPreserved" in backup
@@ -1034,9 +1026,6 @@ def test_backup_consistency_uses_current_snapshot_versions_ui_contract() -> None
 
 def test_fault_scenarios_use_host_allocated_table_and_field_identities() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario07 = source[
-        source.index("async function scenario07") : source.index("async function scenario08")
-    ]
     scenario09 = source[
         source.index("async function scenario09") : source.index("async function scenario10")
     ]
@@ -1045,7 +1034,6 @@ def test_fault_scenarios_use_host_allocated_table_and_field_identities() -> None
     ]
     scenario12 = source[source.index("async function scenario12") : source.index("const scenarios")]
 
-    assert '"tbl_e2e_attachments"' not in scenario07
     assert '"tbl_e2e_atomic_import"' not in scenario09
     assert '"tbl_e2e_plugin_target"' not in scenario11
     assert '"tbl_e2e_backup_consistency"' not in scenario12

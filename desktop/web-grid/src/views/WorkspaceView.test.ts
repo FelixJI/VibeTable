@@ -2001,6 +2001,8 @@ describe("WorkspaceView", () => {
         return { status: "applied" };
       }
       if (method === "file.removeRequested") return { status: "applied" };
+      if (method === "file.previewRequested") return { outcome: "opened", reason: null };
+      if (method === "file.downloadRequested") return { outcome: "saved" };
       throw new Error(`unexpected request: ${method}`);
     });
     const notify = vi.fn();
@@ -2060,12 +2062,17 @@ describe("WorkspaceView", () => {
     expect(panel.exists()).toBe(true);
     panel.vm.$emit("preview", "stored.png");
     panel.vm.$emit("download", "stored.png");
-    expect(notify).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
       storedName: "stored.png",
     }));
-    expect(notify).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
+    expect(request).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
       originalName: "photo.png",
     }));
+    expect(notify).not.toHaveBeenCalledWith(
+      "file.previewRequested",
+      expect.anything(),
+    );
 
     panel.vm.$emit("replace", "stored.png");
     await flushPromises();
