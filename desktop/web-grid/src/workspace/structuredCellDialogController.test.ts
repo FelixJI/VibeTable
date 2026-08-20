@@ -14,9 +14,12 @@ import {
   type StructuredDialogFocus,
   type StructuredGridLike,
 } from "@/services/dialogFocus";
+import { createNaiveModalAfterLeaveAdapter } from "@/services/naiveModalAfterLeave";
 import {
   createStructuredCellDialogController,
   type StructuredCellBridge,
+  type StructuredCellDialogController,
+  type StructuredCellDialogKind,
 } from "./structuredCellDialogController";
 
 const attachmentColumn: ColumnSchema = {
@@ -90,6 +93,15 @@ function setup(
     activeElement: () => null,
   });
   return { controller, commitJson, dialogFocus, reportError };
+}
+
+function releaseClose(
+  controller: StructuredCellDialogController,
+  dialog: StructuredCellDialogKind,
+): void {
+  const lease = controller.claimCloseLease(dialog);
+  expect(lease).not.toBeNull();
+  lease?.release();
 }
 
 interface RealTabulatorDomFixture {
@@ -231,7 +243,7 @@ describe("structured cell dialog controller", () => {
       trigger,
     });
     await controller.dispatch({ type: "attachment.close" });
-    await controller.dispatch({ type: "attachment.closed" });
+    releaseClose(controller, "attachment");
 
     expect(document.activeElement).toBe(trigger);
     dialogFocus.dispose();
@@ -306,6 +318,7 @@ describe("structured cell dialog controller", () => {
       trigger: firstTrigger,
     });
     await controller.dispatch({ type: "attachment.close" });
+    const firstClose = controller.claimCloseLease("attachment");
     await controller.dispatch({
       type: "attachment.open",
       rowKey: "row-2",
@@ -313,12 +326,56 @@ describe("structured cell dialog controller", () => {
       trigger: secondTrigger,
     });
 
-    await controller.dispatch({ type: "attachment.closed" });
+    firstClose?.release();
     expect(document.activeElement).not.toBe(secondTrigger);
 
     await controller.dispatch({ type: "attachment.close" });
-    await controller.dispatch({ type: "attachment.closed" });
+    releaseClose(controller, "attachment");
     expect(document.activeElement).toBe(secondTrigger);
+
+    dialogFocus.dispose();
+    firstTrigger.remove();
+    secondTrigger.remove();
+  });
+
+  it("binds each queued attachment after-leave to the close that created it", async () => {
+    const firstTrigger = document.createElement("button");
+    const secondTrigger = document.createElement("button");
+    document.body.append(firstTrigger, secondTrigger);
+    const secondFocus = vi.spyOn(secondTrigger, "focus");
+    const request = vi.fn().mockResolvedValue({ attachments: [] });
+    const { controller, dialogFocus, reportError } = setup(request as HostBridge["request"]);
+    const modal = createNaiveModalAfterLeaveAdapter({
+      claimRelease: () => controller.claimCloseLease("attachment"),
+      reportError,
+    });
+
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+      trigger: firstTrigger,
+    });
+    await controller.dispatch({ type: "attachment.close" });
+    modal.beforeLeave();
+    const firstRelease = modal.afterLeave();
+
+    const secondOpen = controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-2",
+      column: attachmentColumn,
+      trigger: secondTrigger,
+    });
+    const secondClose = controller.dispatch({ type: "attachment.close" });
+    modal.beforeLeave();
+    await firstRelease;
+    expect(secondFocus).not.toHaveBeenCalled();
+
+    await modal.afterLeave();
+    expect(secondFocus).toHaveBeenCalledTimes(1);
+    expect(reportError).not.toHaveBeenCalled();
+    await secondOpen;
+    await secondClose;
 
     dialogFocus.dispose();
     firstTrigger.remove();
@@ -587,7 +644,7 @@ describe("structured cell dialog controller", () => {
         trigger,
       });
       await controller.dispatch({ type: "json.close" });
-      await controller.dispatch({ type: "json.closed" });
+      releaseClose(controller, "json");
       expect(focusAttempts).toBe(1);
 
       expect(renderComplete).not.toBeNull();
@@ -671,7 +728,7 @@ describe("structured cell dialog controller", () => {
         trigger,
       });
       await controller.dispatch({ type: "json.close" });
-      await controller.dispatch({ type: "json.closed" });
+      releaseClose(controller, "json");
       await nextTick();
       await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
 

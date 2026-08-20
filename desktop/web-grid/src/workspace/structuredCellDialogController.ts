@@ -74,7 +74,6 @@ export type StructuredCellDialogIntent =
     readonly trigger?: HTMLElement | null;
   }
   | { readonly type: "attachment.close" }
-  | { readonly type: "attachment.closed" }
   | { readonly type: "attachment.upload" }
   | { readonly type: "attachment.replace"; readonly storedName: string }
   | { readonly type: "attachment.remove"; readonly storedName: string }
@@ -91,12 +90,21 @@ export type StructuredCellDialogIntent =
   | { readonly type: "json.change"; readonly value: unknown }
   | { readonly type: "json.validity"; readonly valid: boolean }
   | { readonly type: "json.save" }
-  | { readonly type: "json.close" }
-  | { readonly type: "json.closed" };
+  | { readonly type: "json.close" };
+
+export type StructuredCellDialogKind = "attachment" | "json";
+
+const structuredDialogCloseLeaseBrand: unique symbol = Symbol("structured-dialog-close-lease");
+
+export interface StructuredDialogCloseLease {
+  readonly [structuredDialogCloseLeaseBrand]: true;
+  release(): void;
+}
 
 export interface StructuredCellDialogController {
   readonly state: StructuredCellDialogState;
   dispatch(intent: StructuredCellDialogIntent): Promise<void>;
+  claimCloseLease(dialog: StructuredCellDialogKind): StructuredDialogCloseLease | null;
 }
 
 export type StructuredCellBridge = Pick<HostBridge, "request">;
@@ -204,28 +212,40 @@ export function createStructuredCellDialogController(
   const attachmentActionLeases = new Map<string, number>();
   let attachmentFocus: StructuredDialogFocusLease | null = null;
   let jsonFocus: StructuredDialogFocusLease | null = null;
+  let attachmentCloseLease: StructuredDialogCloseLease | null = null;
+  let jsonCloseLease: StructuredDialogCloseLease | null = null;
 
   const activeElement = (): HTMLElement | null =>
     dependencies.activeElement?.() ?? currentActiveElement();
 
+  function createCloseLease(
+    releaseCurrent: (lease: StructuredDialogCloseLease) => void,
+  ): StructuredDialogCloseLease {
+    let released = false;
+    const lease: StructuredDialogCloseLease = {
+      [structuredDialogCloseLeaseBrand]: true,
+      release(): void {
+        if (released) return;
+        released = true;
+        releaseCurrent(lease);
+      },
+    };
+    return lease;
+  }
+
   function closeAttachment(): void {
+    if (!state.attachment.show) return;
     attachmentEpoch += 1;
     attachmentActionEpoch += 1;
     attachmentActionLeases.clear();
     state.attachment.show = false;
-  }
-
-  function finishDialogClose(
-    dialogRemainsOpen: boolean,
-    focus: StructuredDialogFocusLease | null,
-  ): StructuredDialogFocusLease | null {
-    if (dialogRemainsOpen) return focus;
-    focus?.restore();
-    return null;
-  }
-
-  function finishAttachmentClose(): void {
-    attachmentFocus = finishDialogClose(state.attachment.show, attachmentFocus);
+    attachmentCloseLease = createCloseLease((lease) => {
+      if (attachmentCloseLease !== lease || state.attachment.show) return;
+      attachmentCloseLease = null;
+      const focus = attachmentFocus;
+      attachmentFocus = null;
+      focus?.restore();
+    });
   }
 
   async function openAttachment(
@@ -242,6 +262,7 @@ export function createStructuredCellDialogController(
     }
     const focused = activeElement();
     const trigger = triggerElement ?? focused;
+    attachmentCloseLease = null;
     attachmentFocus = dependencies.dialogFocus.capture({
       element: trigger,
       rowKey,
@@ -401,6 +422,7 @@ export function createStructuredCellDialogController(
 
   function openJson(intent: Extract<StructuredCellDialogIntent, { type: "json.open" }>): void {
     const focused = activeElement();
+    jsonCloseLease = null;
     jsonFocus = dependencies.dialogFocus.capture({
       element: intent.trigger ?? focused,
       rowKey: intent.rowKey,
@@ -419,11 +441,22 @@ export function createStructuredCellDialogController(
   }
 
   function closeJson(): void {
+    if (!state.json.show) return;
     state.json.show = false;
+    jsonCloseLease = createCloseLease((lease) => {
+      if (jsonCloseLease !== lease || state.json.show) return;
+      jsonCloseLease = null;
+      const focus = jsonFocus;
+      jsonFocus = null;
+      focus?.restore();
+    });
   }
 
-  function finishJsonClose(): void {
-    jsonFocus = finishDialogClose(state.json.show, jsonFocus);
+  function claimCloseLease(dialog: StructuredCellDialogKind): StructuredDialogCloseLease | null {
+    if (dialog === "attachment") {
+      return state.attachment.show ? null : attachmentCloseLease;
+    }
+    return state.json.show ? null : jsonCloseLease;
   }
 
   async function dispatch(intent: StructuredCellDialogIntent): Promise<void> {
@@ -433,9 +466,6 @@ export function createStructuredCellDialogController(
         return;
       case "attachment.close":
         closeAttachment();
-        return;
-      case "attachment.closed":
-        finishAttachmentClose();
         return;
       case "attachment.upload":
         await mutateAttachment("file.uploadRequested");
@@ -477,13 +507,12 @@ export function createStructuredCellDialogController(
       case "json.close":
         closeJson();
         return;
-      case "json.closed":
-        finishJsonClose();
     }
   }
 
   return {
     state: readonly(state) as StructuredCellDialogState,
     dispatch,
+    claimCloseLease,
   };
 }

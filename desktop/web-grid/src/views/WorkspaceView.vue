@@ -74,6 +74,7 @@ import {
   createStructuredDialogFocus,
   type StructuredGridLike,
 } from "@/services/dialogFocus";
+import { createNaiveModalAfterLeaveAdapter } from "@/services/naiveModalAfterLeave";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { usePluginService } from "@/services/pluginService";
@@ -302,7 +303,15 @@ const structuredCellDialogs = createStructuredCellDialogController({
   ),
   dialogFocus: structuredDialogFocus,
   translate: t,
-  reportError: error => message.error(error),
+  reportError: reportStructuredDialogError,
+});
+const attachmentModalLifecycle = createNaiveModalAfterLeaveAdapter({
+  claimRelease: () => structuredCellDialogs.claimCloseLease("attachment"),
+  reportError: reportStructuredDialogError,
+});
+const jsonModalLifecycle = createNaiveModalAfterLeaveAdapter({
+  claimRelease: () => structuredCellDialogs.claimCloseLease("json"),
+  reportError: reportStructuredDialogError,
 });
 const attachmentPanel = structuredCellDialogs.state.attachment;
 const jsonEditor = structuredCellDialogs.state.json;
@@ -312,6 +321,10 @@ const jsonEditorDialog = ref<HTMLElement | null>(null);
 
 function focusModalDialog(dialog: HTMLElement | null): void {
   dialog?.focus({ preventScroll: true });
+}
+
+function reportStructuredDialogError(error: unknown): void {
+  message.error(error instanceof Error ? error.message : String(error));
 }
 
 const lookupProvenance = createLookupProvenanceController({
@@ -1163,7 +1176,8 @@ useKeyboard({
       :mask-closable="true"
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'attachment.close' }) }"
       @after-enter="focusModalDialog(attachmentDialog)"
-      @after-leave="structuredCellDialogs.dispatch({ type: 'attachment.closed' })"
+      @before-leave="attachmentModalLifecycle.beforeLeave()"
+      @after-leave="attachmentModalLifecycle.afterLeave()"
     >
       <div
         ref="attachmentDialog"
@@ -1213,7 +1227,8 @@ useKeyboard({
       :mask-closable="true"
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'json.close' }) }"
       @after-enter="focusModalDialog(jsonEditorDialog)"
-      @after-leave="structuredCellDialogs.dispatch({ type: 'json.closed' })"
+      @before-leave="jsonModalLifecycle.beforeLeave()"
+      @after-leave="jsonModalLifecycle.afterLeave()"
     >
       <div
         ref="jsonEditorDialog"

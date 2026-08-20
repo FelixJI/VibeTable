@@ -206,6 +206,7 @@ function makePlan(token = "tok-xyz"): PastePlan {
 describe("WorkspaceView", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    document.body.removeAttribute("tabindex");
     setLocale("zh-CN");
     testPinia = createPinia();
     setActivePinia(testPinia);
@@ -222,6 +223,7 @@ describe("WorkspaceView", () => {
   afterEach(() => {
     for (const wrapper of mountedViews.splice(0)) wrapper.unmount();
     document.body.innerHTML = "";
+    document.body.removeAttribute("tabindex");
     setHostBridgeForTesting(null);
     setWorkspaceV2UiPort(null);
     vi.restoreAllMocks();
@@ -1791,6 +1793,7 @@ describe("WorkspaceView", () => {
   });
 
   it("gives structured editors dialog semantics and restores keyboard focus", async () => {
+    document.body.tabIndex = -1;
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -1851,7 +1854,8 @@ describe("WorkspaceView", () => {
     });
   });
 
-  it("releases attachment gridcell focus before hiding the background for NModal", async () => {
+  it("restores attachment gridcell focus after NModal releases its focus trap", async () => {
+    document.body.tabIndex = -1;
     setHostBridgeForTesting({
       request: vi.fn(async (method: string) => {
         if (method === "file.list") return { attachments: [] };
