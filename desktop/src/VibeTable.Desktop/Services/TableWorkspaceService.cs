@@ -230,15 +230,21 @@ public sealed class TableWorkspaceService
         string table,
         CancellationToken sessionToken)
     {
-        SelectionTicket? ticket = await SelectOwnedTableAsync(table, sessionToken)
+        OwnedSelection? selection = await SelectOwnedTableAsync(table, sessionToken)
             .ConfigureAwait(true);
-        if (ticket is not SelectionTicket owned)
+        if (selection is not OwnedSelection owned || !Owns(owned.Ticket))
             return;
 
-        await GetEditSchemaAsync(owned).ConfigureAwait(true);
+        Emit(owned.Ticket.Generation, new TableNotification(
+            Type: "table.editSchemaLoaded", Page: null,
+            MutationResult: new MutationOutcome(
+                Kind: "editSchema",
+                Success: true,
+                Error: null,
+                Result: owned.Projection.EditSchema)));
     }
 
-    private async Task<SelectionTicket?> SelectOwnedTableAsync(
+    private async Task<OwnedSelection?> SelectOwnedTableAsync(
         string table,
         CancellationToken sessionToken)
     {
@@ -267,15 +273,24 @@ public sealed class TableWorkspaceService
         _selectCts = cts;
         var ticket = new SelectionTicket(table, generation, cts.Token);
 
-        bool selected = await FetchAsync(table, generation, cts.Token)
+        TableSelectionProjection? projection = await FetchAsync(
+            table,
+            generation,
+            cts.Token)
             .ConfigureAwait(true);
-        return selected && Owns(ticket) ? ticket : null;
+        return projection is not null && Owns(ticket)
+            ? new OwnedSelection(ticket, projection)
+            : null;
     }
 
     private readonly record struct SelectionTicket(
         string Table,
         int Generation,
         CancellationToken OwnershipToken);
+
+    private readonly record struct OwnedSelection(
+        SelectionTicket Ticket,
+        TableSelectionProjection Projection);
 
     private bool Owns(SelectionTicket ticket)
         => !ticket.OwnershipToken.IsCancellationRequested
@@ -298,7 +313,7 @@ public sealed class TableWorkspaceService
     /// bounded recovery window; exhausting it becomes a stable backend-
     /// unavailable outcome at the controller boundary.
     /// </remarks>
-    private async Task<bool> FetchAsync(
+    private async Task<TableSelectionProjection?> FetchAsync(
         string table,
         int generation,
         CancellationToken ownershipToken)
@@ -310,9 +325,9 @@ public sealed class TableWorkspaceService
             while (true)
             {
                 if (IsStale(generation) || ownershipToken.IsCancellationRequested)
-                    return false;
+                    return null;
 
-                TablePage? firstWindow = null;
+                TableSelectionProjection? projection = null;
                 bool retryRequired = false;
                 RecoveryOutcome attemptOutcome = RecoveryOutcome.Completed;
                 try
@@ -325,27 +340,27 @@ public sealed class TableWorkspaceService
                         offset = 0,
                         limit = TableWorkspaceLimits.MaxPageLimit,
                     });
-                    RecoveryWait<TablePage> attempt = recovery is null
+                    RecoveryWait<TableSelectionProjection> attempt = recovery is null
                         ? await RunOwnedAsync(
-                            token => _gateway.OpenTableCursorRawAsync(
+                            token => _gateway.OpenTableSelectionAsync(
                                 table,
                                 query,
                                 token),
                             ownershipToken).ConfigureAwait(true)
                         : await recovery.RunAsync(
-                            token => _gateway.OpenTableCursorRawAsync(
+                            token => _gateway.OpenTableSelectionAsync(
                                 table,
                                 query,
                                 token)).ConfigureAwait(true);
                     attemptOutcome = attempt.Outcome;
-                    firstWindow = attempt.Value!;
+                    projection = attempt.Value!;
                 }
                 catch (OperationCanceledException)
                     when (IsStale(generation) || ownershipToken.IsCancellationRequested)
                 {
                     // A newer selection owns the UI. The old selection must not
                     // retry, publish a page, or let its controller load schema.
-                    return false;
+                    return null;
                 }
                 catch (Exception exception) when (IsTransientReadFailure(exception))
                 {
@@ -366,14 +381,14 @@ public sealed class TableWorkspaceService
                 }
 
                 if (attemptOutcome == RecoveryOutcome.Superseded)
-                    return false;
+                    return null;
                 if (attemptOutcome == RecoveryOutcome.Expired)
                     throw SelectionUnavailable(lastFailure);
 
                 if (!retryRequired)
                 {
                     if (IsStale(generation) || ownershipToken.IsCancellationRequested)
-                        return false;
+                        return null;
 
                     // Subscriber failures are deliberately outside the transient
                     // transport catch above. A consumer exception must not reopen
@@ -381,13 +396,13 @@ public sealed class TableWorkspaceService
                     Emit(generation, new TableNotification
                     {
                         Type = "table.datasetReady",
-                        Page = firstWindow!,
+                        Page = projection!.Page,
                     });
-                    return true;
+                    return projection;
                 }
 
                 if (IsStale(generation) || ownershipToken.IsCancellationRequested)
-                    return false;
+                    return null;
                 RecoveryWait<bool> delay = await recovery!.RunAsync(async token =>
                 {
                     await Task.Delay(
@@ -397,7 +412,7 @@ public sealed class TableWorkspaceService
                     return true;
                 }).ConfigureAwait(true);
                 if (delay.Outcome == RecoveryOutcome.Superseded)
-                    return false;
+                    return null;
                 if (delay.Outcome == RecoveryOutcome.Expired)
                     throw SelectionUnavailable(lastFailure);
             }

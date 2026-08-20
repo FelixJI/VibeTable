@@ -364,6 +364,8 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Dictionary<string, TablePage> CursorPageResults { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, TablePage> CursorOpenResults { get; } =
         new(StringComparer.Ordinal);
+    public Dictionary<string, TableSelectionProjection> SelectionProjectionResults { get; } =
+        new(StringComparer.Ordinal);
     public Dictionary<string, TablePage> QueryWindowResults { get; } =
         new(StringComparer.Ordinal);
 
@@ -374,6 +376,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     /// </summary>
     public Func<string, JsonElement, CancellationToken, Task<TablePage>>?
         CursorOpenOverride
+    { get; set; }
+
+    public Func<string, JsonElement, CancellationToken, Task<TableSelectionProjection>>?
+        SelectionOpenOverride
     { get; set; }
 
     public List<string> ValidateSnapshotCalls { get; } = new();
@@ -416,6 +422,27 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
             return Task.FromResult(page);
         }
         return QueryTableViewRawAsync(table, query, token);
+    }
+
+    public async Task<TableSelectionProjection> OpenTableSelectionAsync(
+        string table, JsonElement query, CancellationToken token)
+    {
+        if (SelectionOpenOverride is { } scripted)
+        {
+            QueryWindowCalls.Add(table);
+            RawViewQueries.Add(query.Clone());
+            return await scripted(table, query, token).ConfigureAwait(false);
+        }
+        QueryWindowCalls.Add(table);
+        RawViewQueries.Add(query.Clone());
+        if (SelectionProjectionResults.TryGetValue(
+            table,
+            out TableSelectionProjection? projection))
+        {
+            return projection;
+        }
+        throw new InvalidOperationException(
+            $"fake: no atomic selection projection for '{table}'");
     }
 
     public Task<TablePage> FetchTableCursorAsync(string cursor, CancellationToken token)

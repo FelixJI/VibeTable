@@ -69,7 +69,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new[] { "records" },
             Array.Empty<string>(),
             TestDisplayNames.For("records"));
-        gateway.CursorOpenResults["records"] = EmptyPage("records");
+        gateway.SelectionProjectionResults["records"] = Projection("records");
         var workspace = new TableWorkspaceService(gateway);
         await workspace.OpenDatabaseAsync("db");
         workspace.Notification += _ =>
@@ -102,17 +102,17 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new[] { "records" },
             Array.Empty<string>(),
             TestDisplayNames.For("records"));
-        var lateAttempt = new TaskCompletionSource<TablePage>(
+        var lateAttempt = new TaskCompletionSource<TableSelectionProjection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var attemptStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         int attempts = 0;
-        gateway.CursorOpenOverride = (_, _, _) =>
+        gateway.SelectionOpenOverride = (_, _, _) =>
         {
             attempts += 1;
             if (attempts == 1)
             {
-                return Task.FromException<TablePage>(
+                return Task.FromException<TableSelectionProjection>(
                     new BackendUnavailableException("sidecar restarting"));
             }
             attemptStarted.TrySetResult();
@@ -162,7 +162,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         Assert.AreEqual("BACKEND_UNAVAILABLE", payload.GetProperty("code").GetString());
         Assert.AreEqual("table.selected", payload.GetProperty("operation").GetString());
 
-        lateAttempt.SetResult(EmptyPage("records"));
+        lateAttempt.SetResult(Projection("records"));
         await Task.Yield();
         Assert.AreEqual(0, notifications.Count,
             "late recovery completion must publish neither dataset nor schema");
@@ -181,9 +181,9 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             TestDisplayNames.For("records"));
         var readStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var lateRead = new TaskCompletionSource<TablePage>(
+        var lateRead = new TaskCompletionSource<TableSelectionProjection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        gateway.CursorOpenOverride = (_, _, _) =>
+        gateway.SelectionOpenOverride = (_, _, _) =>
         {
             readStarted.TrySetResult();
             return lateRead.Task;
@@ -222,7 +222,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         await readStarted.Task;
         session.Cancel();
         await selection;
-        lateRead.SetResult(EmptyPage("records"));
+        lateRead.SetResult(Projection("records"));
         await Task.Yield();
 
         Assert.AreEqual(1, tokenCaptures,
@@ -235,7 +235,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
 
     [TestMethod]
     [Timeout(2_000)]
-    public async Task TableSelection_SessionCloseSilencesIgnoredSchemaCancellation()
+    public async Task TableSelection_SessionCloseSilencesIgnoredProjectionCancellation()
     {
         using var session = new CancellationTokenSource();
         var gateway = new FakeTableRpcGateway();
@@ -243,15 +243,14 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new[] { "records" },
             Array.Empty<string>(),
             TestDisplayNames.For("records"));
-        gateway.CursorOpenResults["records"] = EmptyPage("records");
-        var schemaStarted = new TaskCompletionSource(
+        var projectionStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var lateSchema = new TaskCompletionSource<EditSchemaResult>(
+        var lateProjection = new TaskCompletionSource<TableSelectionProjection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        gateway.EditSchemaOverride = (_, _) =>
+        gateway.SelectionOpenOverride = (_, _, _) =>
         {
-            schemaStarted.TrySetResult();
-            return lateSchema.Task;
+            projectionStarted.TrySetResult();
+            return lateProjection.Task;
         };
         var workspace = new TableWorkspaceService(gateway);
         await workspace.OpenDatabaseAsync("db");
@@ -272,25 +271,91 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             document.RootElement.Clone(),
             string.Empty);
         Task selection = controller.DispatchAsync(request);
-        await schemaStarted.Task;
-        Assert.AreEqual(1, notifications.Count);
-        Assert.AreEqual("table.datasetReady", notifications[0].Type);
+        await projectionStarted.Task;
+        Assert.AreEqual(0, notifications.Count);
 
         session.Cancel();
         await selection;
-        lateSchema.SetResult(new EditSchemaResult(
-            "records",
-            "schema-late",
-            "primary_key",
-            RowKeyStable: true,
-            Editable: true,
-            Array.Empty<ColumnEditSchema>()));
+        lateProjection.SetResult(new TableSelectionProjection(
+            EmptyPage("records"),
+            new EditSchemaResult(
+                "records",
+                "schema-late",
+                "primary_key",
+                RowKeyStable: true,
+                Editable: true,
+                Array.Empty<ColumnEditSchema>())));
         await Task.Yield();
 
-        Assert.AreEqual(1, notifications.Count,
-            "late schema must not publish after session close");
+        Assert.AreEqual(0, notifications.Count,
+            "late projection must not publish a dataset or schema after session close");
         Assert.AreEqual(0, sink.Replies.Count,
             "session close during schema read must remain silent");
+    }
+
+    [TestMethod]
+    public async Task TableSelection_RetriesTheWholeProjectionAndUsesRecoveredSchema()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" },
+            Array.Empty<string>(),
+            TestDisplayNames.For("records"));
+        int attempts = 0;
+        gateway.SelectionOpenOverride = (table, _, _) =>
+        {
+            attempts += 1;
+            if (attempts == 1)
+            {
+                return Task.FromException<TableSelectionProjection>(
+                    new BackendUnavailableException("sidecar restarting"));
+            }
+            return Task.FromResult(RevisionedProjection(
+                table,
+                "schema_0002",
+                2,
+                "recovered-row"));
+        };
+        gateway.EditSchemaOverride = (_, _) =>
+            Task.FromException<EditSchemaResult>(
+                new InvalidOperationException("selection must not perform a second schema RPC"));
+        var time = new ManualTimeProvider();
+        var workspace = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(1),
+            timeProvider: time);
+        await workspace.OpenDatabaseAsync("db");
+        var notifications = new List<TableNotification>();
+        workspace.Notification += notifications.Add;
+        var controller = new WorkspaceTableRequestController(
+            workspace,
+            new FakeDatabasePicker("local://configured"),
+            new FakeWebReplySink(),
+            () => null);
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task selection = controller.DispatchAsync(new RoutedWebRequest(
+            "table.selected",
+            "recovered-projection",
+            document.RootElement.Clone(),
+            string.Empty));
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await selection;
+
+        Assert.AreEqual(2, attempts);
+        TablePage page = notifications
+            .Single(notification => notification.Type == "table.datasetReady")
+            .Page!;
+        EditSchemaResult schema = notifications
+            .Single(notification => notification.Type == "table.editSchemaLoaded")
+            .MutationResult!.Result as EditSchemaResult
+            ?? throw new AssertFailedException("missing recovered edit schema");
+        Assert.AreEqual("recovered-row", page.Rows.Single()["rowKey"]);
+        Assert.AreEqual("schema_0002", page.QuerySnapshot!.SchemaRevision);
+        Assert.AreEqual(2, page.QuerySnapshot.DataRevision);
+        Assert.AreEqual(page.QuerySnapshot.SchemaRevision, schema.SchemaRevision);
     }
 
     [TestMethod]
@@ -302,8 +367,8 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new[] { "records" },
             Array.Empty<string>(),
             TestDisplayNames.For("records"));
-        gateway.CursorOpenOverride = (_, _, _) =>
-            Task.FromException<TablePage>(
+        gateway.SelectionOpenOverride = (_, _, _) =>
+            Task.FromException<TableSelectionProjection>(
                 new BackendUnavailableException("sidecar restarting"));
         var time = new ManualTimeProvider();
         var workspace = new TableWorkspaceService(
@@ -344,8 +409,8 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new[] { "alpha", "beta" },
             Array.Empty<string>(),
             TestDisplayNames.For("alpha", "beta"));
-        gateway.CursorOpenResults["alpha"] = EmptyPage("alpha");
-        gateway.CursorOpenResults["beta"] = EmptyPage("beta");
+        gateway.SelectionProjectionResults["alpha"] = Projection("alpha");
+        gateway.SelectionProjectionResults["beta"] = Projection("beta");
         gateway.EditSchemaResults["alpha"] = new EditSchemaResult(
             "alpha",
             "schema-alpha",
@@ -733,5 +798,52 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             TableWorkspaceLimits.MaxPageLimit,
             0,
             "remote");
+
+    private static TableSelectionProjection Projection(string table)
+        => new(
+            EmptyPage(table),
+            new EditSchemaResult(
+                table,
+                "schema_0001",
+                "fake-row-key",
+                RowKeyStable: true,
+                Editable: false,
+                Array.Empty<ColumnEditSchema>()));
+
+    private static TableSelectionProjection RevisionedProjection(
+        string table,
+        string schemaRevision,
+        int dataRevision,
+        string rowKey)
+    {
+        var snapshot = new QuerySnapshot(
+            "00000000000000000000000000000000",
+            new string('a', 64),
+            "local",
+            table,
+            schemaRevision,
+            dataRevision,
+            new Dictionary<string, object?> { ["offset"] = 0, ["limit"] = 500 });
+        var page = new TablePage(
+            table,
+            Array.Empty<ColumnSchema>(),
+            new[] { new Dictionary<string, object?> { ["rowKey"] = rowKey } },
+            0,
+            500,
+            1,
+            "remote",
+            1,
+            snapshot,
+            new MutationRevision("fake", schemaRevision, dataRevision));
+        return new TableSelectionProjection(
+            page,
+            new EditSchemaResult(
+                table,
+                schemaRevision,
+                "fake-row-key",
+                RowKeyStable: true,
+                Editable: true,
+                Array.Empty<ColumnEditSchema>()));
+    }
 
 }

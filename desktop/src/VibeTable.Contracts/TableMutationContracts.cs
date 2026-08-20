@@ -32,6 +32,14 @@ public sealed record EditSchemaResult(
     IReadOnlyList<ColumnEditSchema> Columns);
 
 /// <summary>
+/// Revision-matched schema and initial cursor window returned by one
+/// authoritative selection read.
+/// </summary>
+public sealed record TableSelectionProjection(
+    TablePage Page,
+    EditSchemaResult EditSchema);
+
+/// <summary>
 /// Mutation revision metadata used for stale-write guards.
 /// </summary>
 public sealed record MutationRevision(

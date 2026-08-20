@@ -15,6 +15,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 func TestQueryPortRealPocketBaseFilteringPagingAggregateAndSnapshot(t *testing.T) {
@@ -728,18 +729,171 @@ func TestQueryPageUsesOneConsistentTransaction(t *testing.T) {
 	}
 }
 
+func TestSelectionProjectionCannotMixSchemaAndCursorRevisions(t *testing.T) {
+	app := newBootstrappedApp(t)
+	defer resetApp(t, app)
+	if _, err := app.DB().NewQuery(
+		"CREATE TABLE query_consistency (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+	).Execute(); err != nil {
+		t.Fatalf("create consistency table: %v", err)
+	}
+	if _, err := app.DB().NewQuery(`
+		INSERT INTO query_consistency (id, name) VALUES
+			('id-1', 'one'), ('id-2', 'two'), ('id-3', 'three')
+	`).Execute(); err != nil {
+		t.Fatalf("seed consistency table: %v", err)
+	}
+	source := &concurrentWriteSource{
+		app: app,
+		descriptor: query.TableDescriptor{
+			DatabaseID: "local", TableID: "consistency", PhysicalName: "query_consistency",
+			PrimaryKey: "id", SchemaRevision: "schema_0001", DataRevision: 1,
+			Fields: map[string]query.FieldDescriptor{
+				"id":   {PhysicalName: "id", Type: query.FieldTypeText},
+				"name": {PhysicalName: "name", Type: query.FieldTypeText},
+			},
+		},
+		writeCommitted:       make(chan error, 1),
+		writeDone:            make(chan error, 1),
+		updateSchemaRevision: true,
+	}
+	port := query.NewPort(app, source)
+
+	first, err := port.OpenSelectionProjection(
+		context.Background(),
+		"consistency",
+		query.TableQuery{Limit: 10},
+	)
+	if err != nil {
+		t.Fatalf("OpenSelectionProjection(first): %v", err)
+	}
+	select {
+	case err := <-source.writeDone:
+		if err != nil {
+			t.Fatalf("concurrent write: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent write remained blocked after selection transaction")
+	}
+	assertSelectionRevision(t, first, "schema_0001", 1, 3)
+
+	second, err := port.OpenSelectionProjection(
+		context.Background(),
+		"consistency",
+		query.TableQuery{Limit: 10},
+	)
+	if err != nil {
+		t.Fatalf("OpenSelectionProjection(second): %v", err)
+	}
+	assertSelectionRevision(t, second, "schema_0002", 2, 4)
+}
+
+func TestSelectionProjectionRejectsMismatchedSourceRevisions(t *testing.T) {
+	app := newBootstrappedApp(t)
+	defer resetApp(t, app)
+	descriptor := query.TableDescriptor{
+		DatabaseID: "local", TableID: "orders", PhysicalName: "orders",
+		PrimaryKey: "id", SchemaRevision: "schema_0001", DataRevision: 1,
+		Fields: map[string]query.FieldDescriptor{
+			"id": {PhysicalName: "id", Type: query.FieldTypeText},
+		},
+	}
+	port := query.NewPort(app, mismatchedSelectionSource{descriptor: descriptor})
+
+	projection, err := port.OpenSelectionProjection(
+		context.Background(), "orders", query.TableQuery{Limit: 10},
+	)
+	var productErr *query.ProductError
+	if !errors.As(err, &productErr) || productErr.Code != "query.schema.failed" ||
+		projection.SchemaSnapshot.TableID != "" || projection.CursorWindow.Rows != nil {
+		t.Fatalf("mismatched selection result=%#v error=%#v", projection, err)
+	}
+}
+
+func assertSelectionRevision(
+	t *testing.T,
+	projection query.SelectionProjection,
+	schemaRevision string,
+	dataRevision int64,
+	rowCount int,
+) {
+	t.Helper()
+	if projection.SchemaSnapshot.SchemaRevision != schemaRevision ||
+		projection.SchemaSnapshot.DataRevision != dataRevision ||
+		projection.CursorWindow.Snapshot.SchemaRevision != schemaRevision ||
+		projection.CursorWindow.Snapshot.DataRevision != dataRevision ||
+		len(projection.CursorWindow.Rows) != rowCount ||
+		projection.CursorWindow.FilteredRows != int64(rowCount) ||
+		projection.CursorWindow.TotalRows != int64(rowCount) {
+		t.Fatalf("selection projection mixed revisions: %#v", projection)
+	}
+}
+
 type staticQuerySource struct {
 	mu         sync.RWMutex
 	descriptor query.TableDescriptor
 }
 
 type concurrentWriteSource struct {
-	app            core.App
-	mu             sync.RWMutex
-	once           sync.Once
-	descriptor     query.TableDescriptor
-	writeCommitted chan error
-	writeDone      chan error
+	app                  core.App
+	mu                   sync.RWMutex
+	once                 sync.Once
+	descriptor           query.TableDescriptor
+	writeCommitted       chan error
+	writeDone            chan error
+	updateSchemaRevision bool
+}
+
+type mismatchedSelectionSource struct {
+	descriptor query.TableDescriptor
+}
+
+func (source mismatchedSelectionSource) DescribeQueryTable(
+	context.Context,
+	core.App,
+	string,
+) (query.TableDescriptor, error) {
+	return source.descriptor, nil
+}
+
+func (source mismatchedSelectionSource) DescribeSelectionTable(
+	context.Context,
+	core.App,
+	string,
+) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	return source.descriptor, v2.SchemaSnapshot{
+		Contract:       v2.Contract,
+		TableID:        source.descriptor.TableID,
+		DisplayName:    source.descriptor.TableID,
+		Kind:           "base",
+		SchemaRevision: "schema_0002",
+		DataRevision:   source.descriptor.DataRevision,
+		ArchivePolicy:  v2.ArchivePolicy{Mode: "none"},
+		Fields:         []v2.FieldDefinition{},
+		Capabilities:   []v2.Capability{},
+	}, nil
+}
+
+func (source *concurrentWriteSource) DescribeSelectionTable(
+	ctx context.Context,
+	txApp core.App,
+	tableID string,
+) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	descriptor, err := source.DescribeQueryTable(ctx, txApp, tableID)
+	if err != nil {
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
+	}
+	return descriptor, v2.SchemaSnapshot{
+		Contract:       v2.Contract,
+		TableID:        descriptor.TableID,
+		DisplayName:    descriptor.TableID,
+		Kind:           "base",
+		SchemaRevision: descriptor.SchemaRevision,
+		DataRevision:   descriptor.DataRevision,
+		ArchivePolicy:  v2.ArchivePolicy{Mode: "none"},
+		Fields:         []v2.FieldDefinition{},
+		Capabilities:   []v2.Capability{},
+	}, nil
 }
 
 func (source *concurrentWriteSource) DescribeQueryTable(
@@ -764,6 +918,9 @@ func (source *concurrentWriteSource) DescribeQueryTable(
 			).Execute()
 			if err == nil {
 				source.mu.Lock()
+				if source.updateSchemaRevision {
+					source.descriptor.SchemaRevision = "schema_0002"
+				}
 				source.descriptor.DataRevision = 2
 				source.mu.Unlock()
 			}
@@ -789,6 +946,28 @@ func (source *staticQuerySource) DescribeQueryTable(
 	source.mu.RLock()
 	defer source.mu.RUnlock()
 	return source.descriptor, nil
+}
+
+func (source *staticQuerySource) DescribeSelectionTable(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	descriptor, err := source.DescribeQueryTable(ctx, app, tableID)
+	if err != nil {
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
+	}
+	return descriptor, v2.SchemaSnapshot{
+		Contract:       v2.Contract,
+		TableID:        descriptor.TableID,
+		DisplayName:    descriptor.TableID,
+		Kind:           "base",
+		SchemaRevision: descriptor.SchemaRevision,
+		DataRevision:   descriptor.DataRevision,
+		ArchivePolicy:  v2.ArchivePolicy{Mode: "none"},
+		Fields:         []v2.FieldDefinition{},
+		Capabilities:   []v2.Capability{},
+	}, nil
 }
 
 func (source *staticQuerySource) setDataRevision(revision int64) {
