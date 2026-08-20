@@ -49,6 +49,8 @@ public partial class MainWindow : Window
     private readonly GridStateCoordinator _coordinator;
     private readonly ProductWorkspaceController _productWorkspace;
     private readonly WorkspaceRequestDispatcher _dispatcher;
+    private readonly PluginProjectContextBindingRegistry _databaseOpens;
+    private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
     private readonly NativeProductFileRequestController _nativeProductFiles;
     private readonly PluginSurfaceSessionManager _pluginSurfaces;
@@ -298,6 +300,8 @@ public partial class MainWindow : Window
             _e2eControlsDir is null
                 ? new WindowsPluginPackageSourcePicker()
                 : new TestModePluginPackageSourcePicker(_e2eControlsDir);
+        var productAuthority = new ProductAuthorityEpoch();
+        _databaseOpens = new PluginProjectContextBindingRegistry(productAuthority);
         _pluginDispatcher = new PluginRequestDispatcher(
             _webBridge,
             _pluginSurfaces,
@@ -308,7 +312,8 @@ public partial class MainWindow : Window
                 Path.Combine(_productDataRoot, "plugin-downloads"),
                 () => _appPreferencesService.Read()),
             message => _readiness?.Trace(message),
-            () => PluginProjectContext.FromSession(_workspaceSessions.Current));
+            () => PluginProjectContext.FromSession(_workspaceSessions.Current),
+            productAuthority);
         var dailyQuotes = new DailyQuoteHostClient();
         _tableGateway = new LazyProductTableGateway();
         _workspace = new TableWorkspaceService(_tableGateway);
@@ -328,7 +333,9 @@ public partial class MainWindow : Window
             () => _productGateway is not null,
             message => _readiness?.Trace(message),
             typeof(MainWindow).Assembly.GetName().Version?.ToString()
-                ?? "unknown");
+                ?? "unknown",
+            authority: productAuthority,
+            databaseOpens: _databaseOpens);
         productWorkspace = _productWorkspace;
         _workspace.Notification += _productWorkspace.OnNotification;
         _dispatcher = new WorkspaceRequestDispatcher(
@@ -336,7 +343,15 @@ public partial class MainWindow : Window
             _databasePicker,
             _webBridge,
             _coordinator,
-            sessionEnvelopeFilter: _workspaceSessionFilter);
+            sessionEnvelopeFilter: _workspaceSessionFilter,
+            pluginContext: () => PluginProjectContext.FromSession(_workspaceSessions.Current),
+            authority: productAuthority,
+            databaseOpens: _databaseOpens);
+        _authorityTransition = new ProductAuthorityTransitionCoordinator(
+            productAuthority,
+            _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
+            _pluginDispatcher.SetProjectContextAfterAuthorityTransition,
+            _dispatcher.PostRetiredDatabaseOpenCancellations);
         _documentRequests = new DocumentRequestController(
             _webBridge,
             () => _documentWorkspace,
@@ -526,6 +541,7 @@ public partial class MainWindow : Window
         PythonBackendSupervisor backend,
         JsonRpcClient client)
     {
+        _authorityTransition.Transition(null);
         _tableGateway.Bind(backend);
 
         if (_productGateway is not null)
@@ -547,7 +563,9 @@ public partial class MainWindow : Window
 
         IPluginRpcGateway? previousPluginGateway = _pluginGateway;
         _pluginGateway = new JsonRpcPluginGateway(client);
-        _pluginDispatcher.SetGateway(_pluginGateway);
+        _pluginDispatcher.SetGatewayAfterAuthorityTransition(
+            _pluginGateway,
+            PluginProjectContext.FromSession(_workspaceSessions.Current));
         previousPluginGateway?.Dispose();
 
         _documentWorkspace?.Dispose();
@@ -563,6 +581,9 @@ public partial class MainWindow : Window
             new OpenXmlDocumentDiffEngine(),
             Path.Combine(_productDataRoot, "document-diff"));
         _dispatcher.SetDocumentWorkspace(_documentWorkspace);
+        _authorityTransition.Transition(
+            PluginProjectContext.FromSession(_workspaceSessions.Current),
+            _session.Token);
 
         _productWorkspace.ResetBinding();
         if (_router.IsReady)
@@ -634,7 +655,13 @@ public partial class MainWindow : Window
         WorkspaceSessionChangedEventArgs args)
     {
         PluginProjectContext? context = PluginProjectContext.FromSession(args.Session);
-        _pluginDispatcher.SetProjectContext(context);
+        _authorityTransition.Transition(context, _session.Token);
+        if (context is null)
+        {
+            _webBridge.PostNotification(
+                "plugin.projectContext.unavailable",
+                new { reason = "workspace-session-unavailable" });
+        }
         _workspaceProduct.OnSessionChanged(args);
     }
 
@@ -651,11 +678,15 @@ public partial class MainWindow : Window
             PythonBackendSupervisor? backend = _runtime.CurrentBackend;
             if (backend is not null)
             {
+                _authorityTransition.Transition(null);
                 _tableGateway.Bind(backend);
                 return;
             }
             _tableGateway.Unbind();
-            _pluginDispatcher.InvalidateProjectContext();
+            _authorityTransition.Transition(null);
+            _webBridge.PostNotification(
+                "plugin.projectContext.unavailable",
+                new { reason = "backend-binding-unavailable" });
             if (_productGateway is not null)
             {
                 _dispatcher.ClearProductDataGateway(_productGateway);
@@ -666,7 +697,7 @@ public partial class MainWindow : Window
             }
             if (_pluginGateway is not null)
             {
-                _pluginDispatcher.ClearGateway(_pluginGateway);
+                _pluginDispatcher.ClearGatewayAfterAuthorityTransition(_pluginGateway);
                 _pluginGateway.Dispose();
             }
             _pluginGateway = null;
@@ -860,6 +891,9 @@ public partial class MainWindow : Window
             _productGateway.TaskChanged -= OnProductTaskChanged;
             _productGateway.Dispose();
         }
+        _authorityTransition.Dispose();
+        _databaseOpens.Dispose();
+        _dispatcher.Dispose();
         _pluginDispatcher.Dispose();
         _applicationRequests.Dispose();
         _pluginGateway?.Dispose();

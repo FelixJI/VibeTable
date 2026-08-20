@@ -66,6 +66,7 @@ public sealed class TableWorkspaceService
     private readonly ITableRpcGateway _gateway;
     private readonly TimeSpan _selectionRecoveryTimeout;
     private readonly TimeProvider _timeProvider;
+    private readonly object _databaseGate = new();
 
     /// <summary>
     /// The RPC gateway, exposed so the B2 paste dispatcher handlers can call
@@ -79,6 +80,7 @@ public sealed class TableWorkspaceService
     private string? _currentTable;
     private IReadOnlyList<string> _knownTables = Array.Empty<string>();
     private IReadOnlyList<string> _knownViews = Array.Empty<string>();
+    private long _databaseGeneration;
 
     private int _generation;
     private CancellationTokenSource? _selectCts;
@@ -115,7 +117,10 @@ public sealed class TableWorkspaceService
     public event Action<TableNotification>? Notification;
 
     /// <summary>The logical source identifier currently open.</summary>
-    public string? CurrentDatabase => _currentDatabase;
+    public string? CurrentDatabase
+    {
+        get { lock (_databaseGate) return _currentDatabase; }
+    }
 
     /// <summary>
     /// Opens the configured source identified by <paramref name="path"/> and
@@ -123,6 +128,17 @@ public sealed class TableWorkspaceService
     /// can enforce the "known name" invariant.
     /// </summary>
     public async Task<DatabaseOpenResult> OpenDatabaseAsync(string path)
+    {
+        DatabaseOpenResult result = await PrepareDatabaseOpenAsync(
+            path, CancellationToken.None).ConfigureAwait(true);
+        using DatabaseOpenAdmission admission = BeginDatabaseOpenAdmission(path, result);
+        admission.Complete();
+        return result;
+    }
+
+    internal async Task<DatabaseOpenResult> PrepareDatabaseOpenAsync(
+        string path,
+        CancellationToken token)
     {
         if (path is null)
         {
@@ -137,16 +153,67 @@ public sealed class TableWorkspaceService
         // Cancel any in-flight table fetch before switching databases.
         CancelSelection();
 
-        var result = await _gateway.OpenDatabaseAsync(path, CancellationToken.None)
+        var result = await _gateway.OpenDatabaseAsync(path, token)
             .ConfigureAwait(true);
-        _currentDatabase = path;
-        // Filter on the way in so the cache matches the sidebar exactly: the
-        // The gateway returns the raw collection list, including vibetable_*
-        // product metadata tables, but those are never user-selectable.
-        Volatile.Write(ref _knownTables, FilterUserTables(result.Tables));
-        Volatile.Write(ref _knownViews, result.Views);
+        token.ThrowIfCancellationRequested();
         return result;
     }
+
+    internal DatabaseOpenAdmission BeginDatabaseOpenAdmission(
+        string path,
+        DatabaseOpenResult result)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(result);
+        IReadOnlyList<string> tables = FilterUserTables(result.Tables);
+        IReadOnlyList<string> views = result.Views
+            ?? throw new InvalidOperationException("Database views are unavailable.");
+        lock (_databaseGate)
+        {
+            var previous = new DatabaseState(
+                _currentDatabase,
+                _knownTables,
+                _knownViews);
+            _databaseGeneration += 1;
+            _currentDatabase = path;
+            Volatile.Write(ref _knownTables, tables);
+            Volatile.Write(ref _knownViews, views);
+            return new DatabaseOpenAdmission(this, _databaseGeneration, previous);
+        }
+    }
+
+    private void RollbackDatabaseOpen(long generation, DatabaseState previous)
+    {
+        lock (_databaseGate)
+        {
+            if (_databaseGeneration != generation) return;
+            _databaseGeneration += 1;
+            _currentDatabase = previous.Database;
+            Volatile.Write(ref _knownTables, previous.Tables);
+            Volatile.Write(ref _knownViews, previous.Views);
+        }
+    }
+
+    internal sealed class DatabaseOpenAdmission(
+        TableWorkspaceService owner,
+        long generation,
+        DatabaseState previous) : IDisposable
+    {
+        private int _completed;
+
+        public void Complete() => Interlocked.Exchange(ref _completed, 1);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) == 0)
+                owner.RollbackDatabaseOpen(generation, previous);
+        }
+    }
+
+    internal sealed record DatabaseState(
+        string? Database,
+        IReadOnlyList<string> Tables,
+        IReadOnlyList<string> Views);
 
     /// <summary>
     /// Replaces the cached known-tables list with <paramref name="tables"/>. Use

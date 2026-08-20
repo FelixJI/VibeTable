@@ -1626,6 +1626,12 @@ def test_plugin_lifecycle_waits_for_the_install_enable_request_to_settle() -> No
         source.index("async function scenario11") : source.index("async function scenario12")
     ]
 
+    assert (
+        "const databaseOpened = await waitForShell(page, recorder, "
+        "{ requireDatabaseOpened: true })" in scenario
+    )
+    assert "const projectKey = databaseOpened.payload.projectKey.trim()" in scenario
+    assert 'projectKey: "local:default"' not in scenario
     first_toggle = scenario.index("await toggle.click();")
     stable_enabled = scenario.index('lifecycleToggle.classList.contains("enabled")')
     assert stable_enabled < first_toggle

@@ -74,6 +74,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     /// </summary>
     public Func<string, Task<DatabaseOpenResult>>? OpenDatabaseOverride { get; set; }
 
+    public Func<string, CancellationToken, Task<DatabaseOpenResult>>?
+        OpenDatabaseWithTokenOverride
+    { get; set; }
+
     private readonly Dictionary<string, Task> _readGates = new(StringComparer.Ordinal);
 
     public void SetWindowReadGate(string table, Task gate)
@@ -84,6 +88,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Task<DatabaseOpenResult> OpenDatabaseAsync(string path, CancellationToken token)
     {
         OpenDatabaseCalls.Add(path);
+        if (OpenDatabaseWithTokenOverride is { } scriptedWithToken)
+        {
+            return scriptedWithToken(path, token);
+        }
         if (OpenDatabaseOverride is { } scripted)
         {
             return scripted(path);

@@ -47,9 +47,11 @@ export function useWorkspaceService(): {
   const store = useWorkspaceStore();
   const pluginStore = usePluginStore();
   const pluginService = usePluginService();
+  let activeOpenId: string | null = null;
 
   function init(): void {
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
+      if (!acceptOpenTerminal(payload.openId)) return;
       store.setOpened(toCollections(payload), payload.displayNames);
       if (payload.projectKey?.trim()) {
         pluginService.openProjectContext(
@@ -59,6 +61,19 @@ export function useWorkspaceService(): {
       }
       pluginStore.setHostContext(payload.currentUser, payload.hostVersion);
       if (pluginStore.projectContextReady) void pluginService.list().catch(() => undefined);
+    });
+    bridge.on("database.openCancelled", (payload) => {
+      if (!acceptOpenTerminal(payload.openId)) return;
+      store.cancelOpen();
+    });
+    bridge.on("operation.failed", (payload) => {
+      if (payload.operation === "database.openRequested"
+        && acceptOpenTerminal(payload.operationId)) {
+        store.setFailed(payload.message);
+      }
+    });
+    bridge.on("plugin.projectContext.unavailable", () => {
+      pluginService.openProjectContext("", "");
     });
     bridge.on("database.collectionsChanged", (payload) => {
       store.setCollections(
@@ -73,8 +88,17 @@ export function useWorkspaceService(): {
   }
 
   function openDatabase(): void {
+    const openId = `database-open:${globalThis.crypto.randomUUID()}`;
+    activeOpenId = openId;
     store.beginOpen();
-    bridge.notify("database.openRequested", { path: "" });
+    bridge.notify("database.openRequested", { path: "", openId });
+  }
+
+  function acceptOpenTerminal(openId: string | undefined): boolean {
+    if (activeOpenId === null) return openId === undefined;
+    if (openId !== activeOpenId) return false;
+    activeOpenId = null;
+    return true;
   }
 
   return { init, openDatabase };
