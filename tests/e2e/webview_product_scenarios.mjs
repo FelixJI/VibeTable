@@ -4,14 +4,21 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
-import { acknowledgeExpectedSidecarRecoveryFailure } from "./bridge_failure_policy.mjs";
+import {
+  acknowledgeExpectedSidecarRecoveryFailure,
+  SidecarRecoveryContractError,
+  SidecarRecoveryReadWindow,
+} from "./bridge_failure_policy.mjs";
 import {
   installBridgeDiagnosticsInPage,
   readBridgeDiagnosticsInPage,
 } from "./bridge_diagnostics_instrumentation.mjs";
 import {
   beginRawBridgeRequestInPage,
+  isAppliedMutationResponse,
   postRawBridgeNotificationInPage,
+  readRawBridgeRequestTerminalInPage,
+  releaseRawBridgeRequestInPage,
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
@@ -1399,14 +1406,12 @@ async function beginRawBridgeRequest(
   page,
   type,
   payload,
-  expectedResponseTypes = [type],
 ) {
   return page.evaluate(
     beginRawBridgeRequestInPage,
     {
       requestType: type,
       requestPayload: payload,
-      responseTypes: expectedResponseTypes,
     },
   );
 }
@@ -1421,20 +1426,55 @@ async function postRawBridgeNotification(page, type, payload) {
   );
 }
 
-async function waitForRawBridgeRequest(page, requestId, timeoutMs = 20_000) {
+async function observeRawBridgeRequest(page, requestId, timeoutMs) {
+  // Observation expiry must not cancel the in-page request listener. Recovery
+  // ownership later settles the same requestId against its real terminal.
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await page.evaluate(
-      (id) => {
-        const request = window.__vibetableE2ERawRequests?.[id];
-        return request?.message ?? null;
-      },
-      requestId,
+      readRawBridgeRequestTerminalInPage,
+      { requestId },
     );
     if (result) return result;
     await page.waitForTimeout(25);
   }
-  throw new Error(`bridge response timeout for ${requestId}`);
+  return null;
+}
+
+async function releaseRawBridgeRequest(page, requestId) {
+  await page.evaluate(releaseRawBridgeRequestInPage, { requestId });
+}
+
+function attachCleanupFailure(primaryError, cleanupError, message) {
+  if (!(primaryError instanceof Error)) return false;
+  primaryError.cause = primaryError.cause === undefined
+    ? cleanupError
+    : new AggregateError([primaryError.cause, cleanupError], message);
+  return true;
+}
+
+async function waitForRawBridgeRequest(page, requestId, timeoutMs = 20_000) {
+  let primaryError = null;
+  try {
+    const result = await observeRawBridgeRequest(page, requestId, timeoutMs);
+    if (result) return result;
+    throw new Error(`bridge response timeout for ${requestId}`);
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      await releaseRawBridgeRequest(page, requestId);
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(
+        primaryError,
+        cleanupError,
+        `bridge request cleanup also failed: ${requestId}`,
+      )) {
+        throw cleanupError;
+      }
+    }
+  }
 }
 
 async function waitForQueryPage(page, payload, predicate, timeoutMs = 30_000) {
@@ -2633,7 +2673,7 @@ async function scenario08(page, recorder) {
   });
   const competitor = await waitForRawBridgeRequest(page, competitorRequestId);
   recorder.check("competing edit committed from the same closed product bridge",
-    competitor.payload?.status === "applied", { competitor });
+    isAppliedMutationResponse(competitor), { competitor });
   // Let the competitor's realtime invalidation finish its authoritative table
   // refresh before starting the deliberately stale request. Otherwise the
   // workspace generation can change while UpdateCellAsync is in flight and
@@ -2756,60 +2796,91 @@ async function waitForTableRecovery(
   timeoutMs = 60_000,
 ) {
   const deadline = Date.now() + timeoutMs;
+  const recoveryReads = new SidecarRecoveryReadWindow({
+    deadlineAt: deadline,
+    observeTerminal: (requestId, observationMs) =>
+      observeRawBridgeRequest(page, requestId, observationMs),
+    releaseRequest: requestId => releaseRawBridgeRequest(page, requestId),
+    acknowledge: response => acknowledgeExpectedBridgeFailure(page, response),
+  });
   let lastError;
-  while (Date.now() < deadline) {
+  let primaryError = null;
+  try {
+    while (Date.now() < deadline) {
+      try {
+        const retry = page.getByTestId("connection-retry");
+        if (await retry.isVisible().catch(() => false)) await retry.click();
+        const name = page.getByTestId("sidebar-table-name").filter({ hasText: displayName });
+        if (await name.isVisible().catch(() => false)) {
+          const tableButton = name.locator("xpath=ancestor::button");
+          if (await tableButton.getAttribute("aria-current") !== "page") {
+            await tableButton.click();
+          }
+        }
+        await page.waitForTimeout(750);
+        const count = await page.locator(".tabulator-row").count();
+        const requestId = await beginRawBridgeRequest(page, "query.page", {
+          tableId,
+          query: { filters: [], sorts: [], offset: 0, limit: 100 },
+        });
+        recoveryReads.own(requestId);
+        const backend = await recoveryReads.observe(requestId);
+        if (backend === null) {
+          lastError = new Error(
+            `query.page observation expired during sidecar recovery: ${requestId}`,
+          );
+          continue;
+        }
+        const backendRows = backend.type === "query.page"
+          && Array.isArray(backend.payload?.rows)
+          ? backend.payload.rows.length
+          : null;
+        if (
+          count === expectedRows
+          && backendRows === expectedRows
+          && typeof backend.payload?.snapshot?.schemaRevision === "string"
+        ) {
+          const errorOverlay = page.getByTestId("table-error-overlay");
+          if (await errorOverlay.isVisible().catch(() => false)) {
+            await name.locator("xpath=ancestor::button").click();
+            await errorOverlay.waitFor({ state: "hidden", timeout: 10_000 });
+            await page.waitForTimeout(250);
+          }
+          const recoveredCount = await page.locator(".tabulator-row").count();
+          if (recoveredCount === expectedRows) {
+            await recoveryReads.settle();
+            return recoveredCount;
+          }
+        }
+        lastError = new Error(`table did not recover: ${JSON.stringify({
+          tableId,
+          observedUiRows: count,
+          observedBackendRows: backendRows,
+          expectedRows,
+          backendType: backend.type,
+        })}`);
+      } catch (error) {
+        if (error instanceof SidecarRecoveryContractError) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError ?? new Error("table did not recover");
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
     try {
-      const retry = page.getByTestId("connection-retry");
-      if (await retry.isVisible().catch(() => false)) await retry.click();
-      const name = page.getByTestId("sidebar-table-name").filter({ hasText: displayName });
-      if (await name.isVisible().catch(() => false)) {
-        const tableButton = name.locator("xpath=ancestor::button");
-        if (await tableButton.getAttribute("aria-current") !== "page") {
-          await tableButton.click();
-        }
+      await recoveryReads.close();
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(
+        primaryError,
+        cleanupError,
+        "sidecar recovery cleanup also failed",
+      )) {
+        throw cleanupError;
       }
-      await page.waitForTimeout(750);
-      const count = await page.locator(".tabulator-row").count();
-      const backend = await rawBridgeRequest(page, "query.page", {
-        tableId,
-        query: { filters: [], sorts: [], offset: 0, limit: 100 },
-      }, 5_000);
-      const backendRows = backend.type === "query.page"
-        && Array.isArray(backend.payload?.rows)
-        ? backend.payload.rows.length
-        : null;
-      if (backend.type !== "query.page") {
-        await acknowledgeExpectedSidecarRecoveryFailure(
-          backend,
-          response => acknowledgeExpectedBridgeFailure(page, response),
-        );
-      }
-      if (
-        count === expectedRows
-        && backendRows === expectedRows
-        && typeof backend.payload?.snapshot?.schemaRevision === "string"
-      ) {
-        const errorOverlay = page.getByTestId("table-error-overlay");
-        if (await errorOverlay.isVisible().catch(() => false)) {
-          await name.locator("xpath=ancestor::button").click();
-          await errorOverlay.waitFor({ state: "hidden", timeout: 10_000 });
-          await page.waitForTimeout(250);
-        }
-        const recoveredCount = await page.locator(".tabulator-row").count();
-        if (recoveredCount === expectedRows) return recoveredCount;
-      }
-      lastError = new Error(`table did not recover: ${JSON.stringify({
-        tableId,
-        observedUiRows: count,
-        observedBackendRows: backendRows,
-        expectedRows,
-        backendType: backend.type,
-      })}`);
-    } catch (error) {
-      lastError = error;
     }
   }
-  throw lastError ?? new Error("table did not recover");
 }
 
 async function waitForStableGridState(

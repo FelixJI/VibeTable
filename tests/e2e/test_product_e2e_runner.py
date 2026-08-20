@@ -1408,19 +1408,6 @@ def test_expected_bridge_rejection_is_acknowledged_only_after_the_scenario_asser
     assert "diagnostics.failures.splice(index, 1)" in source
 
 
-def test_table_recovery_acknowledges_only_correlated_backend_unavailable_reads() -> None:
-    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    helper = source[
-        source.index("async function waitForTableRecovery") : source.index(
-            "async function waitForStableGridState"
-        )
-    ]
-
-    assert "await acknowledgeExpectedSidecarRecoveryFailure(" in helper
-    assert "backend," in helper
-    assert "response => acknowledgeExpectedBridgeFailure(page, response)" in helper
-
-
 def test_failed_scenario_summary_includes_bounded_bridge_diagnostics() -> None:
     summary = runner._format_failed_scenario(
         {
