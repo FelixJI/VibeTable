@@ -39,6 +39,10 @@ import {
   HOST_SNAPSHOT_IMPORT_GRANT,
   HOST_WORKSPACE_ROOT_GRANT,
 } from "@/services/workspaceV2HostAdapter";
+import {
+  canUseSnapshotExport,
+  type SnapshotExportIdentity,
+} from "./snapshotExportGuard";
 
 export type WorkspaceProtectionAction = WorkspaceV2UiAction<
   | "snapshot.request"
@@ -76,6 +80,7 @@ const restoreTrigger = ref<HTMLElement | null>(null);
 const importTrigger = ref<HTMLElement | null>(null);
 const importCredential = ref("");
 const exportTarget = ref<SnapshotTimelineItem | null>(null);
+const exportIdentity = ref<SnapshotExportIdentity | null>(null);
 const exportProtection = ref<"none" | "recipient" | "passphrase">("none");
 const exportRecipient = ref("");
 const exportCredential = ref("");
@@ -167,6 +172,25 @@ watch(
 
 const selected = computed(() => protection.selectedSnapshot);
 const busy = computed(() => protection.busyOperation !== null);
+const exportContext = computed(() => ({
+  busy: busy.value,
+  transitioning: session.isTransitioning,
+  workspaceId: session.activeWorkspaceId,
+  sessionEpoch: session.sessionEpoch,
+}));
+const canOpenExport = computed(() => canUseSnapshotExport(exportContext.value));
+const canConfirmExport = computed(() => exportIdentity.value !== null
+  && canUseSnapshotExport(exportContext.value, exportIdentity.value));
+
+watch(
+  () => [session.activeWorkspaceId, session.sessionEpoch] as const,
+  ([workspaceId, sessionEpoch]) => {
+    const opened = exportIdentity.value;
+    if (opened && (opened.workspaceId !== workspaceId || opened.sessionEpoch !== sessionEpoch)) {
+      closeExport();
+    }
+  },
+);
 const retentionDirty = computed(() =>
   protection.retentionHydrated
   && protection.retention !== null
@@ -269,7 +293,12 @@ function confirmImport(): void {
 }
 
 function openExport(item: SnapshotTimelineItem): void {
+  if (!canOpenExport.value) return;
   exportTarget.value = item;
+  exportIdentity.value = {
+    workspaceId: session.activeWorkspaceId,
+    sessionEpoch: session.sessionEpoch,
+  };
   exportProtection.value = "none";
   exportRecipient.value = "";
   exportCredential.value = "";
@@ -277,11 +306,13 @@ function openExport(item: SnapshotTimelineItem): void {
 
 function closeExport(): void {
   exportTarget.value = null;
+  exportIdentity.value = null;
   exportRecipient.value = "";
   exportCredential.value = "";
 }
 
 function confirmExport(): void {
+  if (!canConfirmExport.value) return;
   const item = exportTarget.value;
   if (!item) return;
   const recipients = exportProtection.value === "recipient"
@@ -619,7 +650,12 @@ function applyStoragePlan(): void {
               <template #icon><NIcon><ExternalLink /></NIcon></template>
               {{ t("workspaceV2.snapshot.openNew") }}
             </NButton>
-            <NButton size="small" data-testid="snapshot-export-open" @click="openExport(selected)">
+            <NButton
+              size="small"
+              :disabled="!canOpenExport"
+              data-testid="snapshot-export-open"
+              @click="openExport(selected)"
+            >
               <template #icon><NIcon><Download /></NIcon></template>
               {{ t("workspaceV2.snapshot.export") }}
             </NButton>
@@ -746,6 +782,7 @@ function applyStoragePlan(): void {
       :show="exportTarget !== null"
       preset="card"
       class="snapshot-restore-modal"
+      data-testid="snapshot-export-modal"
       :title="t('workspaceV2.snapshot.exportTitle')"
       :mask-closable="false"
       @update:show="show => { if (!show) closeExport() }"
@@ -787,7 +824,12 @@ function applyStoragePlan(): void {
       <template #footer>
         <div class="modal-actions">
           <NButton @click="closeExport">{{ t("common.cancel") }}</NButton>
-          <NButton type="primary" data-testid="snapshot-export-apply" @click="confirmExport">
+          <NButton
+            type="primary"
+            :disabled="!canConfirmExport"
+            data-testid="snapshot-export-apply"
+            @click="confirmExport"
+          >
             {{ t("workspaceV2.snapshot.export") }}
           </NButton>
         </div>

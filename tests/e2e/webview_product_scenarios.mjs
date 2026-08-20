@@ -25,6 +25,7 @@ import {
 import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { ownsWorkspaceSearchTerminal } from "./workspace_search_terminal.mjs";
+import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -1340,22 +1341,7 @@ async function beginBridgeMessageCapture(page, responseTypes) {
 }
 
 async function beginWorkspaceV2MethodCapture(page, method) {
-  await page.evaluate((expectedMethod) => {
-    window.__vibetableE2EBridgeCapture = {
-      types: ["workspace.v2.response"],
-      message: null,
-    };
-    window.chrome.webview.addEventListener("message", function handler(event) {
-      let message = event.data;
-      if (typeof message === "string") {
-        try { message = JSON.parse(message); } catch { return; }
-      }
-      if (message?.type !== "workspace.v2.response"
-        || message.payload?.method !== expectedMethod) return;
-      window.__vibetableE2EBridgeCapture.message = message;
-      window.chrome.webview.removeEventListener("message", handler);
-    });
-  }, method);
+  await page.evaluate(installWorkspaceV2MethodTerminalCaptureInPage, method);
 }
 
 async function beginWritableWorkspaceBootstrapCapture(
@@ -4424,15 +4410,37 @@ async function scenario15(page, recorder, _network, runtime) {
   const snapshot = page.locator(`[id="${createdSnapshotId}"]`);
   await snapshot.click();
   await page.getByTestId("snapshot-export-open").click();
+  await beginWorkspaceV2MethodCapture(page, "snapshot.export");
   await page.getByTestId("snapshot-export-apply").click();
-  const packagePath = path.join(runtime.controlsDir, "workspace-snapshot.vtsnapshot");
-  const packageDeadline = Date.now() + 60_000;
-  while (Date.now() < packageDeadline) {
-    try {
-      if ((await fs.stat(packagePath)).size > 0) break;
-    } catch { /* export has not committed the package yet */ }
-    await page.waitForTimeout(100);
+  const exportTerminal = await waitForCapturedBridgeMessage(page, 60_000);
+  if (exportTerminal.type === "operation.failed") {
+    throw new Error(`snapshot export failed: ${JSON.stringify(exportTerminal)}`);
   }
+  const exportResponseSummary = {
+    type: exportTerminal.type,
+    requestId: exportTerminal.requestId,
+    method: exportTerminal.payload?.method ?? null,
+    ok: exportTerminal.payload?.ok === true,
+  };
+  if (exportResponseSummary.type !== "workspace.v2.response"
+    || exportResponseSummary.method !== "snapshot.export"
+    || !exportResponseSummary.ok) {
+    throw new Error(`snapshot export returned an invalid terminal: ${JSON.stringify(
+      exportResponseSummary,
+    )}`);
+  }
+  const exportDiagnosticsAfter = await readBridgeDiagnostics(page);
+  const exportRoundTrip = exportDiagnosticsAfter?.roundTrips
+    .find((item) => item.requestId === exportResponseSummary.requestId) ?? null;
+  recorder.check("snapshot export completes through its correlated bridge request",
+    exportRoundTrip?.responseType === "workspace.v2.response"
+      && exportRoundTrip.requestType === "snapshot.export"
+      && exportRoundTrip.code === null
+      && !exportDiagnosticsAfter.pending.some(
+        (item) => item.requestId === exportRoundTrip.requestId,
+      ),
+  { exportResponseSummary, exportRoundTrip });
+  const packagePath = path.join(runtime.controlsDir, "workspace-snapshot.vtsnapshot");
   const packageBytes = await fs.readFile(packagePath);
   recorder.check("snapshot export writes a non-empty package through the host picker",
     packageBytes.length > 0, { packageSize: packageBytes.length });

@@ -1,17 +1,94 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { mount } from "@vue/test-utils";
+import { DOMWrapper, mount } from "@vue/test-utils";
 import SettingsView from "./SettingsView.vue";
 import WorkspaceCenter from "@/components/workspace/WorkspaceCenter.vue";
 import WorkspaceProtectionSettings from "@/components/settings/WorkspaceProtectionSettings.vue";
+import { canUseSnapshotExport } from "@/components/settings/snapshotExportGuard";
 import ConflictCenterView from "@/views/ConflictCenterView.vue";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
-import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
+import type { WorkspaceSessionV2 } from "@/contracts/workspaceV2";
+import {
+  useWorkspaceProtectionStore,
+  type SnapshotTimelineItem,
+} from "@/stores/workspaceProtectionStore";
+
+function readySnapshot(
+  overrides: Partial<SnapshotTimelineItem> = {},
+): SnapshotTimelineItem {
+  return {
+    snapshotId: "77777777-7777-4777-8777-777777777777",
+    createdAt: "2026-07-28T10:00:00Z",
+    state: "ready",
+    trigger: "manual",
+    integrity: "verified",
+    syncState: "replicated",
+    pinned: true,
+    retentionReasons: ["manual"],
+    logicalSize: 4096,
+    physicalSize: 2048,
+    note: null,
+    catalogRevision: 4,
+    ...overrides,
+  };
+}
+
+function openedSession(
+  workspaceId = "11111111-1111-4111-8111-111111111111",
+  sessionEpoch = 7,
+): WorkspaceSessionV2 {
+  return {
+    contractVersion: "2.0",
+    workspaceId,
+    sessionEpoch,
+    state: "openedWritable",
+    openMode: "writable",
+    writable: true,
+    provisional: false,
+    phase: "idle",
+    errorCode: null,
+  };
+}
+
+function applyOpenedSession(
+  workspaceId = "11111111-1111-4111-8111-111111111111",
+  sessionEpoch = 7,
+): ReturnType<typeof useWorkspaceSessionStore> {
+  const session = useWorkspaceSessionStore();
+  session.configureCapabilities(["workspace.session.v2"]);
+  expect(session.applySession(openedSession(workspaceId, sessionEpoch))).toBe(true);
+  return session;
+}
 
 describe("workspace protection UI capability gates", () => {
   beforeEach(() => {
     localStorage.clear();
     setActivePinia(createPinia());
+  });
+
+  it("fails the snapshot export guard closed outside its opening workspace lease", () => {
+    const opened = {
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
+    };
+
+    expect(canUseSnapshotExport({ ...opened, busy: false, transitioning: false }, opened)).toBe(true);
+    expect(canUseSnapshotExport({ ...opened, busy: true, transitioning: false }, opened)).toBe(false);
+    expect(canUseSnapshotExport({ ...opened, busy: false, transitioning: true }, opened)).toBe(false);
+    expect(canUseSnapshotExport({
+      workspaceId: null,
+      sessionEpoch: 0,
+      busy: false,
+      transitioning: false,
+    })).toBe(false);
+    expect(canUseSnapshotExport({ ...opened, sessionEpoch: 8, busy: false, transitioning: false },
+      opened)).toBe(false);
+    expect(canUseSnapshotExport({
+      workspaceId: "22222222-2222-4222-8222-222222222222",
+      sessionEpoch: 7,
+      busy: false,
+      transitioning: false,
+    }, opened)).toBe(false);
   });
 
   it("shows Workspace Center cards with health, replica, and location context", async () => {
@@ -600,21 +677,9 @@ describe("workspace protection UI capability gates", () => {
   });
 
   it("exports recovery packages to AGE recipients without exposing a passphrase", async () => {
+    applyOpenedSession();
     const protection = useWorkspaceProtectionStore();
-    protection.setSnapshots([{
-      snapshotId: "77777777-7777-4777-8777-777777777777",
-      createdAt: "2026-07-28T10:00:00Z",
-      state: "ready",
-      trigger: "manual",
-      integrity: "verified",
-      syncState: "replicated",
-      pinned: true,
-      retentionReasons: ["manual"],
-      logicalSize: 4096,
-      physicalSize: 2048,
-      note: null,
-      catalogRevision: 4,
-    }]);
+    protection.setSnapshots([readySnapshot()]);
     protection.selectSnapshot("77777777-7777-4777-8777-777777777777");
     const wrapper = mount(WorkspaceProtectionSettings, {
       props: { mode: "versions" },
@@ -643,6 +708,103 @@ describe("workspace protection UI capability gates", () => {
       },
     });
     wrapper.unmount();
+  });
+
+  it("does not open snapshot export while another snapshot operation owns the lease", async () => {
+    applyOpenedSession();
+    const protection = useWorkspaceProtectionStore();
+    protection.setSnapshots([readySnapshot()]);
+    protection.selectSnapshot("77777777-7777-4777-8777-777777777777");
+    expect(protection.beginOperation("snapshot.inspect")).not.toBeNull();
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "versions" },
+      attachTo: document.body,
+    });
+
+    try {
+      const open = wrapper.get('[data-testid="snapshot-export-open"]');
+      expect(open.attributes("disabled")).toBeDefined();
+      await open.trigger("click");
+      expect(document.body.querySelector('[data-testid="snapshot-export-apply"]')).toBeNull();
+      expect(wrapper.emitted("action")).toBeUndefined();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("keeps an open snapshot export modal when its operation lease becomes unavailable", async () => {
+    const session = applyOpenedSession();
+    const protection = useWorkspaceProtectionStore();
+    protection.setSnapshots([readySnapshot()]);
+    protection.selectSnapshot("77777777-7777-4777-8777-777777777777");
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "versions" },
+      attachTo: document.body,
+    });
+
+    try {
+      await wrapper.get('[data-testid="snapshot-export-open"]').trigger("click");
+      const busyLease = protection.beginOperation("snapshot.inspect");
+      expect(busyLease).not.toBeNull();
+      await wrapper.vm.$nextTick();
+      let apply = document.body.querySelector<HTMLButtonElement>(
+        '[data-testid="snapshot-export-apply"]',
+      )!;
+      expect(apply.disabled).toBe(true);
+      expect(wrapper.emitted("action")).toBeUndefined();
+      expect(document.body.querySelector('[data-testid="snapshot-export-apply"]')).not.toBeNull();
+
+      expect(protection.finishOperation(busyLease!)).toBe(true);
+      expect(session.beginSwitch("22222222-2222-4222-8222-222222222222")).toBe(true);
+      await wrapper.vm.$nextTick();
+      apply = document.body.querySelector<HTMLButtonElement>(
+        '[data-testid="snapshot-export-apply"]',
+      )!;
+      expect(apply.disabled).toBe(true);
+      expect(wrapper.emitted("action")).toBeUndefined();
+      expect(document.body.querySelector('[data-testid="snapshot-export-apply"]')).not.toBeNull();
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it.each([
+    {
+      transition: "the same workspace advances its epoch",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 8,
+    },
+    {
+      transition: "a different workspace reuses the epoch",
+      workspaceId: "22222222-2222-4222-8222-222222222222",
+      sessionEpoch: 7,
+    },
+  ])("closes snapshot export when $transition", async ({ workspaceId, sessionEpoch }) => {
+    const session = applyOpenedSession();
+    const protection = useWorkspaceProtectionStore();
+    protection.setSnapshots([readySnapshot()]);
+    protection.selectSnapshot("77777777-7777-4777-8777-777777777777");
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "versions" },
+      attachTo: document.body,
+    });
+
+    try {
+      await wrapper.get('[data-testid="snapshot-export-open"]').trigger("click");
+      const modal = document.body.querySelector<HTMLElement>(
+        '[data-testid="snapshot-export-modal"]',
+      );
+      expect(modal).not.toBeNull();
+      expect(new DOMWrapper(modal!).isVisible()).toBe(true);
+
+      expect(session.applySession(openedSession(workspaceId, sessionEpoch))).toBe(true);
+      await wrapper.vm.$nextTick();
+
+      expect(new DOMWrapper(modal!).isVisible()).toBe(false);
+      expect(wrapper.emitted("action")).toBeUndefined();
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("previews and applies a read-only single-file extraction through a host grant", async () => {
