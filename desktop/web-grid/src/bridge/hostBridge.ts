@@ -220,6 +220,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
 >([
   "host.startupStateChanged",
   "database.opened",
+  "database.openCancelled",
+  "plugin.projectContext.unavailable",
   "table.pageLoaded",
   "table.datasetReady",
   "table.windowLoaded",
@@ -488,7 +490,7 @@ function clearPendingTimer(entry: Pending): void {
 const RESPONSE_TYPE_OVERRIDES: Readonly<
   Partial<Record<WebMessageType, readonly HostMessageType[]>>
 > = {
-  "database.openRequested": ["database.opened"],
+  "database.openRequested": ["database.opened", "database.openCancelled"],
   "table.selected": ["table.editSchemaLoaded"],
   "table.updateCellRequested": ["table.editCommitted", "table.editRejected"],
   "table.insertRowRequested": ["table.rowsInserted"],

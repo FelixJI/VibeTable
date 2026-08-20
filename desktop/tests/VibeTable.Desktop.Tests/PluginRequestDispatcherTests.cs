@@ -1227,7 +1227,8 @@ public sealed class PluginRequestDispatcherTests
             string? requestId,
             string message,
             string? code = null,
-            string? operation = null)
+            string? operation = null,
+            string? operationId = null)
         {
             RequestId = requestId;
             FailureCode = code;

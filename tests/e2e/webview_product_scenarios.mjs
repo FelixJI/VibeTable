@@ -259,8 +259,9 @@ async function waitForShell(page, recorder, { requireDatabaseOpened = false } = 
         message: await page.getByTestId("workspace-operation-error").innerText(),
       })),
   ]);
+  let databaseOpened = null;
   if (requireDatabaseOpened) {
-    await activateWorkspaceAndWaitForDatabaseOpened({
+    databaseOpened = await activateWorkspaceAndWaitForDatabaseOpened({
       beginCapture: (types) => beginBridgeMessageCapture(page, types),
       activate: () => openCreatedWorkspace.click(),
       waitForActivation,
@@ -279,6 +280,7 @@ async function waitForShell(page, recorder, { requireDatabaseOpened = false } = 
     page.url().startsWith("https://app.vibetable.local/"), {
     url: page.url(),
   });
+  return databaseOpened;
 }
 
 async function selectNValue(page, testId, value) {
@@ -3252,7 +3254,8 @@ async function scenario10(page, recorder, _network, runtime) {
 }
 
 async function scenario11(page, recorder, _network, runtime) {
-  await waitForShell(page, recorder);
+  const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const projectKey = databaseOpened.payload.projectKey.trim();
   await page.getByTestId("nav-tables").click();
   const pluginTable = await createSimpleTable(page, "E2E Plugin Target", "value");
   await selectTable(page, "E2E Plugin Target");
@@ -3347,7 +3350,7 @@ async function scenario11(page, recorder, _network, runtime) {
   recorder.check("undeclared field mutation was rejected by the capability boundary",
     /forbidden|permission|declared|field/i.test(deniedText), { deniedText });
   const auditResponse = await rawBridgeRequest(page, "plugin.audit.list", {
-    projectKey: "local:default",
+    projectKey,
     pluginId: "com.vibetable.e2e.mutation-boundary",
   });
   const auditEvents = Array.isArray(auditResponse.payload) ? auditResponse.payload : [];
