@@ -307,7 +307,8 @@ public partial class MainWindow : Window
             new GitHubPluginPackageSource(
                 Path.Combine(_productDataRoot, "plugin-downloads"),
                 () => _appPreferencesService.Read()),
-            message => _readiness?.Trace(message));
+            message => _readiness?.Trace(message),
+            () => PluginProjectContext.FromSession(_workspaceSessions.Current));
         var dailyQuotes = new DailyQuoteHostClient();
         _tableGateway = new LazyProductTableGateway();
         _workspace = new TableWorkspaceService(_tableGateway);
@@ -544,9 +545,10 @@ public partial class MainWindow : Window
             _session.Token);
         _dispatcher.SetSurfaceGateway(new JsonRpcSurfaceGateway(client));
 
-        _pluginGateway?.Dispose();
+        IPluginRpcGateway? previousPluginGateway = _pluginGateway;
         _pluginGateway = new JsonRpcPluginGateway(client);
         _pluginDispatcher.SetGateway(_pluginGateway);
+        previousPluginGateway?.Dispose();
 
         _documentWorkspace?.Dispose();
         _documentWorkspace = new WorkspaceDocumentOsAdapter(
@@ -630,7 +632,11 @@ public partial class MainWindow : Window
     private void OnWorkspaceSessionChanged(
         object? sender,
         WorkspaceSessionChangedEventArgs args)
-        => _workspaceProduct.OnSessionChanged(args);
+    {
+        PluginProjectContext? context = PluginProjectContext.FromSession(args.Session);
+        _pluginDispatcher.SetProjectContext(context);
+        _workspaceProduct.OnSessionChanged(args);
+    }
 
     private const int GatewayConfigureRetryLimit = 30;
     private static readonly TimeSpan GatewayConfigureRetryDelay =
@@ -649,6 +655,7 @@ public partial class MainWindow : Window
                 return;
             }
             _tableGateway.Unbind();
+            _pluginDispatcher.InvalidateProjectContext();
             if (_productGateway is not null)
             {
                 _dispatcher.ClearProductDataGateway(_productGateway);
@@ -657,7 +664,11 @@ public partial class MainWindow : Window
                 _productGateway.Dispose();
                 _productGateway = null;
             }
-            _pluginGateway?.Dispose();
+            if (_pluginGateway is not null)
+            {
+                _pluginDispatcher.ClearGateway(_pluginGateway);
+                _pluginGateway.Dispose();
+            }
             _pluginGateway = null;
             _documentWorkspace?.Dispose();
             _documentWorkspace = null;

@@ -52,13 +52,13 @@ export function useWorkspaceService(): {
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       store.setOpened(toCollections(payload), payload.displayNames);
       if (payload.projectKey?.trim()) {
-        pluginStore.setProjectContext(
+        pluginService.openProjectContext(
           payload.projectKey.trim(),
-          payload.projectRevision?.trim() || "0",
+          payload.projectRevision?.trim() || "",
         );
       }
       pluginStore.setHostContext(payload.currentUser, payload.hostVersion);
-      void pluginService.list().catch(() => undefined);
+      if (pluginStore.projectContextReady) void pluginService.list().catch(() => undefined);
     });
     bridge.on("database.collectionsChanged", (payload) => {
       store.setCollections(
@@ -66,10 +66,7 @@ export function useWorkspaceService(): {
         payload.displayNames,
       );
       if (payload.projectRevision?.trim()) {
-        pluginStore.setProjectContext(
-          pluginStore.projectKey,
-          payload.projectRevision.trim(),
-        );
+        pluginService.updateProjectRevision(payload.projectRevision.trim());
       }
       void pluginService.list().catch(() => undefined);
     });

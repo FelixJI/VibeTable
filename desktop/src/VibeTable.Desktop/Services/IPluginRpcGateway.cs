@@ -26,6 +26,8 @@ public interface IPluginRpcGateway : IDisposable
         PluginInspectInstallParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> CommitInstallAsync(
         PluginCommitInstallParams request, CancellationToken token);
+    Task<bool> CancelInstallAsync(
+        PluginInstallCancelParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> SetEnabledAsync(
         PluginSetEnabledParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> UpgradeAsync(

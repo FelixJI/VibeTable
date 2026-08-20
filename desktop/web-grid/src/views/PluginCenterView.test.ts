@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
 import type { PluginAuditEvent, PluginSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import { usePluginService } from "@/services/pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
 import PluginCenterView from "./PluginCenterView.vue";
 
@@ -69,6 +70,7 @@ const auditEvent: PluginAuditEvent = {
 describe("PluginCenterView", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    usePluginStore().setProjectContext("local:default", "r2");
     usePluginStore().applyPlugin(blockedPlugin);
   });
   afterEach(() => setHostBridgeForTesting(null));
@@ -180,6 +182,7 @@ describe("PluginCenterView", () => {
   });
 
   it("inspects a GitHub Release and explicitly cancels its host-managed plan", async () => {
+    usePluginStore().setProjectContext("local:default", "r2");
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
@@ -233,6 +236,7 @@ describe("PluginCenterView", () => {
   });
 
   it("keeps upgrade mutation internal while retaining the native inspection path", async () => {
+    usePluginStore().setProjectContext("local:default", "r2");
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
@@ -270,8 +274,7 @@ describe("PluginCenterView", () => {
     expect(wrapper.find('input[aria-label="插件包或文件夹位置"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click");
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(posted).toHaveLength(1);
     expect(posted[0]).toMatchObject({
       type: "plugin.install.inspect",
@@ -304,7 +307,7 @@ describe("PluginCenterView", () => {
     const plan = {
       planId: "plan-approved",
       projectKey: "local:default",
-      projectRevision: "0",
+      projectRevision: "r2",
       sourceType: "local-folder" as const,
       sourceLocation: "host-managed",
       packageHash: "sha256:approved",
@@ -383,7 +386,7 @@ describe("PluginCenterView", () => {
     const plan = {
       planId: "plan-enable-fails",
       projectKey: "local:default",
-      projectRevision: "0",
+      projectRevision: "r2",
       sourceType: "package" as const,
       sourceLocation: "host-managed",
       packageHash: "sha256:enable-fails",
@@ -396,7 +399,13 @@ describe("PluginCenterView", () => {
         postMessage: (message) => {
           posted.push(message);
           const request = message as { type: string; requestId: string };
-          queueMicrotask(() => listener?.({ data: request.type === "plugin.install.commit"
+          queueMicrotask(() => listener?.({ data: request.type === "plugin.install.inspect"
+            ? {
+                type: request.type,
+                requestId: request.requestId,
+                payload: plan,
+              }
+            : request.type === "plugin.install.commit"
             ? {
                 type: request.type,
                 requestId: request.requestId,
@@ -414,13 +423,15 @@ describe("PluginCenterView", () => {
     });
     bridge.start();
     setHostBridgeForTesting(bridge);
-    usePluginStore().setInstallPlan(plan);
+    await usePluginService().inspectInstall("package");
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
 
     await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
     await flushPromises();
 
-    expect(posted).toMatchObject([
+    expect(posted.filter((message) =>
+      (message as { type?: string }).type !== "plugin.install.inspect",
+    )).toMatchObject([
       { type: "plugin.install.commit", payload: { planId: plan.planId } },
       {
         type: "plugin.lifecycle.setEnabled",
@@ -441,7 +452,7 @@ describe("PluginCenterView", () => {
     const plan = {
       planId: "plan-blocked",
       projectKey: "local:default",
-      projectRevision: "0",
+      projectRevision: "r2",
       sourceType: "package" as const,
       sourceLocation: "host-managed",
       packageHash: "sha256:blocked",
