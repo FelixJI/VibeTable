@@ -11,13 +11,14 @@ import argparse
 import ctypes
 import json
 import os
-import subprocess
 import time
-from contextlib import ExitStack
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 from tests.e2e import product_e2e_runner as product_runner
+from tests.e2e.windows_process_scope import WindowsProcessScope
 
 ROOT = Path(__file__).resolve().parents[2]
 WINDOW_CLOSE_CONTROL_FILE = "host-window-close.request"
@@ -50,7 +51,7 @@ def _host_executable(package_root: Path) -> Path:
 
 def _wait_for_state(
     controls_dir: Path,
-    process: subprocess.Popen[bytes],
+    scope: WindowsProcessScope,
     action: str,
     *,
     timeout: float = 60.0,
@@ -62,10 +63,9 @@ def _wait_for_state(
         latest = product_runner._read_json(path)
         if latest is not None and latest.get("action") == action:
             return latest
-        if process.poll() is not None:
-            raise RuntimeError(
-                f"VibeTable.Next.exe exited with {process.returncode} before {action!r}"
-            )
+        exit_code = scope.root.poll()
+        if exit_code is not None:
+            raise RuntimeError(f"VibeTable.Next.exe exited with {exit_code} before {action!r}")
         time.sleep(0.1)
     raise TimeoutError(f"packaged host did not report {action!r}; latest={latest!r}")
 
@@ -77,7 +77,7 @@ def _launch_host(
     autostart: bool,
     tray_lifecycle: bool,
     extra_environment: dict[str, str] | None = None,
-) -> tuple[subprocess.Popen[bytes], int, Path, ExitStack]:
+) -> tuple[WindowsProcessScope, int, Path, ExitStack]:
     host = _host_executable(package_root)
     readiness_dir = runtime_root / "host"
     controls_dir = runtime_root / "controls"
@@ -120,82 +120,34 @@ def _launch_host(
         encoding="utf-8",
     )
     streams = ExitStack()
-    stdout = streams.enter_context((runtime_root / "host-stdout.log").open("wb"))
-    stderr = streams.enter_context((runtime_root / "host-stderr.log").open("wb"))
-    process = subprocess.Popen(
-        command,
-        cwd=package_root,
-        env=environment,
-        stdout=stdout,
-        stderr=stderr,
-    )
-    return process, port, controls_dir, streams
-
-
-def _observe_requested_exit(
-    process: subprocess.Popen[bytes],
-    *,
-    tracked: dict[int, str],
-    cdp_port: int,
-) -> dict[str, Any]:
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        for pid, name in product_runner._descendants(process.pid):
-            tracked[pid] = name
-        if process.poll() is not None:
-            break
-        time.sleep(0.1)
-    tracked_pids = set(tracked)
-    for _ in range(50):
-        alive = {pid for pid, _parent, _name in product_runner._windows_processes()}
-        if not ((tracked_pids - {process.pid}) & alive):
-            break
-        time.sleep(0.1)
-    surviving = {
-        pid: name
-        for pid, _parent, name in product_runner._windows_processes()
-        if pid in tracked_pids
-    }
-    descendants_after_exit = [
-        {"pid": pid, "name": name}
-        for pid, name in tracked.items()
-        if pid != process.pid and pid in surviving
-    ]
     try:
-        occupied = [
-            row
-            for row in product_runner._netstat_tcp_rows()
-            if int(row["pid"]) in tracked_pids
-            or (str(row["local"]).endswith(f":{cdp_port}") and row["state"] == "LISTENING")
-        ]
-        ports_released = not occupied
-    except (OSError, RuntimeError, subprocess.SubprocessError):
-        ports_released = False
-    return product_runner._lifecycle_exit_report(
-        normal_exit_requested=True,
-        host_exit_code=process.poll(),
-        descendants_after_exit=descendants_after_exit,
-        ports_released=ports_released,
-    )
+        stdout = streams.enter_context((runtime_root / "host-stdout.log").open("wb"))
+        stderr = streams.enter_context((runtime_root / "host-stderr.log").open("wb"))
+        scope = product_runner._launch_host_process(
+            command,
+            cwd=package_root,
+            env=environment,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except BaseException as exc:
+        try:
+            streams.close()
+        except BaseException as close_error:
+            exc.add_note(f"closing packaged host log streams also failed: {close_error}")
+        raise
+    return scope, port, controls_dir, streams
 
 
-def _request_tray_exit(
-    process: subprocess.Popen[bytes], controls_dir: Path, port: int
-) -> dict[str, Any]:
-    tracked = {process.pid: "VibeTable.Next.exe"}
-    for pid, name in product_runner._descendants(process.pid):
-        tracked[pid] = name
+def _request_tray_exit(scope: WindowsProcessScope, controls_dir: Path, port: int) -> dict[str, Any]:
     (controls_dir / TRAY_EXIT_CONTROL_FILE).write_text("tray-exit\n", encoding="utf-8")
-    return _observe_requested_exit(process, tracked=tracked, cdp_port=port)
+    return product_runner._observe_scope_exit(scope, cdp_port=port)
 
 
-def _request_window_close(process: subprocess.Popen[bytes], port: int) -> dict[str, Any]:
+def _request_window_close(scope: WindowsProcessScope, port: int) -> dict[str, Any]:
     """Send the standard WM_CLOSE used by a user closing the legacy Host window."""
 
     assert os.name == "nt"
-    tracked = {process.pid: "VibeTable.Next.exe"}
-    for pid, name in product_runner._descendants(process.pid):
-        tracked[pid] = name
     from ctypes import wintypes
 
     windows: list[int] = []
@@ -205,7 +157,7 @@ def _request_window_close(process: subprocess.Popen[bytes], port: int) -> dict[s
     def collect(hwnd: int, _parameter: int) -> bool:
         pid = wintypes.DWORD()
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if int(pid.value) == process.pid and ctypes.windll.user32.IsWindowVisible(hwnd):
+        if int(pid.value) == scope.root.pid and ctypes.windll.user32.IsWindowVisible(hwnd):
             windows.append(int(hwnd))
         return True
 
@@ -214,30 +166,62 @@ def _request_window_close(process: subprocess.Popen[bytes], port: int) -> dict[s
     assert ctypes.windll.user32.PostMessageW(windows[0], 0x0010, 0, 0), (
         "WM_CLOSE could not be posted to the legacy packaged Host"
     )
-    return _observe_requested_exit(process, tracked=tracked, cdp_port=port)
+    return product_runner._observe_scope_exit(scope, cdp_port=port)
+
+
+def _cleanup_scope(scope: WindowsProcessScope) -> dict[str, Any]:
+    cleanup = product_runner._terminate_scope(scope)
+    close_error = product_runner._close_scope(scope)
+    if close_error is not None:
+        cleanup["errors"].append(close_error)
+        cleanup["status"] = "failed"
+    return cleanup
+
+
+@contextmanager
+def _scope_lifetime(scope: WindowsProcessScope, streams: ExitStack) -> Iterator[None]:
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup = _cleanup_scope(scope)
+        try:
+            streams.close()
+        except BaseException as exc:
+            cleanup["errors"].append(str(exc))
+            cleanup["status"] = "failed"
+        if cleanup["status"] != "passed":
+            message = f"packaged host Job cleanup failed: {cleanup!r}"
+            if primary_error is not None:
+                primary_error.add_note(message)
+            else:
+                raise RuntimeError(message)
 
 
 def _run_tray_case(package_root: Path, runtime_root: Path) -> dict[str, Any]:
-    process, port, controls, streams = _launch_host(
+    scope, port, controls, streams = _launch_host(
         package_root,
         runtime_root,
         autostart=False,
         tray_lifecycle=True,
         extra_environment=None,
     )
-    try:
-        product_runner._wait_for_cdp(port, process)
-        readiness = product_runner._wait_for_readiness(runtime_root / "host", process)
-        visible = _wait_for_state(controls, process, "visible-startup")
+    with _scope_lifetime(scope, streams):
+        product_runner._wait_for_cdp(port, scope)
+        readiness = product_runner._wait_for_readiness(runtime_root / "host", scope)
+        visible = _wait_for_state(controls, scope, "visible-startup")
         assert readiness.get("ready") is True, readiness
         assert visible.get("windowVisible") is True, visible
         assert visible.get("trayVisible") is True, visible
         (controls / WINDOW_CLOSE_CONTROL_FILE).write_text("window-close\n", encoding="utf-8")
-        minimized = _wait_for_state(controls, process, "close-to-tray")
-        assert process.poll() is None, "close-to-tray terminated the packaged host"
+        minimized = _wait_for_state(controls, scope, "close-to-tray")
+        assert scope.root.poll() is None, "close-to-tray terminated the packaged host"
         assert minimized.get("windowVisible") is False, minimized
         assert minimized.get("trayVisible") is True, minimized
-        lifecycle = _request_tray_exit(process, controls, port)
+        lifecycle = _request_tray_exit(scope, controls, port)
         assert lifecycle["status"] == "passed", lifecycle
         return {
             "status": "passed",
@@ -245,32 +229,26 @@ def _run_tray_case(package_root: Path, runtime_root: Path) -> dict[str, Any]:
             "closeToTray": minimized,
             "lifecycle": lifecycle,
         }
-    finally:
-        product_runner._stop_process_tree(process)
-        streams.close()
 
 
 def _run_silent_startup_case(package_root: Path, runtime_root: Path) -> dict[str, Any]:
-    process, port, controls, streams = _launch_host(
+    scope, port, controls, streams = _launch_host(
         package_root,
         runtime_root,
         autostart=True,
         tray_lifecycle=True,
         extra_environment=None,
     )
-    try:
-        product_runner._wait_for_cdp(port, process)
-        readiness = product_runner._wait_for_readiness(runtime_root / "host", process)
-        silent = _wait_for_state(controls, process, "silent-startup")
+    with _scope_lifetime(scope, streams):
+        product_runner._wait_for_cdp(port, scope)
+        readiness = product_runner._wait_for_readiness(runtime_root / "host", scope)
+        silent = _wait_for_state(controls, scope, "silent-startup")
         assert readiness.get("ready") is True, readiness
         assert silent.get("windowVisible") is False, silent
         assert silent.get("trayVisible") is True, silent
-        lifecycle = _request_tray_exit(process, controls, port)
+        lifecycle = _request_tray_exit(scope, controls, port)
         assert lifecycle["status"] == "passed", lifecycle
         return {"status": "passed", "startup": silent, "lifecycle": lifecycle}
-    finally:
-        product_runner._stop_process_tree(process)
-        streams.close()
 
 
 def run_lifecycle(package_root: Path, evidence_root: Path) -> dict[str, Any]:
@@ -371,7 +349,7 @@ def open_workspace_with_packaged_host(
     evidence_root.mkdir(parents=True)
     readiness_dir = evidence_root / "host"
     _seed_workspace_registry(readiness_dir, workspace_root)
-    process, port, controls, streams = _launch_host(
+    scope, port, controls, streams = _launch_host(
         package_root,
         evidence_root,
         autostart=False,
@@ -382,13 +360,13 @@ def open_workspace_with_packaged_host(
             else None
         ),
     )
-    try:
-        product_runner._wait_for_cdp(port, process)
-        readiness = product_runner._wait_for_readiness(readiness_dir, process)
+    with _scope_lifetime(scope, streams):
+        product_runner._wait_for_cdp(port, scope)
+        readiness = product_runner._wait_for_readiness(readiness_dir, scope)
         assert readiness.get("ready") is True, readiness
         (controls / OPEN_WORKSPACE_CONTROL_FILE).write_text(WORKSPACE_ID + "\n", encoding="utf-8")
         expected_action = "workspace-open-failed" if expect_open_failure else "workspace-opened"
-        opened = _wait_for_state(controls, process, expected_action)
+        opened = _wait_for_state(controls, scope, expected_action)
         assert opened.get("hostExecutable", "").casefold() == "vibetable.next.exe", opened
         open_evidence = workspace_open_evidence(
             opened,
@@ -397,7 +375,7 @@ def open_workspace_with_packaged_host(
         if expect_open_failure and startup_fault_file is not None:
             assert not startup_fault_file.exists(), "startup fault was not consumed once"
         lifecycle = product_runner._request_normal_exit(
-            process,
+            scope,
             controls_dir=controls,
             cdp_port=port,
         )
@@ -414,9 +392,6 @@ def open_workspace_with_packaged_host(
             "readiness": readiness,
             "lifecycle": lifecycle,
         }
-    finally:
-        product_runner._stop_process_tree(process)
-        streams.close()
 
 
 def main(argv: list[str] | None = None) -> int:
