@@ -7,6 +7,7 @@ import pytest
 from tests.e2e.windows_process_scope import (
     ProcessLaunchSpec,
     ProcessScopeClosedError,
+    ProcessScopeMember,
     ProcessScopeQueryError,
     _launch_with_adapter,
 )
@@ -34,6 +35,7 @@ class _FakePlatformScope:
         residual_pids: set[int] | None = None,
         wait_error: OSError | None = None,
         terminate_error: OSError | None = None,
+        unavailable_pids: set[int] | None = None,
     ) -> None:
         self.root = _FakeRoot(42)
         self.members = members or {42: "host.exe", 7: "child.exe"}
@@ -43,6 +45,7 @@ class _FakePlatformScope:
         self.termination_requested = False
         self.wait_error = wait_error
         self.terminate_error = terminate_error
+        self.unavailable_pids = unavailable_pids or set()
 
     def member_pids(self) -> tuple[int, ...]:
         if self.query_error is not None:
@@ -50,6 +53,8 @@ class _FakePlatformScope:
         return tuple(self.members)
 
     def open_member(self, pid: int):
+        if pid in self.unavailable_pids:
+            return None
         name = self.members.get(pid)
         return None if name is None else _FakeMemberHandle(self, pid, name)
 
@@ -112,6 +117,42 @@ def test_launch_returns_root_and_kernel_owned_membership() -> None:
 
     assert scope.root.pid == 42
     assert [member.pid for member in scope.snapshot().members] == [42, 7]
+    assert [
+        (member.executable_name, member.identity_verified) for member in scope.snapshot().members
+    ] == [
+        ("host.exe", True),
+        ("child.exe", True),
+    ]
+
+
+def test_snapshot_keeps_an_unavailable_member_with_unknown_identity() -> None:
+    platform = _FakePlatformScope(
+        {42: "host.exe", 7: "child.exe"},
+        unavailable_pids={7},
+    )
+    scope = _launch_with_adapter(ProcessLaunchSpec(("host.exe",)), _FakeAdapter(platform))
+
+    assert scope.snapshot().members == (
+        ProcessScopeMember(42, "host.exe", True),
+        ProcessScopeMember(7),
+    )
+
+
+def test_wait_empty_returns_structured_timeout_and_query_error() -> None:
+    residual = _launch_with_adapter(
+        ProcessLaunchSpec(("host.exe",)),
+        _FakeAdapter(_FakePlatformScope({7: "child.exe"})),
+    ).wait_empty(timeout=0)
+    failed = _launch_with_adapter(
+        ProcessLaunchSpec(("host.exe",)),
+        _FakeAdapter(_FakePlatformScope(wait_error=OSError("query denied"))),
+    ).wait_empty(timeout=0)
+
+    assert residual.success is False
+    assert residual.remaining_pids == (7,)
+    assert "deadline" in residual.errors[0]
+    assert failed.remaining_pids is None
+    assert failed.errors == ("unable to observe Job becoming empty: query denied",)
 
 
 def test_terminate_unique_fails_closed_when_target_is_absent() -> None:
@@ -251,8 +292,9 @@ def test_terminate_all_preserves_the_job_termination_failure() -> None:
         lambda scope: scope.snapshot(),
         lambda scope: scope.terminate_unique("vibetable-pb.exe"),
         lambda scope: scope.terminate_all(),
+        lambda scope: scope.wait_empty(),
     ],
-    ids=["root-poll", "root-wait", "snapshot", "terminate-unique", "terminate-all"],
+    ids=["root-poll", "root-wait", "snapshot", "terminate-unique", "terminate-all", "wait-empty"],
 )
 def test_closed_scope_rejects_every_public_process_operation(operation) -> None:
     scope = _launch_with_adapter(

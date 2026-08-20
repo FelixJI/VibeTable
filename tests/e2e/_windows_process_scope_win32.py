@@ -448,7 +448,7 @@ class _Win32PlatformScope:
                 try:
                     if not handle.belongs_to_scope():
                         continue
-                    handle.wait(min(remaining, 0.25))
+                    handle.wait(remaining)
                     waited = True
                     break
                 finally:

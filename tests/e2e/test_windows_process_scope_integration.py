@@ -141,15 +141,25 @@ def test_atomic_job_keeps_child_owned_after_root_exit_and_terminates_it(
     ):
         ready.wait()
         child_pid = _read_pid(child_pid_path)
-        initial = {member.pid for member in scope.snapshot().members}
+        initial_snapshot = scope.snapshot()
+        initial = {member.pid for member in initial_snapshot.members}
         assert scope.root.pid in initial
         assert child_pid in initial
+        assert all(member.identity_verified for member in initial_snapshot.members)
+        assert all(
+            member.executable_name.casefold().startswith("python")
+            for member in initial_snapshot.members
+        )
 
         root_release.set()
         assert scope.root.wait(timeout=15) == 0
         after_root = {member.pid for member in scope.snapshot().members}
         assert scope.root.pid not in after_root
         assert child_pid in after_root
+        residual = scope.wait_empty(timeout=0)
+        assert residual.success is False
+        assert residual.remaining_pids is not None
+        assert set(residual.remaining_pids) == after_root
 
         result = scope.terminate_all()
         assert result.success is True
@@ -196,7 +206,7 @@ def test_process_already_in_outer_job_can_launch_an_inner_job(tmp_path: Path) ->
             root_release.set()
             assert outer.root.wait(timeout=15) == 0
             assert kernel32.WaitForSingleObject(child_handle, 15_000) == WAIT_OBJECT_0
-            assert outer.snapshot().members == ()
+            assert outer.wait_empty(timeout=5).success is True
         finally:
             root_release.set()
             child_release.set()

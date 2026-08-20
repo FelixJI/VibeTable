@@ -24,6 +24,7 @@ __all__ = [
     "ProcessScopeQueryError",
     "ProcessScopeSnapshot",
     "ScopeTerminationResult",
+    "ScopeWaitResult",
     "TargetTerminationResult",
     "WindowsProcessScope",
 ]
@@ -76,6 +77,8 @@ class ProcessLaunchSpec:
 @dataclass(frozen=True)
 class ProcessScopeMember:
     pid: int
+    executable_name: str = "unknown"
+    identity_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,16 @@ class ScopeTerminationResult:
     @property
     def success(self) -> bool:
         return self.termination_requested and self.remaining_pids == () and not self.errors
+
+
+@dataclass(frozen=True)
+class ScopeWaitResult:
+    remaining_pids: tuple[int, ...] | None
+    errors: tuple[str, ...] = ()
+
+    @property
+    def success(self) -> bool:
+        return self.remaining_pids == () and not self.errors
 
 
 class _RootProcess(Protocol):
@@ -214,8 +227,37 @@ class WindowsProcessScope:
             pids = self._platform_scope.member_pids()
         except OSError as exc:
             raise ProcessScopeQueryError(f"unable to query Job membership: {exc}") from exc
-        members = tuple(ProcessScopeMember(pid) for pid in pids)
-        return ProcessScopeSnapshot(members)
+        members: list[ProcessScopeMember] = []
+        for pid in pids:
+            handle: _PlatformMemberHandle | None = None
+            try:
+                handle = self._platform_scope.open_member(pid)
+                if handle is None or not handle.belongs_to_scope():
+                    members.append(ProcessScopeMember(pid))
+                else:
+                    members.append(ProcessScopeMember(pid, handle.name, True))
+            except OSError:
+                members.append(ProcessScopeMember(pid))
+            finally:
+                if handle is not None:
+                    handle.close()
+        return ProcessScopeSnapshot(tuple(members))
+
+    def wait_empty(self, *, timeout: float = 5.0) -> ScopeWaitResult:
+        with self._operation():
+            try:
+                remaining = self._platform_scope.wait_until_empty(timeout)
+            except OSError as exc:
+                return ScopeWaitResult(
+                    None,
+                    errors=(f"unable to observe Job becoming empty: {exc}",),
+                )
+            errors = (
+                (f"Job still contains processes after the wait deadline: {remaining}",)
+                if remaining
+                else ()
+            )
+            return ScopeWaitResult(remaining, errors)
 
     def terminate_unique(
         self,
