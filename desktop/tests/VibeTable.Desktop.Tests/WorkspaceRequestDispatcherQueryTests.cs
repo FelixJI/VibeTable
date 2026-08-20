@@ -62,6 +62,335 @@ public sealed class WorkspaceRequestDispatcherQueryTests
     }
 
     [TestMethod]
+    public async Task TableSelection_SubscriberBackendFailureUsesProgrammerDefectFallback()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" },
+            Array.Empty<string>(),
+            TestDisplayNames.For("records"));
+        gateway.CursorOpenResults["records"] = EmptyPage("records");
+        var workspace = new TableWorkspaceService(gateway);
+        await workspace.OpenDatabaseAsync("db");
+        workspace.Notification += _ =>
+            throw new BackendUnavailableException("subscriber failed");
+        var sink = new FakeWebReplySink();
+        var dispatcher = new WorkspaceRequestDispatcher(
+            workspace,
+            new FakeDatabasePicker("local://configured"),
+            sink);
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "table.selected",
+            "select-subscriber",
+            document.RootElement.Clone(),
+            string.Empty));
+
+        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        JsonElement payload = JsonSerializer.SerializeToElement(failure.Payload);
+        Assert.AreEqual("WORKSPACE_ERROR", payload.GetProperty("code").GetString());
+        Assert.AreEqual("table.selected", payload.GetProperty("operation").GetString());
+    }
+
+    [TestMethod]
+    public async Task TableSelection_ReportsStableUnavailableAfterRecoveryDeadline()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" },
+            Array.Empty<string>(),
+            TestDisplayNames.For("records"));
+        var lateAttempt = new TaskCompletionSource<TablePage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var attemptStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int attempts = 0;
+        gateway.CursorOpenOverride = (_, _, _) =>
+        {
+            attempts += 1;
+            if (attempts == 1)
+            {
+                return Task.FromException<TablePage>(
+                    new BackendUnavailableException("sidecar restarting"));
+            }
+            attemptStarted.TrySetResult();
+            return lateAttempt.Task;
+        };
+        gateway.EditSchemaResults["records"] = new EditSchemaResult(
+            "records",
+            "schema-records",
+            "primary_key",
+            RowKeyStable: true,
+            Editable: true,
+            Array.Empty<ColumnEditSchema>());
+        var time = new ManualTimeProvider();
+        var workspace = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(3),
+            timeProvider: time);
+        await workspace.OpenDatabaseAsync("db");
+        var notifications = new List<TableNotification>();
+        workspace.Notification += notifications.Add;
+        var sink = new FakeWebReplySink();
+        var controller = new WorkspaceTableRequestController(
+            workspace,
+            new FakeDatabasePicker("local://configured"),
+            sink,
+            () => null);
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task selection = controller.DispatchAsync(new RoutedWebRequest(
+            "table.selected",
+            null,
+            document.RootElement.Clone(),
+            string.Empty));
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await attemptStarted.Task;
+        time.Advance(TimeSpan.FromMilliseconds(2_975));
+
+        Assert.IsTrue(selection.IsCompleted,
+            "the controller operation must stabilize even if the RPC ignores cancellation");
+        await selection;
+
+        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        JsonElement payload = JsonSerializer.SerializeToElement(failure.Payload);
+        Assert.AreEqual("BACKEND_UNAVAILABLE", payload.GetProperty("code").GetString());
+        Assert.AreEqual("table.selected", payload.GetProperty("operation").GetString());
+
+        lateAttempt.SetResult(EmptyPage("records"));
+        await Task.Yield();
+        Assert.AreEqual(0, notifications.Count,
+            "late recovery completion must publish neither dataset nor schema");
+        Assert.AreEqual(2, attempts);
+    }
+
+    [TestMethod]
+    [Timeout(2_000)]
+    public async Task TableSelection_SessionCloseSilencesIgnoredCancellationAndLateSuccess()
+    {
+        using var session = new CancellationTokenSource();
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" },
+            Array.Empty<string>(),
+            TestDisplayNames.For("records"));
+        var readStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateRead = new TaskCompletionSource<TablePage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        gateway.CursorOpenOverride = (_, _, _) =>
+        {
+            readStarted.TrySetResult();
+            return lateRead.Task;
+        };
+        gateway.EditSchemaResults["records"] = new EditSchemaResult(
+            "records",
+            "schema-records",
+            "primary_key",
+            RowKeyStable: true,
+            Editable: true,
+            Array.Empty<ColumnEditSchema>());
+        var workspace = new TableWorkspaceService(gateway);
+        await workspace.OpenDatabaseAsync("db");
+        var notifications = new List<TableNotification>();
+        workspace.Notification += notifications.Add;
+        var sink = new FakeWebReplySink();
+        int tokenCaptures = 0;
+        var controller = new WorkspaceTableRequestController(
+            workspace,
+            new FakeDatabasePicker("local://configured"),
+            sink,
+            () => null,
+            sessionToken: () =>
+            {
+                tokenCaptures += 1;
+                return session.Token;
+            });
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+
+        var request = new RoutedWebRequest(
+            "table.selected",
+            "select-session",
+            document.RootElement.Clone(),
+            string.Empty);
+        Task selection = controller.DispatchAsync(request);
+        await readStarted.Task;
+        session.Cancel();
+        await selection;
+        lateRead.SetResult(EmptyPage("records"));
+        await Task.Yield();
+
+        Assert.AreEqual(1, tokenCaptures,
+            "the controller must capture one stable session token per selection");
+        Assert.AreEqual(0, notifications.Count,
+            "session close must suppress late dataset and schema notifications");
+        Assert.AreEqual(0, sink.Replies.Count,
+            "session close is silent and must not post a correlated failure");
+    }
+
+    [TestMethod]
+    [Timeout(2_000)]
+    public async Task TableSelection_SessionCloseSilencesIgnoredSchemaCancellation()
+    {
+        using var session = new CancellationTokenSource();
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" },
+            Array.Empty<string>(),
+            TestDisplayNames.For("records"));
+        gateway.CursorOpenResults["records"] = EmptyPage("records");
+        var schemaStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateSchema = new TaskCompletionSource<EditSchemaResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        gateway.EditSchemaOverride = (_, _) =>
+        {
+            schemaStarted.TrySetResult();
+            return lateSchema.Task;
+        };
+        var workspace = new TableWorkspaceService(gateway);
+        await workspace.OpenDatabaseAsync("db");
+        var notifications = new List<TableNotification>();
+        workspace.Notification += notifications.Add;
+        var sink = new FakeWebReplySink();
+        var controller = new WorkspaceTableRequestController(
+            workspace,
+            new FakeDatabasePicker("local://configured"),
+            sink,
+            () => null,
+            sessionToken: () => session.Token);
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+
+        var request = new RoutedWebRequest(
+            "table.selected",
+            "select-schema-session",
+            document.RootElement.Clone(),
+            string.Empty);
+        Task selection = controller.DispatchAsync(request);
+        await schemaStarted.Task;
+        Assert.AreEqual(1, notifications.Count);
+        Assert.AreEqual("table.datasetReady", notifications[0].Type);
+
+        session.Cancel();
+        await selection;
+        lateSchema.SetResult(new EditSchemaResult(
+            "records",
+            "schema-late",
+            "primary_key",
+            RowKeyStable: true,
+            Editable: true,
+            Array.Empty<ColumnEditSchema>()));
+        await Task.Yield();
+
+        Assert.AreEqual(1, notifications.Count,
+            "late schema must not publish after session close");
+        Assert.AreEqual(0, sink.Replies.Count,
+            "session close during schema read must remain silent");
+    }
+
+    [TestMethod]
+    public async Task TableSelection_SessionCloseWinsRecoveryDeadlineWithoutReply()
+    {
+        using var session = new CancellationTokenSource();
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" },
+            Array.Empty<string>(),
+            TestDisplayNames.For("records"));
+        gateway.CursorOpenOverride = (_, _, _) =>
+            Task.FromException<TablePage>(
+                new BackendUnavailableException("sidecar restarting"));
+        var time = new ManualTimeProvider();
+        var workspace = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromMilliseconds(25),
+            timeProvider: time);
+        await workspace.OpenDatabaseAsync("db");
+        var sink = new FakeWebReplySink();
+        var controller = new WorkspaceTableRequestController(
+            workspace,
+            new FakeDatabasePicker("local://configured"),
+            sink,
+            () => null,
+            sessionToken: () => session.Token);
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+
+        Task timersScheduled = time.WaitForScheduledTimersAsync(2);
+        Task selection = controller.DispatchAsync(new RoutedWebRequest(
+            "table.selected",
+            "select-deadline-session",
+            document.RootElement.Clone(),
+            string.Empty));
+        await timersScheduled;
+        time.BeforeTimerFire = session.Cancel;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await selection;
+
+        Assert.IsTrue(session.IsCancellationRequested);
+        Assert.AreEqual(0, sink.Replies.Count,
+            "session ownership outranks an exhausted deadline and stays silent");
+    }
+
+    [TestMethod]
+    public async Task TableSelection_DoesNotPublishSchemaAfterDatasetReentersNewSelection()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "alpha", "beta" },
+            Array.Empty<string>(),
+            TestDisplayNames.For("alpha", "beta"));
+        gateway.CursorOpenResults["alpha"] = EmptyPage("alpha");
+        gateway.CursorOpenResults["beta"] = EmptyPage("beta");
+        gateway.EditSchemaResults["alpha"] = new EditSchemaResult(
+            "alpha",
+            "schema-alpha",
+            "primary_key",
+            RowKeyStable: true,
+            Editable: true,
+            Array.Empty<ColumnEditSchema>());
+        var workspace = new TableWorkspaceService(gateway);
+        await workspace.OpenDatabaseAsync("db");
+        var notifications = new List<TableNotification>();
+        Task<bool>? betaSelection = null;
+        workspace.Notification += notification =>
+        {
+            notifications.Add(notification);
+            if (notification.Type == "table.datasetReady"
+                && notification.Page?.Table == "alpha")
+            {
+                betaSelection = workspace.SelectTableAsync("beta");
+            }
+        };
+        var controller = new WorkspaceTableRequestController(
+            workspace,
+            new FakeDatabasePicker("local://configured"),
+            new FakeWebReplySink(),
+            () => null);
+        using var document = JsonDocument.Parse("""{"table":"alpha"}""");
+
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "table.selected",
+            null,
+            document.RootElement.Clone(),
+            string.Empty));
+        Assert.IsNotNull(betaSelection);
+        Assert.IsTrue(await betaSelection);
+
+        var schemas = notifications
+            .Where(notification => notification.Type == "table.editSchemaLoaded")
+            .Select(notification => notification.MutationResult?.Result)
+            .OfType<EditSchemaResult>()
+            .ToList();
+        Assert.IsFalse(schemas.Any(schema => schema.Table == "alpha"),
+            "alpha schema must not borrow beta's generation after reentrant selection");
+    }
+
+    [TestMethod]
     public void ProductControllerHandlesOnlyRegisteredProductAndRelationRequests()
     {
         foreach (string type in ProductDataRpcRegistry.RequestTypes)
@@ -394,4 +723,15 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             return ValueTask.CompletedTask;
         }
     }
+
+    private static TablePage EmptyPage(string table)
+        => new(
+            table,
+            Array.Empty<ColumnSchema>(),
+            Array.Empty<Dictionary<string, object?>>(),
+            0,
+            TableWorkspaceLimits.MaxPageLimit,
+            0,
+            "remote");
+
 }

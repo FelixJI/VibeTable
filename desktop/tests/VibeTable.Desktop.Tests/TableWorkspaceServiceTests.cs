@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -165,6 +167,441 @@ public sealed class TableWorkspaceServiceTests
     }
 
     [TestMethod]
+    public async Task SelectTableAsync_RetriesTransientReadWithinOwnedGeneration()
+    {
+        var gateway = SelectionGateway("alpha");
+        int attempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            attempts += 1;
+            return attempts == 1
+                ? Task.FromException<TablePage>(
+                    new BackendUnavailableException("sidecar restarting"))
+                : Task.FromResult(EmptyPage(table));
+        };
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(1),
+            timeProvider: time);
+        var notifications = new List<TableNotification>();
+        service.Notification += notifications.Add;
+        await service.OpenDatabaseAsync("db");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task selection = service.SelectTableAsync("alpha");
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await selection;
+
+        Assert.AreEqual(2, attempts);
+        TableNotification ready = notifications.Single();
+        Assert.AreEqual("table.datasetReady", ready.Type);
+        Assert.AreEqual("alpha", ready.Page!.Table);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_RecoveryDeadlineDoesNotTrustAttemptCancellation()
+    {
+        var gateway = SelectionGateway("alpha");
+        var lateAttempt = new TaskCompletionSource<TablePage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var attemptStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int attempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            attempts += 1;
+            if (attempts == 1)
+            {
+                return Task.FromException<TablePage>(
+                    new BackendUnavailableException("sidecar restarting"));
+            }
+            attemptStarted.TrySetResult();
+            return lateAttempt.Task;
+        };
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(3),
+            timeProvider: time);
+        var notifications = new List<TableNotification>();
+        service.Notification += notifications.Add;
+        await service.OpenDatabaseAsync("db");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task<bool> selection = service.SelectTableAsync("alpha");
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await attemptStarted.Task;
+        time.Advance(TimeSpan.FromMilliseconds(2_975));
+
+        Assert.IsTrue(selection.IsCompleted,
+            "the absolute deadline must complete even when the RPC ignores cancellation");
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(
+            async () => await selection);
+        Assert.AreEqual(2, attempts);
+        Assert.AreEqual(0, notifications.Count);
+
+        lateAttempt.SetResult(EmptyPage("alpha"));
+        await Task.Yield();
+        Assert.AreEqual(0, notifications.Count,
+            "a late recovery result must not publish after the stable deadline outcome");
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_DeadlineWinsWhenRecoveryCompletesOnSameTick()
+    {
+        var gateway = SelectionGateway("alpha");
+        var recoveryAttempt = new TaskCompletionSource<TablePage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var attemptStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var time = new ManualTimeProvider();
+        int attempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            attempts += 1;
+            if (attempts == 1)
+            {
+                return Task.FromException<TablePage>(
+                    new BackendUnavailableException("sidecar restarting"));
+            }
+            attemptStarted.TrySetResult();
+            time.Advance(TimeSpan.FromMilliseconds(2_975));
+            recoveryAttempt.TrySetResult(EmptyPage(table));
+            return recoveryAttempt.Task;
+        };
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(3),
+            timeProvider: time);
+        var notifications = new List<TableNotification>();
+        service.Notification += notifications.Add;
+        await service.OpenDatabaseAsync("db");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task<bool> selection = service.SelectTableAsync("alpha");
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await attemptStarted.Task;
+
+        Assert.IsTrue(selection.IsCompleted,
+            "the arbiter must settle after both contenders complete on the deadline tick");
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(
+            async () => await selection);
+        Assert.AreEqual(0, notifications.Count);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_SupersedeWinsWhenOwnershipAndDeadlineEndTogether()
+    {
+        var gateway = SelectionGateway("alpha", "beta");
+        var time = new ManualTimeProvider();
+        TableWorkspaceService? service = null;
+        Task<bool>? betaSelection = null;
+        int alphaAttempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            if (table == "beta")
+                return Task.FromResult(EmptyPage(table));
+            alphaAttempts += 1;
+            if (alphaAttempts == 1)
+            {
+                return Task.FromException<TablePage>(
+                    new BackendUnavailableException("sidecar restarting"));
+            }
+
+            betaSelection = service!.SelectTableAsync("beta");
+            time.Advance(TimeSpan.FromMilliseconds(2_975));
+            return Task.FromResult(EmptyPage(table));
+        };
+        service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(3),
+            timeProvider: time);
+        var notifications = new List<TableNotification>();
+        service.Notification += notifications.Add;
+        await service.OpenDatabaseAsync("db");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task<bool> alphaSelection = service.SelectTableAsync("alpha");
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+
+        Assert.IsFalse(await alphaSelection,
+            "ownership loss must suppress the old selection instead of surfacing deadline failure");
+        Assert.IsNotNull(betaSelection);
+        Assert.IsTrue(await betaSelection);
+        TableNotification ready = notifications.Single();
+        Assert.AreEqual("beta", ready.Page!.Table);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_DoesNotRetryTransientSubscriberFailure()
+    {
+        var gateway = SelectionGateway("alpha");
+        int attempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            attempts += 1;
+            return Task.FromResult(EmptyPage(table));
+        };
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(3),
+            timeProvider: time);
+        service.Notification += _ =>
+            throw new BackendUnavailableException("subscriber failed");
+        await service.OpenDatabaseAsync("db");
+
+        Task<bool> selection = service.SelectTableAsync("alpha");
+
+        Assert.IsTrue(selection.IsCompleted,
+            "subscriber failure must escape instead of entering the recovery loop");
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(
+            async () => await selection);
+        Assert.AreEqual(1, attempts);
+        Assert.AreEqual(0, time.ScheduledTimerCount);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_ImmediateTransientFailuresRespectRecoveryCadence()
+    {
+        var gateway = SelectionGateway("alpha");
+        int attempts = 0;
+        gateway.CursorOpenOverride = (_, _, _) =>
+        {
+            attempts += 1;
+            return Task.FromException<TablePage>(
+                new BackendUnavailableException("sidecar restarting"));
+        };
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromMilliseconds(100),
+            timeProvider: time);
+        await service.OpenDatabaseAsync("db");
+
+        Task timersScheduled = time.WaitForScheduledTimersAsync(2);
+        Task<bool> selection = service.SelectTableAsync("alpha");
+        await timersScheduled;
+        Assert.AreEqual(1, attempts,
+            "immediate failures must not retry while manual time is stationary");
+
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await time.WaitForScheduledTimersAsync(2);
+        Assert.IsGreaterThanOrEqualTo(2, attempts,
+            "advancing through the retry cadence must permit another attempt");
+
+        time.Advance(TimeSpan.FromMilliseconds(75));
+
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(
+            async () => await selection);
+        Assert.IsGreaterThanOrEqualTo(2, attempts);
+        Assert.IsLessThanOrEqualTo(5, attempts,
+            "the 100 ms recovery window must keep immediate failures bounded");
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_StartsRecoveryWindowAfterSlowInitialFailure()
+    {
+        var gateway = SelectionGateway("alpha");
+        var failInitialRead = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var time = new ManualTimeProvider();
+        int attempts = 0;
+        gateway.CursorOpenOverride = async (table, _, token) =>
+        {
+            attempts += 1;
+            if (attempts == 1)
+            {
+                await failInitialRead.Task.WaitAsync(token);
+                throw new BackendUnavailableException("sidecar restarting");
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(118), time, token);
+            return EmptyPage(table);
+        };
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(3),
+            timeProvider: time);
+        await service.OpenDatabaseAsync("db");
+
+        Task selection = service.SelectTableAsync("alpha");
+        time.Advance(TimeSpan.FromMilliseconds(2_900));
+        Assert.AreEqual(0, time.ScheduledTimerCount,
+            "the initial transport tail must not consume the recovery window");
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        failInitialRead.SetResult();
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        Task recoveredReadScheduled = time.WaitForScheduledTimersAsync(2);
+        await recoveredReadScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(118));
+        await selection;
+
+        Assert.AreEqual(2, attempts);
+        Assert.AreEqual(
+            DateTimeOffset.UnixEpoch + TimeSpan.FromMilliseconds(3_043),
+            time.GetUtcNow(),
+            "the 3 s window starts at the slow initial failure, so 143 ms recovery succeeds");
+        int lateTimerFires = 0;
+        time.BeforeTimerFire = () => lateTimerFires += 1;
+        time.Advance(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(0, lateTimerFires,
+            "successful recovery must dispose the deadline timer and registrations");
+        Assert.AreEqual(0, time.ScheduledTimerCount);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_SupersededRecoveryNeverRetriesOrPublishesOldSelection()
+    {
+        var gateway = SelectionGateway("alpha", "beta");
+        int alphaAttempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            if (table == "alpha")
+            {
+                alphaAttempts += 1;
+                return Task.FromException<TablePage>(
+                    new BackendUnavailableException("sidecar restarting"));
+            }
+            return Task.FromResult(EmptyPage(table));
+        };
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(1),
+            timeProvider: time);
+        var notifications = new List<TableNotification>();
+        service.Notification += notifications.Add;
+        await service.OpenDatabaseAsync("db");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task<bool> alpha = service.SelectTableAsync("alpha");
+        await recoveryScheduled;
+        bool betaSelected = await service.SelectTableAsync("beta");
+        time.Advance(TimeSpan.FromSeconds(1));
+        bool alphaSelected = await alpha;
+
+        Assert.IsFalse(alphaSelected);
+        Assert.IsTrue(betaSelected);
+        Assert.AreEqual(1, alphaAttempts);
+        TableNotification ready = notifications.Single();
+        Assert.AreEqual("beta", ready.Page!.Table);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_RetriesOnlyExactSidecarUnavailableRemoteFailure()
+    {
+        var gateway = SelectionGateway("alpha");
+        int attempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            attempts += 1;
+            return attempts == 1
+                ? Task.FromException<TablePage>(RemoteFailure(
+                    -32150,
+                    "product unavailable",
+                    "sidecar.unavailable"))
+                : Task.FromResult(EmptyPage(table));
+        };
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(1),
+            timeProvider: time);
+        await service.OpenDatabaseAsync("db");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task selection = service.SelectTableAsync("alpha");
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await selection;
+
+        Assert.AreEqual(2, attempts);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_RetriesDisposedTransportWithinRecoveryWindow()
+    {
+        var gateway = SelectionGateway("alpha");
+        int attempts = 0;
+        gateway.CursorOpenOverride = (table, _, _) =>
+        {
+            attempts += 1;
+            return attempts == 1
+                ? Task.FromException<TablePage>(
+                    new ObjectDisposedException("sidecar transport"))
+                : Task.FromResult(EmptyPage(table));
+        };
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(1),
+            timeProvider: time);
+        await service.OpenDatabaseAsync("db");
+
+        Task recoveryScheduled = time.WaitForScheduledTimersAsync(2);
+        Task selection = service.SelectTableAsync("alpha");
+        await recoveryScheduled;
+        time.Advance(TimeSpan.FromMilliseconds(25));
+        await selection;
+
+        Assert.AreEqual(2, attempts);
+        Assert.AreEqual(0, time.ScheduledTimerCount);
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_DoesNotRetryOtherProductRemoteFailure()
+    {
+        var gateway = SelectionGateway("alpha");
+        gateway.CursorOpenOverride = (_, _, _) =>
+            Task.FromException<TablePage>(RemoteFailure(
+                -32150,
+                "table missing",
+                "table.not_found"));
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(1),
+            timeProvider: time);
+        await service.OpenDatabaseAsync("db");
+
+        await Assert.ThrowsExactlyAsync<RpcRemoteException>(
+            async () => await service.SelectTableAsync("alpha"));
+
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
+        Assert.AreEqual(0, time.ScheduledTimerCount,
+            "a non-retryable product failure must not schedule recovery delay");
+    }
+
+    [TestMethod]
+    public async Task SelectTableAsync_DoesNotRetryUnavailableDataWithWrongOuterCode()
+    {
+        var gateway = SelectionGateway("alpha");
+        gateway.CursorOpenOverride = (_, _, _) =>
+            Task.FromException<TablePage>(RemoteFailure(
+                -32603,
+                "wrong outer code",
+                "sidecar.unavailable"));
+        var time = new ManualTimeProvider();
+        var service = new TableWorkspaceService(
+            gateway,
+            selectionRecoveryTimeout: TimeSpan.FromSeconds(1),
+            timeProvider: time);
+        await service.OpenDatabaseAsync("db");
+
+        await Assert.ThrowsExactlyAsync<RpcRemoteException>(
+            async () => await service.SelectTableAsync("alpha"));
+
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
+        Assert.AreEqual(0, time.ScheduledTimerCount);
+    }
+
+    [TestMethod]
     public async Task SelectTableAsync_PageLimitStaysWithin_1_To_500()
     {
         // Cursor Open always requests a window of size 500.
@@ -322,4 +759,38 @@ public sealed class TableWorkspaceServiceTests
         }
         return pages;
     }
+
+    private static FakeTableRpcGateway SelectionGateway(params string[] tables)
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            tables,
+            Array.Empty<string>(),
+            TestDisplayNames.For(tables));
+        return gateway;
+    }
+
+    private static TablePage EmptyPage(string table)
+        => new(
+            table,
+            Array.Empty<ColumnSchema>(),
+            Array.Empty<Dictionary<string, object?>>(),
+            0,
+            TableWorkspaceLimits.MaxPageLimit,
+            0,
+            "remote");
+
+    private static RpcRemoteException RemoteFailure(
+        int code,
+        string message,
+        string dataCode)
+    {
+        using var data = JsonDocument.Parse($$"""{"code":"{{dataCode}}"}""");
+        var constructor = typeof(RpcRemoteException).GetConstructors(
+            System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic).Single();
+        return (RpcRemoteException)constructor.Invoke(
+            new object[] { code, message, (JsonElement?)data.RootElement.Clone() });
+    }
+
 }

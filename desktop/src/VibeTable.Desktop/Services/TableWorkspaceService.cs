@@ -5,8 +5,13 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
+
+internal sealed class TableSelectionRecoveryExhaustedException(
+    string message,
+    Exception innerException) : Exception(message, innerException);
 
 /// <summary>
 /// Host paging limits for product collection views.
@@ -52,7 +57,15 @@ public static class TableWorkspaceLimits
 /// </remarks>
 public sealed class TableWorkspaceService
 {
+    private const int ProductDataRpcErrorCode = -32150;
+    private static readonly TimeSpan DefaultSelectionRecoveryTimeout =
+        TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan SelectionRecoveryPollInterval =
+        TimeSpan.FromMilliseconds(25);
+
     private readonly ITableRpcGateway _gateway;
+    private readonly TimeSpan _selectionRecoveryTimeout;
+    private readonly TimeProvider _timeProvider;
 
     /// <summary>
     /// The RPC gateway, exposed so the B2 paste dispatcher handlers can call
@@ -70,9 +83,28 @@ public sealed class TableWorkspaceService
     private int _generation;
     private CancellationTokenSource? _selectCts;
 
-    public TableWorkspaceService(ITableRpcGateway gateway)
+    /// <summary>Creates the table-selection module.</summary>
+    /// <param name="gateway">The product-table transport adapter.</param>
+    /// <param name="selectionRecoveryTimeout">
+    /// The absolute recovery window after the first cursor-open failure that is
+    /// classified as transient. It is not a total selection timeout: the initial
+    /// RPC remains governed by the transport lifecycle and does not consume this
+    /// window before a classified transient failure is observed.
+    /// </param>
+    /// <param name="timeProvider">
+    /// The clock used for recovery delays and the absolute recovery deadline.
+    /// </param>
+    public TableWorkspaceService(
+        ITableRpcGateway gateway,
+        TimeSpan? selectionRecoveryTimeout = null,
+        TimeProvider? timeProvider = null)
     {
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+        _selectionRecoveryTimeout = selectionRecoveryTimeout
+            ?? DefaultSelectionRecoveryTimeout;
+        if (_selectionRecoveryTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(selectionRecoveryTimeout));
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -168,9 +200,47 @@ public sealed class TableWorkspaceService
     /// Selecting a new table cancels any in-flight fetch for the previous table
     /// (the old generation's cancellation token fires), and late-arriving pages
     /// for the superseded table are suppressed by the generation check.
+    /// The result is <see langword="true"/> only while this selection still
+    /// owns the generation and published its initial dataset.
     /// </para>
     /// </remarks>
-    public async Task SelectTableAsync(string table)
+    /// <exception cref="BackendUnavailableException">
+    /// The bounded recovery window expired after a transient cursor-open failure.
+    /// </exception>
+    public async Task<bool> SelectTableAsync(string table)
+    {
+        try
+        {
+            return await SelectOwnedTableAsync(table, CancellationToken.None)
+                .ConfigureAwait(true) is not null;
+        }
+        catch (TableSelectionRecoveryExhaustedException exception)
+        {
+            // Keep the public service contract on the stable transport-facing
+            // exception. The controller-only orchestration below needs the
+            // closed internal outcome to distinguish recovery exhaustion from
+            // notification subscriber failures of the same public type.
+            throw new BackendUnavailableException(
+                exception.Message,
+                exception.InnerException!);
+        }
+    }
+
+    internal async Task SelectTableWithSchemaAsync(
+        string table,
+        CancellationToken sessionToken)
+    {
+        SelectionTicket? ticket = await SelectOwnedTableAsync(table, sessionToken)
+            .ConfigureAwait(true);
+        if (ticket is not SelectionTicket owned)
+            return;
+
+        await GetEditSchemaAsync(owned).ConfigureAwait(true);
+    }
+
+    private async Task<SelectionTicket?> SelectOwnedTableAsync(
+        string table,
+        CancellationToken sessionToken)
     {
         if (string.IsNullOrEmpty(table))
         {
@@ -191,11 +261,29 @@ public sealed class TableWorkspaceService
         CancelSelection();
         Volatile.Write(ref _currentTable, table);
         int generation = System.Threading.Interlocked.Increment(ref _generation);
-        var cts = new CancellationTokenSource();
+        CancellationTokenSource cts = sessionToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(sessionToken)
+            : new CancellationTokenSource();
         _selectCts = cts;
+        var ticket = new SelectionTicket(table, generation, cts.Token);
 
-        await FetchAsync(table, generation, cts.Token).ConfigureAwait(true);
+        bool selected = await FetchAsync(table, generation, cts.Token)
+            .ConfigureAwait(true);
+        return selected && Owns(ticket) ? ticket : null;
     }
+
+    private readonly record struct SelectionTicket(
+        string Table,
+        int Generation,
+        CancellationToken OwnershipToken);
+
+    private bool Owns(SelectionTicket ticket)
+        => !ticket.OwnershipToken.IsCancellationRequested
+            && !IsStale(ticket.Generation)
+            && string.Equals(
+                Volatile.Read(ref _currentTable),
+                ticket.Table,
+                StringComparison.Ordinal);
 
     /// <summary>
     /// Opens one revision-bound cursor window. Further windows are requested
@@ -205,45 +293,255 @@ public sealed class TableWorkspaceService
     /// Cancellation is EXPECTED on a table/database switch: the previous
     /// selection's token fires, the in-flight RPC throws
     /// <see cref="OperationCanceledException"/>, and we simply stop fetching.
-    /// We never rethrow — the superseding selection drives the next fetch.
+    /// We never rethrow that ownership cancellation — the superseding selection
+    /// drives the next fetch. Exact transient read failures instead open one
+    /// bounded recovery window; exhausting it becomes a stable backend-
+    /// unavailable outcome at the controller boundary.
     /// </remarks>
-    private async Task FetchAsync(
+    private async Task<bool> FetchAsync(
         string table,
         int generation,
-        CancellationToken token)
+        CancellationToken ownershipToken)
     {
-        TablePage firstWindow;
+        SelectionRecoveryWindow? recovery = null;
+        Exception? lastFailure = null;
         try
         {
-            JsonElement query = JsonSerializer.SerializeToElement(new
+            while (true)
             {
-                keyword = "",
-                filters = Array.Empty<object>(),
-                sorts = Array.Empty<object>(),
-                offset = 0,
-                limit = TableWorkspaceLimits.MaxPageLimit,
-            });
-            firstWindow = await _gateway.OpenTableCursorRawAsync(table, query, token)
-                .ConfigureAwait(true);
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested || IsStale(generation))
-        {
-            // Superseded by a newer selection (or cancelled): stop quietly. The
-            // newer selection's fetch is responsible for emitting pages.
-            return;
-        }
+                if (IsStale(generation) || ownershipToken.IsCancellationRequested)
+                    return false;
 
-        if (IsStale(generation))
-        {
-            return;
-        }
+                TablePage? firstWindow = null;
+                bool retryRequired = false;
+                RecoveryOutcome attemptOutcome = RecoveryOutcome.Completed;
+                try
+                {
+                    JsonElement query = JsonSerializer.SerializeToElement(new
+                    {
+                        keyword = "",
+                        filters = Array.Empty<object>(),
+                        sorts = Array.Empty<object>(),
+                        offset = 0,
+                        limit = TableWorkspaceLimits.MaxPageLimit,
+                    });
+                    RecoveryWait<TablePage> attempt = recovery is null
+                        ? await RunOwnedAsync(
+                            token => _gateway.OpenTableCursorRawAsync(
+                                table,
+                                query,
+                                token),
+                            ownershipToken).ConfigureAwait(true)
+                        : await recovery.RunAsync(
+                            token => _gateway.OpenTableCursorRawAsync(
+                                table,
+                                query,
+                                token)).ConfigureAwait(true);
+                    attemptOutcome = attempt.Outcome;
+                    firstWindow = attempt.Value!;
+                }
+                catch (OperationCanceledException)
+                    when (IsStale(generation) || ownershipToken.IsCancellationRequested)
+                {
+                    // A newer selection owns the UI. The old selection must not
+                    // retry, publish a page, or let its controller load schema.
+                    return false;
+                }
+                catch (Exception exception) when (IsTransientReadFailure(exception))
+                {
+                    lastFailure = exception;
+                    retryRequired = true;
+                    if (recovery is null)
+                    {
+                        // The recovery window starts at the first classified
+                        // transient failure. The initial RPC has its own
+                        // transport lifecycle; charging its tail latency to
+                        // recovery would expire just as a restarted sidecar
+                        // becomes ready.
+                        recovery = new SelectionRecoveryWindow(
+                            _selectionRecoveryTimeout,
+                            _timeProvider,
+                            ownershipToken);
+                    }
+                }
 
-        Emit(generation, new TableNotification
+                if (attemptOutcome == RecoveryOutcome.Superseded)
+                    return false;
+                if (attemptOutcome == RecoveryOutcome.Expired)
+                    throw SelectionUnavailable(lastFailure);
+
+                if (!retryRequired)
+                {
+                    if (IsStale(generation) || ownershipToken.IsCancellationRequested)
+                        return false;
+
+                    // Subscriber failures are deliberately outside the transient
+                    // transport catch above. A consumer exception must not reopen
+                    // the cursor and duplicate a dataset read.
+                    Emit(generation, new TableNotification
+                    {
+                        Type = "table.datasetReady",
+                        Page = firstWindow!,
+                    });
+                    return true;
+                }
+
+                if (IsStale(generation) || ownershipToken.IsCancellationRequested)
+                    return false;
+                RecoveryWait<bool> delay = await recovery!.RunAsync(async token =>
+                {
+                    await Task.Delay(
+                        SelectionRecoveryPollInterval,
+                        _timeProvider,
+                        token).ConfigureAwait(true);
+                    return true;
+                }).ConfigureAwait(true);
+                if (delay.Outcome == RecoveryOutcome.Superseded)
+                    return false;
+                if (delay.Outcome == RecoveryOutcome.Expired)
+                    throw SelectionUnavailable(lastFailure);
+            }
+        }
+        finally
         {
-            Type = "table.datasetReady",
-            Page = firstWindow,
-        });
+            recovery?.Dispose();
+        }
     }
+
+    private enum RecoveryOutcome
+    {
+        Completed,
+        Superseded,
+        Expired,
+    }
+
+    private readonly record struct RecoveryWait<T>(
+        RecoveryOutcome Outcome,
+        T? Value = default);
+
+    private static async Task<RecoveryWait<T>> RunOwnedAsync<T>(
+        Func<CancellationToken, Task<T>> operationFactory,
+        CancellationToken ownershipToken)
+    {
+        if (ownershipToken.IsCancellationRequested)
+            return new RecoveryWait<T>(RecoveryOutcome.Superseded);
+
+        var ownershipLost = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration registration = ownershipToken.UnsafeRegister(
+            static state => ((TaskCompletionSource)state!).TrySetResult(),
+            ownershipLost);
+        Task<T> operation = operationFactory(ownershipToken);
+        Task winner = await Task.WhenAny(operation, ownershipLost.Task)
+            .ConfigureAwait(true);
+        if (ownershipToken.IsCancellationRequested
+            || ReferenceEquals(winner, ownershipLost.Task))
+        {
+            ObserveLate(operation);
+            return new RecoveryWait<T>(RecoveryOutcome.Superseded);
+        }
+
+        T value = await operation.ConfigureAwait(true);
+        if (ownershipToken.IsCancellationRequested)
+            return new RecoveryWait<T>(RecoveryOutcome.Superseded);
+        return new RecoveryWait<T>(RecoveryOutcome.Completed, value);
+    }
+
+    private sealed class SelectionRecoveryWindow : IDisposable
+    {
+        private readonly CancellationTokenSource _deadlineLifetime = new();
+        private readonly CancellationToken _ownershipToken;
+        private readonly Task _deadline;
+        private readonly TaskCompletionSource _ownershipLost = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenRegistration _ownershipRegistration;
+
+        public SelectionRecoveryWindow(
+            TimeSpan timeout,
+            TimeProvider timeProvider,
+            CancellationToken ownershipToken)
+        {
+            _ownershipToken = ownershipToken;
+            _deadline = Task.Delay(timeout, timeProvider, _deadlineLifetime.Token);
+            _ownershipRegistration = ownershipToken.UnsafeRegister(
+                static state => ((TaskCompletionSource)state!).TrySetResult(),
+                _ownershipLost);
+        }
+
+        public async Task<RecoveryWait<T>> RunAsync<T>(
+            Func<CancellationToken, Task<T>> operationFactory)
+        {
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(
+                _ownershipToken);
+            Task<T> operation = operationFactory(attempt.Token);
+            Task winner = await Task.WhenAny(
+                operation,
+                _deadline,
+                _ownershipLost.Task).ConfigureAwait(true);
+
+            if (_ownershipToken.IsCancellationRequested
+                || ReferenceEquals(winner, _ownershipLost.Task))
+            {
+                attempt.Cancel();
+                ObserveLate(operation);
+                return new RecoveryWait<T>(RecoveryOutcome.Superseded);
+            }
+            if (_deadline.IsCompleted)
+            {
+                attempt.Cancel();
+                ObserveLate(operation);
+                return new RecoveryWait<T>(RecoveryOutcome.Expired);
+            }
+
+            T value = await operation.ConfigureAwait(true);
+            if (_ownershipToken.IsCancellationRequested)
+                return new RecoveryWait<T>(RecoveryOutcome.Superseded);
+            if (_deadline.IsCompleted)
+                return new RecoveryWait<T>(RecoveryOutcome.Expired);
+            return new RecoveryWait<T>(RecoveryOutcome.Completed, value);
+        }
+
+        public void Dispose()
+        {
+            _ownershipRegistration.Dispose();
+            _deadlineLifetime.Cancel();
+            _deadlineLifetime.Dispose();
+        }
+
+        private static void ObserveLate(Task operation)
+            => TableWorkspaceService.ObserveLate(operation);
+    }
+
+    private static void ObserveLate(Task operation)
+    {
+        _ = operation.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously
+                | TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+    }
+
+    private static TableSelectionRecoveryExhaustedException SelectionUnavailable(
+        Exception? lastFailure)
+        => new(
+            "The table selection did not recover before the read deadline.",
+            lastFailure ?? new InvalidOperationException(
+                "The table selection read deadline expired."));
+
+    private static bool IsTransientReadFailure(Exception exception)
+        => exception is BackendUnavailableException
+            or ObjectDisposedException
+            || exception is RpcRemoteException remote
+                && remote.Code == ProductDataRpcErrorCode
+                && HasBackendCode(remote.ErrorData, "sidecar.unavailable");
+
+    private static bool HasBackendCode(JsonElement? data, string expected)
+        => data is JsonElement value
+            && value.ValueKind == JsonValueKind.Object
+            && value.TryGetProperty("code", out JsonElement code)
+            && code.ValueKind == JsonValueKind.String
+            && string.Equals(code.GetString(), expected, StringComparison.Ordinal);
 
     /// <summary>
     /// True if the current generation has advanced past
@@ -299,28 +597,49 @@ public sealed class TableWorkspaceService
         {
             return null;
         }
-        int generation = CurrentGeneration;
+        var ticket = new SelectionTicket(
+            table,
+            CurrentGeneration,
+            _selectCts?.Token ?? CancellationToken.None);
+        return await GetEditSchemaAsync(ticket).ConfigureAwait(false);
+    }
+
+    private async Task<EditSchemaResult?> GetEditSchemaAsync(
+        SelectionTicket ticket)
+    {
+        if (!Owns(ticket))
+            return null;
+
         try
         {
-            var schema = await _gateway.GetEditSchemaAsync(table, CancellationToken.None)
-                .ConfigureAwait(false);
-            if (IsStale(generation))
+            RecoveryWait<EditSchemaResult> schemaRead = await RunOwnedAsync(
+                token => _gateway.GetEditSchemaAsync(ticket.Table, token),
+                ticket.OwnershipToken).ConfigureAwait(false);
+            if (schemaRead.Outcome == RecoveryOutcome.Superseded || !Owns(ticket))
             {
                 return null;
             }
-            Emit(generation, new TableNotification(
+            EditSchemaResult schema = schemaRead.Value!;
+            Emit(ticket.Generation, new TableNotification(
                 Type: "table.editSchemaLoaded", Page: null,
                 MutationResult: new MutationOutcome(
                     Kind: "editSchema", Success: true, Error: null, Result: schema)));
             return schema;
         }
+        catch (OperationCanceledException) when (!Owns(ticket))
+        {
+            return null;
+        }
         catch (Exception ex)
         {
-            if (IsStale(generation))
+            if (!Owns(ticket))
             {
                 return null;
             }
-            EmitMutationError(generation, "editSchema", MutationErrorMapper.Map(ex));
+            EmitMutationError(
+                ticket.Generation,
+                "editSchema",
+                MutationErrorMapper.Map(ex));
             return null;
         }
     }

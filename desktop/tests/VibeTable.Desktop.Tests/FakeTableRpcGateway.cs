@@ -186,6 +186,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Dictionary<string, EditSchemaResult> EditSchemaResults { get; } =
         new(StringComparer.Ordinal);
 
+    public Func<string, CancellationToken, Task<EditSchemaResult>>?
+        EditSchemaOverride
+    { get; set; }
+
     public List<string> UpdateCellCalls { get; } = new();
     public List<string> InsertRowCalls { get; } = new();
     public List<string> DeleteRowsCalls { get; } = new();
@@ -197,6 +201,8 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     public Task<EditSchemaResult> GetEditSchemaAsync(string table, CancellationToken token)
     {
+        if (EditSchemaOverride is { } scripted)
+            return scripted(table, token);
         if (EditSchemaResults.TryGetValue(table, out var schema))
         {
             return Task.FromResult(schema);
@@ -361,6 +367,15 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Dictionary<string, TablePage> QueryWindowResults { get; } =
         new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Optional async cursor-open script used by selection recovery tests.
+    /// It runs before canned cursor results so tests can model a sidecar
+    /// restart, cancellation, and a replacement read without real delays.
+    /// </summary>
+    public Func<string, JsonElement, CancellationToken, Task<TablePage>>?
+        CursorOpenOverride
+    { get; set; }
+
     public List<string> ValidateSnapshotCalls { get; } = new();
     public SnapshotValidation? NextValidateSnapshotResult { get; set; }
 
@@ -388,6 +403,12 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Task<TablePage> OpenTableCursorRawAsync(
         string table, JsonElement query, CancellationToken token)
     {
+        if (CursorOpenOverride is { } scripted)
+        {
+            QueryWindowCalls.Add(table);
+            RawViewQueries.Add(query.Clone());
+            return scripted(table, query, token);
+        }
         if (CursorOpenResults.TryGetValue(table, out var page))
         {
             QueryWindowCalls.Add(table);

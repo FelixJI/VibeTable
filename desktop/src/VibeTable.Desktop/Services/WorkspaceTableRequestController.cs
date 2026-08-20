@@ -116,8 +116,26 @@ public sealed class WorkspaceTableRequestController
                 "table.selected requires a non-empty 'table' payload field.");
             return;
         }
-        await _workspace.SelectTableAsync(table).ConfigureAwait(false);
-        await _workspace.GetEditSchemaAsync(table).ConfigureAwait(false);
+        CancellationToken sessionToken = _sessionToken();
+        try
+        {
+            await _workspace.SelectTableWithSchemaAsync(table, sessionToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception) when (sessionToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (TableSelectionRecoveryExhaustedException)
+        {
+            TraceFailure(request.Type, "BACKEND_UNAVAILABLE");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "本地数据服务暂不可用，请稍后重试。",
+                "BACKEND_UNAVAILABLE",
+                request.Type);
+            return;
+        }
     }
 
     private async Task UpdateCellAsync(RoutedWebRequest request)
