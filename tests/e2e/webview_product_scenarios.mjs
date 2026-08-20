@@ -17,6 +17,7 @@ import {
 } from "./bridge_raw_request.mjs";
 import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
+import { ownsWorkspaceSearchTerminal } from "./workspace_search_terminal.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -3347,18 +3348,55 @@ async function submitWorkspaceSearch(page, { keyboard = false } = {}) {
   return response.payload.result;
 }
 
-async function waitForWorkspaceSearchTerminal(page, timeout = 120_000) {
+async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000) {
+  await beginWorkspaceV2MethodCapture(page, "workspaceSearch.rebuild");
+  await page.getByTestId("workspace-search-rebuild").click();
+  const response = await waitForCapturedBridgeMessage(page, 30_000);
+  const accepted = response.payload?.result;
+  if (response.payload?.ok !== true
+    || accepted?.state !== "building"
+    || !Number.isInteger(accepted.generation)) {
+    throw new Error(`WorkspaceSearch rebuild was not accepted: ${JSON.stringify(response)}`);
+  }
+
   await page.waitForFunction(
-    () => {
-      const state = document.querySelector(".index-state")?.getAttribute("data-state");
-      return state === "ready" || state === "failed" || state === "degraded";
+    ({ expectedGeneration }) => {
+      const index = document.querySelector(".index-state");
+      const state = index?.getAttribute("data-state");
+      const generation = index?.getAttribute("data-generation");
+      return state === "building" && generation === String(expectedGeneration);
     },
-    undefined,
+    { expectedGeneration: accepted.generation },
+    { timeout: 30_000 },
+  );
+  const terminalStates = ["ready", "failed", "degraded"];
+  await page.waitForFunction(
+    ({ terminalStates }) => {
+      const index = document.querySelector(".index-state");
+      const state = index?.getAttribute("data-state");
+      return terminalStates.includes(state);
+    },
+    { terminalStates },
     { timeout },
   );
-  return page.getByTestId("workspace-search-view")
+  const terminal = await page.getByTestId("workspace-search-view")
     .locator(".index-state")
-    .getAttribute("data-state");
+    .evaluate((element) => ({
+      state: element.getAttribute("data-state"),
+      generation: Number(element.getAttribute("data-generation")),
+    }));
+  if (!ownsWorkspaceSearchTerminal({
+    acceptedGeneration: accepted.generation,
+    ...terminal,
+  })) {
+    throw new Error(
+      `WorkspaceSearch terminal does not belong to accepted rebuild: ${JSON.stringify({
+        accepted,
+        terminal,
+      })}`,
+    );
+  }
+  return { ...terminal, accepted };
 }
 
 async function scenario12(page, recorder, _network, runtime) {
@@ -3553,8 +3591,8 @@ async function scenario12(page, recorder, _network, runtime) {
   await page.getByTestId("nav-search").click();
   const searchWorkspace = page.getByTestId("workspace-search-view");
   await searchWorkspace.waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByTestId("workspace-search-rebuild").click();
-  const beforeSnapshotSearchState = await waitForWorkspaceSearchTerminal(page);
+  const beforeSnapshotSearchLifecycle = await rebuildWorkspaceSearchAndWaitForTerminal(page);
+  const beforeSnapshotSearchState = beforeSnapshotSearchLifecycle.state;
   await page.getByTestId("workspace-search-input").locator("input").fill("backup-original");
   const beforeSnapshotSearch = await submitWorkspaceSearch(page);
   const beforeSnapshotSearchStatus = await rawWorkspaceV2Request(
@@ -3681,8 +3719,8 @@ async function scenario12(page, recorder, _network, runtime) {
   );
   await page.getByTestId("nav-search").click();
   await searchWorkspace.waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByTestId("workspace-search-rebuild").click();
-  const restoredSearchState = await waitForWorkspaceSearchTerminal(page);
+  const restoredSearchLifecycle = await rebuildWorkspaceSearchAndWaitForTerminal(page);
+  const restoredSearchState = restoredSearchLifecycle.state;
   await page.getByTestId("workspace-search-input").locator("input").fill("backup-original");
   const restoredSearch = await submitWorkspaceSearch(page);
   const restoredSearchStatus = await rawWorkspaceV2Request(
@@ -4980,11 +5018,10 @@ async function scenario18(page, recorder, _network, runtime) {
   const workspace = page.getByTestId("workspace-search-view");
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
 
-  const rebuild = page.getByTestId("workspace-search-rebuild");
-  await rebuild.click();
-  const indexState = await waitForWorkspaceSearchTerminal(page);
+  const rebuiltIndex = await rebuildWorkspaceSearchAndWaitForTerminal(page);
+  const indexState = rebuiltIndex.state;
   recorder.check("WorkspaceSearch rebuild completes durably without a silent fallback",
-    indexState === "ready", { indexState });
+    indexState === "ready", { rebuiltIndex });
 
   await page.getByTestId("workspace-search-input").locator("input").fill("E2E");
   await submitWorkspaceSearch(page, { keyboard: true });

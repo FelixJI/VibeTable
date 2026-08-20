@@ -106,7 +106,6 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("interface-save")' in interface
     assert 'getByTestId("interface-run")' in interface
     assert 'getByTestId("nav-search")' in search
-    assert 'getByTestId("workspace-search-rebuild")' in search
     assert 'getByTestId("workspace-search-submit")' in source
 
 
@@ -150,7 +149,6 @@ def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries(
     assert "activeSearchInput.evaluate((element) => element === document.activeElement)" in search
     assert "staleRecord.evaluate((element) => element === document.activeElement)" not in search
     assert '"workspaceSearch.status"' in restore
-    assert 'getByTestId("workspace-search-rebuild")' in restore
     assert "restoredSearchStatus.result?.generation" in restore
     assert "snapshotStorageProof.auditLedger.anchorHash" in restore
 
@@ -1415,6 +1413,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
     ]
     completed = subprocess.run(
         [str(ensure_node(runner.ROOT)), "--test", *(str(path) for path in test_files)],
