@@ -728,6 +728,17 @@ export interface AttachmentDownloadPayload {
   readonly originalName: string;
 }
 
+export type AttachmentPreviewResult =
+  | { readonly outcome: "opened"; readonly reason: null }
+  | {
+    readonly outcome: "unavailable";
+    readonly reason: "PREVIEW_HANDLER_UNAVAILABLE";
+  };
+
+export interface AttachmentDownloadResult {
+  readonly outcome: "saved" | "cancelled";
+}
+
 export type FormulaPreviewRpcPayload = FormulaPreviewRequestV2;
 
 export interface FormulaDraftValidateParams {
@@ -1513,6 +1524,8 @@ export type HostMessageType =
   | "file.uploadRequested"
   | "file.replaceRequested"
   | "file.removeRequested"
+  | "file.previewRequested"
+  | "file.downloadRequested"
   | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
@@ -1791,6 +1804,8 @@ export interface HostPayloadMap {
   "file.uploadRequested": MutationReceipt;
   "file.replaceRequested": MutationReceipt;
   "file.removeRequested": MutationReceipt;
+  "file.previewRequested": AttachmentPreviewResult;
+  "file.downloadRequested": AttachmentDownloadResult;
   "events.reconcile": Readonly<Record<string, unknown>>;
   "schema.describe": SchemaDescribeResult;
   "relation.searchTargets": RelationSearchResult;

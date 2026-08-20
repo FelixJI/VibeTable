@@ -1,7 +1,7 @@
 import { nextTick } from "vue";
 import { describe, expect, it, vi } from "vitest";
 
-import type { HostBridge } from "@/bridge/hostBridge";
+import { BridgeOperationError, type HostBridge } from "@/bridge/hostBridge";
 import type {
   ColumnEditSchema,
   ColumnSchema,
@@ -51,8 +51,12 @@ const file = (storedName: string): ManagedAttachmentRef => ({
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 function setup(
@@ -67,11 +71,10 @@ function setup(
     subscribeScope: () => () => undefined,
   }),
 ) {
-  const notify = vi.fn();
   const commitJson = vi.fn();
+  const reportError = vi.fn();
   const bridge: StructuredCellBridge = {
     request,
-    notify: notify as HostBridge["notify"],
   };
   const controller = createStructuredCellDialogController({
     bridge,
@@ -83,10 +86,10 @@ function setup(
     commitJson,
     dialogFocus,
     translate: key => key,
-    reportError: vi.fn(),
+    reportError,
     activeElement: () => null,
   });
-  return { controller, notify, commitJson, dialogFocus };
+  return { controller, commitJson, dialogFocus, reportError };
 }
 
 interface RealTabulatorDomFixture {
@@ -322,12 +325,12 @@ describe("structured cell dialog controller", () => {
     secondTrigger.remove();
   });
 
-  it("binds mutations and notifications to the current authority revision", async () => {
+  it("binds mutations and native actions to the current authority revision", async () => {
     const request = vi.fn(async (type: string) => {
       if (type === "file.list") return { attachments: [file("stored")] };
       return { status: "applied" };
     });
-    const { controller, notify } = setup(request as HostBridge["request"]);
+    const { controller } = setup(request as HostBridge["request"]);
     await controller.dispatch({
       type: "attachment.open",
       rowKey: "row-1",
@@ -338,11 +341,11 @@ describe("structured cell dialog controller", () => {
     await controller.dispatch({ type: "attachment.download", storedName: "stored" });
     await controller.dispatch({ type: "attachment.remove", storedName: "stored" });
 
-    expect(notify).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
+    expect(request).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
       recordId: "row-1",
       storedName: "stored",
     }));
-    expect(notify).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
+    expect(request).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
       originalName: "stored.png",
     }));
     expect(request).toHaveBeenCalledWith("file.removeRequested", expect.objectContaining({
@@ -350,6 +353,158 @@ describe("structured cell dialog controller", () => {
       expectedDigest: `sha256:${"a".repeat(64)}`,
     }));
     expect(controller.state.attachment.files).toEqual([]);
+  });
+
+  it("leases a native action so concurrent clicks issue one correlated request", async () => {
+    const action = deferred<{ outcome: "opened"; reason: null }>();
+    const request = vi.fn((type: string) => {
+      if (type === "file.list") return Promise.resolve({ attachments: [file("stored")] });
+      return action.promise;
+    });
+    const { controller } = setup(request as HostBridge["request"]);
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+    });
+
+    const first = controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+    const second = controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+    expect(request.mock.calls.filter(([type]) => type === "file.previewRequested")).toHaveLength(1);
+
+    action.resolve({ outcome: "opened", reason: null });
+    await Promise.all([first, second]);
+  });
+
+  it("shows preview unavailability locally without reporting a global error", async () => {
+    const request = vi.fn(async (type: string) => {
+      if (type === "file.list") return { attachments: [file("stored")] };
+      return { outcome: "unavailable", reason: "PREVIEW_HANDLER_UNAVAILABLE" };
+    });
+    const { controller, reportError } = setup(request as HostBridge["request"]);
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+    });
+
+    await controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+
+    expect(controller.state.attachment.error).toBe("workspace.attachment.previewUnavailable");
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it("shows a correlated native action failure only in the attachment dialog", async () => {
+    const request = vi.fn(async (type: string) => {
+      if (type === "file.list") return { attachments: [file("stored")] };
+      throw new BridgeOperationError({
+        message: "save failed",
+        code: "ATTACHMENT_DOWNLOAD_FAILED",
+      });
+    });
+    const { controller, reportError } = setup(request as HostBridge["request"]);
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+    });
+
+    await controller.dispatch({ type: "attachment.download", storedName: "stored" });
+
+    expect(controller.state.attachment.error).toBe("workspace.attachment.error.operation");
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed native action terminal payload at the dialog boundary", async () => {
+    const request = vi.fn(async (type: string) => {
+      if (type === "file.list") return { attachments: [file("stored")] };
+      return null;
+    });
+    const { controller } = setup(request as HostBridge["request"]);
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+    });
+
+    await controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+
+    expect(controller.state.attachment.error).toBe(
+      "workspace.attachment.invalidResponse",
+    );
+  });
+
+  it("rejects a native action response that exposes an undeclared local path", async () => {
+    const request = vi.fn(async (type: string) => {
+      if (type === "file.list") return { attachments: [file("stored")] };
+      return {
+        outcome: "opened",
+        reason: null,
+        path: "C:\\private\\preview.pdf",
+      };
+    });
+    const { controller } = setup(request as HostBridge["request"]);
+    await controller.dispatch({
+      type: "attachment.open",
+      rowKey: "row-1",
+      column: attachmentColumn,
+    });
+
+    await controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+
+    expect(controller.state.attachment.error).toBe(
+      "workspace.attachment.invalidResponse",
+    );
+  });
+
+  it("suppresses a late native action error after the dialog is reopened", async () => {
+    const action = deferred<never>();
+    const request = vi.fn((type: string) => {
+      if (type === "file.list") return Promise.resolve({ attachments: [file("stored")] });
+      return action.promise;
+    });
+    const { controller } = setup(request as HostBridge["request"]);
+    await controller.dispatch({ type: "attachment.open", rowKey: "row-1", column: attachmentColumn });
+    const pending = controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+    await controller.dispatch({ type: "attachment.close" });
+    await controller.dispatch({ type: "attachment.open", rowKey: "row-2", column: attachmentColumn });
+
+    action.reject(new BridgeOperationError({
+      message: "boom",
+      code: "ATTACHMENT_PREVIEW_FAILED",
+    }));
+    await pending;
+
+    expect(controller.state.attachment.rowKey).toBe("row-2");
+    expect(controller.state.attachment.error).toBeNull();
+  });
+
+  it("releases old action leases when the dialog closes without clearing a newer lease", async () => {
+    const firstAction = deferred<{ outcome: "opened"; reason: null }>();
+    const secondAction = deferred<{ outcome: "opened"; reason: null }>();
+    let actionCount = 0;
+    const request = vi.fn((type: string) => {
+      if (type === "file.list") return Promise.resolve({ attachments: [file("stored")] });
+      actionCount += 1;
+      return actionCount === 1 ? firstAction.promise : secondAction.promise;
+    });
+    const { controller } = setup(request as HostBridge["request"]);
+    await controller.dispatch({ type: "attachment.open", rowKey: "row-1", column: attachmentColumn });
+    const first = controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+    await controller.dispatch({ type: "attachment.close" });
+    await controller.dispatch({ type: "attachment.open", rowKey: "row-2", column: attachmentColumn });
+    const second = controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+    const duplicate = controller.dispatch({ type: "attachment.preview", storedName: "stored" });
+
+    expect(actionCount).toBe(2);
+    firstAction.resolve({ outcome: "opened", reason: null });
+    await first;
+    expect(actionCount).toBe(2);
+
+    secondAction.resolve({ outcome: "opened", reason: null });
+    await Promise.all([second, duplicate]);
+    expect(controller.state.attachment.rowKey).toBe("row-2");
+    expect(controller.state.attachment.error).toBeNull();
   });
 
   it("commits valid JSON through the injected mutation seam and keeps invalid edits open", async () => {
@@ -489,7 +644,6 @@ describe("structured cell dialog controller", () => {
     const controller = createStructuredCellDialogController({
       bridge: {
         request: vi.fn() as unknown as HostBridge["request"],
-        notify: vi.fn() as unknown as HostBridge["notify"],
       },
       resolveAttachmentAuthority: () => ({
         tableId: null,

@@ -7,7 +7,9 @@ import {
 } from "@/bridge/hostBridge";
 import type {
   AttachmentListResult,
+  AttachmentDownloadResult,
   AttachmentPolicy,
+  AttachmentPreviewResult,
   ColumnSchema,
   ManagedAttachmentRef,
 } from "@/contracts";
@@ -97,7 +99,7 @@ export interface StructuredCellDialogController {
   dispatch(intent: StructuredCellDialogIntent): Promise<void>;
 }
 
-export type StructuredCellBridge = Pick<HostBridge, "request" | "notify">;
+export type StructuredCellBridge = Pick<HostBridge, "request">;
 
 export interface StructuredCellDialogDependencies {
   readonly bridge: StructuredCellBridge;
@@ -150,6 +152,30 @@ function attachmentErrorMessage(
   return translate("workspace.attachment.error.generic");
 }
 
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every(key => keys.includes(key));
+}
+
+function isAttachmentPreviewResult(value: unknown): value is AttachmentPreviewResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const result = value as Record<string, unknown>;
+  if (!hasOnlyKeys(result, ["outcome", "reason"])) return false;
+  return (result.outcome === "opened" && result.reason === null)
+    || (result.outcome === "unavailable"
+      && result.reason === "PREVIEW_HANDLER_UNAVAILABLE");
+}
+
+function isAttachmentDownloadResult(value: unknown): value is AttachmentDownloadResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const result = value as Record<string, unknown>;
+  return hasOnlyKeys(result, ["outcome"])
+    && (result.outcome === "saved" || result.outcome === "cancelled");
+}
+
 export function createStructuredCellDialogController(
   dependencies: StructuredCellDialogDependencies,
 ): StructuredCellDialogController {
@@ -174,6 +200,8 @@ export function createStructuredCellDialogController(
     },
   });
   let attachmentEpoch = 0;
+  let attachmentActionEpoch = 0;
+  const attachmentActionLeases = new Map<string, number>();
   let attachmentFocus: StructuredDialogFocusLease | null = null;
   let jsonFocus: StructuredDialogFocusLease | null = null;
 
@@ -182,6 +210,8 @@ export function createStructuredCellDialogController(
 
   function closeAttachment(): void {
     attachmentEpoch += 1;
+    attachmentActionEpoch += 1;
+    attachmentActionLeases.clear();
     state.attachment.show = false;
   }
 
@@ -220,6 +250,8 @@ export function createStructuredCellDialogController(
     focused?.blur();
     if (trigger !== focused) trigger?.blur();
     const epoch = ++attachmentEpoch;
+    attachmentActionEpoch += 1;
+    attachmentActionLeases.clear();
     Object.assign(state.attachment, {
       show: true,
       rowKey,
@@ -309,21 +341,62 @@ export function createStructuredCellDialogController(
     }
   }
 
-  function notifyAttachment(
+  async function runNativeAttachmentAction(
     type: "file.previewRequested" | "file.downloadRequested",
     storedName: string,
-  ): void {
+  ): Promise<void> {
     const file = state.attachment.files.find(item => item.storedName === storedName);
     const fieldId = state.attachment.column?.fieldId;
-    const { tableId } = dependencies.resolveAttachmentAuthority(state.attachment.rowKey);
+    const rowKey = state.attachment.rowKey;
+    const { tableId } = dependencies.resolveAttachmentAuthority(rowKey);
     if (!file || !tableId || !fieldId) return;
-    dependencies.bridge.notify(type, {
-      tableId,
-      recordId: String(state.attachment.rowKey),
-      fieldId,
-      storedName,
-      originalName: file.originalName,
-    });
+    const recordId = String(rowKey);
+    const leaseKey = JSON.stringify([type, tableId, recordId, fieldId, storedName]);
+    if (attachmentActionLeases.has(leaseKey)) return;
+    const dialogEpoch = attachmentEpoch;
+    const actionEpoch = ++attachmentActionEpoch;
+    attachmentActionLeases.set(leaseKey, actionEpoch);
+    const isCurrent = (): boolean =>
+      dialogEpoch === attachmentEpoch
+      && attachmentActionLeases.get(leaseKey) === actionEpoch
+      && state.attachment.show
+      && String(state.attachment.rowKey) === recordId
+      && state.attachment.column?.fieldId === fieldId
+      && dependencies.resolveAttachmentAuthority(state.attachment.rowKey).tableId === tableId
+      && state.attachment.files.some(item => item.storedName === storedName);
+    state.attachment.error = null;
+    try {
+      const result = await dependencies.bridge.request(type, {
+        tableId,
+        recordId,
+        fieldId,
+        storedName,
+        originalName: file.originalName,
+      });
+      if (!isCurrent()) return;
+      if (type === "file.previewRequested") {
+        if (!isAttachmentPreviewResult(result)) {
+          throw new Error(dependencies.translate("workspace.attachment.invalidResponse"));
+        }
+        if (result.outcome === "unavailable") {
+          state.attachment.error = dependencies.translate(
+            "workspace.attachment.previewUnavailable",
+          );
+          return;
+        }
+        return;
+      }
+      if (!isAttachmentDownloadResult(result)) {
+        throw new Error(dependencies.translate("workspace.attachment.invalidResponse"));
+      }
+    } catch (error) {
+      if (!isCurrent()) return;
+      state.attachment.error = attachmentErrorMessage(error, dependencies.translate);
+    } finally {
+      if (attachmentActionLeases.get(leaseKey) === actionEpoch) {
+        attachmentActionLeases.delete(leaseKey);
+      }
+    }
   }
 
   function openJson(intent: Extract<StructuredCellDialogIntent, { type: "json.open" }>): void {
@@ -374,10 +447,10 @@ export function createStructuredCellDialogController(
         await mutateAttachment("file.removeRequested", intent.storedName);
         return;
       case "attachment.preview":
-        notifyAttachment("file.previewRequested", intent.storedName);
+        await runNativeAttachmentAction("file.previewRequested", intent.storedName);
         return;
       case "attachment.download":
-        notifyAttachment("file.downloadRequested", intent.storedName);
+        await runNativeAttachmentAction("file.downloadRequested", intent.storedName);
         return;
       case "json.open":
         openJson(intent);
