@@ -14,7 +14,7 @@ import {
   type StructuredDialogFocus,
   type StructuredGridLike,
 } from "@/services/dialogFocus";
-import { createNaiveModalAfterLeaveAdapter } from "@/services/naiveModalAfterLeave";
+import { createNaiveModalContentUnmountAdapter } from "@/services/naiveModalContentUnmount";
 import {
   createStructuredCellDialogController,
   type StructuredCellBridge,
@@ -338,17 +338,18 @@ describe("structured cell dialog controller", () => {
     secondTrigger.remove();
   });
 
-  it("binds each queued attachment after-leave to the close that created it", async () => {
+  it("does not release a stale attachment close when the modal reopens before unmount", async () => {
     const firstTrigger = document.createElement("button");
     const secondTrigger = document.createElement("button");
     document.body.append(firstTrigger, secondTrigger);
     const secondFocus = vi.spyOn(secondTrigger, "focus");
     const request = vi.fn().mockResolvedValue({ attachments: [] });
     const { controller, dialogFocus, reportError } = setup(request as HostBridge["request"]);
-    const modal = createNaiveModalAfterLeaveAdapter({
+    const modal = createNaiveModalContentUnmountAdapter({
       claimRelease: () => controller.claimCloseLease("attachment"),
       reportError,
     });
+    const detachedContent = document.createElement("div");
 
     await controller.dispatch({
       type: "attachment.open",
@@ -358,25 +359,24 @@ describe("structured cell dialog controller", () => {
     });
     await controller.dispatch({ type: "attachment.close" });
     modal.beforeLeave();
-    const firstRelease = modal.afterLeave();
 
-    const secondOpen = controller.dispatch({
+    await controller.dispatch({
       type: "attachment.open",
       rowKey: "row-2",
       column: attachmentColumn,
       trigger: secondTrigger,
     });
-    const secondClose = controller.dispatch({ type: "attachment.close" });
-    modal.beforeLeave();
-    await firstRelease;
+    modal.showChanged(true);
+    modal.contentUnmountDirective.unmounted?.(detachedContent, {} as never, {} as never, null);
     expect(secondFocus).not.toHaveBeenCalled();
 
-    await modal.afterLeave();
+    await controller.dispatch({ type: "attachment.close" });
+    modal.beforeLeave();
+    modal.contentUnmountDirective.unmounted?.(detachedContent, {} as never, {} as never, null);
     expect(secondFocus).toHaveBeenCalledTimes(1);
     expect(reportError).not.toHaveBeenCalled();
-    await secondOpen;
-    await secondClose;
 
+    modal.dispose();
     dialogFocus.dispose();
     firstTrigger.remove();
     secondTrigger.remove();

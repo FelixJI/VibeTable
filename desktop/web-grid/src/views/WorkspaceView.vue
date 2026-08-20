@@ -74,7 +74,7 @@ import {
   createStructuredDialogFocus,
   type StructuredGridLike,
 } from "@/services/dialogFocus";
-import { createNaiveModalAfterLeaveAdapter } from "@/services/naiveModalAfterLeave";
+import { createNaiveModalContentUnmountAdapter } from "@/services/naiveModalContentUnmount";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { usePluginService } from "@/services/pluginService";
@@ -305,16 +305,28 @@ const structuredCellDialogs = createStructuredCellDialogController({
   translate: t,
   reportError: reportStructuredDialogError,
 });
-const attachmentModalLifecycle = createNaiveModalAfterLeaveAdapter({
+const attachmentModalLifecycle = createNaiveModalContentUnmountAdapter({
   claimRelease: () => structuredCellDialogs.claimCloseLease("attachment"),
   reportError: reportStructuredDialogError,
 });
-const jsonModalLifecycle = createNaiveModalAfterLeaveAdapter({
+const jsonModalLifecycle = createNaiveModalContentUnmountAdapter({
   claimRelease: () => structuredCellDialogs.claimCloseLease("json"),
   reportError: reportStructuredDialogError,
 });
+const vAttachmentModalContentUnmount = attachmentModalLifecycle.contentUnmountDirective;
+const vJsonModalContentUnmount = jsonModalLifecycle.contentUnmountDirective;
 const attachmentPanel = structuredCellDialogs.state.attachment;
 const jsonEditor = structuredCellDialogs.state.json;
+watch(
+  () => attachmentPanel.show,
+  show => attachmentModalLifecycle.showChanged(show),
+  { flush: "sync", immediate: true },
+);
+watch(
+  () => jsonEditor.show,
+  show => jsonModalLifecycle.showChanged(show),
+  { flush: "sync", immediate: true },
+);
 const lookupSourcesDialog = ref<HTMLElement | null>(null);
 const attachmentDialog = ref<HTMLElement | null>(null);
 const jsonEditorDialog = ref<HTMLElement | null>(null);
@@ -678,6 +690,8 @@ onBeforeUnmount(() => {
   dashboardService.dispose();
   surfaceService.dispose();
   fieldSettingsService.dispose();
+  attachmentModalLifecycle.dispose();
+  jsonModalLifecycle.dispose();
   structuredDialogFocus.dispose();
   window.removeEventListener("beforeunload", onBeforeUnload);
 });
@@ -1177,9 +1191,9 @@ useKeyboard({
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'attachment.close' }) }"
       @after-enter="focusModalDialog(attachmentDialog)"
       @before-leave="attachmentModalLifecycle.beforeLeave()"
-      @after-leave="attachmentModalLifecycle.afterLeave()"
     >
       <div
+        v-attachment-modal-content-unmount
         ref="attachmentDialog"
         class="attachment-panel"
         role="dialog"
@@ -1228,9 +1242,9 @@ useKeyboard({
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'json.close' }) }"
       @after-enter="focusModalDialog(jsonEditorDialog)"
       @before-leave="jsonModalLifecycle.beforeLeave()"
-      @after-leave="jsonModalLifecycle.afterLeave()"
     >
       <div
+        v-json-modal-content-unmount
         ref="jsonEditorDialog"
         class="json-editor-dialog"
         role="dialog"
