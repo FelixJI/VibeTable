@@ -65,11 +65,19 @@ export function createStructuredDialogFocus(
     let observingDocumentFocus = false;
     let observingWindowFocus = false;
     let restoringFocus = false;
+    // A missing row is a reprojection gap only after this lease has resolved
+    // its logical target once; an initially unknown row still fails closed.
+    let targetObserved = false;
 
     const attemptRestore = (grid: StructuredGridLike | null): void => {
       restoringFocus = true;
       try {
-        if (attemptStructuredDialogFocus(grid, target) === "missing") lease.cancel();
+        const attempt = attemptStructuredDialogFocus(grid, target);
+        if (attempt === "missing" && !targetObserved) {
+          lease.cancel();
+          return;
+        }
+        if (attempt !== "missing") targetObserved = true;
       } finally {
         restoringFocus = false;
       }
