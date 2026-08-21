@@ -30,6 +30,7 @@ public sealed class JsonRpcPluginGatewayTests
         await gateway.ListCatalogAsync(new("project-1"), CancellationToken.None);
         await gateway.InspectInstallAsync(new("project-1", "revision-1", "source-1"), CancellationToken.None);
         await gateway.CommitInstallAsync(new("plan-1", "revision-1"), CancellationToken.None);
+        await gateway.CancelInstallAsync(new("plan-1"), CancellationToken.None);
         await gateway.SetEnabledAsync(new("project-1", "com.acme.clean", false), CancellationToken.None);
         await gateway.UpgradeAsync(
             new("project-1", "com.acme.clean", "upgrade-1", "revision-2"), CancellationToken.None);
@@ -56,6 +57,7 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.listCatalog",
                 "plugin.inspectInstall",
                 "plugin.commitInstall",
+                "plugin.cancelInstall",
                 "plugin.setEnabled",
                 "plugin.upgrade",
                 "plugin.rollback",
@@ -74,17 +76,17 @@ public sealed class JsonRpcPluginGatewayTests
             transport.Requests[1].GetProperty("params").GetProperty("sourceLocation").GetString());
         Assert.AreEqual(
             "project-1",
-            transport.Requests[8].GetProperty("params").GetProperty("context")
+            transport.Requests[9].GetProperty("params").GetProperty("context")
                 .GetProperty("projectKey").GetString());
         Assert.IsTrue(
-            transport.Requests[8].GetProperty("params").GetProperty("input")
+            transport.Requests[9].GetProperty("params").GetProperty("input")
                 .GetProperty("trim").GetBoolean());
         Assert.AreEqual(
             "rejected",
-            transport.Requests[9].GetProperty("params").GetProperty("decision").GetString());
+            transport.Requests[10].GetProperty("params").GetProperty("decision").GetString());
         Assert.AreEqual(
             @"C:\trusted\output.txt",
-            transport.Requests[10].GetProperty("params").GetProperty("selectedPath").GetString());
+            transport.Requests[11].GetProperty("params").GetProperty("selectedPath").GetString());
     }
 
     private sealed class AutoRespondTransport : IJsonLineTransport
@@ -112,6 +114,7 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.listCatalog" => "[]",
                 "plugin.inspectInstall" =>
                     """{"planId":"p","projectKey":"project","projectRevision":"1","sourceType":"package","sourceLocation":"package.vtplugin","packageHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","manifest":{"$schema":"vibetable.plugin-manifest.v1","pluginId":"x.test","version":"1","displayName":{},"description":{},"compatibility":{},"permissions":{},"actions":[],"ui":{}},"schemas":{}}""",
+                "plugin.cancelInstall" => "true",
                 "plugin.uninstall" =>
                     """{"uninstalled":true,"privateSettingsRetained":true}""",
                 "plugin.describeAction" => """{"available":true,"reasons":[]}""",

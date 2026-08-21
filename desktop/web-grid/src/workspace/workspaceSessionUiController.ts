@@ -25,30 +25,42 @@ export interface WorkspaceSessionUiDependencies {
   readonly initializeConsumers: () => void;
 }
 
+type AcquiredExecutionOutcome = "succeeded" | "failed" | "stale";
+
 export function createWorkspaceSessionUiController(
   dependencies: WorkspaceSessionUiDependencies,
 ): WorkspaceSessionUiController {
   const activationPending = ref(false);
 
-  async function execute(action: WorkspaceV2UiAction): Promise<boolean> {
-    if (!dependencies.session.enabled || !dependencies.protection.beginOperation(action.method)) {
-      return false;
-    }
+  async function executeAcquired(
+    action: WorkspaceV2UiAction,
+    lease: NonNullable<ReturnType<typeof dependencies.protection.beginOperation>>,
+  ): Promise<AcquiredExecutionOutcome> {
     try {
       await dependencies.request(action);
       if (action.method === "fileHistory.unlink") {
         dependencies.documents.removeActiveDocument(action.params.documentId);
       }
-      dependencies.protection.finishOperation();
-      return true;
+      dependencies.protection.finishOperation(lease);
+      return "succeeded";
     } catch (error) {
       const message = dependencies.errorMessage(error);
-      dependencies.protection.finishOperation(message);
-      if (action.method === "workspace.open" || action.method === "workspace.switch") {
+      const owned = dependencies.protection.finishOperation(lease, message);
+      if (!owned) return "stale";
+      if (
+        action.method === "workspace.open" || action.method === "workspace.switch"
+      ) {
         dependencies.session.failSwitch(message);
       }
-      return false;
+      return "failed";
     }
+  }
+
+  async function execute(action: WorkspaceV2UiAction): Promise<boolean> {
+    if (!dependencies.session.enabled) return false;
+    const lease = dependencies.protection.beginOperation(action.method);
+    if (!lease) return false;
+    return (await executeAcquired(action, lease)) === "succeeded";
   }
 
   async function open(workspaceId: string): Promise<boolean> {
@@ -56,23 +68,35 @@ export function createWorkspaceSessionUiController(
       dependencies.showCenter.value = false;
       return true;
     }
-    if (!dependencies.session.isTransitioning) dependencies.session.beginSwitch(workspaceId);
-    activationPending.value = true;
-    let opened = false;
-    try {
-      opened = dependencies.session.activeWorkspaceId
-        ? await execute({
+    if (!dependencies.session.enabled || dependencies.session.isTransitioning) return false;
+    const action: WorkspaceV2UiAction = dependencies.session.activeWorkspaceId
+      ? {
           method: "workspace.switch",
           params: { targetWorkspaceId: workspaceId, openMode: "writable" },
-        })
-        : await execute({
+        }
+      : {
           method: "workspace.open",
           params: { workspaceId, openMode: "writable" },
-        });
-      dependencies.showCenter.value = !opened;
+        };
+    const lease = dependencies.protection.beginOperation(action.method);
+    if (!lease) return false;
+    if (!dependencies.session.beginSwitch(workspaceId)) {
+      dependencies.protection.finishOperation(lease);
+      return false;
+    }
+    activationPending.value = true;
+    let outcome: AcquiredExecutionOutcome;
+    try {
+      outcome = await executeAcquired(action, lease);
+      if (outcome !== "stale") {
+        dependencies.showCenter.value = outcome === "failed";
+      }
     } finally {
       activationPending.value = false;
     }
+    const opened = outcome === "succeeded"
+      || (outcome === "stale" && dependencies.session.activeWorkspaceId === workspaceId);
+    if (outcome === "stale" && opened) dependencies.showCenter.value = false;
     if (opened) dependencies.initializeConsumers();
     return opened;
   }

@@ -8,7 +8,9 @@
  *     `window.chrome.webview.postMessage`, and returns a Promise that:
  *        * resolves on the matching `{type:<resultType>, requestId}` payload,
  *        * rejects  on `{type:"operation.failed", requestId}` payloads,
- *        * rejects  with a TimeoutError after its request-specific timeout.
+ *        * rejects  with a TimeoutError after its request-specific timeout;
+ *          host-owned workspace lifecycle requests complete through the
+ *          native state machine and are only abandoned when the bridge stops.
  *
  *   - `notify(type, payload)`   : fire-and-forget web -> host (no requestId),
  *     used for `app.ready` and other one-shot notifications.
@@ -125,7 +127,8 @@ type WebPayloadMap =
 export type DiagnosticKind =
   | "unknown-type"
   | "malformed"
-  | "mismatched-response";
+  | "mismatched-response"
+  | "orphaned-response";
 
 export interface Diagnostic {
   readonly kind: DiagnosticKind;
@@ -200,9 +203,11 @@ export class BridgeTimeoutError extends Error {
 export class BridgeOperationError extends Error {
   public override readonly name = "BridgeOperationError";
   public readonly code?: string;
+  public readonly operation?: string;
   public constructor(payload: OperationFailedPayload) {
     super(payload.message);
     this.code = payload.code;
+    this.operation = payload.operation;
   }
 }
 
@@ -215,6 +220,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
 >([
   "host.startupStateChanged",
   "database.opened",
+  "database.openCancelled",
+  "plugin.projectContext.unavailable",
   "table.pageLoaded",
   "table.datasetReady",
   "table.windowLoaded",
@@ -263,6 +270,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "file.uploadRequested",
   "file.replaceRequested",
   "file.removeRequested",
+  "file.previewRequested",
+  "file.downloadRequested",
   "events.reconcile",
   "schema.describe",
   "relation.searchTargets",
@@ -466,7 +475,11 @@ interface Pending {
   readonly responseTypes: ReadonlySet<HostMessageType>;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
+  readonly timer: ReturnType<typeof setTimeout> | null;
+}
+
+function clearPendingTimer(entry: Pending): void {
+  if (entry.timer !== null) clearTimeout(entry.timer);
 }
 
 /**
@@ -477,7 +490,7 @@ interface Pending {
 const RESPONSE_TYPE_OVERRIDES: Readonly<
   Partial<Record<WebMessageType, readonly HostMessageType[]>>
 > = {
-  "database.openRequested": ["database.opened"],
+  "database.openRequested": ["database.opened", "database.openCancelled"],
   "table.selected": ["table.editSchemaLoaded"],
   "table.updateCellRequested": ["table.editCommitted", "table.editRejected"],
   "table.insertRowRequested": ["table.rowsInserted"],
@@ -514,9 +527,22 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
 const HOST_PICKER_PREFIX = "host-picker://";
 const WORKSPACE_BOOTSTRAP_METHODS = new Set([
   "workspace.create",
-  "workspace.open",
   "workspace.register",
   "workspace.relink",
+]);
+const HOST_OWNED_WORKSPACE_LIFECYCLE_METHODS = new Set([
+  "workspace.open",
+  "workspace.switch",
+  "workspace.close",
+  "snapshot.openAsNewWorkspace",
+]);
+const HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+  "tableAdmin.createRequested",
+  "tableAdmin.deleteRequested",
+]);
+const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+  "file.previewRequested",
+  "file.downloadRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
@@ -534,6 +560,11 @@ function isWorkspaceBootstrapRequest(value: unknown): boolean {
   return WORKSPACE_BOOTSTRAP_METHODS.has(
     String((value as Readonly<Record<string, unknown>>).method ?? ""),
   );
+}
+
+function isHostOwnedWorkspaceLifecycleRequest(value: unknown): boolean {
+  if (!isPlainObject(value) || typeof value.method !== "string") return false;
+  return HOST_OWNED_WORKSPACE_LIFECYCLE_METHODS.has(value.method);
 }
 
 function responseTypesFor(type: WebMessageType): ReadonlySet<HostMessageType> {
@@ -781,14 +812,15 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     }
 
     // --- Resolve pending request (if any) --------------------------------
-    // Only a real string requestId can match a pending request(). null (the
-    // PostReply-with-null shape) and undefined (PostNotification shape) fall
+    // A real string requestId belongs exclusively to the correlated RPC
+    // domain. null (the PostReply-with-null shape) and undefined
+    // (PostNotification shape) belong to the notification domain and fall
     // through to the handler fan-out below.
     if (typeof requestId === "string") {
       const entry = pending.get(requestId);
       if (entry) {
         if (type === "operation.failed") {
-          clearTimeout(entry.timer);
+          clearPendingTimer(entry);
           pending.delete(requestId);
           entry.reject(
             new BridgeOperationError(
@@ -811,7 +843,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           // still arrive, otherwise the existing timeout closes the request.
           return;
         }
-        clearTimeout(entry.timer);
+        clearPendingTimer(entry);
         pending.delete(requestId);
         entry.resolve(payload);
         // Note: for a request-response type we still ALSO fan out to handlers
@@ -819,6 +851,17 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         // branch has a requestId, we return after resolving the request.
         return;
       }
+      // A response for an already-settled or unknown request must never be
+      // reinterpreted as a global notification. In particular, a late
+      // operation.failed would otherwise contaminate unrelated UI stores.
+      onDiagnostic({
+        kind: "orphaned-response",
+        type,
+        reason:
+          `inbound response has no pending request ` +
+          `(requestId=${requestId})`,
+      });
+      return;
     }
 
     // --- Fan out to typed handlers ---------------------------------------
@@ -859,7 +902,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     started = false;
     // Reject any still-pending requests so callers don't hang forever.
     for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
+      clearPendingTimer(entry);
       entry.reject(
         new BridgeTimeoutError(entry.messageType, "<bridge stopped>", timeoutMs),
       );
@@ -940,21 +983,34 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
     const env = outboundEnvelope(type, payload, requestId);
-    const requestTimeoutMs = type === "update.install"
+    const requestTimeoutMs: number | null = type === "update.install"
       ? updateInstallTimeoutMs
       : type === "update.check"
         ? updateCheckTimeoutMs
         : type === "workspace.v2.request" && containsHostPickerSentinel(payload)
           ? nativePickerTimeoutMs
+          : type === "workspace.v2.request"
+              && isHostOwnedWorkspaceLifecycleRequest(payload)
+            ? null
+          : HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES.has(type)
+            ? null
+          : HOST_OWNED_NATIVE_ACTION_MESSAGES.has(type)
+            ? null
           : type === "workspace.v2.request" && isWorkspaceBootstrapRequest(payload)
             ? workspaceBootstrapTimeoutMs
           : timeoutMs;
     const promise = new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (pending.delete(requestId)) {
-          reject(new BridgeTimeoutError(type, requestId, requestTimeoutMs));
-        }
-      }, requestTimeoutMs);
+      // Workspace open/switch may perform drain, protection and pre-open work
+      // before the native 105-second activation budget begins. A renderer
+      // wall-clock timer can therefore reject while the host still commits.
+      // The native state machine owns completion; stop() still clears pending.
+      const timer = requestTimeoutMs === null
+        ? null
+        : setTimeout(() => {
+            if (pending.delete(requestId)) {
+              reject(new BridgeTimeoutError(type, requestId, requestTimeoutMs));
+            }
+          }, requestTimeoutMs);
       pending.set(requestId, {
         messageType: type,
         responseTypes: responseTypesFor(type),
@@ -965,7 +1021,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       try {
         postEnvelope(env);
       } catch (err) {
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         pending.delete(requestId);
         reject(err);
       }
@@ -1049,7 +1105,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       return promise;
     } catch {
       const entry = pending.get(requestId);
-      if (entry) clearTimeout(entry.timer);
+      if (entry) clearPendingTimer(entry);
       pending.delete(requestId);
       // Prevent an unhandled rejection: the pending promise was never exposed.
       promise.catch(() => undefined);
@@ -1118,6 +1174,9 @@ function normalizeFailure(payload: unknown): OperationFailedPayload {
       message: payload.message,
       ...(typeof payload.code === "string"
         ? { code: payload.code }
+        : {}),
+      ...(typeof payload.operation === "string"
+        ? { operation: payload.operation }
         : {}),
     };
   }

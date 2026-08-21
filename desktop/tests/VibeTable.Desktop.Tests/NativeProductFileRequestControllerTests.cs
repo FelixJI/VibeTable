@@ -81,7 +81,7 @@ public sealed class NativeProductFileRequestControllerTests
     }
 
     [TestMethod]
-    public async Task PreviewSavesBeforeOpeningAndPreservesPreviewFailureCode()
+    public async Task PreviewUnavailableIsACorrelatedCapabilityOutcomeAfterMaterialization()
     {
         var sink = new FakeWebReplySink();
         var gateway = new FakeProductFileGateway();
@@ -106,7 +106,42 @@ public sealed class NativeProductFileRequestControllerTests
             host.PreviewPath,
             gateway.AttachmentSaves.Single().GetProperty("outputPath").GetString());
         CollectionAssert.AreEqual(new[] { host.PreviewPath }, host.PreviewedPaths);
-        AssertFailure(sink.Replies.Single(), "PREVIEW_HANDLER_UNAVAILABLE");
+        FakeWebReplySink.Reply response = sink.Replies.Single();
+        Assert.AreEqual("file.previewRequested", response.Type);
+        Assert.AreEqual("request-file.previewRequested", response.RequestId);
+        JsonElement outcome = JsonSerializer.SerializeToElement(response.Payload);
+        Assert.AreEqual("unavailable", outcome.GetProperty("outcome").GetString());
+        Assert.AreEqual(
+            "PREVIEW_HANDLER_UNAVAILABLE",
+            outcome.GetProperty("reason").GetString());
+        Assert.IsFalse(outcome.TryGetProperty("path", out _));
+    }
+
+    [TestMethod]
+    public async Task PreviewOpenedProducesExactlyOneCorrelatedTerminalOutcome()
+    {
+        var sink = new FakeWebReplySink();
+        var gateway = new FakeProductFileGateway();
+        var host = new FakeNativeProductFileHost
+        {
+            PreviewPath = @"C:\preview\safe-report.pdf",
+        };
+        var controller = Controller(sink, gateway, host);
+
+        await controller.DispatchAsync(Request(
+            "file.previewRequested",
+            AttachmentPayload(
+                includeDigest: false,
+                storedName: "stored.pdf",
+                originalName: "report.pdf")));
+
+        FakeWebReplySink.Reply response = sink.Replies.Single();
+        Assert.AreEqual("file.previewRequested", response.Type);
+        Assert.AreEqual("request-file.previewRequested", response.RequestId);
+        JsonElement outcome = JsonSerializer.SerializeToElement(response.Payload);
+        Assert.AreEqual("opened", outcome.GetProperty("outcome").GetString());
+        Assert.AreEqual(JsonValueKind.Null, outcome.GetProperty("reason").ValueKind);
+        Assert.IsFalse(outcome.TryGetProperty("path", out _));
     }
 
     [TestMethod]
@@ -205,6 +240,225 @@ public sealed class NativeProductFileRequestControllerTests
         JsonElement save = gateway.AttachmentSaves.Single();
         Assert.AreEqual("stored.pdf", save.GetProperty("storedName").GetString());
         Assert.AreEqual(host.AttachmentTarget, save.GetProperty("outputPath").GetString());
+        FakeWebReplySink.Reply download = sink.Replies.Single(
+            reply => reply.Type == "file.downloadRequested");
+        JsonElement outcome = JsonSerializer.SerializeToElement(download.Payload);
+        Assert.AreEqual("saved", outcome.GetProperty("outcome").GetString());
+        Assert.IsFalse(outcome.TryGetProperty("path", out _));
+    }
+
+    [TestMethod]
+    public async Task DownloadPickerCancellationProducesExactlyOneCorrelatedTerminalOutcome()
+    {
+        var sink = new FakeWebReplySink();
+        var gateway = new FakeProductFileGateway();
+        var controller = Controller(sink, gateway, new FakeNativeProductFileHost());
+
+        await controller.DispatchAsync(Request(
+            "file.downloadRequested",
+            AttachmentPayload(
+                includeDigest: false,
+                storedName: "stored.pdf",
+                originalName: "report.pdf")));
+
+        Assert.IsEmpty(gateway.AttachmentSaves);
+        FakeWebReplySink.Reply response = sink.Replies.Single();
+        Assert.AreEqual("file.downloadRequested", response.Type);
+        Assert.AreEqual("request-file.downloadRequested", response.RequestId);
+        JsonElement outcome = JsonSerializer.SerializeToElement(response.Payload);
+        Assert.AreEqual("cancelled", outcome.GetProperty("outcome").GetString());
+        Assert.IsFalse(outcome.TryGetProperty("path", out _));
+    }
+
+    [TestMethod]
+    public async Task LegacyAttachmentNotificationsKeepSideEffectsWithoutPostingAnyReply()
+    {
+        foreach (Exception? previewFailure in new Exception?[]
+        {
+            null,
+            new DocumentPreviewException(
+                "No preview handler is installed.",
+                "PREVIEW_HANDLER_UNAVAILABLE"),
+            new IOException("preview failed"),
+        })
+        {
+            var sink = new FakeWebReplySink();
+            var gateway = new FakeProductFileGateway();
+            var host = new FakeNativeProductFileHost { PreviewFailure = previewFailure };
+
+            await Controller(sink, gateway, host).DispatchAsync(Notification(
+                "file.previewRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+            Assert.HasCount(1, gateway.AttachmentSaves);
+            CollectionAssert.AreEqual(new[] { host.PreviewPath }, host.PreviewedPaths);
+            Assert.IsEmpty(sink.Replies);
+        }
+
+        var cancelSink = new FakeWebReplySink();
+        var cancelHost = new FakeNativeProductFileHost();
+        await Controller(cancelSink, new FakeProductFileGateway(), cancelHost)
+            .DispatchAsync(Notification(
+                "file.downloadRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        Assert.HasCount(1, cancelHost.AttachmentTargetSuggestions);
+        Assert.IsEmpty(cancelSink.Replies);
+    }
+
+    [TestMethod]
+    public async Task NativeAttachmentSessionCancellationProducesOneCorrelatedFailure()
+    {
+        using var session = new CancellationTokenSource();
+        session.Cancel();
+        var gateway = new FakeProductFileGateway
+        {
+            AttachmentSaveFailure = new OperationCanceledException(session.Token),
+        };
+
+        foreach (string type in new[] { "file.previewRequested", "file.downloadRequested" })
+        {
+            var sink = new FakeWebReplySink();
+            var host = new FakeNativeProductFileHost
+            {
+                AttachmentTarget = @"C:\exports\report.pdf",
+            };
+
+            await Controller(sink, gateway, host, () => session.Token)
+                .DispatchAsync(Request(
+                    type,
+                    AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+            AssertFailure(sink.Replies.Single(), "CANCELLED");
+        }
+    }
+
+    [TestMethod]
+    public async Task PreviewCallbackCancellationWinsOverAHostSuccess()
+    {
+        using var session = new CancellationTokenSource();
+        var sink = new FakeWebReplySink();
+        var host = new FakeNativeProductFileHost
+        {
+            PreviewCallback = session.Cancel,
+        };
+
+        await Controller(sink, new FakeProductFileGateway(), host, () => session.Token)
+            .DispatchAsync(Request(
+                "file.previewRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        AssertFailure(sink.Replies.Single(), "CANCELLED");
+    }
+
+    [TestMethod]
+    public async Task DownloadTargetCallbackCancellationWinsBeforeSaving()
+    {
+        using var session = new CancellationTokenSource();
+        var sink = new FakeWebReplySink();
+        var gateway = new FakeProductFileGateway();
+        var host = new FakeNativeProductFileHost
+        {
+            AttachmentTarget = @"C:\exports\report.pdf",
+            AttachmentTargetCallback = session.Cancel,
+        };
+
+        await Controller(sink, gateway, host, () => session.Token)
+            .DispatchAsync(Request(
+                "file.downloadRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        Assert.IsEmpty(gateway.AttachmentSaves);
+        AssertFailure(sink.Replies.Single(), "CANCELLED");
+    }
+
+    [TestMethod]
+    public async Task GatewayCompletionCancellationWinsBeforePreviewing()
+    {
+        using var session = new CancellationTokenSource();
+        var sink = new FakeWebReplySink();
+        var gateway = new FakeProductFileGateway
+        {
+            AttachmentSaveCallback = session.Cancel,
+        };
+        var host = new FakeNativeProductFileHost();
+
+        await Controller(sink, gateway, host, () => session.Token)
+            .DispatchAsync(Request(
+                "file.previewRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        Assert.HasCount(1, gateway.AttachmentSaves);
+        Assert.IsEmpty(host.PreviewedPaths);
+        AssertFailure(sink.Replies.Single(), "CANCELLED");
+    }
+
+    [TestMethod]
+    public async Task NativeAttachmentActionErrorsProduceOneCorrelatedFailure()
+    {
+        var previewSink = new FakeWebReplySink();
+        var previewHost = new FakeNativeProductFileHost
+        {
+            PreviewFailure = new DocumentPreviewException(
+                "预览器启动失败。",
+                "PREVIEW_LAUNCH_FAILED"),
+        };
+        await Controller(previewSink, new FakeProductFileGateway(), previewHost)
+            .DispatchAsync(Request(
+                "file.previewRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        FakeWebReplySink.Reply previewFailure = previewSink.Replies.Single();
+        Assert.AreEqual("request-file.previewRequested", previewFailure.RequestId);
+        AssertFailure(previewFailure, "PREVIEW_LAUNCH_FAILED");
+
+        var downloadSink = new FakeWebReplySink();
+        var downloadGateway = new FakeProductFileGateway
+        {
+            AttachmentSaveFailure = new IOException("disk unavailable"),
+        };
+        var downloadHost = new FakeNativeProductFileHost
+        {
+            AttachmentTarget = @"C:\exports\report.pdf",
+        };
+        await Controller(downloadSink, downloadGateway, downloadHost)
+            .DispatchAsync(Request(
+                "file.downloadRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        FakeWebReplySink.Reply downloadFailure = downloadSink.Replies.Single();
+        Assert.AreEqual("request-file.downloadRequested", downloadFailure.RequestId);
+        AssertFailure(downloadFailure, "ATTACHMENT_DOWNLOAD_FAILED");
+    }
+
+    [TestMethod]
+    public async Task NativeAttachmentHostErrorsProduceOneCorrelatedFailure()
+    {
+        var previewSink = new FakeWebReplySink();
+        var previewHost = new FakeNativeProductFileHost
+        {
+            PreviewPathFailure = new IOException("preview directory unavailable"),
+        };
+
+        await Controller(previewSink, new FakeProductFileGateway(), previewHost)
+            .DispatchAsync(Request(
+                "file.previewRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        AssertFailure(previewSink.Replies.Single(), "ATTACHMENT_PREVIEW_FAILED");
+
+        var downloadSink = new FakeWebReplySink();
+        var downloadHost = new FakeNativeProductFileHost
+        {
+            AttachmentTargetFailure = new InvalidOperationException("dialog unavailable"),
+        };
+
+        await Controller(downloadSink, new FakeProductFileGateway(), downloadHost)
+            .DispatchAsync(Request(
+                "file.downloadRequested",
+                AttachmentPayload(false, "stored.pdf", "report.pdf")));
+
+        AssertFailure(downloadSink.Replies.Single(), "ATTACHMENT_DOWNLOAD_FAILED");
     }
 
     [TestMethod]
@@ -258,6 +512,16 @@ public sealed class NativeProductFileRequestControllerTests
             string.Empty);
     }
 
+    private static RoutedWebRequest Notification(string type, string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return new RoutedWebRequest(
+            type,
+            RequestId: null,
+            document.RootElement.Clone(),
+            string.Empty);
+    }
+
     private static string AttachmentPayload(
         bool includeDigest,
         string? storedName = null,
@@ -284,11 +548,15 @@ public sealed class NativeProductFileRequestControllerTests
     private static void AssertFailure(FakeWebReplySink.Reply reply, string code)
     {
         Assert.AreEqual("operation.failed", reply.Type);
+        Assert.IsNotNull(reply.RequestId);
+        string expectedOperation = reply.RequestId["request-".Length..];
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
         Assert.AreEqual(
             code,
-            JsonSerializer.SerializeToElement(reply.Payload)
-                .GetProperty("code")
-                .GetString());
+            payload.GetProperty("code").GetString());
+        Assert.AreEqual(
+            expectedOperation,
+            payload.GetProperty("operation").GetString());
     }
 
     private sealed class FakeNativeProductFileHost : INativeProductFileHost
@@ -299,6 +567,10 @@ public sealed class NativeProductFileRequestControllerTests
         public string? AttachmentTarget { get; init; }
         public string PreviewPath { get; init; } = @"C:\preview\attachment.bin";
         public Exception? PreviewFailure { get; init; }
+        public Exception? PreviewPathFailure { get; init; }
+        public Exception? AttachmentTargetFailure { get; init; }
+        public Action? PreviewCallback { get; init; }
+        public Action? AttachmentTargetCallback { get; init; }
         public List<string> PreviewedPaths { get; } = [];
         public List<string> AttachmentTargetSuggestions { get; } = [];
 
@@ -312,14 +584,21 @@ public sealed class NativeProductFileRequestControllerTests
         public string? SelectAttachmentTarget(string suggestedName)
         {
             AttachmentTargetSuggestions.Add(suggestedName);
+            if (AttachmentTargetFailure is not null)
+                throw AttachmentTargetFailure;
+            AttachmentTargetCallback?.Invoke();
             return AttachmentTarget;
         }
 
-        public string CreateAttachmentPreviewPath(string suggestedName) => PreviewPath;
+        public string CreateAttachmentPreviewPath(string suggestedName)
+            => PreviewPathFailure is null
+                ? PreviewPath
+                : throw PreviewPathFailure;
 
         public Task PreviewAttachmentAsync(string fullPath)
         {
             PreviewedPaths.Add(fullPath);
+            PreviewCallback?.Invoke();
             return PreviewFailure is null
                 ? Task.CompletedTask
                 : Task.FromException(PreviewFailure);
@@ -330,6 +609,8 @@ public sealed class NativeProductFileRequestControllerTests
     {
         public bool IsAvailable { get; init; } = true;
         public Exception? AttachmentChangeFailure { get; init; }
+        public Exception? AttachmentSaveFailure { get; init; }
+        public Action? AttachmentSaveCallback { get; init; }
         public List<JsonElement> ImportRegistrations { get; } = [];
         public List<JsonElement> ExportRegistrations { get; } = [];
         public List<JsonElement> AttachmentChanges { get; } = [];
@@ -366,7 +647,10 @@ public sealed class NativeProductFileRequestControllerTests
             CancellationToken cancellationToken)
         {
             AttachmentSaves.Add(parameters.Clone());
-            return Success();
+            AttachmentSaveCallback?.Invoke();
+            return AttachmentSaveFailure is null
+                ? Success()
+                : Task.FromException<JsonElement>(AttachmentSaveFailure);
         }
 
         private static Task<JsonElement> Success()

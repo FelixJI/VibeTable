@@ -1,7 +1,11 @@
+export function isAppliedMutationResponse(response) {
+  return response?.type === "mutation.apply"
+    && response.payload?.status === "applied";
+}
+
 export function beginRawBridgeRequestInPage({
   requestType,
   requestPayload,
-  responseTypes,
 }) {
   const operationId = crypto.randomUUID();
   const requestId = `e2e-${operationId}`;
@@ -11,27 +15,79 @@ export function beginRawBridgeRequestInPage({
   }
   const scope = wirePort.reserve(operationId);
   window.__vibetableE2ERawRequests ??= {};
-  window.__vibetableE2ERawRequests[requestId] = {
-    responseTypes,
-    message: null,
-  };
-  window.chrome.webview.addEventListener("message", function handler(event) {
+  const entry = { message: null, listener: null, released: false };
+  const listener = (event) => {
+    if (entry.released) return;
     let message = event.data;
     if (typeof message === "string") {
       try { message = JSON.parse(message); } catch { return; }
     }
     if (!message || message.requestId !== requestId) return;
-    if (!responseTypes.includes(message.type) && message.type !== "operation.failed") return;
-    window.__vibetableE2ERawRequests[requestId].message = message;
-    window.chrome.webview.removeEventListener("message", handler);
-  });
+    if (entry.message !== null) return;
+    entry.message = message;
+    window.chrome.webview.removeEventListener("message", listener);
+    entry.listener = null;
+  };
+  entry.listener = listener;
+  window.__vibetableE2ERawRequests[requestId] = entry;
+  try {
+    window.chrome.webview.addEventListener("message", listener);
+    window.chrome.webview.postMessage({
+      type: requestType,
+      requestId,
+      payload: requestPayload,
+      scope,
+    });
+  } catch (error) {
+    try {
+      releaseRawBridgeRequestInPage({ requestId });
+    } catch (cleanupError) {
+      if (error instanceof Error) {
+        error.cause = cleanupError;
+      } else {
+        throw new AggregateError([error, cleanupError], "raw bridge setup and cleanup failed");
+      }
+    }
+    throw error;
+  }
+  return requestId;
+}
+
+export function readRawBridgeRequestTerminalInPage({ requestId }) {
+  return window.__vibetableE2ERawRequests?.[requestId]?.message ?? null;
+}
+
+export function releaseRawBridgeRequestInPage({ requestId }) {
+  const registry = window.__vibetableE2ERawRequests;
+  const entry = registry?.[requestId];
+  if (!entry) return false;
+  entry.released = true;
+  if (entry.listener !== null) {
+    window.chrome.webview.removeEventListener("message", entry.listener);
+    entry.listener = null;
+  }
+  delete registry[requestId];
+  if (Object.keys(registry).length === 0) {
+    delete window.__vibetableE2ERawRequests;
+  }
+  return true;
+}
+
+export function postRawBridgeNotificationInPage({
+  requestType,
+  requestPayload,
+}) {
+  const operationId = crypto.randomUUID();
+  const wirePort = window.__vibetableE2EWorkspaceWirePort;
+  if (!wirePort) {
+    throw new Error(`workspace wire E2E port unavailable for ${requestType}`);
+  }
+  const scope = wirePort.reserve(operationId);
   window.chrome.webview.postMessage({
     type: requestType,
-    requestId,
     payload: requestPayload,
     scope,
   });
-  return requestId;
 }
 
 export async function requestWorkspaceV2InPage({ method, params }) {

@@ -263,6 +263,8 @@ public sealed class WebMessageRouterTests
         Assert.IsTrue(router.IsHostNotificationAllowed("file.uploadRequested"));
         Assert.IsTrue(router.IsHostNotificationAllowed("file.replaceRequested"));
         Assert.IsTrue(router.IsHostNotificationAllowed("file.removeRequested"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("file.previewRequested"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("file.downloadRequested"));
     }
 
     [TestMethod]
@@ -413,13 +415,34 @@ public sealed class WebMessageRouterTests
         var envelope = WebMessageRouter.BuildOperationFailed(
             requestId: "abc",
             message: "bad",
-            code: "BAD");
+            code: "BAD",
+            operation: "table.selected");
 
         Assert.AreEqual("operation.failed", envelope.Type);
         Assert.AreEqual("abc", envelope.RequestId);
         Assert.IsNotNull(envelope.Payload);
         Assert.AreEqual("bad", envelope.Payload!.Message);
         Assert.AreEqual("BAD", envelope.Payload.Code);
+        Assert.AreEqual("table.selected", envelope.Payload.Operation);
+    }
+
+    [TestMethod]
+    public void SerializeRouterReply_PreservesOperationForTheWebViewBoundary()
+    {
+        HostReplyMessage reply = WebMessageRouter.BuildOperationFailed(
+            requestId: "late-field-apply",
+            message: "Workspace operation failed.",
+            code: "WORKSPACE_ERROR",
+            operation: "field.change.apply");
+
+        using JsonDocument document = JsonDocument.Parse(
+            ProductWebViewBridge.SerializeRouterReply(reply));
+
+        JsonElement root = document.RootElement;
+        Assert.AreEqual("late-field-apply", root.GetProperty("requestId").GetString());
+        Assert.AreEqual(
+            "field.change.apply",
+            root.GetProperty("payload").GetProperty("operation").GetString());
     }
 
     [TestMethod]

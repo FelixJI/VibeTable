@@ -88,7 +88,7 @@ class PluginPlatformService:
         plan_id: str,
         project_revision: str,
     ) -> PluginSnapshot:
-        plan = self._checked_plan(plan_id, project_revision)
+        plan = self._consume_plan(plan_id, project_revision)
         self._recheck_plan_source(plan)
         retained_path = self._package_lifecycle.retain(
             source_location=plan.source_location,
@@ -116,9 +116,11 @@ class PluginPlatformService:
                 )
             self._delete_package_if_unreferenced(retained_path)
             raise
-        self._plans.pop(plan_id, None)
         await self._emit_catalog(installed)
         return installed
+
+    def cancel_install(self, *, plan_id: str) -> bool:
+        return self._plans.pop(plan_id, None) is not None
 
     async def list_catalog(self, *, project_key: str) -> list[PluginSnapshot]:
         return self._registry.list(project_key)
@@ -154,7 +156,7 @@ class PluginPlatformService:
         plan_id: str,
         project_revision: str,
     ) -> PluginSnapshot:
-        plan = self._checked_plan(plan_id, project_revision)
+        plan = self._consume_plan(plan_id, project_revision)
         if plan.project_key != project_key or plan.manifest.plugin_id != plugin_id:
             raise ValueError("upgrade plan identity does not match the installation")
         self._recheck_plan_source(plan)
@@ -199,7 +201,6 @@ class PluginPlatformService:
                 self._store.save_package_revision(revision)
             self._delete_package_if_unreferenced(retained_path)
             raise
-        self._plans.pop(plan_id, None)
         await self._emit_catalog(snapshot)
         return snapshot
 
@@ -341,13 +342,14 @@ class PluginPlatformService:
     def get_task(self, *, task_id: str) -> PluginTaskSnapshot:
         return self._runtime.get_task(task_id)
 
-    def _checked_plan(self, plan_id: str, project_revision: str) -> InstallPlan:
+    def _consume_plan(self, plan_id: str, project_revision: str) -> InstallPlan:
         try:
             plan = self._plans[plan_id]
         except KeyError as exc:
             raise ValueError("plugin install plan was not found") from exc
         if plan.project_revision != project_revision:
             raise ValueError("plugin project revision changed")
+        del self._plans[plan_id]
         return plan
 
     def _recheck_plan_source(self, plan: InstallPlan) -> None:

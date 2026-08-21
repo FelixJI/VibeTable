@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -8,11 +9,13 @@ public interface IPocketBaseSupervisor : IAsyncDisposable
 {
     event Action<object?, PocketBaseStatus>? StatusChanged;
 
+    PocketBaseStartupTimings? LastStartupTimings { get; }
     Task StartAsync(CancellationToken cancellationToken);
     PocketBaseStatus GetStatus();
     Task StopAsync(CancellationToken cancellationToken);
     Uri? GetAdminUri();
     PocketBaseAdminContext? GetAdminContext();
+    void ConfigureBackendEnvironment(IDictionary<string, string> environment);
 }
 
 public sealed record PocketBaseAdminContext(

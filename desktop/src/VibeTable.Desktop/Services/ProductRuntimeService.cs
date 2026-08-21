@@ -12,53 +12,73 @@ namespace VibeTable.Desktop.Services;
 /// the child environment, and a sidecar recovery rotates the Python RPC
 /// client before consumers are notified.
 /// </summary>
-public sealed class ProductRuntimeService : IBackendLifecycle, IAsyncDisposable
+public sealed class ProductRuntimeService : IAsyncDisposable
 {
-    private readonly LocalDataService _localData;
-    private readonly PocketBaseSupervisor _sidecar;
-    private readonly PythonBackendSupervisor _backend;
-    private readonly BackendLaunchOptions _backendOptions;
+    private readonly ILocalDataService _localData;
+    private readonly IPocketBaseSupervisor _sidecar;
+    private readonly IBackendSupervisor _backend;
+    private readonly IDictionary<string, string> _backendEnvironment;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly SemaphoreSlim _recovery = new(1, 1);
     private int _started;
     private int _disposed;
 
     public ProductRuntimeService(
-        LocalDataService localData,
-        PocketBaseSupervisor sidecar,
-        PythonBackendSupervisor backend,
-        BackendLaunchOptions backendOptions)
+        ILocalDataService localData,
+        IPocketBaseSupervisor sidecar,
+        IBackendSupervisor backend,
+        IDictionary<string, string> backendEnvironment)
     {
         _localData = localData ?? throw new ArgumentNullException(nameof(localData));
         _sidecar = sidecar ?? throw new ArgumentNullException(nameof(sidecar));
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
-        _backendOptions = backendOptions
-            ?? throw new ArgumentNullException(nameof(backendOptions));
+        _backendEnvironment = backendEnvironment
+            ?? throw new ArgumentNullException(nameof(backendEnvironment));
         _sidecar.StatusChanged += OnSidecarStatusChanged;
     }
 
     public event Action? ClientReady;
     public event Action<Exception>? RecoveryFailed;
 
-    public PythonBackendSupervisor Backend => _backend;
-
-    public async Task StartAsync(CancellationToken cancellationToken)
+    internal async Task StartAsync(WorkspaceActivationBudget budget)
     {
+        ArgumentNullException.ThrowIfNull(budget);
         ThrowIfDisposed();
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _lifecycle.WaitAsync().ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
-            LocalDataStatus status = _localData.GetStatus();
-            if (!status.IsReady)
-            {
-                await _localData.StartAsync(cancellationToken).ConfigureAwait(false);
-            }
-            _sidecar.ConfigureBackendEnvironment(_backendOptions.Environment);
-            if (_backend.State != BackendState.Ready)
-            {
-                await _backend.StartAsync(cancellationToken).ConfigureAwait(false);
-            }
+            await budget.RunAsync(
+                WorkspaceActivationStage.Sidecar,
+                async token =>
+                {
+                    try
+                    {
+                        if (!_localData.GetStatus().IsReady)
+                            await _localData.StartAsync(token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        PocketBaseStartupTimings? timings =
+                            _sidecar.LastStartupTimings;
+                        if (timings is not null)
+                        {
+                            budget.RecordSidecarStartup(
+                                timings.SpawnDuration,
+                                timings.ReadyRecordDuration,
+                                timings.HealthDuration,
+                                timings.LastStage);
+                        }
+                    }
+                }).ConfigureAwait(false);
+            _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
+            await budget.RunAsync(
+                WorkspaceActivationStage.Backend,
+                async token =>
+                {
+                    if (_backend.State != BackendState.Ready)
+                        await _backend.StartAsync(token).ConfigureAwait(false);
+                }).ConfigureAwait(false);
             Volatile.Write(ref _started, 1);
             ClientReady?.Invoke();
         }
@@ -132,7 +152,7 @@ public sealed class ProductRuntimeService : IBackendLifecycle, IAsyncDisposable
             if (!_localData.GetStatus().IsReady)
                 throw new InvalidOperationException(
                     "The workspace Sidecar is no longer ready.");
-            _sidecar.ConfigureBackendEnvironment(_backendOptions.Environment);
+            _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
             if (_backend.State != BackendState.Ready)
                 await _backend.StartAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -189,7 +209,7 @@ public sealed class ProductRuntimeService : IBackendLifecycle, IAsyncDisposable
                 return;
             }
             await _backend.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            _sidecar.ConfigureBackendEnvironment(_backendOptions.Environment);
+            _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
             await _backend.StartAsync(CancellationToken.None).ConfigureAwait(false);
             ClientReady?.Invoke();
         }

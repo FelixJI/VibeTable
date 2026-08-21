@@ -117,6 +117,12 @@ class QueryCursorWindowResult:
 
 
 @dataclass(frozen=True)
+class SelectionProjectionResult:
+    schema_snapshot: dict[str, JsonValue]
+    cursor_window: QueryCursorWindowResult
+
+
+@dataclass(frozen=True)
 class QueryCursorOpenCommand:
     table_id: str
     query: JsonObject
@@ -202,6 +208,23 @@ class PocketBaseClient:
             "query cursor window",
         )
         return _query_cursor_window(payload)
+
+    async def open_selection_projection(
+        self,
+        command: QueryCursorOpenCommand,
+    ) -> SelectionProjectionResult:
+        payload = _object(
+            await self._post(
+                QUERY_PATH,
+                {
+                    "operation": "selection.open",
+                    "tableId": command.table_id,
+                    "query": command.query,
+                },
+            ),
+            "selection projection",
+        )
+        return _selection_projection(payload, command.table_id)
 
     async def fetch_query_cursor(self, *, cursor: str) -> QueryCursorWindowResult:
         payload = _object(
@@ -625,6 +648,32 @@ def _query_cursor_window(payload: Mapping[str, JsonValue]) -> QueryCursorWindowR
         total_rows=_integer(payload.get("totalRows"), "totalRows"),
         snapshot=_object(snapshot, "query snapshot"),
     )
+
+
+def _selection_projection(
+    payload: Mapping[str, JsonValue],
+    expected_table: str,
+) -> SelectionProjectionResult:
+    schema_raw = payload.get("schemaSnapshot")
+    window_raw = payload.get("cursorWindow")
+    if not isinstance(schema_raw, dict) or not isinstance(window_raw, dict):
+        raise ValueError("PocketBase returned an invalid selection projection")
+    schema = _object(schema_raw, "selection schema snapshot")
+    window = _query_cursor_window(window_raw)
+    snapshot = window.snapshot
+    if (
+        schema.get("tableId") != expected_table
+        or snapshot.get("table") != expected_table
+        or not isinstance(schema.get("schemaRevision"), str)
+        or schema.get("schemaRevision") != snapshot.get("schemaRevision")
+        or not isinstance(schema.get("dataRevision"), int)
+        or isinstance(schema.get("dataRevision"), bool)
+        or not isinstance(snapshot.get("dataRevision"), int)
+        or isinstance(snapshot.get("dataRevision"), bool)
+        or schema.get("dataRevision") != snapshot.get("dataRevision")
+    ):
+        raise ValueError("PocketBase returned mismatched selection revisions")
+    return SelectionProjectionResult(schema_snapshot=schema, cursor_window=window)
 
 
 def _flat_view_query_result(payload: Mapping[str, JsonValue]) -> ViewQueryResult:

@@ -356,6 +356,9 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         BackendEnvironment = new Dictionary<string, string>(
             backendOptions.Environment,
             StringComparer.Ordinal);
+        ActivationPolicy = WorkspaceActivationPolicy.FromStageTimeouts(
+            sidecarOptions.StartupTimeout,
+            backendOptions.StartupTimeout);
         Sidecar = new PocketBaseSupervisor(sidecarOptions);
         var localData = new LocalDataService(Sidecar);
         Backend = new PythonBackendSupervisor(backendOptions);
@@ -363,7 +366,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             localData,
             Sidecar,
             Backend,
-            backendOptions);
+            backendOptions.Environment);
         Gateway = new WorkspaceV2HttpGateway(Sidecar);
         _runtime.ClientReady += OnClientReady;
         _runtime.RecoveryFailed += OnRecoveryFailed;
@@ -372,6 +375,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
     public WorkspaceRegistryEntryV2 Workspace { get; }
     public Guid WorkspaceId => Workspace.WorkspaceId;
     public ulong SessionEpoch => _authority.LastSessionEpoch;
+    public WorkspaceActivationPolicy ActivationPolicy { get; }
     public PocketBaseSupervisor Sidecar { get; }
     public PythonBackendSupervisor Backend { get; }
     public WorkspaceV2HttpGateway Gateway { get; }
@@ -382,8 +386,9 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
 
     public async Task StartAsync(
         WorkspaceOpenMode mode,
-        CancellationToken cancellationToken)
+        WorkspaceActivationBudget budget)
     {
+        ArgumentNullException.ThrowIfNull(budget);
         ObjectDisposedException.ThrowIf(
             Volatile.Read(ref _disposed) != 0,
             this);
@@ -392,8 +397,14 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
                 "Workspace runtime is already started.");
         try
         {
-            VerifyManifestBinding();
-            await _runtime.StartAsync(cancellationToken).ConfigureAwait(false);
+            await budget.RunAsync(
+                WorkspaceActivationStage.Manifest,
+                _ =>
+                {
+                    VerifyManifestBinding();
+                    return Task.CompletedTask;
+                }).ConfigureAwait(false);
+            await _runtime.StartAsync(budget).ConfigureAwait(false);
         }
         catch
         {
@@ -402,15 +413,23 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         }
     }
 
-    public async Task VerifyAsync(CancellationToken cancellationToken)
+    public async Task VerifyAsync(WorkspaceActivationBudget budget)
     {
+        ArgumentNullException.ThrowIfNull(budget);
         if (Volatile.Read(ref _started) == 0)
             throw new InvalidOperationException(
                 "Workspace runtime has not started.");
-        VerifyManifestBinding();
-        WorkspaceV2SidecarCapabilities capabilities =
-            await Gateway.GetCapabilitiesAsync(cancellationToken)
-                .ConfigureAwait(false);
+        WorkspaceV2SidecarCapabilities? capabilities = null;
+        await budget.RunAsync(
+            WorkspaceActivationStage.Verification,
+            async token =>
+            {
+                VerifyManifestBinding();
+                capabilities = await Gateway.GetCapabilitiesAsync(token)
+                    .ConfigureAwait(false);
+            }).ConfigureAwait(false);
+        if (capabilities is null)
+            throw new InvalidOperationException("Workspace capabilities were not verified.");
         if (capabilities.ContractVersion != WorkspaceV2Json.ContractVersion
             || capabilities.WorkspaceId
                 != WorkspaceId.ToString("D").ToLowerInvariant()

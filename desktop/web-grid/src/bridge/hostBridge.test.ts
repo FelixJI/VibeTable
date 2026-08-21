@@ -8,6 +8,7 @@ import type {
   DatabaseOpenedPayload,
   TablePage,
 } from "@/contracts";
+import type { WorkspaceV2RequestPayload } from "@/contracts/workspaceV2Bridge";
 
 /**
  * Minimal shape of `window.chrome.webview` used by HostBridge. Only the
@@ -362,6 +363,113 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it.each([
+    {
+      method: "workspace.open",
+      params: {
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        openMode: "writable",
+      },
+      wire: {
+        scope: "global",
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        sequence: 1,
+      },
+    },
+    {
+      method: "workspace.switch",
+      params: {
+        targetWorkspaceId: "22222222-2222-4222-8222-222222222222",
+        openMode: "writable",
+      },
+      wire: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+        operationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        sequence: 2,
+      },
+    },
+    {
+      method: "workspace.close",
+      params: { reason: "user" },
+      wire: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+        operationId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        sequence: 3,
+      },
+    },
+    {
+      method: "snapshot.openAsNewWorkspace",
+      params: {
+        snapshotId: "33333333-3333-4333-8333-333333333333",
+      },
+      wire: {
+        scope: "workspace",
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7,
+        operationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        sequence: 4,
+      },
+    },
+  ] satisfies readonly WorkspaceV2RequestPayload<
+    | "workspace.open"
+    | "workspace.switch"
+    | "workspace.close"
+    | "snapshot.openAsNewWorkspace"
+  >[])(
+    "leaves $method lifecycle deadline ownership to the native host",
+    async (payload) => {
+      vi.useFakeTimers();
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1_000,
+        generateRequestId: () => `activation-${payload.method}`,
+      });
+      bridge.start();
+      const pending = bridge.request("workspace.v2.request", payload);
+      let settled = false;
+      void pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+      expect(settled).toBe(false);
+      bridge.stop();
+    },
+  );
+
+  it.each([
+    ["tableAdmin.createRequested", { displayName: "Orders" }],
+    ["tableAdmin.deleteRequested", { collection: "tbl_orders" }],
+  ] as const)(
+    "leaves %s schema lifecycle deadline ownership to the native host",
+    async (type, payload) => {
+      vi.useFakeTimers();
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1_000,
+        generateRequestId: () => `schema-${type}`,
+      });
+      bridge.start();
+      const pending = bridge.request(type, payload);
+      let settled = false;
+      void pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+      expect(settled).toBe(false);
+      bridge.stop();
+    },
+  );
+
   it("adds a strictly scoped workspace envelope to product requests", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);
@@ -483,12 +591,17 @@ describe("HostBridge", () => {
     webview.emit({
       type: "operation.failed",
       requestId: "req-fail",
-      payload: { message: "no such table", code: "ENOENT" },
+      payload: {
+        message: "no such table",
+        code: "ENOENT",
+        operation: "table.queryRequested",
+      },
     });
 
     await expect(pending).rejects.toMatchObject({
       message: "no such table",
       code: "ENOENT",
+      operation: "table.queryRequested",
     });
 
     bridge.stop();
@@ -598,6 +711,61 @@ describe("HostBridge", () => {
       message: "history unavailable",
       code: "HISTORY_FAILED",
     });
+    bridge.stop();
+  });
+
+  it("drops a late correlated failure instead of broadcasting it globally", async () => {
+    const onDiagnostic = vi.fn();
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "field-apply-1",
+      onDiagnostic,
+    });
+    const failedHandler = vi.fn();
+    bridge.on("operation.failed", failedHandler);
+    bridge.start();
+
+    const pending = bridge.request("field.change.apply", {
+      planId: "plan-1",
+      planHash: "hash-1",
+      operationId: "operation-1",
+      actor: { id: "tester", kind: "user" },
+      confirmations: [],
+    });
+    webview.emit({
+      type: "field.change.apply",
+      requestId: "field-apply-1",
+      payload: {
+        contract: "vibetable.schema.v2",
+        operationId: "operation-1",
+        planId: "plan-1",
+        action: "update",
+        tableId: "tbl_orders",
+        fieldId: "fld_title",
+        schemaRevision: "schema_2",
+        definition: null,
+        migrationJobId: "",
+      },
+    });
+    await expect(pending).resolves.toMatchObject({ operationId: "operation-1" });
+
+    webview.emit({
+      type: "operation.failed",
+      requestId: "field-apply-1",
+      payload: {
+        message: "Workspace operation failed.",
+        code: "WORKSPACE_ERROR",
+        operation: "field.change.apply",
+      },
+    });
+
+    expect(failedHandler).not.toHaveBeenCalled();
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "orphaned-response",
+      type: "operation.failed",
+      reason: expect.stringContaining("field-apply-1"),
+    }));
     bridge.stop();
   });
 
@@ -870,6 +1038,66 @@ describe("HostBridge", () => {
     });
     await expect(pending).resolves.toMatchObject({ status: "applied" });
     bridge.stop();
+  });
+
+  it.each([
+    ["file.previewRequested", { outcome: "opened", reason: null }],
+    ["file.downloadRequested", { outcome: "cancelled" }],
+  ] as const)(
+    "correlates %s and leaves its long native interaction deadline to the host",
+    async (type, outcome) => {
+      vi.useFakeTimers();
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1_000,
+        generateRequestId: () => `native-action-${type}`,
+      });
+      bridge.start();
+
+      const pending = bridge.request(type, {
+        tableId: "table-1",
+        recordId: "record-1",
+        fieldId: "field-1",
+        storedName: "stored.pdf",
+        originalName: "report.pdf",
+      });
+      let settled = false;
+      void pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(settled).toBe(false);
+
+      webview.emit({
+        type,
+        requestId: `native-action-${type}`,
+        payload: outcome,
+      });
+      await expect(pending).resolves.toEqual(outcome);
+      bridge.stop();
+    },
+  );
+
+  it("still clears a pending host-owned attachment action when the bridge stops", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1_000,
+      generateRequestId: () => "native-action-stop",
+    });
+    bridge.start();
+    const pending = bridge.request("file.downloadRequested", {
+      tableId: "table-1",
+      recordId: "record-1",
+      fieldId: "field-1",
+      storedName: "stored.pdf",
+      originalName: "report.pdf",
+    });
+
+    bridge.stop();
+
+    await expect(pending).rejects.toThrow(/stopped/i);
   });
 
   it("whitelists the revision history query and page notification contract", () => {

@@ -12,7 +12,7 @@ internal sealed record ProductDataRpcEndpoint(
     Func<JsonElement, bool> IsValidPayload,
     Func<IProductDataRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync,
     bool MutatesWorkspace = false,
-    bool RequiresProtectionSnapshot = false);
+    ProtectionSnapshotPolicy? ProtectionPolicy = null);
 
 /// <summary>
 /// Closed renderer-to-product dispatch table. The renderer chooses a complete
@@ -30,24 +30,15 @@ internal static class ProductDataRpcRegistry
             && HasOptionalString(p, "fieldId"),
             (g, p, t) => g.DescribeFieldSettingsAsync(p, t)),
         new("field.change.plan", p => Safe(p)
-            && HasOnlyProperties(
-                p, "action", "tableId", "fieldId", "expectedSchemaRevision",
-                "expectedDataRevision", "draft", "actor", "conversionRule",
-                "confirmation", "backupReceipt", "relationPair")
-            && HasStrings(p, "action", "tableId", "expectedSchemaRevision")
-            && HasObject(p, "actor"),
+            && FieldChangePayloadContract.IsValidPlanRequest(p),
             (g, p, t) => g.PlanFieldChangeAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangePlan),
         new("field.change.apply", p => Safe(p)
-            && HasExactProperties(
-                p, "planId", "planHash", "operationId", "actor", "confirmations")
-            && HasStrings(p, "planId", "planHash", "operationId")
-            && HasObject(p, "actor")
-            && HasArray(p, "confirmations"),
+            && FieldChangePayloadContract.IsValidApplyRequest(p),
             (g, p, t) => g.ApplyFieldChangeAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangeApply),
         new("field.change.status", p => Safe(p)
             && HasExactProperties(p, "jobId")
             && HasString(p, "jobId"),
@@ -72,13 +63,13 @@ internal static class ProductDataRpcRegistry
             && HasString(p, "idempotencyKey"),
             (g, p, t) => g.CommitContentProfileAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("contentProfile.delete", p => Safe(p)
             && HasExactProperties(p, "tableId", "expectedRevision", "idempotencyKey")
             && HasStrings(p, "tableId", "expectedRevision", "idempotencyKey"),
             (g, p, t) => g.DeleteContentProfileAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("recordDocumentLink.list", p => Safe(p)
             && HasExactProperties(p, "tableId", "recordId")
             && HasStrings(p, "tableId", "recordId"),
@@ -89,7 +80,7 @@ internal static class ProductDataRpcRegistry
             && HasString(p, "idempotencyKey"),
             (g, p, t) => g.CommitRecordDocumentLinkAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("recordDocumentLink.repair", p => Safe(p)
             && HasExactProperties(
                 p, "linkId", "documentId", "expectedRevision", "idempotencyKey")
@@ -97,13 +88,13 @@ internal static class ProductDataRpcRegistry
                 p, "linkId", "documentId", "expectedRevision", "idempotencyKey"),
             (g, p, t) => g.RepairRecordDocumentLinkAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("recordDocumentLink.delete", p => Safe(p)
             && HasExactProperties(p, "linkId", "expectedRevision", "idempotencyKey")
             && HasStrings(p, "linkId", "expectedRevision", "idempotencyKey"),
             (g, p, t) => g.DeleteRecordDocumentLinkAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("query.page", p => Safe(p) && HasString(p, "tableId") && HasObject(p, "query"),
             (g, p, t) => g.QueryPageAsync(p, t)),
         new("query.cursorOpen", p => Safe(p) && HasExactProperties(p, "tableId", "query")
@@ -125,13 +116,13 @@ internal static class ProductDataRpcRegistry
         new("data.applyImport", p => Safe(p) && HasStrings(p, "grantId", "collection", "token"),
             (g, p, t) => g.ApplyImportAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("data.export", p => Safe(p) && HasStrings(p, "grantId", "collection") && HasObject(p, "query"),
             (g, p, t) => g.ExportAsync(p, t)),
         new("task.create", p => Safe(p) && HasString(p, "kind") && HasObject(p, "params"),
             (g, p, t) => g.CreateTaskAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("task.cancel", p => Safe(p) && HasString(p, "taskId"),
             (g, p, t) => g.CancelTaskAsync(p, t),
             MutatesWorkspace: true),
@@ -177,7 +168,7 @@ internal static class ProductDataRpcRegistry
         new("version.promote", p => Safe(p) && HasStrings(p, "collection", "itemId", "versionId", "mainHash", "operationId"),
             (g, p, t) => g.PromoteVersionAsync(p, t),
             MutatesWorkspace: true,
-            RequiresProtectionSnapshot: true),
+            ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("version.delete", p => Safe(p) && HasStrings(p, "collection", "itemId", "versionId", "expectedRevision", "operationId"),
             (g, p, t) => g.DeleteVersionAsync(p, t),
             MutatesWorkspace: true),

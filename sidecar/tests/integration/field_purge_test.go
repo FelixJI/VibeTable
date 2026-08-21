@@ -270,12 +270,15 @@ func TestFileFieldPurgeRequiresCurrentBackupAndRemovesEveryPhysicalResource(
 		purgePlan.Steps[1].Details["removeAttachmentBlobs"] != true {
 		t.Fatalf("purge plan did not expose attachment impact: %#v", purgePlan)
 	}
-	if _, err := executor.Apply(ctx, v2.ApplyRequest{
+	_, err = executor.Apply(ctx, v2.ApplyRequest{
 		PlanID: purgePlan.PlanID, PlanHash: purgePlan.PlanHash,
 		OperationID: "op_purge_without_confirmation", Actor: actor,
 		ProtectionSnapshotID: "snapshot_current",
-	}); err == nil {
-		t.Fatal("purge without frozen confirmations was accepted")
+	})
+	var confirmationErr *fieldchange.ProductError
+	if !errors.As(err, &confirmationErr) ||
+		confirmationErr.Code != "field.change.confirmation_required" {
+		t.Fatalf("purge without frozen confirmations = %#v, %v", confirmationErr, err)
 	}
 	purgeReceipt, err := executor.Apply(ctx, v2.ApplyRequest{
 		PlanID: purgePlan.PlanID, PlanHash: purgePlan.PlanHash,
