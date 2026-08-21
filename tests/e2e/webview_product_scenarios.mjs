@@ -23,6 +23,7 @@ import {
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
 import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
+import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { ownsWorkspaceSearchTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
@@ -5243,19 +5244,34 @@ async function scenario18(page, recorder, _network, runtime) {
       && await activeSearchInput.evaluate((element) => element === document.activeElement),
   { staleMessage: staleMessageText });
 
-  const restart = await requestSidecarKill(runtime, "verify ContentProfile and repaired link survive restart");
+  const freshTableName = page.getByTestId("sidebar-table-name")
+    .filter({ hasText: "E2E Search Records" });
+  const recovery = await runScenario18RecoveryBoundary({
+    page,
+    tableId,
+    injectFault: () => requestSidecarKill(runtime, "verify ContentProfile and repaired link survive restart"),
+    awaitBackendRecovery: () => waitForActiveTableBackend(page, tableId, 1, 90_000),
+    prepareFreshTable: async () => {
+      await page.getByTestId("nav-files").click();
+      await page.getByTestId("file-workspace").waitFor({ state: "visible", timeout: 30_000 });
+      await page.getByTestId("nav-tables").click();
+      await freshTableName.waitFor();
+    },
+    triggerFreshTable: () => freshTableName.locator("xpath=ancestor::button").click(),
+    prepareFreshContent: async () => {
+      await titleCell.waitFor({ state: "visible", timeout: 30_000 });
+      await titleCell.click();
+    },
+    triggerFreshContent: () => page.getByTestId("toolbar-content-record").click(),
+    readFreshContent: async () => {
+      await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
+      return contentPanel.innerText();
+    },
+  });
+  const restart = recovery.fault;
   recorder.check("content restart terminated only the exact sidecar child",
     restart.processName === "vibetable-pb.exe", { restart });
-  await waitForActiveTableBackend(page, tableId, 1, 90_000);
-  await page.getByTestId("nav-files").click();
-  await page.getByTestId("file-workspace").waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByTestId("nav-tables").click();
-  await selectTable(page, "E2E Search Records");
-  await titleCell.waitFor({ state: "visible", timeout: 30_000 });
-  await titleCell.click();
-  await page.getByTestId("toolbar-content-record").click();
-  await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
-  const reopenedText = await contentPanel.innerText();
+  const reopenedText = recovery.content;
   recorder.check("content record and repaired link survive packaged sidecar restart and reopen",
     reopenedText.includes("Durable violet body")
       && reopenedText.includes("content-reference-b.json")
