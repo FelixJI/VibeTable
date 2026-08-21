@@ -526,6 +526,45 @@ describe("workspace protection UI capability gates", () => {
     wrapper.unmount();
   });
 
+  it("waits for the active snapshot operation before previewing a restore", async () => {
+    const protection = useWorkspaceProtectionStore();
+    protection.setSnapshots([readySnapshot()]);
+    protection.selectSnapshot("77777777-7777-4777-8777-777777777777");
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "versions" },
+      attachTo: document.body,
+    });
+
+    try {
+      await wrapper.get('[data-testid="snapshot-restore-open"]').trigger("click");
+      const busyLease = protection.beginOperation("snapshot.inspect");
+      expect(busyLease).not.toBeNull();
+      await wrapper.vm.$nextTick();
+
+      const advance = document.body.querySelector<HTMLButtonElement>(
+        '[data-testid="snapshot-restore-preview"]',
+      )!;
+      expect(advance.disabled).toBe(true);
+      advance.click();
+      expect(wrapper.emitted("action")).toBeUndefined();
+
+      expect(protection.finishOperation(busyLease!)).toBe(true);
+      await wrapper.vm.$nextTick();
+      expect(advance.disabled).toBe(false);
+      advance.click();
+      await wrapper.vm.$nextTick();
+      expect(wrapper.emitted("action")).toEqual([[{
+        method: "snapshot.previewRestore",
+        params: {
+          snapshotId: "77777777-7777-4777-8777-777777777777",
+          targetMode: "currentWorkspace",
+        },
+      }]]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("opens a selected snapshot through the dedicated new-workspace broker", async () => {
     useWorkspaceSessionStore().configureCapabilities([
       "workspace.session.v2",

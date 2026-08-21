@@ -259,7 +259,8 @@ public sealed class HistoryBridgeTests
             new TableWorkspaceService(gateway),
             new FakeDatabasePicker("local://configured"),
             sink,
-            () => null);
+            () => null,
+            NoDatabaseOpenRoute.Instance);
         return (controller, gateway, sink);
     }
 
