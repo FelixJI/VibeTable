@@ -727,7 +727,12 @@ function applyStoragePlan(): void {
       <template #footer>
         <div class="modal-actions">
           <NButton @click="closeRestore">{{ t("common.cancel") }}</NButton>
-          <NButton type="warning" data-testid="snapshot-restore-preview" @click="advanceRestore">
+          <NButton
+            type="warning"
+            data-testid="snapshot-restore-preview"
+            :disabled="busy"
+            @click="advanceRestore"
+          >
             {{ protection.restorePlan ? t("workspaceV2.snapshot.restore") : t("workspaceV2.snapshot.restorePreview") }}
           </NButton>
         </div>
