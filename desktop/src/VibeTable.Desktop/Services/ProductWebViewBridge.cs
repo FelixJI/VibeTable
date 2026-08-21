@@ -92,7 +92,8 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         string? requestId,
         string message,
         string? code = null,
-        string? operation = null)
+        string? operation = null,
+        string? operationId = null)
     {
         _owner.Dispatcher.BeginInvoke(() =>
         {
@@ -104,7 +105,8 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                     requestId,
                     message,
                     code,
-                    operation));
+                    operation,
+                    operationId));
         });
     }
 

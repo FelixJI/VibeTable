@@ -51,6 +51,7 @@ from backend.contracts.lookup import (
 from backend.contracts.query import (
     QueryCursorWindowResult,
     QueryPageResult,
+    QuerySelectionProjectionResult,
     QueryViewResult,
 )
 from backend.contracts.paste import ApplyPasteResult, PastePlan
@@ -397,6 +398,10 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "groupLimit": 100,
         "hasMoreGroups": False,
     }
+    selection_schema = _model_payload(SchemaSnapshotV2)
+    selection_schema["tableId"] = "orders"
+    selection_schema["schemaRevision"] = "schema_0001"
+    selection_schema["dataRevision"] = 1
     specs: dict[str, ResultSpec] = {
         "command.list": _typed(CommandsResult),
         "command.run": _typed(CommandResult),
@@ -523,6 +528,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "path.requestExportTarget": _typed(SessionPathGrant),
         "path.requestImportSource": _typed(SessionPathGrant),
         "path.resolveGrant": _typed(SessionPathGrant),
+        "plugin.cancelInstall": _typed(bool, "Boolean"),
         "plugin.cancelTask": _typed(PluginTaskSnapshot),
         "plugin.commitInstall": _typed(PluginSnapshot),
         "plugin.describeAction": _typed(ActionAvailability),
@@ -572,6 +578,21 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 "querySnapshot": query_page["snapshot"],
             },
             TypeAdapter(QueryCursorWindowResult).json_schema(by_alias=True),
+        ),
+        "query.selectionOpen": _manual(
+            "QuerySelectionProjectionResult",
+            {
+                "schemaSnapshot": selection_schema,
+                "cursorWindow": {
+                    "rows": [{"id": "row-1"}],
+                    "nextCursor": None,
+                    "hasMore": False,
+                    "filteredRows": 1,
+                    "totalRows": 1,
+                    "querySnapshot": query_page["snapshot"],
+                },
+            },
+            TypeAdapter(QuerySelectionProjectionResult).json_schema(by_alias=True),
         ),
         "query.view": _manual(
             "QueryViewResult",

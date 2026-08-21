@@ -20,6 +20,8 @@ public sealed class ProductDataRequestController
     private readonly IWebReplySink _reply;
     private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly TimeSpan _readRecoveryTimeout;
+    private readonly object _gatewayGate = new();
+    private readonly FieldChangeProtectionPlanLedger _fieldChangePlans = new();
     private IProductDataRpcGateway? _gateway;
 
     public ProductDataRequestController(
@@ -33,23 +35,39 @@ public sealed class ProductDataRequestController
     }
 
     public IProductDataRpcGateway? CurrentGateway
-        => Volatile.Read(ref _gateway);
+    {
+        get
+        {
+            lock (_gatewayGate)
+                return _gateway;
+        }
+    }
 
     public static bool Handles(string requestType)
         => ProductDataRpcRegistry.Contains(requestType)
             || RelationLookupRpcRegistry.Contains(requestType);
 
     public void SetGateway(IProductDataRpcGateway gateway)
-        => Interlocked.Exchange(
-            ref _gateway,
-            gateway ?? throw new ArgumentNullException(nameof(gateway)));
+    {
+        ArgumentNullException.ThrowIfNull(gateway);
+        lock (_gatewayGate)
+        {
+            _gateway = gateway;
+            _fieldChangePlans.ResetGateway();
+        }
+    }
 
     public bool ClearGateway(IProductDataRpcGateway expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
-        return ReferenceEquals(
-            Interlocked.CompareExchange(ref _gateway, null, expected),
-            expected);
+        lock (_gatewayGate)
+        {
+            if (!ReferenceEquals(_gateway, expected))
+                return false;
+            _gateway = null;
+            _fieldChangePlans.ResetGateway();
+            return true;
+        }
     }
 
     public Task DispatchAsync(RoutedWebRequest request)
@@ -155,15 +173,18 @@ public sealed class ProductDataRequestController
             epochLease?.Dispose();
             return;
         }
+        (IProductDataRpcGateway? gateway,
+            FieldChangeProtectionLedgerContext protectionContext) =
+            CaptureProductContext(request.Scope);
         try
         {
             JsonElement forwardedPayload = await ProtectMutationAsync(
                 request,
                 endpoint,
-                epochLease).ConfigureAwait(false);
+                epochLease,
+                protectionContext).ConfigureAwait(false);
             if (!IsRequestCurrent(epochLease))
                 return;
-            IProductDataRpcGateway? gateway = CurrentGateway;
             JsonElement result = string.Equals(
                 request.Type,
                 "query.page",
@@ -183,6 +204,10 @@ public sealed class ProductDataRequestController
                                 ?? CancellationToken.None).ConfigureAwait(false);
             if (!IsRequestCurrent(epochLease))
                 return;
+            endpoint.ProtectionPolicy?.ObserveSuccessfulResponse(
+                result,
+                _fieldChangePlans,
+                protectionContext);
             _reply.PostResponse(request.Type, request.RequestId, result);
         }
         catch (OperationCanceledException)
@@ -245,32 +270,39 @@ public sealed class ProductDataRequestController
     private async Task<JsonElement> ProtectMutationAsync(
         RoutedWebRequest request,
         ProductDataRpcEndpoint endpoint,
-        WorkspaceRequestEpochLease? epochLease)
+        WorkspaceRequestEpochLease? epochLease,
+        FieldChangeProtectionLedgerContext protectionContext)
     {
-        if (!endpoint.RequiresProtectionSnapshot
-            || _sessionEnvelopeFilter is null)
-        {
+        ProtectionSnapshotPolicy? policy = endpoint.ProtectionPolicy;
+        if (policy is null)
             return request.Payload;
-        }
-        ProtectionSnapshotReceipt? protection =
-            await _sessionEnvelopeFilter.ProtectCurrentWithReceiptAsync(
-                $"before-{request.Type}",
-                epochLease?.CancellationToken
-                    ?? CancellationToken.None).ConfigureAwait(false);
-        if (protection is null)
-            return request.Payload;
-        string propertyName = request.Type switch
-        {
-            "field.change.plan" => "backupReceipt",
-            "field.change.apply" => "protectionSnapshotId",
-            _ => string.Empty,
-        };
-        return propertyName.Length == 0
-            ? request.Payload
-            : WithStringProperty(
+        ProtectionSnapshotReceipt? protection = null;
+        if (policy.RequiresSnapshot(
                 request.Payload,
-                propertyName,
-                protection.SnapshotId.ToString("D"));
+                _fieldChangePlans,
+                protectionContext)
+            && _sessionEnvelopeFilter is not null)
+        {
+            protection =
+                await _sessionEnvelopeFilter.ProtectCurrentWithReceiptAsync(
+                    $"before-{request.Type}",
+                    epochLease?.CancellationToken
+                        ?? CancellationToken.None).ConfigureAwait(false);
+        }
+        return policy.RewritePayload(request.Payload, protection);
+    }
+
+    private (
+        IProductDataRpcGateway? Gateway,
+        FieldChangeProtectionLedgerContext ProtectionContext)
+        CaptureProductContext(WorkspaceWireScope? scope)
+    {
+        lock (_gatewayGate)
+        {
+            return (
+                _gateway,
+                _fieldChangePlans.BeginRequest(scope));
+        }
     }
 
     private async Task<JsonElement> InvokeRecoverableReadAsync(
@@ -357,20 +389,6 @@ public sealed class ProductDataRequestController
             request.RequestId,
             "Unknown product data request.",
             "UNKNOWN_TYPE");
-
-    private static JsonElement WithStringProperty(
-        JsonElement payload,
-        string propertyName,
-        string value)
-    {
-        Dictionary<string, JsonElement> properties = payload.EnumerateObject()
-            .ToDictionary(
-                property => property.Name,
-                property => property.Value.Clone(),
-                StringComparer.Ordinal);
-        properties[propertyName] = JsonSerializer.SerializeToElement(value);
-        return JsonSerializer.SerializeToElement(properties);
-    }
 
     private static void TraceFailure(string operation, string code)
         => Trace.TraceError(DiagnosticEvent.Failure(

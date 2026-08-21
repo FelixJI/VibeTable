@@ -43,6 +43,7 @@ public sealed class GridStateCoordinator
 
     private readonly ITableRpcGateway _gateway;
     private readonly Action<TableNotification> _notify;
+    private readonly object _databaseGate = new();
 
     private int _generation;
     private CancellationTokenSource? _queryCts;
@@ -52,6 +53,7 @@ public sealed class GridStateCoordinator
 
     private QuerySnapshot? _activeSnapshot;
     private string? _databaseId;
+    private long _databaseGeneration;
     private string? _currentTable;
     private GridState? _confirmedState;
     private string? _confirmedRevision;
@@ -84,7 +86,48 @@ public sealed class GridStateCoordinator
     /// </summary>
     public void SetDatabase(string databaseId)
     {
-        _databaseId = databaseId;
+        lock (_databaseGate)
+        {
+            _databaseGeneration += 1;
+            _databaseId = databaseId;
+        }
+    }
+
+    internal DatabaseBindingAdmission BeginDatabaseBinding(string databaseId)
+    {
+        lock (_databaseGate)
+        {
+            string? previous = _databaseId;
+            _databaseGeneration += 1;
+            _databaseId = databaseId;
+            return new DatabaseBindingAdmission(this, _databaseGeneration, previous);
+        }
+    }
+
+    private void RollbackDatabaseBinding(long generation, string? previous)
+    {
+        lock (_databaseGate)
+        {
+            if (_databaseGeneration != generation) return;
+            _databaseGeneration += 1;
+            _databaseId = previous;
+        }
+    }
+
+    internal sealed class DatabaseBindingAdmission(
+        GridStateCoordinator owner,
+        long generation,
+        string? previous) : IDisposable
+    {
+        private int _completed;
+
+        public void Complete() => Interlocked.Exchange(ref _completed, 1);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) == 0)
+                owner.RollbackDatabaseBinding(generation, previous);
+        }
     }
 
     /// <summary>

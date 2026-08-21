@@ -106,6 +106,14 @@ public interface ITableRpcGateway
         JsonElement query,
         CancellationToken token);
 
+    /// <summary>
+    /// Opens a table selection as one revision-matched schema/window projection.
+    /// </summary>
+    Task<TableSelectionProjection> OpenTableSelectionAsync(
+        string table,
+        JsonElement query,
+        CancellationToken token);
+
     Task<TablePage> FetchTableCursorAsync(
         string cursor,
         CancellationToken token);

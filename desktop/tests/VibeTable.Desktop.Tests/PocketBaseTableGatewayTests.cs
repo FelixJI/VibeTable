@@ -561,11 +561,12 @@ public sealed class PocketBaseTableGatewayTests
     }
 
     [TestMethod]
-    public async Task CursorWindowsPreserveOpaqueAstAndContinueWithOpaqueToken()
+    public async Task ActiveCursorOpenUsesAtomicProjectionAndContinuesWithOpaqueToken()
     {
         var transport = new ProductTransport();
-        transport.Respond("schema.getTable", Schema("orders"));
-        transport.Respond("query.cursorOpen", CursorWindow("row-1", "opaque-2", true));
+        transport.Respond(
+            "query.selectionOpen",
+            SelectionProjectionJson("schema_0001", 1, "row-1", "opaque-2", true));
         transport.Respond("query.cursorFetch", CursorWindow("row-2", null, false));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
@@ -584,11 +585,139 @@ public sealed class PocketBaseTableGatewayTests
         Assert.AreEqual("row-2", second.Rows[0]["rowKey"]);
         Assert.IsFalse(second.HasMore);
         CollectionAssert.AreEqual(
-            new[] { "schema.getTable", "query.cursorOpen", "query.cursorFetch" },
+            new[] { "query.selectionOpen", "query.cursorFetch" },
             transport.Methods);
         StringAssert.Contains(transport.Serialized, "\"operator\":\"raw_sql\"");
         StringAssert.Contains(transport.Serialized, "\"cursor\":\"opaque-2\"");
         Assert.IsFalse(transport.Serialized.Contains("\"groups\"", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task OlderLateSelectionCannotDowngradeTheSchemaCache()
+    {
+        var transport = new ProductTransport();
+        var releaseOld = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RespondAfter(
+            "query.selectionOpen",
+            SelectionProjectionJson("schema_0001", 1, "row-old", null, false),
+            releaseOld.Task);
+        transport.Respond(
+            "query.selectionOpen",
+            SelectionProjectionJson("schema_0002", 2, "row-new", null, false));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+        using var query = JsonDocument.Parse("""{"filters":[],"sorts":[],"limit":500}""");
+
+        Task<TableSelectionProjection> old = gateway.OpenTableSelectionAsync(
+            "orders", query.RootElement, CancellationToken.None);
+        await transport.WaitForMethodCountAsync(1);
+        TableSelectionProjection newer = await gateway.OpenTableSelectionAsync(
+            "orders", query.RootElement, CancellationToken.None);
+        releaseOld.SetResult();
+        TableSelectionProjection older = await old;
+        EditSchemaResult cached = await gateway.GetEditSchemaAsync(
+            "orders", CancellationToken.None);
+
+        Assert.AreEqual("schema_0002", newer.EditSchema.SchemaRevision);
+        Assert.AreEqual("schema_0001", older.EditSchema.SchemaRevision);
+        Assert.AreEqual("schema_0002", cached.SchemaRevision);
+        CollectionAssert.AreEqual(
+            new[] { "query.selectionOpen", "query.selectionOpen" },
+            transport.Methods);
+    }
+
+    [TestMethod]
+    public async Task OlderLateSchemaReadCannotDowngradeSelectionSchemaCache()
+    {
+        var transport = new ProductTransport();
+        var releaseOldSchema = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RespondAfter(
+            "schema.getTable",
+            Schema("orders"),
+            releaseOldSchema.Task);
+        transport.Respond(
+            "query.selectionOpen",
+            SelectionProjectionJson("schema_0002", 2, "row-new", null, false));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+        using var query = JsonDocument.Parse("""{"filters":[],"sorts":[],"limit":500}""");
+
+        Task<EditSchemaResult> oldRead = gateway.GetEditSchemaAsync(
+            "orders", CancellationToken.None);
+        await transport.WaitForMethodCountAsync(1);
+        TableSelectionProjection newer = await gateway.OpenTableSelectionAsync(
+            "orders", query.RootElement, CancellationToken.None);
+        releaseOldSchema.SetResult();
+        EditSchemaResult completedOldRead = await oldRead;
+        EditSchemaResult cached = await gateway.GetEditSchemaAsync(
+            "orders", CancellationToken.None);
+
+        Assert.AreEqual("schema_0002", newer.EditSchema.SchemaRevision);
+        Assert.AreEqual("schema_0002", completedOldRead.SchemaRevision);
+        Assert.AreEqual("schema_0002", cached.SchemaRevision);
+        CollectionAssert.AreEqual(
+            new[] { "schema.getTable", "query.selectionOpen" },
+            transport.Methods);
+    }
+
+    [TestMethod]
+    public async Task SelectionProjectionUsesOneRevisionMatchedProductRpc()
+    {
+        var transport = new ProductTransport();
+        transport.Respond(
+            "query.selectionOpen",
+            JsonSerializer.Serialize(new
+            {
+                schemaSnapshot = JsonNode.Parse(Schema("orders")),
+                cursorWindow = JsonNode.Parse(CursorWindow("row-1", "opaque-2", true)),
+            }));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+        using var query = JsonDocument.Parse(
+            """{"filters":[],"sorts":[],"limit":500,"groups":[],"summaries":[]}""");
+
+        TableSelectionProjection projection = await gateway.OpenTableSelectionAsync(
+            "orders", query.RootElement, CancellationToken.None);
+
+        Assert.AreEqual("schema_0001", projection.Page.QuerySnapshot!.SchemaRevision);
+        Assert.AreEqual("schema_0001", projection.EditSchema.SchemaRevision);
+        Assert.AreEqual("row-1", projection.Page.Rows[0]["rowKey"]);
+        CollectionAssert.AreEqual(new[] { "query.selectionOpen" }, transport.Methods);
+    }
+
+    [TestMethod]
+    public async Task SelectionProjectionRejectsMismatchedDataRevisionWithoutRetry()
+    {
+        var transport = new ProductTransport();
+        string mismatchedWindow = CursorWindow("row-1", null, false)
+            .Replace("\"dataRevision\":1", "\"dataRevision\":2", StringComparison.Ordinal);
+        transport.Respond(
+            "query.selectionOpen",
+            JsonSerializer.Serialize(new
+            {
+                schemaSnapshot = JsonNode.Parse(Schema("orders")),
+                cursorWindow = JsonNode.Parse(mismatchedWindow),
+            }));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client),
+            new JsonRpcWorkspaceSupportGateway(client));
+        using var query = JsonDocument.Parse(
+            """{"filters":[],"sorts":[],"limit":500}""");
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            gateway.OpenTableSelectionAsync(
+                "orders", query.RootElement, CancellationToken.None));
+
+        CollectionAssert.AreEqual(new[] { "query.selectionOpen" }, transport.Methods);
     }
 
     [TestMethod]
@@ -632,6 +761,27 @@ public sealed class PocketBaseTableGatewayTests
             nextCursor,
             hasMore,
         });
+
+    private static string SelectionProjectionJson(
+        string schemaRevision,
+        int dataRevision,
+        string rowId,
+        string? nextCursor,
+        bool hasMore)
+    {
+        JsonObject schema = JsonNode.Parse(Schema("orders"))!.AsObject();
+        schema["schemaRevision"] = schemaRevision;
+        schema["dataRevision"] = dataRevision;
+        JsonObject cursor = JsonNode.Parse(CursorWindow(rowId, nextCursor, hasMore))!.AsObject();
+        JsonObject snapshot = cursor["querySnapshot"]!.AsObject();
+        snapshot["schemaRevision"] = schemaRevision;
+        snapshot["dataRevision"] = dataRevision;
+        return new JsonObject
+        {
+            ["schemaSnapshot"] = schema,
+            ["cursorWindow"] = cursor,
+        }.ToJsonString();
+    }
 
     private static Task<TablePage> QueryViewAsync(
         PocketBaseTableGateway gateway,
@@ -786,31 +936,35 @@ public sealed class PocketBaseTableGatewayTests
     {
         private readonly Channel<JsonElement?> _incoming =
             Channel.CreateUnbounded<JsonElement?>();
-        private readonly Dictionary<string, Queue<(string Json, bool IsError)>> _responses =
+        private readonly Dictionary<string, Queue<(string Json, bool IsError, Task? Gate)>> _responses =
             new(StringComparer.Ordinal);
+        private TaskCompletionSource _methodObserved = NewMethodObserved();
 
         public List<string> Methods { get; } = [];
         public string Serialized { get; private set; } = "";
 
         public void Respond(string method, string result)
+            => RespondAfter(method, result, Task.CompletedTask);
+
+        public void RespondAfter(string method, string result, Task gate)
         {
             if (!_responses.TryGetValue(
                     method,
-                    out Queue<(string Json, bool IsError)>? queue))
+                    out Queue<(string Json, bool IsError, Task? Gate)>? queue))
             {
-                queue = new Queue<(string Json, bool IsError)>();
+                queue = new Queue<(string Json, bool IsError, Task? Gate)>();
                 _responses[method] = queue;
             }
-            queue.Enqueue((result, false));
+            queue.Enqueue((result, false, gate));
         }
 
         public void RespondError(string method, int code, string message, string data)
         {
             if (!_responses.TryGetValue(
                     method,
-                    out Queue<(string Json, bool IsError)>? queue))
+                    out Queue<(string Json, bool IsError, Task? Gate)>? queue))
             {
-                queue = new Queue<(string Json, bool IsError)>();
+                queue = new Queue<(string Json, bool IsError, Task? Gate)>();
                 _responses[method] = queue;
             }
             queue.Enqueue((
@@ -820,7 +974,20 @@ public sealed class PocketBaseTableGatewayTests
                     message,
                     data = JsonDocument.Parse(data).RootElement.Clone(),
                 }),
-                true));
+                true,
+                null));
+        }
+
+        public async Task WaitForMethodCountAsync(int count)
+        {
+            while (Methods.Count < count)
+            {
+                Task observed = _methodObserved.Task;
+                if (Methods.Count < count)
+                {
+                    await observed.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+            }
         }
 
         public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
@@ -833,14 +1000,17 @@ public sealed class PocketBaseTableGatewayTests
             string id = request.RootElement.GetProperty("id").GetString()!;
             string method = request.RootElement.GetProperty("method").GetString()!;
             Methods.Add(method);
+            TaskCompletionSource observed = _methodObserved;
+            _methodObserved = NewMethodObserved();
+            observed.TrySetResult();
             if (!_responses.TryGetValue(
                     method,
-                    out Queue<(string Json, bool IsError)>? queue)
+                    out Queue<(string Json, bool IsError, Task? Gate)>? queue)
                 || queue.Count == 0)
             {
                 throw new InvalidOperationException($"No response for {method}.");
             }
-            (string json, bool isError) = queue.Dequeue();
+            (string json, bool isError, Task? gate) = queue.Dequeue();
             using var result = JsonDocument.Parse(json);
             JsonElement response = isError
                 ? JsonSerializer.SerializeToElement(new
@@ -855,9 +1025,25 @@ public sealed class PocketBaseTableGatewayTests
                     id,
                     result = result.RootElement.Clone(),
                 });
-            _incoming.Writer.TryWrite(response);
+            if (gate is null || gate.IsCompletedSuccessfully)
+            {
+                _incoming.Writer.TryWrite(response);
+            }
+            else
+            {
+                _ = CompleteAfterAsync(gate, response);
+            }
             return Task.CompletedTask;
         }
+
+        private async Task CompleteAfterAsync(Task gate, JsonElement response)
+        {
+            await gate.ConfigureAwait(false);
+            _incoming.Writer.TryWrite(response);
+        }
+
+        private static TaskCompletionSource NewMethodObserved()
+            => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ValueTask DisposeAsync()
         {

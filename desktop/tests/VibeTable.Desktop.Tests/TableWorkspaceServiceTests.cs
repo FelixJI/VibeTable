@@ -103,6 +103,8 @@ public sealed class TableWorkspaceServiceTests
             NextCursor = "opaque-2",
             HasMore = true,
         };
+        gateway.SelectionProjectionResults["t"] = Projection(
+            "t", gateway.QueryWindowResults["t"]);
         var service = new TableWorkspaceService(gateway);
         var notifications = new List<TableNotification>();
         service.Notification += n => notifications.Add(n);
@@ -133,8 +135,12 @@ public sealed class TableWorkspaceServiceTests
                 new[] { "alpha", "beta" },
                 Array.Empty<string>(),
                 TestDisplayNames.For("alpha", "beta"));
-        gateway.TablePages["alpha"] = BuildPages("alpha", totalRows: 1, pageSize: 500);
-        gateway.TablePages["beta"] = BuildPages("beta", totalRows: 1, pageSize: 500);
+        var alphaPending = new TaskCompletionSource<TableSelectionProjection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        gateway.SelectionOpenOverride = (table, _, _) => table == "alpha"
+            ? alphaPending.Task
+            : Task.FromResult(Projection(
+                "beta", BuildPages("beta", totalRows: 1, pageSize: 500)[0]));
         var service = new TableWorkspaceService(gateway);
         var notifications = new List<TableNotification>();
         service.Notification += n => notifications.Add(n);
@@ -142,9 +148,6 @@ public sealed class TableWorkspaceServiceTests
         await service.OpenDatabaseAsync("db");
 
         // Block alpha's window read until we release it.
-        var releaseAlpha = new TaskCompletionSource<bool>();
-        gateway.SetWindowReadGate("alpha", releaseAlpha.Task);
-
         var selectAlpha = service.SelectTableAsync("alpha");
         // Let alpha's first read be issued and block on the gate.
         await Task.Yield();
@@ -155,7 +158,8 @@ public sealed class TableWorkspaceServiceTests
         await service.SelectTableAsync("beta");
 
         // Now release alpha's stalled read. The window it returns MUST be dropped.
-        releaseAlpha.SetResult(true);
+        alphaPending.SetResult(Projection(
+            "alpha", BuildPages("alpha", totalRows: 1, pageSize: 500)[0]));
         await selectAlpha; // alpha's select completes (cancelled/suppressed)
 
         var ready = notifications
@@ -171,13 +175,13 @@ public sealed class TableWorkspaceServiceTests
     {
         var gateway = SelectionGateway("alpha");
         int attempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             attempts += 1;
             return attempts == 1
-                ? Task.FromException<TablePage>(
+                ? Task.FromException<TableSelectionProjection>(
                     new BackendUnavailableException("sidecar restarting"))
-                : Task.FromResult(EmptyPage(table));
+                : Task.FromResult(Projection(table));
         };
         var time = new ManualTimeProvider();
         var service = new TableWorkspaceService(
@@ -204,17 +208,17 @@ public sealed class TableWorkspaceServiceTests
     public async Task SelectTableAsync_RecoveryDeadlineDoesNotTrustAttemptCancellation()
     {
         var gateway = SelectionGateway("alpha");
-        var lateAttempt = new TaskCompletionSource<TablePage>(
+        var lateAttempt = new TaskCompletionSource<TableSelectionProjection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var attemptStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         int attempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             attempts += 1;
             if (attempts == 1)
             {
-                return Task.FromException<TablePage>(
+                return Task.FromException<TableSelectionProjection>(
                     new BackendUnavailableException("sidecar restarting"));
             }
             attemptStarted.TrySetResult();
@@ -243,7 +247,7 @@ public sealed class TableWorkspaceServiceTests
         Assert.AreEqual(2, attempts);
         Assert.AreEqual(0, notifications.Count);
 
-        lateAttempt.SetResult(EmptyPage("alpha"));
+        lateAttempt.SetResult(Projection("alpha"));
         await Task.Yield();
         Assert.AreEqual(0, notifications.Count,
             "a late recovery result must not publish after the stable deadline outcome");
@@ -253,23 +257,23 @@ public sealed class TableWorkspaceServiceTests
     public async Task SelectTableAsync_DeadlineWinsWhenRecoveryCompletesOnSameTick()
     {
         var gateway = SelectionGateway("alpha");
-        var recoveryAttempt = new TaskCompletionSource<TablePage>(
+        var recoveryAttempt = new TaskCompletionSource<TableSelectionProjection>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var attemptStarted = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var time = new ManualTimeProvider();
         int attempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             attempts += 1;
             if (attempts == 1)
             {
-                return Task.FromException<TablePage>(
+                return Task.FromException<TableSelectionProjection>(
                     new BackendUnavailableException("sidecar restarting"));
             }
             attemptStarted.TrySetResult();
             time.Advance(TimeSpan.FromMilliseconds(2_975));
-            recoveryAttempt.TrySetResult(EmptyPage(table));
+            recoveryAttempt.TrySetResult(Projection(table));
             return recoveryAttempt.Task;
         };
         var service = new TableWorkspaceService(
@@ -301,20 +305,20 @@ public sealed class TableWorkspaceServiceTests
         TableWorkspaceService? service = null;
         Task<bool>? betaSelection = null;
         int alphaAttempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             if (table == "beta")
-                return Task.FromResult(EmptyPage(table));
+                return Task.FromResult(Projection(table));
             alphaAttempts += 1;
             if (alphaAttempts == 1)
             {
-                return Task.FromException<TablePage>(
+                return Task.FromException<TableSelectionProjection>(
                     new BackendUnavailableException("sidecar restarting"));
             }
 
             betaSelection = service!.SelectTableAsync("beta");
             time.Advance(TimeSpan.FromMilliseconds(2_975));
-            return Task.FromResult(EmptyPage(table));
+            return Task.FromResult(Projection(table));
         };
         service = new TableWorkspaceService(
             gateway,
@@ -342,10 +346,10 @@ public sealed class TableWorkspaceServiceTests
     {
         var gateway = SelectionGateway("alpha");
         int attempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             attempts += 1;
-            return Task.FromResult(EmptyPage(table));
+            return Task.FromResult(Projection(table));
         };
         var time = new ManualTimeProvider();
         var service = new TableWorkspaceService(
@@ -371,10 +375,10 @@ public sealed class TableWorkspaceServiceTests
     {
         var gateway = SelectionGateway("alpha");
         int attempts = 0;
-        gateway.CursorOpenOverride = (_, _, _) =>
+        gateway.SelectionOpenOverride = (_, _, _) =>
         {
             attempts += 1;
-            return Task.FromException<TablePage>(
+            return Task.FromException<TableSelectionProjection>(
                 new BackendUnavailableException("sidecar restarting"));
         };
         var time = new ManualTimeProvider();
@@ -412,7 +416,7 @@ public sealed class TableWorkspaceServiceTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var time = new ManualTimeProvider();
         int attempts = 0;
-        gateway.CursorOpenOverride = async (table, _, token) =>
+        gateway.SelectionOpenOverride = async (table, _, token) =>
         {
             attempts += 1;
             if (attempts == 1)
@@ -421,7 +425,7 @@ public sealed class TableWorkspaceServiceTests
                 throw new BackendUnavailableException("sidecar restarting");
             }
             await Task.Delay(TimeSpan.FromMilliseconds(118), time, token);
-            return EmptyPage(table);
+            return Projection(table);
         };
         var service = new TableWorkspaceService(
             gateway,
@@ -460,15 +464,15 @@ public sealed class TableWorkspaceServiceTests
     {
         var gateway = SelectionGateway("alpha", "beta");
         int alphaAttempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             if (table == "alpha")
             {
                 alphaAttempts += 1;
-                return Task.FromException<TablePage>(
+                return Task.FromException<TableSelectionProjection>(
                     new BackendUnavailableException("sidecar restarting"));
             }
-            return Task.FromResult(EmptyPage(table));
+            return Task.FromResult(Projection(table));
         };
         var time = new ManualTimeProvider();
         var service = new TableWorkspaceService(
@@ -498,15 +502,15 @@ public sealed class TableWorkspaceServiceTests
     {
         var gateway = SelectionGateway("alpha");
         int attempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             attempts += 1;
             return attempts == 1
-                ? Task.FromException<TablePage>(RemoteFailure(
+                ? Task.FromException<TableSelectionProjection>(RemoteFailure(
                     -32150,
                     "product unavailable",
                     "sidecar.unavailable"))
-                : Task.FromResult(EmptyPage(table));
+                : Task.FromResult(Projection(table));
         };
         var time = new ManualTimeProvider();
         var service = new TableWorkspaceService(
@@ -529,13 +533,13 @@ public sealed class TableWorkspaceServiceTests
     {
         var gateway = SelectionGateway("alpha");
         int attempts = 0;
-        gateway.CursorOpenOverride = (table, _, _) =>
+        gateway.SelectionOpenOverride = (table, _, _) =>
         {
             attempts += 1;
             return attempts == 1
-                ? Task.FromException<TablePage>(
+                ? Task.FromException<TableSelectionProjection>(
                     new ObjectDisposedException("sidecar transport"))
-                : Task.FromResult(EmptyPage(table));
+                : Task.FromResult(Projection(table));
         };
         var time = new ManualTimeProvider();
         var service = new TableWorkspaceService(
@@ -558,8 +562,8 @@ public sealed class TableWorkspaceServiceTests
     public async Task SelectTableAsync_DoesNotRetryOtherProductRemoteFailure()
     {
         var gateway = SelectionGateway("alpha");
-        gateway.CursorOpenOverride = (_, _, _) =>
-            Task.FromException<TablePage>(RemoteFailure(
+        gateway.SelectionOpenOverride = (_, _, _) =>
+            Task.FromException<TableSelectionProjection>(RemoteFailure(
                 -32150,
                 "table missing",
                 "table.not_found"));
@@ -582,8 +586,8 @@ public sealed class TableWorkspaceServiceTests
     public async Task SelectTableAsync_DoesNotRetryUnavailableDataWithWrongOuterCode()
     {
         var gateway = SelectionGateway("alpha");
-        gateway.CursorOpenOverride = (_, _, _) =>
-            Task.FromException<TablePage>(RemoteFailure(
+        gateway.SelectionOpenOverride = (_, _, _) =>
+            Task.FromException<TableSelectionProjection>(RemoteFailure(
                 -32603,
                 "wrong outer code",
                 "sidecar.unavailable"));
@@ -612,6 +616,7 @@ public sealed class TableWorkspaceServiceTests
                 Array.Empty<string>(),
                 TestDisplayNames.For("t"));
         gateway.TablePages["t"] = BuildPages("t", totalRows: 1_200, pageSize: 500);
+        gateway.SelectionProjectionResults["t"] = Projection("t", gateway.TablePages["t"][0]);
         var service = new TableWorkspaceService(gateway);
 
         await service.OpenDatabaseAsync("db");
@@ -645,6 +650,8 @@ public sealed class TableWorkspaceServiceTests
                 Array.Empty<string>(),
                 TestDisplayNames.For("old"));
         gateway.TablePages["fresh"] = BuildPages("fresh", totalRows: 1, pageSize: 500);
+        gateway.SelectionProjectionResults["fresh"] = Projection(
+            "fresh", gateway.TablePages["fresh"][0]);
         var service = new TableWorkspaceService(gateway);
         await service.OpenDatabaseAsync("db");
 
@@ -676,6 +683,7 @@ public sealed class TableWorkspaceServiceTests
         await service.OpenDatabaseAsync("db");
 
         service.UpdateKnownTables(new[] { "real", "vibetable_settings" });
+        gateway.SelectionProjectionResults["real"] = Projection("real");
 
         await service.SelectTableAsync("real"); // user table: OK
         await Assert.ThrowsExactlyAsync<ArgumentException>(
@@ -700,6 +708,10 @@ public sealed class TableWorkspaceServiceTests
             TestDisplayNames.For("alpha", "vibetable_settings", "beta"));
         gateway.TablePages["alpha"] = BuildPages("alpha", totalRows: 1, pageSize: 500);
         gateway.TablePages["beta"] = BuildPages("beta", totalRows: 1, pageSize: 500);
+        gateway.SelectionProjectionResults["alpha"] = Projection(
+            "alpha", gateway.TablePages["alpha"][0]);
+        gateway.SelectionProjectionResults["beta"] = Projection(
+            "beta", gateway.TablePages["beta"][0]);
         var service = new TableWorkspaceService(gateway);
         await service.OpenDatabaseAsync("db");
 
@@ -767,8 +779,26 @@ public sealed class TableWorkspaceServiceTests
             tables,
             Array.Empty<string>(),
             TestDisplayNames.For(tables));
+        foreach (string table in tables)
+        {
+            gateway.SelectionProjectionResults[table] = Projection(table);
+        }
         return gateway;
     }
+
+    private static TableSelectionProjection Projection(string table)
+        => Projection(table, EmptyPage(table));
+
+    private static TableSelectionProjection Projection(string table, TablePage page)
+        => new(
+            page,
+            new EditSchemaResult(
+                table,
+                "schema_0001",
+                "fake-row-key",
+                RowKeyStable: true,
+                Editable: false,
+                Array.Empty<ColumnEditSchema>()));
 
     private static TablePage EmptyPage(string table)
         => new(

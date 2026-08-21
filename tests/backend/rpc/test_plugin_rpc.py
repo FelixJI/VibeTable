@@ -28,6 +28,7 @@ def test_plugin_rpc_registration_is_closed_and_complete() -> None:
         "plugin.listPendingCleanup",
         "plugin.inspectInstall",
         "plugin.commitInstall",
+        "plugin.cancelInstall",
         "plugin.setEnabled",
         "plugin.upgrade",
         "plugin.rollback",
