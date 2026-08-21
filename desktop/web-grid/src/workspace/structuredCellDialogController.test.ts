@@ -1,3 +1,4 @@
+import { flushPromises } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { describe, expect, it, vi } from "vitest";
 
@@ -395,6 +396,8 @@ describe("structured cell dialog controller", () => {
     await controller.dispatch({ type: "attachment.close" });
     modal.beforeLeave();
     modal.contentUnmountDirective.unmounted?.(detachedContent, {} as never, {} as never, null);
+    await nextTick();
+    await flushPromises();
     expect(secondFocus).toHaveBeenCalledTimes(1);
     expect(reportError).not.toHaveBeenCalled();
 

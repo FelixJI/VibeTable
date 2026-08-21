@@ -5,6 +5,7 @@ import {
   h,
   nextTick,
   onBeforeUnmount,
+  onUnmounted,
   ref,
   watch,
   withDirectives,
@@ -244,12 +245,84 @@ describe("Naive modal content-unmount adapter", () => {
     adapter.beforeLeave();
     wrapper.vm.show = false;
     await nextTick();
+    await flushPromises();
 
     expect(release).toHaveBeenCalledOnce();
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("releases a claimed close at most once across duplicate unmounted hooks", () => {
+  it("keeps restored focus after the parent focus owner finishes unmounting", async () => {
+    document.body.tabIndex = -1;
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const release = vi.fn(() => trigger.focus());
+    const adapter = createNaiveModalContentUnmountAdapter({
+      claimRelease: () => ({ release }),
+      reportError: vi.fn(),
+    });
+    const FocusOwner = defineComponent({
+      setup() {
+        onUnmounted(() => document.body.focus());
+        return () => withDirectives(h("div"), [[adapter.contentUnmountDirective]]);
+      },
+    });
+    const Harness = defineComponent({
+      setup() {
+        const show = ref(true);
+        return { show };
+      },
+      render() {
+        return this.show ? h(FocusOwner) : null;
+      },
+    });
+    const wrapper = mount(Harness, { attachTo: document.body });
+    wrappers.push(wrapper);
+
+    adapter.beforeLeave();
+    wrapper.vm.show = false;
+    await nextTick();
+    await flushPromises();
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("cancels a queued release when the modal reopens during the post-flush barrier", async () => {
+    const release = vi.fn();
+    const adapter = createNaiveModalContentUnmountAdapter({
+      claimRelease: () => ({ release }),
+      reportError: vi.fn(),
+    });
+    const content = document.createElement("div");
+
+    adapter.beforeLeave();
+    adapter.contentUnmountDirective.unmounted?.(content, {} as never, {} as never, null);
+    adapter.showChanged(true);
+    await nextTick();
+    await flushPromises();
+
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("cancels a queued release when the adapter is disposed during the post-flush barrier", async () => {
+    const release = vi.fn();
+    const adapter = createNaiveModalContentUnmountAdapter({
+      claimRelease: () => ({ release }),
+      reportError: vi.fn(),
+    });
+    const content = document.createElement("div");
+
+    adapter.beforeLeave();
+    adapter.contentUnmountDirective.unmounted?.(content, {} as never, {} as never, null);
+    adapter.dispose();
+    await nextTick();
+    await flushPromises();
+
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("releases a claimed close at most once across duplicate unmounted hooks", async () => {
     const release = vi.fn();
     const adapter = createNaiveModalContentUnmountAdapter({
       claimRelease: () => ({ release }),
@@ -260,6 +333,8 @@ describe("Naive modal content-unmount adapter", () => {
     adapter.beforeLeave();
     adapter.contentUnmountDirective.unmounted?.(content, {} as never, {} as never, null);
     adapter.contentUnmountDirective.unmounted?.(content, {} as never, {} as never, null);
+    await nextTick();
+    await flushPromises();
 
     expect(release).toHaveBeenCalledOnce();
   });
@@ -299,7 +374,7 @@ describe("Naive modal content-unmount adapter", () => {
     expect(release).not.toHaveBeenCalled();
   });
 
-  it("reports a synchronous close release failure", () => {
+  it("reports a synchronous close release failure", async () => {
     const failure = new Error("sync release failed");
     const reportError = vi.fn();
     const adapter = createNaiveModalContentUnmountAdapter({
@@ -316,6 +391,8 @@ describe("Naive modal content-unmount adapter", () => {
       {} as never,
       null,
     );
+    await nextTick();
+    await flushPromises();
 
     expect(reportError).toHaveBeenCalledWith(failure);
   });
@@ -337,7 +414,8 @@ describe("Naive modal content-unmount adapter", () => {
       {} as never,
       null,
     );
-    await Promise.resolve();
+    await nextTick();
+    await flushPromises();
 
     expect(reportError).toHaveBeenCalledWith(failure);
   });
