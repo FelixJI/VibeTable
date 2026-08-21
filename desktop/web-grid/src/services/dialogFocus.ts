@@ -2,7 +2,27 @@ export interface StructuredDialogFocusTarget {
   element: HTMLElement | null;
   rowKey: string | number;
   field: string;
+  target?: StructuredDialogFocusDiagnosticTarget;
 }
+
+export type StructuredDialogFocusDiagnosticTarget = "attachment" | "json";
+export type StructuredDialogFocusPendingReason = "grid" | "row" | "cell" | "focus-rejected";
+export type StructuredDialogFocusCancellationReason =
+  | "scope"
+  | "window"
+  | "external"
+  | "disposed"
+  | "stale";
+
+export type StructuredDialogFocusOutcome = {
+  readonly leaseId: number;
+  readonly target?: StructuredDialogFocusDiagnosticTarget;
+} & (
+  | { readonly state: "claimed" | "released" }
+  | { readonly state: "restored"; readonly via: "captured" | "reprojected" }
+  | { readonly state: "pending"; readonly reason: StructuredDialogFocusPendingReason }
+  | { readonly state: "cancelled"; readonly reason: StructuredDialogFocusCancellationReason }
+);
 
 interface StructuredCellLike {
   getElement?: () => HTMLElement;
@@ -39,9 +59,32 @@ export interface StructuredDialogFocusDependencies {
   readonly getGrid: () => StructuredGridLike | null;
   readonly getScope: () => StructuredGridFocusScope;
   readonly subscribeScope: (listener: () => void) => () => void;
+  readonly reportOutcome?: (outcome: StructuredDialogFocusOutcome) => void;
 }
 
-type StructuredDialogFocusAttempt = "restored" | "pending" | "missing";
+type StructuredDialogFocusOutcomeBody =
+  | { readonly state: "claimed" | "released" }
+  | { readonly state: "restored"; readonly via: "captured" | "reprojected" }
+  | { readonly state: "pending"; readonly reason: StructuredDialogFocusPendingReason }
+  | { readonly state: "cancelled"; readonly reason: StructuredDialogFocusCancellationReason };
+
+type StructuredDialogFocusAttempt = Extract<
+  StructuredDialogFocusOutcomeBody,
+  { state: "restored" | "pending" }
+>;
+
+type StructuredDialogFocusResolution =
+  | { readonly status: "grid" | "row" }
+  | { readonly status: "resolved"; readonly element: HTMLElement | null };
+
+interface InternalStructuredDialogFocusLease extends StructuredDialogFocusLease {
+  cancelFor(reason: StructuredDialogFocusCancellationReason): void;
+}
+
+// The E2E ledger survives WorkspaceView/service recreation within one page.
+// Keep lease identities monotonic for the same lifetime so a bounded visible
+// window never aliases a new lease to an older producer instance.
+let nextStructuredDialogFocusLeaseId = 0;
 
 function sameScope(left: StructuredGridFocusScope, right: StructuredGridFocusScope): boolean {
   return left.workspaceId === right.workspaceId
@@ -52,60 +95,78 @@ function sameScope(left: StructuredGridFocusScope, right: StructuredGridFocusSco
 export function createStructuredDialogFocus(
   dependencies: StructuredDialogFocusDependencies,
 ): StructuredDialogFocus {
-  let current: StructuredDialogFocusLease | null = null;
+  let current: InternalStructuredDialogFocusLease | null = null;
   let disposed = false;
-  const stopScope = dependencies.subscribeScope(() => current?.cancel());
+  const stopScope = dependencies.subscribeScope(() => current?.cancelFor("scope"));
 
   function capture(target: StructuredDialogFocusTarget): StructuredDialogFocusLease {
-    current?.cancel();
+    current?.cancelFor("stale");
     const scope = dependencies.getScope();
+    const leaseId = ++nextStructuredDialogFocusLeaseId;
     let cancelled = false;
     let restoreRequested = false;
     let boundGrid: StructuredGridLike | null = null;
     let observingDocumentFocus = false;
     let observingWindowFocus = false;
     let restoringFocus = false;
-    // A missing row is a reprojection gap only after this lease has resolved
-    // its logical target once; an initially unknown row still fails closed.
-    let targetObserved = false;
+    let terminalReported = false;
+    const captured = resolveStructuredDialogFocusTarget(dependencies.getGrid(), target);
+    // Only an exact, connected current cell can authorize later row/grid gaps.
+    // A stale trigger or initially absent identity remains fail-closed.
+    const captureVerified = target.element?.isConnected === true
+      && captured.status === "resolved"
+      && captured.element === target.element;
+
+    const report = (outcome: StructuredDialogFocusOutcomeBody): void => {
+      if (terminalReported) return;
+      if (outcome.state === "restored" || outcome.state === "cancelled") {
+        terminalReported = true;
+      }
+      dependencies.reportOutcome?.({
+        leaseId,
+        ...(target.target ? { target: target.target } : {}),
+        ...outcome,
+      } as StructuredDialogFocusOutcome);
+    };
 
     const attemptRestore = (grid: StructuredGridLike | null): void => {
       restoringFocus = true;
       try {
         const attempt = attemptStructuredDialogFocus(grid, target);
-        if (attempt === "missing" && !targetObserved) {
-          lease.cancel();
-          return;
-        }
-        if (attempt !== "missing") targetObserved = true;
+        report(attempt);
       } finally {
         restoringFocus = false;
       }
     };
 
     const onDocumentFocusIn = () => {
-      if (!restoringFocus) lease.cancel();
+      if (!restoringFocus) lease.cancelFor("external");
     };
 
     const onRenderComplete = () => {
       if (cancelled || disposed || current !== lease) return;
       if (!sameScope(scope, dependencies.getScope())) {
-        lease.cancel();
+        lease.cancelFor("scope");
         return;
       }
       attemptRestore(dependencies.getGrid());
     };
 
-    const onWindowBlur = () => lease.cancel();
+    const onWindowBlur = () => lease.cancelFor("window");
 
-    const lease: StructuredDialogFocusLease = {
+    const lease: InternalStructuredDialogFocusLease = {
       restore(): void {
         if (cancelled || disposed || restoreRequested || current !== lease) return;
+        restoreRequested = true;
+        report({ state: "released" });
         if (!sameScope(scope, dependencies.getScope())) {
-          lease.cancel();
+          lease.cancelFor("scope");
           return;
         }
-        restoreRequested = true;
+        if (!captureVerified) {
+          lease.cancelFor("stale");
+          return;
+        }
         boundGrid = dependencies.getGrid();
         boundGrid?.on?.("renderComplete", onRenderComplete);
         attemptRestore(boundGrid);
@@ -114,8 +175,12 @@ export function createStructuredDialogFocus(
         observingDocumentFocus = true;
       },
       cancel(): void {
+        lease.cancelFor("stale");
+      },
+      cancelFor(reason): void {
         if (cancelled) return;
         cancelled = true;
+        report({ state: "cancelled", reason });
         boundGrid?.off?.("renderComplete", onRenderComplete);
         if (observingDocumentFocus) {
           document.removeEventListener("focusin", onDocumentFocusIn);
@@ -130,13 +195,14 @@ export function createStructuredDialogFocus(
     current = lease;
     window.addEventListener("blur", onWindowBlur);
     observingWindowFocus = true;
+    report({ state: "claimed" });
     return lease;
   }
 
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    current?.cancel();
+    current?.cancelFor("disposed");
     stopScope();
   }
 
@@ -157,25 +223,48 @@ export function restoreStructuredDialogFocus(
   grid: StructuredGridLike | null,
   target: StructuredDialogFocusTarget | null,
 ): boolean {
-  return attemptStructuredDialogFocus(grid, target) === "restored";
+  return attemptStructuredDialogFocus(grid, target).state === "restored";
 }
 
 function attemptStructuredDialogFocus(
   grid: StructuredGridLike | null,
   target: StructuredDialogFocusTarget | null,
 ): StructuredDialogFocusAttempt {
-  if (!target) return "missing";
-  const rows = grid?.getRows?.() ?? [];
-  const row = rows.find((candidate) => String(candidate.getIndex?.()) === String(target.rowKey));
-  if (!row) return "missing";
-  const fallback = row.getCell?.(target.field)?.getElement?.();
-  const candidates = [target.element, fallback];
+  if (!target) return { state: "pending", reason: "row" };
+  const resolved = resolveStructuredDialogFocusTarget(grid, target);
+  if (resolved.status !== "resolved") {
+    return { state: "pending", reason: resolved.status };
+  }
+  const candidates = [target.element, resolved.element];
   const attempted = new Set<HTMLElement>();
   for (const element of candidates) {
     if (!element?.isConnected || attempted.has(element)) continue;
     attempted.add(element);
     element.focus({ preventScroll: true });
-    if (document.activeElement === element) return "restored";
+    if (document.activeElement === element) {
+      return {
+        state: "restored",
+        via: element === target.element ? "captured" : "reprojected",
+      };
+    }
   }
-  return "pending";
+  return {
+    state: "pending",
+    reason: attempted.size === 0 ? "cell" : "focus-rejected",
+  };
+}
+
+function resolveStructuredDialogFocusTarget(
+  grid: StructuredGridLike | null,
+  target: StructuredDialogFocusTarget,
+): StructuredDialogFocusResolution {
+  if (!grid?.getRows) return { status: "grid" };
+  const rows = grid.getRows();
+  if (!rows) return { status: "grid" };
+  const row = rows.find((candidate) => String(candidate.getIndex?.()) === String(target.rowKey));
+  if (!row) return { status: "row" };
+  return {
+    status: "resolved",
+    element: row.getCell?.(target.field)?.getElement?.() ?? null,
+  };
 }

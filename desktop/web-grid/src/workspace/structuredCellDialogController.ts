@@ -267,6 +267,7 @@ export function createStructuredCellDialogController(
       element: trigger,
       rowKey,
       field: column.name,
+      target: "attachment",
     });
     focused?.blur();
     if (trigger !== focused) trigger?.blur();
@@ -427,6 +428,7 @@ export function createStructuredCellDialogController(
       element: intent.trigger ?? focused,
       rowKey: intent.rowKey,
       field: intent.column.name,
+      target: "json",
     });
     focused?.blur();
     Object.assign(state.json, {

@@ -64,16 +64,22 @@ function deferred<T>() {
 
 function setup(
   request: HostBridge["request"],
-  dialogFocus: StructuredDialogFocus = createStructuredDialogFocus({
+  dialogFocus?: StructuredDialogFocus,
+  resolveCell: (rowKey: string, field: string) => HTMLElement | null = () => null,
+) {
+  const resolvedDialogFocus = dialogFocus ?? createStructuredDialogFocus({
     getGrid: () => ({
       getRows: () => ["row-1", "row-2"].map(rowKey => ({
         getIndex: () => rowKey,
+        getCell: (field: string) => {
+          const element = resolveCell(rowKey, field);
+          return element ? { getElement: () => element } : null;
+        },
       })),
     }),
     getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
     subscribeScope: () => () => undefined,
-  }),
-) {
+  });
   const commitJson = vi.fn();
   const reportError = vi.fn();
   const bridge: StructuredCellBridge = {
@@ -87,12 +93,12 @@ function setup(
       expectedDigest: `sha256:${"a".repeat(64)}`,
     }),
     commitJson,
-    dialogFocus,
+    dialogFocus: resolvedDialogFocus,
     translate: key => key,
     reportError,
     activeElement: () => null,
   });
-  return { controller, commitJson, dialogFocus, reportError };
+  return { controller, commitJson, dialogFocus: resolvedDialogFocus, reportError };
 }
 
 function releaseClose(
@@ -234,7 +240,11 @@ describe("structured cell dialog controller", () => {
     document.body.append(trigger);
     trigger.focus();
     const request = vi.fn().mockResolvedValue({ attachments: [] });
-    const { controller, dialogFocus } = setup(request as HostBridge["request"]);
+    const { controller, dialogFocus } = setup(
+      request as HostBridge["request"],
+      undefined,
+      (rowKey, field) => rowKey === "row-1" && field === "photos" ? trigger : null,
+    );
 
     await controller.dispatch({
       type: "attachment.open",
@@ -309,7 +319,13 @@ describe("structured cell dialog controller", () => {
     const secondTrigger = document.createElement("button");
     document.body.append(firstTrigger, secondTrigger);
     const request = vi.fn().mockResolvedValue({ attachments: [] });
-    const { controller, dialogFocus } = setup(request as HostBridge["request"]);
+    const { controller, dialogFocus } = setup(
+      request as HostBridge["request"],
+      undefined,
+      (rowKey, field) => field === "photos"
+        ? ({ "row-1": firstTrigger, "row-2": secondTrigger }[rowKey] ?? null)
+        : null,
+    );
 
     await controller.dispatch({
       type: "attachment.open",
@@ -344,7 +360,13 @@ describe("structured cell dialog controller", () => {
     document.body.append(firstTrigger, secondTrigger);
     const secondFocus = vi.spyOn(secondTrigger, "focus");
     const request = vi.fn().mockResolvedValue({ attachments: [] });
-    const { controller, dialogFocus, reportError } = setup(request as HostBridge["request"]);
+    const { controller, dialogFocus, reportError } = setup(
+      request as HostBridge["request"],
+      undefined,
+      (rowKey, field) => field === "photos"
+        ? ({ "row-1": firstTrigger, "row-2": secondTrigger }[rowKey] ?? null)
+        : null,
+    );
     const modal = createNaiveModalContentUnmountAdapter({
       claimRelease: () => controller.claimCloseLease("attachment"),
       reportError,
