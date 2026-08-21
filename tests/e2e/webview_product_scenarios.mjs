@@ -30,7 +30,7 @@ import {
 import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
-import { ownsWorkspaceSearchTerminal } from "./workspace_search_terminal.mjs";
+import { classifyWorkspaceSearchObservation } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 
 function parseArgs(argv) {
@@ -3462,10 +3462,10 @@ async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000)
       state: element.getAttribute("data-state"),
       generation: Number(element.getAttribute("data-generation")),
     }));
-  if (!ownsWorkspaceSearchTerminal({
+  if (classifyWorkspaceSearchObservation({
     acceptedGeneration: accepted.generation,
     ...terminal,
-  })) {
+  }) !== "terminal") {
     throw new Error(
       `WorkspaceSearch terminal does not belong to accepted rebuild: ${JSON.stringify({
         accepted,

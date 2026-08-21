@@ -240,7 +240,7 @@ describe("workspaceSearchStore", () => {
         return { hits: [hit("rebuilt")], nextCursor: null, generation: 9 };
       }
       if (action.method === "workspaceSearch.cancel") {
-        return { state: "degraded", generation: 8, checkpoint: "20", processed: 1, total: 2, errorCode: "workspace_search.cancelled" };
+        return { state: "degraded", generation: 9, checkpoint: "20", processed: 1, total: 2, errorCode: "workspace_search.cancelled" };
       }
       throw new Error("unexpected method");
     });
@@ -315,6 +315,7 @@ describe("workspaceSearchStore", () => {
     const duplicateCancel = store.cancelRebuild();
     await vi.advanceTimersByTimeAsync(0);
     expect(store.rebuilding).toBe(true);
+    expect(store.cancelling).toBe(true);
 
     await vi.advanceTimersByTimeAsync(250);
     expect(store.status.state).toBe("building");
@@ -323,12 +324,76 @@ describe("workspaceSearchStore", () => {
 
     expect(store.status.state).toBe("degraded");
     expect(store.rebuilding).toBe(false);
+    expect(store.cancelling).toBe(false);
     expect(methods).toEqual([
       "workspaceSearch.rebuild",
       "workspaceSearch.cancel",
       "workspaceSearch.status",
       "workspaceSearch.status",
     ]);
+    vi.useRealTimers();
+  });
+
+  it("fails closed and releases lifecycle ownership when cancel stays building", async () => {
+    vi.useFakeTimers({ now: 0 });
+    let statusCalls = 0;
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "workspaceSearch.cancel") return searchStatus("building", 8);
+      if (action.method === "workspaceSearch.status") {
+        statusCalls += 1;
+        return searchStatus("building", 8);
+      }
+      throw new Error("unexpected method");
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+    store.status = searchStatus("building", 8);
+    store.rebuilding = true;
+
+    const cancelling = store.cancelRebuild();
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(store.status).toMatchObject({
+        state: "failed",
+        errorCode: "workspace_search.cancel_terminal_timeout",
+      });
+      expect(store.errorCode).toBe("workspace_search.cancel_terminal_timeout");
+      expect(store.rebuilding).toBe(false);
+      expect(store.cancelling).toBe(false);
+      const callsAtDeadline = statusCalls;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(statusCalls).toBe(callsAtDeadline);
+      await cancelling;
+    } finally {
+      store.reset();
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a terminal from a different search lifecycle generation", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "workspaceSearch.cancel") return searchStatus("building", 8);
+      if (action.method === "workspaceSearch.status") return searchStatus("degraded", 9);
+      throw new Error("unexpected method");
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+    store.status = searchStatus("building", 8);
+    store.rebuilding = true;
+
+    const cancelling = store.cancelRebuild();
+    await vi.advanceTimersByTimeAsync(250);
+    await cancelling;
+
+    expect(store.status).toMatchObject({
+      state: "failed",
+      errorCode: "workspace_search.generation_mismatch",
+    });
+    expect(store.rebuilding).toBe(false);
+    expect(store.cancelling).toBe(false);
     vi.useRealTimers();
   });
 

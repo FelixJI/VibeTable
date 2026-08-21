@@ -8,6 +8,11 @@ import type {
   SearchStatus,
 } from "@/contracts/generated/workbench";
 import { requestWorkspaceV2UiAction } from "@/services/workspaceV2UiPort";
+import {
+  observeWorkspaceSearchTerminal,
+  WORKSPACE_SEARCH_CANCEL_TERMINAL_BUDGET_MS,
+  WORKSPACE_SEARCH_REBUILD_TERMINAL_BUDGET_MS,
+} from "./workspaceSearchTerminalObserver";
 
 const EMPTY_STATUS: SearchStatus = {
   state: "idle",
@@ -124,6 +129,41 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
     }
   }
 
+  async function readLifecycleStatus(): Promise<SearchStatus> {
+    try {
+      return await requestWorkspaceV2UiAction({
+        method: "workspaceSearch.status",
+        params: {},
+      });
+    } catch (error) {
+      return {
+        ...status.value,
+        state: "degraded",
+        errorCode: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async function observeTerminal(
+    acceptedGeneration: number,
+    initial: SearchStatus,
+    epoch: number,
+    budgetMs: number,
+    timeoutCode: string,
+  ): Promise<SearchStatus | null> {
+    return observeWorkspaceSearchTerminal({
+      acceptedGeneration,
+      initial,
+      budgetMs,
+      timeoutCode,
+      ownsLifecycle: () => epoch === lifecycleEpoch,
+      readStatus: readLifecycleStatus,
+      publishObservation: (observed) => {
+        if (epoch === lifecycleEpoch) status.value = observed;
+      },
+    });
+  }
+
   async function rebuild(): Promise<void> {
     if (rebuilding.value) return;
     const epoch = ++lifecycleEpoch;
@@ -136,13 +176,15 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
         params: {},
       });
       if (epoch !== lifecycleEpoch) return;
-      status.value = rebuilt;
-      while (epoch === lifecycleEpoch && status.value.state === "building") {
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
-        if (epoch !== lifecycleEpoch) return;
-        await refreshStatus();
-      }
-      if (epoch !== lifecycleEpoch) return;
+      const terminal = await observeTerminal(
+        rebuilt.generation,
+        rebuilt,
+        epoch,
+        WORKSPACE_SEARCH_REBUILD_TERMINAL_BUDGET_MS,
+        "workspace_search.rebuild_terminal_timeout",
+      );
+      if (terminal === null || epoch !== lifecycleEpoch) return;
+      status.value = terminal;
       if (status.value.state === "ready") await search();
     } catch (error) {
       if (epoch !== lifecycleEpoch) return;
@@ -164,12 +206,15 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
         params: {},
       });
       if (epoch !== lifecycleEpoch) return;
-      status.value = cancelled;
-      while (epoch === lifecycleEpoch && status.value.state === "building") {
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
-        if (epoch !== lifecycleEpoch) return;
-        await refreshStatus();
-      }
+      const terminal = await observeTerminal(
+        cancelled.generation,
+        cancelled,
+        epoch,
+        WORKSPACE_SEARCH_CANCEL_TERMINAL_BUDGET_MS,
+        "workspace_search.cancel_terminal_timeout",
+      );
+      if (terminal === null || epoch !== lifecycleEpoch) return;
+      status.value = terminal;
     } catch (error) {
       if (epoch !== lifecycleEpoch) return;
       errorCode.value = error instanceof Error ? error.message : String(error);
@@ -244,6 +289,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
     status,
     searching,
     rebuilding,
+    cancelling,
     resolvingHitId,
     errorCode,
     canSearch,
