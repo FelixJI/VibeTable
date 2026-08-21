@@ -14,6 +14,102 @@ export async function acknowledgeExpectedSidecarRecoveryFailure(
   return true;
 }
 
+export function beginSidecarRecoveryNotificationFailureWindowInPage({ ownerToken, tableId }) {
+  const pageGlobal = globalThis.window ?? globalThis;
+  const diagnostics = pageGlobal.__vibetableE2EBridgeDiagnostics;
+  if (
+    typeof ownerToken !== "string"
+    || ownerToken.length === 0
+    || typeof tableId !== "string"
+    || tableId.length === 0
+    || !Number.isSafeInteger(diagnostics?.diagnosticCursor)
+  ) {
+    throw new Error("sidecar recovery notification failure window is unavailable");
+  }
+  pageGlobal.__vibetableE2ESidecarRecoveryFailureWindow = {
+    ownerToken,
+    tableId,
+    startCursor: diagnostics.diagnosticCursor,
+  };
+  return { state: "owned", startCursor: diagnostics.diagnosticCursor };
+}
+
+export function settleSidecarRecoveryNotificationFailureWindowInPage({
+  ownerToken,
+  deadlineAt,
+}) {
+  const pageGlobal = globalThis.window ?? globalThis;
+  const lease = pageGlobal.__vibetableE2ESidecarRecoveryFailureWindow;
+  if (lease?.ownerToken !== ownerToken) return { state: "stale" };
+  if (!Number.isFinite(deadlineAt) || Date.now() >= deadlineAt) {
+    return { state: "expired" };
+  }
+  const diagnostics = pageGlobal.__vibetableE2EBridgeDiagnostics;
+  if (!Number.isSafeInteger(diagnostics?.diagnosticCursor)) {
+    throw new Error("sidecar recovery notification diagnostics are unavailable");
+  }
+
+  const endCursor = diagnostics.diagnosticCursor;
+  const notificationEvents = diagnostics.notifications
+    .filter(notification => (
+      notification.requestType === "table.selected"
+      && Number.isSafeInteger(notification.cursor)
+      && notification.cursor > lease.startCursor
+      && notification.cursor <= endCursor
+    ))
+    .map(notification => ({
+      kind: "notification",
+      cursor: notification.cursor,
+      ownerToken: notification.recoveryOwnerToken,
+    }));
+  const failureEvents = diagnostics.failures
+    .filter(failure => (
+      failure.requestId === null
+      && failure.operation === "table.selected"
+      && Number.isSafeInteger(failure.cursor)
+      && failure.cursor > lease.startCursor
+      && failure.cursor <= endCursor
+    ))
+    .map(failure => ({ kind: "failure", cursor: failure.cursor, failure }));
+  let currentNotification = null;
+  const acknowledged = new Set();
+  for (const event of [...notificationEvents, ...failureEvents]
+    .sort((left, right) => left.cursor - right.cursor)) {
+    if (event.kind === "notification") {
+      currentNotification = event;
+      continue;
+    }
+    const notification = currentNotification;
+    currentNotification = null;
+    if (
+      notification?.ownerToken === ownerToken
+      && event.failure.responseType === "operation.failed"
+      && event.failure.code === "BACKEND_UNAVAILABLE"
+    ) {
+      acknowledged.add(event.failure);
+    }
+  }
+  const remaining = diagnostics.failures.filter(failure => !acknowledged.has(failure));
+  diagnostics.failures = remaining;
+  diagnostics.acknowledgedFailures ??= [];
+  diagnostics.acknowledgedFailures.push(...acknowledged);
+  delete pageGlobal.__vibetableE2ESidecarRecoveryFailureWindow;
+  return {
+    state: "settled",
+    startCursor: lease.startCursor,
+    endCursor,
+    acknowledgedCount: acknowledged.size,
+  };
+}
+
+export function releaseSidecarRecoveryNotificationFailureWindowInPage({ ownerToken }) {
+  const pageGlobal = globalThis.window ?? globalThis;
+  const lease = pageGlobal.__vibetableE2ESidecarRecoveryFailureWindow;
+  if (lease?.ownerToken !== ownerToken) return { state: "stale" };
+  delete pageGlobal.__vibetableE2ESidecarRecoveryFailureWindow;
+  return { state: "released" };
+}
+
 const recoveryObservationMs = 5_000;
 const recoveryRequestType = "query.page";
 

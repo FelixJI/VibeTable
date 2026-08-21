@@ -6,6 +6,9 @@ import process from "node:process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
+  beginSidecarRecoveryNotificationFailureWindowInPage,
+  releaseSidecarRecoveryNotificationFailureWindowInPage,
+  settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
   SidecarRecoveryReadWindow,
 } from "./bridge_failure_policy.mjs";
@@ -2460,15 +2463,42 @@ async function scenario07(page, recorder, _network, runtime) {
     expectedOriginalHash,
     expectedSize: originalBytes.length,
   });
-  const restart = await requestSidecarKill(runtime, "verify attachment survives sidecar restart");
-  recorder.check("attachment restart terminated only the exact sidecar child",
-    restart.processName === "vibetable-pb.exe", { restart });
-  await waitForTableRecovery(
-    page,
-    "E2E Attachments",
+  const recoveryFailureOwnerToken = `attachment-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
+    ownerToken: recoveryFailureOwnerToken,
     tableId,
-    1,
-  );
+  });
+  let recoveryPrimaryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify attachment survives sidecar restart");
+    recorder.check("attachment restart terminated only the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(
+      page,
+      "E2E Attachments",
+      tableId,
+      1,
+      60_000,
+      recoveryFailureOwnerToken,
+    );
+  } catch (error) {
+    recoveryPrimaryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, {
+        ownerToken: recoveryFailureOwnerToken,
+      });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(
+        recoveryPrimaryError,
+        cleanupError,
+        "sidecar recovery notification failure window cleanup also failed",
+      )) {
+        throw cleanupError;
+      }
+    }
+  }
   const recovered = await waitForAttachmentList(
     page,
     attachmentParams,
@@ -2800,6 +2830,7 @@ async function waitForTableRecovery(
   tableId,
   expectedRows,
   timeoutMs = 60_000,
+  recoveryFailureOwnerToken = null,
 ) {
   const deadline = Date.now() + timeoutMs;
   const recoveryReads = new SidecarRecoveryReadWindow({
@@ -2855,6 +2886,17 @@ async function waitForTableRecovery(
           const recoveredCount = await page.locator(".tabulator-row").count();
           if (recoveredCount === expectedRows) {
             await recoveryReads.settle();
+            if (recoveryFailureOwnerToken !== null) {
+              const failureWindow = await page.evaluate(
+                settleSidecarRecoveryNotificationFailureWindowInPage,
+                { ownerToken: recoveryFailureOwnerToken, deadlineAt: deadline },
+              );
+              if (failureWindow.state !== "settled") {
+                throw new SidecarRecoveryContractError(
+                  `sidecar recovery notification failure window did not settle: ${failureWindow.state}`,
+                );
+              }
+            }
             return recoveredCount;
           }
         }

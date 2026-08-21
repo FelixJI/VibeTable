@@ -117,6 +117,10 @@ test("records fire-and-forget notifications and uncorrelated host failures", () 
   globalThis.window = { chrome: { webview } };
   try {
     installBridgeDiagnosticsInPage();
+    window.__vibetableE2ESidecarRecoveryFailureWindow = {
+      ownerToken: "scenario-07",
+      tableId: "Orders",
+    };
     webview.postMessage({
       type: "table.selected",
       payload: { table: "Orders" },
@@ -135,6 +139,11 @@ test("records fire-and-forget notifications and uncorrelated host failures", () 
 
     assert.equal(posted.length, 1);
     assert.equal(window.__vibetableE2EBridgeDiagnostics.notifications.length, 1);
+    assert.equal(window.__vibetableE2EBridgeDiagnostics.notifications[0].cursor, 1);
+    assert.equal(
+      window.__vibetableE2EBridgeDiagnostics.notifications[0].recoveryOwnerToken,
+      "scenario-07",
+    );
     assert.equal(
       window.__vibetableE2EBridgeDiagnostics.notifications[0].requestType,
       "table.selected",
@@ -155,9 +164,15 @@ test("records fire-and-forget notifications and uncorrelated host failures", () 
         operation: "table.selected",
       }],
     );
+    assert.equal(window.__vibetableE2EBridgeDiagnostics.failures[0].cursor, 2);
+    assert.equal(window.__vibetableE2EBridgeDiagnostics.diagnosticCursor, 2);
     const artifact = JSON.stringify(window.__vibetableE2EBridgeDiagnostics);
     assert.equal(artifact.includes("Orders"), false);
     assert.equal(artifact.includes("C:\\Users\\secret"), false);
+    assert.equal(
+      Object.hasOwn(readBridgeDiagnosticsInPage().notifications[0], "recoveryOwnerToken"),
+      false,
+    );
   } finally {
     delete globalThis.window;
   }

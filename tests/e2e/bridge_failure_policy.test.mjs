@@ -3,7 +3,10 @@ import test from "node:test";
 
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
+  beginSidecarRecoveryNotificationFailureWindowInPage,
   isExpectedSidecarRecoveryFailure,
+  releaseSidecarRecoveryNotificationFailureWindowInPage,
+  settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
   SidecarRecoveryReadWindow,
 } from "./bridge_failure_policy.mjs";
@@ -60,6 +63,257 @@ test("does not acknowledge a response without a request identity", async () => {
     ),
     false,
   );
+});
+
+test("settles only matched table selection failures inside the owned restart window", () => {
+  const expectedNotification = {
+    cursor: 3,
+    requestId: null,
+    responseType: "operation.failed",
+    code: "BACKEND_UNAVAILABLE",
+    operation: "table.selected",
+  };
+  const beforeWindow = { ...expectedNotification, cursor: 1 };
+  const correlatedFailure = { ...expectedNotification, cursor: 4, requestId: "query-1" };
+  const wrongOperation = { ...expectedNotification, cursor: 5, operation: "query" };
+  const wrongCode = { ...expectedNotification, cursor: 6, code: "PRODUCT_DATA_FAILED" };
+  const wrongTableFailure = { ...expectedNotification, cursor: 8 };
+  const repeatedNotificationFailure = { ...expectedNotification, cursor: 10 };
+  const excessFailure = { ...expectedNotification, cursor: 11 };
+  const previous = globalThis.__vibetableE2EBridgeDiagnostics;
+  globalThis.__vibetableE2EBridgeDiagnostics = {
+    diagnosticCursor: 1,
+    notifications: [],
+    failures: [beforeWindow],
+    acknowledgedFailures: [],
+  };
+  try {
+    assert.deepEqual(beginSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "scenario-07",
+      tableId: "attachments",
+    }), { state: "owned", startCursor: 1 });
+    globalThis.__vibetableE2EBridgeDiagnostics.notifications.push({
+      cursor: 2,
+      requestType: "table.selected",
+      recoveryOwnerToken: "scenario-07",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.failures.push(
+      expectedNotification,
+      correlatedFailure,
+      wrongOperation,
+      wrongCode,
+      wrongTableFailure,
+      repeatedNotificationFailure,
+      excessFailure,
+    );
+    globalThis.__vibetableE2EBridgeDiagnostics.notifications.push({
+      cursor: 7,
+      requestType: "table.selected",
+      recoveryOwnerToken: null,
+    }, {
+      cursor: 9,
+      requestType: "table.selected",
+      recoveryOwnerToken: "scenario-07",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.diagnosticCursor = 11;
+
+    assert.deepEqual(settleSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "scenario-07",
+      deadlineAt: Date.now() + 1_000,
+    }), {
+      state: "settled",
+      startCursor: 1,
+      endCursor: 11,
+      acknowledgedCount: 2,
+    });
+    assert.deepEqual(
+      globalThis.__vibetableE2EBridgeDiagnostics.failures,
+      [
+        beforeWindow,
+        correlatedFailure,
+        wrongOperation,
+        wrongCode,
+        wrongTableFailure,
+        excessFailure,
+      ],
+    );
+    assert.deepEqual(
+      globalThis.__vibetableE2EBridgeDiagnostics.acknowledgedFailures,
+      [expectedNotification, repeatedNotificationFailure],
+    );
+
+    const afterWindow = { ...expectedNotification, cursor: 13 };
+    globalThis.__vibetableE2EBridgeDiagnostics.notifications.push({
+      cursor: 12,
+      requestType: "table.selected",
+      recoveryOwnerToken: "scenario-07",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.failures.push(afterWindow);
+    globalThis.__vibetableE2EBridgeDiagnostics.diagnosticCursor = 13;
+    assert.deepEqual(settleSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "scenario-07",
+      deadlineAt: Date.now() + 1_000,
+    }), { state: "stale" });
+    assert.equal(globalThis.__vibetableE2EBridgeDiagnostics.failures.at(-1), afterWindow);
+  } finally {
+    if (previous === undefined) delete globalThis.__vibetableE2EBridgeDiagnostics;
+    else globalThis.__vibetableE2EBridgeDiagnostics = previous;
+  }
+});
+
+test("a replaced, released, or expired recovery owner cannot consume failures", () => {
+  const expectedNotification = {
+    cursor: 2,
+    requestId: null,
+    responseType: "operation.failed",
+    code: "BACKEND_UNAVAILABLE",
+    operation: "table.selected",
+  };
+  const previous = globalThis.__vibetableE2EBridgeDiagnostics;
+  globalThis.__vibetableE2EBridgeDiagnostics = {
+    diagnosticCursor: 0,
+    notifications: [],
+    failures: [],
+    acknowledgedFailures: [],
+  };
+  try {
+    beginSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "old",
+      tableId: "attachments",
+    });
+    beginSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "current",
+      tableId: "attachments",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.notifications.push({
+      cursor: 1,
+      requestType: "table.selected",
+      recoveryOwnerToken: "current",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.failures.push(expectedNotification);
+    globalThis.__vibetableE2EBridgeDiagnostics.diagnosticCursor = 2;
+
+    assert.deepEqual(settleSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "old",
+      deadlineAt: Date.now() + 1_000,
+    }), { state: "stale" });
+    assert.deepEqual(settleSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "current",
+      deadlineAt: 0,
+    }), { state: "expired" });
+    assert.deepEqual(globalThis.__vibetableE2EBridgeDiagnostics.failures, [expectedNotification]);
+
+    assert.deepEqual(releaseSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "current",
+    }), { state: "released" });
+    assert.deepEqual(settleSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "current",
+      deadlineAt: Date.now() + 1_000,
+    }), { state: "stale" });
+    assert.deepEqual(globalThis.__vibetableE2EBridgeDiagnostics.acknowledgedFailures, []);
+  } finally {
+    if (previous === undefined) delete globalThis.__vibetableE2EBridgeDiagnostics;
+    else globalThis.__vibetableE2EBridgeDiagnostics = previous;
+  }
+});
+
+test("does not lend an owned notification to a later wrong-table failure", () => {
+  const wrongTableFailure = {
+    cursor: 3,
+    requestId: null,
+    responseType: "operation.failed",
+    code: "BACKEND_UNAVAILABLE",
+    operation: "table.selected",
+  };
+  const excessFailure = { ...wrongTableFailure, cursor: 4 };
+  const previous = globalThis.__vibetableE2EBridgeDiagnostics;
+  globalThis.__vibetableE2EBridgeDiagnostics = {
+    diagnosticCursor: 0,
+    notifications: [],
+    failures: [],
+    acknowledgedFailures: [],
+  };
+  try {
+    beginSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "scenario-07",
+      tableId: "attachments",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.notifications.push({
+      cursor: 1,
+      requestType: "table.selected",
+      recoveryOwnerToken: "scenario-07",
+    }, {
+      cursor: 2,
+      requestType: "table.selected",
+      recoveryOwnerToken: null,
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.failures.push(
+      wrongTableFailure,
+      excessFailure,
+    );
+    globalThis.__vibetableE2EBridgeDiagnostics.diagnosticCursor = 4;
+
+    const settled = settleSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "scenario-07",
+      deadlineAt: Date.now() + 1_000,
+    });
+    assert.equal(settled.acknowledgedCount, 0);
+    assert.deepEqual(
+      globalThis.__vibetableE2EBridgeDiagnostics.failures,
+      [wrongTableFailure, excessFailure],
+    );
+  } finally {
+    if (previous === undefined) delete globalThis.__vibetableE2EBridgeDiagnostics;
+    else globalThis.__vibetableE2EBridgeDiagnostics = previous;
+  }
+});
+
+test("a wrong-code terminal consumes its notification slot without hiding a later excess failure", () => {
+  const wrongCode = {
+    cursor: 2,
+    requestId: null,
+    responseType: "operation.failed",
+    code: "PRODUCT_DATA_FAILED",
+    operation: "table.selected",
+  };
+  const excessFailure = {
+    ...wrongCode,
+    cursor: 3,
+    code: "BACKEND_UNAVAILABLE",
+  };
+  const previous = globalThis.__vibetableE2EBridgeDiagnostics;
+  globalThis.__vibetableE2EBridgeDiagnostics = {
+    diagnosticCursor: 0,
+    notifications: [],
+    failures: [],
+    acknowledgedFailures: [],
+  };
+  try {
+    beginSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "scenario-07",
+      tableId: "attachments",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.notifications.push({
+      cursor: 1,
+      requestType: "table.selected",
+      recoveryOwnerToken: "scenario-07",
+    });
+    globalThis.__vibetableE2EBridgeDiagnostics.failures.push(wrongCode, excessFailure);
+    globalThis.__vibetableE2EBridgeDiagnostics.diagnosticCursor = 3;
+
+    const settled = settleSidecarRecoveryNotificationFailureWindowInPage({
+      ownerToken: "scenario-07",
+      deadlineAt: Date.now() + 1_000,
+    });
+    assert.equal(settled.acknowledgedCount, 0);
+    assert.deepEqual(
+      globalThis.__vibetableE2EBridgeDiagnostics.failures,
+      [wrongCode, excessFailure],
+    );
+  } finally {
+    if (previous === undefined) delete globalThis.__vibetableE2EBridgeDiagnostics;
+    else globalThis.__vibetableE2EBridgeDiagnostics = previous;
+  }
 });
 
 test("propagates acknowledgement failures", async () => {

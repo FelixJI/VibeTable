@@ -9,6 +9,7 @@ export function installBridgeDiagnosticsInPage() {
     roundTrips: [],
     recentCompleted: [],
     failures: [],
+    diagnosticCursor: 0,
     pending: {},
     workspaceSession: null,
     maxWorkspaceSequence: 0,
@@ -24,6 +25,13 @@ export function installBridgeDiagnosticsInPage() {
     if (items.length <= maxEntries) return;
     const evicted = items.shift();
     onEvicted?.(evicted);
+  };
+  const pushDiagnostic = (items, value) => {
+    diagnostics.diagnosticCursor += 1;
+    pushBounded(items, {
+      cursor: diagnostics.diagnosticCursor,
+      ...value,
+    });
   };
   const dialogFocusTargets = new Set(["attachment", "json"]);
   const dialogFocusPendingReasons = new Set(["grid", "row", "cell", "focus-rejected"]);
@@ -156,10 +164,15 @@ export function installBridgeDiagnosticsInPage() {
       });
       diagnostics.pending[message.requestId] = request;
     } else if (message?.type) {
-      pushBounded(diagnostics.notifications, {
+      const recoveryWindow = window.__vibetableE2ESidecarRecoveryFailureWindow;
+      pushDiagnostic(diagnostics.notifications, {
         requestType: message.type,
         payloadShape: describePayload(message.payload),
         startedAt: new Date().toISOString(),
+        recoveryOwnerToken: message.type === "table.selected"
+          && message.payload?.table === recoveryWindow?.tableId
+          ? recoveryWindow.ownerToken
+          : null,
       });
     }
     return originalPostMessage(...args);
@@ -213,7 +226,7 @@ export function installBridgeDiagnosticsInPage() {
           ?? message?.payload?.error?.message
           ?? message?.error?.message
           ?? null;
-        pushBounded(diagnostics.failures, {
+        pushDiagnostic(diagnostics.failures, {
           requestId: rawRequestId,
           requestType: completedRequest?.requestType ?? null,
           payloadShape: completedRequest?.payloadShape ?? null,
@@ -256,7 +269,7 @@ export function installBridgeDiagnosticsInPage() {
     pushBounded(diagnostics.roundTrips, roundTrip);
     pushBounded(diagnostics.recentCompleted, request);
     if (isFailure) {
-      pushBounded(diagnostics.failures, roundTrip);
+      pushDiagnostic(diagnostics.failures, roundTrip);
     }
     delete diagnostics.pending[message.requestId];
   });
@@ -269,6 +282,7 @@ export function readBridgeDiagnosticsInPage() {
   const now = performance.now();
   return {
     installedAt: diagnostics.installedAt,
+    diagnosticCursor: diagnostics.diagnosticCursor,
     requests: diagnostics.requests.map((request) => ({
       requestId: request.requestId,
       requestType: request.requestType,
