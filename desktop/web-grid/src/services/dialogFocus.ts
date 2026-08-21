@@ -108,6 +108,7 @@ export function createStructuredDialogFocus(
     let boundGrid: StructuredGridLike | null = null;
     let observingDocumentFocus = false;
     let observingWindowFocus = false;
+    let focusTargetObserver: MutationObserver | null = null;
     let restoringFocus = false;
     let terminalReported = false;
     const captured = resolveStructuredDialogFocusTarget(dependencies.getGrid(), target);
@@ -116,6 +117,9 @@ export function createStructuredDialogFocus(
     const captureVerified = target.element?.isConnected === true
       && captured.status === "resolved"
       && captured.element === target.element;
+    const capturedGridRoot = captureVerified
+      ? target.element?.closest<HTMLElement>(".tabulator") ?? null
+      : null;
 
     const report = (outcome: StructuredDialogFocusOutcomeBody): void => {
       if (terminalReported) return;
@@ -159,6 +163,15 @@ export function createStructuredDialogFocus(
 
     const onRenderComplete = () => reattemptRestore();
 
+    const onFocusTargetMutation = () => {
+      if (target.element?.isConnected === true) return;
+      if (
+        document.activeElement !== document.body
+        && document.activeElement !== document.documentElement
+      ) return;
+      reattemptRestore();
+    };
+
     const onWindowBlur = () => lease.cancelFor("window");
 
     const lease: InternalStructuredDialogFocusLease = {
@@ -176,6 +189,10 @@ export function createStructuredDialogFocus(
         }
         boundGrid = dependencies.getGrid();
         boundGrid?.on?.("renderComplete", onRenderComplete);
+        if (capturedGridRoot) {
+          focusTargetObserver = new MutationObserver(onFocusTargetMutation);
+          focusTargetObserver.observe(capturedGridRoot, { childList: true, subtree: true });
+        }
         attemptRestore(boundGrid);
         if (cancelled) return;
         document.addEventListener("focusin", onDocumentFocusIn);
@@ -195,6 +212,8 @@ export function createStructuredDialogFocus(
         if (observingWindowFocus) {
           window.removeEventListener("blur", onWindowBlur);
         }
+        focusTargetObserver?.disconnect();
+        focusTargetObserver = null;
         boundGrid = null;
         if (current === lease) current = null;
       },

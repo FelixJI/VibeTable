@@ -86,6 +86,45 @@ describe("structured dialog focus", () => {
     dialogFocus.dispose();
   });
 
+  it("reprojects focus when the captured cell is silently replaced", async () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const originalCell = document.createElement("button");
+    const replacementCell = document.createElement("button");
+    gridRoot.append(originalCell);
+    document.body.append(gridRoot);
+    let currentCell = originalCell;
+    const { grid } = createGridHarness(() => currentCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+
+    dialogFocus.capture({
+      element: originalCell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    expect(document.activeElement).toBe(originalCell);
+
+    const mutationDelivered = new Promise<void>((resolve) => {
+      const observer = new MutationObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(gridRoot, { childList: true, subtree: true });
+    });
+    originalCell.remove();
+    currentCell = replacementCell;
+    gridRoot.append(replacementCell);
+    expect(document.activeElement).toBe(document.body);
+    await mutationDelivered;
+
+    expect(document.activeElement).toBe(replacementCell);
+    dialogFocus.dispose();
+  });
+
   it("keeps the lease when a closing focus owner moves focus to the document body", () => {
     document.body.tabIndex = -1;
     const cell = document.createElement("button");
@@ -415,13 +454,16 @@ describe("structured dialog focus", () => {
     )).toEqual([{ state: "restored", target: "json", via: "reprojected" }]);
   });
 
-  it("does not steal focus after the user moves to another control", () => {
+  it("does not steal focus after the user moves to another control", async () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
     const originalCell = document.createElement("button");
     const replacementCell = document.createElement("button");
     const otherControl = document.createElement("button");
-    document.body.append(originalCell, otherControl);
+    gridRoot.append(originalCell);
+    document.body.append(gridRoot, otherControl);
     let currentCell = originalCell;
-    const { grid, emit } = createGridHarness(() => currentCell);
+    const { grid } = createGridHarness(() => currentCell);
     const dialogFocus = createStructuredDialogFocus({
       getGrid: () => grid,
       getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
@@ -435,10 +477,17 @@ describe("structured dialog focus", () => {
     }).restore();
     otherControl.focus();
 
+    const mutationDelivered = new Promise<void>((resolve) => {
+      const observer = new MutationObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(gridRoot, { childList: true, subtree: true });
+    });
     originalCell.remove();
-    document.body.append(replacementCell);
     currentCell = replacementCell;
-    emit("renderComplete");
+    gridRoot.append(replacementCell);
+    await mutationDelivered;
 
     expect(document.activeElement).toBe(otherControl);
     dialogFocus.dispose();
