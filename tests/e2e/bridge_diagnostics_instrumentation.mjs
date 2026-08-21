@@ -12,6 +12,10 @@ export function installBridgeDiagnosticsInPage() {
     pending: {},
     workspaceSession: null,
     maxWorkspaceSequence: 0,
+    dialogFocus: {
+      cursor: 0,
+      events: [],
+    },
   };
   const webview = window.chrome.webview;
   const maxEntries = 200;
@@ -21,6 +25,51 @@ export function installBridgeDiagnosticsInPage() {
     const evicted = items.shift();
     onEvicted?.(evicted);
   };
+  const dialogFocusTargets = new Set(["attachment", "json"]);
+  const dialogFocusPendingReasons = new Set(["grid", "row", "cell", "focus-rejected"]);
+  const dialogFocusCancellationReasons = new Set([
+    "scope",
+    "window",
+    "external",
+    "disposed",
+    "stale",
+  ]);
+  const dialogFocusRestoreTargets = new Set(["captured", "reprojected"]);
+  const hasExactKeys = (value, expected) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const keys = Object.keys(value);
+    return keys.length === expected.length && expected.every((key) => keys.includes(key));
+  };
+  window.addEventListener?.("vibetable:e2e-dialog-focus-outcome", (event) => {
+    const detail = event?.detail;
+    if (!Number.isSafeInteger(detail?.leaseId) || detail.leaseId <= 0) return;
+    if (!dialogFocusTargets.has(detail.target)) return;
+    let outcome = null;
+    if ((detail.state === "claimed" || detail.state === "released")
+      && hasExactKeys(detail, ["leaseId", "state", "target"])) {
+      outcome = { state: detail.state };
+    } else if (detail.state === "restored"
+      && hasExactKeys(detail, ["leaseId", "state", "target", "via"])
+      && dialogFocusRestoreTargets.has(detail.via)) {
+      outcome = { state: detail.state, via: detail.via };
+    } else if (detail.state === "pending"
+      && hasExactKeys(detail, ["leaseId", "state", "target", "reason"])
+      && dialogFocusPendingReasons.has(detail.reason)) {
+      outcome = { state: detail.state, reason: detail.reason };
+    } else if (detail.state === "cancelled"
+      && hasExactKeys(detail, ["leaseId", "state", "target", "reason"])
+      && dialogFocusCancellationReasons.has(detail.reason)) {
+      outcome = { state: detail.state, reason: detail.reason };
+    }
+    if (outcome === null) return;
+    diagnostics.dialogFocus.cursor += 1;
+    pushBounded(diagnostics.dialogFocus.events, {
+      cursor: diagnostics.dialogFocus.cursor,
+      leaseId: detail.leaseId,
+      target: detail.target,
+      ...outcome,
+    });
+  });
   const messageLength = (message) => typeof message === "string"
     ? message.length
     : null;
@@ -241,5 +290,9 @@ export function readBridgeDiagnosticsInPage() {
       startedAt: request.startedAt,
       pendingMs: Math.round((now - request.startedMonotonicMs) * 100) / 100,
     })),
+    dialogFocus: {
+      cursor: diagnostics.dialogFocus.cursor,
+      events: diagnostics.dialogFocus.events,
+    },
   };
 }

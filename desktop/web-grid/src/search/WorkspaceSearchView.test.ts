@@ -84,6 +84,7 @@ describe("WorkspaceSearchView", () => {
     const store = useWorkspaceSearchStore();
     await flushPromises();
 
+    expect(wrapper.get(".index-state").attributes("data-generation")).toBe("4");
     expect(wrapper.get(".empty-state--initial").text()).toContain("跨数据与文件查找");
     store.query = "季度报告";
     await wrapper.get("form").trigger("submit");

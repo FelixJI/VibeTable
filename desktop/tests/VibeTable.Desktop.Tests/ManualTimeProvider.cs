@@ -4,6 +4,7 @@ internal sealed class ManualTimeProvider : TimeProvider
 {
     private readonly object _gate = new();
     private readonly List<ManualTimer> _timers = [];
+    private readonly List<ScheduledTimerWaiter> _scheduledTimerWaiters = [];
     private long _timestamp;
 
     public Action? BeforeTimerFire { get; set; }
@@ -17,7 +18,7 @@ internal sealed class ManualTimeProvider : TimeProvider
         get
         {
             lock (_gate)
-                return _timers.Count(timer => timer.DueTimestamp is not null);
+                return CountScheduledTimers();
         }
     }
 
@@ -31,6 +32,21 @@ internal sealed class ManualTimeProvider : TimeProvider
     {
         lock (_gate)
             return _timestamp;
+    }
+
+    public Task WaitForScheduledTimersAsync(int expectedCount)
+    {
+        if (expectedCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(expectedCount));
+        lock (_gate)
+        {
+            if (CountScheduledTimers() >= expectedCount)
+                return Task.CompletedTask;
+            var reached = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _scheduledTimerWaiters.Add(new ScheduledTimerWaiter(expectedCount, reached));
+            return reached.Task;
+        }
     }
 
     public override ITimer CreateTimer(
@@ -77,6 +93,7 @@ internal sealed class ManualTimeProvider : TimeProvider
 
     private void Schedule(ManualTimer timer, TimeSpan dueTime)
     {
+        List<TaskCompletionSource>? reached = null;
         lock (_gate)
         {
             if (!_timers.Contains(timer))
@@ -84,8 +101,26 @@ internal sealed class ManualTimeProvider : TimeProvider
             timer.DueTimestamp = dueTime == Timeout.InfiniteTimeSpan
                 ? null
                 : checked(_timestamp + dueTime.Ticks);
+            int scheduledCount = CountScheduledTimers();
+            for (int index = _scheduledTimerWaiters.Count - 1; index >= 0; index--)
+            {
+                ScheduledTimerWaiter waiter = _scheduledTimerWaiters[index];
+                if (scheduledCount < waiter.ExpectedCount)
+                    continue;
+                reached ??= [];
+                reached.Add(waiter.Reached);
+                _scheduledTimerWaiters.RemoveAt(index);
+            }
+        }
+        if (reached is not null)
+        {
+            foreach (TaskCompletionSource waiter in reached)
+                waiter.TrySetResult();
         }
     }
+
+    private int CountScheduledTimers()
+        => _timers.Count(timer => timer.DueTimestamp is not null);
 
     private void Remove(ManualTimer timer)
     {
@@ -141,4 +176,8 @@ internal sealed class ManualTimeProvider : TimeProvider
                 : checked(owner._timestamp + _period.Ticks);
         }
     }
+
+    private readonly record struct ScheduledTimerWaiter(
+        int ExpectedCount,
+        TaskCompletionSource Reached);
 }

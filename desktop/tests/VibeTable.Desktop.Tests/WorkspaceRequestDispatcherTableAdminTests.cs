@@ -25,7 +25,8 @@ public sealed class WorkspaceTableRequestControllerTests
             new TableWorkspaceService(tableGateway),
             new FakeDatabasePicker("local://configured"),
             sink,
-            () => currentGateway);
+            () => currentGateway,
+            NoDatabaseOpenRoute.Instance);
         var transport = new SchemaCaptureTransport();
         await using var client = new JsonRpcClient(transport);
         using var productGateway = new JsonRpcProductDataGateway(client);
@@ -92,7 +93,8 @@ public sealed class WorkspaceTableRequestControllerTests
             new TableWorkspaceService(new FakeTableRpcGateway()),
             new FakeDatabasePicker("local://configured"),
             sink,
-            () => null);
+            () => null,
+            NoDatabaseOpenRoute.Instance);
         using var payload = JsonDocument.Parse(
             """{"displayName":"bad\u0001name"}""");
 
@@ -131,6 +133,7 @@ public sealed class WorkspaceTableRequestControllerTests
             new FakeDatabasePicker("local://configured"),
             sink,
             () => currentGateway,
+            NoDatabaseOpenRoute.Instance,
             schemaLifecycleTimeout: TimeSpan.FromSeconds(5),
             timeProvider: time);
         var transport = new SchemaCaptureTransport();
@@ -180,6 +183,7 @@ public sealed class WorkspaceTableRequestControllerTests
             new FakeDatabasePicker("local://configured"),
             sink,
             () => productGateway,
+            NoDatabaseOpenRoute.Instance,
             schemaLifecycleTimeout: TimeSpan.FromSeconds(5),
             timeProvider: time);
         using var payload = JsonDocument.Parse("""{"collection":"tbl_orders"}""");
@@ -230,6 +234,7 @@ public sealed class WorkspaceTableRequestControllerTests
             new FakeDatabasePicker("local://configured"),
             sink,
             () => currentGateway,
+            NoDatabaseOpenRoute.Instance,
             sessionToken: () => activeSessionToken);
         var transport = new SchemaCaptureTransport();
         await using var client = new JsonRpcClient(transport);

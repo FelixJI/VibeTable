@@ -263,6 +263,8 @@ public sealed class WebMessageRouterTests
         Assert.IsTrue(router.IsHostNotificationAllowed("file.uploadRequested"));
         Assert.IsTrue(router.IsHostNotificationAllowed("file.replaceRequested"));
         Assert.IsTrue(router.IsHostNotificationAllowed("file.removeRequested"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("file.previewRequested"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("file.downloadRequested"));
     }
 
     [TestMethod]
