@@ -121,7 +121,6 @@ async function commitPlan(): Promise<void> {
       // enable fails. Clear it before issuing a second RPC so the UI cannot
       // offer a duplicate commit for an installation that already succeeded.
       plannedUpgradePluginId.value = null;
-      store.setInstallPlan(null);
       // The install button is the user's explicit permission approval. Keep
       // the registry's safe disabled-by-default primitive, but complete the
       // product action by enabling the newly approved installation.
@@ -132,13 +131,11 @@ async function commitPlan(): Promise<void> {
       return;
     }
     plannedUpgradePluginId.value = null;
-    store.setInstallPlan(null);
   });
 }
 async function cancelPlan(): Promise<void> {
   const plan = store.installPlan;
   plannedUpgradePluginId.value = null;
-  store.setInstallPlan(null);
   if (plan) await safely(() => service.cancelInstall(plan.planId));
 }
 async function inspectUpgrade(current: PluginSnapshot): Promise<void> {
@@ -148,7 +145,7 @@ async function inspectUpgrade(current: PluginSnapshot): Promise<void> {
       : "host-picker:package";
     const plan = await service.inspectInstall(sourceToken);
     if (plan.manifest.pluginId !== current.pluginId) {
-      store.setInstallPlan(null);
+      await service.cancelInstall(plan.planId);
       throw new Error("所选来源不是当前插件的新版本");
     }
     plannedUpgradePluginId.value = current.pluginId;
@@ -200,16 +197,16 @@ onBeforeUnmount(() => service.dispose());
           class="install-button"
           type="button"
           data-testid="plugin-install-github"
-          :disabled="!githubRepository.trim()"
+          :disabled="!store.projectContextReady || store.busy || !githubRepository.trim()"
           title="Release metadata 直连 GitHub，.vtplugin 使用设置中的下载通道"
           @click="inspectGitHubInstall"
         >
           <NIcon :size="15"><Github /></NIcon> 从 GitHub 检查
         </button>
-        <button class="install-button" type="button" data-testid="plugin-install-package" @click="inspectInstall('host-picker:package')">
+        <button class="install-button" type="button" data-testid="plugin-install-package" :disabled="!store.projectContextReady || store.busy" @click="inspectInstall('host-picker:package')">
           <NIcon :size="15"><Upload /></NIcon> 选择 .vtplugin
         </button>
-        <button class="install-button" type="button" data-testid="plugin-install-folder" @click="inspectInstall('host-picker:folder')">
+        <button class="install-button" type="button" data-testid="plugin-install-folder" :disabled="!store.projectContextReady || store.busy" @click="inspectInstall('host-picker:folder')">
           <NIcon :size="15"><PackageOpen /></NIcon> 加载本地文件夹
         </button>
       </div>
@@ -244,6 +241,7 @@ onBeforeUnmount(() => service.dispose());
           data-testid="plugin-install-commit"
           type="button"
           class="primary-button"
+          :disabled="!store.projectContextReady || store.busy"
           @click="commitPlan"
         >{{ plannedUpgradePluginId ? '批准变更并升级' : '批准权限并安装' }}</button>
       </div>

@@ -7,6 +7,8 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class PluginRequestDispatcherTests
 {
+    private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
+
     [TestMethod]
     public async Task DispatchUsesCorrelatedClosedResponseTypeAndNeverGenericRpc()
     {
@@ -44,12 +46,18 @@ public sealed class PluginRequestDispatcherTests
         using var dispatcher = new PluginRequestDispatcher(
             reply,
             surfaces,
-            new FakePluginPackageSourcePicker(null),
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
             resources,
             filePicker: null,
             githubSource: null,
-            diagnosticTrace: traces.Add);
+            diagnosticTrace: traces.Add,
+            projectContext: ReadyContext);
         dispatcher.SetGateway(gateway);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-before-failure",
+            """{"projectKey":"forged","projectRevision":"forged","sourceLocation":"host-picker"}"""));
 
         await dispatcher.DispatchAsync(Request(
             "plugin.install.commit",
@@ -57,6 +65,7 @@ public sealed class PluginRequestDispatcherTests
             """{"planId":"plan-1","projectRevision":"r1"}"""));
 
         Assert.AreEqual("PLUGIN_OPERATION_FAILED", reply.FailureCode);
+        Assert.AreEqual(1, gateway.CancelCalls);
         CollectionAssert.AreEqual(
             new[]
             {
@@ -113,7 +122,8 @@ public sealed class PluginRequestDispatcherTests
             reply,
             surfaces,
             new FakePluginPackageSourcePicker(nativePath),
-            resources);
+            resources,
+            projectContext: ReadyContext);
         dispatcher.SetGateway(gateway);
 
         await dispatcher.DispatchAsync(Request(
@@ -122,9 +132,717 @@ public sealed class PluginRequestDispatcherTests
             """{"projectKey":"project-1","projectRevision":"r1","sourceLocation":"host-picker"}"""));
 
         Assert.AreEqual(nativePath, gateway.InspectRequest?.SourceLocation);
+        Assert.AreEqual("project-1", gateway.InspectRequest?.ProjectKey);
+        Assert.AreEqual("1", gateway.InspectRequest?.ProjectRevision);
         var plan = (PluginRuntimeInstallPlan)reply.Payload!;
         Assert.AreEqual(PluginRequestDispatcher.HostManagedSource, plan.SourceLocation);
         Assert.IsFalse(JsonSerializer.Serialize(reply.Payload).Contains(nativePath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task CommitRejectsAPlanFromAnOldAuthoritativeSessionBeforeGateway()
+    {
+        PluginProjectContext context = ReadyContext();
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            resources,
+            projectContext: () => context);
+        dispatcher.SetGateway(gateway);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-old-session",
+            """{"projectKey":"forged","projectRevision":"forged","sourceLocation":"host-picker"}"""));
+        context = context with { ProjectRevision = "2", SessionGeneration = 2 };
+        dispatcher.SetProjectContext(context);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.commit",
+            "commit-old-session",
+            """{"planId":"plan-1","projectRevision":"1"}"""));
+
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.IsNull(gateway.CommitRequest);
+        Assert.AreEqual("plan-1", gateway.CancelRequest?.PlanId);
+    }
+
+    [TestMethod]
+    public async Task TransitionCancelsActiveCommitAndSuppressesItsSuccessProjection()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        PluginProjectContext context = ReadyContext();
+        var pendingCommit = new TaskCompletionSource<PluginRuntimeSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var gateway = new FakePluginGateway { PendingCommit = pendingCommit };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            resources,
+            projectContext: () => context);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-active-commit",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+
+        Task committing = dispatcher.DispatchAsync(Request(
+            "plugin.install.commit",
+            "commit-active",
+            """{"planId":"plan-1","projectRevision":"1"}"""));
+        await gateway.CommitStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        context = context with { SessionGeneration = 2 };
+        dispatcher.SetProjectContext(context);
+        Assert.IsTrue(gateway.CommitToken.IsCancellationRequested);
+        await committing.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.AreNotEqual("plugin.install.commit", reply.ResponseType);
+        Assert.AreEqual(1, gateway.CancelCalls);
+    }
+
+    [TestMethod]
+    public async Task SuccessfulCommitCompletesOperationWithoutBackendCancel()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-successful-commit",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.commit",
+            "commit-successful",
+            """{"planId":"plan-1","projectRevision":"1"}"""));
+
+        Assert.AreEqual("plugin.install.commit", reply.ResponseType);
+        Assert.AreEqual(0, gateway.CancelCalls);
+    }
+
+    [TestMethod]
+    public async Task TransitionCancelsIgnoredTokenUpgradeAndCleansPlanExactlyOnce()
+    {
+        PluginProjectContext context = ReadyContext();
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var pendingUpgrade = new TaskCompletionSource<PluginRuntimeSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var gateway = new FakePluginGateway { PendingUpgrade = pendingUpgrade };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            resources,
+            projectContext: () => context);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-upgrade-transition",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+
+        Task upgrading = dispatcher.DispatchAsync(Request(
+            "plugin.lifecycle.upgrade",
+            "upgrade-transition",
+            """{"projectKey":"project-1","pluginId":"com.acme.clean","planId":"plan-1","projectRevision":"1"}"""));
+        await gateway.UpgradeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        context = context with { SessionGeneration = 2 };
+        dispatcher.SetProjectContext(context);
+        await upgrading.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.IsTrue(gateway.UpgradeToken.IsCancellationRequested);
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.AreEqual(1, gateway.CancelCalls);
+    }
+
+    [TestMethod]
+    public async Task SameProjectAndRevisionInANewSessionCancelAcceptedPlanAndDeletePackage()
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-new-session-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        PluginProjectContext context = ReadyContext();
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(downloadedPath),
+            projectContext: () => context);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-old-generation",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+
+        context = context with { SessionGeneration = 2 };
+        dispatcher.SetProjectContext(context);
+        await gateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("plan-1", gateway.CancelRequest?.PlanId);
+        Assert.AreEqual(1, gateway.CancelCalls);
+        Assert.IsFalse(File.Exists(downloadedPath));
+    }
+
+    [TestMethod]
+    public async Task ThrowingCleanupTraceCannotInterruptBackgroundPlanAndPackageRelease()
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-transition-sink-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        var time = new ManualTimeProvider();
+        var traces = new List<string>();
+        var traceObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        PluginProjectContext context = ReadyContext();
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway
+        {
+            PendingCancel = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(downloadedPath),
+            projectContext: () => context,
+            diagnosticTrace: message =>
+            {
+                traces.Add(message);
+                traceObserved.TrySetResult();
+                throw new InvalidOperationException("synthetic trace failure");
+            },
+            cleanupTimeout: TimeSpan.FromSeconds(1),
+            cleanupTimeProvider: time);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-before-throwing-terminal",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+
+        context = context with { SessionGeneration = 2 };
+        dispatcher.SetProjectContext(context);
+        await gateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.IsFalse(File.Exists(downloadedPath));
+        time.Advance(TimeSpan.FromSeconds(1));
+        await traceObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(1, gateway.CancelCalls);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "Plugin install cleanup failed; code=PLUGIN_INSTALL_CANCEL_TIMEOUT",
+            },
+            traces);
+        Assert.IsNull(reply.FailureCode);
+    }
+
+    [TestMethod]
+    public async Task UpgradePluginMismatchConsumesAndCancelsPlanBeforeGatewayUpgrade()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-upgrade-mismatch",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.lifecycle.upgrade",
+            "upgrade-mismatch",
+            """{"projectKey":"project-1","pluginId":"com.acme.other","planId":"plan-1","projectRevision":"1"}"""));
+
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.IsNull(gateway.UpgradeRequest);
+        Assert.AreEqual("plan-1", gateway.CancelRequest?.PlanId);
+    }
+
+    [TestMethod]
+    [DataRow("context")]
+    [DataRow("gateway")]
+    [DataRow("dispose")]
+    public async Task AdmissionRaceTransfersPlanAndPackageOwnershipExactlyOnce(string transition)
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-admit-race-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        var package = new DownloadedPluginPackage(
+            downloadedPath, "owner/repo", "v1", "plugin.vtplugin", new string('a', 64));
+        using var oldGateway = new FakePluginGateway();
+        using var newGateway = new FakePluginGateway();
+        using var authority = new ProductAuthorityEpoch();
+        var registry = new HostInstallPlanLeaseRegistry(authority);
+        PluginProjectContext context = ReadyContext();
+        registry.SetGateway(oldGateway, context);
+        HostInstallPlanBinding binding = registry.Capture()!;
+        PluginRuntimeInstallPlan plan = FakePluginGateway.InstallPlan("plan-race", "project-1", "1");
+        using var barrier = new Barrier(2);
+
+        Task<bool> admit = Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            return registry.TryAdmit(binding, plan, package, out _);
+        });
+        Task<IReadOnlyList<HostInstallPlanLease>> invalidate = Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            return transition switch
+            {
+                "context" => registry.SetContext(context with { SessionGeneration = 2 }),
+                "gateway" => registry.SetGateway(newGateway, context),
+                _ => registry.ClearGateway(oldGateway),
+            };
+        });
+        await Task.WhenAll(admit, invalidate);
+
+        HostInstallPlanLease owned = admit.Result
+            ? AssertSingle(invalidate.Result)
+            : new HostInstallPlanLease("plan-race", "com.acme.clean", binding, package);
+        await owned.Binding.Gateway.CancelInstallAsync(
+            new PluginInstallCancelParams(owned.PlanId), CancellationToken.None);
+        owned.Package?.Dispose();
+
+        Assert.AreEqual(1, oldGateway.CancelCalls);
+        Assert.IsFalse(File.Exists(downloadedPath));
+        Assert.IsFalse(registry.TryTake("plan-race", out _));
+    }
+
+    [TestMethod]
+    public async Task AuthorityTransitionAfterCommitLeasePreventsOldGatewayEntry()
+    {
+        using var authority = new ProductAuthorityEpoch();
+        PluginProjectContext context = ReadyContext();
+        authority.Transition(context);
+        using var gateway = new FakePluginGateway();
+        var registry = new HostInstallPlanLeaseRegistry(authority);
+        registry.SetGatewayAfterAuthorityTransition(gateway, context);
+        HostInstallPlanBinding binding = registry.Capture()!;
+        Assert.IsTrue(registry.TryAdmit(
+            binding,
+            FakePluginGateway.InstallPlan("plan-commit-race", "project-1", "1"),
+            null,
+            out _));
+        Assert.IsTrue(registry.TryBeginOperation(
+            "plan-commit-race",
+            null,
+            out HostInstallPlanOperation? operation,
+            out _));
+        await using HostInstallPlanOperation owned = operation!;
+        authority.Transition(context with { SessionGeneration = 2 });
+
+        bool started = authority.TryStart(
+            owned.Authority,
+            token => gateway.CommitInstallAsync(
+                new PluginCommitInstallParams("plan-commit-race", "1"),
+                token),
+            out Task<PluginRuntimeSnapshot>? pending);
+
+        Assert.IsFalse(started);
+        Assert.IsNull(pending);
+        Assert.IsNull(gateway.CommitRequest);
+        await owned.DisposeAsync();
+        Assert.AreEqual(1, gateway.CancelCalls);
+    }
+
+    [TestMethod]
+    public async Task NeverCompletingPlanCancelIsBudgetedAndStillReleasesLocalResources()
+    {
+        string packagePath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-cleanup-budget-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(packagePath, "downloaded");
+        var package = new DownloadedPluginPackage(
+            packagePath, "owner/repo", "v1", "plugin.vtplugin", new string('a', 64));
+        var time = new ManualTimeProvider();
+        var traces = new List<string>();
+        using var authority = new ProductAuthorityEpoch();
+        PluginProjectContext context = ReadyContext();
+        authority.Transition(context);
+        using var gateway = new FakePluginGateway
+        {
+            PendingCancel = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        var registry = new HostInstallPlanLeaseRegistry(
+            authority,
+            TimeSpan.FromSeconds(1),
+            time,
+            traces.Add);
+        registry.SetGatewayAfterAuthorityTransition(gateway, context);
+        HostInstallPlanBinding binding = registry.Capture()!;
+        Assert.IsTrue(registry.TryAdmit(
+            binding,
+            FakePluginGateway.InstallPlan("plan-budget", "project-1", "1"),
+            package,
+            out _));
+        Assert.IsTrue(registry.TryBeginOperation(
+            "plan-budget", null, out HostInstallPlanOperation? operation, out _));
+
+        ValueTask disposing = operation!.DisposeAsync();
+        await gateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        time.Advance(TimeSpan.FromSeconds(1));
+        await disposing.AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(1, gateway.CancelCalls);
+        Assert.IsTrue(gateway.CancelToken.IsCancellationRequested);
+        Assert.IsFalse(File.Exists(packagePath));
+        CollectionAssert.AreEqual(
+            new[] { "PLUGIN_INSTALL_CANCEL_TIMEOUT" }, traces);
+    }
+
+    [TestMethod]
+    public async Task StaleInspectionCancelUsesBudgetAndDeletesPackageBeforeRemoteCompletion()
+    {
+        string packagePath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-stale-budget-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(packagePath, "downloaded");
+        var time = new ManualTimeProvider();
+        var traces = new List<string>();
+        PluginProjectContext context = ReadyContext();
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var pendingInspection = new TaskCompletionSource<PluginRuntimeInstallPlan>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var oldGateway = new FakePluginGateway
+        {
+            PendingCancel = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        oldGateway.PendingInspections.Enqueue(pendingInspection);
+        using var newGateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(packagePath),
+            diagnosticTrace: message =>
+            {
+                traces.Add(message);
+                throw new InvalidOperationException("synthetic trace failure");
+            },
+            projectContext: () => context,
+            cleanupTimeout: TimeSpan.FromSeconds(1),
+            cleanupTimeProvider: time);
+        dispatcher.SetGateway(oldGateway);
+
+        Task inspection = dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-stale-budget",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+        await oldGateway.InspectStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        dispatcher.SetGateway(newGateway);
+        pendingInspection.SetResult(
+            FakePluginGateway.InstallPlan("plan-stale-budget", "project-1", "1"));
+        await oldGateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.IsFalse(File.Exists(packagePath));
+        time.Advance(TimeSpan.FromSeconds(1));
+        await inspection.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.AreEqual(1, oldGateway.CancelCalls);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "Plugin install cleanup failed; code=PLUGIN_INSTALL_CANCEL_TIMEOUT",
+            },
+            traces);
+    }
+
+    [TestMethod]
+    public async Task ExplicitCancelUsesBudgetAndDeletesPackageBeforeRemoteCompletion()
+    {
+        string packagePath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-explicit-budget-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(packagePath, "downloaded");
+        var time = new ManualTimeProvider();
+        var traces = new List<string>();
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway
+        {
+            PendingCancel = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(packagePath),
+            diagnosticTrace: message =>
+            {
+                traces.Add(message);
+                throw new InvalidOperationException("synthetic trace failure");
+            },
+            projectContext: ReadyContext,
+            cleanupTimeout: TimeSpan.FromSeconds(1),
+            cleanupTimeProvider: time);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-explicit-budget",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+
+        Task cancelling = dispatcher.DispatchAsync(Request(
+            "plugin.install.cancel",
+            "cancel-explicit-budget",
+            """{"planId":"plan-1"}"""));
+        await gateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.IsFalse(File.Exists(packagePath));
+        time.Advance(TimeSpan.FromSeconds(1));
+        await cancelling.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(new PluginInstallCancelResult(true), reply.Payload);
+        Assert.AreEqual(1, gateway.CancelCalls);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "Plugin install cleanup failed; code=PLUGIN_INSTALL_CANCEL_TIMEOUT",
+            },
+            traces);
+    }
+
+    [TestMethod]
+    public async Task ExplicitCancelCallerCancellationIsReportedAndStillObserved()
+    {
+        string packagePath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-explicit-caller-cancel-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(packagePath, "downloaded");
+        int diagnosticCalls = 0;
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway
+        {
+            PendingCancel = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(packagePath),
+            diagnosticTrace: _ =>
+            {
+                diagnosticCalls += 1;
+                throw new InvalidOperationException("synthetic trace failure");
+            },
+            projectContext: ReadyContext,
+            cleanupTimeout: TimeSpan.FromMinutes(1));
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-before-caller-cancel",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+
+        using var caller = new CancellationTokenSource();
+        Task cancelling = dispatcher.DispatchAsync(Request(
+            "plugin.install.cancel",
+            "cancel-by-caller",
+            """{"planId":"plan-1"}"""), caller.Token);
+        await gateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(File.Exists(packagePath));
+
+        caller.Cancel();
+        await cancelling.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("PLUGIN_REQUEST_CANCELLED", reply.FailureCode);
+        Assert.AreEqual(1, gateway.CancelCalls);
+        Assert.AreEqual(0, diagnosticCalls);
+    }
+
+    [TestMethod]
+    public async Task CleanupDeadlineReturnsFalseAndObservesPendingRemoteCancel()
+    {
+        var time = new ManualTimeProvider();
+        var traces = new List<string>();
+        using var gateway = new FakePluginGateway
+        {
+            PendingCancel = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        var cleanup = new HostInstallPlanCleanup(
+            TimeSpan.FromSeconds(1),
+            time,
+            traces.Add);
+
+        Task<bool> cancelling = cleanup.CancelRemoteAsync(gateway, "plan-deadline");
+        await gateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        time.Advance(TimeSpan.FromSeconds(1));
+
+        Assert.IsFalse(await cancelling.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.AreEqual(1, gateway.CancelCalls);
+        CollectionAssert.AreEqual(
+            new[] { "PLUGIN_INSTALL_CANCEL_TIMEOUT" },
+            traces);
+    }
+
+    [TestMethod]
+    public async Task SynchronouslyFaultedRemoteCancelIsObservedAndTraceCannotEscape()
+    {
+        var traces = new List<string>();
+        using var gateway = new FakePluginGateway
+        {
+            CancelFailure = new InvalidOperationException("synthetic synchronous failure"),
+        };
+        var cleanup = new HostInstallPlanCleanup(
+            TimeSpan.FromSeconds(1),
+            TimeProvider.System,
+            code =>
+            {
+                traces.Add(code);
+                throw new InvalidOperationException("synthetic trace failure");
+            });
+
+        bool cancelled = await cleanup.CancelRemoteAsync(gateway, "plan-sync-fault");
+
+        Assert.IsFalse(cancelled);
+        Assert.AreEqual(1, gateway.CancelCalls);
+        CollectionAssert.AreEqual(
+            new[] { "PLUGIN_INSTALL_CANCEL_FAILED" },
+            traces);
+    }
+
+    private static HostInstallPlanLease AssertSingle(IReadOnlyList<HostInstallPlanLease> leases)
+    {
+        Assert.AreEqual(1, leases.Count);
+        return leases[0];
+    }
+
+    [TestMethod]
+    public async Task InspectFromAReplacedGatewayCannotBeAdmitted()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var oldGateway = new FakePluginGateway();
+        using var newGateway = new FakePluginGateway();
+        var pendingPlan = new TaskCompletionSource<PluginRuntimeInstallPlan>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        oldGateway.PendingInspections.Enqueue(pendingPlan);
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(oldGateway);
+
+        Task pending = dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-old-gateway",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+        await oldGateway.InspectStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        dispatcher.SetGateway(newGateway);
+        pendingPlan.SetResult(FakePluginGateway.InstallPlan("plan-old", "project-1", "1"));
+        await pending;
+
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.AreEqual("plan-old", oldGateway.CancelRequest?.PlanId);
+        Assert.IsNull(newGateway.CancelRequest);
+    }
+
+    [TestMethod]
+    [DataRow("context")]
+    [DataRow("gateway")]
+    [DataRow("dispose")]
+    public async Task PendingRemoteInspectionCannotCrossLifecycleTransition(string transition)
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(), $"vibetable-pending-transition-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        PluginProjectContext context = ReadyContext();
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var oldGateway = new FakePluginGateway();
+        using var newGateway = new FakePluginGateway();
+        var pendingPlan = new TaskCompletionSource<PluginRuntimeInstallPlan>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        oldGateway.PendingInspections.Enqueue(pendingPlan);
+        var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(downloadedPath),
+            projectContext: () => context);
+        dispatcher.SetGateway(oldGateway);
+
+        Task pending = dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            $"inspect-before-{transition}",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+        await oldGateway.InspectStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        switch (transition)
+        {
+            case "context":
+                context = context with { SessionGeneration = 2 };
+                dispatcher.SetProjectContext(context);
+                break;
+            case "gateway":
+                dispatcher.SetGateway(newGateway);
+                break;
+            default:
+                dispatcher.Dispose();
+                break;
+        }
+        pendingPlan.SetResult(FakePluginGateway.InstallPlan("plan-old", "project-1", "1"));
+        await pending;
+        await oldGateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.AreEqual("plan-old", oldGateway.CancelRequest?.PlanId);
+        Assert.AreEqual(1, oldGateway.CancelCalls);
+        Assert.IsNull(newGateway.CancelRequest);
+        Assert.IsFalse(File.Exists(downloadedPath));
+        dispatcher.Dispose();
     }
 
     [TestMethod]
@@ -168,7 +886,8 @@ public sealed class PluginRequestDispatcherTests
             new FakePluginPackageSourcePicker(null),
             resources,
             filePicker: null,
-            githubSource: github);
+            githubSource: github,
+            projectContext: ReadyContext);
         dispatcher.SetGateway(gateway);
 
         await dispatcher.DispatchAsync(Request(
@@ -188,6 +907,171 @@ public sealed class PluginRequestDispatcherTests
             """{"planId":"plan-1"}"""));
 
         Assert.AreEqual(new PluginInstallCancelResult(true), reply.Payload);
+        Assert.AreEqual("plan-1", gateway.CancelRequest?.PlanId);
+        Assert.IsFalse(File.Exists(downloadedPath));
+    }
+
+    [TestMethod]
+    public async Task CancelReleasesRemotePackageAndReturnsOwnedWhenBackendCleanupFails()
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-plugin-download-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway
+        {
+            CancelFailure = new InvalidOperationException("backend cleanup failed"),
+        };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(downloadedPath),
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-github-failure",
+            """{"projectKey":"project-1","projectRevision":"r1","repository":"owner/repo"}"""));
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.cancel",
+            "cancel-github-failure",
+            """{"planId":"plan-1"}"""));
+
+        Assert.AreEqual(new PluginInstallCancelResult(true), reply.Payload);
+        Assert.IsNull(reply.FailureCode);
+        Assert.AreEqual("plan-1", gateway.CancelRequest?.PlanId);
+        Assert.IsFalse(File.Exists(downloadedPath));
+    }
+
+    [TestMethod]
+    public async Task ReplacingGatewayCancelsBackendPlanAndReleasesRemotePackage()
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-plugin-download-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var oldGateway = new FakePluginGateway();
+        using var replacementGateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(downloadedPath),
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(oldGateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-before-rebind",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+
+        dispatcher.SetGateway(replacementGateway);
+        await oldGateway.CancelObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("plan-1", oldGateway.CancelRequest?.PlanId);
+        Assert.IsFalse(File.Exists(downloadedPath));
+        Assert.IsFalse(ReferenceEquals(oldGateway, replacementGateway));
+    }
+
+    [TestMethod]
+    public async Task CancelAndDisposeRaceStillReleaseRemotePackage()
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-plugin-download-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(downloadedPath),
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-before-dispose-race",
+            """{"projectKey":"project-1","projectRevision":"1","repository":"owner/repo"}"""));
+        using var barrier = new Barrier(2);
+
+        Task cancel = Task.Run(async () =>
+        {
+            barrier.SignalAndWait();
+            try
+            {
+                await dispatcher.DispatchAsync(Request(
+                    "plugin.install.cancel",
+                    "cancel-dispose-race",
+                    """{"planId":"plan-1"}"""));
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose won the barrier; it owns the same cleanup transfer.
+            }
+        });
+        Task dispose = Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            dispatcher.Dispose();
+        });
+        await Task.WhenAll(cancel, dispose);
+
+        Assert.IsFalse(File.Exists(downloadedPath));
+    }
+
+    [TestMethod]
+    public async Task ANewInspectionDoesNotReleaseAnUnrelatedRemotePlan()
+    {
+        string downloadedPath = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-plugin-download-{Guid.NewGuid():N}.vtplugin");
+        File.WriteAllText(downloadedPath, "downloaded");
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        gateway.InspectPlanIds.Enqueue("plan-remote");
+        gateway.InspectPlanIds.Enqueue("plan-local");
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\local-plugin"),
+            resources,
+            filePicker: null,
+            githubSource: new FakeGitHubPluginPackageSource(downloadedPath),
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.github.inspect",
+            "inspect-remote",
+            """{"projectKey":"project-1","projectRevision":"r1","repository":"owner/repo"}"""));
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.inspect",
+            "inspect-local",
+            """{"projectKey":"project-1","projectRevision":"r1","sourceLocation":"host-picker"}"""));
+
+        Assert.IsTrue(File.Exists(downloadedPath));
+        await dispatcher.DispatchAsync(Request(
+            "plugin.install.cancel",
+            "cancel-remote",
+            """{"planId":"plan-remote"}"""));
         Assert.IsFalse(File.Exists(downloadedPath));
     }
 
@@ -343,7 +1227,8 @@ public sealed class PluginRequestDispatcherTests
             string? requestId,
             string message,
             string? code = null,
-            string? operation = null)
+            string? operation = null,
+            string? operationId = null)
         {
             RequestId = requestId;
             FailureCode = code;
@@ -405,8 +1290,29 @@ public sealed class PluginRequestDispatcherTests
 
         public int ListCalls { get; private set; }
         public PluginInspectInstallParams? InspectRequest { get; private set; }
+        public Queue<string> InspectPlanIds { get; } = new();
+        public Queue<TaskCompletionSource<PluginRuntimeInstallPlan>> PendingInspections { get; } = new();
+        public TaskCompletionSource InspectStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CancelObserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public PluginInstallCancelParams? CancelRequest { get; private set; }
+        public int CancelCalls { get; private set; }
+        public PluginCommitInstallParams? CommitRequest { get; private set; }
+        public TaskCompletionSource CommitStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<PluginRuntimeSnapshot>? PendingCommit { get; set; }
+        public CancellationToken CommitToken { get; private set; }
+        public PluginUpgradeParams? UpgradeRequest { get; private set; }
+        public TaskCompletionSource UpgradeStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<PluginRuntimeSnapshot>? PendingUpgrade { get; set; }
+        public CancellationToken UpgradeToken { get; private set; }
         public PluginRuntimeSnapshot CatalogSnapshot { get; set; } = DefaultSnapshot;
         public Exception? CommitFailure { get; init; }
+        public Exception? CancelFailure { get; init; }
+        public TaskCompletionSource<bool>? PendingCancel { get; init; }
+        public CancellationToken CancelToken { get; private set; }
         public TaskCompletionSource<PluginResolveFileParams> FileResolution { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         private Action<PluginEventEnvelope>? _catalogChanged;
@@ -473,19 +1379,56 @@ public sealed class PluginRequestDispatcherTests
         public Task<PluginRuntimeInstallPlan> InspectInstallAsync(PluginInspectInstallParams request, CancellationToken token)
         {
             InspectRequest = request;
-            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeInstallPlan(
-                "plan-1", "project-1", "1", "package", "package.vtplugin",
-                DefaultSnapshot.PackageHash, Manifest,
-                new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>()));
+            InspectStarted.TrySetResult();
+            if (PendingInspections.TryDequeue(out TaskCompletionSource<PluginRuntimeInstallPlan>? pending))
+            {
+                return pending.Task;
+            }
+            string planId = InspectPlanIds.TryDequeue(out string? configuredPlanId)
+                ? configuredPlanId
+                : "plan-1";
+            return System.Threading.Tasks.Task.FromResult(InstallPlan(
+                planId, request.ProjectKey, request.ProjectRevision));
         }
+
+        public static PluginRuntimeInstallPlan InstallPlan(
+            string planId,
+            string projectKey,
+            string projectRevision) => new(
+                planId, projectKey, projectRevision, "package", "package.vtplugin",
+                DefaultSnapshot.PackageHash, Manifest,
+                new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>());
         public Task<PluginRuntimeSnapshot> CommitInstallAsync(PluginCommitInstallParams request, CancellationToken token)
-            => CommitFailure is null
+        {
+            CommitRequest = request;
+            CommitToken = token;
+            CommitStarted.TrySetResult();
+            if (PendingCommit is not null) return PendingCommit.Task;
+            return CommitFailure is null
                 ? System.Threading.Tasks.Task.FromResult(CatalogSnapshot)
                 : System.Threading.Tasks.Task.FromException<PluginRuntimeSnapshot>(CommitFailure);
+        }
+        public Task<bool> CancelInstallAsync(PluginInstallCancelParams request, CancellationToken token)
+        {
+            CancelCalls += 1;
+            CancelRequest = request;
+            CancelToken = token;
+            CancelObserved.TrySetResult();
+            if (PendingCancel is not null) return PendingCancel.Task;
+            return CancelFailure is null
+                ? System.Threading.Tasks.Task.FromResult(true)
+                : System.Threading.Tasks.Task.FromException<bool>(CancelFailure);
+        }
         public Task<PluginRuntimeSnapshot> SetEnabledAsync(PluginSetEnabledParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
         public Task<PluginRuntimeSnapshot> UpgradeAsync(PluginUpgradeParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        {
+            UpgradeRequest = request;
+            UpgradeToken = token;
+            UpgradeStarted.TrySetResult();
+            return PendingUpgrade?.Task
+                ?? System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        }
         public Task<PluginRuntimeSnapshot> RollbackAsync(PluginRollbackParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
         public Task<PluginRuntimeUninstallResult> UninstallAsync(PluginUninstallParams request, CancellationToken token)

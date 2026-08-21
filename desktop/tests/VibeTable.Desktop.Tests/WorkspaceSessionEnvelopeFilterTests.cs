@@ -578,6 +578,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             new TableWorkspaceService(new FakeTableRpcGateway()),
             new FakeDatabasePicker("local://configured"),
             sink,
+            NoDatabaseOpenRoute.Instance,
             readRecoveryTimeout: TimeSpan.FromMilliseconds(750),
             sessionEnvelopeFilter: filter);
 

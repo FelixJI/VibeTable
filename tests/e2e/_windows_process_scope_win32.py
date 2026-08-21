@@ -13,6 +13,7 @@ from ctypes import wintypes
 from pathlib import PureWindowsPath
 from typing import IO, Protocol
 
+from tests.e2e._windows_tcp_table import WindowsTcpRow, query_windows_tcp_table
 from tests.e2e.windows_process_scope import ProcessLaunchSpec
 
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
@@ -343,6 +344,62 @@ class _Win32MemberHandle:
 
     def close(self) -> None:
         self._process.close()
+
+
+class _Win32TcpListenerOwnerHandle:
+    def __init__(self, process: _OwnedHandle, pid: int, name: str) -> None:
+        self._process = process
+        self.pid = pid
+        self.name = name
+
+    def wait(self, timeout: float) -> bool:
+        result = int(kernel32.WaitForSingleObject(self._process.value, _milliseconds(timeout)))
+        if result == WAIT_TIMEOUT:
+            return False
+        if result != WAIT_OBJECT_0:
+            raise ctypes.WinError(ctypes.get_last_error(), "WaitForSingleObject(listener owner)")
+        return True
+
+    def close(self) -> None:
+        self._process.close()
+
+
+class _Win32TcpListenerOwnerAdapter:
+    """Read TCP rows and open a non-terminating stable owner handle."""
+
+    @staticmethod
+    def query_listeners(port: int, *, timeout: float) -> tuple[WindowsTcpRow, ...]:
+        return tuple(
+            row for row in query_windows_tcp_table(timeout=timeout) if row.is_listener_on(port)
+        )
+
+    @staticmethod
+    def open_owner(pid: int) -> _Win32TcpListenerOwnerHandle:
+        access = PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+        handle = kernel32.OpenProcess(access, False, pid)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error(), f"OpenProcess({pid})")
+        process = _OwnedHandle(int(handle))
+        try:
+            capacity = wintypes.DWORD(32768)
+            path = ctypes.create_unicode_buffer(capacity.value)
+            _check(
+                kernel32.QueryFullProcessImageNameW(
+                    process.value,
+                    0,
+                    path,
+                    ctypes.byref(capacity),
+                ),
+                f"QueryFullProcessImageNameW({pid})",
+            )
+            return _Win32TcpListenerOwnerHandle(
+                process,
+                pid,
+                PureWindowsPath(path.value).name,
+            )
+        except BaseException:
+            process.close()
+            raise
 
 
 class _QueryJobInformation(Protocol):

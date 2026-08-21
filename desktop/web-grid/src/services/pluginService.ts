@@ -16,10 +16,28 @@ import type {
 } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
 import { usePluginStore } from "@/stores/pluginStore";
+import {
+  PluginInstallPlanLease,
+  PluginInstallPlanStaleError,
+  PluginProjectNotReadyError,
+  type PluginProjectContext,
+} from "./pluginInstallPlanLease";
+
+const installPlanLeases = new WeakMap<object, PluginInstallPlanLease>();
+
+function installPlanLeaseFor(owner: object): PluginInstallPlanLease {
+  const existing = installPlanLeases.get(owner);
+  if (existing) return existing;
+  const created = new PluginInstallPlanLease();
+  installPlanLeases.set(owner, created);
+  return created;
+}
 
 export interface PluginService {
   init(): void;
   dispose(): void;
+  openProjectContext(projectKey: string, projectRevision: string): void;
+  updateProjectRevision(projectRevision: string): void;
   list(): Promise<readonly PluginSnapshot[]>;
   listAudit(pluginId: string): Promise<readonly PluginAuditEvent[]>;
   listPendingCleanup(): Promise<readonly PluginAuditEvent[]>;
@@ -72,6 +90,7 @@ export function createPluginCommandContext(input: {
 export function usePluginService(): PluginService {
   const bridge = useHostBridge();
   const store = usePluginStore();
+  const installPlanLease = installPlanLeaseFor(store);
   let initialized = false;
   let unsubscribe: Array<() => void> = [];
   const taskPollers = new Map<string, { cancelled: boolean }>();
@@ -113,6 +132,7 @@ export function usePluginService(): PluginService {
     payload: WebPayloadMap[K],
     options: { readonly errorPolicy?: RequestErrorPolicy } = {},
   ): Promise<T> {
+    ensureProjectReady();
     const errorPolicy = options.errorPolicy ?? "foreground";
     store.startBusy(errorPolicy === "foreground");
     try {
@@ -142,44 +162,110 @@ export function usePluginService(): PluginService {
   }
 
   async function inspectInstall(sourceLocation: string): Promise<PluginInstallPlan> {
-    const plan = await call<"plugin.install.inspect", PluginInstallPlan>("plugin.install.inspect", {
+    return inspectPlan("plugin.install.inspect", { sourceLocation });
+  }
+
+  function currentInstallPlanContext(): PluginProjectContext {
+    return {
+      ready: store.projectContextReady,
       projectKey: store.projectKey,
       projectRevision: store.projectRevision,
-      sourceLocation,
-    });
-    store.setInstallPlan(plan);
-    return plan;
+      generation: store.projectContextGeneration,
+    };
+  }
+
+  function ensureProjectReady(): PluginProjectContext {
+    const context = currentInstallPlanContext();
+    if (!context.ready || !context.projectKey || !context.projectRevision) {
+      const error = new PluginProjectNotReadyError();
+      store.fail(error);
+      throw error;
+    }
+    return context;
+  }
+
+  async function inspectPlan(
+    type: "plugin.install.inspect" | "plugin.install.github.inspect",
+    payload: { readonly sourceLocation: string } | { readonly repository: string },
+  ): Promise<PluginInstallPlan> {
+    const context = ensureProjectReady();
+    const { inspection, releasedPlan } = installPlanLease.begin(context);
+    syncInstallPlan();
+    store.startBusy();
+    if (releasedPlan) await releaseInstallPlan(releasedPlan.planId);
+    try {
+      const plan = type === "plugin.install.inspect"
+        ? await bridge.request(type, {
+          projectKey: context.projectKey,
+          projectRevision: context.projectRevision,
+          sourceLocation: "sourceLocation" in payload ? payload.sourceLocation : "",
+        })
+        : await bridge.request(type, {
+          projectKey: context.projectKey,
+          projectRevision: context.projectRevision,
+          repository: "repository" in payload ? payload.repository : "",
+        });
+      if (!installPlanLease.admit(inspection, currentInstallPlanContext(), plan)) {
+        await releaseInstallPlan(plan.planId);
+        throw new PluginInstallPlanStaleError();
+      }
+      syncInstallPlan();
+      store.finishBusy();
+      return plan;
+    } catch (error) {
+      if (installPlanLease.fail(inspection)) store.fail(error);
+      throw error;
+    }
   }
 
   async function inspectGitHubInstall(repository: string): Promise<PluginInstallPlan> {
-    const plan = await call<"plugin.install.github.inspect", PluginInstallPlan>(
-      "plugin.install.github.inspect",
-      {
-        projectKey: store.projectKey,
-        projectRevision: store.projectRevision,
-        repository,
-      },
-    );
-    store.setInstallPlan(plan);
-    return plan;
+    return inspectPlan("plugin.install.github.inspect", { repository });
   }
 
   async function cancelInstall(planId: string): Promise<boolean> {
-    const result = await call<"plugin.install.cancel", { readonly cancelled: boolean }>(
-      "plugin.install.cancel",
-      { planId },
-    );
-    return result.cancelled;
+    installPlanLease.release(planId);
+    syncInstallPlan();
+    try {
+      const result = await call<"plugin.install.cancel", { readonly cancelled: boolean }>(
+        "plugin.install.cancel",
+        { planId },
+      );
+      return result.cancelled;
+    } finally { syncInstallPlan(); }
   }
 
   async function commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot> {
+    const consumed = consumeInstallPlan(plan);
     const snapshot = await call<"plugin.install.commit", PluginSnapshot>("plugin.install.commit", {
-      planId: plan.planId,
+      planId: consumed.planId,
       projectRevision: store.projectRevision,
     });
     store.applyPlugin(snapshot);
-    store.setInstallPlan(null);
     return snapshot;
+  }
+
+  async function releaseInstallPlan(planId: string): Promise<void> {
+    try {
+      await bridge.request("plugin.install.cancel", { planId });
+    } catch { /* best effort: the invalidated plan is already unusable locally */ }
+  }
+
+  function releaseChangedContextPlan(plan: PluginInstallPlan | null): void {
+    if (plan) void releaseInstallPlan(plan.planId);
+  }
+
+  function openProjectContext(projectKey: string, projectRevision: string): void {
+    const releasedPlan = installPlanLease.invalidate();
+    store.setProjectContext(projectKey, projectRevision);
+    syncInstallPlan();
+    releaseChangedContextPlan(releasedPlan);
+  }
+
+  function updateProjectRevision(projectRevision: string): void {
+    if (!store.updateProjectRevision(projectRevision)) return;
+    const releasedPlan = installPlanLease.invalidate();
+    syncInstallPlan();
+    releaseChangedContextPlan(releasedPlan);
   }
 
   async function applyPluginRequest<K extends
@@ -190,6 +276,41 @@ export function usePluginService(): PluginService {
     const snapshot = await call<K, PluginSnapshot>(type, payload);
     store.applyPlugin(snapshot);
     return snapshot;
+  }
+
+  async function upgrade(
+    plugin: PluginSnapshot,
+    plan: PluginInstallPlan,
+  ): Promise<PluginSnapshot> {
+    const consumed = consumeInstallPlan(plan);
+    if (consumed.manifest.pluginId !== plugin.pluginId) {
+      await releaseInstallPlan(consumed.planId);
+      const error = new PluginInstallPlanStaleError();
+      store.fail(error);
+      throw error;
+    }
+    const snapshot = await applyPluginRequest("plugin.lifecycle.upgrade", {
+      projectKey: plugin.projectKey,
+      pluginId: plugin.pluginId,
+      planId: consumed.planId,
+      projectRevision: store.projectRevision,
+    });
+    return snapshot;
+  }
+
+  function consumeInstallPlan(plan: PluginInstallPlan): PluginInstallPlan {
+    try {
+      const consumed = installPlanLease.consume(plan, ensureProjectReady());
+      syncInstallPlan();
+      return consumed;
+    } catch (error) {
+      store.fail(error);
+      throw error;
+    }
+  }
+
+  function syncInstallPlan(): void {
+    store.projectInstallPlan(installPlanLease.plan);
   }
 
   async function getTask(taskId: string): Promise<PluginTaskViewSnapshot> {
@@ -250,6 +371,8 @@ export function usePluginService(): PluginService {
   return {
     init,
     dispose,
+    openProjectContext,
+    updateProjectRevision,
     list,
     listAudit: (pluginId) => call(
       "plugin.audit.list",
@@ -275,12 +398,7 @@ export function usePluginService(): PluginService {
       pluginId: plugin.pluginId,
       enabled,
     }),
-    upgrade: (plugin, plan) => applyPluginRequest("plugin.lifecycle.upgrade", {
-      projectKey: plugin.projectKey,
-      pluginId: plugin.pluginId,
-      planId: plan.planId,
-      projectRevision: store.projectRevision,
-    }),
+    upgrade,
     rollback: (plugin) => applyPluginRequest("plugin.lifecycle.rollback", {
       projectKey: plugin.projectKey,
       pluginId: plugin.pluginId,
