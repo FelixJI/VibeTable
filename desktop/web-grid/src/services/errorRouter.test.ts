@@ -50,7 +50,7 @@ describe("errorRouter", () => {
   // the architecture-debt note from the task brief.
   afterEach(() => setHostBridgeForTesting(null));
 
-  it("routes operation.failed to tableAdmin only after create submission", () => {
+  it("leaves create failures to the correlated tableAdmin request", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);
     const admin = useTableAdminStore();
@@ -60,10 +60,29 @@ describe("errorRouter", () => {
     const router = useErrorRouter();
     router.init();
     emit("operation.failed", { message: "bad name", code: "X" });
-    expect(admin.phase).toBe("failed");
-    expect(admin.error).toBe("bad name");
-    // fallback store should NOT have received it
-    expect(table.error).toBeNull();
+    expect(admin.phase).toBe("submitting");
+    expect(admin.error).toBeNull();
+    expect(table.error).toBe("bad name");
+  });
+
+  it("does not infer tableAdmin ownership from an uncorrelated failure", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const admin = useTableAdminStore();
+    const table = useTableStore();
+    admin.openCreate();
+    admin.beginSubmit();
+    const router = useErrorRouter();
+    router.init();
+
+    emit("operation.failed", {
+      message: "Workspace operation failed.",
+      code: "WORKSPACE_ERROR",
+    });
+
+    expect(admin.phase).toBe("submitting");
+    expect(admin.error).toBeNull();
+    expect(table.error).toBe("Workspace operation failed.");
   });
 
   it("does not claim unrelated failures while the create form is only being edited", () => {
@@ -82,15 +101,18 @@ describe("errorRouter", () => {
     expect(table.error).toBe("table load failed");
   });
 
-  it("routes to tableAdmin when deleting", () => {
+  it("leaves delete failures to the correlated tableAdmin request", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);
     const admin = useTableAdminStore();
+    const table = useTableStore();
     admin.requestDelete("users");
     const router = useErrorRouter();
     router.init();
     emit("operation.failed", { message: "cannot delete", code: "X" });
-    expect(admin.phase).toBe("failed");
+    expect(admin.phase).toBe("deleting");
+    expect(admin.error).toBeNull();
+    expect(table.error).toBe("cannot delete");
   });
 
   it("routes to pasteStore when applying", () => {

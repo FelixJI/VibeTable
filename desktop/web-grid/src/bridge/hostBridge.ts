@@ -127,7 +127,8 @@ type WebPayloadMap =
 export type DiagnosticKind =
   | "unknown-type"
   | "malformed"
-  | "mismatched-response";
+  | "mismatched-response"
+  | "orphaned-response";
 
 export interface Diagnostic {
   readonly kind: DiagnosticKind;
@@ -202,9 +203,11 @@ export class BridgeTimeoutError extends Error {
 export class BridgeOperationError extends Error {
   public override readonly name = "BridgeOperationError";
   public readonly code?: string;
+  public readonly operation?: string;
   public constructor(payload: OperationFailedPayload) {
     super(payload.message);
     this.code = payload.code;
+    this.operation = payload.operation;
   }
 }
 
@@ -217,6 +220,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
 >([
   "host.startupStateChanged",
   "database.opened",
+  "database.openCancelled",
+  "plugin.projectContext.unavailable",
   "table.pageLoaded",
   "table.datasetReady",
   "table.windowLoaded",
@@ -265,6 +270,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "file.uploadRequested",
   "file.replaceRequested",
   "file.removeRequested",
+  "file.previewRequested",
+  "file.downloadRequested",
   "events.reconcile",
   "schema.describe",
   "relation.searchTargets",
@@ -483,7 +490,7 @@ function clearPendingTimer(entry: Pending): void {
 const RESPONSE_TYPE_OVERRIDES: Readonly<
   Partial<Record<WebMessageType, readonly HostMessageType[]>>
 > = {
-  "database.openRequested": ["database.opened"],
+  "database.openRequested": ["database.opened", "database.openCancelled"],
   "table.selected": ["table.editSchemaLoaded"],
   "table.updateCellRequested": ["table.editCommitted", "table.editRejected"],
   "table.insertRowRequested": ["table.rowsInserted"],
@@ -528,6 +535,14 @@ const HOST_OWNED_WORKSPACE_LIFECYCLE_METHODS = new Set([
   "workspace.switch",
   "workspace.close",
   "snapshot.openAsNewWorkspace",
+]);
+const HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+  "tableAdmin.createRequested",
+  "tableAdmin.deleteRequested",
+]);
+const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+  "file.previewRequested",
+  "file.downloadRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
@@ -797,8 +812,9 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     }
 
     // --- Resolve pending request (if any) --------------------------------
-    // Only a real string requestId can match a pending request(). null (the
-    // PostReply-with-null shape) and undefined (PostNotification shape) fall
+    // A real string requestId belongs exclusively to the correlated RPC
+    // domain. null (the PostReply-with-null shape) and undefined
+    // (PostNotification shape) belong to the notification domain and fall
     // through to the handler fan-out below.
     if (typeof requestId === "string") {
       const entry = pending.get(requestId);
@@ -835,6 +851,17 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         // branch has a requestId, we return after resolving the request.
         return;
       }
+      // A response for an already-settled or unknown request must never be
+      // reinterpreted as a global notification. In particular, a late
+      // operation.failed would otherwise contaminate unrelated UI stores.
+      onDiagnostic({
+        kind: "orphaned-response",
+        type,
+        reason:
+          `inbound response has no pending request ` +
+          `(requestId=${requestId})`,
+      });
+      return;
     }
 
     // --- Fan out to typed handlers ---------------------------------------
@@ -964,6 +991,10 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           ? nativePickerTimeoutMs
           : type === "workspace.v2.request"
               && isHostOwnedWorkspaceLifecycleRequest(payload)
+            ? null
+          : HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES.has(type)
+            ? null
+          : HOST_OWNED_NATIVE_ACTION_MESSAGES.has(type)
             ? null
           : type === "workspace.v2.request" && isWorkspaceBootstrapRequest(payload)
             ? workspaceBootstrapTimeoutMs
@@ -1143,6 +1174,9 @@ function normalizeFailure(payload: unknown): OperationFailedPayload {
       message: payload.message,
       ...(typeof payload.code === "string"
         ? { code: payload.code }
+        : {}),
+      ...(typeof payload.operation === "string"
+        ? { operation: payload.operation }
         : {}),
     };
   }

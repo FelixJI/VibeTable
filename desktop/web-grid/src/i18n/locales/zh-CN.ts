@@ -573,6 +573,7 @@ export const messages: Record<string, string> = {
   "workspace.attachment.staleRow": "缺少最新行版本，请刷新后重试",
   "workspace.attachment.title": "附件",
   "workspace.attachment.loading": "正在读取附件…",
+  "workspace.attachment.previewUnavailable": "系统没有为此文件类型注册安全预览器。",
   "workspace.attachment.error.timeout": "附件操作超时，请重试。",
   "workspace.attachment.error.cancelled": "附件操作已取消。",
   "workspace.attachment.error.picker": "无法打开文件选择器，请重试。",

@@ -573,6 +573,7 @@ export const messages: Record<string, string> = {
   "workspace.attachment.staleRow": "The latest row version is missing. Refresh and try again.",
   "workspace.attachment.title": "Attachments",
   "workspace.attachment.loading": "Loading attachments…",
+  "workspace.attachment.previewUnavailable": "No safe preview handler is registered for this file type.",
   "workspace.attachment.error.timeout": "The attachment operation timed out. Try again.",
   "workspace.attachment.error.cancelled": "The attachment operation was cancelled.",
   "workspace.attachment.error.picker": "The file picker could not be opened. Try again.",

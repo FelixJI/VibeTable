@@ -58,6 +58,8 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     public Task<JsonElement> DeleteRecordDocumentLinkAsync(JsonElement p, CancellationToken t) => Invoke("recordDocumentLink.delete", p, t);
     public Task<JsonElement> QueryPageAsync(JsonElement p, CancellationToken t) => Invoke("query.page", p, t);
     public Task<JsonElement> OpenQueryCursorAsync(JsonElement p, CancellationToken t) => Invoke("query.cursorOpen", p, t);
+    public Task<JsonElement> OpenSelectionProjectionAsync(JsonElement p, CancellationToken t) =>
+        Invoke("query.selectionOpen", p, t);
     public Task<JsonElement> FetchQueryCursorAsync(JsonElement p, CancellationToken t) => Invoke("query.cursorFetch", p, t);
     public Task<JsonElement> QueryViewAsync(JsonElement p, CancellationToken t) => Invoke("query.view", p, t);
     public Task<JsonElement> ReadRowsAsync(JsonElement p, CancellationToken t) => Invoke("query.readRows", p, t);

@@ -28,5 +28,10 @@ public interface IWebReplySink
     /// Posts an <c>operation.failed</c> reply correlated to the inbound
     /// <paramref name="requestId"/> (or uncorrelated when null).
     /// </summary>
-    void PostOperationFailed(string? requestId, string message, string? code = null);
+    void PostOperationFailed(
+        string? requestId,
+        string message,
+        string? code = null,
+        string? operation = null,
+        string? operationId = null);
 }

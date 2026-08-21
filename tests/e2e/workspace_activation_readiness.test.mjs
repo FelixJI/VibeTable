@@ -16,7 +16,10 @@ function makeDependencies(overrides = {}) {
       },
       waitForDatabaseOpened: async (timeoutMs) => {
         calls.push(["database.opened", timeoutMs]);
-        return { type: "database.opened", payload: { projectRevision: "7" } };
+        return {
+          type: "database.opened",
+          payload: { projectKey: "local:workspace-7", projectRevision: "7" },
+        };
       },
       ...overrides,
     },
@@ -29,6 +32,7 @@ test("captures database.opened before activation and returns only after readines
   const opened = await activateWorkspaceAndWaitForDatabaseOpened(dependencies);
 
   assert.equal(opened.payload.projectRevision, "7");
+  assert.equal(opened.payload.projectKey, "local:workspace-7");
   assert.deepEqual(calls, [
     ["capture", ["database.opened"]],
     ["activate"],
@@ -53,7 +57,21 @@ test("rejects a database.opened message without a usable project revision", asyn
   const { dependencies } = makeDependencies({
     waitForDatabaseOpened: async () => ({
       type: "database.opened",
-      payload: { projectRevision: " " },
+      payload: { projectKey: "local:workspace-7", projectRevision: " " },
+    }),
+  });
+
+  await assert.rejects(
+    activateWorkspaceAndWaitForDatabaseOpened(dependencies),
+    /invalid database context/,
+  );
+});
+
+test("rejects a database.opened message without an authoritative project key", async () => {
+  const { dependencies } = makeDependencies({
+    waitForDatabaseOpened: async () => ({
+      type: "database.opened",
+      payload: { projectKey: " ", projectRevision: "7" },
     }),
   });
 

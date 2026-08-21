@@ -43,22 +43,42 @@ func (source *Source) DescribeQueryTable(
 	app core.App,
 	tableID string,
 ) (query.TableDescriptor, error) {
+	descriptor, _, err := source.describeSelectionTable(ctx, app, tableID)
+	return descriptor, err
+}
+
+// DescribeSelectionTable derives the execution descriptor and public schema
+// snapshot from the same caller-owned app handle. QueryPort passes a
+// transactional handle here for atomic selection projection.
+func (source *Source) DescribeSelectionTable(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	return source.describeSelectionTable(ctx, app, tableID)
+}
+
+func (source *Source) describeSelectionTable(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	if err := ctx.Err(); err != nil {
-		return query.TableDescriptor{}, err
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
 	}
 	if source == nil || source.databaseID == "" || app == nil {
-		return query.TableDescriptor{}, &query.ProductError{
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, &query.ProductError{
 			Code: "query.schema.unconfigured", Path: "table",
 			Message: "query schema source is not configured",
 		}
 	}
 	table, err := schemaexecution.Describe(ctx, app, tableID)
 	if err != nil {
-		return query.TableDescriptor{}, mapSchemaError(err)
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, mapSchemaError(err)
 	}
 	fields, err := source.describeFields(ctx, app, table)
 	if err != nil {
-		return query.TableDescriptor{}, err
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
 	}
 	descriptor := query.TableDescriptor{
 		DatabaseID: source.databaseID, TableID: table.Snapshot.TableID,
@@ -88,14 +108,14 @@ func (source *Source) DescribeQueryTable(
 	if table.ArchivePolicy.FieldID != nil {
 		field, ok := table.Field(*table.ArchivePolicy.FieldID)
 		if !ok {
-			return query.TableDescriptor{}, &query.ProductError{
+			return query.TableDescriptor{}, v2.SchemaSnapshot{}, &query.ProductError{
 				Code: "query.schema.invalid", Path: "archivePolicy.fieldId",
 				Message: "archive field is not queryable",
 			}
 		}
 		descriptor.ArchiveField = field.Identity.PhysicalName
 	}
-	return descriptor, nil
+	return descriptor, table.Snapshot, nil
 }
 
 func projectRecord(fields []v2.FieldDefinition, record *core.Record) map[string]any {

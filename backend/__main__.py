@@ -68,6 +68,7 @@ from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
 from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
+    CancelInstallParams,
     CommitInstallParams,
     DescribePluginActionParams,
     InspectInstallParams,
@@ -340,6 +341,7 @@ def _register_plugin_methods(
     )
     dispatcher.register("plugin.inspectInstall", service.inspect_install, InspectInstallParams)
     dispatcher.register("plugin.commitInstall", service.commit_install, CommitInstallParams)
+    dispatcher.register("plugin.cancelInstall", service.cancel_install, CancelInstallParams)
     dispatcher.register("plugin.setEnabled", service.set_enabled, SetPluginEnabledParams)
     dispatcher.register("plugin.upgrade", service.upgrade, UpgradePluginParams)
     dispatcher.register("plugin.rollback", service.rollback, RollbackPluginParams)
