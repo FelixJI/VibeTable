@@ -86,6 +86,186 @@ describe("workspaceService display names", () => {
     });
   });
 
+  it("advances the plugin session generation on every database.opened event", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceService().init();
+    const payload = {
+      tables: [], views: [], displayNames: {},
+      projectKey: "local:workspace-a", projectRevision: "workspace-r7",
+    };
+
+    emit("database.opened", payload);
+    const firstGeneration = usePluginStore().projectContextGeneration;
+    emit("database.opened", payload);
+
+    expect(usePluginStore().projectContextGeneration).toBe(firstGeneration + 1);
+  });
+
+  it("does not reinterpret an incomplete database.opened as a context close", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceService().init();
+    usePluginStore().setProjectContext("local:workspace-a", "workspace-r7");
+
+    emit("database.opened", { tables: [], views: [], displayNames: {} });
+
+    expect(usePluginStore().projectContextReady).toBe(true);
+    expect(usePluginStore().projectKey).toBe("local:workspace-a");
+  });
+
+  it("closes plugin readiness only on the explicit host context event", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceService().init();
+    usePluginStore().setProjectContext("local:workspace-a", "workspace-r7");
+
+    emit("plugin.projectContext.unavailable", { reason: "workspace-session-unavailable" });
+
+    expect(usePluginStore().projectContextReady).toBe(false);
+    expect(usePluginStore().projectKey).toBe("");
+  });
+
+  it("restores opening state on picker cancellation without changing plugin context", () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+    const workspace = useWorkspaceStore();
+    const pluginStore = usePluginStore();
+    pluginStore.setProjectContext("local:workspace-a", "workspace-r7");
+    workspace.setOpened([], {});
+    service.openDatabase();
+    const openId = (posted.at(-1) as {
+      payload: { openId: string };
+    }).payload.openId;
+    pluginStore.setProjectContext("local:workspace-b", "workspace-r8");
+
+    emit("database.openCancelled", { openId, reason: "project-context-changed" });
+
+    expect(workspace.phase).toBe("opened");
+    expect(pluginStore.projectContextReady).toBe(true);
+    expect(pluginStore.projectKey).toBe("local:workspace-b");
+    expect(pluginStore.projectRevision).toBe("workspace-r8");
+  });
+
+  it("lets only the latest overlapping open terminal change renderer state", () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([], {});
+
+    service.openDatabase();
+    service.openDatabase();
+    const requests = posted as Array<{ payload: { openId: string } }>;
+    const firstOpenId = requests.at(-2)!.payload.openId;
+    const secondOpenId = requests.at(-1)!.payload.openId;
+    emit("database.openCancelled", {
+      openId: firstOpenId,
+      reason: "superseded",
+    });
+    emit("database.opened", {
+      openId: firstOpenId,
+      tables: ["stale_records"],
+      views: [],
+      displayNames: { stale_records: "Stale" },
+      projectKey: "local:stale",
+      projectRevision: "stale:1",
+    });
+
+    expect(workspace.phase).toBe("opening");
+    expect(workspace.collections).toEqual([]);
+
+    emit("database.opened", {
+      openId: secondOpenId,
+      tables: ["current_records"],
+      views: [],
+      displayNames: { current_records: "Current" },
+      projectKey: "local:current",
+      projectRevision: "current:2",
+    });
+    emit("database.openCancelled", {
+      openId: firstOpenId,
+      reason: "late-stale-terminal",
+    });
+
+    expect(workspace.phase).toBe("opened");
+    expect(workspace.collections.map((item) => item.collection)).toEqual(["current_records"]);
+    expect(usePluginStore().projectKey).toBe("local:current");
+  });
+
+  it("isolates a rebuilt renderer open from an old renderer terminal", () => {
+    const firstBridge = makeShimBridge();
+    setHostBridgeForTesting(firstBridge.bridge);
+    const firstService = useWorkspaceService();
+    firstService.init();
+    firstService.openDatabase();
+    const firstOpenId = (firstBridge.posted.at(-1) as {
+      payload: { openId: string };
+    }).payload.openId;
+
+    const replacementBridge = makeShimBridge();
+    setHostBridgeForTesting(replacementBridge.bridge);
+    const replacementService = useWorkspaceService();
+    replacementService.init();
+    replacementService.openDatabase();
+    const replacementOpenId = (replacementBridge.posted.at(-1) as {
+      payload: { openId: string };
+    }).payload.openId;
+
+    expect(firstOpenId).toMatch(/^database-open:[0-9a-f-]{36}$/u);
+    expect(replacementOpenId).not.toBe(firstOpenId);
+
+    replacementBridge.emit("database.openCancelled", {
+      openId: firstOpenId,
+      reason: "old-renderer-retired",
+    });
+    expect(useWorkspaceStore().phase).toBe("opening");
+
+    replacementBridge.emit("database.opened", {
+      openId: replacementOpenId,
+      tables: ["current_records"],
+      views: [],
+      displayNames: { current_records: "Current" },
+      projectKey: "local:current",
+      projectRevision: "current:2",
+    });
+    expect(useWorkspaceStore().phase).toBe("opened");
+  });
+
+  it("finishes only the matching open on the stable host operation failure", () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+    const workspace = useWorkspaceStore();
+    service.openDatabase();
+    const openId = (posted.at(-1) as {
+      payload: { openId: string };
+    }).payload.openId;
+
+    emit("operation.failed", {
+      operation: "database.openRequested",
+      operationId: "stale-open",
+      code: "WORKSPACE_ERROR",
+      message: "Workspace operation failed.",
+    });
+
+    expect(workspace.phase).toBe("opening");
+
+    emit("operation.failed", {
+      operation: "database.openRequested",
+      operationId: openId,
+      code: "WORKSPACE_ERROR",
+      message: "Workspace operation failed.",
+    });
+
+    expect(workspace.phase).toBe("failed");
+    expect(workspace.lastError).toBe("Workspace operation failed.");
+  });
+
   it("advances plugin project revision when product collections change", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);

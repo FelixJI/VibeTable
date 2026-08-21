@@ -243,6 +243,12 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
         required=("tableId", "query"),
         field_types={"tableId": (str,), "query": (dict,)},
     ),
+    "query.selectionOpen": _closed_params(
+        "QuerySelectionOpenParams",
+        allowed=("tableId", "query"),
+        required=("tableId", "query"),
+        field_types={"tableId": (str,), "query": (dict,)},
+    ),
     "query.cursorFetch": _closed_params(
         "QueryCursorFetchParams",
         allowed=("cursor",),

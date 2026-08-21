@@ -334,3 +334,81 @@ test("artifact snapshot includes bounded sanitized notifications", () => {
     delete globalThis.window;
   }
 });
+
+test("records a bounded closed dialog-focus ledger without business identity", () => {
+  const pageListeners = new Map();
+  const webview = {
+    postMessage() {},
+    addEventListener() {},
+  };
+  globalThis.window = {
+    chrome: { webview },
+    addEventListener(type, listener) {
+      pageListeners.set(type, listener);
+    },
+  };
+  try {
+    installBridgeDiagnosticsInPage();
+    const listener = pageListeners.get("vibetable:e2e-dialog-focus-outcome");
+    assert.equal(typeof listener, "function");
+    listener({
+      detail: {
+        leaseId: 1,
+        state: "claimed",
+        target: "json",
+      },
+    });
+    listener({
+      detail: {
+        leaseId: 1,
+        state: "pending",
+        target: "json",
+        reason: "row",
+      },
+    });
+    listener({
+      detail: {
+        leaseId: 1,
+        state: "restored",
+        target: "json",
+        via: "reprojected",
+      },
+    });
+    listener({
+      detail: {
+        leaseId: 99,
+        state: "claimed",
+        target: "json",
+        rowKey: "private-row",
+        field: "private-field",
+      },
+    });
+    listener({ detail: { leaseId: 1, state: "pending", reason: "private-reason" } });
+    listener({ detail: { leaseId: 1, state: "restored", via: "private-via" } });
+    listener({ detail: { leaseId: 1, state: "claimed", target: "private-target" } });
+    for (let leaseId = 2; leaseId <= 205; leaseId += 1) {
+      listener({
+        detail: { leaseId, state: "cancelled", reason: "stale", target: "attachment" },
+      });
+    }
+
+    const snapshot = readBridgeDiagnosticsInPage();
+    assert.equal(snapshot.dialogFocus.events.length, 200);
+    assert.equal(snapshot.dialogFocus.cursor, 207);
+    assert.deepEqual(snapshot.dialogFocus.events.at(-1), {
+      cursor: 207,
+      leaseId: 205,
+      state: "cancelled",
+      reason: "stale",
+      target: "attachment",
+    });
+    const artifact = JSON.stringify(snapshot.dialogFocus);
+    assert.equal(artifact.includes("private-row"), false);
+    assert.equal(artifact.includes("private-field"), false);
+    assert.equal(artifact.includes("private-reason"), false);
+    assert.equal(artifact.includes("private-via"), false);
+    assert.equal(artifact.includes("private-target"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});

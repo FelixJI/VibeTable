@@ -16,13 +16,21 @@ export interface CollectionSummary {
 
 export const useWorkspaceStore = defineStore("workspace", () => {
   const phase = ref<WorkspacePhase>("idle");
+  let phaseBeforeOpen: WorkspacePhase = "idle";
   const collections = ref<readonly CollectionSummary[]>([]);
   const displayNames = ref<Readonly<Record<string, string>>>({});
   const currentTable = ref<string | null>(null);
   const lastError = ref<string | null>(null);
 
   function beginOpen(): void {
+    if (phase.value !== "opening") phaseBeforeOpen = phase.value;
     phase.value = "opening";
+    lastError.value = null;
+  }
+
+  function cancelOpen(): void {
+    if (phase.value !== "opening") return;
+    phase.value = phaseBeforeOpen;
     lastError.value = null;
   }
 
@@ -68,6 +76,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     currentTable,
     lastError,
     beginOpen,
+    cancelOpen,
     setOpened,
     setCollections,
     selectTable,

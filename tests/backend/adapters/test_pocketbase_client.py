@@ -189,6 +189,110 @@ async def test_query_cursor_open_and_fetch_forward_opaque_ast_and_token() -> Non
 
 
 @pytest.mark.asyncio
+async def test_selection_projection_forwards_one_atomic_sidecar_read() -> None:
+    snapshot = {
+        "snapshotId": "0" * 32,
+        "databaseId": "db",
+        "table": "orders",
+        "schemaRevision": "schema_0001",
+        "dataRevision": 2,
+        "normalizedQuery": {"offset": 0, "limit": 1},
+        "digest": "d" * 64,
+    }
+    transport = FakeTransport(
+        [
+            {
+                "schemaSnapshot": {
+                    "contract": "vibetable.schema.v2",
+                    "tableId": "orders",
+                    "displayName": "Orders",
+                    "kind": "base",
+                    "schemaRevision": "schema_0001",
+                    "dataRevision": 2,
+                    "archivePolicy": {
+                        "mode": "none",
+                        "fieldId": None,
+                        "archivedValue": None,
+                    },
+                    "fields": [],
+                    "capabilities": [],
+                },
+                "cursorWindow": {
+                    "rows": [{"id": "1"}],
+                    "nextCursor": None,
+                    "hasMore": False,
+                    "filteredRows": 1,
+                    "totalRows": 1,
+                    "querySnapshot": snapshot,
+                },
+            }
+        ]
+    )
+    client = PocketBaseClient(transport=transport, session_secret="b" * 64)
+
+    projection = await client.open_selection_projection(
+        QueryCursorOpenCommand(table_id="orders", query={"limit": 1})
+    )
+
+    assert projection.schema_snapshot["schemaRevision"] == "schema_0001"
+    assert projection.cursor_window.rows == [{"id": "1"}]
+    assert transport.requests[0]["json_body"] == {
+        "operation": "selection.open",
+        "tableId": "orders",
+        "query": {"limit": 1},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema_revision", "data_revision", "table_id", "snapshot_data_revision"),
+    [
+        ("schema_0002", 2, "orders", 2),
+        ("schema_0001", 3, "orders", 2),
+        ("schema_0001", 2, "customers", 2),
+        ("schema_0001", 1, "orders", True),
+    ],
+)
+async def test_selection_projection_rejects_mismatched_revisions_without_retry(
+    schema_revision: str,
+    data_revision: int,
+    table_id: str,
+    snapshot_data_revision: object,
+) -> None:
+    transport = FakeTransport(
+        [
+            {
+                "schemaSnapshot": {
+                    "tableId": table_id,
+                    "schemaRevision": schema_revision,
+                    "dataRevision": data_revision,
+                },
+                "cursorWindow": {
+                    "rows": [],
+                    "nextCursor": None,
+                    "hasMore": False,
+                    "filteredRows": 0,
+                    "totalRows": 0,
+                    "querySnapshot": {
+                        "table": "orders",
+                        "schemaRevision": "schema_0001",
+                        "dataRevision": snapshot_data_revision,
+                    },
+                },
+            }
+        ]
+    )
+    client = PocketBaseClient(transport=transport, session_secret="b" * 64)
+
+    with pytest.raises(ValueError, match="mismatched selection revisions"):
+        await client.open_selection_projection(
+            QueryCursorOpenCommand(table_id="orders", query={"limit": 1})
+        )
+
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_aggregate_uses_frozen_query_port_operation() -> None:
     transport = FakeTransport([{"rows": [{"region": "east", "total": 12}]}])
     client = PocketBaseClient(transport=transport, session_secret="d" * 64)

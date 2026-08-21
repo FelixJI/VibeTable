@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -28,8 +27,11 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly IPluginFilePicker? _filePicker;
     private readonly IGitHubPluginPackageSource? _githubSource;
     private readonly Action<string>? _diagnosticTrace;
-    private readonly Dictionary<string, DownloadedPluginPackage> _remotePlans =
-        new(StringComparer.Ordinal);
+    private readonly Func<PluginProjectContext?> _projectContext;
+    private readonly object _gatewayGate = new();
+    private readonly HostInstallPlanLeaseRegistry _installLeases;
+    private readonly ProductAuthorityEpoch _authority;
+    private readonly bool _ownsAuthority;
     private IPluginRpcGateway? _gateway;
     private bool _disposed;
 
@@ -38,8 +40,23 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginSurfaceSessionManager surfaces,
         IPluginPackageSourcePicker packagePicker,
         PluginWebViewResourceHost resourceHost,
-        IPluginFilePicker? filePicker = null)
-        : this(reply, surfaces, packagePicker, resourceHost, filePicker, null, null)
+        IPluginFilePicker? filePicker = null,
+        Func<PluginProjectContext?>? projectContext = null,
+        ProductAuthorityEpoch? authority = null,
+        TimeSpan? cleanupTimeout = null,
+        TimeProvider? cleanupTimeProvider = null)
+        : this(
+            reply,
+            surfaces,
+            packagePicker,
+            resourceHost,
+            filePicker,
+            null,
+            null,
+            projectContext,
+            authority,
+            cleanupTimeout,
+            cleanupTimeProvider)
     {
     }
 
@@ -50,7 +67,11 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginWebViewResourceHost resourceHost,
         IPluginFilePicker? filePicker,
         IGitHubPluginPackageSource? githubSource,
-        Action<string>? diagnosticTrace = null)
+        Action<string>? diagnosticTrace = null,
+        Func<PluginProjectContext?>? projectContext = null,
+        ProductAuthorityEpoch? authority = null,
+        TimeSpan? cleanupTimeout = null,
+        TimeProvider? cleanupTimeProvider = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
@@ -59,6 +80,14 @@ public sealed class PluginRequestDispatcher : IDisposable
         _filePicker = filePicker;
         _githubSource = githubSource;
         _diagnosticTrace = diagnosticTrace;
+        _projectContext = projectContext ?? (() => null);
+        _authority = authority ?? new ProductAuthorityEpoch();
+        _ownsAuthority = authority is null;
+        _installLeases = new HostInstallPlanLeaseRegistry(
+            _authority,
+            cleanupTimeout,
+            cleanupTimeProvider,
+            cleanupTrace: TraceCleanupFailure);
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
@@ -66,19 +95,59 @@ public sealed class PluginRequestDispatcher : IDisposable
     public static bool Handles(string requestType) =>
         requestType.StartsWith("plugin.", StringComparison.Ordinal);
 
-    public bool HasGateway => _gateway is not null;
+    public bool HasGateway
+    {
+        get { lock (_gatewayGate) return _gateway is not null; }
+    }
 
     public void SetGateway(IPluginRpcGateway gateway)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        PluginProjectContext? context = _projectContext();
+        _authority.Transition(context);
+        SetGatewayAfterAuthorityTransition(gateway, context);
+    }
+
+    internal void SetGatewayAfterAuthorityTransition(
+        IPluginRpcGateway gateway,
+        PluginProjectContext? context)
+    {
         ArgumentNullException.ThrowIfNull(gateway);
         DetachGateway();
-        _gateway = gateway;
-        _gateway.CatalogChanged += OnCatalogChanged;
-        _gateway.TaskChanged += OnTaskChanged;
-        _gateway.InteractionRequested += OnInteractionRequested;
-        _gateway.FileRequested += OnFileRequested;
+        lock (_gatewayGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _gateway = gateway;
+            gateway.CatalogChanged += OnCatalogChanged;
+            gateway.TaskChanged += OnTaskChanged;
+            gateway.InteractionRequested += OnInteractionRequested;
+            gateway.FileRequested += OnFileRequested;
+        }
+        ReleaseLeases(_installLeases.SetGatewayAfterAuthorityTransition(gateway, context));
     }
+
+    public void ClearGateway(IPluginRpcGateway gateway)
+    {
+        ArgumentNullException.ThrowIfNull(gateway);
+        _authority.Transition(null);
+        ClearGatewayAfterAuthorityTransition(gateway);
+    }
+
+    internal void ClearGatewayAfterAuthorityTransition(IPluginRpcGateway gateway)
+    {
+        ArgumentNullException.ThrowIfNull(gateway);
+        DetachGateway(gateway);
+    }
+
+    public void SetProjectContext(PluginProjectContext? context)
+    {
+        _authority.Transition(context);
+        SetProjectContextAfterAuthorityTransition(context);
+    }
+
+    internal void SetProjectContextAfterAuthorityTransition(PluginProjectContext? context) =>
+        ReleaseLeases(_installLeases.SetContextAfterAuthorityTransition(context));
+
+    public void InvalidateProjectContext() => SetProjectContext(null);
 
     public void Dispatch(RoutedWebRequest request)
         => _ = DispatchAsync(request);
@@ -96,7 +165,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                 DispatchSurfaceEvent(request);
                 return;
             }
-            if (_gateway is null)
+            IPluginRpcGateway? gateway = CaptureGatewayOrNull();
+            if (gateway is null)
             {
                 _reply.PostOperationFailed(
                     request.RequestId,
@@ -104,40 +174,52 @@ public sealed class PluginRequestDispatcher : IDisposable
                     "PLUGIN_NOT_READY");
                 return;
             }
+            if (string.Equals(request.Type, "plugin.install.commit", StringComparison.Ordinal))
+            {
+                await CommitInstallAsync(
+                    request,
+                    Read<PluginCommitInstallParams>(request.Payload),
+                    token).ConfigureAwait(false);
+                return;
+            }
+            if (string.Equals(request.Type, "plugin.lifecycle.upgrade", StringComparison.Ordinal))
+            {
+                await UpgradeAsync(
+                    request,
+                    Read<PluginUpgradeParams>(request.Payload),
+                    token).ConfigureAwait(false);
+                return;
+            }
 
             object result = request.Type switch
             {
                 "plugin.catalog.list" => await ListCatalogAsync(
                     Read<PluginCatalogListParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.audit.list" => await _gateway.ListAuditAsync(
+                "plugin.audit.list" => await gateway.ListAuditAsync(
                     Read<PluginAuditListParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.cleanup.listPending" => await _gateway.ListPendingCleanupAsync(
+                "plugin.cleanup.listPending" => await gateway.ListPendingCleanupAsync(
                     Read<PluginCatalogListParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.inspect" => await InspectInstallAsync(
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.github.inspect" => await InspectGitHubInstallAsync(
                     Read<PluginGitHubInspectParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.install.commit" => await CommitInstallAsync(
-                    Read<PluginCommitInstallParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.install.cancel" => CancelInstall(
-                    Read<PluginInstallCancelParams>(request.Payload)),
-                "plugin.lifecycle.setEnabled" => ProjectSnapshot(await _gateway.SetEnabledAsync(
+                "plugin.install.cancel" => await CancelInstallAsync(
+                    Read<PluginInstallCancelParams>(request.Payload), token).ConfigureAwait(false),
+                "plugin.lifecycle.setEnabled" => ProjectSnapshot(await gateway.SetEnabledAsync(
                     Read<PluginSetEnabledParams>(request.Payload), token).ConfigureAwait(false)),
-                "plugin.lifecycle.upgrade" => await UpgradeAsync(
-                    Read<PluginUpgradeParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.lifecycle.rollback" => ProjectSnapshot(await _gateway.RollbackAsync(
+                "plugin.lifecycle.rollback" => ProjectSnapshot(await gateway.RollbackAsync(
                     Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.uninstall" => await UninstallAsync(
                     Read<PluginUninstallParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.action.describe" => await _gateway.DescribeActionAsync(
+                "plugin.action.describe" => await gateway.DescribeActionAsync(
                     Read<PluginDescribeActionParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.action.start" => await _gateway.StartActionAsync(
+                "plugin.action.start" => await gateway.StartActionAsync(
                     Read<PluginStartActionParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.interaction.resolve" => await _gateway.ResolveInteractionAsync(
+                "plugin.interaction.resolve" => await gateway.ResolveInteractionAsync(
                     Read<PluginResolveInteractionParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.task.cancel" => await _gateway.CancelTaskAsync(
+                "plugin.task.cancel" => await gateway.CancelTaskAsync(
                     Read<PluginTaskParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.task.get" => await _gateway.GetTaskAsync(
+                "plugin.task.get" => await gateway.GetTaskAsync(
                     Read<PluginTaskParams>(request.Payload), token).ConfigureAwait(false),
                 _ => throw new PluginDispatchException(
                     "UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'."),
@@ -170,11 +252,11 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
         catch (Exception ex)
         {
-            Trace.TraceError(DiagnosticEvent.Failure(
-                "VibeTable.Desktop.PluginRequestDispatcher",
-                request.Type,
-                ex.GetType().Name));
-            _diagnosticTrace?.Invoke(
+            SafeTrace(() => Trace.TraceError(DiagnosticEvent.Failure(
+                    "VibeTable.Desktop.PluginRequestDispatcher",
+                    request.Type,
+                    ex.GetType().Name)));
+            SafeDiagnosticTrace(
                 $"Plugin request failed; type={request.Type}; " +
                 $"exception={ex.GetType().Name}");
             _reply.PostOperationFailed(
@@ -186,14 +268,15 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_gatewayGate)
         {
-            return;
+            if (_disposed) return;
+            _disposed = true;
         }
-        _disposed = true;
         DetachGateway();
         _githubSource?.Dispose();
         _surfaces.CloseAll();
+        if (_ownsAuthority) _authority.Dispose();
     }
 
     private void DispatchSurfaceEvent(RoutedWebRequest request)
@@ -251,10 +334,16 @@ public sealed class PluginRequestDispatcher : IDisposable
                 "PLUGIN_SOURCE_SELECTION_CANCELLED",
                 "Plugin source selection was cancelled.");
         }
-        var plan = await _gateway!.InspectInstallAsync(
-            request with { SourceLocation = sourceLocation },
+        HostInstallPlanBinding binding = CapturePluginBinding();
+        var plan = await binding.Gateway.InspectInstallAsync(
+            request with
+            {
+                ProjectKey = binding.Context.ProjectKey,
+                ProjectRevision = binding.Context.ProjectRevision,
+                SourceLocation = sourceLocation,
+            },
             token).ConfigureAwait(false);
-        ClearRemotePlans();
+        await AdmitInstallPlanAsync(binding, plan, null).ConfigureAwait(false);
         return plan with { SourceLocation = HostManagedSource };
     }
 
@@ -268,50 +357,134 @@ public sealed class PluginRequestDispatcher : IDisposable
                 "PLUGIN_GITHUB_SOURCE_UNAVAILABLE",
                 "GitHub 插件来源在当前运行模式下不可用。");
         }
-        DownloadedPluginPackage download = await _githubSource.DownloadLatestAsync(
+        DownloadedPluginPackage? download = await _githubSource.DownloadLatestAsync(
             request.Repository,
             token).ConfigureAwait(false);
         try
         {
-            var plan = await _gateway!.InspectInstallAsync(
+            HostInstallPlanBinding binding = CapturePluginBinding();
+            var plan = await binding.Gateway.InspectInstallAsync(
                 new PluginInspectInstallParams(
-                    request.ProjectKey,
-                    request.ProjectRevision,
+                    binding.Context.ProjectKey,
+                    binding.Context.ProjectRevision,
                     download.Path),
                 token).ConfigureAwait(false);
-            ClearRemotePlans();
-            _remotePlans.Add(plan.PlanId, download);
+            DownloadedPluginPackage admittedPackage = download;
+            download = null;
+            await AdmitInstallPlanAsync(binding, plan, admittedPackage).ConfigureAwait(false);
             return plan with { SourceLocation = HostManagedSource };
         }
-        catch
+        finally
         {
-            download.Dispose();
-            throw;
+            download?.Dispose();
         }
     }
 
-    private async Task<PluginRuntimeSnapshot> CommitInstallAsync(
+    private async Task CommitInstallAsync(
+        RoutedWebRequest routed,
         PluginCommitInstallParams request,
         CancellationToken token)
     {
-        PluginRuntimeSnapshot snapshot = await _gateway!.CommitInstallAsync(request, token)
-            .ConfigureAwait(false);
-        ReleaseRemotePlan(request.PlanId);
-        return ProjectSnapshot(snapshot);
+        await using HostInstallPlanOperation operation =
+            BeginInstallPlanOperation(request.PlanId);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            token,
+            operation.Authority.Token);
+        try
+        {
+            HostInstallPlanBinding binding = operation.Plan.Binding;
+            if (!_authority.TryStart(
+                    operation.Authority,
+                    _ => binding.Gateway.CommitInstallAsync(
+                        request with { ProjectRevision = binding.Context.ProjectRevision },
+                        linked.Token),
+                    out Task<PluginRuntimeSnapshot>? pending)
+                || pending is null)
+            {
+                throw StaleInstallPlan();
+            }
+            PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
+                .ConfigureAwait(false);
+            if (!_authority.TryFinish(operation.Authority, () =>
+            {
+                _reply.PostResponse(
+                    routed.Type,
+                    routed.RequestId,
+                    ProjectSnapshot(snapshot));
+            }))
+            {
+                throw StaleInstallPlan();
+            }
+            operation.Complete();
+        }
+        catch (OperationCanceledException) when (operation.Authority.Token.IsCancellationRequested)
+        {
+            throw StaleInstallPlan();
+        }
     }
 
-    private async Task<PluginRuntimeSnapshot> UpgradeAsync(
+    private async Task UpgradeAsync(
+        RoutedWebRequest routed,
         PluginUpgradeParams request,
         CancellationToken token)
     {
-        PluginRuntimeSnapshot snapshot = await _gateway!.UpgradeAsync(request, token)
-            .ConfigureAwait(false);
-        ReleaseRemotePlan(request.PlanId);
-        return ProjectSnapshot(snapshot);
+        await using HostInstallPlanOperation operation = BeginInstallPlanOperation(
+            request.PlanId,
+            request.PluginId);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            token,
+            operation.Authority.Token);
+        try
+        {
+            HostInstallPlanBinding binding = operation.Plan.Binding;
+            if (!_authority.TryStart(
+                    operation.Authority,
+                    _ => binding.Gateway.UpgradeAsync(
+                        request with
+                        {
+                            ProjectKey = binding.Context.ProjectKey,
+                            ProjectRevision = binding.Context.ProjectRevision,
+                        },
+                        linked.Token),
+                    out Task<PluginRuntimeSnapshot>? pending)
+                || pending is null)
+            {
+                throw StaleInstallPlan();
+            }
+            PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
+                .ConfigureAwait(false);
+            if (!_authority.TryFinish(operation.Authority, () =>
+            {
+                _reply.PostResponse(
+                    routed.Type,
+                    routed.RequestId,
+                    ProjectSnapshot(snapshot));
+            }))
+            {
+                throw StaleInstallPlan();
+            }
+            operation.Complete();
+        }
+        catch (OperationCanceledException) when (operation.Authority.Token.IsCancellationRequested)
+        {
+            throw StaleInstallPlan();
+        }
     }
 
-    private PluginInstallCancelResult CancelInstall(PluginInstallCancelParams request) =>
-        new(ReleaseRemotePlan(request.PlanId));
+    private async Task<PluginInstallCancelResult> CancelInstallAsync(
+        PluginInstallCancelParams request,
+        CancellationToken token)
+    {
+        bool owned = _installLeases.TryTake(request.PlanId, out HostInstallPlanLease? lease);
+        IPluginRpcGateway gateway = lease?.Binding.Gateway ?? CaptureGateway();
+        bool backendCancelled = lease is null
+            ? await _installLeases.Cleanup.CancelRemoteAsync(
+                gateway,
+                request.PlanId,
+                token).ConfigureAwait(false)
+            : await _installLeases.Cleanup.ReleaseAsync(lease, token).ConfigureAwait(false);
+        return new PluginInstallCancelResult(backendCancelled || owned);
+    }
 
     private async Task<PluginRuntimeUninstallResult> UninstallAsync(
         PluginUninstallParams request,
@@ -426,7 +599,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
         catch (Exception ex)
         {
-            Trace.TraceError($"Plugin catalog event was dropped: {ex}");
+            SafeTrace(() => Trace.TraceError($"Plugin catalog event was dropped: {ex}"));
         }
     }
 
@@ -457,41 +630,147 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
         catch (Exception ex)
         {
-            Trace.TraceError($"Plugin file request failed: {ex}");
+            SafeTrace(() => Trace.TraceError($"Plugin file request failed: {ex}"));
         }
     }
 
-    private void DetachGateway()
+    private void DetachGateway(IPluginRpcGateway? expected = null)
     {
-        ClearRemotePlans();
-        if (_gateway is null)
+        IPluginRpcGateway? gateway;
+        lock (_gatewayGate)
+        {
+            if (expected is not null && !ReferenceEquals(_gateway, expected)) return;
+            gateway = _gateway;
+            _gateway = null;
+        }
+        if (gateway is not null)
+        {
+            ReleaseLeases(_installLeases.ClearGatewayAfterAuthorityTransition(gateway));
+        }
+        if (gateway is null)
         {
             return;
         }
-        _gateway.CatalogChanged -= OnCatalogChanged;
-        _gateway.TaskChanged -= OnTaskChanged;
-        _gateway.InteractionRequested -= OnInteractionRequested;
-        _gateway.FileRequested -= OnFileRequested;
-        _gateway = null;
+        gateway.CatalogChanged -= OnCatalogChanged;
+        gateway.TaskChanged -= OnTaskChanged;
+        gateway.InteractionRequested -= OnInteractionRequested;
+        gateway.FileRequested -= OnFileRequested;
     }
 
-    private bool ReleaseRemotePlan(string planId)
+    private HostInstallPlanBinding CapturePluginBinding()
     {
-        if (!_remotePlans.Remove(planId, out DownloadedPluginPackage? package))
+        HostInstallPlanBinding? binding = _installLeases.Capture();
+        if (binding is null
+            || binding.GatewayGeneration == 0
+            || binding.Context.SessionGeneration == 0
+            || string.IsNullOrWhiteSpace(binding.Context.ProjectKey)
+            || string.IsNullOrWhiteSpace(binding.Context.ProjectRevision))
         {
-            return false;
+            throw new PluginDispatchException(
+                "PLUGIN_NOT_READY",
+                "Plugin services are not available for the current project.");
         }
-        package.Dispose();
-        return true;
+        return binding;
     }
 
-    private void ClearRemotePlans()
+    private IPluginRpcGateway CaptureGateway()
     {
-        foreach (DownloadedPluginPackage package in _remotePlans.Values)
+        lock (_gatewayGate)
         {
-            package.Dispose();
+            return _gateway ?? throw new PluginDispatchException(
+                "PLUGIN_NOT_READY",
+                "Plugin services are not available for the current project.");
         }
-        _remotePlans.Clear();
+    }
+
+    private async Task AdmitInstallPlanAsync(
+        HostInstallPlanBinding binding,
+        PluginRuntimeInstallPlan plan,
+        DownloadedPluginPackage? package)
+    {
+        if (!_installLeases.TryAdmit(binding, plan, package, out HostInstallPlanLease? replaced))
+        {
+            package?.Dispose();
+            await _installLeases.Cleanup.CancelRemoteAsync(
+                binding.Gateway,
+                plan.PlanId).ConfigureAwait(false);
+            throw new PluginDispatchException(
+                "PLUGIN_INSTALL_PLAN_STALE",
+                "Plugin install plan is stale for the current project session.");
+        }
+        ReleaseLease(replaced);
+    }
+
+    private HostInstallPlanOperation BeginInstallPlanOperation(
+        string planId,
+        string? expectedPluginId = null)
+    {
+        if (!_installLeases.TryBeginOperation(
+                planId,
+                expectedPluginId,
+                out HostInstallPlanOperation? operation,
+                out HostInstallPlanLease? rejected)
+            || operation is null)
+        {
+            if (rejected is not null)
+            {
+                ReleaseLease(rejected);
+            }
+            else
+            {
+                IPluginRpcGateway? gateway = CaptureGatewayOrNull();
+                if (gateway is not null)
+                    _ = _installLeases.Cleanup.CancelRemoteAsync(gateway, planId);
+            }
+            throw StaleInstallPlan();
+        }
+        return operation;
+    }
+
+    private static PluginDispatchException StaleInstallPlan() => new(
+        "PLUGIN_INSTALL_PLAN_STALE",
+        "Plugin install plan is stale for the current project session.");
+
+    private void TraceCleanupFailure(string code)
+    {
+        SafeTrace(() => Trace.TraceError(DiagnosticEvent.Failure(
+                "VibeTable.Desktop.PluginRequestDispatcher",
+                "plugin.install.cancel",
+                code)));
+        SafeDiagnosticTrace($"Plugin install cleanup failed; code={code}");
+    }
+
+    private void SafeDiagnosticTrace(string message)
+        => SafeTrace(() => _diagnosticTrace?.Invoke(message));
+
+    private static void SafeTrace(Action trace)
+    {
+        try
+        {
+            trace();
+        }
+        catch
+        {
+        }
+    }
+
+    private void ReleaseLeases(IEnumerable<HostInstallPlanLease> leases)
+    {
+        foreach (HostInstallPlanLease lease in leases)
+        {
+            ReleaseLease(lease);
+        }
+    }
+
+    private void ReleaseLease(HostInstallPlanLease? lease)
+    {
+        if (lease is null) return;
+        _ = _installLeases.Cleanup.ReleaseAsync(lease);
+    }
+
+    private IPluginRpcGateway? CaptureGatewayOrNull()
+    {
+        lock (_gatewayGate) return _gateway;
     }
 
     private sealed class PluginDispatchException : Exception
