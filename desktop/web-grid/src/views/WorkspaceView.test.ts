@@ -206,6 +206,7 @@ function makePlan(token = "tok-xyz"): PastePlan {
 describe("WorkspaceView", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    document.body.removeAttribute("tabindex");
     setLocale("zh-CN");
     testPinia = createPinia();
     setActivePinia(testPinia);
@@ -222,6 +223,7 @@ describe("WorkspaceView", () => {
   afterEach(() => {
     for (const wrapper of mountedViews.splice(0)) wrapper.unmount();
     document.body.innerHTML = "";
+    document.body.removeAttribute("tabindex");
     setHostBridgeForTesting(null);
     setWorkspaceV2UiPort(null);
     vi.restoreAllMocks();
@@ -1791,6 +1793,7 @@ describe("WorkspaceView", () => {
   });
 
   it("gives structured editors dialog semantics and restores keyboard focus", async () => {
+    document.body.tabIndex = -1;
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -1851,7 +1854,8 @@ describe("WorkspaceView", () => {
     });
   });
 
-  it("releases attachment gridcell focus before hiding the background for NModal", async () => {
+  it("restores attachment gridcell focus after NModal releases its focus trap", async () => {
+    document.body.tabIndex = -1;
     setHostBridgeForTesting({
       request: vi.fn(async (method: string) => {
         if (method === "file.list") return { attachments: [] };
@@ -2001,6 +2005,8 @@ describe("WorkspaceView", () => {
         return { status: "applied" };
       }
       if (method === "file.removeRequested") return { status: "applied" };
+      if (method === "file.previewRequested") return { outcome: "opened", reason: null };
+      if (method === "file.downloadRequested") return { outcome: "saved" };
       throw new Error(`unexpected request: ${method}`);
     });
     const notify = vi.fn();
@@ -2060,12 +2066,17 @@ describe("WorkspaceView", () => {
     expect(panel.exists()).toBe(true);
     panel.vm.$emit("preview", "stored.png");
     panel.vm.$emit("download", "stored.png");
-    expect(notify).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
       storedName: "stored.png",
     }));
-    expect(notify).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
+    expect(request).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
       originalName: "photo.png",
     }));
+    expect(notify).not.toHaveBeenCalledWith(
+      "file.previewRequested",
+      expect.anything(),
+    );
 
     panel.vm.$emit("replace", "stored.png");
     await flushPromises();

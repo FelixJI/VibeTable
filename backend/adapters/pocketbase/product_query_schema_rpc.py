@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from backend.adapters.pocketbase.client import QueryCursorOpenCommand, QueryCursorWindowResult
+from backend.adapters.pocketbase.client import (
+    QueryCursorOpenCommand,
+    QueryCursorWindowResult,
+    SelectionProjectionResult,
+)
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
@@ -18,6 +22,7 @@ from backend.adapters.pocketbase.product_rpc_support import (
     _text,
 )
 from backend.contracts.product_rpc import JsonObject, ProductParams
+from backend.contracts.query import QuerySelectionProjectionResult
 from backend.contracts.schema_v2 import (
     FormulaPreviewRequestV2,
     FormulaValidateRequestV2,
@@ -44,6 +49,7 @@ class ProductQuerySchemaRpc:
             "schema.describe": self._describe_schema,
             "query.page": self._query_page,
             "query.cursorOpen": self._open_query_cursor,
+            "query.selectionOpen": self._open_selection_projection,
             "query.cursorFetch": self._fetch_query_cursor,
             "query.view": self._query_view,
             "query.readRows": self._read_rows,
@@ -156,6 +162,15 @@ class ProductQuerySchemaRpc:
             )
         )
         return _cursor_window_result(window)
+
+    async def _open_selection_projection(self, params: ProductParams) -> JsonObject:
+        projection = await self._context.client.open_selection_projection(
+            QueryCursorOpenCommand(
+                table_id=_text(params.root, "tableId"),
+                query=_object(params.root, "query"),
+            )
+        )
+        return _selection_projection_result(projection)
 
     async def _fetch_query_cursor(self, params: ProductParams) -> JsonObject:
         window = await self._context.client.fetch_query_cursor(
@@ -309,6 +324,16 @@ def _cursor_window_result(window: QueryCursorWindowResult) -> JsonObject:
             "querySnapshot": window.snapshot,
         }
     )
+
+
+def _selection_projection_result(projection: SelectionProjectionResult) -> JsonObject:
+    validated = QuerySelectionProjectionResult.model_validate(
+        {
+            "schemaSnapshot": projection.schema_snapshot,
+            "cursorWindow": _cursor_window_result(projection.cursor_window),
+        }
+    )
+    return _result_object(validated.model_dump(mode="json", by_alias=True))
 
 
 def _renderer_relation(value: JsonObject, definition: JsonObject) -> JsonObject:

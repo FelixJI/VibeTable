@@ -318,6 +318,7 @@ describe("InterfaceRuntime", () => {
   it("keeps a plugin action running until its broker confirmation is approved", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
+    usePluginStore().setProjectContext("local:default", "interface-session:1");
     const h = host();
     let currentTask = runningPluginTask();
     const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
@@ -367,6 +368,7 @@ describe("InterfaceRuntime", () => {
   it("projects broker rejection as a rejected Interface action", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
+    usePluginStore().setProjectContext("local:default", "interface-session:1");
     const h = host();
     let currentTask = runningPluginTask();
     const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
@@ -407,6 +409,7 @@ describe("InterfaceRuntime", () => {
   it("cancels an in-flight plugin task through the authoritative task endpoint", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
+    usePluginStore().setProjectContext("local:default", "interface-session:1");
     const h = host();
     let currentTask = runningPluginTask();
     const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {

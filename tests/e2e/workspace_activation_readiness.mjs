@@ -19,14 +19,18 @@ export async function activateWorkspaceAndWaitForDatabaseOpened({
   }
 
   const databaseOpened = await waitForDatabaseOpened(timeoutMs);
+  const projectKey = databaseOpened?.payload?.projectKey;
   const projectRevision = databaseOpened?.payload?.projectRevision;
   if (
     databaseOpened?.type !== "database.opened"
+    || typeof projectKey !== "string"
+    || !projectKey.trim()
     || typeof projectRevision !== "string"
     || !projectRevision.trim()
   ) {
     throw new Error(`workspace activation returned invalid database context: ${JSON.stringify({
       type: databaseOpened?.type,
+      projectKey,
       projectRevision,
     })}`);
   }

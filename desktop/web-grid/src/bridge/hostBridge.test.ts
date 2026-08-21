@@ -591,12 +591,17 @@ describe("HostBridge", () => {
     webview.emit({
       type: "operation.failed",
       requestId: "req-fail",
-      payload: { message: "no such table", code: "ENOENT" },
+      payload: {
+        message: "no such table",
+        code: "ENOENT",
+        operation: "table.queryRequested",
+      },
     });
 
     await expect(pending).rejects.toMatchObject({
       message: "no such table",
       code: "ENOENT",
+      operation: "table.queryRequested",
     });
 
     bridge.stop();
@@ -1033,6 +1038,66 @@ describe("HostBridge", () => {
     });
     await expect(pending).resolves.toMatchObject({ status: "applied" });
     bridge.stop();
+  });
+
+  it.each([
+    ["file.previewRequested", { outcome: "opened", reason: null }],
+    ["file.downloadRequested", { outcome: "cancelled" }],
+  ] as const)(
+    "correlates %s and leaves its long native interaction deadline to the host",
+    async (type, outcome) => {
+      vi.useFakeTimers();
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1_000,
+        generateRequestId: () => `native-action-${type}`,
+      });
+      bridge.start();
+
+      const pending = bridge.request(type, {
+        tableId: "table-1",
+        recordId: "record-1",
+        fieldId: "field-1",
+        storedName: "stored.pdf",
+        originalName: "report.pdf",
+      });
+      let settled = false;
+      void pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(settled).toBe(false);
+
+      webview.emit({
+        type,
+        requestId: `native-action-${type}`,
+        payload: outcome,
+      });
+      await expect(pending).resolves.toEqual(outcome);
+      bridge.stop();
+    },
+  );
+
+  it("still clears a pending host-owned attachment action when the bridge stops", async () => {
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1_000,
+      generateRequestId: () => "native-action-stop",
+    });
+    bridge.start();
+    const pending = bridge.request("file.downloadRequested", {
+      tableId: "table-1",
+      recordId: "record-1",
+      fieldId: "field-1",
+      storedName: "stored.pdf",
+      originalName: "report.pdf",
+    });
+
+    bridge.stop();
+
+    await expect(pending).rejects.toThrow(/stopped/i);
   });
 
   it("whitelists the revision history query and page notification contract", () => {

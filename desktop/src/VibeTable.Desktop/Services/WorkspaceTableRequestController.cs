@@ -23,21 +23,84 @@ public sealed class WorkspaceTableRequestController
     private readonly TimeSpan _readRecoveryTimeout;
     private readonly TimeSpan _schemaLifecycleTimeout;
     private readonly Func<CancellationToken> _sessionToken;
+    private readonly PluginProjectContextBindingRegistry _pluginBindings;
+    private readonly GridStateCoordinator? _grid;
+    private readonly bool _databaseOpenEnabled;
     private readonly TimeProvider _timeProvider;
+    private readonly DatabaseOpenTerminalPublisher _terminals;
 
     public WorkspaceTableRequestController(
         TableWorkspaceService workspace,
         IDatabasePicker picker,
         IWebReplySink reply,
         Func<IProductDataRpcGateway?> productGateway,
+        GridStateCoordinator grid,
         TimeSpan? readRecoveryTimeout = null,
         TimeSpan? schemaLifecycleTimeout = null,
         Func<CancellationToken>? sessionToken = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        PluginProjectContextBindingRegistry? pluginBindings = null)
+        : this(
+            workspace,
+            picker,
+            reply,
+            productGateway,
+            grid ?? throw new ArgumentNullException(nameof(grid)),
+            true,
+            readRecoveryTimeout,
+            schemaLifecycleTimeout,
+            sessionToken,
+            timeProvider,
+            pluginBindings)
+    {
+    }
+
+    public WorkspaceTableRequestController(
+        TableWorkspaceService workspace,
+        IDatabasePicker picker,
+        IWebReplySink reply,
+        Func<IProductDataRpcGateway?> productGateway,
+        NoDatabaseOpenRoute noDatabaseOpenRoute,
+        TimeSpan? readRecoveryTimeout = null,
+        TimeSpan? schemaLifecycleTimeout = null,
+        Func<CancellationToken>? sessionToken = null,
+        TimeProvider? timeProvider = null,
+        PluginProjectContextBindingRegistry? pluginBindings = null)
+        : this(
+            workspace,
+            picker,
+            reply,
+            productGateway,
+            null,
+            false,
+            readRecoveryTimeout,
+            schemaLifecycleTimeout,
+            sessionToken,
+            timeProvider,
+            pluginBindings)
+    {
+        ArgumentNullException.ThrowIfNull(noDatabaseOpenRoute);
+    }
+
+    private WorkspaceTableRequestController(
+        TableWorkspaceService workspace,
+        IDatabasePicker picker,
+        IWebReplySink reply,
+        Func<IProductDataRpcGateway?> productGateway,
+        GridStateCoordinator? grid,
+        bool databaseOpenEnabled,
+        TimeSpan? readRecoveryTimeout,
+        TimeSpan? schemaLifecycleTimeout,
+        Func<CancellationToken>? sessionToken,
+        TimeProvider? timeProvider,
+        PluginProjectContextBindingRegistry? pluginBindings)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
+        _terminals = new DatabaseOpenTerminalPublisher(
+            _reply,
+            message => Trace.TraceError(message));
         _productGateway = productGateway
             ?? throw new ArgumentNullException(nameof(productGateway));
         _readRecoveryTimeout = readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
@@ -46,6 +109,9 @@ public sealed class WorkspaceTableRequestController
         if (_schemaLifecycleTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(schemaLifecycleTimeout));
         _sessionToken = sessionToken ?? (() => CancellationToken.None);
+        _pluginBindings = pluginBindings ?? UnavailablePluginBindings.Instance;
+        _grid = grid;
+        _databaseOpenEnabled = databaseOpenEnabled;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -64,10 +130,15 @@ public sealed class WorkspaceTableRequestController
             "tableAdmin.createRequested" or
             "tableAdmin.deleteRequested";
 
+    internal bool HandlesRequest(string requestType)
+        => requestType != "database.openRequested"
+            ? Handles(requestType)
+            : _databaseOpenEnabled;
+
     public Task DispatchAsync(RoutedWebRequest request)
         => request.Type switch
         {
-            "database.openRequested" => OpenDatabaseAsync(),
+            "database.openRequested" => OpenDatabaseAsync(request),
             "table.selected" => SelectTableAsync(request),
             "table.updateCellRequested" => UpdateCellAsync(request),
             "table.insertRowRequested" => InsertRowAsync(request),
@@ -82,29 +153,93 @@ public sealed class WorkspaceTableRequestController
             _ => RejectUnknownAsync(request),
         };
 
-    private async Task OpenDatabaseAsync()
+    private async Task OpenDatabaseAsync(RoutedWebRequest request)
     {
-        string? path = await _picker.PickDatabaseAsync().ConfigureAwait(false);
-        if (string.IsNullOrEmpty(path))
+        if (!_databaseOpenEnabled || _grid is null)
+            throw new InvalidOperationException("Database open route is not installed.");
+        string openId = GetString(request.Payload, "openId")
+            ?? throw new JsonException("database.openRequested requires openId.");
+        PluginProjectContextOpenStart start;
+        try
         {
-            _reply.PostNotification("database.opened", new
-            {
-                tables = Array.Empty<string>(),
-                views = Array.Empty<string>(),
-                displayNames = new Dictionary<string, string>(),
-            });
+            start = _pluginBindings.BeginOpen(openId);
+        }
+        catch (InvalidOperationException)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Database open identity was already used.",
+                "DATABASE_OPEN_ID_REUSED",
+                request.Type,
+                openId);
             return;
         }
-
-        DatabaseOpenResult result = await _workspace.OpenDatabaseAsync(path)
-            .ConfigureAwait(false);
-        _reply.PostNotification("database.opened", new
+        PluginProjectContextBinding? binding = start.Binding;
+        try
         {
-            tables = result.Tables,
-            views = result.Views,
-            displayNames = result.DisplayNames,
-        });
+            _terminals.PostRetiredCancellations(start.RetiredOpenIds, "superseded");
+            if (binding is null)
+            {
+                PostDatabaseOpenCancelled(openId, "project-context-unavailable");
+                return;
+            }
+            string? path = await _picker.PickDatabaseAsync().ConfigureAwait(false);
+            if (string.IsNullOrEmpty(path))
+            {
+                PostDatabaseOpenCancelledIfOwned(binding, "source-selection-cancelled");
+                return;
+            }
+            DatabaseOpenResult result = await _workspace.PrepareDatabaseOpenAsync(
+                path, binding.SessionToken).ConfigureAwait(false);
+            object projection = ProductDatabaseOpenedProjection.Create(
+                result,
+                binding.Context,
+                binding.OpenId);
+            bool completed = _pluginBindings.TryComplete(binding, () =>
+            {
+                using DatabaseOpenCommit commit = DatabaseOpenCommit.Begin(
+                    _workspace, _grid, path, result);
+                commit.Enqueue(() =>
+                    _reply.PostNotification("database.opened", projection));
+            });
+            if (!completed)
+            {
+                PostDatabaseOpenCancelledIfOwned(binding, "project-context-changed");
+            }
+        }
+        catch (OperationCanceledException)
+            when (binding is not null && binding.SessionToken.IsCancellationRequested)
+        {
+            PostDatabaseOpenCancelledIfOwned(binding, "project-context-changed");
+        }
+        catch (Exception)
+        {
+            if (binding is not null && _pluginBindings.TryClaimTerminal(binding))
+            {
+                _reply.PostOperationFailed(
+                    request.RequestId,
+                    "Workspace operation failed.",
+                    "WORKSPACE_ERROR",
+                    request.Type,
+                    binding.OpenId);
+            }
+        }
+        finally
+        {
+            if (binding is not null) _pluginBindings.Release(binding);
+        }
     }
+
+    private void PostDatabaseOpenCancelledIfOwned(
+        PluginProjectContextBinding binding,
+        string reason)
+    {
+        if (_pluginBindings.TryClaimTerminal(binding))
+            PostDatabaseOpenCancelled(binding.OpenId, reason);
+    }
+
+    private void PostDatabaseOpenCancelled(string openId, string reason) =>
+        _reply.PostNotification("database.openCancelled", new { openId, reason });
 
     private async Task SelectTableAsync(RoutedWebRequest request)
     {
@@ -116,8 +251,26 @@ public sealed class WorkspaceTableRequestController
                 "table.selected requires a non-empty 'table' payload field.");
             return;
         }
-        await _workspace.SelectTableAsync(table).ConfigureAwait(false);
-        await _workspace.GetEditSchemaAsync(table).ConfigureAwait(false);
+        CancellationToken sessionToken = _sessionToken();
+        try
+        {
+            await _workspace.SelectTableWithSchemaAsync(table, sessionToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception) when (sessionToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (TableSelectionRecoveryExhaustedException)
+        {
+            TraceFailure(request.Type, "BACKEND_UNAVAILABLE");
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "本地数据服务暂不可用，请稍后重试。",
+                "BACKEND_UNAVAILABLE",
+                request.Type);
+            return;
+        }
     }
 
     private async Task UpdateCellAsync(RoutedWebRequest request)
