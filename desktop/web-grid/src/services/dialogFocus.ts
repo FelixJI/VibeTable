@@ -153,6 +153,12 @@ export function createStructuredDialogFocus(
       attemptRestore(dependencies.getGrid());
     };
 
+    const isCapturedGridInfrastructureFocus = (candidate: unknown): boolean =>
+      capturedGridRoot !== null
+      && candidate instanceof HTMLElement
+      && candidate.classList.contains("tabulator-tableholder")
+      && candidate.closest(".tabulator") === capturedGridRoot;
+
     const onDocumentFocusIn = (event: FocusEvent) => {
       if (restoringFocus) return;
       if (event.target === document.body || event.target === document.documentElement) {
@@ -161,11 +167,7 @@ export function createStructuredDialogFocus(
       }
       // Tabulator's range module focuses its tableholder as an infrastructure sink
       // when editing settles. Other controls inside the grid retain external ownership.
-      if (
-        event.target instanceof HTMLElement
-        && event.target.classList.contains("tabulator-tableholder")
-        && event.target.closest(".tabulator") === capturedGridRoot
-      ) {
+      if (isCapturedGridInfrastructureFocus(event.target)) {
         reattemptRestore();
         return;
       }
@@ -181,6 +183,7 @@ export function createStructuredDialogFocus(
       if (
         document.activeElement !== document.body
         && document.activeElement !== document.documentElement
+        && !isCapturedGridInfrastructureFocus(document.activeElement)
       ) return;
       reattemptRestore();
     };
