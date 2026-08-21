@@ -107,6 +107,7 @@ export function createStructuredDialogFocus(
     let restoreRequested = false;
     let boundGrid: StructuredGridLike | null = null;
     let observingDocumentFocus = false;
+    let observingDocumentIntent = false;
     let observingWindowFocus = false;
     let focusTargetObserver: MutationObserver | null = null;
     let restoringFocus = false;
@@ -158,8 +159,20 @@ export function createStructuredDialogFocus(
         reattemptRestore();
         return;
       }
+      // Tabulator's range module focuses its tableholder as an infrastructure sink
+      // when editing settles. Other controls inside the grid retain external ownership.
+      if (
+        event.target instanceof HTMLElement
+        && event.target.classList.contains("tabulator-tableholder")
+        && event.target.closest(".tabulator") === capturedGridRoot
+      ) {
+        reattemptRestore();
+        return;
+      }
       lease.cancelFor("external");
     };
+
+    const onDocumentFocusIntent = () => lease.cancelFor("external");
 
     const onRenderComplete = () => reattemptRestore();
 
@@ -197,6 +210,9 @@ export function createStructuredDialogFocus(
         if (cancelled) return;
         document.addEventListener("focusin", onDocumentFocusIn);
         observingDocumentFocus = true;
+        document.addEventListener("pointerdown", onDocumentFocusIntent, true);
+        document.addEventListener("keydown", onDocumentFocusIntent, true);
+        observingDocumentIntent = true;
       },
       cancel(): void {
         lease.cancelFor("stale");
@@ -208,6 +224,10 @@ export function createStructuredDialogFocus(
         boundGrid?.off?.("renderComplete", onRenderComplete);
         if (observingDocumentFocus) {
           document.removeEventListener("focusin", onDocumentFocusIn);
+        }
+        if (observingDocumentIntent) {
+          document.removeEventListener("pointerdown", onDocumentFocusIntent, true);
+          document.removeEventListener("keydown", onDocumentFocusIntent, true);
         }
         if (observingWindowFocus) {
           window.removeEventListener("blur", onWindowBlur);

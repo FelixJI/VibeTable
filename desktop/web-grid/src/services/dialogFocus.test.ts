@@ -149,6 +149,91 @@ describe("structured dialog focus", () => {
     dialogFocus.dispose();
   });
 
+  it("reclaims focus from Tabulator's tableholder sink without user intent", () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const tableholder = document.createElement("div");
+    tableholder.className = "tabulator-tableholder";
+    tableholder.tabIndex = 0;
+    const targetCell = document.createElement("button");
+    tableholder.append(targetCell);
+    gridRoot.append(tableholder);
+    document.body.append(gridRoot);
+    const { grid } = createGridHarness(() => targetCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+
+    dialogFocus.capture({
+      element: targetCell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    tableholder.focus();
+
+    expect(document.activeElement).toBe(targetCell);
+    dialogFocus.dispose();
+  });
+
+  it("allows another in-grid control to own focus without user intent", () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const tableholder = document.createElement("div");
+    tableholder.className = "tabulator-tableholder";
+    const targetCell = document.createElement("button");
+    const headerFilter = document.createElement("input");
+    tableholder.append(targetCell);
+    gridRoot.append(tableholder, headerFilter);
+    document.body.append(gridRoot);
+    const { grid } = createGridHarness(() => targetCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+
+    dialogFocus.capture({
+      element: targetCell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    headerFilter.focus();
+
+    expect(document.activeElement).toBe(headerFilter);
+    dialogFocus.dispose();
+  });
+
+  it.each(["pointerdown", "keydown"])(
+    "allows %s intent to move focus within the grid",
+    (eventType) => {
+      const gridRoot = document.createElement("div");
+      gridRoot.className = "tabulator";
+      const targetCell = document.createElement("button");
+      const intendedCell = document.createElement("button");
+      gridRoot.append(targetCell, intendedCell);
+      document.body.append(gridRoot);
+      const { grid } = createGridHarness(() => targetCell);
+      const dialogFocus = createStructuredDialogFocus({
+        getGrid: () => grid,
+        getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+        subscribeScope: () => () => undefined,
+      });
+
+      dialogFocus.capture({
+        element: targetCell,
+        rowKey: "row-7",
+        field: "payload",
+      }).restore();
+      intendedCell.dispatchEvent(new Event(eventType, { bubbles: true }));
+      intendedCell.focus();
+
+      expect(document.activeElement).toBe(intendedCell);
+      dialogFocus.dispose();
+    },
+  );
+
   it("restores the logical cell after the row is temporarily absent during reprojection", () => {
     const originalCell = document.createElement("button");
     const replacementCell = document.createElement("button");
