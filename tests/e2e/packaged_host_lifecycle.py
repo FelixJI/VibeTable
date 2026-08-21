@@ -19,6 +19,7 @@ from typing import Any
 
 from tests.e2e import product_e2e_runner as product_runner
 from tests.e2e.windows_process_scope import WindowsProcessScope
+from tests.e2e.windows_tcp_listener_owner import WindowsTcpListenerOwnerLease
 
 ROOT = Path(__file__).resolve().parents[2]
 WINDOW_CLOSE_CONTROL_FILE = "host-window-close.request"
@@ -139,12 +140,19 @@ def _launch_host(
     return scope, port, controls_dir, streams
 
 
-def _request_tray_exit(scope: WindowsProcessScope, controls_dir: Path, port: int) -> dict[str, Any]:
+def _request_tray_exit(
+    scope: WindowsProcessScope,
+    controls_dir: Path,
+    cdp_owner: WindowsTcpListenerOwnerLease,
+) -> dict[str, Any]:
     (controls_dir / TRAY_EXIT_CONTROL_FILE).write_text("tray-exit\n", encoding="utf-8")
-    return product_runner._observe_scope_exit(scope, cdp_port=port)
+    return product_runner._observe_scope_exit(scope, cdp_owner=cdp_owner)
 
 
-def _request_window_close(scope: WindowsProcessScope, port: int) -> dict[str, Any]:
+def _request_window_close(
+    scope: WindowsProcessScope,
+    cdp_owner: WindowsTcpListenerOwnerLease,
+) -> dict[str, Any]:
     """Send the standard WM_CLOSE used by a user closing the legacy Host window."""
 
     assert os.name == "nt"
@@ -166,7 +174,7 @@ def _request_window_close(scope: WindowsProcessScope, port: int) -> dict[str, An
     assert ctypes.windll.user32.PostMessageW(windows[0], 0x0010, 0, 0), (
         "WM_CLOSE could not be posted to the legacy packaged Host"
     )
-    return product_runner._observe_scope_exit(scope, cdp_port=port)
+    return product_runner._observe_scope_exit(scope, cdp_owner=cdp_owner)
 
 
 def _cleanup_scope(scope: WindowsProcessScope) -> dict[str, Any]:
@@ -201,6 +209,19 @@ def _scope_lifetime(scope: WindowsProcessScope, streams: ExitStack) -> Iterator[
                 raise RuntimeError(message)
 
 
+@contextmanager
+def _close_owner_on_primary_error(
+    cdp_owner: WindowsTcpListenerOwnerLease,
+) -> Iterator[None]:
+    try:
+        yield
+    except BaseException as exc:
+        cleanup = cdp_owner.close()
+        for error in cleanup.errors:
+            exc.add_note(error)
+        raise
+
+
 def _run_tray_case(package_root: Path, runtime_root: Path) -> dict[str, Any]:
     scope, port, controls, streams = _launch_host(
         package_root,
@@ -209,8 +230,10 @@ def _run_tray_case(package_root: Path, runtime_root: Path) -> dict[str, Any]:
         tray_lifecycle=True,
         extra_environment=None,
     )
-    with _scope_lifetime(scope, streams):
+    with _scope_lifetime(scope, streams), ExitStack() as owner_resources:
         product_runner._wait_for_cdp(port, scope)
+        cdp_owner = WindowsTcpListenerOwnerLease.capture(port)
+        owner_resources.enter_context(_close_owner_on_primary_error(cdp_owner))
         readiness = product_runner._wait_for_readiness(runtime_root / "host", scope)
         visible = _wait_for_state(controls, scope, "visible-startup")
         assert readiness.get("ready") is True, readiness
@@ -221,10 +244,9 @@ def _run_tray_case(package_root: Path, runtime_root: Path) -> dict[str, Any]:
         assert scope.root.poll() is None, "close-to-tray terminated the packaged host"
         assert minimized.get("windowVisible") is False, minimized
         assert minimized.get("trayVisible") is True, minimized
-        lifecycle = _request_tray_exit(scope, controls, port)
-        assert lifecycle["status"] == "passed", lifecycle
+        lifecycle = _request_tray_exit(scope, controls, cdp_owner)
         return {
-            "status": "passed",
+            "status": lifecycle["status"],
             "startup": visible,
             "closeToTray": minimized,
             "lifecycle": lifecycle,
@@ -239,16 +261,17 @@ def _run_silent_startup_case(package_root: Path, runtime_root: Path) -> dict[str
         tray_lifecycle=True,
         extra_environment=None,
     )
-    with _scope_lifetime(scope, streams):
+    with _scope_lifetime(scope, streams), ExitStack() as owner_resources:
         product_runner._wait_for_cdp(port, scope)
+        cdp_owner = WindowsTcpListenerOwnerLease.capture(port)
+        owner_resources.enter_context(_close_owner_on_primary_error(cdp_owner))
         readiness = product_runner._wait_for_readiness(runtime_root / "host", scope)
         silent = _wait_for_state(controls, scope, "silent-startup")
         assert readiness.get("ready") is True, readiness
         assert silent.get("windowVisible") is False, silent
         assert silent.get("trayVisible") is True, silent
-        lifecycle = _request_tray_exit(scope, controls, port)
-        assert lifecycle["status"] == "passed", lifecycle
-        return {"status": "passed", "startup": silent, "lifecycle": lifecycle}
+        lifecycle = _request_tray_exit(scope, controls, cdp_owner)
+        return {"status": lifecycle["status"], "startup": silent, "lifecycle": lifecycle}
 
 
 def run_lifecycle(package_root: Path, evidence_root: Path) -> dict[str, Any]:
@@ -258,7 +281,7 @@ def run_lifecycle(package_root: Path, evidence_root: Path) -> dict[str, Any]:
     tray = _run_tray_case(package_root, evidence_root / "close-to-tray")
     silent = _run_silent_startup_case(package_root, evidence_root / "silent-startup")
     return {
-        "ok": True,
+        "ok": tray["status"] == "passed" and silent["status"] == "passed",
         "evidenceKind": "packaged-host-lifecycle",
         "hostExecutable": "VibeTable.Next.exe",
         "closeToTrayAndTrayExit": tray,
@@ -360,8 +383,10 @@ def open_workspace_with_packaged_host(
             else None
         ),
     )
-    with _scope_lifetime(scope, streams):
+    with _scope_lifetime(scope, streams), ExitStack() as owner_resources:
         product_runner._wait_for_cdp(port, scope)
+        cdp_owner = WindowsTcpListenerOwnerLease.capture(port)
+        owner_resources.enter_context(_close_owner_on_primary_error(cdp_owner))
         readiness = product_runner._wait_for_readiness(readiness_dir, scope)
         assert readiness.get("ready") is True, readiness
         (controls / OPEN_WORKSPACE_CONTROL_FILE).write_text(WORKSPACE_ID + "\n", encoding="utf-8")
@@ -377,11 +402,10 @@ def open_workspace_with_packaged_host(
         lifecycle = product_runner._request_normal_exit(
             scope,
             controls_dir=controls,
-            cdp_port=port,
+            cdp_owner=cdp_owner,
         )
-        assert lifecycle["status"] == "passed", lifecycle
         return {
-            "status": "passed",
+            "status": lifecycle["status"],
             "evidenceKind": "packaged-host-workspace-open",
             "hostExecutable": opened["hostExecutable"],
             **open_evidence,

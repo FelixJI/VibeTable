@@ -4,9 +4,9 @@ namespace VibeTable.Desktop.Tests;
 
 internal sealed class FakeDatabasePicker : IDatabasePicker
 {
-    private readonly string _path;
+    private readonly string? _path;
 
-    public FakeDatabasePicker(string path) => _path = path;
+    public FakeDatabasePicker(string? path) => _path = path;
 
     public Task<string?> PickDatabaseAsync()
         => Task.FromResult<string?>(_path);
@@ -47,11 +47,12 @@ internal sealed class FakeWebReplySink : IWebReplySink
         string? requestId,
         string message,
         string? code = null,
-        string? operation = null)
+        string? operation = null,
+        string? operationId = null)
         => Add(new Reply(
             "operation.failed",
             requestId,
-            new { message, code, operation }));
+            new { message, code, operation, operationId }));
 
     public async Task<Reply?> WaitForAsync(
         string type,
