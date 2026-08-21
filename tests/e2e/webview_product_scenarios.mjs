@@ -14,6 +14,11 @@ import {
   readBridgeDiagnosticsInPage,
 } from "./bridge_diagnostics_instrumentation.mjs";
 import {
+  captureDialogFocusLeaseInPage,
+  hasDialogFocusLeaseTerminalInPage,
+  readDialogFocusLeaseEvidenceInPage,
+} from "./dialog_focus_terminal.mjs";
+import {
   beginRawBridgeRequestInPage,
   isAppliedMutationResponse,
   postRawBridgeNotificationInPage,
@@ -23,6 +28,7 @@ import {
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
 import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
+import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { ownsWorkspaceSearchTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
@@ -1928,13 +1934,23 @@ async function scenario04(page, recorder, _network, runtime) {
       && keyboardContract.ariaLabel.length > 0,
     { keyboardContract },
   );
+  const focusLease = await page.evaluate(captureDialogFocusLeaseInPage, {
+    operation: "capture",
+    target: "json",
+  });
   await page.keyboard.press("Escape");
   await page.getByTestId("json-editor-modal").waitFor({ state: "hidden" });
   await page.waitForFunction(
-    (element) => document.activeElement === element,
-    await jsonCell.elementHandle(),
-    { timeout: 1_000 },
-  ).catch(() => null);
+    hasDialogFocusLeaseTerminalInPage,
+    { operation: "has-terminal", capture: focusLease },
+    { timeout: 10_000 },
+  );
+  const focusLeaseEvidence = await page.evaluate(
+    readDialogFocusLeaseEvidenceInPage,
+    { operation: "read-evidence", capture: focusLease },
+  );
+  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
+  await jsonCell.waitFor({ timeout: 10_000 });
   const focusRestoration = await jsonCell.evaluate((element) => ({
     documentHasFocus: document.hasFocus(),
     restored: document.activeElement === element,
@@ -1942,8 +1958,10 @@ async function scenario04(page, recorder, _network, runtime) {
   }));
   recorder.check(
     "Escape closes the structured modal and restores focus when the renderer owns OS focus",
-    !focusRestoration.documentHasFocus || focusRestoration.restored,
-    { focusRestoration },
+    focusRestoration.documentHasFocus
+      && focusLeaseEvidence.terminal?.state === "restored"
+      && focusRestoration.restored,
+    { focusLeaseEvidence, focusRestoration },
   );
   await jsonCell.press("Shift+F10");
   const keyboardContextMenu = page.locator(".n-dropdown-menu:visible").last();
@@ -5243,19 +5261,34 @@ async function scenario18(page, recorder, _network, runtime) {
       && await activeSearchInput.evaluate((element) => element === document.activeElement),
   { staleMessage: staleMessageText });
 
-  const restart = await requestSidecarKill(runtime, "verify ContentProfile and repaired link survive restart");
+  const freshTableName = page.getByTestId("sidebar-table-name")
+    .filter({ hasText: "E2E Search Records" });
+  const recovery = await runScenario18RecoveryBoundary({
+    page,
+    tableId,
+    injectFault: () => requestSidecarKill(runtime, "verify ContentProfile and repaired link survive restart"),
+    awaitBackendRecovery: () => waitForActiveTableBackend(page, tableId, 1, 90_000),
+    prepareFreshTable: async () => {
+      await page.getByTestId("nav-files").click();
+      await page.getByTestId("file-workspace").waitFor({ state: "visible", timeout: 30_000 });
+      await page.getByTestId("nav-tables").click();
+      await freshTableName.waitFor();
+    },
+    triggerFreshTable: () => freshTableName.locator("xpath=ancestor::button").click(),
+    prepareFreshContent: async () => {
+      await titleCell.waitFor({ state: "visible", timeout: 30_000 });
+      await titleCell.click();
+    },
+    triggerFreshContent: () => page.getByTestId("toolbar-content-record").click(),
+    readFreshContent: async () => {
+      await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
+      return contentPanel.innerText();
+    },
+  });
+  const restart = recovery.fault;
   recorder.check("content restart terminated only the exact sidecar child",
     restart.processName === "vibetable-pb.exe", { restart });
-  await waitForActiveTableBackend(page, tableId, 1, 90_000);
-  await page.getByTestId("nav-files").click();
-  await page.getByTestId("file-workspace").waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByTestId("nav-tables").click();
-  await selectTable(page, "E2E Search Records");
-  await titleCell.waitFor({ state: "visible", timeout: 30_000 });
-  await titleCell.click();
-  await page.getByTestId("toolbar-content-record").click();
-  await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
-  const reopenedText = await contentPanel.innerText();
+  const reopenedText = recovery.content;
   recorder.check("content record and repaired link survive packaged sidecar restart and reopen",
     reopenedText.includes("Durable violet body")
       && reopenedText.includes("content-reference-b.json")
