@@ -106,6 +106,8 @@ public sealed class TableWorkspaceMutationTests
             new List<string> { "a", "b" },
             new List<string>(),
             TestDisplayNames.For("a", "b"));
+        fake.SelectionProjectionResults["a"] = SelectionProjection("a");
+        fake.SelectionProjectionResults["b"] = SelectionProjection("b");
         var workspace = new TableWorkspaceService(fake);
         var notifications = new List<TableNotification>();
         workspace.Notification += n => notifications.Add(n);
@@ -141,6 +143,8 @@ public sealed class TableWorkspaceMutationTests
             new List<string> { "a", "b" },
             new List<string>(),
             TestDisplayNames.For("a", "b"));
+        fake.SelectionProjectionResults["a"] = SelectionProjection("a");
+        fake.SelectionProjectionResults["b"] = SelectionProjection("b");
         var workspace = new TableWorkspaceService(fake);
         var notifications = new List<TableNotification>();
         workspace.Notification += n => notifications.Add(n);
@@ -207,4 +211,22 @@ public sealed class TableWorkspaceMutationTests
             System.Reflection.BindingFlags.NonPublic);
         return (RpcRemoteException)ctor[0].Invoke(new object[] { code, message, (JsonElement?)data });
     }
+
+    private static TableSelectionProjection SelectionProjection(string table)
+        => new(
+            new TablePage(
+                table,
+                Array.Empty<ColumnSchema>(),
+                Array.Empty<Dictionary<string, object?>>(),
+                0,
+                TableWorkspaceLimits.MaxPageLimit,
+                0,
+                "remote"),
+            new EditSchemaResult(
+                table,
+                "schema_0001",
+                "fake-row-key",
+                RowKeyStable: true,
+                Editable: false,
+                Array.Empty<ColumnEditSchema>()));
 }

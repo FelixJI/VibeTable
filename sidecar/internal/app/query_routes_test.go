@@ -1,13 +1,136 @@
 package app
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
+
+func TestSelectionOpenRouteReturnsProjectionAndMapsProductError(t *testing.T) {
+	matched := query.SelectionProjection{
+		SchemaSnapshot: v2.SchemaSnapshot{
+			Contract: v2.Contract, TableID: "orders", DisplayName: "Orders", Kind: "base",
+			SchemaRevision: "schema_0001", DataRevision: 1,
+			ArchivePolicy: v2.ArchivePolicy{Mode: "none"},
+		},
+		CursorWindow: query.CursorWindow{Snapshot: query.QuerySnapshot{
+			Table: "orders", SchemaRevision: "schema_0001", DataRevision: 1,
+			NormalizedQuery: query.TableQuery{Limit: 10},
+		}},
+	}
+	for _, testCase := range []struct {
+		name       string
+		port       *selectionRoutePort
+		wantStatus int
+		wantCode   string
+	}{
+		{"success", &selectionRoutePort{projection: matched}, http.StatusOK, ""},
+		{"product error", &selectionRoutePort{err: &query.ProductError{
+			Code: "query.schema.not_found", Path: "table", Message: "missing",
+		}}, http.StatusNotFound, "query.schema.not_found"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			r := router.NewRouter(func(
+				writer http.ResponseWriter,
+				request *http.Request,
+			) (*core.RequestEvent, router.EventCleanupFunc) {
+				return &core.RequestEvent{Event: router.Event{
+					Response: writer,
+					Request:  request,
+				}}, nil
+			})
+			registerQueryRoutes(r, testCase.port)
+			mux, err := r.BuildMux()
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/api/vibetable/v1/query",
+				bytes.NewBufferString(
+					`{"operation":"selection.open","tableId":"orders","query":{"limit":10}}`,
+				),
+			)
+			response := httptest.NewRecorder()
+
+			mux.ServeHTTP(response, request)
+
+			if response.Code != testCase.wantStatus || testCase.port.calls != 1 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, testCase.port.calls, response.Body)
+			}
+			if testCase.wantCode == "" {
+				var projection query.SelectionProjection
+				if err := json.Unmarshal(response.Body.Bytes(), &projection); err != nil ||
+					projection.SchemaSnapshot.SchemaRevision != "schema_0001" {
+					t.Fatalf("projection=%#v err=%v", projection, err)
+				}
+			} else {
+				var productErr query.ProductError
+				if err := json.Unmarshal(response.Body.Bytes(), &productErr); err != nil ||
+					productErr.Code != testCase.wantCode {
+					t.Fatalf("product error=%#v err=%v", productErr, err)
+				}
+			}
+		})
+	}
+}
+
+type selectionRoutePort struct {
+	projection query.SelectionProjection
+	err        error
+	calls      int
+}
+
+func (port *selectionRoutePort) OpenSelectionProjection(
+	context.Context,
+	string,
+	query.TableQuery,
+) (query.SelectionProjection, error) {
+	port.calls++
+	return port.projection, port.err
+}
+
+func (*selectionRoutePort) QueryPage(context.Context, string, query.TableQuery) (query.Page, error) {
+	return query.Page{}, nil
+}
+
+func (*selectionRoutePort) OpenCursor(context.Context, string, query.TableQuery) (query.CursorWindow, error) {
+	return query.CursorWindow{}, nil
+}
+
+func (*selectionRoutePort) FetchCursor(context.Context, string) (query.CursorWindow, error) {
+	return query.CursorWindow{}, nil
+}
+
+func (*selectionRoutePort) ExecuteViewQuery(context.Context, string, query.ViewQuery) (query.ViewResult, error) {
+	return query.ViewResult{}, nil
+}
+
+func (*selectionRoutePort) ReadRows(context.Context, string, []string) ([]map[string]any, error) {
+	return nil, nil
+}
+
+func (*selectionRoutePort) Aggregate(context.Context, string, query.AggregateQuery) (query.AggregateResult, error) {
+	return query.AggregateResult{}, nil
+}
+
+func (*selectionRoutePort) ValidateSnapshot(
+	context.Context,
+	query.QuerySnapshot,
+	*query.TableQuery,
+) (query.SnapshotValidation, error) {
+	return query.SnapshotValidation{}, nil
+}
 
 func TestDecodeQueryRequestIsStrictAndBounded(t *testing.T) {
 	var valid queryOperationRequest
@@ -122,6 +245,9 @@ func TestValidateQueryOperationRequiresExactlyOnePayload(t *testing.T) {
 		"cursor open": {
 			Operation: "cursor.open", TableID: "orders", Query: &page,
 		},
+		"selection open": {
+			Operation: "selection.open", TableID: "orders", Query: &page,
+		},
 		"cursor fetch": {
 			Operation: "cursor.fetch", Cursor: &cursor,
 		},
@@ -152,6 +278,9 @@ func TestValidateQueryOperationRequiresExactlyOnePayload(t *testing.T) {
 		},
 		"mixed cursor open payload": {
 			Operation: "cursor.open", Query: &page, Cursor: &cursor,
+		},
+		"mixed selection open payload": {
+			Operation: "selection.open", Query: &page, Cursor: &cursor,
 		},
 		"missing cursor fetch token": {
 			Operation: "cursor.fetch",

@@ -34,12 +34,14 @@ NODE_RUNNER = Path(__file__).with_name("webview_product_scenarios.mjs")
 DEFAULT_EVIDENCE = ROOT / "build" / "qa" / "product-e2e"
 CDP_TIMEOUT_SECONDS = 60.0
 NORMAL_CLOSE_CONTROL_FILE = "host-normal-close.request"
+LIFECYCLE_EXIT_TIMEOUT_SECONDS = 35.0
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from qa.package_check import check_package  # noqa: E402
 from scripts.build_next import RepoPaths  # noqa: E402
+from tests.e2e._windows_tcp_table import query_windows_tcp_table  # noqa: E402
 from tests.e2e.windows_process_scope import (  # noqa: E402
     ProcessLaunchSpec,
     ProcessScopeSnapshot,
@@ -47,6 +49,11 @@ from tests.e2e.windows_process_scope import (  # noqa: E402
     ScopeWaitResult,
     TargetTerminationResult,
     WindowsProcessScope,
+)
+from tests.e2e.windows_tcp_listener_owner import (  # noqa: E402
+    OwnerLeaseCleanupReport,
+    PortReleaseReport,
+    WindowsTcpListenerOwnerLease,
 )
 
 DEFAULT_PACKAGE = RepoPaths.default(ROOT).publish_root
@@ -91,6 +98,12 @@ class _ManagedScope(_LifecycleScope, _CloseScope, Protocol):
 
 class _HostObservationScope(_SnapshotScope, _FaultScope, Protocol):
     pass
+
+
+class _PortOwnerLease(Protocol):
+    def observe_release(self, *, timeout: float) -> PortReleaseReport: ...
+
+    def close(self) -> OwnerLeaseCleanupReport: ...
 
 
 @dataclass(frozen=True)
@@ -429,6 +442,8 @@ def _lifecycle_exit_report(
     members_after_exit: list[dict[str, Any]],
     ports_released: bool,
     root_pid: int | None = None,
+    port_release: dict[str, object] | None = None,
+    owner_lease_cleanup: dict[str, object] | None = None,
     cleanup: dict[str, Any] | None = None,
     errors: Sequence[str] = (),
 ) -> dict[str, Any]:
@@ -454,6 +469,10 @@ def _lifecycle_exit_report(
     }
     if cleanup is not None:
         report["cleanup"] = cleanup
+    if port_release is not None:
+        report["portRelease"] = port_release
+    if owner_lease_cleanup is not None:
+        report["ownerLeaseCleanup"] = owner_lease_cleanup
     return report
 
 
@@ -555,18 +574,39 @@ def _scope_members(scope: _SnapshotScope) -> list[dict[str, Any]]:
     ]
 
 
-def _job_ports_released(scope: _SnapshotScope, *, cdp_port: int) -> bool:
-    before = {member.pid for member in scope.snapshot().members}
-    rows = _netstat_tcp_rows()
-    after = {member.pid for member in scope.snapshot().members}
-    stable_members = before & after
-    return not any(
-        int(row["pid"]) in stable_members or _is_cdp_listener(row, cdp_port=cdp_port)
-        for row in rows
-    )
+def _close_owner_lease(cdp_owner: _PortOwnerLease) -> OwnerLeaseCleanupReport:
+    try:
+        cleanup = cdp_owner.close()
+    except (OSError, RuntimeError) as exc:
+        return OwnerLeaseCleanupReport(
+            stable_handle_closed=False,
+            errors=(f"unable to close captured CDP owner handle ({type(exc).__name__})",),
+        )
+    if cleanup is None:
+        return OwnerLeaseCleanupReport(
+            stable_handle_closed=False,
+            errors=("captured CDP owner cleanup returned no report",),
+        )
+    return cleanup
 
 
-def _abort_scope(scope: _LifecycleScope, *, reason: str) -> dict[str, Any]:
+@contextmanager
+def _close_owner_on_primary_error(cdp_owner: _PortOwnerLease) -> Iterator[None]:
+    try:
+        yield
+    except BaseException as exc:
+        cleanup = _close_owner_lease(cdp_owner)
+        for error in cleanup.errors:
+            exc.add_note(error)
+        raise
+
+
+def _abort_scope(
+    scope: _LifecycleScope,
+    *,
+    reason: str,
+    cdp_owner: _PortOwnerLease | None = None,
+) -> dict[str, Any]:
     errors = [reason]
     try:
         host_exit_code = scope.root.poll()
@@ -578,6 +618,9 @@ def _abort_scope(scope: _LifecycleScope, *, reason: str) -> dict[str, Any]:
     except (OSError, RuntimeError) as exc:
         members = []
         errors.append(str(exc))
+    owner_cleanup = None if cdp_owner is None else _close_owner_lease(cdp_owner)
+    if owner_cleanup is not None:
+        errors.extend(owner_cleanup.errors)
     return _lifecycle_exit_report(
         normal_exit_requested=False,
         host_exit_code=host_exit_code,
@@ -585,6 +628,7 @@ def _abort_scope(scope: _LifecycleScope, *, reason: str) -> dict[str, Any]:
         ports_released=False,
         root_pid=scope.root.pid,
         cleanup=_terminate_scope(scope),
+        owner_lease_cleanup=(None if owner_cleanup is None else owner_cleanup.as_artifact()),
         errors=errors,
     )
 
@@ -593,35 +637,45 @@ def _request_normal_exit(
     scope: _LifecycleScope,
     *,
     controls_dir: Path,
-    cdp_port: int,
+    cdp_owner: _PortOwnerLease,
 ) -> dict[str, Any]:
     control = controls_dir / NORMAL_CLOSE_CONTROL_FILE
     control.write_text("normal-close\n", encoding="utf-8")
-    return _observe_scope_exit(scope, cdp_port=cdp_port)
+    return _observe_scope_exit(scope, cdp_owner=cdp_owner)
 
 
 def _observe_scope_exit(
     scope: _LifecycleScope,
     *,
-    cdp_port: int,
+    cdp_owner: _PortOwnerLease,
 ) -> dict[str, Any]:
+    deadline = time.monotonic() + LIFECYCLE_EXIT_TIMEOUT_SECONDS
+
+    def remaining() -> float:
+        return max(0.0, deadline - time.monotonic())
+
     host_exit_code: int | None = None
     errors: list[str] = []
     try:
-        host_exit_code = scope.root.wait(timeout=30)
+        host_exit_code = scope.root.wait(timeout=min(30.0, remaining()))
     except subprocess.TimeoutExpired:
         pass
     except (OSError, RuntimeError) as exc:
         errors.append(str(exc))
-    wait_result = scope.wait_empty(timeout=5)
+    wait_result = scope.wait_empty(timeout=min(5.0, remaining()))
     errors.extend(wait_result.errors)
+    port_release: PortReleaseReport | None = None
     try:
         members_after_exit = _scope_members(scope)
-        ports_released = _job_ports_released(scope, cdp_port=cdp_port)
+        port_release = cdp_owner.observe_release(timeout=remaining())
+        ports_released = port_release.released
+        errors.extend(port_release.errors)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         members_after_exit = []
         ports_released = False
-        errors.append(str(exc))
+        errors.append(f"CDP listener ownership observation failed ({type(exc).__name__})")
+    owner_cleanup = _close_owner_lease(cdp_owner)
+    errors.extend(owner_cleanup.errors)
     cleanup = None
     if host_exit_code is None or members_after_exit or errors or not ports_released:
         cleanup = _terminate_scope(scope)
@@ -631,6 +685,8 @@ def _observe_scope_exit(
         members_after_exit=members_after_exit,
         ports_released=ports_released,
         root_pid=scope.root.pid,
+        port_release=(None if port_release is None else port_release.as_artifact()),
+        owner_lease_cleanup=owner_cleanup.as_artifact(),
         cleanup=cleanup,
         errors=errors,
     )
@@ -641,26 +697,6 @@ def _endpoint_host(endpoint: str) -> str:
         closing = endpoint.find("]")
         return endpoint[1:closing] if closing > 0 else endpoint
     return endpoint.rsplit(":", 1)[0]
-
-
-def _endpoint_port(endpoint: str) -> int | None:
-    separator = endpoint.rfind(":")
-    if separator < 0:
-        return None
-    try:
-        return int(endpoint[separator + 1 :])
-    except ValueError:
-        return None
-
-
-def _is_cdp_listener(row: Mapping[str, Any], *, cdp_port: int) -> bool:
-    local = str(row.get("local", ""))
-    remote = str(row.get("remote", ""))
-    return (
-        _endpoint_port(local) == cdp_port
-        and _is_unspecified_endpoint(remote)
-        and _endpoint_port(remote) == 0
-    )
 
 
 def _is_loopback_endpoint(endpoint: str) -> bool:
@@ -679,41 +715,6 @@ def _is_unspecified_endpoint(endpoint: str) -> bool:
         return False
 
 
-def _netstat_tcp_rows() -> list[dict[str, Any]]:
-    completed = subprocess.run(
-        ["netstat", "-ano", "-p", "tcp"],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"netstat failed with {completed.returncode}: {completed.stderr.strip()}"
-        )
-    rows: list[dict[str, Any]] = []
-    for raw_line in completed.stdout.splitlines():
-        parts = raw_line.split()
-        if len(parts) != 5 or parts[0].casefold() != "tcp":
-            continue
-        try:
-            pid = int(parts[4])
-        except ValueError:
-            continue
-        rows.append(
-            {
-                "protocol": "TCP",
-                "local": parts[1],
-                "remote": parts[2],
-                "state": parts[3].upper(),
-                "pid": pid,
-            }
-        )
-    return rows
-
-
 def _record_process_network(
     scope: _SnapshotScope,
     evidence: dict[str, Any],
@@ -721,13 +722,13 @@ def _record_process_network(
     try:
         before_snapshot = scope.snapshot()
         before = {member.pid: member for member in before_snapshot.members}
-        rows = _netstat_tcp_rows()
+        rows = query_windows_tcp_table(timeout=10.0)
         after_snapshot = scope.snapshot()
         after = {member.pid: member for member in after_snapshot.members}
         members = set(before) & set(after)
         observed = evidence.setdefault("observations", {})
         for row in rows:
-            pid = int(row["pid"])
+            pid = row.pid
             if pid not in members:
                 continue
             member = after[pid]
@@ -736,7 +737,7 @@ def _record_process_network(
                 if getattr(member, "identity_verified", False)
                 else "unknown"
             )
-            item = row | {"processName": name}
+            item = row.as_artifact() | {"processName": name}
             key = "|".join(str(item[field]) for field in ("pid", "local", "remote", "state"))
             observed[key] = item
         evidence["samples"] = int(evidence.get("samples", 0)) + 1
@@ -1488,6 +1489,7 @@ def run_scenario(
         result: dict[str, Any]
         normal_exit_allowed = False
         infrastructure_error: str | None = None
+        cdp_owner: WindowsTcpListenerOwnerLease | None = None
         try:
             process_network = (
                 {"observations": {}, "errors": [], "samples": 0}
@@ -1495,6 +1497,8 @@ def run_scenario(
                 else None
             )
             _wait_for_cdp(port, scope, process_network)
+            cdp_owner = WindowsTcpListenerOwnerLease.capture(port)
+            resources.enter_context(_close_owner_on_primary_error(cdp_owner))
             node_command = [
                 node,
                 str(NODE_RUNNER),
@@ -1586,19 +1590,27 @@ def run_scenario(
                 code="E2E_INFRASTRUCTURE_FAILED",
                 message=str(exc),
             ) | {"evidenceDirectory": str(scenario_dir)}
-        if normal_exit_allowed:
+        if normal_exit_allowed and cdp_owner is not None:
             try:
                 lifecycle = _request_normal_exit(
                     scope,
                     controls_dir=controls_dir,
-                    cdp_port=port,
+                    cdp_owner=cdp_owner,
                 )
             except Exception as exc:
-                lifecycle = _abort_scope(scope, reason=str(exc))
+                lifecycle = _abort_scope(scope, reason=str(exc), cdp_owner=cdp_owner)
         else:
             lifecycle = _abort_scope(
                 scope,
-                reason=infrastructure_error or "host readiness did not permit normal exit",
+                reason=(
+                    infrastructure_error
+                    or (
+                        "CDP listener owner lease was unavailable"
+                        if normal_exit_allowed
+                        else "host readiness did not permit normal exit"
+                    )
+                ),
+                cdp_owner=cdp_owner,
             )
         result["lifecycle"] = lifecycle
         lifecycle_errors = list(lifecycle.get("errors", []))

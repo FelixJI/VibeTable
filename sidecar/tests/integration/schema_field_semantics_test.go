@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
@@ -13,6 +16,209 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 )
+
+func TestSelectionProjectionProductionSourceReturnsOneMatchedSnapshot(t *testing.T) {
+	dataDir := queryTempDir(t)
+	app := bootstrapApp(t, dataDir)
+	defer resetApp(t, app)
+	ctx := context.Background()
+	table := createV2IntegrationTable(
+		t, ctx, app, "Atomic selection", "atomic_selection_table",
+	)
+	source, err := queryschema.New(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projection, err := query.NewPort(app, source).OpenSelectionProjection(
+		ctx, table.TableID, query.TableQuery{Limit: 10},
+	)
+	if err != nil {
+		t.Fatalf("OpenSelectionProjection: %v", err)
+	}
+	schema := projection.SchemaSnapshot
+	snapshot := projection.CursorWindow.Snapshot
+	if schema.TableID != table.TableID || snapshot.Table != table.TableID ||
+		schema.SchemaRevision != snapshot.SchemaRevision ||
+		schema.DataRevision != snapshot.DataRevision ||
+		len(projection.CursorWindow.Rows) != 0 {
+		t.Fatalf("production selection projection = %#v", projection)
+	}
+}
+
+func TestSelectionProjectionProductionSourceExcludesConcurrentFieldApply(t *testing.T) {
+	dataDir := queryTempDir(t)
+	app := bootstrapApp(t, dataDir)
+	defer resetApp(t, app)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	table := createV2IntegrationTable(
+		t, ctx, app, "Atomic field apply", "atomic_field_apply_table",
+	)
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	writeEntered := make(chan struct{})
+	writerApp := &transactionBarrierApp{App: app, entered: writeEntered}
+	executor := fieldchange.NewExecutor(writerApp, store)
+	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	revisions, err := catalog.Revisions(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialRowID := "atomicrow000001"
+	if _, err := kernel.Apply(ctx, mutationRequest(
+		table.TableID, revisions.Schema, "atomic-selection-initial-row",
+		mutation.Operation{
+			Kind: mutation.OperationInsert, RecordID: &initialRowID, Values: map[string]any{},
+		},
+	)); err != nil {
+		t.Fatalf("insert initial row: %v", err)
+	}
+	revisions, err = catalog.Revisions(ctx, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := v2.Actor{ID: "local-user", Kind: "user"}
+	draft := fieldDraftForIntegration(t, v2.LogicalText, "Title")
+	plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: table.TableID,
+		ExpectedSchemaRev: revisions.Schema,
+		Draft:             &draft,
+		Actor:             actor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	production, err := queryschema.New(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	barrier := &realConcurrentSelectionSource{
+		delegate:     production,
+		writeEntered: writeEntered,
+		done:         make(chan error, 1),
+		apply: func() error {
+			receipt, applyErr := executor.Apply(ctx, v2.ApplyRequest{
+				PlanID: plan.PlanID, PlanHash: plan.PlanHash,
+				OperationID: "atomic-selection-field-apply", Actor: actor,
+			})
+			if applyErr != nil {
+				return applyErr
+			}
+			concurrentRowID := "atomicrow000002"
+			_, mutationErr := kernel.Apply(ctx, mutationRequest(
+				table.TableID, receipt.SchemaRevision, "atomic-selection-concurrent-row",
+				mutation.Operation{
+					Kind: mutation.OperationInsert, RecordID: &concurrentRowID,
+					Values: map[string]any{},
+				},
+			))
+			return mutationErr
+		},
+	}
+	port := query.NewPort(app, barrier)
+
+	before, err := port.OpenSelectionProjection(
+		ctx, table.TableID, query.TableQuery{Limit: 10},
+	)
+	if err != nil {
+		t.Fatalf("OpenSelectionProjection(before): %v", err)
+	}
+	select {
+	case writeErr := <-barrier.done:
+		if writeErr != nil {
+			t.Fatalf("concurrent schema/data write: %v", writeErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("concurrent schema/data write did not commit: %v", ctx.Err())
+	}
+	after, err := port.OpenSelectionProjection(
+		ctx, table.TableID, query.TableQuery{Limit: 10},
+	)
+	if err != nil {
+		t.Fatalf("OpenSelectionProjection(after): %v", err)
+	}
+	assertMatchedProductionProjection(t, before)
+	assertMatchedProductionProjection(t, after)
+	if before.SchemaSnapshot.SchemaRevision == after.SchemaSnapshot.SchemaRevision ||
+		before.SchemaSnapshot.DataRevision == after.SchemaSnapshot.DataRevision ||
+		len(before.SchemaSnapshot.Fields) != 0 || len(after.SchemaSnapshot.Fields) != 1 ||
+		len(before.CursorWindow.Rows) != 1 ||
+		!containsRowID(before.CursorWindow.Rows, initialRowID) ||
+		containsRowID(before.CursorWindow.Rows, "atomicrow000002") ||
+		len(after.CursorWindow.Rows) != 2 ||
+		!containsRowID(after.CursorWindow.Rows, initialRowID) ||
+		!containsRowID(after.CursorWindow.Rows, "atomicrow000002") {
+		t.Fatalf("field apply split or disappeared: before=%#v after=%#v", before, after)
+	}
+}
+
+type realConcurrentSelectionSource struct {
+	delegate     *queryschema.Source
+	once         sync.Once
+	writeEntered <-chan struct{}
+	done         chan error
+	apply        func() error
+}
+
+type transactionBarrierApp struct {
+	core.App
+	once    sync.Once
+	entered chan struct{}
+}
+
+func (app *transactionBarrierApp) RunInTransaction(
+	transactionFunc func(core.App) error,
+) error {
+	var connectionProbe int
+	if err := app.App.ConcurrentDB().NewQuery("SELECT 1").Row(&connectionProbe); err != nil {
+		return err
+	}
+	app.once.Do(func() { close(app.entered) })
+	return app.App.RunInTransaction(transactionFunc)
+}
+
+func (source *realConcurrentSelectionSource) DescribeQueryTable(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+) (query.TableDescriptor, error) {
+	return source.delegate.DescribeQueryTable(ctx, app, tableID)
+}
+
+func (source *realConcurrentSelectionSource) DescribeSelectionTable(
+	ctx context.Context,
+	app core.App,
+	tableID string,
+) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	descriptor, snapshot, err := source.delegate.DescribeSelectionTable(ctx, app, tableID)
+	if err != nil {
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
+	}
+	source.once.Do(func() {
+		go func() {
+			source.done <- source.apply()
+		}()
+	})
+	select {
+	case <-source.writeEntered:
+	case <-ctx.Done():
+		return query.TableDescriptor{}, v2.SchemaSnapshot{}, ctx.Err()
+	}
+	return descriptor, snapshot, nil
+}
+
+func assertMatchedProductionProjection(t *testing.T, projection query.SelectionProjection) {
+	t.Helper()
+	schema := projection.SchemaSnapshot
+	snapshot := projection.CursorWindow.Snapshot
+	if schema.TableID != snapshot.Table ||
+		schema.SchemaRevision != snapshot.SchemaRevision ||
+		schema.DataRevision != snapshot.DataRevision {
+		t.Fatalf("production selection projection mixed revisions: %#v", projection)
+	}
+}
 
 func TestQueryDigestGuardsSchemaV2RowsWithEmptyMultiValues(t *testing.T) {
 	dataDir := queryTempDir(t)

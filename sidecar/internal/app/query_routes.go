@@ -34,7 +34,10 @@ type snapshotValidationRequest struct {
 
 func registerQueryRoutes(
 	r *router.Router[*core.RequestEvent],
-	port query.QueryPort,
+	port interface {
+		query.QueryPort
+		query.SelectionPort
+	},
 ) {
 	r.POST("/api/vibetable/v1/query", func(request *core.RequestEvent) error {
 		var input queryOperationRequest
@@ -75,6 +78,14 @@ func registerQueryRoutes(
 				return writeQueryError(request, err)
 			}
 			return request.JSON(http.StatusOK, result)
+		case "selection.open":
+			result, err := port.OpenSelectionProjection(
+				request.Request.Context(), input.TableID, *input.Query,
+			)
+			if err != nil {
+				return writeQueryError(request, err)
+			}
+			return request.JSON(http.StatusOK, result)
 		case "cursor.fetch":
 			result, err := port.FetchCursor(request.Request.Context(), *input.Cursor)
 			if err != nil {
@@ -99,7 +110,7 @@ func registerQueryRoutes(
 			return request.JSON(http.StatusOK, result)
 		}
 		return writeQueryError(request, invalidQueryRequest(
-			"operation", "operation must be view, page, cursor.open, cursor.fetch, readRows, or aggregate",
+			"operation", "operation must be view, page, cursor.open, cursor.fetch, selection.open, readRows, or aggregate",
 		))
 	})
 
@@ -131,9 +142,9 @@ func validateQueryOperation(input queryOperationRequest) error {
 		if input.Query == nil || input.View != nil || input.Aggregate != nil || input.RowIDs != nil || input.Cursor != nil {
 			return invalidQueryRequest("operation", "page requires only query")
 		}
-	case "cursor.open":
+	case "cursor.open", "selection.open":
 		if input.Query == nil || input.View != nil || input.Aggregate != nil || input.RowIDs != nil || input.Cursor != nil {
-			return invalidQueryRequest("operation", "cursor.open requires only query")
+			return invalidQueryRequest("operation", input.Operation+" requires only query")
 		}
 	case "cursor.fetch":
 		if input.Cursor == nil || strings.TrimSpace(*input.Cursor) == "" || input.TableID != "" ||
@@ -150,7 +161,7 @@ func validateQueryOperation(input queryOperationRequest) error {
 		}
 	default:
 		return invalidQueryRequest(
-			"operation", "operation must be view, page, cursor.open, cursor.fetch, readRows, or aggregate",
+			"operation", "operation must be view, page, cursor.open, cursor.fetch, selection.open, readRows, or aggregate",
 		)
 	}
 	return nil

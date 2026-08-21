@@ -175,6 +175,8 @@ public sealed class WebMessageRouter
     {
         "host.startupStateChanged",
         "database.opened",
+        "database.openCancelled",
+        "plugin.projectContext.unavailable",
         "table.pageLoaded",
         "table.datasetReady",
         "operation.failed",
@@ -528,12 +530,13 @@ public sealed class WebMessageRouter
         string? requestId,
         string message,
         string? code = null,
-        string? operation = null)
+        string? operation = null,
+        string? operationId = null)
     {
         return new HostReplyMessage(
             Type: "operation.failed",
             RequestId: requestId,
-            Payload: new OperationFailedPayload(message, code, operation));
+            Payload: new OperationFailedPayload(message, code, operation, operationId));
     }
 
     /// <summary>
@@ -593,4 +596,5 @@ public sealed record HostReplyMessage(
 public sealed record OperationFailedPayload(
     string Message,
     string? Code,
-    string? Operation = null);
+    string? Operation = null,
+    string? OperationId = null);

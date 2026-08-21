@@ -19,6 +19,7 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 type SchemaSource interface {
@@ -27,6 +28,22 @@ type SchemaSource interface {
 		app core.App,
 		tableID string,
 	) (TableDescriptor, error)
+}
+
+// SelectionSchemaSource supplies both query execution metadata and the schema
+// projection from the same app handle. Production adapters must derive both
+// values from that handle rather than reopening an independent read.
+type SelectionSchemaSource interface {
+	DescribeSelectionTable(
+		ctx context.Context,
+		app core.App,
+		tableID string,
+	) (TableDescriptor, v2.SchemaSnapshot, error)
+}
+
+type Source interface {
+	SchemaSource
+	SelectionSchemaSource
 }
 
 type QueryPort interface {
@@ -41,6 +58,14 @@ type QueryPort interface {
 		snapshot QuerySnapshot,
 		currentQuery *TableQuery,
 	) (SnapshotValidation, error)
+}
+
+type SelectionPort interface {
+	OpenSelectionProjection(
+		ctx context.Context,
+		tableID string,
+		input TableQuery,
+	) (SelectionProjection, error)
 }
 
 type cursorEnvelope struct {
@@ -58,10 +83,10 @@ const (
 
 type Port struct {
 	app    core.App
-	source SchemaSource
+	source Source
 }
 
-func NewPort(app core.App, source SchemaSource) *Port {
+func NewPort(app core.App, source Source) *Port {
 	return &Port{app: app, source: source}
 }
 
@@ -80,6 +105,61 @@ func (port *Port) OpenCursor(
 		return CursorWindow{}, err
 	}
 	return port.cursorWindow(ctx, tableID, normalized, nil, nil)
+}
+
+// OpenSelectionProjection returns the complete table-selection projection
+// from one authoritative read transaction. A concurrent schema write may
+// commit before or after this transaction, but cannot split its schema and
+// cursor revisions.
+func (port *Port) OpenSelectionProjection(
+	ctx context.Context,
+	tableID string,
+	input TableQuery,
+) (SelectionProjection, error) {
+	if input.Offset != 0 {
+		return SelectionProjection{}, productError(
+			"query.cursor.invalid", "offset", "cursor queries cannot use offset", nil,
+		)
+	}
+	normalized, err := Normalize(input)
+	if err != nil {
+		return SelectionProjection{}, err
+	}
+	if err := port.validateConfigured(); err != nil {
+		return SelectionProjection{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return SelectionProjection{}, err
+	}
+	var result SelectionProjection
+	err = port.app.RunInTransaction(func(txApp core.App) error {
+		descriptor, schema, describeErr := port.source.DescribeSelectionTable(
+			ctx, txApp, tableID,
+		)
+		if describeErr != nil {
+			return port.mapDescribeError(describeErr)
+		}
+		if schema.TableID != descriptor.TableID ||
+			schema.SchemaRevision != descriptor.SchemaRevision ||
+			schema.DataRevision != descriptor.DataRevision {
+			return productError(
+				"query.schema.failed", "table",
+				"selection schema revisions do not match query metadata", nil,
+			)
+		}
+		window, windowErr := port.cursorWindowInTransaction(
+			ctx, txApp, descriptor, normalized, nil, nil,
+		)
+		if windowErr != nil {
+			return windowErr
+		}
+		result = SelectionProjection{SchemaSnapshot: schema, CursorWindow: window}
+		return nil
+	})
+	if err != nil {
+		return SelectionProjection{}, operationError(err)
+	}
+	return result, nil
 }
 
 func (port *Port) FetchCursor(ctx context.Context, cursor string) (CursorWindow, error) {
@@ -118,70 +198,83 @@ func (port *Port) cursorWindow(
 		if err != nil {
 			return err
 		}
-		if expected != nil {
-			if descriptor.DatabaseID != expected.DatabaseID ||
-				descriptor.SchemaRevision != expected.SchemaRevision ||
-				descriptor.DataRevision != expected.DataRevision {
-				return productError(
-					"query.cursor_stale", "cursor",
-					"cursor revisions no longer match the authoritative table", nil,
-				)
-			}
-		}
-		plan, err := CompileKeyset(descriptor, normalized, after, normalized.Limit+1)
-		if err != nil {
-			return err
-		}
-		rows, err := port.queryRows(ctx, txApp, plan.SQL, plan.Params, descriptor)
-		if err != nil {
-			return operationError(err)
-		}
-		hasMore := len(rows) > normalized.Limit
-		if hasMore {
-			rows = rows[:normalized.Limit]
-		}
-		var filteredRows, totalRows int64
-		if err := txApp.DB().NewQuery(plan.CountSQL).
-			WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&filteredRows); err != nil {
-			return operationError(err)
-		}
-		if err := txApp.DB().NewQuery(plan.TotalSQL).
-			WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&totalRows); err != nil {
-			return operationError(err)
-		}
-		snapshot := QuerySnapshot{}
-		if expected == nil {
-			snapshot, err = port.buildSnapshot(descriptor, normalized)
-			if err != nil {
-				return err
-			}
-		} else {
-			snapshot = *expected
-		}
-		var next *string
-		if hasMore && len(rows) != 0 {
-			keys, keyErr := KeysetValues(descriptor, normalized, rows[len(rows)-1])
-			if keyErr != nil {
-				return keyErr
-			}
-			encoded, encodeErr := encodeCursor(cursorEnvelope{
-				Version: 1, Snapshot: snapshot, After: keys, PageSize: normalized.Limit,
-			})
-			if encodeErr != nil {
-				return encodeErr
-			}
-			next = &encoded
-		}
-		result = CursorWindow{
-			Rows: rows, NextCursor: next, HasMore: hasMore,
-			FilteredRows: filteredRows, TotalRows: totalRows, Snapshot: snapshot,
-		}
-		return nil
+		result, err = port.cursorWindowInTransaction(
+			ctx, txApp, descriptor, normalized, after, expected,
+		)
+		return err
 	})
 	if err != nil {
 		return CursorWindow{}, operationError(err)
 	}
 	return result, nil
+}
+
+func (port *Port) cursorWindowInTransaction(
+	ctx context.Context,
+	app core.App,
+	descriptor TableDescriptor,
+	normalized TableQuery,
+	after []any,
+	expected *QuerySnapshot,
+) (CursorWindow, error) {
+	if expected != nil {
+		if descriptor.DatabaseID != expected.DatabaseID ||
+			descriptor.SchemaRevision != expected.SchemaRevision ||
+			descriptor.DataRevision != expected.DataRevision {
+			return CursorWindow{}, productError(
+				"query.cursor_stale", "cursor",
+				"cursor revisions no longer match the authoritative table", nil,
+			)
+		}
+	}
+	plan, err := CompileKeyset(descriptor, normalized, after, normalized.Limit+1)
+	if err != nil {
+		return CursorWindow{}, err
+	}
+	rows, err := port.queryRows(ctx, app, plan.SQL, plan.Params, descriptor)
+	if err != nil {
+		return CursorWindow{}, operationError(err)
+	}
+	hasMore := len(rows) > normalized.Limit
+	if hasMore {
+		rows = rows[:normalized.Limit]
+	}
+	var filteredRows, totalRows int64
+	if err := app.DB().NewQuery(plan.CountSQL).
+		WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&filteredRows); err != nil {
+		return CursorWindow{}, operationError(err)
+	}
+	if err := app.DB().NewQuery(plan.TotalSQL).
+		WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&totalRows); err != nil {
+		return CursorWindow{}, operationError(err)
+	}
+	snapshot := QuerySnapshot{}
+	if expected == nil {
+		snapshot, err = port.buildSnapshot(descriptor, normalized)
+		if err != nil {
+			return CursorWindow{}, err
+		}
+	} else {
+		snapshot = *expected
+	}
+	var next *string
+	if hasMore && len(rows) != 0 {
+		keys, keyErr := KeysetValues(descriptor, normalized, rows[len(rows)-1])
+		if keyErr != nil {
+			return CursorWindow{}, keyErr
+		}
+		encoded, encodeErr := encodeCursor(cursorEnvelope{
+			Version: 1, Snapshot: snapshot, After: keys, PageSize: normalized.Limit,
+		})
+		if encodeErr != nil {
+			return CursorWindow{}, encodeErr
+		}
+		next = &encoded
+	}
+	return CursorWindow{
+		Rows: rows, NextCursor: next, HasMore: hasMore,
+		FilteredRows: filteredRows, TotalRows: totalRows, Snapshot: snapshot,
+	}, nil
 }
 
 func encodeCursor(envelope cursorEnvelope) (string, error) {
@@ -621,17 +714,21 @@ func (port *Port) describe(
 	}
 	descriptor, err := port.source.DescribeQueryTable(ctx, app, tableID)
 	if err != nil {
-		if contextError(err) != nil {
-			return TableDescriptor{}, contextError(err)
-		}
-		var productErr *ProductError
-		if errors.As(err, &productErr) {
-			return TableDescriptor{}, productErr
-		}
-		return TableDescriptor{}, productError(
-			"query.schema.failed", "table", "query schema could not be loaded", nil)
+		return TableDescriptor{}, port.mapDescribeError(err)
 	}
 	return descriptor, nil
+}
+
+func (port *Port) mapDescribeError(err error) error {
+	if contextError(err) != nil {
+		return contextError(err)
+	}
+	var productErr *ProductError
+	if errors.As(err, &productErr) {
+		return productErr
+	}
+	return productError(
+		"query.schema.failed", "table", "query schema could not be loaded", nil)
 }
 
 func (port *Port) validateConfigured() error {

@@ -14,6 +14,13 @@ import pytest
 from scripts.node_toolchain import ensure_node
 from tests.e2e import product_e2e_runner as runner
 from tests.e2e.windows_process_scope import ProcessScopeLaunchError
+from tests.e2e.windows_tcp_listener_owner import (
+    OwnerLeaseCleanupReport,
+    PortReleaseReport,
+    TcpListenerRow,
+    WindowsTcpListenerOwnerLease,
+    _capture_with_adapter,
+)
 
 
 class _FakeRoot:
@@ -29,6 +36,12 @@ class _FakeRoot:
         if self.exit_code is None:
             raise subprocess.TimeoutExpired(["fake-host"], 0 if timeout is None else timeout)
         return self.exit_code
+
+
+class _SuccessfulRoot(_FakeRoot):
+    def wait(self, timeout: float | None = None) -> int:
+        assert timeout is not None
+        return 0
 
 
 class _FakeScope:
@@ -52,6 +65,111 @@ class _FakeScope:
 
     def close(self) -> None:
         self.close_calls += 1
+
+
+class _FakePortOwnerLease:
+    def __init__(
+        self,
+        *,
+        released: bool = True,
+        close_error: BaseException | None = None,
+    ) -> None:
+        self.released = released
+        self.close_error = close_error
+        self.closed = False
+        self.close_calls = 0
+        self.cleanup_report: OwnerLeaseCleanupReport | None = None
+        self.observe_timeouts: list[float] = []
+
+    def observe_release(self, *, timeout: float) -> PortReleaseReport:
+        assert 0 <= timeout <= runner.LIFECYCLE_EXIT_TIMEOUT_SECONDS
+        self.observe_timeouts.append(timeout)
+        return PortReleaseReport(
+            owner_pid=42,
+            owner_name="msedgewebview2.exe",
+            capture_rows=(),
+            release_rows=(),
+            decision="captured-owner-exited" if self.released else "captured-owner-still-listening",
+            released=self.released,
+            owner_exited=self.released,
+        )
+
+    def close(self) -> OwnerLeaseCleanupReport:
+        if self.cleanup_report is not None:
+            return self.cleanup_report
+        self.closed = True
+        self.close_calls += 1
+        if self.close_error is not None:
+            self.cleanup_report = OwnerLeaseCleanupReport(
+                stable_handle_closed=False,
+                errors=(
+                    "unable to close captured CDP owner handle "
+                    f"({type(self.close_error).__name__})",
+                ),
+            )
+        else:
+            self.cleanup_report = OwnerLeaseCleanupReport(stable_handle_closed=True)
+        return self.cleanup_report
+
+    def __enter__(self) -> _FakePortOwnerLease:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+class _CloseFailOwnerHandle:
+    pid = 42
+    name = "C:\\private\\msedgewebview2.exe"
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def wait(self, timeout: float) -> bool:
+        del self, timeout
+        return False
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise OSError("C:\\private\\handle close denied")
+
+
+class _CloseFailOwnerAdapter:
+    def __init__(self, owner: _CloseFailOwnerHandle) -> None:
+        row = TcpListenerRow("TCP", "127.0.0.1:9222", "0.0.0.0:0", "侦听", owner.pid)
+        self.samples = iter(((row,), (row,), ()))
+        self.owner = owner
+
+    def query_listeners(self, port: int, *, timeout: float) -> tuple[TcpListenerRow, ...]:
+        assert port == 9222
+        assert timeout > 0
+        return next(self.samples)
+
+    def open_owner(self, pid: int) -> _CloseFailOwnerHandle:
+        assert pid == self.owner.pid
+        return self.owner
+
+
+def _real_close_failing_owner_lease() -> tuple[
+    WindowsTcpListenerOwnerLease,
+    _CloseFailOwnerHandle,
+]:
+    owner = _CloseFailOwnerHandle()
+    return _capture_with_adapter(9222, _CloseFailOwnerAdapter(owner)), owner
+
+
+def _stub_cdp_owner_capture(
+    monkeypatch,
+    *,
+    close_error: BaseException | None = None,
+) -> _FakePortOwnerLease:
+    lease = _FakePortOwnerLease(close_error=close_error)
+    monkeypatch.setattr(
+        runner.WindowsTcpListenerOwnerLease,
+        "capture",
+        lambda _port: lease,
+    )
+    return lease
 
 
 def test_manifest_accepts_capability_tagged_scenarios_without_a_fixed_count(
@@ -416,13 +534,12 @@ def test_normal_exit_reports_residual_job_members_and_terminates_them(
             return runner.ScopeWaitResult((7, 8))
 
     scope = FakeScope()
-    monkeypatch.setattr(runner, "_netstat_tcp_rows", lambda: [])
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
 
     report = runner._request_normal_exit(
         scope,
         controls_dir=tmp_path,
-        cdp_port=9222,
+        cdp_owner=_FakePortOwnerLease(),
     )
 
     assert report["status"] == "failed"
@@ -451,13 +568,12 @@ def test_normal_exit_passes_when_the_job_is_empty(
             del timeout
             return runner.ScopeWaitResult(())
 
-    monkeypatch.setattr(runner, "_netstat_tcp_rows", lambda: [])
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
 
     report = runner._request_normal_exit(
         FakeScope(),
         controls_dir=tmp_path,
-        cdp_port=9222,
+        cdp_owner=_FakePortOwnerLease(),
     )
 
     assert report["status"] == "passed"
@@ -469,17 +585,72 @@ def test_normal_exit_timeout_keeps_root_in_members_but_not_legacy_descendants(
     tmp_path: Path,
 ) -> None:
     scope = _FakeScope(members=(42, 7))
-    monkeypatch.setattr(runner, "_netstat_tcp_rows", lambda: [])
-
     report = runner._request_normal_exit(
         scope,
         controls_dir=tmp_path,
-        cdp_port=9222,
+        cdp_owner=_FakePortOwnerLease(),
     )
 
     assert [member["pid"] for member in report["membersAfterExit"]] == [42, 7]
     assert report["descendantsAfterExit"] == [{"pid": 7, "name": "unknown"}]
     assert report["hostExitCode"] is None
+
+
+def test_lifecycle_waits_share_one_absolute_budget_without_polling(monkeypatch) -> None:
+    class Clock:
+        value = 100.0
+
+        def monotonic(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    clock = Clock()
+    waits: list[tuple[str, float]] = []
+
+    class BudgetRoot(_FakeRoot):
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None
+            waits.append(("host", timeout))
+            clock.advance(timeout)
+            raise subprocess.TimeoutExpired(["fake-host"], timeout)
+
+    class BudgetScope(_FakeScope):
+        def __init__(self) -> None:
+            super().__init__(members=())
+            self.root = BudgetRoot()
+
+        def wait_empty(self, *, timeout: float = 5.0) -> Any:
+            waits.append(("job", timeout))
+            clock.advance(timeout)
+            return runner.ScopeWaitResult(())
+
+    class BudgetOwner(_FakePortOwnerLease):
+        def observe_release(self, *, timeout: float) -> PortReleaseReport:
+            waits.append(("owner", timeout))
+            assert timeout == 0.0
+            return PortReleaseReport(
+                owner_pid=42,
+                owner_name="msedgewebview2.exe",
+                capture_rows=(),
+                release_rows=(),
+                decision="release-observation-budget-exhausted",
+                released=False,
+                owner_exited=None,
+                errors=("CDP listener release observation exceeded its deadline",),
+            )
+
+    monkeypatch.setattr(runner.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: pytest.fail("no polling"))
+
+    report = runner._observe_scope_exit(BudgetScope(), cdp_owner=BudgetOwner())
+
+    assert waits == [("host", 30.0), ("job", 5.0), ("owner", 0.0)]
+    assert sum(timeout for _name, timeout in waits) == runner.LIFECYCLE_EXIT_TIMEOUT_SECONDS
+    assert report["portsReleased"] is False
+    assert report["portRelease"]["decision"] == "release-observation-budget-exhausted"
+    assert report["status"] == "failed"
 
 
 @pytest.mark.parametrize(
@@ -507,6 +678,7 @@ def test_run_scenario_reports_lifecycle_when_post_launch_logic_raises(
     scope = _FakeScope(members=(42, 7))
     monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_run_node_runner",
@@ -527,6 +699,197 @@ def test_run_scenario_reports_lifecycle_when_post_launch_logic_raises(
     assert result["lifecycle"]["descendantsAfterExit"] == [{"pid": 7, "name": "unknown"}]
     assert scope.terminate_calls == 1
     assert scope.close_calls == 1
+    assert cdp_owner.closed is True
+
+
+def test_run_scenario_success_closes_the_cdp_owner_lease(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="success cleanup")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+
+    def successful_node(
+        _command: list[str],
+        *,
+        scenario_dir: Path,
+        local_data: Path,
+        host_scope: Any,
+        process_network: dict[str, Any] | None = None,
+    ) -> tuple[int, str, str]:
+        del local_data, host_scope, process_network
+        (scenario_dir / f"{scenario.id}-result.json").write_text(
+            json.dumps({"scenario": scenario.id, "status": "passed"}),
+            encoding="utf-8",
+        )
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", successful_node)
+
+    result = runner.run_scenario(
+        scenario,
+        package_root=package,
+        evidence_root=tmp_path / "evidence",
+        node="node",
+    )
+
+    assert result["status"] == "passed"
+    assert result["lifecycle"]["status"] == "passed"
+    assert result["lifecycle"]["ownerLeaseCleanup"]["stableHandleClosed"] is True
+    assert cdp_owner.observe_timeouts
+    assert cdp_owner.closed is True
+    assert scope.close_calls == 1
+
+
+def test_run_scenario_reports_owner_handle_close_failure_without_interrupting_result(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenarios = (
+        runner.Scenario(id="02-schema-edit", title="schema", requirement="close report"),
+        runner.Scenario(id="03-view-crud", title="view", requirement="next scenario"),
+    )
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+    scopes: list[_FakeScope] = []
+
+    def launch(*_args: object, **_kwargs: object) -> _FakeScope:
+        scope = _FakeScope()
+        scope.root = _SuccessfulRoot()
+        scopes.append(scope)
+        return scope
+
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    owners: list[_CloseFailOwnerHandle] = []
+
+    def capture(_port: int) -> WindowsTcpListenerOwnerLease:
+        cdp_owner, owner = _real_close_failing_owner_lease()
+        owners.append(owner)
+        return cdp_owner
+
+    monkeypatch.setattr(
+        runner.WindowsTcpListenerOwnerLease,
+        "capture",
+        capture,
+    )
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+
+    def successful_node(
+        command: list[str],
+        *,
+        scenario_dir: Path,
+        **_kwargs: object,
+    ) -> tuple[int, str, str]:
+        scenario_id = command[command.index("--scenario") + 1]
+        (scenario_dir / f"{scenario_id}-result.json").write_text(
+            json.dumps({"scenario": scenario_id, "status": "passed"}),
+            encoding="utf-8",
+        )
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", successful_node)
+
+    results = [
+        runner.run_scenario(
+            scenario,
+            package_root=package,
+            evidence_root=tmp_path / f"evidence-{index}",
+            node="node",
+        )
+        for index, scenario in enumerate(scenarios)
+    ]
+
+    assert len(results) == 2
+    for result in results:
+        assert result["status"] == "failed"
+        assert result["error"]["code"] == "HOST_LIFECYCLE_FAILED"
+        assert result["lifecycle"]["ownerLeaseCleanup"] == {
+            "stableHandleClosed": False,
+            "errors": ["unable to close captured CDP owner handle (OSError)"],
+            "status": "failed",
+        }
+        assert "private" not in result["lifecycleError"]
+    assert [owner.close_calls for owner in owners] == [1, 1]
+    assert len(scopes) == 2
+
+
+def test_run_scenario_closes_real_owner_lease_without_replacing_base_exception(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="base error")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+    scope = _FakeScope()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner, owner = _real_close_failing_owner_lease()
+    monkeypatch.setattr(
+        runner.WindowsTcpListenerOwnerLease,
+        "capture",
+        lambda _port: cdp_owner,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_node_runner",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt("primary interrupt")),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="primary interrupt") as raised:
+        runner.run_scenario(
+            scenario,
+            package_root=package,
+            evidence_root=tmp_path / "evidence",
+            node="node",
+        )
+
+    assert owner.close_calls == 1
+    assert raised.value.__notes__ == ["unable to close captured CDP owner handle (OSError)"]
+    assert "private" not in str(raised.value.__notes__)
+
+
+def test_missing_owner_cleanup_report_fails_closed() -> None:
+    class MissingReportLease:
+        def __init__(self) -> None:
+            self.closed = False
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.closed = True
+            self.close_calls += 1
+            return None
+
+    lease: Any = MissingReportLease()
+    cleanup = runner._close_owner_lease(lease)
+
+    assert cleanup.as_artifact() == {
+        "stableHandleClosed": False,
+        "errors": ["captured CDP owner cleanup returned no report"],
+        "status": "failed",
+    }
 
 
 def test_run_scenario_scope_launch_failure_executes_no_followup_app_logic(
@@ -598,6 +961,7 @@ def test_run_scenario_aggregates_cleanup_failure_without_replacing_primary_error
     scope = FailingCleanupScope(members=(42, 7))
     monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_run_node_runner",
@@ -614,6 +978,8 @@ def test_run_scenario_aggregates_cleanup_failure_without_replacing_primary_error
     assert result["error"]["message"] == "primary failure"
     assert "terminate denied" in result["lifecycleError"]
     assert "close denied" in result["lifecycleError"]
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
 
 
 def test_run_scenario_fails_closed_when_lifecycle_observation_raises(
@@ -636,6 +1002,7 @@ def test_run_scenario_fails_closed_when_lifecycle_observation_raises(
     scope = _FakeScope(members=(42, 7))
     monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_run_node_runner",
@@ -661,6 +1028,8 @@ def test_run_scenario_fails_closed_when_lifecycle_observation_raises(
     assert result["lifecycle"]["errors"] == ["process inspection failed"]
     assert scope.terminate_calls == 1
     assert scope.close_calls == 1
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
 
 
 def test_normal_close_control_is_limited_to_the_test_mode_host_boundary() -> None:
@@ -746,6 +1115,7 @@ def test_packaged_state_failure_terminates_and_closes_the_job_scope(
         lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
     )
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
     monkeypatch.setattr(
         packaged_host_lifecycle,
@@ -758,6 +1128,8 @@ def test_packaged_state_failure_terminates_and_closes_the_job_scope(
 
     assert scope.terminate_calls == 1
     assert scope.close_calls == 1
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
 
 
 def test_packaged_cleanup_failure_is_not_allowed_to_mask_the_primary_error(
@@ -783,6 +1155,7 @@ def test_packaged_cleanup_failure_is_not_allowed_to_mask_the_primary_error(
         lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
     )
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
     monkeypatch.setattr(
         packaged_host_lifecycle,
@@ -794,6 +1167,81 @@ def test_packaged_cleanup_failure_is_not_allowed_to_mask_the_primary_error(
         packaged_host_lifecycle._run_tray_case(tmp_path, tmp_path / "runtime")
 
     assert any("terminate denied" in note for note in raised.value.__notes__)
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
+
+
+def test_packaged_tray_success_observes_and_closes_the_cdp_owner_lease(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    streams = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_launch_host",
+        lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
+    )
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    states = iter(
+        (
+            {"action": "visible-startup", "windowVisible": True, "trayVisible": True},
+            {"action": "close-to-tray", "windowVisible": False, "trayVisible": True},
+        )
+    )
+    monkeypatch.setattr(packaged_host_lifecycle, "_wait_for_state", lambda *_args: next(states))
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
+
+    result = packaged_host_lifecycle._run_tray_case(tmp_path, tmp_path / "runtime")
+
+    assert result["status"] == "passed"
+    assert result["lifecycle"]["status"] == "passed"
+    assert result["lifecycle"]["ownerLeaseCleanup"]["stableHandleClosed"] is True
+    assert cdp_owner.observe_timeouts
+    assert cdp_owner.closed is True
+    assert scope.close_calls == 1
+
+
+def test_packaged_tray_reports_owner_handle_close_failure_without_raising(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    streams = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_launch_host",
+        lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
+    )
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    states = iter(
+        (
+            {"action": "visible-startup", "windowVisible": True, "trayVisible": True},
+            {"action": "close-to-tray", "windowVisible": False, "trayVisible": True},
+        )
+    )
+    monkeypatch.setattr(packaged_host_lifecycle, "_wait_for_state", lambda *_args: next(states))
+    cdp_owner = _stub_cdp_owner_capture(
+        monkeypatch,
+        close_error=OSError("C:\\private\\handle close denied"),
+    )
+
+    result = packaged_host_lifecycle._run_tray_case(tmp_path, tmp_path / "runtime")
+
+    assert result["status"] == "failed"
+    assert result["lifecycle"]["status"] == "failed"
+    assert result["lifecycle"]["ownerLeaseCleanup"]["stableHandleClosed"] is False
+    assert result["lifecycle"]["errors"] == ["unable to close captured CDP owner handle (OSError)"]
+    assert "private" not in str(result)
+    assert cdp_owner.close_calls == 1
 
 
 def test_packaged_launch_closes_stdout_when_opening_stderr_fails(
@@ -893,72 +1341,49 @@ def test_empty_job_ignores_unowned_system_network_activity(monkeypatch) -> None:
     scope = _FakeScope(exit_code=0)
     monkeypatch.setattr(
         runner,
-        "_netstat_tcp_rows",
-        lambda: [
-            {
-                "pid": 4,
-                "local": "0.0.0.0:445",
-                "remote": "0.0.0.0:0",
-                "state": "LISTENING",
-            }
-        ],
+        "query_windows_tcp_table",
+        lambda **_kwargs: (TcpListenerRow("TCP", "0.0.0.0:445", "0.0.0.0:0", "LISTENING", 4),),
     )
     evidence: dict[str, Any] = {"observations": {}, "errors": [], "samples": 0}
 
     runner._record_process_network(scope, evidence)
 
     assert evidence["observations"] == {}
-    assert runner._job_ports_released(scope, cdp_port=9222) is True
 
 
-def test_empty_job_still_fails_when_the_cdp_port_is_listening(monkeypatch) -> None:
-    scope = _FakeScope(exit_code=0)
-    monkeypatch.setattr(
-        runner,
-        "_netstat_tcp_rows",
-        lambda: [
-            {
-                "pid": 99,
-                "local": "127.0.0.1:9222",
-                "remote": "0.0.0.0:0",
-                "state": "侦听",
-            }
-        ],
-    )
-
-    assert runner._job_ports_released(scope, cdp_port=9222) is False
-
-
-@pytest.mark.parametrize(
-    ("row", "expected"),
-    [
-        (
-            {"local": "127.0.0.1:9222", "remote": "0.0.0.0:0", "state": "侦听"},
-            True,
-        ),
-        (
-            {"local": "[::1]:9222", "remote": "[::]:0", "state": "LISTENING"},
-            True,
-        ),
-        (
-            {"local": "127.0.0.1:9222", "remote": "127.0.0.1:50123", "state": "TIME_WAIT"},
-            False,
-        ),
-        (
-            {"local": "127.0.0.1:9222", "remote": "127.0.0.1:50123", "state": "LISTENING"},
-            False,
-        ),
-        (
-            {"local": "127.0.0.1:19222", "remote": "0.0.0.0:0", "state": "LISTENING"},
-            False,
-        ),
-    ],
-)
-def test_cdp_listener_detection_uses_endpoint_semantics_not_localized_state(
-    row: dict[str, Any],
-    expected: bool,
+def test_empty_job_accepts_a_reused_numeric_port_when_the_listener_is_unowned(
+    monkeypatch,
 ) -> None:
-    assert runner._is_cdp_listener(row, cdp_port=9222) is expected
+    scope = _FakeScope(exit_code=0)
+
+    class ExitedOwnerLease:
+        @staticmethod
+        def observe_release(*, timeout: float) -> PortReleaseReport:
+            assert 0 <= timeout <= 35
+            return PortReleaseReport(
+                owner_pid=42,
+                owner_name="msedgewebview2.exe",
+                capture_rows=(
+                    TcpListenerRow("TCP", "127.0.0.1:9222", "0.0.0.0:0", "LISTENING", 42),
+                ),
+                release_rows=(
+                    TcpListenerRow("TCP", "127.0.0.1:9222", "0.0.0.0:0", "LISTENING", 99),
+                ),
+                decision="captured-owner-exited-port-reused-unowned",
+                released=True,
+                owner_exited=True,
+            )
+
+        @staticmethod
+        def close() -> OwnerLeaseCleanupReport:
+            return OwnerLeaseCleanupReport(stable_handle_closed=True)
+
+    report = runner._observe_scope_exit(scope, cdp_owner=ExitedOwnerLease())
+
+    assert report["status"] == "passed"
+    assert report["portsReleased"] is True
+    assert report["portRelease"]["decision"] == ("captured-owner-exited-port-reused-unowned")
+    assert report["portRelease"]["releaseRows"][0]["ownership"] == "unowned"
 
 
 def test_network_evidence_accepts_only_stable_job_members(monkeypatch) -> None:
@@ -987,33 +1412,13 @@ def test_network_evidence_accepts_only_stable_job_members(monkeypatch) -> None:
 
     monkeypatch.setattr(
         runner,
-        "_netstat_tcp_rows",
-        lambda: [
-            {
-                "pid": 42,
-                "local": "127.0.0.1:1",
-                "remote": "0.0.0.0:0",
-                "state": "LISTENING",
-            },
-            {
-                "pid": 7,
-                "local": "0.0.0.0:2",
-                "remote": "0.0.0.0:0",
-                "state": "LISTENING",
-            },
-            {
-                "pid": 8,
-                "local": "127.0.0.1:4",
-                "remote": "127.0.0.1:5",
-                "state": "ESTABLISHED",
-            },
-            {
-                "pid": 99,
-                "local": "0.0.0.0:6",
-                "remote": "0.0.0.0:0",
-                "state": "LISTENING",
-            },
-        ],
+        "query_windows_tcp_table",
+        lambda **_kwargs: (
+            TcpListenerRow("TCP", "127.0.0.1:1", "0.0.0.0:0", "LISTENING", 42),
+            TcpListenerRow("TCP", "0.0.0.0:2", "0.0.0.0:0", "LISTENING", 7),
+            TcpListenerRow("TCP", "127.0.0.1:4", "127.0.0.1:5", "ESTABLISHED", 8),
+            TcpListenerRow("TCP", "0.0.0.0:6", "0.0.0.0:0", "LISTENING", 99),
+        ),
     )
     evidence: dict[str, Any] = {"observations": {}, "errors": [], "samples": 0}
 
@@ -1221,6 +1626,12 @@ def test_plugin_lifecycle_waits_for_the_install_enable_request_to_settle() -> No
         source.index("async function scenario11") : source.index("async function scenario12")
     ]
 
+    assert (
+        "const databaseOpened = await waitForShell(page, recorder, "
+        "{ requireDatabaseOpened: true })" in scenario
+    )
+    assert "const projectKey = databaseOpened.payload.projectKey.trim()" in scenario
+    assert 'projectKey: "local:default"' not in scenario
     first_toggle = scenario.index("await toggle.click();")
     stable_enabled = scenario.index('lifecycleToggle.classList.contains("enabled")')
     assert stable_enabled < first_toggle
@@ -1491,6 +1902,14 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert 'jsonCell.press("Enter")' in scenario
     assert 'page.keyboard.press("Escape")' in scenario
     assert 'jsonCell.press("Shift+F10")' in scenario
+    assert 'operation: "capture"' in scenario
+    assert 'target: "json"' in scenario
+    assert "hasDialogFocusLeaseTerminalInPage" in scenario
+    assert "readDialogFocusLeaseEvidenceInPage" in scenario
+    assert 'focusLeaseEvidence.terminal?.state === "restored"' in scenario
+    assert scenario.index('operation: "capture"') < scenario.index('page.keyboard.press("Escape")')
+    assert "focusRestoration.documentHasFocus\n      &&" in scenario
+    assert "!focusRestoration.documentHasFocus" not in scenario
     assert "document.activeElement === element" in scenario
     assert "`${jsonField}\\n" in scenario
     assert 'setProductLocale(page, "en-US")' in scenario
@@ -1835,7 +2254,7 @@ def test_process_network_report_rejects_listener_and_remote_non_loopback() -> No
                 "protocol": "TCP",
                 "local": "0.0.0.0:5000",
                 "remote": "0.0.0.0:0",
-                "state": "LISTENING",
+                "state": "侦听",
                 "pid": 11,
                 "processName": "VibeTable.Next.exe",
             },
@@ -1921,9 +2340,12 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
+        runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
+        runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
     ]
     completed = subprocess.run(
         [str(ensure_node(runner.ROOT)), "--test", *(str(path) for path in test_files)],
@@ -2022,6 +2444,7 @@ def test_nonzero_node_exit_preserves_structured_scenario_failure_but_rejects_pas
     scope = _FakeScope()
     monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_wait_for_readiness",

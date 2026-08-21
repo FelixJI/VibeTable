@@ -66,6 +66,7 @@ public sealed class TableWorkspaceService
     private readonly ITableRpcGateway _gateway;
     private readonly TimeSpan _selectionRecoveryTimeout;
     private readonly TimeProvider _timeProvider;
+    private readonly object _databaseGate = new();
 
     /// <summary>
     /// The RPC gateway, exposed so the B2 paste dispatcher handlers can call
@@ -79,6 +80,7 @@ public sealed class TableWorkspaceService
     private string? _currentTable;
     private IReadOnlyList<string> _knownTables = Array.Empty<string>();
     private IReadOnlyList<string> _knownViews = Array.Empty<string>();
+    private long _databaseGeneration;
 
     private int _generation;
     private CancellationTokenSource? _selectCts;
@@ -115,7 +117,10 @@ public sealed class TableWorkspaceService
     public event Action<TableNotification>? Notification;
 
     /// <summary>The logical source identifier currently open.</summary>
-    public string? CurrentDatabase => _currentDatabase;
+    public string? CurrentDatabase
+    {
+        get { lock (_databaseGate) return _currentDatabase; }
+    }
 
     /// <summary>
     /// Opens the configured source identified by <paramref name="path"/> and
@@ -123,6 +128,17 @@ public sealed class TableWorkspaceService
     /// can enforce the "known name" invariant.
     /// </summary>
     public async Task<DatabaseOpenResult> OpenDatabaseAsync(string path)
+    {
+        DatabaseOpenResult result = await PrepareDatabaseOpenAsync(
+            path, CancellationToken.None).ConfigureAwait(true);
+        using DatabaseOpenAdmission admission = BeginDatabaseOpenAdmission(path, result);
+        admission.Complete();
+        return result;
+    }
+
+    internal async Task<DatabaseOpenResult> PrepareDatabaseOpenAsync(
+        string path,
+        CancellationToken token)
     {
         if (path is null)
         {
@@ -137,16 +153,67 @@ public sealed class TableWorkspaceService
         // Cancel any in-flight table fetch before switching databases.
         CancelSelection();
 
-        var result = await _gateway.OpenDatabaseAsync(path, CancellationToken.None)
+        var result = await _gateway.OpenDatabaseAsync(path, token)
             .ConfigureAwait(true);
-        _currentDatabase = path;
-        // Filter on the way in so the cache matches the sidebar exactly: the
-        // The gateway returns the raw collection list, including vibetable_*
-        // product metadata tables, but those are never user-selectable.
-        Volatile.Write(ref _knownTables, FilterUserTables(result.Tables));
-        Volatile.Write(ref _knownViews, result.Views);
+        token.ThrowIfCancellationRequested();
         return result;
     }
+
+    internal DatabaseOpenAdmission BeginDatabaseOpenAdmission(
+        string path,
+        DatabaseOpenResult result)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(result);
+        IReadOnlyList<string> tables = FilterUserTables(result.Tables);
+        IReadOnlyList<string> views = result.Views
+            ?? throw new InvalidOperationException("Database views are unavailable.");
+        lock (_databaseGate)
+        {
+            var previous = new DatabaseState(
+                _currentDatabase,
+                _knownTables,
+                _knownViews);
+            _databaseGeneration += 1;
+            _currentDatabase = path;
+            Volatile.Write(ref _knownTables, tables);
+            Volatile.Write(ref _knownViews, views);
+            return new DatabaseOpenAdmission(this, _databaseGeneration, previous);
+        }
+    }
+
+    private void RollbackDatabaseOpen(long generation, DatabaseState previous)
+    {
+        lock (_databaseGate)
+        {
+            if (_databaseGeneration != generation) return;
+            _databaseGeneration += 1;
+            _currentDatabase = previous.Database;
+            Volatile.Write(ref _knownTables, previous.Tables);
+            Volatile.Write(ref _knownViews, previous.Views);
+        }
+    }
+
+    internal sealed class DatabaseOpenAdmission(
+        TableWorkspaceService owner,
+        long generation,
+        DatabaseState previous) : IDisposable
+    {
+        private int _completed;
+
+        public void Complete() => Interlocked.Exchange(ref _completed, 1);
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _completed, 1) == 0)
+                owner.RollbackDatabaseOpen(generation, previous);
+        }
+    }
+
+    internal sealed record DatabaseState(
+        string? Database,
+        IReadOnlyList<string> Tables,
+        IReadOnlyList<string> Views);
 
     /// <summary>
     /// Replaces the cached known-tables list with <paramref name="tables"/>. Use
@@ -230,15 +297,21 @@ public sealed class TableWorkspaceService
         string table,
         CancellationToken sessionToken)
     {
-        SelectionTicket? ticket = await SelectOwnedTableAsync(table, sessionToken)
+        OwnedSelection? selection = await SelectOwnedTableAsync(table, sessionToken)
             .ConfigureAwait(true);
-        if (ticket is not SelectionTicket owned)
+        if (selection is not OwnedSelection owned || !Owns(owned.Ticket))
             return;
 
-        await GetEditSchemaAsync(owned).ConfigureAwait(true);
+        Emit(owned.Ticket.Generation, new TableNotification(
+            Type: "table.editSchemaLoaded", Page: null,
+            MutationResult: new MutationOutcome(
+                Kind: "editSchema",
+                Success: true,
+                Error: null,
+                Result: owned.Projection.EditSchema)));
     }
 
-    private async Task<SelectionTicket?> SelectOwnedTableAsync(
+    private async Task<OwnedSelection?> SelectOwnedTableAsync(
         string table,
         CancellationToken sessionToken)
     {
@@ -267,15 +340,24 @@ public sealed class TableWorkspaceService
         _selectCts = cts;
         var ticket = new SelectionTicket(table, generation, cts.Token);
 
-        bool selected = await FetchAsync(table, generation, cts.Token)
+        TableSelectionProjection? projection = await FetchAsync(
+            table,
+            generation,
+            cts.Token)
             .ConfigureAwait(true);
-        return selected && Owns(ticket) ? ticket : null;
+        return projection is not null && Owns(ticket)
+            ? new OwnedSelection(ticket, projection)
+            : null;
     }
 
     private readonly record struct SelectionTicket(
         string Table,
         int Generation,
         CancellationToken OwnershipToken);
+
+    private readonly record struct OwnedSelection(
+        SelectionTicket Ticket,
+        TableSelectionProjection Projection);
 
     private bool Owns(SelectionTicket ticket)
         => !ticket.OwnershipToken.IsCancellationRequested
@@ -298,7 +380,7 @@ public sealed class TableWorkspaceService
     /// bounded recovery window; exhausting it becomes a stable backend-
     /// unavailable outcome at the controller boundary.
     /// </remarks>
-    private async Task<bool> FetchAsync(
+    private async Task<TableSelectionProjection?> FetchAsync(
         string table,
         int generation,
         CancellationToken ownershipToken)
@@ -310,9 +392,9 @@ public sealed class TableWorkspaceService
             while (true)
             {
                 if (IsStale(generation) || ownershipToken.IsCancellationRequested)
-                    return false;
+                    return null;
 
-                TablePage? firstWindow = null;
+                TableSelectionProjection? projection = null;
                 bool retryRequired = false;
                 RecoveryOutcome attemptOutcome = RecoveryOutcome.Completed;
                 try
@@ -325,27 +407,27 @@ public sealed class TableWorkspaceService
                         offset = 0,
                         limit = TableWorkspaceLimits.MaxPageLimit,
                     });
-                    RecoveryWait<TablePage> attempt = recovery is null
+                    RecoveryWait<TableSelectionProjection> attempt = recovery is null
                         ? await RunOwnedAsync(
-                            token => _gateway.OpenTableCursorRawAsync(
+                            token => _gateway.OpenTableSelectionAsync(
                                 table,
                                 query,
                                 token),
                             ownershipToken).ConfigureAwait(true)
                         : await recovery.RunAsync(
-                            token => _gateway.OpenTableCursorRawAsync(
+                            token => _gateway.OpenTableSelectionAsync(
                                 table,
                                 query,
                                 token)).ConfigureAwait(true);
                     attemptOutcome = attempt.Outcome;
-                    firstWindow = attempt.Value!;
+                    projection = attempt.Value!;
                 }
                 catch (OperationCanceledException)
                     when (IsStale(generation) || ownershipToken.IsCancellationRequested)
                 {
                     // A newer selection owns the UI. The old selection must not
                     // retry, publish a page, or let its controller load schema.
-                    return false;
+                    return null;
                 }
                 catch (Exception exception) when (IsTransientReadFailure(exception))
                 {
@@ -366,14 +448,14 @@ public sealed class TableWorkspaceService
                 }
 
                 if (attemptOutcome == RecoveryOutcome.Superseded)
-                    return false;
+                    return null;
                 if (attemptOutcome == RecoveryOutcome.Expired)
                     throw SelectionUnavailable(lastFailure);
 
                 if (!retryRequired)
                 {
                     if (IsStale(generation) || ownershipToken.IsCancellationRequested)
-                        return false;
+                        return null;
 
                     // Subscriber failures are deliberately outside the transient
                     // transport catch above. A consumer exception must not reopen
@@ -381,13 +463,13 @@ public sealed class TableWorkspaceService
                     Emit(generation, new TableNotification
                     {
                         Type = "table.datasetReady",
-                        Page = firstWindow!,
+                        Page = projection!.Page,
                     });
-                    return true;
+                    return projection;
                 }
 
                 if (IsStale(generation) || ownershipToken.IsCancellationRequested)
-                    return false;
+                    return null;
                 RecoveryWait<bool> delay = await recovery!.RunAsync(async token =>
                 {
                     await Task.Delay(
@@ -397,7 +479,7 @@ public sealed class TableWorkspaceService
                     return true;
                 }).ConfigureAwait(true);
                 if (delay.Outcome == RecoveryOutcome.Superseded)
-                    return false;
+                    return null;
                 if (delay.Outcome == RecoveryOutcome.Expired)
                     throw SelectionUnavailable(lastFailure);
             }

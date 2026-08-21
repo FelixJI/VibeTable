@@ -11,12 +11,11 @@ import type {
   WebPluginConfirmationPreview,
 } from "@/contracts";
 
-const DEFAULT_PROJECT_KEY = "local:default";
-const DEFAULT_PROJECT_REVISION = "0";
-
 export const usePluginStore = defineStore("plugins", () => {
-  const projectKey = ref(DEFAULT_PROJECT_KEY);
-  const projectRevision = ref(DEFAULT_PROJECT_REVISION);
+  const projectKey = ref("");
+  const projectRevision = ref("");
+  const projectContextReady = ref(false);
+  const projectContextGeneration = ref(0);
   const currentUser = ref<Readonly<Record<string, unknown>>>({});
   const hostVersion = ref("unknown");
   const catalogRevision = ref(-1);
@@ -48,7 +47,12 @@ export const usePluginStore = defineStore("plugins", () => {
     activeTask.value?.confirmation ?? null,
   );
 
+  function projectInstallPlan(plan: PluginInstallPlan | null): void {
+    installPlan.value = plan;
+  }
+
   function setProjectContext(key: string, revision: string): void {
+    projectContextGeneration.value += 1;
     if (projectKey.value !== key) {
       pluginById.value = {};
       taskById.value = {};
@@ -58,7 +62,6 @@ export const usePluginStore = defineStore("plugins", () => {
       selectedPluginId.value = null;
       activeTaskId.value = null;
       catalogRevision.value = -1;
-      installPlan.value = null;
       describedAction.value = null;
       activeContext.value = null;
       actionOpen.value = false;
@@ -67,6 +70,14 @@ export const usePluginStore = defineStore("plugins", () => {
     }
     projectKey.value = key;
     projectRevision.value = revision;
+    projectContextReady.value = Boolean(key.trim() && revision.trim());
+  }
+
+  function updateProjectRevision(revision: string): boolean {
+    if (!projectContextReady.value || projectRevision.value === revision) return false;
+    projectRevision.value = revision;
+    projectContextGeneration.value += 1;
+    return true;
   }
 
   function setHostContext(
@@ -212,9 +223,6 @@ export const usePluginStore = defineStore("plugins", () => {
     describedAction.value = null;
     activeContext.value = null;
   }
-  function setInstallPlan(plan: PluginInstallPlan | null): void {
-    installPlan.value = plan;
-  }
   function startBusy(clearError = true): void {
     busy.value = true;
     if (clearError) lastError.value = null;
@@ -234,6 +242,8 @@ export const usePluginStore = defineStore("plugins", () => {
   return {
     projectKey,
     projectRevision,
+    projectContextReady,
+    projectContextGeneration,
     currentUser,
     hostVersion,
     catalogRevision,
@@ -248,6 +258,7 @@ export const usePluginStore = defineStore("plugins", () => {
     busy,
     lastError,
     setProjectContext,
+    updateProjectRevision,
     setHostContext,
     replaceCatalog,
     applyPlugin,
@@ -258,7 +269,7 @@ export const usePluginStore = defineStore("plugins", () => {
     selectPlugin,
     beginAction,
     closeAction,
-    setInstallPlan,
+    projectInstallPlan,
     startBusy,
     finishBusy,
     fail,

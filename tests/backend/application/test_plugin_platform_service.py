@@ -335,6 +335,13 @@ async def test_commit_rejects_source_changed_after_inspection(tmp_path: Path) ->
             project_revision="project-r1",
         )
 
+    assert service.cancel_install(plan_id=plan.plan_id) is False
+    with pytest.raises(ValueError, match="not found"):
+        await service.commit_install(
+            plan_id=plan.plan_id,
+            project_revision="project-r1",
+        )
+
     assert store.list_installations("local:default") == []
     assert (
         store.list_package_revisions(
@@ -343,6 +350,27 @@ async def test_commit_rejects_source_changed_after_inspection(tmp_path: Path) ->
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_cancel_install_discards_the_pending_plan(tmp_path: Path) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    store = InMemoryPluginStore()
+    service = _service(store, package_cache=tmp_path / "cache")
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
+    )
+
+    assert service.cancel_install(plan_id=plan.plan_id) is True
+    assert service.cancel_install(plan_id=plan.plan_id) is False
+    with pytest.raises(ValueError, match="not found"):
+        await service.commit_install(
+            plan_id=plan.plan_id,
+            project_revision="project-r1",
+        )
 
 
 @pytest.mark.asyncio
@@ -493,3 +521,58 @@ async def test_upgrade_retains_previous_package_and_rollback_restores_it(
         "2.0.0": "rollback",
     }
     assert store.list_audit("local:default", "com.example.reader")[-1].event_type == "rollback"
+
+
+@pytest.mark.asyncio
+async def test_upgrade_identity_failure_consumes_plan_once(tmp_path: Path) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    service = _service(InMemoryPluginStore(), package_cache=tmp_path / "cache")
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
+    )
+
+    with pytest.raises(ValueError, match="identity"):
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id="com.example.other",
+            plan_id=plan.plan_id,
+            project_revision="project-r1",
+        )
+    with pytest.raises(ValueError, match="not found"):
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id="com.example.reader",
+            plan_id=plan.plan_id,
+            project_revision="project-r1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_upgrade_source_failure_consumes_plan_once(tmp_path: Path) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    service = _service(InMemoryPluginStore(), package_cache=tmp_path / "cache")
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
+    )
+    (source / "schemas" / "input.json").write_text('{"type":"array"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed"):
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id="com.example.reader",
+            plan_id=plan.plan_id,
+            project_revision="project-r1",
+        )
+    with pytest.raises(ValueError, match="not found"):
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id="com.example.reader",
+            plan_id=plan.plan_id,
+            project_revision="project-r1",
+        )
