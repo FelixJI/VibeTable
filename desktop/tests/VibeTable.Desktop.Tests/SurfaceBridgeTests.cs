@@ -174,10 +174,11 @@ public sealed class SurfaceBridgeTests
     {
         var gateway = new FakeSurfaceGateway();
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        using var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(new FakeTableRpcGateway()),
             new FakeDatabasePicker("db"),
-            sink);
+            sink,
+            NoDatabaseOpenRoute.Instance);
         dispatcher.SetSurfaceGateway(gateway);
         return (dispatcher, gateway, sink);
     }

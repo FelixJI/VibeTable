@@ -62,6 +62,12 @@ public sealed class PocketBaseSupervisorTests
             health.Requests.Single().SessionSecret);
         Assert.AreEqual(PocketBaseState.Ready, supervisor.GetStatus().State);
         Assert.IsTrue(supervisor.GetStatus().AdminAvailable);
+        PocketBaseStartupTimings timings = supervisor.LastStartupTimings!;
+        Assert.IsNotNull(timings);
+        Assert.AreEqual("health", timings.LastStage);
+        Assert.IsTrue(timings.SpawnDuration >= TimeSpan.Zero);
+        Assert.IsTrue(timings.ReadyRecordDuration >= TimeSpan.Zero);
+        Assert.IsTrue(timings.HealthDuration >= TimeSpan.Zero);
         Assert.AreEqual(
             new Uri("http://127.0.0.1:43125/_/"),
             supervisor.GetAdminUri());
@@ -322,6 +328,8 @@ public sealed class PocketBaseSupervisorTests
             () => supervisor.StartAsync(CancellationToken.None));
 
         Assert.AreEqual(PocketBaseState.Faulted, supervisor.GetStatus().State);
+        Assert.AreEqual("health", supervisor.LastStartupTimings!.LastStage);
+        Assert.IsNotNull(supervisor.LastStartupTimings.HealthDuration);
         Assert.IsTrue(process.KillProcessTreeCalls > 0);
         Assert.IsTrue(health.Requests.All(
             request => request.Endpoint.Host == "127.0.0.1"));

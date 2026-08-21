@@ -48,6 +48,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "mutation.preview",
         "query.page",
         "query.cursorOpen",
+        "query.selectionOpen",
         "query.cursorFetch",
         "query.view",
         "query.readRows",

@@ -21,6 +21,8 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
 {
     private static readonly Regex RevisionPattern =
         new("^data_([0-9]+)$", RegexOptions.CultureInvariant);
+    private static readonly Regex SchemaRevisionPattern =
+        new("^schema_([0-9]+)$", RegexOptions.CultureInvariant);
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
 
@@ -56,6 +58,15 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         CancellationToken token)
     {
         JsonElement schema = await GetSchemaAsync(table, token).ConfigureAwait(false);
+        return ReadEditSchema(table, schema);
+    }
+
+    private static EditSchemaResult ReadEditSchema(string table, JsonElement schema)
+    {
+        if (!string.Equals(RequiredString(schema, "tableId"), table, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The schema no longer matches the selected table.");
+        }
         string schemaRevision = RequiredString(schema, "schemaRevision");
         var columns = ReadColumns(schema);
         string primaryKey = FindPrimaryKey(schema);
@@ -293,8 +304,13 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string table,
         JsonElement query,
         CancellationToken token)
+        => (await OpenTableSelectionAsync(table, query, token).ConfigureAwait(false)).Page;
+
+    public async Task<TableSelectionProjection> OpenTableSelectionAsync(
+        string table,
+        JsonElement query,
+        CancellationToken token)
     {
-        JsonElement schema = await GetSchemaAsync(table, token, refresh: true).ConfigureAwait(false);
         JsonElement request = JsonSerializer.SerializeToElement(
             new Dictionary<string, object?>
             {
@@ -302,9 +318,71 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 ["query"] = OpaqueCursorQueryBody(query),
             },
             JsonOptions);
-        JsonElement response = await _product.OpenQueryCursorAsync(request, token)
+        JsonElement response = await _product.OpenSelectionProjectionAsync(request, token)
             .ConfigureAwait(false);
-        return ReadCursorWindow(table, schema, response);
+        JsonElement schema = RequiredProperty(response, "schemaSnapshot");
+        JsonElement cursorWindow = RequiredProperty(response, "cursorWindow");
+        TablePage page = ReadCursorWindow(table, schema, cursorWindow);
+        string schemaRevision = RequiredString(schema, "schemaRevision");
+        int dataRevision = RequiredInt(schema, "dataRevision");
+        if (!string.Equals(page.QuerySnapshot!.SchemaRevision, schemaRevision, StringComparison.Ordinal)
+            || page.QuerySnapshot.DataRevision != dataRevision)
+        {
+            throw new InvalidOperationException(
+                "The selection projection contains mismatched revisions.");
+        }
+        JsonElement frozenSchema = schema.Clone();
+        _ = CacheSchema(table, frozenSchema);
+        return new TableSelectionProjection(
+            page,
+            ReadEditSchema(table, frozenSchema));
+    }
+
+    private JsonElement CacheSchema(string table, JsonElement schema)
+    {
+        JsonElement candidate = schema.Clone();
+        return _schemas.AddOrUpdate(
+            table,
+            candidate,
+            (_, current) => ShouldReplaceCachedSchema(current, candidate)
+                ? candidate
+                : current);
+    }
+
+    private static bool ShouldReplaceCachedSchema(
+        JsonElement current,
+        JsonElement candidate)
+    {
+        int currentDataRevision = RequiredInt(current, "dataRevision");
+        int candidateDataRevision = RequiredInt(candidate, "dataRevision");
+        if (candidateDataRevision != currentDataRevision)
+        {
+            return candidateDataRevision > currentDataRevision;
+        }
+        string currentSchemaRevision = RequiredString(current, "schemaRevision");
+        string candidateSchemaRevision = RequiredString(candidate, "schemaRevision");
+        if (string.Equals(
+            currentSchemaRevision,
+            candidateSchemaRevision,
+            StringComparison.Ordinal))
+        {
+            return true;
+        }
+        return TryRevisionNumber(SchemaRevisionPattern, candidateSchemaRevision, out int candidateValue)
+            && TryRevisionNumber(SchemaRevisionPattern, currentSchemaRevision, out int currentValue)
+            && candidateValue > currentValue;
+    }
+
+    private static bool TryRevisionNumber(Regex pattern, string value, out int revision)
+    {
+        revision = 0;
+        Match match = pattern.Match(value);
+        return match.Success
+            && int.TryParse(
+                match.Groups[1].Value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out revision);
     }
 
     public async Task<TablePage> FetchTableCursorAsync(
@@ -556,9 +634,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 new Dictionary<string, object?> { ["tableId"] = table },
                 JsonOptions),
             token).ConfigureAwait(false);
-        schema = schema.Clone();
-        _schemas[table] = schema;
-        return schema;
+        return CacheSchema(table, schema);
     }
 
     private async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ReadRowsInternalAsync(

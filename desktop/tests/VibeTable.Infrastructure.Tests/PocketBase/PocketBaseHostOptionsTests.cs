@@ -38,6 +38,10 @@ public sealed class PocketBaseHostOptionsTests
             options.DataDirectory);
         Assert.IsFalse(options.DevelopmentMode);
         Assert.AreEqual(
+            TimeSpan.FromSeconds(60),
+            options.StartupTimeout,
+            "Packaged cold start must extend beyond the legacy 30-second boundary.");
+        Assert.AreEqual(
             new string('a', 64),
             options.ExpectedIdentity!.MigrationHash);
     }
@@ -62,6 +66,10 @@ public sealed class PocketBaseHostOptionsTests
             PocketBaseHostOptions.Resolve(root, CreateDirectory());
 
         Assert.IsTrue(options.DevelopmentMode);
+        Assert.AreEqual(
+            PocketBaseLaunchOptions.DefaultStartupTimeout,
+            options.StartupTimeout,
+            "Source development keeps the strict default startup policy.");
         Assert.AreEqual(
             Convert.ToHexString(SHA256.HashData(manifest)).ToLowerInvariant(),
             options.ExpectedIdentity!.MigrationHash);

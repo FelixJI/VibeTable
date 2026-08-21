@@ -89,4 +89,98 @@ describe("workspaceSessionUiController", () => {
     expect(pendingWhenInitialized).toBe(false);
     expect(showCenter.value).toBe(false);
   });
+
+  it("已有保护操作时拒绝切换且不污染 session 状态", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const protection = useWorkspaceProtectionStore();
+    const activeLease = protection.beginOperation("retention.get");
+    const request = vi.fn();
+    const controller = createWorkspaceSessionUiController({
+      session,
+      protection,
+      documents: useDocumentWorkspaceStore(),
+      showCenter: ref(false),
+      request,
+      errorMessage: error => String(error),
+      initializeConsumers: vi.fn(),
+    });
+
+    await expect(controller.open("workspace-2")).resolves.toBe(false);
+
+    expect(activeLease).not.toBeNull();
+    expect(session.isTransitioning).toBe(false);
+    expect(session.targetWorkspaceId).toBeNull();
+    expect(protection.busyOperation).toBe("retention.get");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("session 拒绝进入切换时释放刚取得的操作租约", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    vi.spyOn(session, "beginSwitch").mockReturnValue(false);
+    const protection = useWorkspaceProtectionStore();
+    const request = vi.fn();
+    const controller = createWorkspaceSessionUiController({
+      session,
+      protection,
+      documents: useDocumentWorkspaceStore(),
+      showCenter: ref(false),
+      request,
+      errorMessage: error => String(error),
+      initializeConsumers: vi.fn(),
+    });
+
+    await expect(controller.open("workspace-2")).resolves.toBe(false);
+
+    expect(protection.busyOperation).toBeNull();
+    expect(protection.operationError).toBeNull();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("新的 epoch 使旧失败失效且不会清除新操作或破坏新 session", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const protection = useWorkspaceProtectionStore();
+    const workspaceId = "workspace-2";
+    const openedSession: WorkspaceSessionV2 = {
+      contractVersion: "2.0",
+      workspaceId,
+      sessionEpoch: 2,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    };
+    let currentLease: ReturnType<typeof protection.beginOperation> = null;
+    const showCenter = ref(false);
+    const initializeConsumers = vi.fn();
+    const controller = createWorkspaceSessionUiController({
+      session,
+      protection,
+      documents: useDocumentWorkspaceStore(),
+      showCenter,
+      request: vi.fn(async () => {
+        session.applySession(openedSession);
+        currentLease = protection.beginOperation("retention.get");
+        throw new Error("stale open failure");
+      }),
+      errorMessage: error => error instanceof Error ? error.message : String(error),
+      initializeConsumers,
+    });
+
+    await expect(controller.open(workspaceId)).resolves.toBe(true);
+
+    expect(controller.activationPending.value).toBe(false);
+    expect(currentLease).not.toBeNull();
+    expect(protection.busyOperation).toBe("retention.get");
+    expect(protection.operationError).toBeNull();
+    expect(session.activeWorkspaceId).toBe(workspaceId);
+    expect(session.errorCode).toBeNull();
+    expect(session.isTransitioning).toBe(false);
+    expect(showCenter.value).toBe(false);
+    expect(initializeConsumers).toHaveBeenCalledTimes(1);
+  });
 });

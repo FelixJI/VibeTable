@@ -174,6 +174,8 @@ export interface DatabaseOpenedPayload {
   /** Safe display identity; session secrets are never included. */
   readonly currentUser?: Readonly<Record<string, unknown>>;
   readonly hostVersion?: string;
+  /** Correlates a renderer-requested open; absent for host-driven activation. */
+  readonly openId?: string;
   /** Physical collection -> user-facing label. */
   readonly displayNames: Readonly<Record<string, string>>;
 }
@@ -181,6 +183,7 @@ export interface DatabaseOpenedPayload {
 /** Payload produced by the web layer for `database.openRequested`. */
 export interface DatabaseOpenRequestedPayload {
   readonly path: string;
+  readonly openId: string;
 }
 
 /** Payload produced by the web layer for `table.selected`. */
@@ -389,6 +392,7 @@ export interface OperationFailedPayload {
   readonly message: string;
   readonly code?: string;
   readonly operation?: string;
+  readonly operationId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +732,17 @@ export interface AttachmentDownloadPayload {
   readonly originalName: string;
 }
 
+export type AttachmentPreviewResult =
+  | { readonly outcome: "opened"; readonly reason: null }
+  | {
+    readonly outcome: "unavailable";
+    readonly reason: "PREVIEW_HANDLER_UNAVAILABLE";
+  };
+
+export interface AttachmentDownloadResult {
+  readonly outcome: "saved" | "cancelled";
+}
+
 export type FormulaPreviewRpcPayload = FormulaPreviewRequestV2;
 
 export interface FormulaDraftValidateParams {
@@ -761,6 +776,10 @@ export interface CollectionsChangedPayload {
   /** Physical collection -> user-facing label. */
   readonly displayNames: Readonly<Record<string, string>>;
   readonly projectRevision?: string;
+  /** Present only on the correlated create response. */
+  readonly createdTableId?: string;
+  /** Present only on the correlated delete response. */
+  readonly deletedTableId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1462,6 +1481,8 @@ export type WebMessageType =
 export type HostMessageType =
   | "host.startupStateChanged"
   | "database.opened"
+  | "database.openCancelled"
+  | "plugin.projectContext.unavailable"
   | "table.pageLoaded"
   | "table.datasetReady"
   | "table.windowLoaded"
@@ -1509,6 +1530,8 @@ export type HostMessageType =
   | "file.uploadRequested"
   | "file.replaceRequested"
   | "file.removeRequested"
+  | "file.previewRequested"
+  | "file.downloadRequested"
   | "events.reconcile"
   | "schema.describe"
   | "relation.searchTargets"
@@ -1740,6 +1763,8 @@ export interface BridgeMessage<P = unknown> {
 export interface HostPayloadMap {
   "host.startupStateChanged": StartupStatePayload;
   "database.opened": DatabaseOpenedPayload;
+  "database.openCancelled": { readonly openId: string; readonly reason: string };
+  "plugin.projectContext.unavailable": { readonly reason: string };
   "table.pageLoaded": TablePageLoadedPayload;
   "table.datasetReady": DatasetReadyPayload;
   "table.windowLoaded": TablePage;
@@ -1787,6 +1812,8 @@ export interface HostPayloadMap {
   "file.uploadRequested": MutationReceipt;
   "file.replaceRequested": MutationReceipt;
   "file.removeRequested": MutationReceipt;
+  "file.previewRequested": AttachmentPreviewResult;
+  "file.downloadRequested": AttachmentDownloadResult;
   "events.reconcile": Readonly<Record<string, unknown>>;
   "schema.describe": SchemaDescribeResult;
   "relation.searchTargets": RelationSearchResult;

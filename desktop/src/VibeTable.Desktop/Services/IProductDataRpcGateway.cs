@@ -40,6 +40,9 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     Task<JsonElement> DeleteRecordDocumentLinkAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryPageAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> OpenQueryCursorAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> OpenSelectionProjectionAsync(
+        JsonElement parameters,
+        CancellationToken token);
     Task<JsonElement> FetchQueryCursorAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryViewAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ReadRowsAsync(JsonElement parameters, CancellationToken token);

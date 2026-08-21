@@ -47,6 +47,9 @@ export const useTableStore = defineStore("table", () => {
   const editSchemaRevision = ref<string | null>(null);
   /** Current mutation revision (databaseSessionId/schemaRevision/dataRevision). */
   const revision = ref<MutationRevision | null>(null);
+  /** Stable schema identity retained while a same-schema data window refreshes. */
+  const schemaRevision = computed(() =>
+    revision.value?.schemaRevision ?? editSchemaRevision.value);
   /**
    * Monotonic accepted revision retained across same-schema background loads.
    * `revision` is cleared while loading to block writes; this separate floor
@@ -493,6 +496,7 @@ export const useTableStore = defineStore("table", () => {
     error,
     editSchema,
     revision,
+    schemaRevision,
     loadGeneration,
     lookupGroups,
     viewGroups,

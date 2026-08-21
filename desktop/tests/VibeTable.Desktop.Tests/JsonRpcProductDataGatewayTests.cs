@@ -50,6 +50,7 @@ public sealed class JsonRpcProductDataGatewayTests
         await gateway.GetTableSchemaAsync(payload, CancellationToken.None);
         await gateway.QueryPageAsync(payload, CancellationToken.None);
         await gateway.OpenQueryCursorAsync(payload, CancellationToken.None);
+        await gateway.OpenSelectionProjectionAsync(payload, CancellationToken.None);
         await gateway.FetchQueryCursorAsync(payload, CancellationToken.None);
         await gateway.QueryViewAsync(payload, CancellationToken.None);
         await gateway.ReadRowsAsync(payload, CancellationToken.None);
@@ -81,7 +82,7 @@ public sealed class JsonRpcProductDataGatewayTests
                 "field.change.status", "field.change.cancel", "field.recycleBin.list",
                 "schema.table.create", "schema.delete", "schema.list",
                 "schema.getTable",
-                "query.page", "query.cursorOpen", "query.cursorFetch", "query.view",
+                "query.page", "query.cursorOpen", "query.selectionOpen", "query.cursorFetch", "query.view",
                 "query.readRows", "query.validateSnapshot",
                 "mutation.preview", "mutation.apply",
                 "formula.validate", "formula.draft.validate", "formula.preview",
