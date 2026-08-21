@@ -28,12 +28,13 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 function settleBeforeDeadline<T>(
-  pending: Promise<T>,
+  start: () => Promise<T>,
   deadline: number,
   timeoutCode: string,
 ): Promise<T> {
   const remaining = deadline - Date.now();
   if (remaining <= 0) return Promise.reject(lifecycleError(timeoutCode));
+  const pending = start();
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const timeout = window.setTimeout(() => {
@@ -87,7 +88,7 @@ export async function observeWorkspaceSearchTerminal({
     if (remaining <= 0) throw lifecycleError(timeoutCode);
     await delay(Math.min(WORKSPACE_SEARCH_STATUS_INTERVAL_MS, remaining));
     if (!ownsLifecycle()) return null;
-    observed = await settleBeforeDeadline(readStatus(), deadline, timeoutCode);
+    observed = await settleBeforeDeadline(readStatus, deadline, timeoutCode);
   }
   return null;
 }

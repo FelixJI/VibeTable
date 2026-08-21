@@ -52,4 +52,25 @@ describe("observeWorkspaceSearchTerminal", () => {
     await vi.runAllTimersAsync();
     expect(publishObservation).toHaveBeenCalledTimes(1);
   });
+
+  it("does not start a status request after the lifecycle deadline", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const readStatus = vi.fn(async () => searchStatus("degraded", 8));
+    const observation = observeWorkspaceSearchTerminal({
+      acceptedGeneration: 8,
+      initial: searchStatus("building", 8),
+      budgetMs: 100,
+      timeoutCode: "workspace_search.test_terminal_timeout",
+      ownsLifecycle: () => true,
+      readStatus,
+      publishObservation: vi.fn(),
+    });
+
+    const rejection = expect(observation).rejects.toThrow(
+      "workspace_search.test_terminal_timeout",
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    await rejection;
+    expect(readStatus).not.toHaveBeenCalled();
+  });
 });
