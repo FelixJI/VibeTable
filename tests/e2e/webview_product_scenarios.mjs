@@ -14,6 +14,11 @@ import {
   readBridgeDiagnosticsInPage,
 } from "./bridge_diagnostics_instrumentation.mjs";
 import {
+  captureDialogFocusLeaseInPage,
+  hasDialogFocusLeaseTerminalInPage,
+  readDialogFocusLeaseEvidenceInPage,
+} from "./dialog_focus_terminal.mjs";
+import {
   beginRawBridgeRequestInPage,
   isAppliedMutationResponse,
   postRawBridgeNotificationInPage,
@@ -1929,13 +1934,23 @@ async function scenario04(page, recorder, _network, runtime) {
       && keyboardContract.ariaLabel.length > 0,
     { keyboardContract },
   );
+  const focusLease = await page.evaluate(captureDialogFocusLeaseInPage, {
+    operation: "capture",
+    target: "json",
+  });
   await page.keyboard.press("Escape");
   await page.getByTestId("json-editor-modal").waitFor({ state: "hidden" });
   await page.waitForFunction(
-    (element) => document.activeElement === element,
-    await jsonCell.elementHandle(),
-    { timeout: 1_000 },
-  ).catch(() => null);
+    hasDialogFocusLeaseTerminalInPage,
+    { operation: "has-terminal", capture: focusLease },
+    { timeout: 10_000 },
+  );
+  const focusLeaseEvidence = await page.evaluate(
+    readDialogFocusLeaseEvidenceInPage,
+    { operation: "read-evidence", capture: focusLease },
+  );
+  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
+  await jsonCell.waitFor({ timeout: 10_000 });
   const focusRestoration = await jsonCell.evaluate((element) => ({
     documentHasFocus: document.hasFocus(),
     restored: document.activeElement === element,
@@ -1943,8 +1958,10 @@ async function scenario04(page, recorder, _network, runtime) {
   }));
   recorder.check(
     "Escape closes the structured modal and restores focus when the renderer owns OS focus",
-    !focusRestoration.documentHasFocus || focusRestoration.restored,
-    { focusRestoration },
+    focusRestoration.documentHasFocus
+      && focusLeaseEvidence.terminal?.state === "restored"
+      && focusRestoration.restored,
+    { focusLeaseEvidence, focusRestoration },
   );
   await jsonCell.press("Shift+F10");
   const keyboardContextMenu = page.locator(".n-dropdown-menu:visible").last();

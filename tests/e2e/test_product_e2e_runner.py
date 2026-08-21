@@ -1902,6 +1902,14 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert 'jsonCell.press("Enter")' in scenario
     assert 'page.keyboard.press("Escape")' in scenario
     assert 'jsonCell.press("Shift+F10")' in scenario
+    assert 'operation: "capture"' in scenario
+    assert 'target: "json"' in scenario
+    assert "hasDialogFocusLeaseTerminalInPage" in scenario
+    assert "readDialogFocusLeaseEvidenceInPage" in scenario
+    assert 'focusLeaseEvidence.terminal?.state === "restored"' in scenario
+    assert scenario.index('operation: "capture"') < scenario.index('page.keyboard.press("Escape")')
+    assert "focusRestoration.documentHasFocus\n      &&" in scenario
+    assert "!focusRestoration.documentHasFocus" not in scenario
     assert "document.activeElement === element" in scenario
     assert "`${jsonField}\\n" in scenario
     assert 'setProductLocale(page, "en-US")' in scenario
@@ -2332,6 +2340,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
+        runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),

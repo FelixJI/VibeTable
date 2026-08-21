@@ -74,6 +74,7 @@ import {
   createStructuredDialogFocus,
   type StructuredGridLike,
 } from "@/services/dialogFocus";
+import { reportStructuredDialogFocusE2EOutcome } from "@/services/dialogFocusDiagnostics";
 import { createNaiveModalContentUnmountAdapter } from "@/services/naiveModalContentUnmount";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
@@ -269,6 +270,7 @@ const structuredDialogFocus = createStructuredDialogFocus({
     listener,
     { flush: "sync" },
   ),
+  reportOutcome: reportStructuredDialogFocusE2EOutcome,
 });
 const tableInteractions = createWorkspaceTableInteractionController({
   workspace,
