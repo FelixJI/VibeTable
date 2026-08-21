@@ -583,6 +583,8 @@ public sealed class WorkspaceTableRequestController
 
     private async Task CreateTableAsync(RoutedWebRequest request)
     {
+        if (!RequireTableAdminCorrelation(request, "table.create"))
+            return;
         string? displayName = GetString(request.Payload, "displayName")?.Trim();
         if (string.IsNullOrWhiteSpace(displayName)
             || displayName.Length > 128
@@ -656,6 +658,8 @@ public sealed class WorkspaceTableRequestController
 
     private async Task DeleteTableAsync(RoutedWebRequest request)
     {
+        if (!RequireTableAdminCorrelation(request, "schema.delete"))
+            return;
         string? collection = GetString(request.Payload, "collection");
         if (string.IsNullOrWhiteSpace(collection))
         {
@@ -734,6 +738,19 @@ public sealed class WorkspaceTableRequestController
         TableSummary summary = await _workspace.Gateway.ListTablesAsync(
             cancellationToken).ConfigureAwait(false);
         return summary;
+    }
+
+    private static bool RequireTableAdminCorrelation(
+        RoutedWebRequest request,
+        string operation)
+    {
+        if (!string.IsNullOrWhiteSpace(request.RequestId))
+            return true;
+        // Without a request identity there is no response channel. Fail closed
+        // before payload interpretation or gateway I/O instead of broadcasting
+        // an uncorrelated terminal into the notification domain.
+        TraceFailure(operation, "TABLE_ADMIN_REQUEST_ID_REQUIRED");
+        return false;
     }
 
     private void PublishCollectionList(

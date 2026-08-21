@@ -111,6 +111,39 @@ public sealed class WorkspaceTableRequestControllerTests
     }
 
     [TestMethod]
+    public async Task TableAdmin_RejectsMissingCorrelationBeforeBackendLookupOrBroadcast()
+    {
+        int gatewayLookups = 0;
+        var sink = new FakeWebReplySink();
+        var controller = new WorkspaceTableRequestController(
+            new TableWorkspaceService(new FakeTableRpcGateway()),
+            new FakeDatabasePicker("local://configured"),
+            sink,
+            () =>
+            {
+                gatewayLookups += 1;
+                return null;
+            },
+            NoDatabaseOpenRoute.Instance);
+        using var createPayload = JsonDocument.Parse("""{"displayName":"Orders"}""");
+        using var deletePayload = JsonDocument.Parse("""{"collection":"tbl_orders"}""");
+
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "tableAdmin.createRequested",
+            null,
+            createPayload.RootElement.Clone(),
+            string.Empty));
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "tableAdmin.deleteRequested",
+            " ",
+            deletePayload.RootElement.Clone(),
+            string.Empty));
+
+        Assert.AreEqual(0, gatewayLookups);
+        Assert.AreEqual(0, sink.Replies.Count);
+    }
+
+    [TestMethod]
     public async Task CreateTable_TimesOutTheWholeLifecycleAndSuppressesLateRefresh()
     {
         var time = new ManualTimeProvider();
