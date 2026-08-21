@@ -25,6 +25,8 @@ export interface WorkspaceSessionUiDependencies {
   readonly initializeConsumers: () => void;
 }
 
+type AcquiredExecutionOutcome = "succeeded" | "failed" | "stale";
+
 export function createWorkspaceSessionUiController(
   dependencies: WorkspaceSessionUiDependencies,
 ): WorkspaceSessionUiController {
@@ -33,24 +35,24 @@ export function createWorkspaceSessionUiController(
   async function executeAcquired(
     action: WorkspaceV2UiAction,
     lease: NonNullable<ReturnType<typeof dependencies.protection.beginOperation>>,
-  ): Promise<boolean> {
+  ): Promise<AcquiredExecutionOutcome> {
     try {
       await dependencies.request(action);
       if (action.method === "fileHistory.unlink") {
         dependencies.documents.removeActiveDocument(action.params.documentId);
       }
       dependencies.protection.finishOperation(lease);
-      return true;
+      return "succeeded";
     } catch (error) {
       const message = dependencies.errorMessage(error);
       const owned = dependencies.protection.finishOperation(lease, message);
+      if (!owned) return "stale";
       if (
-        owned
-        && (action.method === "workspace.open" || action.method === "workspace.switch")
+        action.method === "workspace.open" || action.method === "workspace.switch"
       ) {
         dependencies.session.failSwitch(message);
       }
-      return false;
+      return "failed";
     }
   }
 
@@ -58,7 +60,7 @@ export function createWorkspaceSessionUiController(
     if (!dependencies.session.enabled) return false;
     const lease = dependencies.protection.beginOperation(action.method);
     if (!lease) return false;
-    return executeAcquired(action, lease);
+    return (await executeAcquired(action, lease)) === "succeeded";
   }
 
   async function open(workspaceId: string): Promise<boolean> {
@@ -83,13 +85,18 @@ export function createWorkspaceSessionUiController(
       return false;
     }
     activationPending.value = true;
-    let opened = false;
+    let outcome: AcquiredExecutionOutcome;
     try {
-      opened = await executeAcquired(action, lease);
-      dependencies.showCenter.value = !opened;
+      outcome = await executeAcquired(action, lease);
+      if (outcome !== "stale") {
+        dependencies.showCenter.value = outcome === "failed";
+      }
     } finally {
       activationPending.value = false;
     }
+    const opened = outcome === "succeeded"
+      || (outcome === "stale" && dependencies.session.activeWorkspaceId === workspaceId);
+    if (outcome === "stale" && opened) dependencies.showCenter.value = false;
     if (opened) dependencies.initializeConsumers();
     return opened;
   }

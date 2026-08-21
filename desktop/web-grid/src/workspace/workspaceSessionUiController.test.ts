@@ -155,27 +155,32 @@ describe("workspaceSessionUiController", () => {
       errorCode: null,
     };
     let currentLease: ReturnType<typeof protection.beginOperation> = null;
+    const showCenter = ref(false);
+    const initializeConsumers = vi.fn();
     const controller = createWorkspaceSessionUiController({
       session,
       protection,
       documents: useDocumentWorkspaceStore(),
-      showCenter: ref(false),
+      showCenter,
       request: vi.fn(async () => {
         session.applySession(openedSession);
         currentLease = protection.beginOperation("retention.get");
         throw new Error("stale open failure");
       }),
       errorMessage: error => error instanceof Error ? error.message : String(error),
-      initializeConsumers: vi.fn(),
+      initializeConsumers,
     });
 
-    await expect(controller.open(workspaceId)).resolves.toBe(false);
+    await expect(controller.open(workspaceId)).resolves.toBe(true);
 
+    expect(controller.activationPending.value).toBe(false);
     expect(currentLease).not.toBeNull();
     expect(protection.busyOperation).toBe("retention.get");
     expect(protection.operationError).toBeNull();
     expect(session.activeWorkspaceId).toBe(workspaceId);
     expect(session.errorCode).toBeNull();
     expect(session.isTransitioning).toBe(false);
+    expect(showCenter.value).toBe(false);
+    expect(initializeConsumers).toHaveBeenCalledTimes(1);
   });
 });
