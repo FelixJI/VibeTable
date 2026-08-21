@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createStructuredDialogFocus,
@@ -45,8 +45,16 @@ function createGridHarness(cell: () => HTMLElement, rowExists: () => boolean = (
 }
 
 describe("structured dialog focus", () => {
+  let originalBodyTabIndex: string | null;
+
   beforeEach(() => {
+    originalBodyTabIndex = document.body.getAttribute("tabindex");
     document.body.innerHTML = "";
+  });
+
+  afterEach(() => {
+    if (originalBodyTabIndex === null) document.body.removeAttribute("tabindex");
+    else document.body.setAttribute("tabindex", originalBodyTabIndex);
   });
 
   it("keeps logical cell focus when a committed row is rebuilt after restore", () => {
@@ -75,6 +83,30 @@ describe("structured dialog focus", () => {
     emit("renderComplete");
 
     expect(document.activeElement).toBe(replacementCell);
+    dialogFocus.dispose();
+  });
+
+  it("keeps the lease when a closing focus owner moves focus to the document body", () => {
+    document.body.tabIndex = -1;
+    const cell = document.createElement("button");
+    document.body.append(cell);
+    const { grid } = createGridHarness(() => cell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+
+    dialogFocus.capture({
+      element: cell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    expect(document.activeElement).toBe(cell);
+
+    document.body.focus();
+
+    expect(document.activeElement).toBe(cell);
     dialogFocus.dispose();
   });
 

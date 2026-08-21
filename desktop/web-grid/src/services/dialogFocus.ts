@@ -139,11 +139,7 @@ export function createStructuredDialogFocus(
       }
     };
 
-    const onDocumentFocusIn = () => {
-      if (!restoringFocus) lease.cancelFor("external");
-    };
-
-    const onRenderComplete = () => {
+    const reattemptRestore = () => {
       if (cancelled || disposed || current !== lease) return;
       if (!sameScope(scope, dependencies.getScope())) {
         lease.cancelFor("scope");
@@ -151,6 +147,17 @@ export function createStructuredDialogFocus(
       }
       attemptRestore(dependencies.getGrid());
     };
+
+    const onDocumentFocusIn = (event: FocusEvent) => {
+      if (restoringFocus) return;
+      if (event.target === document.body || event.target === document.documentElement) {
+        reattemptRestore();
+        return;
+      }
+      lease.cancelFor("external");
+    };
+
+    const onRenderComplete = () => reattemptRestore();
 
     const onWindowBlur = () => lease.cancelFor("window");
 
