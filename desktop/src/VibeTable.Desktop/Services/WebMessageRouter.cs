@@ -175,6 +175,8 @@ public sealed class WebMessageRouter
     {
         "host.startupStateChanged",
         "database.opened",
+        "database.openCancelled",
+        "plugin.projectContext.unavailable",
         "table.pageLoaded",
         "table.datasetReady",
         "operation.failed",
@@ -224,6 +226,8 @@ public sealed class WebMessageRouter
         "file.uploadRequested",
         "file.replaceRequested",
         "file.removeRequested",
+        "file.previewRequested",
+        "file.downloadRequested",
         // Versioned plugin domain events and local surface messages.
         "plugin.catalog.changed",
         "plugin.task.changed",
@@ -525,12 +529,14 @@ public sealed class WebMessageRouter
     public static HostReplyMessage BuildOperationFailed(
         string? requestId,
         string message,
-        string? code = null)
+        string? code = null,
+        string? operation = null,
+        string? operationId = null)
     {
         return new HostReplyMessage(
             Type: "operation.failed",
             RequestId: requestId,
-            Payload: new OperationFailedPayload(message, code));
+            Payload: new OperationFailedPayload(message, code, operation, operationId));
     }
 
     /// <summary>
@@ -587,4 +593,8 @@ public sealed record HostReplyMessage(
 /// Payload for the <c>operation.failed</c> notification. Mirrors
 /// <c>desktop/web-grid/src/contracts.ts:OperationFailedPayload</c>.
 /// </summary>
-public sealed record OperationFailedPayload(string Message, string? Code);
+public sealed record OperationFailedPayload(
+    string Message,
+    string? Code,
+    string? Operation = null,
+    string? OperationId = null);

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -42,6 +43,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private int _restartAttempts;
     private int _restartSuppressed = 1;
     private int _disposed;
+    private PocketBaseStartupTimings? _lastStartupTimings;
 
     public PocketBaseSupervisor(PocketBaseLaunchOptions options)
         : this(options, new SystemPocketBaseProcessFactory(), new HttpPocketBaseHealthProbe())
@@ -63,6 +65,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     public event Action<object?, PocketBaseStatus>? StatusChanged;
     public event Action<object?, string>? LogReceived;
+    public PocketBaseStartupTimings? LastStartupTimings =>
+        Volatile.Read(ref _lastStartupTimings);
 
     public PocketBaseStatus GetStatus()
     {
@@ -250,6 +254,10 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     private async Task StartGenerationAsync(CancellationToken cancellationToken)
     {
+        long startedAt = Stopwatch.GetTimestamp();
+        long? spawnedAt = null;
+        long? readyAt = null;
+        Volatile.Write(ref _lastStartupTimings, null);
         PublishStatus(new PocketBaseStatus(
             PocketBaseState.Starting, null, false, null, null));
 
@@ -269,6 +277,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 BuildArguments(),
                 environment);
             IPocketBaseProcess process = _processFactory.Start(request);
+            spawnedAt = Stopwatch.GetTimestamp();
             generation = new ProcessGeneration(process, sessionSecret);
             generation.ExitHandler = (_, _) => OnProcessExited(generation);
             process.Exited += generation.ExitHandler;
@@ -298,6 +307,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             }
 
             ReadyRecord ready = ParseAndValidateReady(readyLine, process.Id);
+            readyAt = Stopwatch.GetTimestamp();
             generation.StdoutPump = DrainStdoutAsync(
                 process.StandardOutput,
                 sessionSecret);
@@ -309,6 +319,14 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 new Uri(generation.BaseAddress, HealthPath.TrimStart('/')),
                 startupCts.Token,
                 cancellationToken).ConfigureAwait(false);
+            long healthyAt = Stopwatch.GetTimestamp();
+            Volatile.Write(
+                ref _lastStartupTimings,
+                new PocketBaseStartupTimings(
+                    Stopwatch.GetElapsedTime(startedAt, spawnedAt.Value),
+                    Stopwatch.GetElapsedTime(spawnedAt.Value, readyAt.Value),
+                    Stopwatch.GetElapsedTime(readyAt.Value, healthyAt),
+                    "health"));
 
             // Exited and Ready compete through one atomic phase transition.
             // If Exited won, Ready can never be published for this generation.
@@ -331,6 +349,22 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
         catch (Exception exception)
         {
+            long failedAt = Stopwatch.GetTimestamp();
+            Volatile.Write(
+                ref _lastStartupTimings,
+                new PocketBaseStartupTimings(
+                    spawnedAt is null
+                        ? null
+                        : Stopwatch.GetElapsedTime(startedAt, spawnedAt.Value),
+                    spawnedAt is null || readyAt is null
+                        ? null
+                        : Stopwatch.GetElapsedTime(spawnedAt.Value, readyAt.Value),
+                    readyAt is null
+                        ? null
+                        : Stopwatch.GetElapsedTime(readyAt.Value, failedAt),
+                    spawnedAt is null
+                        ? "spawn"
+                        : readyAt is null ? "ready-record" : "health"));
             int? exitCode = generation?.Process.ExitCode;
             string message = Sanitize(exception.Message, generation?.SessionSecret);
             PublishStatus(new PocketBaseStatus(

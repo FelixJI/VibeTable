@@ -57,7 +57,7 @@ namespace VibeTable.Infrastructure.Backend;
 /// <see cref="StartAsync"/> is supported (the inner call no-ops).
 /// </para>
 /// </remarks>
-public sealed class PythonBackendSupervisor : IAsyncDisposable
+public sealed class PythonBackendSupervisor : IBackendSupervisor
 {
     /// <summary>
     /// Synthetic exit code reported by <see cref="ExitCode"/> when the

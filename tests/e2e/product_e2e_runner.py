@@ -8,7 +8,6 @@ Chromium/Edge process itself.
 from __future__ import annotations
 
 import argparse
-import ctypes
 import hashlib
 import ipaddress
 import json
@@ -22,11 +21,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, Protocol
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_MANIFEST = Path(__file__).with_name("pocketbase_product_scenarios.json")
@@ -34,14 +34,76 @@ NODE_RUNNER = Path(__file__).with_name("webview_product_scenarios.mjs")
 DEFAULT_EVIDENCE = ROOT / "build" / "qa" / "product-e2e"
 CDP_TIMEOUT_SECONDS = 60.0
 NORMAL_CLOSE_CONTROL_FILE = "host-normal-close.request"
+LIFECYCLE_EXIT_TIMEOUT_SECONDS = 35.0
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from qa.package_check import check_package  # noqa: E402
 from scripts.build_next import RepoPaths  # noqa: E402
+from tests.e2e._windows_tcp_table import query_windows_tcp_table  # noqa: E402
+from tests.e2e.windows_process_scope import (  # noqa: E402
+    ProcessLaunchSpec,
+    ProcessScopeSnapshot,
+    ScopeTerminationResult,
+    ScopeWaitResult,
+    TargetTerminationResult,
+    WindowsProcessScope,
+)
+from tests.e2e.windows_tcp_listener_owner import (  # noqa: E402
+    OwnerLeaseCleanupReport,
+    PortReleaseReport,
+    WindowsTcpListenerOwnerLease,
+)
 
 DEFAULT_PACKAGE = RepoPaths.default(ROOT).publish_root
+
+
+class _ScopeRoot(Protocol):
+    pid: int
+
+    def poll(self) -> int | None: ...
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+
+class _RootScope(Protocol):
+    @property
+    def root(self) -> _ScopeRoot: ...
+
+
+class _SnapshotScope(_RootScope, Protocol):
+    def snapshot(self) -> ProcessScopeSnapshot: ...
+
+
+class _FaultScope(Protocol):
+    def terminate_unique(self, executable_name: str) -> TargetTerminationResult: ...
+
+
+class _TerminationScope(Protocol):
+    def terminate_all(self) -> ScopeTerminationResult: ...
+
+
+class _CloseScope(Protocol):
+    def close(self) -> None: ...
+
+
+class _LifecycleScope(_SnapshotScope, _TerminationScope, Protocol):
+    def wait_empty(self, *, timeout: float = 5.0) -> ScopeWaitResult: ...
+
+
+class _ManagedScope(_LifecycleScope, _CloseScope, Protocol):
+    pass
+
+
+class _HostObservationScope(_SnapshotScope, _FaultScope, Protocol):
+    pass
+
+
+class _PortOwnerLease(Protocol):
+    def observe_release(self, *, timeout: float) -> PortReleaseReport: ...
+
+    def close(self) -> OwnerLeaseCleanupReport: ...
 
 
 @dataclass(frozen=True)
@@ -288,9 +350,28 @@ def _reserve_port() -> int:
         return int(listener.getsockname()[1])
 
 
+def _launch_host_process(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    stdout: IO[bytes],
+    stderr: IO[bytes],
+) -> WindowsProcessScope:
+    return WindowsProcessScope.launch(
+        ProcessLaunchSpec(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    )
+
+
 def _wait_for_cdp(
     port: int,
-    process: subprocess.Popen[bytes],
+    scope: _SnapshotScope,
     process_network: dict[str, Any] | None = None,
 ) -> None:
     endpoint = f"http://127.0.0.1:{port}/json/version"
@@ -298,11 +379,10 @@ def _wait_for_cdp(
     last_error = ""
     while time.monotonic() < deadline:
         if process_network is not None:
-            _record_process_network(process.pid, process_network)
-        if process.poll() is not None:
-            raise RuntimeError(
-                f"WPF host exited with code {process.returncode} before CDP became ready"
-            )
+            _record_process_network(scope, process_network)
+        exit_code = scope.root.poll()
+        if exit_code is not None:
+            raise RuntimeError(f"WPF host exited with code {exit_code} before CDP became ready")
         try:
             with urllib.request.urlopen(endpoint, timeout=0.5) as response:
                 payload = json.load(response)
@@ -341,180 +421,275 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
             time.sleep(min(0.01 * (attempt + 1), 0.1))
 
 
-def _wait_for_readiness(readiness_dir: Path, process: subprocess.Popen[bytes]) -> dict[str, Any]:
+def _wait_for_readiness(readiness_dir: Path, scope: _RootScope) -> dict[str, Any]:
     path = readiness_dir / "vibetable-readiness.json"
     deadline = time.monotonic() + CDP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         report = _read_json(path)
         if report is not None:
             return report
-        if process.poll() is not None:
-            raise RuntimeError(f"WPF host exited with code {process.returncode} before readiness")
+        exit_code = scope.root.poll()
+        if exit_code is not None:
+            raise RuntimeError(f"WPF host exited with code {exit_code} before readiness")
         time.sleep(0.1)
     raise TimeoutError("WPF host did not emit vibetable-readiness.json")
-
-
-def _stop_process_tree(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            check=False,
-            capture_output=True,
-            timeout=15,
-        )
-    else:
-        process.terminate()
-    try:
-        process.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
-
-
-def _stop_process_ids(process_ids: Sequence[int]) -> None:
-    if os.name != "nt":
-        return
-    for process_id in sorted({item for item in process_ids if item > 0}):
-        subprocess.run(
-            ["taskkill", "/PID", str(process_id), "/T", "/F"],
-            check=False,
-            capture_output=True,
-            timeout=15,
-        )
 
 
 def _lifecycle_exit_report(
     *,
     normal_exit_requested: bool,
     host_exit_code: int | None,
-    descendants_after_exit: list[dict[str, Any]],
+    members_after_exit: list[dict[str, Any]],
     ports_released: bool,
+    root_pid: int | None = None,
+    port_release: dict[str, object] | None = None,
+    owner_lease_cleanup: dict[str, object] | None = None,
+    cleanup: dict[str, Any] | None = None,
+    errors: Sequence[str] = (),
 ) -> dict[str, Any]:
     passed = (
         normal_exit_requested
         and host_exit_code == 0
-        and not descendants_after_exit
+        and not members_after_exit
         and ports_released
+        and not errors
     )
-    return {
+    report: dict[str, Any] = {
         "normalExitRequested": normal_exit_requested,
         "hostExitCode": host_exit_code,
-        "descendantsAfterExit": descendants_after_exit,
+        "membersAfterExit": members_after_exit,
+        "descendantsAfterExit": [
+            {"pid": member["pid"], "name": member.get("name", "unknown")}
+            for member in members_after_exit
+            if member["pid"] != root_pid
+        ],
         "portsReleased": ports_released,
+        "errors": list(errors),
         "status": "passed" if passed else "failed",
+    }
+    if cleanup is not None:
+        report["cleanup"] = cleanup
+    if port_release is not None:
+        report["portRelease"] = port_release
+    if owner_lease_cleanup is not None:
+        report["ownerLeaseCleanup"] = owner_lease_cleanup
+    return report
+
+
+def _termination_report(result: ScopeTerminationResult) -> dict[str, Any]:
+    return {
+        "terminationRequested": result.termination_requested,
+        "remainingPids": (
+            list(result.remaining_pids) if result.remaining_pids is not None else None
+        ),
+        "errors": list(result.errors),
+        "status": "passed" if result.success else "failed",
     }
 
 
-def _request_normal_exit(
-    process: subprocess.Popen[bytes],
-    *,
-    controls_dir: Path,
-    cdp_port: int,
-) -> dict[str, Any]:
-    tracked = {process.pid: "VibeTable.Next.exe"}
-    for pid, name in _descendants(process.pid):
-        tracked[pid] = name
-    control = controls_dir / NORMAL_CLOSE_CONTROL_FILE
-    control.write_text("normal-close\n", encoding="utf-8")
-
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        for pid, name in _descendants(process.pid):
-            tracked[pid] = name
-        if process.poll() is not None:
-            break
-        time.sleep(0.1)
-
-    tracked_pids = set(tracked)
-
-    # WebView2 may outlive the WPF window by a few scheduler turns while its
-    # browser-process tree flushes profile state. Observe that bounded normal
-    # shutdown before classifying an already tracked process as a leak.
-    for _ in range(50):
-        alive = {pid for pid, _parent, _name in _windows_processes()}
-        if not ((tracked_pids - {process.pid}) & alive):
-            break
-        time.sleep(0.1)
-
-    surviving = {pid: name for pid, _parent, name in _windows_processes() if pid in tracked_pids}
-    descendants_after_exit = [
-        {"pid": pid, "name": name}
-        for pid, name in tracked.items()
-        if pid != process.pid and pid in surviving
-    ]
+def _terminate_scope(scope: _TerminationScope) -> dict[str, Any]:
     try:
-        occupied_by_tracked = [
-            row
-            for row in _netstat_tcp_rows()
-            if int(row["pid"]) in tracked_pids or str(row["local"]).endswith(f":{cdp_port}")
-        ]
-        ports_released = not occupied_by_tracked
-    except (OSError, RuntimeError, subprocess.SubprocessError):
-        ports_released = False
+        return _termination_report(scope.terminate_all())
+    except (OSError, RuntimeError) as exc:
+        return {
+            "terminationRequested": False,
+            "remainingPids": None,
+            "errors": [str(exc)],
+            "status": "failed",
+        }
+
+
+def _close_scope(scope: _CloseScope) -> str | None:
+    try:
+        scope.close()
+    except (OSError, RuntimeError) as exc:
+        return str(exc)
+    return None
+
+
+@contextmanager
+def _product_scope_lifetime(
+    scope: _ManagedScope,
+    state: dict[str, Any],
+) -> Iterator[None]:
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        result = state.get("result")
+        prior_cleanup: object = None
+        if isinstance(result, dict):
+            prior_lifecycle = result.get("lifecycle")
+            if isinstance(prior_lifecycle, dict):
+                prior_cleanup = prior_lifecycle.get("cleanup")
+        cleanup = (
+            prior_cleanup
+            if isinstance(prior_cleanup, dict) and prior_cleanup.get("status") == "passed"
+            else _terminate_scope(scope)
+        )
+        close_error = _close_scope(scope)
+        if close_error is not None:
+            cleanup["errors"].append(close_error)
+            cleanup["status"] = "failed"
+        failures = [str(item) for item in cleanup["errors"]]
+        if isinstance(result, dict):
+            lifecycle = result.get("lifecycle")
+            if isinstance(lifecycle, dict):
+                lifecycle["finalCleanup"] = cleanup
+                if failures:
+                    lifecycle_errors = lifecycle.setdefault("errors", [])
+                    lifecycle_errors.extend(
+                        failure for failure in failures if failure not in lifecycle_errors
+                    )
+                    lifecycle["status"] = "failed"
+                    result["lifecycleError"] = "; ".join(lifecycle_errors)
+                    if result.get("status") == "passed":
+                        result["status"] = "failed"
+                        result["error"] = {
+                            "code": "HOST_LIFECYCLE_FAILED",
+                            "message": "Job 作用域最终清理失败。",
+                            "details": lifecycle,
+                        }
+                    else:
+                        result["lifecycleFailure"] = lifecycle
+        elif failures:
+            message = "Job scope cleanup also failed: " + "; ".join(failures)
+            if primary_error is not None:
+                primary_error.add_note(message)
+            else:
+                raise RuntimeError(message)
+
+
+def _scope_members(scope: _SnapshotScope) -> list[dict[str, Any]]:
+    return [
+        {
+            "pid": member.pid,
+            "name": getattr(member, "executable_name", "unknown"),
+            "identityVerified": getattr(member, "identity_verified", False),
+        }
+        for member in scope.snapshot().members
+    ]
+
+
+def _close_owner_lease(cdp_owner: _PortOwnerLease) -> OwnerLeaseCleanupReport:
+    try:
+        cleanup = cdp_owner.close()
+    except (OSError, RuntimeError) as exc:
+        return OwnerLeaseCleanupReport(
+            stable_handle_closed=False,
+            errors=(f"unable to close captured CDP owner handle ({type(exc).__name__})",),
+        )
+    if cleanup is None:
+        return OwnerLeaseCleanupReport(
+            stable_handle_closed=False,
+            errors=("captured CDP owner cleanup returned no report",),
+        )
+    return cleanup
+
+
+@contextmanager
+def _close_owner_on_primary_error(cdp_owner: _PortOwnerLease) -> Iterator[None]:
+    try:
+        yield
+    except BaseException as exc:
+        cleanup = _close_owner_lease(cdp_owner)
+        for error in cleanup.errors:
+            exc.add_note(error)
+        raise
+
+
+def _abort_scope(
+    scope: _LifecycleScope,
+    *,
+    reason: str,
+    cdp_owner: _PortOwnerLease | None = None,
+) -> dict[str, Any]:
+    errors = [reason]
+    try:
+        host_exit_code = scope.root.poll()
+    except RuntimeError as exc:
+        host_exit_code = None
+        errors.append(str(exc))
+    try:
+        members = _scope_members(scope)
+    except (OSError, RuntimeError) as exc:
+        members = []
+        errors.append(str(exc))
+    owner_cleanup = None if cdp_owner is None else _close_owner_lease(cdp_owner)
+    if owner_cleanup is not None:
+        errors.extend(owner_cleanup.errors)
     return _lifecycle_exit_report(
-        normal_exit_requested=True,
-        host_exit_code=process.poll(),
-        descendants_after_exit=descendants_after_exit,
-        ports_released=ports_released,
+        normal_exit_requested=False,
+        host_exit_code=host_exit_code,
+        members_after_exit=members,
+        ports_released=False,
+        root_pid=scope.root.pid,
+        cleanup=_terminate_scope(scope),
+        owner_lease_cleanup=(None if owner_cleanup is None else owner_cleanup.as_artifact()),
+        errors=errors,
     )
 
 
-def _windows_processes() -> list[tuple[int, int, str]]:
-    if os.name != "nt":
-        return []
-    from ctypes import wintypes
+def _request_normal_exit(
+    scope: _LifecycleScope,
+    *,
+    controls_dir: Path,
+    cdp_owner: _PortOwnerLease,
+) -> dict[str, Any]:
+    control = controls_dir / NORMAL_CLOSE_CONTROL_FILE
+    control.write_text("normal-close\n", encoding="utf-8")
+    return _observe_scope_exit(scope, cdp_owner=cdp_owner)
 
-    class ProcessEntry32W(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", wintypes.DWORD),
-            ("cntUsage", wintypes.DWORD),
-            ("th32ProcessID", wintypes.DWORD),
-            ("th32DefaultHeapID", ctypes.c_size_t),
-            ("th32ModuleID", wintypes.DWORD),
-            ("cntThreads", wintypes.DWORD),
-            ("th32ParentProcessID", wintypes.DWORD),
-            ("pcPriClassBase", ctypes.c_long),
-            ("dwFlags", wintypes.DWORD),
-            ("szExeFile", wintypes.WCHAR * 260),
-        ]
 
-    snapshot = ctypes.windll.kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
-    if snapshot in (0, ctypes.c_void_p(-1).value):
-        raise OSError("CreateToolhelp32Snapshot failed")
-    entry = ProcessEntry32W()
-    entry.dwSize = ctypes.sizeof(entry)
-    result: list[tuple[int, int, str]] = []
+def _observe_scope_exit(
+    scope: _LifecycleScope,
+    *,
+    cdp_owner: _PortOwnerLease,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + LIFECYCLE_EXIT_TIMEOUT_SECONDS
+
+    def remaining() -> float:
+        return max(0.0, deadline - time.monotonic())
+
+    host_exit_code: int | None = None
+    errors: list[str] = []
     try:
-        more = ctypes.windll.kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-        while more:
-            result.append(
-                (
-                    int(entry.th32ProcessID),
-                    int(entry.th32ParentProcessID),
-                    str(entry.szExeFile),
-                )
-            )
-            more = ctypes.windll.kernel32.Process32NextW(snapshot, ctypes.byref(entry))
-    finally:
-        ctypes.windll.kernel32.CloseHandle(snapshot)
-    return result
-
-
-def _descendants(parent_pid: int) -> list[tuple[int, str]]:
-    processes = _windows_processes()
-    children: dict[int, list[tuple[int, str]]] = {}
-    for pid, parent, name in processes:
-        children.setdefault(parent, []).append((pid, name))
-    result: list[tuple[int, str]] = []
-    pending = [parent_pid]
-    while pending:
-        parent = pending.pop()
-        for child in children.get(parent, []):
-            result.append(child)
-            pending.append(child[0])
-    return result
+        host_exit_code = scope.root.wait(timeout=min(30.0, remaining()))
+    except subprocess.TimeoutExpired:
+        pass
+    except (OSError, RuntimeError) as exc:
+        errors.append(str(exc))
+    wait_result = scope.wait_empty(timeout=min(5.0, remaining()))
+    errors.extend(wait_result.errors)
+    port_release: PortReleaseReport | None = None
+    try:
+        members_after_exit = _scope_members(scope)
+        port_release = cdp_owner.observe_release(timeout=remaining())
+        ports_released = port_release.released
+        errors.extend(port_release.errors)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        members_after_exit = []
+        ports_released = False
+        errors.append(f"CDP listener ownership observation failed ({type(exc).__name__})")
+    owner_cleanup = _close_owner_lease(cdp_owner)
+    errors.extend(owner_cleanup.errors)
+    cleanup = None
+    if host_exit_code is None or members_after_exit or errors or not ports_released:
+        cleanup = _terminate_scope(scope)
+    return _lifecycle_exit_report(
+        normal_exit_requested=True,
+        host_exit_code=host_exit_code,
+        members_after_exit=members_after_exit,
+        ports_released=ports_released,
+        root_pid=scope.root.pid,
+        port_release=(None if port_release is None else port_release.as_artifact()),
+        owner_lease_cleanup=owner_cleanup.as_artifact(),
+        cleanup=cleanup,
+        errors=errors,
+    )
 
 
 def _endpoint_host(endpoint: str) -> str:
@@ -540,54 +715,29 @@ def _is_unspecified_endpoint(endpoint: str) -> bool:
         return False
 
 
-def _netstat_tcp_rows() -> list[dict[str, Any]]:
-    completed = subprocess.run(
-        ["netstat", "-ano", "-p", "tcp"],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"netstat failed with {completed.returncode}: {completed.stderr.strip()}"
-        )
-    rows: list[dict[str, Any]] = []
-    for raw_line in completed.stdout.splitlines():
-        parts = raw_line.split()
-        if len(parts) != 5 or parts[0].casefold() != "tcp":
-            continue
-        try:
-            pid = int(parts[4])
-        except ValueError:
-            continue
-        rows.append(
-            {
-                "protocol": "TCP",
-                "local": parts[1],
-                "remote": parts[2],
-                "state": parts[3].upper(),
-                "pid": pid,
-            }
-        )
-    return rows
-
-
 def _record_process_network(
-    host_pid: int,
+    scope: _SnapshotScope,
     evidence: dict[str, Any],
 ) -> None:
     try:
-        descendants = _descendants(host_pid)
-        names = {host_pid: "VibeTable.Next.exe", **dict(descendants)}
+        before_snapshot = scope.snapshot()
+        before = {member.pid: member for member in before_snapshot.members}
+        rows = query_windows_tcp_table(timeout=10.0)
+        after_snapshot = scope.snapshot()
+        after = {member.pid: member for member in after_snapshot.members}
+        members = set(before) & set(after)
         observed = evidence.setdefault("observations", {})
-        for row in _netstat_tcp_rows():
-            pid = int(row["pid"])
-            if pid not in names:
+        for row in rows:
+            pid = row.pid
+            if pid not in members:
                 continue
-            item = row | {"processName": names[pid]}
+            member = after[pid]
+            name = (
+                getattr(member, "executable_name", "unknown")
+                if getattr(member, "identity_verified", False)
+                else "unknown"
+            )
+            item = row.as_artifact() | {"processName": name}
             key = "|".join(str(item[field]) for field in ("pid", "local", "remote", "state"))
             observed[key] = item
         evidence["samples"] = int(evidence.get("samples", 0)) + 1
@@ -853,13 +1003,19 @@ def _audit_ledger_proof(ledger_path: Path) -> dict[str, Any]:
     }
 
 
-def _handle_fault_request(
-    request: dict[str, Any], host_process: subprocess.Popen[bytes]
-) -> dict[str, Any]:
+def _handle_fault_request(request: dict[str, Any], host_scope: _FaultScope) -> dict[str, Any]:
     action = request.get("action")
     targets = {
-        "kill-sidecar": ("vibetable-pb.exe", "SIDECAR_PROCESS_NOT_UNIQUE"),
-        "kill-backend": ("vibetable-backend.exe", "BACKEND_PROCESS_NOT_UNIQUE"),
+        "kill-sidecar": (
+            "vibetable-pb.exe",
+            "SIDECAR_PROCESS_NOT_FOUND",
+            "SIDECAR_PROCESS_NOT_UNIQUE",
+        ),
+        "kill-backend": (
+            "vibetable-backend.exe",
+            "BACKEND_PROCESS_NOT_FOUND",
+            "BACKEND_PROCESS_NOT_UNIQUE",
+        ),
     }
     target = targets.get(action) if isinstance(action, str) else None
     if target is None:
@@ -868,36 +1024,33 @@ def _handle_fault_request(
             "code": "UNKNOWN_FAULT_ACTION",
             "action": action,
         }
-    process_name, non_unique_code = target
-    matches = [
-        (pid, name)
-        for pid, name in _descendants(host_process.pid)
-        if name.casefold() == process_name
-    ]
-    if len(matches) != 1:
+    process_name, not_found_code, non_unique_code = target
+    result: TargetTerminationResult = host_scope.terminate_unique(process_name)
+    if result.status == "not_found":
+        return {
+            "status": "failed",
+            "code": not_found_code,
+            "matches": [],
+        }
+    if result.status == "ambiguous":
         return {
             "status": "failed",
             "code": non_unique_code,
-            "matches": matches,
+            "matches": list(result.matched_pids),
         }
-    pid, name = matches[0]
-    killed = subprocess.run(
-        ["taskkill", "/PID", str(pid), "/F"],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=15,
-    )
+    if result.status == "terminated" and result.terminated_pid is not None:
+        return {
+            "status": "completed",
+            "action": action,
+            "pid": result.terminated_pid,
+            "processName": process_name,
+        }
     return {
-        "status": "completed" if killed.returncode == 0 else "failed",
-        "action": action,
-        "pid": pid,
-        "processName": name,
-        "returncode": killed.returncode,
-        "stdout": killed.stdout,
-        "stderr": killed.stderr,
+        "status": "failed",
+        "code": "PROCESS_SCOPE_TARGET_TERMINATION_FAILED",
+        "matches": list(result.matched_pids),
+        "unverifiedPids": list(result.unverified_pids),
+        "errors": list(result.errors),
     }
 
 
@@ -906,7 +1059,7 @@ def _run_node_runner(
     *,
     scenario_dir: Path,
     local_data: Path,
-    host_process: subprocess.Popen[bytes],
+    host_scope: _HostObservationScope,
     process_network: dict[str, Any] | None = None,
 ) -> tuple[int, str, str]:
     fault_request = scenario_dir / "fault-request.json"
@@ -943,7 +1096,7 @@ def _run_node_runner(
                         fault_result,
                         {
                             "requestId": fault_request_id,
-                            **_handle_fault_request(request, host_process),
+                            **_handle_fault_request(request, host_scope),
                         },
                     )
             elif not invalid_fault_reported:
@@ -969,7 +1122,7 @@ def _run_node_runner(
                     _handle_storage_proof(request, local_data),
                 )
         if process_network is not None and time.monotonic() >= next_network_sample:
-            _record_process_network(host_process.pid, process_network)
+            _record_process_network(host_scope, process_network)
             _write_json_atomic(
                 process_network_path,
                 _process_network_report(process_network, status="monitoring"),
@@ -977,7 +1130,7 @@ def _run_node_runner(
             next_network_sample = time.monotonic() + 0.25
         time.sleep(0.05)
     if process_network is not None:
-        _record_process_network(host_process.pid, process_network)
+        _record_process_network(host_scope, process_network)
         _write_json_atomic(
             process_network_path,
             _process_network_report(process_network, status="completed"),
@@ -1091,9 +1244,11 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
     )
     history_status = "not-measured"
     if history is not None:
-        if history["maxMs"] > 2_000:
+        history_max = history.get("maxMs")
+        history_p95 = history.get("p95Ms")
+        if isinstance(history_max, (int, float)) and history_max > 2_000:
             history_status = "hard-limit-exceeded"
-        elif history["p95Ms"] > 500:
+        elif isinstance(history_p95, (int, float)) and history_p95 > 500:
             history_status = "warning"
         else:
             history_status = "within-budget"
@@ -1113,9 +1268,11 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
     )
     history_ui_status = "not-measured"
     if history_ui is not None:
-        if history_ui["maxMs"] > 2_000:
+        history_ui_max = history_ui.get("maxMs")
+        history_ui_p95 = history_ui.get("p95Ms")
+        if isinstance(history_ui_max, (int, float)) and history_ui_max > 2_000:
             history_ui_status = "hard-limit-exceeded"
-        elif history_ui["p95Ms"] > 750:
+        elif isinstance(history_ui_p95, (int, float)) and history_ui_p95 > 750:
             history_ui_status = "warning"
         else:
             history_ui_status = "within-budget"
@@ -1298,25 +1455,50 @@ def run_scenario(
         + "\n",
         encoding="utf-8",
     )
-    with (
-        (scenario_dir / "host-stdout.log").open("wb") as stdout,
-        (scenario_dir / "host-stderr.log").open("wb") as stderr,
-    ):
-        process = subprocess.Popen(
-            command,
-            cwd=package_root,
-            env=environment,
-            stdout=stdout,
-            stderr=stderr,
-        )
+    with ExitStack() as resources:
+        stdout = resources.enter_context((scenario_dir / "host-stdout.log").open("wb"))
+        stderr = resources.enter_context((scenario_dir / "host-stderr.log").open("wb"))
+        try:
+            scope = _launch_host_process(
+                command,
+                cwd=package_root,
+                env=environment,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except (OSError, RuntimeError) as exc:
+            return _failure_result(
+                scenario,
+                code="PROCESS_SCOPE_LAUNCH_FAILED",
+                message=str(exc),
+            ) | {
+                "evidenceDirectory": str(scenario_dir),
+                "lifecycle": {
+                    "normalExitRequested": False,
+                    "hostExitCode": None,
+                    "membersAfterExit": [],
+                    "descendantsAfterExit": [],
+                    "portsReleased": False,
+                    "errors": [str(exc)],
+                    "status": "failed",
+                },
+                "lifecycleError": str(exc),
+            }
+        cleanup_state: dict[str, Any] = {}
+        resources.enter_context(_product_scope_lifetime(scope, cleanup_state))
         result: dict[str, Any]
+        normal_exit_allowed = False
+        infrastructure_error: str | None = None
+        cdp_owner: WindowsTcpListenerOwnerLease | None = None
         try:
             process_network = (
                 {"observations": {}, "errors": [], "samples": 0}
                 if scenario.id == "01-offline-first-start"
                 else None
             )
-            _wait_for_cdp(port, process, process_network)
+            _wait_for_cdp(port, scope, process_network)
+            cdp_owner = WindowsTcpListenerOwnerLease.capture(port)
+            resources.enter_context(_close_owner_on_primary_error(cdp_owner))
             node_command = [
                 node,
                 str(NODE_RUNNER),
@@ -1335,12 +1517,13 @@ def run_scenario(
                 node_command,
                 scenario_dir=scenario_dir,
                 local_data=readiness_dir / "local-data",
-                host_process=process,
+                host_scope=scope,
                 process_network=process_network,
             )
             (scenario_dir / "runner-stdout.log").write_text(node_stdout, encoding="utf-8")
             (scenario_dir / "runner-stderr.log").write_text(node_stderr, encoding="utf-8")
-            readiness = _wait_for_readiness(readiness_dir, process)
+            readiness = _wait_for_readiness(readiness_dir, scope)
+            normal_exit_allowed = readiness.get("ready") is True
             result_path = scenario_dir / f"{scenario.id}-result.json"
             result = _read_json(result_path) or _failure_result(
                 scenario,
@@ -1353,7 +1536,7 @@ def run_scenario(
                     "title": scenario.title,
                     "requirement": scenario.requirement,
                     "readiness": readiness,
-                    "hostExitCodeBeforeCleanup": process.poll(),
+                    "hostExitCodeBeforeCleanup": scope.root.poll(),
                     "nodeExitCode": node_returncode,
                     "evidenceDirectory": str(scenario_dir),
                     "processNetwork": process_network_report,
@@ -1375,7 +1558,7 @@ def run_scenario(
                 result["error"] = {
                     "code": "PROCESS_NETWORK_OBSERVATION_FAILED",
                     "message": (
-                        "process-tree network observation was unavailable or found "
+                        "Job-scope network observation was unavailable or found "
                         "a VibeTable-owned non-loopback listener/remote endpoint"
                     ),
                     "details": process_network_report,
@@ -1400,49 +1583,53 @@ def run_scenario(
                     "code": "RESULT_EXIT_MISMATCH",
                     "message": "runner exited zero without a passing result",
                 }
-        except (OSError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+        except Exception as exc:
+            infrastructure_error = str(exc)
             result = _failure_result(
                 scenario,
                 code="E2E_INFRASTRUCTURE_FAILED",
                 message=str(exc),
             ) | {"evidenceDirectory": str(scenario_dir)}
-
-        lifecycle_error: str | None = None
-        try:
-            lifecycle = _request_normal_exit(
-                process,
-                controls_dir=controls_dir,
-                cdp_port=port,
-            )
-        except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError) as exc:
-            lifecycle_error = str(exc)
-            lifecycle = _lifecycle_exit_report(
-                normal_exit_requested=False,
-                host_exit_code=process.poll(),
-                descendants_after_exit=[],
-                ports_released=False,
+        if normal_exit_allowed and cdp_owner is not None:
+            try:
+                lifecycle = _request_normal_exit(
+                    scope,
+                    controls_dir=controls_dir,
+                    cdp_owner=cdp_owner,
+                )
+            except Exception as exc:
+                lifecycle = _abort_scope(scope, reason=str(exc), cdp_owner=cdp_owner)
+        else:
+            lifecycle = _abort_scope(
+                scope,
+                reason=(
+                    infrastructure_error
+                    or (
+                        "CDP listener owner lease was unavailable"
+                        if normal_exit_allowed
+                        else "host readiness did not permit normal exit"
+                    )
+                ),
+                cdp_owner=cdp_owner,
             )
         result["lifecycle"] = lifecycle
-        if lifecycle_error is not None:
-            result["lifecycleError"] = lifecycle_error
+        lifecycle_errors = list(lifecycle.get("errors", []))
+        lifecycle_cleanup = lifecycle.get("cleanup")
+        if isinstance(lifecycle_cleanup, dict):
+            lifecycle_errors.extend(str(item) for item in lifecycle_cleanup.get("errors", []))
+        if lifecycle_errors:
+            result["lifecycleError"] = "; ".join(lifecycle_errors)
         if lifecycle["status"] != "passed":
             if result.get("status") == "passed":
                 result["status"] = "failed"
                 result["error"] = {
                     "code": "HOST_LIFECYCLE_FAILED",
-                    "message": "正常关闭后仍有宿主进程、子进程或端口残留。",
+                    "message": "正常关闭后 Job 作用域仍有成员、端口或清理错误。",
                     "details": lifecycle,
                 }
             else:
                 result["lifecycleFailure"] = lifecycle
-            _stop_process_tree(process)
-            _stop_process_ids(
-                [
-                    int(item["pid"])
-                    for item in lifecycle["descendantsAfterExit"]
-                    if isinstance(item, dict) and isinstance(item.get("pid"), int)
-                ]
-            )
+        cleanup_state["result"] = result
         return result
 
 

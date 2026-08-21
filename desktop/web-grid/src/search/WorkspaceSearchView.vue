@@ -123,7 +123,11 @@ onMounted(() => void search.refreshStatus());
         <h1>{{ t("workspaceSearch.title") }}</h1>
         <p>{{ t("workspaceSearch.description") }}</p>
       </div>
-      <div class="index-state" :data-state="search.status.state">
+      <div
+        class="index-state"
+        :data-state="search.status.state"
+        :data-generation="search.status.generation"
+      >
         <span></span>
         <div>
           <strong>{{ t(`workspaceSearch.state.${search.status.state}`) }}</strong>

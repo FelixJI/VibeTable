@@ -65,12 +65,18 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     /// </summary>
     public TableSummary? ListTablesResult { get; set; }
 
+    public Func<CancellationToken, Task<TableSummary>>? ListTablesOverride { get; set; }
+
     /// <summary>
     /// Optional scripted open used by workspace-recovery tests. When set it
     /// replaces the dictionary lookup entirely, so a test can fail the first
     /// attempts (sidecar recycling) and then succeed.
     /// </summary>
     public Func<string, Task<DatabaseOpenResult>>? OpenDatabaseOverride { get; set; }
+
+    public Func<string, CancellationToken, Task<DatabaseOpenResult>>?
+        OpenDatabaseWithTokenOverride
+    { get; set; }
 
     private readonly Dictionary<string, Task> _readGates = new(StringComparer.Ordinal);
 
@@ -82,6 +88,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Task<DatabaseOpenResult> OpenDatabaseAsync(string path, CancellationToken token)
     {
         OpenDatabaseCalls.Add(path);
+        if (OpenDatabaseWithTokenOverride is { } scriptedWithToken)
+        {
+            return scriptedWithToken(path, token);
+        }
         if (OpenDatabaseOverride is { } scripted)
         {
             return scripted(path);
@@ -96,6 +106,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     public Task<TableSummary> ListTablesAsync(CancellationToken token)
     {
+        if (ListTablesOverride is { } scripted)
+        {
+            return scripted(token);
+        }
         // table.list reuses the same object catalog as database.open in Phase A.
         // Tests key on the open result; list returns the same tables/views.
         // When ListTablesResult is set explicitly, prefer it (used by the
@@ -180,6 +194,10 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Dictionary<string, EditSchemaResult> EditSchemaResults { get; } =
         new(StringComparer.Ordinal);
 
+    public Func<string, CancellationToken, Task<EditSchemaResult>>?
+        EditSchemaOverride
+    { get; set; }
+
     public List<string> UpdateCellCalls { get; } = new();
     public List<string> InsertRowCalls { get; } = new();
     public List<string> DeleteRowsCalls { get; } = new();
@@ -191,6 +209,8 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
 
     public Task<EditSchemaResult> GetEditSchemaAsync(string table, CancellationToken token)
     {
+        if (EditSchemaOverride is { } scripted)
+            return scripted(table, token);
         if (EditSchemaResults.TryGetValue(table, out var schema))
         {
             return Task.FromResult(schema);
@@ -352,8 +372,23 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Dictionary<string, TablePage> CursorPageResults { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, TablePage> CursorOpenResults { get; } =
         new(StringComparer.Ordinal);
+    public Dictionary<string, TableSelectionProjection> SelectionProjectionResults { get; } =
+        new(StringComparer.Ordinal);
     public Dictionary<string, TablePage> QueryWindowResults { get; } =
         new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Optional async cursor-open script used by selection recovery tests.
+    /// It runs before canned cursor results so tests can model a sidecar
+    /// restart, cancellation, and a replacement read without real delays.
+    /// </summary>
+    public Func<string, JsonElement, CancellationToken, Task<TablePage>>?
+        CursorOpenOverride
+    { get; set; }
+
+    public Func<string, JsonElement, CancellationToken, Task<TableSelectionProjection>>?
+        SelectionOpenOverride
+    { get; set; }
 
     public List<string> ValidateSnapshotCalls { get; } = new();
     public SnapshotValidation? NextValidateSnapshotResult { get; set; }
@@ -382,6 +417,12 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public Task<TablePage> OpenTableCursorRawAsync(
         string table, JsonElement query, CancellationToken token)
     {
+        if (CursorOpenOverride is { } scripted)
+        {
+            QueryWindowCalls.Add(table);
+            RawViewQueries.Add(query.Clone());
+            return scripted(table, query, token);
+        }
         if (CursorOpenResults.TryGetValue(table, out var page))
         {
             QueryWindowCalls.Add(table);
@@ -389,6 +430,27 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
             return Task.FromResult(page);
         }
         return QueryTableViewRawAsync(table, query, token);
+    }
+
+    public async Task<TableSelectionProjection> OpenTableSelectionAsync(
+        string table, JsonElement query, CancellationToken token)
+    {
+        if (SelectionOpenOverride is { } scripted)
+        {
+            QueryWindowCalls.Add(table);
+            RawViewQueries.Add(query.Clone());
+            return await scripted(table, query, token).ConfigureAwait(false);
+        }
+        QueryWindowCalls.Add(table);
+        RawViewQueries.Add(query.Clone());
+        if (SelectionProjectionResults.TryGetValue(
+            table,
+            out TableSelectionProjection? projection))
+        {
+            return projection;
+        }
+        throw new InvalidOperationException(
+            $"fake: no atomic selection projection for '{table}'");
     }
 
     public Task<TablePage> FetchTableCursorAsync(string cursor, CancellationToken token)

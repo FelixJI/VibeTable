@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
 import type { RetentionPolicyV2 } from "@/contracts/workspaceV2";
 import type {
@@ -29,6 +29,17 @@ export type {
   WorkspaceStorageProjection,
 } from "@/contracts/workspaceV2Bridge";
 
+const workspaceOperationLeaseBrand: unique symbol = Symbol("workspace-operation-lease");
+
+export type WorkspaceOperationLease = Readonly<{
+  readonly [workspaceOperationLeaseBrand]: true;
+}>;
+
+interface ActiveWorkspaceOperation {
+  readonly lease: WorkspaceOperationLease;
+  readonly operation: string;
+}
+
 export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2", () => {
   const snapshots = ref<readonly SnapshotTimelineItem[]>([]);
   const selectedSnapshotId = ref<string | null>(null);
@@ -50,13 +61,14 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
   const retentionPlan = ref<CleanupPlanResult | null>(null);
   const conflictPlans = ref<Readonly<Record<string, ConflictPlanResult>>>({});
   const snapshotPackagePlan = ref<SnapshotPackagePlan | null>(null);
-  const busyOperation = ref<string | null>(null);
+  const activeOperation = shallowRef<ActiveWorkspaceOperation | null>(null);
   const operationError = ref<string | null>(null);
 
   const selectedSnapshot = computed(() =>
     snapshots.value.find((snapshot) => snapshot.snapshotId === selectedSnapshotId.value) ?? null);
   const pendingConflictCount = computed(() =>
     conflictSets.value.filter((conflict) => conflict.state !== "ready").length);
+  const busyOperation = computed(() => activeOperation.value?.operation ?? null);
 
   registerWorkspaceEpochReset("workspace-protection-v2", () => {
     snapshots.value = [];
@@ -78,7 +90,7 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     retentionPlan.value = null;
     conflictPlans.value = {};
     snapshotPackagePlan.value = null;
-    busyOperation.value = null;
+    activeOperation.value = null;
     operationError.value = null;
   });
 
@@ -212,16 +224,21 @@ export const useWorkspaceProtectionStore = defineStore("workspace-protection-v2"
     snapshotPackagePlan.value = next;
   }
 
-  function beginOperation(operation: string): boolean {
-    if (busyOperation.value) return false;
-    busyOperation.value = operation;
+  function beginOperation(operation: string): WorkspaceOperationLease | null {
+    if (activeOperation.value) return null;
+    const lease: WorkspaceOperationLease = Object.freeze({
+      [workspaceOperationLeaseBrand]: true,
+    });
+    activeOperation.value = { lease, operation };
     operationError.value = null;
-    return true;
+    return lease;
   }
 
-  function finishOperation(error?: string): void {
-    busyOperation.value = null;
+  function finishOperation(lease: WorkspaceOperationLease, error?: string): boolean {
+    if (activeOperation.value?.lease !== lease) return false;
+    activeOperation.value = null;
     operationError.value = error ?? null;
+    return true;
   }
 
   return {

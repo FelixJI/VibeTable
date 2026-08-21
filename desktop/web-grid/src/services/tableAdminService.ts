@@ -55,95 +55,85 @@ function toCollectionsFromChanged(
 export function useTableAdminService(): {
   init: (onTableCreated?: (tableId: string) => void | Promise<void>) => void;
   createTable: () => Promise<void>;
-  deleteTable: (name: string) => void;
+  deleteTable: (name: string) => Promise<void>;
   openAdmin: () => void;
 } {
   const bridge = useHostBridge();
   const store = useTableAdminStore();
   const ui = useUiStore();
   let createdCallback: ((tableId: string) => void | Promise<void>) | undefined;
-  let pendingDisplayName: string | null = null;
-  let pendingExistingIds: ReadonlySet<string> | null = null;
-
-  /**
-   * Resolve an in-flight create/delete when the host signals the collection
-   * list changed (or a fresh `database.opened` arrived). The host emits
-   * `database.collectionsChanged` for ANY collection change — including the
-   * initial load — so we ONLY transition + close the modal when `phase` is
-   * actually `submitting`/`deleting` (meaning the user kicked off an op and is
-   * waiting on its round-trip). This restores the auto-close-on-success
-   * behavior that the pre-rewrite `main.ts` had (the rewrite dropped it; see
-   * issue I3 in the final review).
-   */
-  function resolveIfPending(
-    collections: readonly CollectionSummary[],
-    previousIds: ReadonlySet<string>,
-    displayNames: Readonly<Record<string, string>>,
-  ): void {
-    if (store.phase === "submitting") {
-      const baseline = pendingExistingIds ?? previousIds;
-      const additions = collections.filter(
-        (item) => !baseline.has(item.collection),
-      );
-      const created = additions.find(
-        (item) => displayNames[item.collection] === pendingDisplayName,
-      );
-      if (!created) return;
-      store.succeed();
-      ui.closeCreate();
-      pendingDisplayName = null;
-      pendingExistingIds = null;
-      void createdCallback?.(created.collection);
-    } else if (store.phase === "deleting") {
-      store.succeed();
-      ui.closeDelete();
-    }
-  }
+  let operationSequence = 0;
 
   function init(
     onTableCreated?: (tableId: string) => void | Promise<void>,
   ): void {
     createdCallback = onTableCreated;
     bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
-      const previousIds = new Set(store.collections.map((item) => item.collection));
       const collections = toCollections(payload);
       store.setCollections(collections);
-      // A `database.opened` after a create/delete also implies success: the
-      // host re-announces the full collection list once the new schema lands.
-      resolveIfPending(collections, previousIds, payload.displayNames);
     });
-    bridge.on("database.collectionsChanged", (payload) => {
-      const previousIds = new Set(store.collections.map((item) => item.collection));
-      const collections = toCollectionsFromChanged(payload);
-      store.setCollections(collections);
-      resolveIfPending(collections, previousIds, payload.displayNames);
-    });
+    bridge.on("database.collectionsChanged", applyCollectionsChanged);
+  }
+
+  function applyCollectionsChanged(payload: CollectionsChangedPayload): void {
+    const collections = toCollectionsFromChanged(payload);
+    store.setCollections(collections);
   }
 
   async function createTable(): Promise<void> {
     if (!store.canSubmit) return;
     store.beginSubmit();
-    pendingDisplayName = store.form.name.trim();
-    pendingExistingIds = new Set(
+    const sequence = ++operationSequence;
+    const displayName = store.form.name.trim();
+    const existingIds = new Set(
       store.collections.map((item) => item.collection),
     );
     try {
       // Table lifecycle is host-owned. The renderer submits one closed intent
       // and never receives access to the generic schema.validate/apply RPCs.
-      bridge.notify("tableAdmin.createRequested", {
-        displayName: pendingDisplayName,
-      });
+      const changed = await bridge.request("tableAdmin.createRequested", {
+        displayName,
+      }) as CollectionsChangedPayload;
+      if (sequence !== operationSequence || store.phase !== "submitting") return;
+      applyCollectionsChanged(changed);
+      const createdTableId = changed.createdTableId;
+      if (!createdTableId
+        || existingIds.has(createdTableId)
+        || !changed.tables.includes(createdTableId)
+        || changed.displayNames[createdTableId] !== displayName) {
+        throw new Error("主机未返回新建数据表的权威标识。");
+      }
+      store.succeed();
+      ui.closeCreate();
+      void createdCallback?.(createdTableId);
     } catch (error) {
-      pendingExistingIds = null;
+      if (sequence !== operationSequence || store.phase !== "submitting") return;
       const mapped = error as Error & { readonly path?: string };
       store.fail(mapped.message || "创建数据表失败。");
     }
   }
 
-  function deleteTable(name: string): void {
+  async function deleteTable(name: string): Promise<void> {
     store.requestDelete(name);
-    // Wire contract is { collection }, NOT { name }.
-    bridge.notify("tableAdmin.deleteRequested", { collection: name });
+    const sequence = ++operationSequence;
+    try {
+      // Wire contract is { collection }, NOT { name }.
+      const changed = await bridge.request(
+        "tableAdmin.deleteRequested",
+        { collection: name },
+      ) as CollectionsChangedPayload;
+      if (sequence !== operationSequence || store.phase !== "deleting") return;
+      applyCollectionsChanged(changed);
+      if (changed.deletedTableId !== name || changed.tables.includes(name)) {
+        throw new Error("主机返回的集合目录仍包含待删除数据表。");
+      }
+      store.succeed();
+      ui.closeDelete();
+    } catch (error) {
+      if (sequence !== operationSequence || store.phase !== "deleting") return;
+      const mapped = error as Error;
+      store.fail(mapped.message || "删除数据表失败。");
+    }
   }
 
   function openAdmin(): void {
