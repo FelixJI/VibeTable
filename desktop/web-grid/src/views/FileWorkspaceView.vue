@@ -177,14 +177,16 @@ function select(index: number, options: { toggle: boolean; range: boolean }): vo
 }
 
 function history(entry: DocumentEntry): void {
-  if (store.primaryHandle !== entry.entryHandle) {
-    const index = store.visibleEntries.findIndex((candidate) => candidate.entryHandle === entry.entryHandle);
-    if (index >= 0) store.selectAt(index);
-  }
+  const index = store.visibleEntries.findIndex(
+    (candidate) => candidate.entryHandle === entry.entryHandle,
+  );
+  const currentEntry = store.visibleEntries[index];
+  if (!currentEntry?.capabilities.includes("history")) return;
+  if (store.primaryHandle !== currentEntry.entryHandle) store.selectAt(index);
   store.showInspector("history");
   emit("workspaceV2Action", {
     method: "fileHistory.readTree",
-    params: { documentId: entry.documentId },
+    params: { documentId: currentEntry.documentId },
   });
 }
 

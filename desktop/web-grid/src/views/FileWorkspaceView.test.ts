@@ -104,6 +104,56 @@ describe("FileWorkspaceView", () => {
     }]);
   });
 
+  it("aligns history selection and projection when invoked for a non-primary document", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const first = entry({
+      documentId: "14141414-1414-4414-8414-141414141414",
+      entryHandle: "context-first",
+      displayName: "主文档.txt",
+      capabilities: ["history"],
+    });
+    const second = entry({
+      documentId: "15151515-1515-4515-8515-151515151515",
+      entryHandle: "context-second",
+      displayName: "右键文档.txt",
+      capabilities: ["history"],
+    });
+    const secondRevision = fileRevision(
+      second.documentId,
+      "16161616-1616-4616-8616-161616161616",
+    );
+    store.setEntries([first, second]);
+    protection.setFileTree({
+      documentId: second.documentId,
+      effectiveRevisionId: secondRevision.revisionId,
+      revisions: [secondRevision],
+    });
+    const wrapper = mount(FileWorkspaceView);
+    await wrapper.get('[data-testid="document-row-context-second"]').trigger("click");
+    await wrapper.get('[data-testid="document-row-context-first"]')
+      .trigger("click", { ctrlKey: true });
+    expect(store.primaryHandle).toBe(first.entryHandle);
+    expect(store.selectedHandles).toEqual([second.entryHandle, first.entryHandle]);
+
+    await wrapper.get('[data-testid="document-row-context-second"]')
+      .trigger("contextmenu", { clientX: 20, clientY: 30 });
+    const historyAction = wrapper.get('[data-testid="document-context-menu"]')
+      .findAll('[role="menuitem"]')
+      .find((item) => item.text().includes("历史"));
+    expect(historyAction).toBeDefined();
+    await historyAction!.trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(store.primaryHandle).toBe(second.entryHandle);
+    expect(store.selectedHandles).toEqual([second.entryHandle]);
+    expect(wrapper.emitted("workspaceV2Action")?.at(-1)).toEqual([{
+      method: "fileHistory.readTree",
+      params: { documentId: second.documentId },
+    }]);
+    expect(wrapper.find(`[data-revision-id="${secondRevision.revisionId}"]`).exists()).toBe(true);
+  });
+
   it("offers relink instead of reveal for a missing workspace document", async () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries([
@@ -182,6 +232,37 @@ describe("FileWorkspaceView", () => {
     )).not.toBe(true);
   });
 
+  it.each(["revoked", "removed"] as const)(
+    "rejects a stale history menu after the host has %s its authority entry",
+    async (hostChange) => {
+      const store = useDocumentWorkspaceStore();
+      const document = entry({
+        documentId: "30303030-3030-4030-8030-303030303030",
+        entryHandle: "stale-history-menu",
+        displayName: "旧菜单.txt",
+        capabilities: ["history"],
+      });
+      store.setEntries([document]);
+      const wrapper = mount(FileWorkspaceView);
+      const row = wrapper.get('[data-testid="document-row-stale-history-menu"]');
+      await row.trigger("click");
+      await row.trigger("contextmenu", { clientX: 20, clientY: 30 });
+      const staleHistoryAction = wrapper.get('[data-testid="document-context-menu"]')
+        .findAll('[role="menuitem"]')
+        .find((item) => item.text().includes("历史"));
+      expect(staleHistoryAction).toBeDefined();
+
+      store.setEntries(hostChange === "revoked" ? [{ ...document, capabilities: [] }] : []);
+      await wrapper.vm.$nextTick();
+      const actionCount = wrapper.emitted("workspaceV2Action")?.length ?? 0;
+      await staleHistoryAction!.trigger("click");
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.emitted("workspaceV2Action") ?? []).toHaveLength(actionCount);
+      expect(store.inspectorTab).toBe("preview");
+    },
+  );
+
   it("falls back to preview when a host refresh revokes the active history capability", async () => {
     const store = useDocumentWorkspaceStore();
     const protection = useWorkspaceProtectionStore();
@@ -215,9 +296,19 @@ describe("FileWorkspaceView", () => {
     store.setEntries([{ ...documentWithHistory, capabilities: [] }]);
     await wrapper.vm.$nextTick();
 
+    expect(store.inspectorTab).toBe("preview");
     expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toContain("预览");
     expect(wrapper.get('[role="tablist"]').text()).not.toContain("版本历史");
     expect(wrapper.find(`[data-revision-id="${revisionId}"]`).exists()).toBe(false);
+
+    const actionCount = wrapper.emitted("workspaceV2Action")?.length ?? 0;
+    store.setEntries([documentWithHistory]);
+    await wrapper.vm.$nextTick();
+
+    expect(store.inspectorTab).toBe("preview");
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toContain("预览");
+    expect(wrapper.find(`[data-revision-id="${revisionId}"]`).exists()).toBe(false);
+    expect(wrapper.emitted("workspaceV2Action") ?? []).toHaveLength(actionCount);
   });
 
   it("exposes import and forwards dropped DOM Files without reading them", async () => {
