@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import type { WorkspaceSessionV2 } from "@/contracts/workspaceV2";
 import { useDocumentWorkspaceStore, type DocumentEntry } from "./documentWorkspaceStore";
+import { useWorkspaceSessionStore } from "./workspaceSessionStore";
 
 const entries: readonly DocumentEntry[] = [
   entry({ documentId: "11111111-1111-4111-8111-111111111111", entryHandle: "a", displayName: "A.docx", capabilities: ["open", "preview", "reveal", "history"] }),
@@ -14,6 +16,20 @@ function entry(overrides: Partial<DocumentEntry> & Pick<DocumentEntry, "document
     relativePath: overrides.displayName, extension: "txt", mimeType: "text/plain",
     sizeBytes: 1, effectiveRevisionCreatedAt: "2026-08-12T00:00:00Z",
     formalVersion: 1, status: "active", ...overrides,
+  };
+}
+
+function session(workspaceId: string, sessionEpoch: number): WorkspaceSessionV2 {
+  return {
+    contractVersion: "2.0",
+    workspaceId,
+    sessionEpoch,
+    state: "openedWritable",
+    openMode: "writable",
+    writable: true,
+    provisional: false,
+    phase: "idle",
+    errorCode: null,
   };
 }
 
@@ -36,6 +52,67 @@ describe("documentWorkspaceStore", () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries(entries);
     expect(store.visibleEntries.map((entry) => entry.entryHandle)).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps history closed when the current primary document lacks capability", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.selectAt(1);
+
+    store.showInspector("history");
+
+    expect(store.inspectorTab).toBe("preview");
+  });
+
+  it("revokes history state at the authority update boundary without a mounted view", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.selectAt(0);
+    store.showInspector("history");
+    expect(store.inspectorTab).toBe("history");
+
+    store.setEntries([
+      { ...entries[0]!, capabilities: ["open", "preview"] },
+      ...entries.slice(1),
+    ]);
+    expect(store.inspectorTab).toBe("preview");
+
+    store.setEntries(entries);
+    expect(store.inspectorTab).toBe("preview");
+  });
+
+  it.each(["selectAt", "selectAllVisible", "clearSelection"] as const)(
+    "returns history to preview when %s changes the selection identity",
+    (operation) => {
+      const store = useDocumentWorkspaceStore();
+      store.setEntries(entries);
+      store.selectAt(0);
+      store.showInspector("history");
+      expect(store.inspectorTab).toBe("history");
+
+      if (operation === "selectAt") store.selectAt(2);
+      else if (operation === "selectAllVisible") store.selectAllVisible();
+      else store.clearSelection();
+
+      expect(store.inspectorTab).toBe("preview");
+    },
+  );
+
+  it("returns history to preview on a real workspace epoch reset", () => {
+    const workspaceSession = useWorkspaceSessionStore();
+    workspaceSession.configureCapabilities(["workspace.session.v2"]);
+    workspaceSession.applySession(session("workspace-a", 1));
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.selectAt(0);
+    store.showInspector("history");
+    expect(store.inspectorTab).toBe("history");
+
+    workspaceSession.applySession(session("workspace-b", 2));
+
+    expect(store.inspectorTab).toBe("preview");
+    expect(store.primaryHandle).toBeNull();
+    expect(store.entries).toEqual([]);
   });
 
   it("keeps stale entries visible while a refresh is in progress", () => {
@@ -73,6 +150,7 @@ describe("documentWorkspaceStore", () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries(entries);
     store.selectAt(0);
+    store.showInspector("history");
 
     store.removeActiveDocument(entries[0]!.documentId);
 
@@ -80,6 +158,7 @@ describe("documentWorkspaceStore", () => {
     expect(store.documentLabels[entries[0]!.documentId]).toBe("A.docx");
     expect(store.selectedHandles).toEqual([]);
     expect(store.primaryHandle).toBeNull();
+    expect(store.inspectorTab).toBe("preview");
   });
 
   it("retains a typed document failure code until the next load", () => {

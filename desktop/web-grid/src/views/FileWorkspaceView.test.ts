@@ -18,6 +18,33 @@ function entry(overrides: Partial<DocumentEntry> & Pick<DocumentEntry, "document
   };
 }
 
+function fileRevision(
+  documentId: string,
+  revisionId: string,
+  overrides: Partial<FileRevisionV2> = {},
+): FileRevisionV2 {
+  return {
+    contractVersion: "2.0",
+    documentId,
+    revisionId,
+    parentRevisionId: null,
+    revisionOrdinal: 1,
+    objectId: `sha256:${"1".repeat(64)}`,
+    contentHash: `sha256:${"2".repeat(64)}`,
+    size: 12,
+    mimeType: "text/plain",
+    formalVersion: 1,
+    kind: "formal",
+    createdAt: "2026-08-12T00:00:00Z",
+    createdBy: "device",
+    deviceId: "20202020-2020-4020-8020-202020202020",
+    comment: null,
+    localSequence: null,
+    restoredFromRevisionId: null,
+    ...overrides,
+  };
+}
+
 describe("FileWorkspaceView", () => {
   beforeEach(() => setActivePinia(createPinia()));
   afterEach(() => vi.useRealTimers());
@@ -43,6 +70,90 @@ describe("FileWorkspaceView", () => {
     expect(wrapper.emitted("intent")?.at(-1)).toEqual([{ type: "document.openRequested", entryHandle: "doc-1" }]);
   });
 
+  it("keeps a primary document's multi-selection when its inspector opens history", async () => {
+    const store = useDocumentWorkspaceStore();
+    const first = entry({
+      documentId: "12121212-1212-4212-8212-121212121212",
+      entryHandle: "multi-first",
+      displayName: "第一份文档.txt",
+      capabilities: ["history"],
+    });
+    const second = entry({
+      documentId: "13131313-1313-4313-8313-131313131313",
+      entryHandle: "multi-second",
+      displayName: "第二份文档.txt",
+      capabilities: ["history"],
+    });
+    store.setEntries([first, second]);
+    const wrapper = mount(FileWorkspaceView);
+    await wrapper.get('[data-testid="document-row-multi-first"]').trigger("click");
+    await wrapper.get('[data-testid="document-row-multi-second"]').trigger("click", { ctrlKey: true });
+    expect(store.selectedHandles).toEqual([first.entryHandle, second.entryHandle]);
+
+    const historyTab = wrapper.get('[role="tablist"]')
+      .findAll('[role="tab"]')
+      .find((tab) => tab.text().includes("版本历史"));
+    expect(historyTab).toBeDefined();
+    await historyTab!.trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(store.selectedHandles).toEqual([first.entryHandle, second.entryHandle]);
+    expect(wrapper.emitted("workspaceV2Action")?.at(-1)).toEqual([{
+      method: "fileHistory.readTree",
+      params: { documentId: second.documentId },
+    }]);
+  });
+
+  it("aligns history selection and projection when invoked for a non-primary document", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const first = entry({
+      documentId: "14141414-1414-4414-8414-141414141414",
+      entryHandle: "context-first",
+      displayName: "主文档.txt",
+      capabilities: ["history"],
+    });
+    const second = entry({
+      documentId: "15151515-1515-4515-8515-151515151515",
+      entryHandle: "context-second",
+      displayName: "右键文档.txt",
+      capabilities: ["history"],
+    });
+    const secondRevision = fileRevision(
+      second.documentId,
+      "16161616-1616-4616-8616-161616161616",
+    );
+    store.setEntries([first, second]);
+    protection.setFileTree({
+      documentId: second.documentId,
+      effectiveRevisionId: secondRevision.revisionId,
+      revisions: [secondRevision],
+    });
+    const wrapper = mount(FileWorkspaceView);
+    await wrapper.get('[data-testid="document-row-context-second"]').trigger("click");
+    await wrapper.get('[data-testid="document-row-context-first"]')
+      .trigger("click", { ctrlKey: true });
+    expect(store.primaryHandle).toBe(first.entryHandle);
+    expect(store.selectedHandles).toEqual([second.entryHandle, first.entryHandle]);
+
+    await wrapper.get('[data-testid="document-row-context-second"]')
+      .trigger("contextmenu", { clientX: 20, clientY: 30 });
+    const historyAction = wrapper.get('[data-testid="document-context-menu"]')
+      .findAll('[role="menuitem"]')
+      .find((item) => item.text().includes("历史"));
+    expect(historyAction).toBeDefined();
+    await historyAction!.trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(store.primaryHandle).toBe(second.entryHandle);
+    expect(store.selectedHandles).toEqual([second.entryHandle]);
+    expect(wrapper.emitted("workspaceV2Action")?.at(-1)).toEqual([{
+      method: "fileHistory.readTree",
+      params: { documentId: second.documentId },
+    }]);
+    expect(wrapper.find(`[data-revision-id="${secondRevision.revisionId}"]`).exists()).toBe(true);
+  });
+
   it("offers relink instead of reveal for a missing workspace document", async () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries([
@@ -58,6 +169,146 @@ describe("FileWorkspaceView", () => {
       type: "document.relinkRequested",
       handle: "missing",
     }]);
+  });
+
+  it("opens the revision tree for a missing document with history capability", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const missingDocument = entry({
+      documentId: "25252525-2525-4252-8252-252525252525",
+      entryHandle: "missing-history",
+      displayName: "已删除的方案.docx",
+      availability: "missing",
+      capabilities: ["relink", "history"],
+    });
+    const revision = fileRevision(
+      missingDocument.documentId,
+      "24242424-2424-4242-8242-242424242424",
+      { deviceId: "23232323-2323-4232-8232-232323232323" },
+    );
+    store.setEntries([missingDocument]);
+    protection.setFileTree({
+      documentId: missingDocument.documentId,
+      effectiveRevisionId: revision.revisionId,
+      revisions: [revision],
+    });
+    const wrapper = mount(FileWorkspaceView);
+    const row = wrapper.get('[data-testid="document-row-missing-history"]');
+
+    await row.trigger("contextmenu", { clientX: 20, clientY: 30 });
+    const historyAction = wrapper.get('[data-testid="document-context-menu"]')
+      .findAll('[role="menuitem"]')
+      .find((item) => item.text().includes("历史"));
+    expect(historyAction).toBeDefined();
+    await historyAction!.trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted("workspaceV2Action")?.at(-1)).toEqual([{
+      method: "fileHistory.readTree",
+      params: { documentId: missingDocument.documentId },
+    }]);
+    expect(wrapper.find(`[data-revision-id="${revision.revisionId}"]`).exists()).toBe(true);
+  });
+
+  it("does not offer history or read a tree for a missing document without history capability", async () => {
+    const store = useDocumentWorkspaceStore();
+    const missingDocument = entry({
+      documentId: "26262626-2626-4262-8262-262626262626",
+      entryHandle: "missing-without-history",
+      displayName: "无历史的缺失文件.txt",
+      availability: "missing",
+      capabilities: ["relink"],
+    });
+    store.setEntries([missingDocument]);
+    const wrapper = mount(FileWorkspaceView);
+    await wrapper.get('[data-testid="document-row-missing-without-history"]').trigger("click");
+
+    expect(wrapper.get('[role="tablist"]').text()).not.toContain("版本历史");
+    await wrapper.get('[data-testid="document-row-missing-without-history"]')
+      .trigger("contextmenu", { clientX: 20, clientY: 30 });
+    expect(wrapper.get('[data-testid="document-context-menu"]').text()).not.toContain("版本历史");
+    expect(wrapper.emitted("workspaceV2Action")?.some(
+      ([action]) => (action as { method: string }).method === "fileHistory.readTree",
+    )).not.toBe(true);
+  });
+
+  it.each(["revoked", "removed"] as const)(
+    "rejects a stale history menu after the host has %s its authority entry",
+    async (hostChange) => {
+      const store = useDocumentWorkspaceStore();
+      const document = entry({
+        documentId: "30303030-3030-4030-8030-303030303030",
+        entryHandle: "stale-history-menu",
+        displayName: "旧菜单.txt",
+        capabilities: ["history"],
+      });
+      store.setEntries([document]);
+      const wrapper = mount(FileWorkspaceView);
+      const row = wrapper.get('[data-testid="document-row-stale-history-menu"]');
+      await row.trigger("click");
+      await row.trigger("contextmenu", { clientX: 20, clientY: 30 });
+      const staleHistoryAction = wrapper.get('[data-testid="document-context-menu"]')
+        .findAll('[role="menuitem"]')
+        .find((item) => item.text().includes("历史"));
+      expect(staleHistoryAction).toBeDefined();
+
+      store.setEntries(hostChange === "revoked" ? [{ ...document, capabilities: [] }] : []);
+      await wrapper.vm.$nextTick();
+      const actionCount = wrapper.emitted("workspaceV2Action")?.length ?? 0;
+      await staleHistoryAction!.trigger("click");
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.emitted("workspaceV2Action") ?? []).toHaveLength(actionCount);
+      expect(store.inspectorTab).toBe("preview");
+    },
+  );
+
+  it("falls back to preview when a host refresh revokes the active history capability", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const documentId = "27272727-2727-4272-8272-272727272727";
+    const revisionId = "28282828-2828-4282-8282-282828282828";
+    const documentWithHistory = entry({
+      documentId,
+      entryHandle: "history-revoked",
+      displayName: "历史被撤销.txt",
+      effectiveRevisionId: revisionId,
+      capabilities: ["history"],
+    });
+    const revision = fileRevision(documentId, revisionId, {
+      deviceId: "29292929-2929-4292-8292-292929292929",
+    });
+    store.setEntries([documentWithHistory]);
+    protection.setFileTree({ documentId, effectiveRevisionId: revisionId, revisions: [revision] });
+    const wrapper = mount(FileWorkspaceView);
+    const row = wrapper.get('[data-testid="document-row-history-revoked"]');
+    await row.trigger("click");
+    await row.trigger("contextmenu", { clientX: 20, clientY: 30 });
+    const historyAction = wrapper.get('[data-testid="document-context-menu"]')
+      .findAll('[role="menuitem"]')
+      .find((item) => item.text().includes("历史"));
+    expect(historyAction).toBeDefined();
+    await historyAction!.trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toContain("版本历史");
+    expect(wrapper.find(`[data-revision-id="${revisionId}"]`).exists()).toBe(true);
+
+    store.setEntries([{ ...documentWithHistory, capabilities: [] }]);
+    await wrapper.vm.$nextTick();
+
+    expect(store.inspectorTab).toBe("preview");
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toContain("预览");
+    expect(wrapper.get('[role="tablist"]').text()).not.toContain("版本历史");
+    expect(wrapper.find(`[data-revision-id="${revisionId}"]`).exists()).toBe(false);
+
+    const actionCount = wrapper.emitted("workspaceV2Action")?.length ?? 0;
+    store.setEntries([documentWithHistory]);
+    await wrapper.vm.$nextTick();
+
+    expect(store.inspectorTab).toBe("preview");
+    expect(wrapper.get('[role="tab"][aria-selected="true"]').text()).toContain("预览");
+    expect(wrapper.find(`[data-revision-id="${revisionId}"]`).exists()).toBe(false);
+    expect(wrapper.emitted("workspaceV2Action") ?? []).toHaveLength(actionCount);
   });
 
   it("exposes import and forwards dropped DOM Files without reading them", async () => {
@@ -319,25 +570,11 @@ describe("FileWorkspaceView", () => {
     });
     store.setEntries([selected]);
     store.selectAt(0);
-    const revision: FileRevisionV2 = {
-      contractVersion: "2.0",
-      documentId: selected.documentId,
-      revisionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      parentRevisionId: null,
-      revisionOrdinal: 1,
-      objectId: `sha256:${"1".repeat(64)}`,
-      contentHash: `sha256:${"2".repeat(64)}`,
-      size: 12,
-      mimeType: "text/plain",
-      formalVersion: 1,
-      kind: "formal",
-      createdAt: "2026-08-12T00:00:00Z",
-      createdBy: "device",
-      deviceId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-      comment: null,
-      localSequence: null,
-      restoredFromRevisionId: null,
-    };
+    const revision = fileRevision(
+      selected.documentId,
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      { deviceId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" },
+    );
     protection.setFileTree({
       documentId: selected.documentId,
       effectiveRevisionId: selected.effectiveRevisionId!,

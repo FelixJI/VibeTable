@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { NButton, NIcon } from "naive-ui";
 import { AlertTriangle, Eye, FileQuestion, History } from "lucide-vue-next";
 import type { DocumentEntry, InspectorTab } from "@/stores/documentWorkspaceStore";
@@ -9,7 +10,7 @@ import { t } from "@/i18n";
 import type { DocumentDiffCompletedPayload } from "@/contracts";
 import type { DocumentDiffPhase } from "@/stores/documentWorkspaceStore";
 
-defineProps<{
+const props = defineProps<{
   entry: DocumentEntry | null;
   activeTab: InspectorTab;
   busy: boolean;
@@ -18,6 +19,11 @@ defineProps<{
   diffPhase?: DocumentDiffPhase;
   diffResult?: DocumentDiffCompletedPayload | null;
 }>();
+
+const effectiveTab = computed<InspectorTab>(() =>
+  props.activeTab === "history" && props.entry?.capabilities.includes("history")
+    ? "history"
+    : "preview");
 
 const emit = defineEmits<{
   tab: [tab: InspectorTab];
@@ -44,17 +50,18 @@ function unavailableHint(entry: DocumentEntry): string {
   <aside class="document-inspector" :aria-label="t('files.inspector')">
     <div class="inspector-tabs" role="tablist">
       <button
-        :class="{ active: activeTab === 'preview' }"
+        :class="{ active: effectiveTab === 'preview' }"
         role="tab"
-        :aria-selected="activeTab === 'preview'"
+        :aria-selected="effectiveTab === 'preview'"
         @click="emit('tab', 'preview')"
       >
         <NIcon :size="14"><Eye /></NIcon>{{ t("files.action.preview") }}
       </button>
       <button
-        :class="{ active: activeTab === 'history' }"
+        v-if="entry?.capabilities.includes('history')"
+        :class="{ active: effectiveTab === 'history' }"
         role="tab"
-        :aria-selected="activeTab === 'history'"
+        :aria-selected="effectiveTab === 'history'"
         @click="entry && emit('history', entry)"
       >
         <NIcon :size="14"><History /></NIcon>{{ t("files.action.history") }}
@@ -73,7 +80,11 @@ function unavailableHint(entry: DocumentEntry): string {
         <small>{{ entry.versionLabel ?? t("files.authority.workspace") }}</small>
       </header>
 
-      <div v-if="!['available', 'remote'].includes(entry.availability)" class="missing-card">
+      <div
+        v-if="!['available', 'remote'].includes(entry.availability)
+          && effectiveTab !== 'history'"
+        class="missing-card"
+      >
         <NIcon :size="17"><AlertTriangle /></NIcon>
         <div><strong>{{ unavailableTitle(entry) }}</strong><p>{{ unavailableHint(entry) }}</p></div>
         <NButton
@@ -85,7 +96,7 @@ function unavailableHint(entry: DocumentEntry): string {
         </NButton>
       </div>
 
-      <section v-else-if="activeTab === 'preview'" class="preview-stage">
+      <section v-else-if="effectiveTab === 'preview'" class="preview-stage">
         <span><NIcon :size="25"><Eye /></NIcon></span>
         <strong>
           {{ entry.capabilities.includes('preview')
@@ -106,7 +117,7 @@ function unavailableHint(entry: DocumentEntry): string {
         </NButton>
       </section>
 
-      <section v-else class="history-panel">
+      <section v-else-if="effectiveTab === 'history'" class="history-panel">
         <FileRevisionTree
           :tree="revisionTree ?? null"
           :busy="busy"

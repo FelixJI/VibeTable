@@ -90,6 +90,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     selectedHandles.value = [];
     primaryHandle.value = null;
     selectionAnchor.value = null;
+    inspectorTab.value = "preview";
     resetDiff();
   });
 
@@ -102,6 +103,15 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   const primaryEntry = computed(
     () => entries.value.find((entry) => entry.entryHandle === primaryHandle.value) ?? null,
   );
+
+  function reconcileInspectorTab(): void {
+    if (
+      inspectorTab.value === "history"
+      && !primaryEntry.value?.capabilities.includes("history")
+    ) {
+      inspectorTab.value = "preview";
+    }
+  }
 
   function beginLoad(): void {
     resetDiff();
@@ -148,6 +158,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
       primaryHandle.value = null;
       selectionAnchor.value = null;
     }
+    reconcileInspectorTab();
   }
 
   function setFailed(message: string, code: string | null = null): void {
@@ -167,6 +178,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
       primaryHandle.value = null;
       selectionAnchor.value = null;
     }
+    reconcileInspectorTab();
     if (diffTarget.value?.entryHandle === removed.entryHandle) resetDiff();
   }
 
@@ -201,22 +213,28 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
       selectionAnchor.value = index;
     }
     primaryHandle.value = entry.entryHandle;
+    inspectorTab.value = "preview";
   }
 
   function selectAllVisible(): void {
     selectedHandles.value = visibleEntries.value.map((entry) => entry.entryHandle);
     primaryHandle.value = visibleEntries.value.at(-1)?.entryHandle ?? null;
     selectionAnchor.value = visibleEntries.value.length ? 0 : null;
+    inspectorTab.value = "preview";
   }
 
   function clearSelection(): void {
     selectedHandles.value = [];
     primaryHandle.value = null;
     selectionAnchor.value = null;
+    inspectorTab.value = "preview";
   }
 
   function showInspector(tab: InspectorTab): void {
-    inspectorTab.value = tab;
+    inspectorTab.value = tab === "history"
+      && !primaryEntry.value?.capabilities.includes("history")
+      ? "preview"
+      : tab;
   }
 
   function beginDiff(
