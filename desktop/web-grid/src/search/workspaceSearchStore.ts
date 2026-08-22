@@ -8,6 +8,11 @@ import type {
   SearchStatus,
 } from "@/contracts/generated/workbench";
 import { requestWorkspaceV2UiAction } from "@/services/workspaceV2UiPort";
+import {
+  observeWorkspaceSearchTerminal,
+  WORKSPACE_SEARCH_CANCEL_TERMINAL_BUDGET_MS,
+  WORKSPACE_SEARCH_REBUILD_TERMINAL_BUDGET_MS,
+} from "./workspaceSearchTerminalObserver";
 
 const EMPTY_STATUS: SearchStatus = {
   state: "idle",
@@ -30,10 +35,12 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
   const status = ref<SearchStatus>({ ...EMPTY_STATUS });
   const searching = ref(false);
   const rebuilding = ref(false);
+  const cancelling = ref(false);
   const resolvingHitId = ref<string | null>(null);
   const errorCode = ref<string | null>(null);
   let requestEpoch = 0;
   let resolveEpoch = 0;
+  let lifecycleEpoch = 0;
 
   const canSearch = computed(() => query.value.trim().length > 0 && !searching.value);
 
@@ -104,12 +111,16 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
   }
 
   async function refreshStatus(): Promise<void> {
+    const epoch = lifecycleEpoch;
     try {
-      status.value = await requestWorkspaceV2UiAction({
+      const refreshed = await requestWorkspaceV2UiAction({
         method: "workspaceSearch.status",
         params: {},
       });
+      if (epoch !== lifecycleEpoch) return;
+      status.value = refreshed;
     } catch (error) {
+      if (epoch !== lifecycleEpoch) return;
       status.value = {
         ...status.value,
         state: "degraded",
@@ -118,38 +129,101 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
     }
   }
 
+  async function readLifecycleStatus(): Promise<SearchStatus> {
+    try {
+      return await requestWorkspaceV2UiAction({
+        method: "workspaceSearch.status",
+        params: {},
+      });
+    } catch (error) {
+      return {
+        ...status.value,
+        state: "degraded",
+        errorCode: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async function observeTerminal(
+    acceptedGeneration: number,
+    initial: SearchStatus,
+    epoch: number,
+    budgetMs: number,
+    timeoutCode: string,
+  ): Promise<SearchStatus | null> {
+    return observeWorkspaceSearchTerminal({
+      acceptedGeneration,
+      initial,
+      budgetMs,
+      timeoutCode,
+      ownsLifecycle: () => epoch === lifecycleEpoch,
+      readStatus: readLifecycleStatus,
+      publishObservation: (observed) => {
+        if (epoch === lifecycleEpoch) status.value = observed;
+      },
+    });
+  }
+
   async function rebuild(): Promise<void> {
     if (rebuilding.value) return;
+    const epoch = ++lifecycleEpoch;
     rebuilding.value = true;
     errorCode.value = null;
     status.value = { ...status.value, state: "building", processed: 0, total: null };
     try {
-      status.value = await requestWorkspaceV2UiAction({
+      const rebuilt = await requestWorkspaceV2UiAction({
         method: "workspaceSearch.rebuild",
         params: {},
       });
-      while (status.value.state === "building") {
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
-        await refreshStatus();
-      }
+      if (epoch !== lifecycleEpoch) return;
+      const terminal = await observeTerminal(
+        rebuilt.generation,
+        rebuilt,
+        epoch,
+        WORKSPACE_SEARCH_REBUILD_TERMINAL_BUDGET_MS,
+        "workspace_search.rebuild_terminal_timeout",
+      );
+      if (terminal === null || epoch !== lifecycleEpoch) return;
+      status.value = terminal;
       if (status.value.state === "ready") await search();
     } catch (error) {
+      if (epoch !== lifecycleEpoch) return;
       errorCode.value = error instanceof Error ? error.message : String(error);
       status.value = { ...status.value, state: "failed", errorCode: errorCode.value };
     } finally {
-      rebuilding.value = false;
+      if (epoch === lifecycleEpoch) rebuilding.value = false;
     }
   }
 
   async function cancelRebuild(): Promise<void> {
-    if (!rebuilding.value && status.value.state !== "building") return;
+    if (cancelling.value || (!rebuilding.value && status.value.state !== "building")) return;
+    const epoch = ++lifecycleEpoch;
+    cancelling.value = true;
+    errorCode.value = null;
     try {
-      status.value = await requestWorkspaceV2UiAction({
+      const cancelled = await requestWorkspaceV2UiAction({
         method: "workspaceSearch.cancel",
         params: {},
       });
+      if (epoch !== lifecycleEpoch) return;
+      const terminal = await observeTerminal(
+        cancelled.generation,
+        cancelled,
+        epoch,
+        WORKSPACE_SEARCH_CANCEL_TERMINAL_BUDGET_MS,
+        "workspace_search.cancel_terminal_timeout",
+      );
+      if (terminal === null || epoch !== lifecycleEpoch) return;
+      status.value = terminal;
     } catch (error) {
+      if (epoch !== lifecycleEpoch) return;
       errorCode.value = error instanceof Error ? error.message : String(error);
+      status.value = { ...status.value, state: "failed", errorCode: errorCode.value };
+    } finally {
+      if (epoch === lifecycleEpoch) {
+        rebuilding.value = false;
+        cancelling.value = false;
+      }
     }
   }
 
@@ -186,6 +260,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
   function reset(): void {
     requestEpoch += 1;
     resolveEpoch += 1;
+    lifecycleEpoch += 1;
     query.value = "";
     logic.value = "and";
     scope.value = "current";
@@ -197,6 +272,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
     status.value = { ...EMPTY_STATUS };
     searching.value = false;
     rebuilding.value = false;
+    cancelling.value = false;
     resolvingHitId.value = null;
     errorCode.value = null;
   }
@@ -213,6 +289,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
     status,
     searching,
     rebuilding,
+    cancelling,
     resolvingHitId,
     errorCode,
     canSearch,

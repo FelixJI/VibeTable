@@ -31,6 +31,7 @@ import {
   type WorkspaceV2UiPort,
 } from "@/services/workspaceV2UiPort";
 import type {
+  ColumnSchema,
   NormalizedRelationDescriptor,
   PastePlan,
   PasteSummary,
@@ -111,6 +112,7 @@ const mockTabulatorRef: {
     setColumns: ReturnType<typeof vi.fn>;
     destroy: ReturnType<typeof vi.fn>;
     getRanges: () => unknown[];
+    getRows?: () => unknown[];
   };
 } = {
   current: {
@@ -120,6 +122,33 @@ const mockTabulatorRef: {
     getRanges: () => [],
   },
 };
+
+function exposeStructuredGridCell(
+  rowKey: string | number,
+  field: string,
+  element: HTMLElement,
+): void {
+  mockTabulatorRef.current.getRows = () => [{
+    getIndex: () => rowKey,
+    getCell: (candidateField: string) => candidateField === field
+      ? { getElement: () => element }
+      : null,
+  }];
+}
+
+function seedStructuredTablePage(column: ColumnSchema): void {
+  const table = useTableStore();
+  table.beginLoad();
+  table.appendPage({
+    table: "items",
+    columns: [column],
+    rows: [{ rowKey: "row-1", [column.name]: null }],
+    offset: 0,
+    limit: 1,
+    totalRows: 1,
+    mode: "remote",
+  });
+}
 
 vi.mock("@/grid/createGrid", () => ({
   createGrid: () => mockTabulatorRef.current,
@@ -177,6 +206,7 @@ function makePlan(token = "tok-xyz"): PastePlan {
 describe("WorkspaceView", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    document.body.removeAttribute("tabindex");
     setLocale("zh-CN");
     testPinia = createPinia();
     setActivePinia(testPinia);
@@ -193,6 +223,7 @@ describe("WorkspaceView", () => {
   afterEach(() => {
     for (const wrapper of mountedViews.splice(0)) wrapper.unmount();
     document.body.innerHTML = "";
+    document.body.removeAttribute("tabindex");
     setHostBridgeForTesting(null);
     setWorkspaceV2UiPort(null);
     vi.restoreAllMocks();
@@ -769,6 +800,56 @@ describe("WorkspaceView", () => {
       "task.create",
     ]);
     expect(document.body.textContent).toContain("已导出 3 行至 orders-export.csv。");
+  });
+
+  it("starts import from the retained edit schema during a data-only refresh", async () => {
+    const { bridge, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    table.setEditSchema([{
+      name: "region",
+      storageName: "region",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+      primaryKey: false,
+      editor: { kind: "text" },
+      validation: [],
+    }], {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    });
+    table.reset({ preserveEditSchema: true });
+    const wrapper = mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    const toolbar = wrapper.findComponent(AppToolbar);
+    expect(toolbar.props("dataIoImportDisabled")).toBe(false);
+    toolbar.vm.$emit("importData");
+    await flushPromises();
+
+    expect(posted.filter((item) => item.type === "data.importSourceRequested")).toHaveLength(1);
+  });
+
+  it("disables only import after a table switch clears the schema context", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    table.reset();
+    const wrapper = mountView();
+    await flushPromises();
+
+    const toolbar = wrapper.findComponent(AppToolbar);
+    expect(toolbar.props("dataIoImportDisabled")).toBe(true);
+    expect(toolbar.props("dataIoExportDisabled")).toBe(false);
   });
 
   it("runs a validated import and refreshes the active table", async () => {
@@ -1712,6 +1793,7 @@ describe("WorkspaceView", () => {
   });
 
   it("gives structured editors dialog semantics and restores keyboard focus", async () => {
+    document.body.tabIndex = -1;
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -1723,6 +1805,14 @@ describe("WorkspaceView", () => {
     trigger.textContent = "Open JSON";
     document.body.append(trigger);
     trigger.focus();
+    seedStructuredTablePage({
+      name: "metadata",
+      title: "Metadata",
+      dataType: "json",
+      editable: true,
+      nullable: true,
+    });
+    exposeStructuredGridCell("row-1", "metadata", trigger);
 
     const wrapper = mountView({ realTransitions: true });
     await flushPromises();
@@ -1764,7 +1854,8 @@ describe("WorkspaceView", () => {
     });
   });
 
-  it("releases attachment gridcell focus before hiding the background for NModal", async () => {
+  it("restores attachment gridcell focus after NModal releases its focus trap", async () => {
+    document.body.tabIndex = -1;
     setHostBridgeForTesting({
       request: vi.fn(async (method: string) => {
         if (method === "file.list") return { attachments: [] };
@@ -1780,6 +1871,21 @@ describe("WorkspaceView", () => {
     workspace.setOpened([{ collection: "items" }], { items: "Items" });
     workspace.selectTable("items");
     useUiStore().navigate("tables");
+    seedStructuredTablePage({
+      name: "photos",
+      title: "Photos",
+      fieldId: "photos-id",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+      attachmentPolicy: {
+        maxFiles: 3,
+        maxBytesPerFile: 1024,
+        allowedMimeTypes: ["image/png"],
+        thumbnailVariants: [],
+        protected: false,
+      },
+    });
 
     const wrapper = mountView({ realTransitions: true });
     await flushPromises();
@@ -1788,6 +1894,7 @@ describe("WorkspaceView", () => {
     trigger.setAttribute("role", "gridcell");
     document.body.append(trigger);
     trigger.focus();
+    exposeStructuredGridCell("row-1", "photos", trigger);
 
     wrapper.findComponent(GridHost).vm.$emit("attachmentOpen", {
       rowKey: "row-1",
@@ -1898,6 +2005,8 @@ describe("WorkspaceView", () => {
         return { status: "applied" };
       }
       if (method === "file.removeRequested") return { status: "applied" };
+      if (method === "file.previewRequested") return { outcome: "opened", reason: null };
+      if (method === "file.downloadRequested") return { outcome: "saved" };
       throw new Error(`unexpected request: ${method}`);
     });
     const notify = vi.fn();
@@ -1957,12 +2066,17 @@ describe("WorkspaceView", () => {
     expect(panel.exists()).toBe(true);
     panel.vm.$emit("preview", "stored.png");
     panel.vm.$emit("download", "stored.png");
-    expect(notify).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
+    await flushPromises();
+    expect(request).toHaveBeenCalledWith("file.previewRequested", expect.objectContaining({
       storedName: "stored.png",
     }));
-    expect(notify).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
+    expect(request).toHaveBeenCalledWith("file.downloadRequested", expect.objectContaining({
       originalName: "photo.png",
     }));
+    expect(notify).not.toHaveBeenCalledWith(
+      "file.previewRequested",
+      expect.anything(),
+    );
 
     panel.vm.$emit("replace", "stored.png");
     await flushPromises();

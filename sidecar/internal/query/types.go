@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/pocketbase/pocketbase/core"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 type Operator string
@@ -293,6 +294,14 @@ type CursorWindow struct {
 	FilteredRows int64            `json:"filteredRows"`
 	TotalRows    int64            `json:"totalRows"`
 	Snapshot     QuerySnapshot    `json:"querySnapshot"`
+}
+
+// SelectionProjection is the authoritative table-selection read model. The
+// schema and initial cursor window are projected by one read transaction, so
+// callers never have to compare and assemble independently loaded revisions.
+type SelectionProjection struct {
+	SchemaSnapshot v2.SchemaSnapshot `json:"schemaSnapshot"`
+	CursorWindow   CursorWindow      `json:"cursorWindow"`
 }
 
 type AggregateFunction string

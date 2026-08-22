@@ -1,7 +1,6 @@
 import type { OperationFailedPayload } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
 import { usePasteStore } from "@/stores/pasteStore";
-import { useTableAdminStore } from "@/stores/tableAdminStore";
 import { useTableStore } from "@/stores/tableStore";
 
 /**
@@ -9,11 +8,11 @@ import { useTableStore } from "@/stores/tableStore";
  * that was scattered in `main.ts:524-538` of the old web-grid
  * (architecture-debt fix #4).
  *
- * Decision key: the currently-active operation phase across the three business
- * stores. Whoever is "in flight" claims the failure:
+ * Correlated requests consume their own failures before handler fan-out. This
+ * router owns only uncorrelated broadcast failures:
  *
- *   - `tableAdminStore` in `submitting` or `deleting` -> `admin.fail`
- *     (create-table / delete-table flow owns the error surface).
+ *   - correlated table-admin requests reject their own Promise and never
+ *     reach this broadcast-only router.
  *   - `pasteStore` in `applying` -> `paste.setError`
  *     (paste-in-progress owns the error surface).
  *   - otherwise -> `tableStore.setError`
@@ -25,16 +24,13 @@ import { useTableStore } from "@/stores/tableStore";
  */
 export function useErrorRouter(): { init: () => void } {
   const bridge = useHostBridge();
-  const admin = useTableAdminStore();
   const table = useTableStore();
   const paste = usePasteStore();
 
   function init(): void {
     bridge.on("operation.failed", (payload: OperationFailedPayload) => {
       if (payload.code === "query.cursor_stale") return;
-      if (admin.phase === "submitting" || admin.phase === "deleting") {
-        admin.fail(payload.message);
-      } else if (paste.phase === "applying") {
+      if (paste.phase === "applying") {
         paste.setError(payload.message);
       } else {
         table.setError(payload.message);

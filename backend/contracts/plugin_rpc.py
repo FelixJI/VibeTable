@@ -24,6 +24,10 @@ class CommitInstallParams(PluginContract):
     project_revision: str
 
 
+class CancelInstallParams(PluginContract):
+    plan_id: str
+
+
 class PluginIdentityParams(PluginContract):
     project_key: str
     plugin_id: str
@@ -71,6 +75,7 @@ class PluginTaskParams(PluginContract):
 
 
 __all__ = [
+    "CancelInstallParams",
     "CommitInstallParams",
     "DescribePluginActionParams",
     "InspectInstallParams",

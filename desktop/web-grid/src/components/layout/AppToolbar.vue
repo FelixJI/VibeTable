@@ -18,7 +18,8 @@ const props = withDefaults(defineProps<{
   historyDisabled?: boolean;
   insertRowDisabled?: boolean;
   dataIoBusy?: boolean;
-  dataIoLocked?: boolean;
+  dataIoImportDisabled?: boolean;
+  dataIoExportDisabled?: boolean;
 }>(), { pluginActions: () => [] });
 
 const emit = defineEmits<{
@@ -56,13 +57,13 @@ const moreOptions = computed(() => [
     label: "导入数据",
     key: "import",
     icon: () => h(Upload),
-    disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoLocked,
+    disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoImportDisabled,
   },
   {
     label: "导出数据",
     key: "export",
     icon: () => h(Download),
-    disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoLocked,
+    disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoExportDisabled,
   },
   {
     label: t("toolbar.refreshShortcut"),

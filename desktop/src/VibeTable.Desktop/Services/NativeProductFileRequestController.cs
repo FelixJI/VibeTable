@@ -107,12 +107,12 @@ public sealed class NativeProductFileRequestController
 
     private Task PickImportSourceAsync(RoutedWebRequest request)
     {
-        if (!RequireGateway(request.RequestId))
+        if (!RequireGateway(request))
             return Task.CompletedTask;
         string? selectedPath = _host.SelectImportSource();
         if (selectedPath is null)
         {
-            _reply.PostOperationFailed(request.RequestId, "Import cancelled.", "CANCELLED");
+            PostFailure(request, "Import cancelled.", "CANCELLED");
             return Task.CompletedTask;
         }
         var info = new FileInfo(selectedPath);
@@ -129,7 +129,7 @@ public sealed class NativeProductFileRequestController
 
     private Task PickExportTargetAsync(RoutedWebRequest request)
     {
-        if (!RequireGateway(request.RequestId))
+        if (!RequireGateway(request))
             return Task.CompletedTask;
         string format = ReadString(request.Payload, "format") == "xlsx" ? "xlsx" : "csv";
         string defaultName = SafeFileName(ReadString(request.Payload, "defaultName"))
@@ -137,7 +137,7 @@ public sealed class NativeProductFileRequestController
         string? selectedPath = _host.SelectExportTarget(format, defaultName);
         if (selectedPath is null)
         {
-            _reply.PostOperationFailed(request.RequestId, "Export cancelled.", "CANCELLED");
+            PostFailure(request, "Export cancelled.", "CANCELLED");
             return Task.CompletedTask;
         }
         return RegisterPickedPathAsync(
@@ -152,8 +152,8 @@ public sealed class NativeProductFileRequestController
             replacement: false);
         if (selection.Paths.Count == 0)
         {
-            _reply.PostOperationFailed(
-                request.RequestId,
+            PostFailure(
+                request,
                 selection.PickerWasShown
                     ? "已取消选择附件。"
                     : "上传请求没有携带有效的原生文件对象。",
@@ -176,8 +176,8 @@ public sealed class NativeProductFileRequestController
         if (selection.Paths.Count != 1 || string.IsNullOrWhiteSpace(storedName))
         {
             bool cancelled = selection.PickerWasShown && selection.Paths.Count == 0;
-            _reply.PostOperationFailed(
-                request.RequestId,
+            PostFailure(
+                request,
                 cancelled
                     ? "已取消选择替换文件。"
                     : "附件替换必须携带一个原生文件和已有附件标识。",
@@ -192,7 +192,7 @@ public sealed class NativeProductFileRequestController
         string? storedName = ReadString(request.Payload, "storedName");
         if (string.IsNullOrWhiteSpace(storedName))
         {
-            _reply.PostOperationFailed(request.RequestId, "缺少托管附件标识。", "BAD_PAYLOAD");
+            PostFailure(request, "缺少托管附件标识。", "BAD_PAYLOAD");
             return Task.CompletedTask;
         }
         return ApplyAttachmentChangeAsync(request, [], [storedName]);
@@ -212,8 +212,8 @@ public sealed class NativeProductFileRequestController
                 requireDigest: true,
                 out Dictionary<string, object?> context))
         {
-            _reply.PostOperationFailed(
-                request.RequestId,
+            PostFailure(
+                request,
                 "缺少最新附件行版本，请刷新后重试。",
                 "ATTACHMENT_CONTEXT_INVALID");
             return;
@@ -237,8 +237,8 @@ public sealed class NativeProductFileRequestController
             _trace?.Invoke(
                 $"Attachment change failed; type={request.Type}; " +
                 $"exception={exception.GetType().Name}");
-            _reply.PostOperationFailed(
-                request.RequestId,
+            PostFailure(
+                request,
                 "托管附件变更失败，请刷新记录后重试。",
                 "ATTACHMENT_CHANGE_FAILED");
         }
@@ -254,29 +254,64 @@ public sealed class NativeProductFileRequestController
         {
             return;
         }
-        string previewPath = _host.CreateAttachmentPreviewPath(suggestedName);
-        context["outputPath"] = previewPath;
         CancellationToken token = _sessionToken();
         try
         {
+            token.ThrowIfCancellationRequested();
+            string previewPath = _host.CreateAttachmentPreviewPath(suggestedName);
+            token.ThrowIfCancellationRequested();
+            context["outputPath"] = previewPath;
             await _gateway.SaveAttachmentAsync(
                 JsonSerializer.SerializeToElement(context),
                 token);
+            token.ThrowIfCancellationRequested();
             await _host.PreviewAttachmentAsync(previewPath);
+            token.ThrowIfCancellationRequested();
+            PostAttachmentResponse(
+                request,
+                new { outcome = "opened", reason = (string?)null });
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
+            PostFailure(request, "托管附件预览已取消。", "CANCELLED");
+        }
+        catch (DocumentPreviewException exception)
+            when (string.Equals(
+                exception.Code,
+                "PREVIEW_HANDLER_UNAVAILABLE",
+                StringComparison.Ordinal))
+        {
+            if (token.IsCancellationRequested)
+            {
+                PostFailure(request, "托管附件预览已取消。", "CANCELLED");
+            }
+            else
+            {
+                PostAttachmentResponse(
+                    request,
+                    new
+                    {
+                        outcome = "unavailable",
+                        reason = "PREVIEW_HANDLER_UNAVAILABLE",
+                    });
+            }
         }
         catch (DocumentPreviewException exception)
         {
-            _reply.PostOperationFailed(request.RequestId, exception.Message, exception.Code);
+            if (token.IsCancellationRequested)
+                PostFailure(request, "托管附件预览已取消。", "CANCELLED");
+            else
+                PostFailure(request, exception.Message, exception.Code);
         }
         catch (Exception)
         {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "托管附件预览失败，请稍后重试。",
-                "ATTACHMENT_PREVIEW_FAILED");
+            if (token.IsCancellationRequested)
+                PostFailure(request, "托管附件预览已取消。", "CANCELLED");
+            else
+                PostFailure(
+                    request,
+                    "托管附件预览失败，请稍后重试。",
+                    "ATTACHMENT_PREVIEW_FAILED");
         }
     }
 
@@ -290,26 +325,37 @@ public sealed class NativeProductFileRequestController
         {
             return;
         }
-        string? outputPath = _host.SelectAttachmentTarget(suggestedName);
-        if (outputPath is null)
-            return;
-        context["outputPath"] = outputPath;
         CancellationToken token = _sessionToken();
         try
         {
+            token.ThrowIfCancellationRequested();
+            string? outputPath = _host.SelectAttachmentTarget(suggestedName);
+            token.ThrowIfCancellationRequested();
+            if (outputPath is null)
+            {
+                PostAttachmentResponse(request, new { outcome = "cancelled" });
+                return;
+            }
+            context["outputPath"] = outputPath;
             await _gateway.SaveAttachmentAsync(
                 JsonSerializer.SerializeToElement(context),
                 token);
+            token.ThrowIfCancellationRequested();
+            PostAttachmentResponse(request, new { outcome = "saved" });
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
+            PostFailure(request, "托管附件下载已取消。", "CANCELLED");
         }
         catch (Exception)
         {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "托管附件下载失败，请重试。",
-                "ATTACHMENT_DOWNLOAD_FAILED");
+            if (token.IsCancellationRequested)
+                PostFailure(request, "托管附件下载已取消。", "CANCELLED");
+            else
+                PostFailure(
+                    request,
+                    "托管附件下载失败，请重试。",
+                    "ATTACHMENT_DOWNLOAD_FAILED");
         }
     }
 
@@ -327,17 +373,14 @@ public sealed class NativeProductFileRequestController
                 requireDigest: false,
                 out context))
         {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                invalidContextMessage,
-                "ATTACHMENT_CONTEXT_INVALID");
+            PostFailure(request, invalidContextMessage, "ATTACHMENT_CONTEXT_INVALID");
             return false;
         }
         string? storedName = ReadString(request.Payload, "storedName");
         string? originalName = ReadString(request.Payload, "originalName");
         if (string.IsNullOrWhiteSpace(storedName))
         {
-            _reply.PostOperationFailed(request.RequestId, "缺少托管附件标识。", "BAD_PAYLOAD");
+            PostFailure(request, "缺少托管附件标识。", "BAD_PAYLOAD");
             return false;
         }
         suggestedName = SafeFileName(originalName)
@@ -368,19 +411,19 @@ public sealed class NativeProductFileRequestController
             _trace?.Invoke(
                 $"Path grant failed; type={request.Type}; " +
                 $"exception={exception.GetType().Name}");
-            _reply.PostOperationFailed(
-                request.RequestId,
+            PostFailure(
+                request,
                 "无法使用所选位置，请重新选择后重试。",
                 "PATH_GRANT_FAILED");
         }
     }
 
-    private bool RequireGateway(string? requestId)
+    private bool RequireGateway(RoutedWebRequest request)
     {
         if (_gateway.IsAvailable)
             return true;
-        _reply.PostOperationFailed(
-            requestId,
+        PostFailure(
+            request,
             "Local data service is unavailable.",
             "BACKEND_UNAVAILABLE");
         return false;
@@ -388,11 +431,29 @@ public sealed class NativeProductFileRequestController
 
     private Task RejectUnknownAsync(RoutedWebRequest request)
     {
-        _reply.PostOperationFailed(
-            request.RequestId,
+        PostFailure(
+            request,
             "原生文件请求类型无效。",
             "UNKNOWN_TYPE");
         return Task.CompletedTask;
+    }
+
+    private void PostFailure(RoutedWebRequest request, string message, string code)
+    {
+        if (request.RequestId is null)
+            return;
+        _reply.PostOperationFailed(
+            request.RequestId,
+            message,
+            code,
+            request.Type);
+    }
+
+    private void PostAttachmentResponse(RoutedWebRequest request, object payload)
+    {
+        if (request.RequestId is null)
+            return;
+        _reply.PostResponse(request.Type, request.RequestId, payload);
     }
 
     private static bool TryReadAttachmentContext(

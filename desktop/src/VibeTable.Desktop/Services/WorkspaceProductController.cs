@@ -520,11 +520,14 @@ public sealed class WorkspaceProductController : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            string code = exception is WorkspaceRegistryException registry
-                ? registry.Code
-                : exception is WorkspacePathGrantException grant
-                    ? grant.Code
-                : "workspace.operation_failed";
+            string code = exception switch
+            {
+                WorkspaceRegistryException registry => registry.Code,
+                WorkspacePathGrantException grant => grant.Code,
+                _ when ContainsActivationTimeout(exception) =>
+                    WorkspaceActivationTimeoutException.ErrorCode,
+                _ => "workspace.operation_failed",
+            };
             _reply.PostWorkspaceV2Response(
                 request.RequestId,
                 new
@@ -550,6 +553,19 @@ public sealed class WorkspaceProductController : IAsyncDisposable
 
     public static bool Handles(string requestType) =>
         string.Equals(requestType, "workspace.v2.request", StringComparison.Ordinal);
+
+    private static bool ContainsActivationTimeout(Exception exception)
+    {
+        if (exception is WorkspaceActivationTimeoutException)
+            return true;
+        if (exception is AggregateException aggregate
+            && aggregate.InnerExceptions.Any(ContainsActivationTimeout))
+        {
+            return true;
+        }
+        return exception.InnerException is not null
+            && ContainsActivationTimeout(exception.InnerException);
+    }
 
     public Task<WorkspaceSessionV2> OpenAsync(
         Guid workspaceId,

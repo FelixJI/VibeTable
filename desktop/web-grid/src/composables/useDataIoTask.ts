@@ -40,22 +40,39 @@ export function useDataIoTask(options: DataIoTaskOptions) {
   const previewSession = ref<ImportPreviewSession | null>(null);
   const previewing = ref(false);
   const applying = ref(false);
+  const exporting = ref(false);
   const cancelling = ref(false);
   const applyError = ref<string | null>(null);
-  const locked = computed(() =>
+  const taskLocked = computed(() =>
     previewing.value
     || applying.value
+    || exporting.value
     || previewSession.value !== null
     || options.service.busy.value,
   );
+  function resolveImportContext(): { collection: string; schemaRevision: string } | null {
+    const { collection, schemaRevision } = options.resolveContext();
+    return collection && schemaRevision && !taskLocked.value
+      ? { collection, schemaRevision }
+      : null;
+  }
+  function resolveExportCollection(): string | null {
+    const { collection } = options.resolveContext();
+    return collection && !taskLocked.value ? collection : null;
+  }
+  const canPreviewImport = computed(() => resolveImportContext() !== null);
+  const canExport = computed(() => resolveExportCollection() !== null);
 
   async function previewImport(): Promise<void> {
-    const { collection, schemaRevision } = options.resolveContext();
-    if (!collection || !schemaRevision || locked.value) return;
+    const context = resolveImportContext();
+    if (!context) return;
     previewing.value = true;
     applyError.value = null;
     try {
-      previewSession.value = await options.service.previewImport(collection, schemaRevision);
+      previewSession.value = await options.service.previewImport(
+        context.collection,
+        context.schemaRevision,
+      );
     } catch (error) {
       options.reportError(errorMessage(error));
     } finally {
@@ -103,12 +120,15 @@ export function useDataIoTask(options: DataIoTaskOptions) {
   }
 
   async function exportData(): Promise<void> {
-    const { collection } = options.resolveContext();
-    if (!collection || locked.value) return;
+    const collection = resolveExportCollection();
+    if (!collection) return;
+    exporting.value = true;
     try {
       options.exportSucceeded(await options.service.exportData(collection, {}));
     } catch (error) {
       options.reportError(errorMessage(error));
+    } finally {
+      exporting.value = false;
     }
   }
 
@@ -119,7 +139,8 @@ export function useDataIoTask(options: DataIoTaskOptions) {
     applying: readonly(applying),
     cancelling: readonly(cancelling),
     applyError: readonly(applyError),
-    locked,
+    canPreviewImport,
+    canExport,
     previewImport,
     applyImport,
     cancelImport,

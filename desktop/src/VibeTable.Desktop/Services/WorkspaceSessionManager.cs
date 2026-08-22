@@ -9,8 +9,9 @@ public interface IWorkspaceRuntime : IAsyncDisposable
 {
     Guid WorkspaceId { get; }
     ulong SessionEpoch { get; }
-    Task StartAsync(WorkspaceOpenMode mode, CancellationToken cancellationToken);
-    Task VerifyAsync(CancellationToken cancellationToken);
+    WorkspaceActivationPolicy ActivationPolicy => WorkspaceActivationPolicy.Default;
+    Task StartAsync(WorkspaceOpenMode mode, WorkspaceActivationBudget budget);
+    Task VerifyAsync(WorkspaceActivationBudget budget);
     Task DrainAsync(CancellationToken cancellationToken);
     Task ResumeAsync(
         WorkspaceOpenMode mode,
@@ -86,6 +87,8 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
     private readonly IWorkspaceProtectionHook _protection;
     private readonly IWorkspaceLeaseHook _lease;
     private readonly IWorkspacePreOpenHook _preOpen;
+    private readonly TimeProvider _activationTimeProvider;
+    private readonly Action<string>? _activationTrace;
     private IWorkspaceRequestDrainHook _requestDrain =
         NoopWorkspaceRequestDrainHook.Instance;
     private IWorkspaceRuntime? _runtime;
@@ -100,7 +103,9 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
         IWorkspaceRuntimeFactory runtimeFactory,
         IWorkspaceProtectionHook? protection = null,
         IWorkspaceLeaseHook? lease = null,
-        IWorkspacePreOpenHook? preOpen = null)
+        IWorkspacePreOpenHook? preOpen = null,
+        TimeProvider? activationTimeProvider = null,
+        Action<string>? activationTrace = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _runtimeFactory = runtimeFactory ?? throw new ArgumentNullException(nameof(runtimeFactory));
@@ -108,10 +113,13 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
         _protection = protection ?? NoopWorkspaceProtectionHook.Instance;
         _lease = lease ?? NoopWorkspaceLeaseHook.Instance;
         _preOpen = preOpen ?? NoopWorkspacePreOpenHook.Instance;
+        _activationTimeProvider = activationTimeProvider ?? TimeProvider.System;
+        _activationTrace = activationTrace;
     }
 
     public WorkspaceSessionV2 Current => _current;
     public ulong? LastProtectionMutationRevision { get; private set; }
+    public WorkspaceActivationReport? LastActivationReport { get; private set; }
 
     public event EventHandler<WorkspaceSessionChangedEventArgs>? Changed;
 
@@ -568,12 +576,19 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
             Phase = WorkspaceSessionPhase.Starting,
             ErrorCode = null,
         });
+        using var activation = WorkspaceActivationBudget.Begin(
+            entry.WorkspaceId,
+            epoch,
+            runtime.ActivationPolicy,
+            cancellationToken,
+            _activationTimeProvider,
+            _activationTrace);
         try
         {
-            await runtime.StartAsync(grantedMode, cancellationToken);
+            await runtime.StartAsync(grantedMode, activation);
             Publish(_current with { Phase = WorkspaceSessionPhase.Binding });
             Publish(_current with { Phase = WorkspaceSessionPhase.Verifying });
-            await runtime.VerifyAsync(cancellationToken);
+            await runtime.VerifyAsync(activation);
             var openedState = grantedMode switch
             {
                 WorkspaceOpenMode.ReadOnly => WorkspaceSessionState.OpenedReadOnly,
@@ -593,22 +608,30 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
                 LastOpenedAt = DateTimeOffset.UtcNow,
                 LastKnownHealth = WorkspaceHealth.Healthy,
             });
+            LastActivationReport = activation.Complete();
             return _current;
         }
         catch (Exception openError)
         {
+            LastActivationReport = activation.Fail(openError);
+            Exception? cleanupError = null;
             try
             {
                 await StopDisposeAndReleaseCurrentAsync(
                     entry.WorkspaceId,
                     epoch,
                     CancellationToken.None);
+            }
+            catch (Exception error)
+            {
+                cleanupError = error;
+            }
+            finally
+            {
                 Publish(ClosedSession(epoch));
             }
-            catch (Exception cleanupError)
-            {
+            if (cleanupError is not null)
                 throw new AggregateException(openError, cleanupError);
-            }
             ExceptionDispatchInfo.Capture(openError).Throw();
             throw;
         }

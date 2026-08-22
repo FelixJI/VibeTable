@@ -35,7 +35,10 @@ const snapshot: PluginSnapshot = {
 };
 
 describe("pluginService canonical wire", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    usePluginStore().setProjectContext("local:default", "r1");
+  });
   afterEach(() => setHostBridgeForTesting(null));
 
   it("projects the live query, safe user identity and host version into command context", () => {
@@ -270,14 +273,98 @@ describe("pluginService canonical wire", () => {
     expect(store.plugins).toEqual([]);
   });
 
-  it("submits the current host project revision so a stale plan is rejected", async () => {
+  it("fails closed before the install bridge while project context is not ready", async () => {
+    const posted: unknown[] = [];
+    const bridge = createHostBridge({
+      webview: {
+        postMessage: (message) => posted.push(message),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    usePluginStore().setProjectContext("", "");
+
+    await expect(usePluginService().inspectInstall("host-picker:folder"))
+      .rejects.toThrow("当前工作区尚未就绪");
+
+    expect(posted).toEqual([]);
+  });
+
+  it.each(["success", "failure", "cancel"] as const)(
+    "keeps the newer inspection state when the older one completes with %s",
+    async (olderOutcome) => {
+      let listener: ((event: { data: unknown }) => void) | undefined;
+      let sequence = 0;
+      const posted: Array<{ type: string; requestId: string; payload: Record<string, string> }> = [];
+      const bridge = createHostBridge({
+        generateRequestId: () => `reverse-${++sequence}`,
+        webview: {
+          postMessage: (message) => {
+            const request = message as typeof posted[number];
+            posted.push(request);
+            if (request.type === "plugin.install.cancel") queueMicrotask(() => listener?.({ data: {
+              type: request.type,
+              requestId: request.requestId,
+              payload: { cancelled: true },
+            } }));
+          },
+          addEventListener: (_type, handler) => { listener = handler; },
+          removeEventListener: () => undefined,
+        },
+      });
+      bridge.start();
+      setHostBridgeForTesting(bridge);
+      const store = usePluginStore();
+      const service = usePluginService();
+      const older = service.inspectInstall("host-picker:folder");
+      const newer = service.inspectInstall("host-picker:package");
+      const newerPlan = {
+        planId: "plan-newer", projectKey: "local:default", projectRevision: "r1",
+        sourceType: "package" as const, sourceLocation: "host-managed",
+        packageHash: "sha256:newer", manifest: snapshot.manifest, schemas: snapshot.schemas,
+      };
+      listener?.({ data: {
+        type: "plugin.install.inspect", requestId: "reverse-2", payload: newerPlan,
+      } });
+      await newer;
+
+      if (olderOutcome === "success") {
+        listener?.({ data: {
+          type: "plugin.install.inspect", requestId: "reverse-1",
+          payload: { ...newerPlan, planId: "plan-older", packageHash: "sha256:older" },
+        } });
+      } else {
+        listener?.({ data: {
+          type: "operation.failed", requestId: "reverse-1",
+          payload: {
+            code: olderOutcome === "cancel" ? "PLUGIN_REQUEST_CANCELLED" : "PLUGIN_INSPECT_FAILED",
+            message: olderOutcome,
+          },
+        } });
+      }
+      await expect(older).rejects.toThrow();
+
+      expect(store.installPlan?.planId).toBe("plan-newer");
+      expect(store.busy).toBe(false);
+      expect(store.lastError).toBeNull();
+      if (olderOutcome === "success") {
+        expect(posted.at(-1)).toMatchObject({
+          type: "plugin.install.cancel", payload: { planId: "plan-older" },
+        });
+      }
+    },
+  );
+
+  it("rejects commit locally after the inspected plan context becomes stale", async () => {
     const posted: Array<{ type: string; requestId?: string; payload?: unknown }> = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
     const plan = {
       planId: "plan-stale",
       projectKey: "local:default",
-      projectRevision: "r1:state-fingerprint",
+      projectRevision: "r1",
       sourceType: "package" as const,
       sourceLocation: "host-managed",
       packageHash: "sha256:abc",
@@ -306,14 +393,139 @@ describe("pluginService canonical wire", () => {
     store.setProjectContext("local:default", "r1");
     const service = usePluginService();
     const inspected = await service.inspectInstall("host-picker:package");
-    store.setProjectContext("local:default", "r2");
+    service.openProjectContext("local:default", "r2");
 
-    await service.commitInstall(inspected);
+    await expect(service.commitInstall(inspected)).rejects.toThrow("安装计划已失效");
+    await expect(service.upgrade(snapshot, inspected)).rejects.toThrow("安装计划已失效");
 
-    expect(posted[1]).toMatchObject({
-      type: "plugin.install.commit",
-      payload: { planId: "plan-stale", projectRevision: "r2" },
+    expect(posted.map((request) => request.type)).toEqual([
+      "plugin.install.inspect",
+      "plugin.install.cancel",
+    ]);
+    expect(store.installPlan).toBeNull();
+    expect(store.lastError).toContain("安装计划已失效");
+  });
+
+  it("discards and cancels a late install plan after database context changes", async () => {
+    const posted: Array<{ type: string; requestId: string; payload: Record<string, string> }> = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `plan-race-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as typeof posted[number];
+          posted.push(request);
+          if (request.type === "plugin.install.cancel") {
+            queueMicrotask(() => listener?.({ data: {
+              type: request.type,
+              requestId: request.requestId,
+              payload: { cancelled: true },
+            } }));
+          }
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
     });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r0");
+    const service = usePluginService();
+    const pending = service.inspectInstall("host-picker:folder");
+
+    service.openProjectContext("local:default", "r1");
+    const stalePlan = {
+      planId: "plan-r0",
+      projectKey: "local:default",
+      projectRevision: "r0",
+      sourceType: "local-folder" as const,
+      sourceLocation: "host-managed",
+      packageHash: "sha256:stale",
+      manifest: snapshot.manifest,
+      schemas: snapshot.schemas,
+    };
+    listener?.({ data: {
+      type: "plugin.install.inspect",
+      requestId: "plan-race-1",
+      payload: stalePlan,
+    } });
+    await expect(pending).rejects.toThrow("安装计划已失效");
+    expect(store.installPlan).toBeNull();
+    expect(posted[1]).toMatchObject({
+      type: "plugin.install.cancel",
+      payload: { planId: "plan-r0" },
+    });
+    await expect(service.commitInstall(stalePlan)).rejects.toThrow("安装计划已失效");
+    expect(store.lastError).toContain("安装计划已失效");
+    expect(posted.map((request) => request.type)).toEqual([
+      "plugin.install.inspect",
+      "plugin.install.cancel",
+    ]);
+  });
+
+  it("invalidates the accepted plan as soon as a newer inspection begins", async () => {
+    const posted: Array<{ type: string; requestId: string; payload: Record<string, string> }> = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `replace-plan-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          const request = message as typeof posted[number];
+          posted.push(request);
+          if (request.type === "plugin.install.cancel") {
+            queueMicrotask(() => listener?.({ data: {
+              type: request.type,
+              requestId: request.requestId,
+              payload: { cancelled: true },
+            } }));
+          }
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    const service = usePluginService();
+    const firstPending = service.inspectInstall("host-picker:folder");
+    const firstPlan = {
+      planId: "plan-first",
+      projectKey: "local:default",
+      projectRevision: "r1",
+      sourceType: "local-folder" as const,
+      sourceLocation: "host-managed",
+      packageHash: "sha256:first",
+      manifest: snapshot.manifest,
+      schemas: snapshot.schemas,
+    };
+    listener?.({ data: {
+      type: "plugin.install.inspect",
+      requestId: "replace-plan-1",
+      payload: firstPlan,
+    } });
+    await firstPending;
+
+    const secondPending = service.inspectInstall("host-picker:package");
+    await expect(service.commitInstall(firstPlan)).rejects.toThrow("安装计划已失效");
+    await vi.waitFor(() => expect(posted.filter(
+      (request) => request.type === "plugin.install.inspect",
+    )).toHaveLength(2));
+    expect(posted.map((request) => request.type)).toEqual([
+      "plugin.install.inspect",
+      "plugin.install.cancel",
+      "plugin.install.inspect",
+    ]);
+    listener?.({ data: {
+      type: "plugin.install.inspect",
+      requestId: "replace-plan-3",
+      payload: { ...firstPlan, planId: "plan-second", packageHash: "sha256:second" },
+    } });
+    await secondPending;
   });
 
   it("uses canonical install, action and uninstall use-case payloads", async () => {

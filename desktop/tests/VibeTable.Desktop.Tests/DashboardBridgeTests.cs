@@ -177,9 +177,10 @@ public sealed class DashboardBridgeTests
             },
         };
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        using var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(new FakeTableRpcGateway()),
             new FakeDatabasePicker("db"), sink,
+            NoDatabaseOpenRoute.Instance,
             dashboardRequestTimeout: TimeSpan.FromMilliseconds(30));
         dispatcher.SetDashboardGateway(gateway);
 
@@ -237,9 +238,10 @@ public sealed class DashboardBridgeTests
     {
         var gateway = new FakeDashboardGateway();
         var sink = new FakeWebReplySink();
-        var dispatcher = new WorkspaceRequestDispatcher(
+        using var dispatcher = new WorkspaceRequestDispatcher(
             new TableWorkspaceService(new FakeTableRpcGateway()),
-            new FakeDatabasePicker("db"), sink);
+            new FakeDatabasePicker("db"), sink,
+            NoDatabaseOpenRoute.Instance);
         dispatcher.SetDashboardGateway(gateway);
         return (dispatcher, gateway, sink);
     }

@@ -131,6 +131,10 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
         string table, JsonElement query, CancellationToken token)
         => Gateway.OpenTableCursorRawAsync(table, query, token);
 
+    public Task<TableSelectionProjection> OpenTableSelectionAsync(
+        string table, JsonElement query, CancellationToken token)
+        => Gateway.OpenTableSelectionAsync(table, query, token);
+
     public Task<TablePage> FetchTableCursorAsync(string cursor, CancellationToken token)
         => Gateway.FetchTableCursorAsync(cursor, token);
     public Task<SnapshotValidation> ValidateSnapshotAsync(

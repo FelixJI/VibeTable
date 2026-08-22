@@ -85,6 +85,7 @@ public sealed class LocalDataServiceTests
             add { }
             remove { }
         }
+        public PocketBaseStartupTimings? LastStartupTimings => null;
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
@@ -110,6 +111,11 @@ public sealed class LocalDataServiceTests
 
         public Uri? GetAdminUri() => AdminUri;
         public PocketBaseAdminContext? GetAdminContext() => null;
+
+        public void ConfigureBackendEnvironment(
+            IDictionary<string, string> environment)
+        {
+        }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

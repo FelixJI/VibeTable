@@ -1,16 +1,175 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import sqlite3
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from scripts.node_toolchain import ensure_node
 from tests.e2e import product_e2e_runner as runner
+from tests.e2e.windows_process_scope import ProcessScopeLaunchError
+from tests.e2e.windows_tcp_listener_owner import (
+    OwnerLeaseCleanupReport,
+    PortReleaseReport,
+    TcpListenerRow,
+    WindowsTcpListenerOwnerLease,
+    _capture_with_adapter,
+)
+
+
+class _FakeRoot:
+    pid = 42
+
+    def __init__(self, exit_code: int | None = None) -> None:
+        self.exit_code = exit_code
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.exit_code is None:
+            raise subprocess.TimeoutExpired(["fake-host"], 0 if timeout is None else timeout)
+        return self.exit_code
+
+
+class _SuccessfulRoot(_FakeRoot):
+    def wait(self, timeout: float | None = None) -> int:
+        assert timeout is not None
+        return 0
+
+
+class _FakeScope:
+    def __init__(self, *, exit_code: int | None = None, members: tuple[int, ...] = ()) -> None:
+        self.root = _FakeRoot(exit_code)
+        self.members = members
+        self.terminate_calls = 0
+        self.close_calls = 0
+
+    def snapshot(self) -> Any:
+        return SimpleNamespace(members=tuple(SimpleNamespace(pid=pid) for pid in self.members))
+
+    def terminate_all(self) -> Any:
+        self.terminate_calls += 1
+        self.members = ()
+        return runner.ScopeTerminationResult(True, remaining_pids=())
+
+    def wait_empty(self, *, timeout: float = 5.0) -> Any:
+        del timeout
+        return runner.ScopeWaitResult(self.members)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _FakePortOwnerLease:
+    def __init__(
+        self,
+        *,
+        released: bool = True,
+        close_error: BaseException | None = None,
+    ) -> None:
+        self.released = released
+        self.close_error = close_error
+        self.closed = False
+        self.close_calls = 0
+        self.cleanup_report: OwnerLeaseCleanupReport | None = None
+        self.observe_timeouts: list[float] = []
+
+    def observe_release(self, *, timeout: float) -> PortReleaseReport:
+        assert 0 <= timeout <= runner.LIFECYCLE_EXIT_TIMEOUT_SECONDS
+        self.observe_timeouts.append(timeout)
+        return PortReleaseReport(
+            owner_pid=42,
+            owner_name="msedgewebview2.exe",
+            capture_rows=(),
+            release_rows=(),
+            decision="captured-owner-exited" if self.released else "captured-owner-still-listening",
+            released=self.released,
+            owner_exited=self.released,
+        )
+
+    def close(self) -> OwnerLeaseCleanupReport:
+        if self.cleanup_report is not None:
+            return self.cleanup_report
+        self.closed = True
+        self.close_calls += 1
+        if self.close_error is not None:
+            self.cleanup_report = OwnerLeaseCleanupReport(
+                stable_handle_closed=False,
+                errors=(
+                    "unable to close captured CDP owner handle "
+                    f"({type(self.close_error).__name__})",
+                ),
+            )
+        else:
+            self.cleanup_report = OwnerLeaseCleanupReport(stable_handle_closed=True)
+        return self.cleanup_report
+
+    def __enter__(self) -> _FakePortOwnerLease:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+class _CloseFailOwnerHandle:
+    pid = 42
+    name = "C:\\private\\msedgewebview2.exe"
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def wait(self, timeout: float) -> bool:
+        del self, timeout
+        return False
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise OSError("C:\\private\\handle close denied")
+
+
+class _CloseFailOwnerAdapter:
+    def __init__(self, owner: _CloseFailOwnerHandle) -> None:
+        row = TcpListenerRow("TCP", "127.0.0.1:9222", "0.0.0.0:0", "侦听", owner.pid)
+        self.samples = iter(((row,), (row,), ()))
+        self.owner = owner
+
+    def query_listeners(self, port: int, *, timeout: float) -> tuple[TcpListenerRow, ...]:
+        assert port == 9222
+        assert timeout > 0
+        return next(self.samples)
+
+    def open_owner(self, pid: int) -> _CloseFailOwnerHandle:
+        assert pid == self.owner.pid
+        return self.owner
+
+
+def _real_close_failing_owner_lease() -> tuple[
+    WindowsTcpListenerOwnerLease,
+    _CloseFailOwnerHandle,
+]:
+    owner = _CloseFailOwnerHandle()
+    return _capture_with_adapter(9222, _CloseFailOwnerAdapter(owner)), owner
+
+
+def _stub_cdp_owner_capture(
+    monkeypatch,
+    *,
+    close_error: BaseException | None = None,
+) -> _FakePortOwnerLease:
+    lease = _FakePortOwnerLease(close_error=close_error)
+    monkeypatch.setattr(
+        runner.WindowsTcpListenerOwnerLease,
+        "capture",
+        lambda _port: lease,
+    )
+    return lease
 
 
 def test_manifest_accepts_capability_tagged_scenarios_without_a_fixed_count(
@@ -106,7 +265,6 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("interface-save")' in interface
     assert 'getByTestId("interface-run")' in interface
     assert 'getByTestId("nav-search")' in search
-    assert 'getByTestId("workspace-search-rebuild")' in search
     assert 'getByTestId("workspace-search-submit")' in source
 
 
@@ -150,7 +308,6 @@ def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries(
     assert "activeSearchInput.evaluate((element) => element === document.activeElement)" in search
     assert "staleRecord.evaluate((element) => element === document.activeElement)" not in search
     assert '"workspaceSearch.status"' in restore
-    assert 'getByTestId("workspace-search-rebuild")' in restore
     assert "restoredSearchStatus.result?.generation" in restore
     assert "snapshotStorageProof.auditLedger.anchorHash" in restore
 
@@ -169,29 +326,66 @@ def test_lifecycle_harness_requires_a_normal_close_and_empty_process_evidence() 
     report = runner._lifecycle_exit_report(
         normal_exit_requested=True,
         host_exit_code=0,
-        descendants_after_exit=[],
+        members_after_exit=[],
         ports_released=True,
     )
 
     assert report == {
         "normalExitRequested": True,
         "hostExitCode": 0,
+        "membersAfterExit": [],
         "descendantsAfterExit": [],
         "portsReleased": True,
+        "errors": [],
         "status": "passed",
     }
 
 
-def test_lifecycle_harness_fails_closed_when_a_descendant_or_port_remains() -> None:
+def test_host_launch_uses_atomic_job_scope_and_preserves_process_inputs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    launched: list[Any] = []
+    fake_scope = object()
+
+    def fake_launch(spec: Any) -> object:
+        launched.append(spec)
+        return fake_scope
+
+    monkeypatch.setattr(runner.WindowsProcessScope, "launch", fake_launch)
+    environment = {"VIBETABLE_TEST": "1"}
+    with (
+        (tmp_path / "stdout.log").open("wb") as stdout,
+        (tmp_path / "stderr.log").open("wb") as stderr,
+    ):
+        result = runner._launch_host_process(
+            ["host.exe", "--quoted", "value with spaces"],
+            cwd=tmp_path,
+            env=environment,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    assert result is fake_scope
+    assert len(launched) == 1
+    spec = launched[0]
+    assert spec.command == ("host.exe", "--quoted", "value with spaces")
+    assert spec.cwd == tmp_path
+    assert spec.env is environment
+    assert spec.stdout is stdout
+    assert spec.stderr is stderr
+
+
+def test_lifecycle_harness_fails_closed_when_a_job_member_or_port_remains() -> None:
     report = runner._lifecycle_exit_report(
         normal_exit_requested=True,
         host_exit_code=0,
-        descendants_after_exit=[{"pid": 7, "name": "vibetable-pb.exe"}],
+        members_after_exit=[{"pid": 7}],
         ports_released=False,
     )
 
     assert report["status"] == "failed"
-    assert report["descendantsAfterExit"] == [{"pid": 7, "name": "vibetable-pb.exe"}]
+    assert report["membersAfterExit"] == [{"pid": 7}]
     assert report["portsReleased"] is False
 
 
@@ -199,8 +393,22 @@ def test_fault_controller_processes_distinct_sidecar_and_packaged_backend_reques
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    class FakeHostProcess:
-        pid = 42
+    class FakeScope:
+        root = _FakeRoot()
+
+        def __init__(self) -> None:
+            self.targets: list[str] = []
+
+        @staticmethod
+        def snapshot() -> Any:
+            return SimpleNamespace(members=())
+
+        def terminate_unique(self, executable_name: str) -> Any:
+            self.targets.append(executable_name)
+            pid = 7 if executable_name == "vibetable-pb.exe" else 8
+            return runner.TargetTerminationResult(
+                "terminated", terminated_pid=pid, matched_pids=(pid,)
+            )
 
     class FakeNodeProcess:
         returncode = 0
@@ -228,26 +436,15 @@ def test_fault_controller_processes_distinct_sidecar_and_packaged_backend_reques
             assert timeout == 10
             return "", ""
 
-    killed: list[list[str]] = []
+    scope = FakeScope()
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: FakeNodeProcess())
-    monkeypatch.setattr(
-        runner,
-        "_descendants",
-        lambda _pid: [(7, "vibetable-pb.exe"), (8, "vibetable-backend.exe")],
-    )
-
-    def fake_run(command: list[str], **_kwargs: Any):
-        killed.append(command)
-        return runner.subprocess.CompletedProcess(command, 0, "terminated", "")
-
-    monkeypatch.setattr(runner.subprocess, "run", fake_run)
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
 
     exit_code, stdout, stderr = runner._run_node_runner(
         ["node", "scenario.mjs"],
         scenario_dir=tmp_path,
         local_data=tmp_path / "local-data",
-        host_process=FakeHostProcess(),
+        host_scope=scope,
     )
 
     result = json.loads((tmp_path / "fault-result.json").read_text(encoding="utf-8"))
@@ -255,134 +452,215 @@ def test_fault_controller_processes_distinct_sidecar_and_packaged_backend_reques
     assert result["requestId"] == "backend-1"
     assert result["action"] == "kill-backend"
     assert result["processName"] == "vibetable-backend.exe"
-    assert killed == [
-        ["taskkill", "/PID", "7", "/F"],
-        ["taskkill", "/PID", "8", "/F"],
-    ]
+    assert scope.targets == ["vibetable-pb.exe", "vibetable-backend.exe"]
 
 
-def test_backend_fault_controller_fails_closed_when_target_is_not_unique(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("scope_result", "expected"),
+    [
+        (
+            runner.TargetTerminationResult("not_found"),
+            {
+                "status": "failed",
+                "code": "BACKEND_PROCESS_NOT_FOUND",
+                "matches": [],
+            },
+        ),
+        (
+            runner.TargetTerminationResult(
+                "terminated",
+                terminated_pid=8,
+                matched_pids=(8,),
+            ),
+            {
+                "status": "completed",
+                "action": "kill-backend",
+                "pid": 8,
+                "processName": "vibetable-backend.exe",
+            },
+        ),
+        (
+            runner.TargetTerminationResult(
+                "ambiguous",
+                matched_pids=(8, 9),
+            ),
+            {
+                "status": "failed",
+                "code": "BACKEND_PROCESS_NOT_UNIQUE",
+                "matches": [8, 9],
+            },
+        ),
+    ],
+)
+def test_fault_controller_uses_verified_job_target_cardinality(
+    scope_result: Any,
+    expected: dict[str, Any],
 ) -> None:
-    class FakeHostProcess:
-        pid = 42
-
-    monkeypatch.setattr(
-        runner,
-        "_descendants",
-        lambda _pid: [
-            (8, "vibetable-backend.exe"),
-            (9, "VibeTable-Backend.exe"),
-            (10, "python.exe"),
-        ],
-    )
+    class FakeScope:
+        @staticmethod
+        def terminate_unique(executable_name: str) -> Any:
+            assert executable_name == "vibetable-backend.exe"
+            return scope_result
 
     response = runner._handle_fault_request(
-        {"requestId": "backend-non-unique", "action": "kill-backend"},
-        FakeHostProcess(),
+        {"requestId": "backend", "action": "kill-backend"},
+        FakeScope(),
     )
 
-    assert response == {
-        "status": "failed",
-        "code": "BACKEND_PROCESS_NOT_UNIQUE",
-        "matches": [
-            (8, "vibetable-backend.exe"),
-            (9, "VibeTable-Backend.exe"),
-        ],
-    }
+    assert response == expected
 
 
-def test_normal_exit_tracks_children_started_while_the_host_is_closing(
+def test_normal_exit_reports_residual_job_members_and_terminates_them(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    class FakeProcess:
-        pid = 42
-        returncode = 0
+    class FakeScope:
+        root = _FakeRoot(0)
 
         def __init__(self) -> None:
-            self.polls = 0
+            self.terminated = 0
 
-        def poll(self) -> int | None:
-            self.polls += 1
-            return 0 if self.polls >= 3 else None
+        @staticmethod
+        def snapshot() -> Any:
+            return SimpleNamespace(members=(SimpleNamespace(pid=7), SimpleNamespace(pid=8)))
 
-    descendant_samples = iter(
-        [
-            [(7, "vibetable-pb.exe")],
-            [(8, "python.exe")],
-        ]
-    )
-    monkeypatch.setattr(
-        runner,
-        "_descendants",
-        lambda _pid: next(descendant_samples, []),
-    )
-    monkeypatch.setattr(
-        runner,
-        "_windows_processes",
-        lambda: [(7, 1, "vibetable-pb.exe"), (8, 1, "python.exe")],
-    )
-    monkeypatch.setattr(runner, "_netstat_tcp_rows", lambda: [])
+        def terminate_all(self) -> Any:
+            self.terminated += 1
+            return runner.ScopeTerminationResult(True, remaining_pids=())
+
+        @staticmethod
+        def wait_empty(*, timeout: float = 5.0) -> Any:
+            del timeout
+            return runner.ScopeWaitResult((7, 8))
+
+    scope = FakeScope()
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
 
     report = runner._request_normal_exit(
-        FakeProcess(),
+        scope,
         controls_dir=tmp_path,
-        cdp_port=9222,
+        cdp_owner=_FakePortOwnerLease(),
     )
 
     assert report["status"] == "failed"
-    assert report["descendantsAfterExit"] == [
-        {"pid": 7, "name": "vibetable-pb.exe"},
-        {"pid": 8, "name": "python.exe"},
-    ]
+    assert [member["pid"] for member in report["membersAfterExit"]] == [7, 8]
+    assert report["cleanup"]["status"] == "passed"
+    assert scope.terminated == 1
 
 
-def test_normal_exit_allows_tracked_webview_children_to_finish_their_shutdown(
+def test_normal_exit_passes_when_the_job_is_empty(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    class FakeProcess:
-        pid = 42
+    class FakeScope:
+        root = _FakeRoot(0)
 
         @staticmethod
-        def poll() -> int:
-            return 0
+        def snapshot() -> Any:
+            return SimpleNamespace(members=())
 
-    monkeypatch.setattr(
-        runner,
-        "_descendants",
-        lambda _pid: [(7, "msedgewebview2.exe")],
-    )
-    process_samples = iter(
-        [
-            [(7, 42, "msedgewebview2.exe")],
-            [],
-            [],
-        ]
-    )
-    monkeypatch.setattr(
-        runner,
-        "_windows_processes",
-        lambda: next(process_samples, []),
-    )
-    monkeypatch.setattr(runner, "_netstat_tcp_rows", lambda: [])
+        @staticmethod
+        def terminate_all() -> Any:
+            pytest.fail("an empty normal-exit scope must not be terminated")
+
+        @staticmethod
+        def wait_empty(*, timeout: float = 5.0) -> Any:
+            del timeout
+            return runner.ScopeWaitResult(())
+
     monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
 
     report = runner._request_normal_exit(
-        FakeProcess(),
+        FakeScope(),
         controls_dir=tmp_path,
-        cdp_port=9222,
+        cdp_owner=_FakePortOwnerLease(),
     )
 
     assert report["status"] == "passed"
-    assert report["descendantsAfterExit"] == []
+    assert report["membersAfterExit"] == []
 
 
-def test_run_scenario_reports_lifecycle_when_node_runner_raises(
+def test_normal_exit_timeout_keeps_root_in_members_but_not_legacy_descendants(
     monkeypatch,
     tmp_path: Path,
+) -> None:
+    scope = _FakeScope(members=(42, 7))
+    report = runner._request_normal_exit(
+        scope,
+        controls_dir=tmp_path,
+        cdp_owner=_FakePortOwnerLease(),
+    )
+
+    assert [member["pid"] for member in report["membersAfterExit"]] == [42, 7]
+    assert report["descendantsAfterExit"] == [{"pid": 7, "name": "unknown"}]
+    assert report["hostExitCode"] is None
+
+
+def test_lifecycle_waits_share_one_absolute_budget_without_polling(monkeypatch) -> None:
+    class Clock:
+        value = 100.0
+
+        def monotonic(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    clock = Clock()
+    waits: list[tuple[str, float]] = []
+
+    class BudgetRoot(_FakeRoot):
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None
+            waits.append(("host", timeout))
+            clock.advance(timeout)
+            raise subprocess.TimeoutExpired(["fake-host"], timeout)
+
+    class BudgetScope(_FakeScope):
+        def __init__(self) -> None:
+            super().__init__(members=())
+            self.root = BudgetRoot()
+
+        def wait_empty(self, *, timeout: float = 5.0) -> Any:
+            waits.append(("job", timeout))
+            clock.advance(timeout)
+            return runner.ScopeWaitResult(())
+
+    class BudgetOwner(_FakePortOwnerLease):
+        def observe_release(self, *, timeout: float) -> PortReleaseReport:
+            waits.append(("owner", timeout))
+            assert timeout == 0.0
+            return PortReleaseReport(
+                owner_pid=42,
+                owner_name="msedgewebview2.exe",
+                capture_rows=(),
+                release_rows=(),
+                decision="release-observation-budget-exhausted",
+                released=False,
+                owner_exited=None,
+                errors=("CDP listener release observation exceeded its deadline",),
+            )
+
+    monkeypatch.setattr(runner.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: pytest.fail("no polling"))
+
+    report = runner._observe_scope_exit(BudgetScope(), cdp_owner=BudgetOwner())
+
+    assert waits == [("host", 30.0), ("job", 5.0), ("owner", 0.0)]
+    assert sum(timeout for _name, timeout in waits) == runner.LIFECYCLE_EXIT_TIMEOUT_SECONDS
+    assert report["portsReleased"] is False
+    assert report["portRelease"]["decision"] == "release-observation-budget-exhausted"
+    assert report["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [TimeoutError("node timed out"), ValueError("bad state"), AssertionError("asserted")],
+)
+def test_run_scenario_reports_lifecycle_when_post_launch_logic_raises(
+    monkeypatch,
+    tmp_path: Path,
+    failure: Exception,
 ) -> None:
     scenario = runner.Scenario(
         id="02-schema-edit",
@@ -391,38 +669,21 @@ def test_run_scenario_reports_lifecycle_when_node_runner_raises(
     )
     package = tmp_path / "package"
     package.mkdir()
-    (package / "host.exe").write_bytes(b"host")
+    (package / "VibeTable.Next.exe").write_bytes(b"host")
     (package / "publish-layout.json").write_text(
-        json.dumps({"launch": {"host": "host.exe"}}),
+        json.dumps({"launch": {"host": "VibeTable.Next.exe"}}),
         encoding="utf-8",
     )
 
-    class FakeProcess:
-        pid = 42
-        returncode = None
-
-        def poll(self) -> None:
-            return None
-
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    scope = _FakeScope(members=(42, 7))
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_run_node_runner",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("node timed out")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
     )
-    monkeypatch.setattr(
-        runner,
-        "_request_normal_exit",
-        lambda *_args, **_kwargs: {
-            "normalExitRequested": True,
-            "hostExitCode": 0,
-            "descendantsAfterExit": [],
-            "portsReleased": True,
-            "status": "passed",
-        },
-    )
-    monkeypatch.setattr(runner, "_stop_process_tree", lambda *_args: None)
 
     result = runner.run_scenario(
         scenario,
@@ -433,7 +694,292 @@ def test_run_scenario_reports_lifecycle_when_node_runner_raises(
 
     assert result["status"] == "failed"
     assert result["error"]["code"] == "E2E_INFRASTRUCTURE_FAILED"
+    assert result["lifecycle"]["status"] == "failed"
+    assert [member["pid"] for member in result["lifecycle"]["membersAfterExit"]] == [42, 7]
+    assert result["lifecycle"]["descendantsAfterExit"] == [{"pid": 7, "name": "unknown"}]
+    assert scope.terminate_calls == 1
+    assert scope.close_calls == 1
+    assert cdp_owner.closed is True
+
+
+def test_run_scenario_success_closes_the_cdp_owner_lease(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="success cleanup")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+
+    def successful_node(
+        _command: list[str],
+        *,
+        scenario_dir: Path,
+        local_data: Path,
+        host_scope: Any,
+        process_network: dict[str, Any] | None = None,
+    ) -> tuple[int, str, str]:
+        del local_data, host_scope, process_network
+        (scenario_dir / f"{scenario.id}-result.json").write_text(
+            json.dumps({"scenario": scenario.id, "status": "passed"}),
+            encoding="utf-8",
+        )
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", successful_node)
+
+    result = runner.run_scenario(
+        scenario,
+        package_root=package,
+        evidence_root=tmp_path / "evidence",
+        node="node",
+    )
+
+    assert result["status"] == "passed"
     assert result["lifecycle"]["status"] == "passed"
+    assert result["lifecycle"]["ownerLeaseCleanup"]["stableHandleClosed"] is True
+    assert cdp_owner.observe_timeouts
+    assert cdp_owner.closed is True
+    assert scope.close_calls == 1
+
+
+def test_run_scenario_reports_owner_handle_close_failure_without_interrupting_result(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenarios = (
+        runner.Scenario(id="02-schema-edit", title="schema", requirement="close report"),
+        runner.Scenario(id="03-view-crud", title="view", requirement="next scenario"),
+    )
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+    scopes: list[_FakeScope] = []
+
+    def launch(*_args: object, **_kwargs: object) -> _FakeScope:
+        scope = _FakeScope()
+        scope.root = _SuccessfulRoot()
+        scopes.append(scope)
+        return scope
+
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    owners: list[_CloseFailOwnerHandle] = []
+
+    def capture(_port: int) -> WindowsTcpListenerOwnerLease:
+        cdp_owner, owner = _real_close_failing_owner_lease()
+        owners.append(owner)
+        return cdp_owner
+
+    monkeypatch.setattr(
+        runner.WindowsTcpListenerOwnerLease,
+        "capture",
+        capture,
+    )
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+
+    def successful_node(
+        command: list[str],
+        *,
+        scenario_dir: Path,
+        **_kwargs: object,
+    ) -> tuple[int, str, str]:
+        scenario_id = command[command.index("--scenario") + 1]
+        (scenario_dir / f"{scenario_id}-result.json").write_text(
+            json.dumps({"scenario": scenario_id, "status": "passed"}),
+            encoding="utf-8",
+        )
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", successful_node)
+
+    results = [
+        runner.run_scenario(
+            scenario,
+            package_root=package,
+            evidence_root=tmp_path / f"evidence-{index}",
+            node="node",
+        )
+        for index, scenario in enumerate(scenarios)
+    ]
+
+    assert len(results) == 2
+    for result in results:
+        assert result["status"] == "failed"
+        assert result["error"]["code"] == "HOST_LIFECYCLE_FAILED"
+        assert result["lifecycle"]["ownerLeaseCleanup"] == {
+            "stableHandleClosed": False,
+            "errors": ["unable to close captured CDP owner handle (OSError)"],
+            "status": "failed",
+        }
+        assert "private" not in result["lifecycleError"]
+    assert [owner.close_calls for owner in owners] == [1, 1]
+    assert len(scopes) == 2
+
+
+def test_run_scenario_closes_real_owner_lease_without_replacing_base_exception(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="base error")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+    scope = _FakeScope()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner, owner = _real_close_failing_owner_lease()
+    monkeypatch.setattr(
+        runner.WindowsTcpListenerOwnerLease,
+        "capture",
+        lambda _port: cdp_owner,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_node_runner",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt("primary interrupt")),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="primary interrupt") as raised:
+        runner.run_scenario(
+            scenario,
+            package_root=package,
+            evidence_root=tmp_path / "evidence",
+            node="node",
+        )
+
+    assert owner.close_calls == 1
+    assert raised.value.__notes__ == ["unable to close captured CDP owner handle (OSError)"]
+    assert "private" not in str(raised.value.__notes__)
+
+
+def test_missing_owner_cleanup_report_fails_closed() -> None:
+    class MissingReportLease:
+        def __init__(self) -> None:
+            self.closed = False
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.closed = True
+            self.close_calls += 1
+            return None
+
+    lease: Any = MissingReportLease()
+    cleanup = runner._close_owner_lease(lease)
+
+    assert cleanup.as_artifact() == {
+        "stableHandleClosed": False,
+        "errors": ["captured CDP owner cleanup returned no report"],
+        "status": "failed",
+    }
+
+
+def test_run_scenario_scope_launch_failure_executes_no_followup_app_logic(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="atomic")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_launch_host_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ProcessScopeLaunchError("nested Job denied")
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_cdp",
+        lambda *_args, **_kwargs: pytest.fail("CDP must not run after launch failure"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_node_runner",
+        lambda *_args, **_kwargs: pytest.fail("Node must not run after launch failure"),
+    )
+
+    result = runner.run_scenario(
+        scenario,
+        package_root=package,
+        evidence_root=tmp_path / "evidence",
+        node="node",
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "PROCESS_SCOPE_LAUNCH_FAILED"
+    assert result["lifecycle"]["normalExitRequested"] is False
+
+
+def test_run_scenario_aggregates_cleanup_failure_without_replacing_primary_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="cleanup")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}),
+        encoding="utf-8",
+    )
+
+    class FailingCleanupScope(_FakeScope):
+        def terminate_all(self) -> Any:
+            return runner.ScopeTerminationResult(
+                False,
+                remaining_pids=None,
+                errors=("terminate denied",),
+            )
+
+        def close(self) -> None:
+            raise OSError("close denied")
+
+    scope = FailingCleanupScope(members=(42, 7))
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(
+        runner,
+        "_run_node_runner",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("primary failure")),
+    )
+
+    result = runner.run_scenario(
+        scenario,
+        package_root=package,
+        evidence_root=tmp_path / "evidence",
+        node="node",
+    )
+
+    assert result["error"]["message"] == "primary failure"
+    assert "terminate denied" in result["lifecycleError"]
+    assert "close denied" in result["lifecycleError"]
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
 
 
 def test_run_scenario_fails_closed_when_lifecycle_observation_raises(
@@ -453,26 +999,21 @@ def test_run_scenario_fails_closed_when_lifecycle_observation_raises(
         encoding="utf-8",
     )
 
-    class FakeProcess:
-        pid = 42
-        returncode = None
-
-        def poll(self) -> None:
-            return None
-
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    scope = _FakeScope(members=(42, 7))
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_run_node_runner",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("node timed out")),
+        lambda *_args, **_kwargs: (0, "", ""),
     )
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
     monkeypatch.setattr(
         runner,
         "_request_normal_exit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("process inspection failed")),
     )
-    monkeypatch.setattr(runner, "_stop_process_tree", lambda *_args: None)
 
     result = runner.run_scenario(
         scenario,
@@ -482,15 +1023,13 @@ def test_run_scenario_fails_closed_when_lifecycle_observation_raises(
     )
 
     assert result["status"] == "failed"
-    assert result["error"]["code"] == "E2E_INFRASTRUCTURE_FAILED"
-    assert result["lifecycle"] == {
-        "normalExitRequested": False,
-        "hostExitCode": None,
-        "descendantsAfterExit": [],
-        "portsReleased": False,
-        "status": "failed",
-    }
-    assert result["lifecycleError"] == "process inspection failed"
+    assert result["lifecycle"]["normalExitRequested"] is False
+    assert result["lifecycle"]["status"] == "failed"
+    assert result["lifecycle"]["errors"] == ["process inspection failed"]
+    assert scope.terminate_calls == 1
+    assert scope.close_calls == 1
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
 
 
 def test_normal_close_control_is_limited_to_the_test_mode_host_boundary() -> None:
@@ -527,6 +1066,405 @@ def test_packaged_host_lifecycle_uses_fixed_test_mode_tray_controls() -> None:
     assert '"--test-mode-tray-lifecycle"' in text
     assert '"--autostart"' in text
     assert "VibeTable.Next.exe" in text
+
+
+def test_host_lifecycle_artifacts_have_no_pid_tree_ownership_fallback() -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    obsolete_helpers = {
+        "_descendants",
+        "_windows_processes",
+        "_stop_process_tree",
+        "_stop_process_ids",
+    }
+    for module in (runner, packaged_host_lifecycle):
+        module_path = module.__file__
+        assert module_path is not None
+        tree = ast.parse(Path(module_path).read_text(encoding="utf-8"))
+        defined = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert defined.isdisjoint(obsolete_helpers)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            command = node.args[0]
+            if not isinstance(command, (ast.List, ast.Tuple)):
+                continue
+            literal_args = {
+                item.value.casefold()
+                for item in command.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            }
+            assert "taskkill" not in literal_args
+
+
+def test_packaged_state_failure_terminates_and_closes_the_job_scope(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    scope = _FakeScope(members=(42, 7))
+    streams = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_launch_host",
+        lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
+    )
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_wait_for_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("state missing")),
+    )
+
+    with pytest.raises(TimeoutError, match="state missing"):
+        packaged_host_lifecycle._run_tray_case(tmp_path, tmp_path / "runtime")
+
+    assert scope.terminate_calls == 1
+    assert scope.close_calls == 1
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
+
+
+def test_packaged_cleanup_failure_is_not_allowed_to_mask_the_primary_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    class FailingCleanupScope(_FakeScope):
+        def terminate_all(self) -> Any:
+            self.terminate_calls += 1
+            return runner.ScopeTerminationResult(
+                False,
+                remaining_pids=None,
+                errors=("terminate denied",),
+            )
+
+    scope = FailingCleanupScope(members=(42, 7))
+    streams = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_launch_host",
+        lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
+    )
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_wait_for_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad state")),
+    )
+
+    with pytest.raises(ValueError, match="bad state") as raised:
+        packaged_host_lifecycle._run_tray_case(tmp_path, tmp_path / "runtime")
+
+    assert any("terminate denied" in note for note in raised.value.__notes__)
+    assert cdp_owner.observe_timeouts == []
+    assert cdp_owner.closed is True
+
+
+def test_packaged_tray_success_observes_and_closes_the_cdp_owner_lease(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    streams = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_launch_host",
+        lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
+    )
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    states = iter(
+        (
+            {"action": "visible-startup", "windowVisible": True, "trayVisible": True},
+            {"action": "close-to-tray", "windowVisible": False, "trayVisible": True},
+        )
+    )
+    monkeypatch.setattr(packaged_host_lifecycle, "_wait_for_state", lambda *_args: next(states))
+    cdp_owner = _stub_cdp_owner_capture(monkeypatch)
+
+    result = packaged_host_lifecycle._run_tray_case(tmp_path, tmp_path / "runtime")
+
+    assert result["status"] == "passed"
+    assert result["lifecycle"]["status"] == "passed"
+    assert result["lifecycle"]["ownerLeaseCleanup"]["stableHandleClosed"] is True
+    assert cdp_owner.observe_timeouts
+    assert cdp_owner.closed is True
+    assert scope.close_calls == 1
+
+
+def test_packaged_tray_reports_owner_handle_close_failure_without_raising(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    streams = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(
+        packaged_host_lifecycle,
+        "_launch_host",
+        lambda *_args, **_kwargs: (scope, 9222, tmp_path, streams),
+    )
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    states = iter(
+        (
+            {"action": "visible-startup", "windowVisible": True, "trayVisible": True},
+            {"action": "close-to-tray", "windowVisible": False, "trayVisible": True},
+        )
+    )
+    monkeypatch.setattr(packaged_host_lifecycle, "_wait_for_state", lambda *_args: next(states))
+    cdp_owner = _stub_cdp_owner_capture(
+        monkeypatch,
+        close_error=OSError("C:\\private\\handle close denied"),
+    )
+
+    result = packaged_host_lifecycle._run_tray_case(tmp_path, tmp_path / "runtime")
+
+    assert result["status"] == "failed"
+    assert result["lifecycle"]["status"] == "failed"
+    assert result["lifecycle"]["ownerLeaseCleanup"]["stableHandleClosed"] is False
+    assert result["lifecycle"]["errors"] == ["unable to close captured CDP owner handle (OSError)"]
+    assert "private" not in str(result)
+    assert cdp_owner.close_calls == 1
+
+
+def test_packaged_launch_closes_stdout_when_opening_stderr_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "VibeTable.Next.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "VibeTable.Next.exe"}}),
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "runtime"
+    real_open = Path.open
+
+    def fail_stderr_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path.name == "host-stderr.log":
+            raise OSError("stderr denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_stderr_open)
+    monkeypatch.setattr(runner, "_reserve_port", lambda: 9222)
+
+    with pytest.raises(OSError, match="stderr denied"):
+        packaged_host_lifecycle._launch_host(
+            package,
+            runtime,
+            autostart=False,
+            tray_lifecycle=False,
+        )
+
+    (runtime / "host-stdout.log").rename(runtime / "stdout-closed.log")
+
+
+@pytest.mark.parametrize("failure_stage", ["stderr-open", "scope-launch"])
+def test_packaged_launch_preserves_primary_error_when_log_close_fails(
+    monkeypatch,
+    tmp_path: Path,
+    failure_stage: str,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "VibeTable.Next.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "VibeTable.Next.exe"}}),
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "runtime"
+    real_open = Path.open
+
+    class CloseFailure:
+        def __init__(self, stream: Any) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> Any:
+            return self.stream.__enter__()
+
+        def __exit__(self, *exc: object) -> None:
+            self.stream.__exit__(*exc)
+            raise OSError("stdout close denied")
+
+    def controlled_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path.name == "host-stderr.log" and failure_stage == "stderr-open":
+            raise ValueError("stderr primary")
+        stream = real_open(path, *args, **kwargs)
+        return CloseFailure(stream) if path.name == "host-stdout.log" else stream
+
+    monkeypatch.setattr(Path, "open", controlled_open)
+    monkeypatch.setattr(runner, "_reserve_port", lambda: 9222)
+    if failure_stage == "scope-launch":
+        monkeypatch.setattr(
+            runner,
+            "_launch_host_process",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                ProcessScopeLaunchError("scope primary")
+            ),
+        )
+
+    expected = "stderr primary" if failure_stage == "stderr-open" else "scope primary"
+    with pytest.raises((ValueError, ProcessScopeLaunchError), match=expected) as raised:
+        packaged_host_lifecycle._launch_host(
+            package,
+            runtime,
+            autostart=False,
+            tray_lifecycle=False,
+        )
+
+    assert any("stdout close denied" in note for note in raised.value.__notes__)
+
+
+def test_empty_job_ignores_unowned_system_network_activity(monkeypatch) -> None:
+    scope = _FakeScope(exit_code=0)
+    monkeypatch.setattr(
+        runner,
+        "query_windows_tcp_table",
+        lambda **_kwargs: (TcpListenerRow("TCP", "0.0.0.0:445", "0.0.0.0:0", "LISTENING", 4),),
+    )
+    evidence: dict[str, Any] = {"observations": {}, "errors": [], "samples": 0}
+
+    runner._record_process_network(scope, evidence)
+
+    assert evidence["observations"] == {}
+
+
+def test_empty_job_accepts_a_reused_numeric_port_when_the_listener_is_unowned(
+    monkeypatch,
+) -> None:
+    scope = _FakeScope(exit_code=0)
+
+    class ExitedOwnerLease:
+        @staticmethod
+        def observe_release(*, timeout: float) -> PortReleaseReport:
+            assert 0 <= timeout <= 35
+            return PortReleaseReport(
+                owner_pid=42,
+                owner_name="msedgewebview2.exe",
+                capture_rows=(
+                    TcpListenerRow("TCP", "127.0.0.1:9222", "0.0.0.0:0", "LISTENING", 42),
+                ),
+                release_rows=(
+                    TcpListenerRow("TCP", "127.0.0.1:9222", "0.0.0.0:0", "LISTENING", 99),
+                ),
+                decision="captured-owner-exited-port-reused-unowned",
+                released=True,
+                owner_exited=True,
+            )
+
+        @staticmethod
+        def close() -> OwnerLeaseCleanupReport:
+            return OwnerLeaseCleanupReport(stable_handle_closed=True)
+
+    report = runner._observe_scope_exit(scope, cdp_owner=ExitedOwnerLease())
+
+    assert report["status"] == "passed"
+    assert report["portsReleased"] is True
+    assert report["portRelease"]["decision"] == ("captured-owner-exited-port-reused-unowned")
+    assert report["portRelease"]["releaseRows"][0]["ownership"] == "unowned"
+
+
+def test_network_evidence_accepts_only_stable_job_members(monkeypatch) -> None:
+    class FakeScope:
+        root = _FakeRoot()
+
+        def __init__(self) -> None:
+            self.samples = iter(
+                (
+                    ((42, "VibeTable.Next.exe"), (7, "msedgewebview2.exe"), (8, "stale.exe")),
+                    ((42, "VibeTable.Next.exe"), (7, "msedgewebview2.exe")),
+                )
+            )
+
+        def snapshot(self) -> Any:
+            return SimpleNamespace(
+                members=tuple(
+                    SimpleNamespace(
+                        pid=pid,
+                        executable_name=name,
+                        identity_verified=True,
+                    )
+                    for pid, name in next(self.samples)
+                )
+            )
+
+    monkeypatch.setattr(
+        runner,
+        "query_windows_tcp_table",
+        lambda **_kwargs: (
+            TcpListenerRow("TCP", "127.0.0.1:1", "0.0.0.0:0", "LISTENING", 42),
+            TcpListenerRow("TCP", "0.0.0.0:2", "0.0.0.0:0", "LISTENING", 7),
+            TcpListenerRow("TCP", "127.0.0.1:4", "127.0.0.1:5", "ESTABLISHED", 8),
+            TcpListenerRow("TCP", "0.0.0.0:6", "0.0.0.0:0", "LISTENING", 99),
+        ),
+    )
+    evidence: dict[str, Any] = {"observations": {}, "errors": [], "samples": 0}
+
+    runner._record_process_network(FakeScope(), evidence)
+
+    assert {item["pid"] for item in evidence["observations"].values()} == {42, 7}
+    report = runner._process_network_report(evidence, status="completed")
+    assert [item["pid"] for item in report["webViewRuntimeBackgroundNetwork"]] == [7]
+    assert report["unexpectedProductNonLoopback"] == []
+    assert evidence["samples"] == 1
+
+
+def test_abort_scope_preserves_query_and_termination_failures() -> None:
+    class FakeScope:
+        root = _FakeRoot()
+
+        @staticmethod
+        def snapshot() -> Any:
+            raise RuntimeError("membership unavailable")
+
+        @staticmethod
+        def terminate_all() -> Any:
+            return runner.ScopeTerminationResult(
+                False,
+                remaining_pids=None,
+                errors=("TerminateJobObject failed",),
+            )
+
+        @staticmethod
+        def wait_empty(*, timeout: float = 5.0) -> Any:
+            del timeout
+            return runner.ScopeWaitResult(
+                None,
+                errors=("membership unavailable",),
+            )
+
+    report = runner._abort_scope(FakeScope(), reason="readiness failed")
+
+    assert report["status"] == "failed"
+    assert report["errors"] == ["readiness failed", "membership unavailable"]
+    assert report["cleanup"] == {
+        "terminationRequested": False,
+        "remainingPids": None,
+        "errors": ["TerminateJobObject failed"],
+        "status": "failed",
+    }
 
 
 def test_missing_package_is_a_strict_preflight_failure(tmp_path: Path) -> None:
@@ -688,6 +1626,12 @@ def test_plugin_lifecycle_waits_for_the_install_enable_request_to_settle() -> No
         source.index("async function scenario11") : source.index("async function scenario12")
     ]
 
+    assert (
+        "const databaseOpened = await waitForShell(page, recorder, "
+        "{ requireDatabaseOpened: true })" in scenario
+    )
+    assert "const projectKey = databaseOpened.payload.projectKey.trim()" in scenario
+    assert 'projectKey: "local:default"' not in scenario
     first_toggle = scenario.index("await toggle.click();")
     stable_enabled = scenario.index('lifecycleToggle.classList.contains("enabled")')
     assert stable_enabled < first_toggle
@@ -875,19 +1819,6 @@ def test_expected_bridge_rejection_is_acknowledged_only_after_the_scenario_asser
     assert "diagnostics.failures.splice(index, 1)" in source
 
 
-def test_table_recovery_acknowledges_only_correlated_backend_unavailable_reads() -> None:
-    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    helper = source[
-        source.index("async function waitForTableRecovery") : source.index(
-            "async function waitForStableGridState"
-        )
-    ]
-
-    assert "await acknowledgeExpectedSidecarRecoveryFailure(" in helper
-    assert "backend," in helper
-    assert "response => acknowledgeExpectedBridgeFailure(page, response)" in helper
-
-
 def test_failed_scenario_summary_includes_bounded_bridge_diagnostics() -> None:
     summary = runner._format_failed_scenario(
         {
@@ -971,6 +1902,14 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert 'jsonCell.press("Enter")' in scenario
     assert 'page.keyboard.press("Escape")' in scenario
     assert 'jsonCell.press("Shift+F10")' in scenario
+    assert 'operation: "capture"' in scenario
+    assert 'target: "json"' in scenario
+    assert "hasDialogFocusLeaseTerminalInPage" in scenario
+    assert "readDialogFocusLeaseEvidenceInPage" in scenario
+    assert 'focusLeaseEvidence.terminal?.state === "restored"' in scenario
+    assert scenario.index('operation: "capture"') < scenario.index('page.keyboard.press("Escape")')
+    assert "focusRestoration.documentHasFocus\n      &&" in scenario
+    assert "!focusRestoration.documentHasFocus" not in scenario
     assert "document.activeElement === element" in scenario
     assert "`${jsonField}\\n" in scenario
     assert 'setProductLocale(page, "en-US")' in scenario
@@ -979,18 +1918,10 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert "canonicalJsonSet(exportedValues)" in scenario
 
 
-def test_attachment_preview_and_verified_purge_receipt_are_exact_evidence() -> None:
+def test_verified_purge_receipt_is_exact_evidence() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    attachment = source[
-        source.index("async function scenario07") : source.index("async function scenario08")
-    ]
     backup = source[source.index("async function scenario12") : source.index("const scenarios")]
 
-    assert "waitForPreviewArtifact(" in attachment
-    assert 'path.join(runtime.dataRoot, "attachment-preview")' in source
-    assert 'runtime.evidenceDir,\n    "runtime",\n    "local-data"' not in source
-    assert "attachment-preview-verified.txt" in attachment
-    assert "sha256(await fs.readFile(preservedPreviewPath))" in attachment
     assert "preservedChangeSetIds" in backup
     assert "postSnapshotValuePreserved" in backup
     assert "postSnapshotAttachmentPreserved" in backup
@@ -1036,9 +1967,6 @@ def test_backup_consistency_uses_current_snapshot_versions_ui_contract() -> None
 
 def test_fault_scenarios_use_host_allocated_table_and_field_identities() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario07 = source[
-        source.index("async function scenario07") : source.index("async function scenario08")
-    ]
     scenario09 = source[
         source.index("async function scenario09") : source.index("async function scenario10")
     ]
@@ -1047,7 +1975,6 @@ def test_fault_scenarios_use_host_allocated_table_and_field_identities() -> None
     ]
     scenario12 = source[source.index("async function scenario12") : source.index("const scenarios")]
 
-    assert '"tbl_e2e_attachments"' not in scenario07
     assert '"tbl_e2e_atomic_import"' not in scenario09
     assert '"tbl_e2e_plugin_target"' not in scenario11
     assert '"tbl_e2e_backup_consistency"' not in scenario12
@@ -1327,7 +2254,7 @@ def test_process_network_report_rejects_listener_and_remote_non_loopback() -> No
                 "protocol": "TCP",
                 "local": "0.0.0.0:5000",
                 "remote": "0.0.0.0:0",
-                "state": "LISTENING",
+                "state": "侦听",
                 "pid": 11,
                 "processName": "VibeTable.Next.exe",
             },
@@ -1411,9 +2338,14 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
 def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime() -> None:
     test_files = [
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
+        runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
+        runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
+        runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
     ]
     completed = subprocess.run(
         [str(ensure_node(runner.ROOT)), "--test", *(str(path) for path in test_files)],
@@ -1509,33 +2441,24 @@ def test_nonzero_node_exit_preserves_structured_scenario_failure_but_rejects_pas
         encoding="utf-8",
     )
 
-    class FakeProcess:
-        pid = 42
-        returncode = None
-
-        def poll(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        runner.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: FakeProcess(),
-    )
+    scope = _FakeScope()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    _stub_cdp_owner_capture(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_wait_for_readiness",
         lambda *_args: {"ready": True},
     )
-    monkeypatch.setattr(runner, "_stop_process_tree", lambda *_args: None)
     monkeypatch.setattr(
         runner,
         "_request_normal_exit",
         lambda *_args, **_kwargs: {
             "normalExitRequested": True,
             "hostExitCode": 0,
-            "descendantsAfterExit": [],
+            "membersAfterExit": [],
             "portsReleased": True,
+            "errors": [],
             "status": "passed",
         },
     )
@@ -1545,11 +2468,11 @@ def test_nonzero_node_exit_preserves_structured_scenario_failure_but_rejects_pas
         *,
         scenario_dir: Path,
         local_data: Path,
-        host_process: Any,
+        host_scope: Any,
         process_network: dict[str, Any] | None = None,
     ) -> tuple[int, str, str]:
         del local_data
-        del host_process
+        del host_scope
         del process_network
         (scenario_dir / f"{scenario.id}-result.json").write_text(
             json.dumps({"scenario": scenario.id, **node_result}),

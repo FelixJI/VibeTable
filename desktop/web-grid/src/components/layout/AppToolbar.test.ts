@@ -60,7 +60,7 @@ describe("AppToolbar", () => {
     expect(wrapper.emitted("selectTable")).toEqual([["users"]]);
   });
 
-  it("exposes refresh and help through the More menu", () => {
+  it("exposes data, refresh, and help intents through the More menu", () => {
     const workspace = useWorkspaceStore();
     workspace.selectTable("orders");
     const wrapper = mount(AppToolbar);
@@ -69,8 +69,12 @@ describe("AppToolbar", () => {
     );
     expect(dropdown).toBeTruthy();
     const select = dropdown!.props("onSelect") as (key: string) => void;
+    select("import");
+    select("export");
     select("refresh");
     select("help");
+    expect(wrapper.emitted("importData")).toHaveLength(1);
+    expect(wrapper.emitted("exportData")).toHaveLength(1);
     expect(wrapper.emitted("refresh")).toHaveLength(1);
     expect(wrapper.emitted("openHelp")).toHaveLength(1);
   });
@@ -108,6 +112,23 @@ describe("AppToolbar", () => {
     expect(options.find((option) => option.key === "cancel-data-task")?.disabled).toBe(false);
     expect(options.find((option) => option.key === "import")?.disabled).toBe(true);
     expect(options.find((option) => option.key === "export")?.disabled).toBe(true);
+  });
+
+  it("keeps export available when only the import schema is unavailable", () => {
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar, {
+      props: { dataIoImportDisabled: true, dataIoExportDisabled: false },
+    });
+    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
+      (candidate.props("options") as Array<{ key: string }>).some(
+        (option) => option.key === "cancel-data-task",
+      ),
+    );
+    const options = dropdown!.props("options") as Array<{ key: string; disabled: boolean }>;
+
+    expect(options.find((option) => option.key === "import")?.disabled).toBe(true);
+    expect(options.find((option) => option.key === "export")?.disabled).toBe(false);
   });
 
   it("provides an accessible tooltip trigger for More", () => {

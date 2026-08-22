@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import type { SearchHit } from "@/contracts/generated/workbench";
+import type { SearchHit, SearchStatus } from "@/contracts/generated/workbench";
 import {
   setWorkspaceV2UiPort,
   type WorkspaceV2UiPort,
@@ -26,6 +26,26 @@ const hit = (id: string): SearchHit => ({
     fieldId: null,
     documentId: id,
   },
+});
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+const searchStatus = (state: SearchStatus["state"], generation: number): SearchStatus => ({
+  state,
+  generation,
+  checkpoint: null,
+  processed: 0,
+  total: state === "building" ? 2 : 0,
+  errorCode: null,
 });
 
 describe("workspaceSearchStore", () => {
@@ -173,6 +193,36 @@ describe("workspaceSearchStore", () => {
     });
   });
 
+  it("keeps a newer rebuild lifecycle when the initial status arrives late", async () => {
+    vi.useFakeTimers();
+    const initialStatus = deferred<SearchStatus>();
+    let statusCalls = 0;
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "workspaceSearch.status") {
+        statusCalls += 1;
+        return statusCalls === 1 ? initialStatus.promise : searchStatus("ready", 9);
+      }
+      if (action.method === "workspaceSearch.rebuild") return searchStatus("building", 8);
+      throw new Error("unexpected method");
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+
+    const initialRefresh = store.refreshStatus();
+    const rebuilding = store.rebuild();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.status.state).toBe("building");
+
+    initialStatus.resolve(searchStatus("ready", 7));
+    await initialRefresh;
+    expect(store.status).toMatchObject({ state: "building", generation: 8 });
+
+    await vi.advanceTimersByTimeAsync(250);
+    await rebuilding;
+    expect(store.status).toMatchObject({ state: "ready", generation: 9 });
+    vi.useRealTimers();
+  });
+
   it("polls a rebuild to ready, reruns the active query, and supports cancel", async () => {
     vi.useFakeTimers();
     const methods: string[] = [];
@@ -184,13 +234,13 @@ describe("workspaceSearchStore", () => {
       }
       if (action.method === "workspaceSearch.status") {
         statusCalls += 1;
-        return { state: "ready", generation: 8, checkpoint: "20", processed: 2, total: 2, errorCode: null };
+        return { state: "ready", generation: 9, checkpoint: "20", processed: 2, total: 2, errorCode: null };
       }
       if (action.method === "workspaceSearch.query") {
-        return { hits: [hit("rebuilt")], nextCursor: null, generation: 8 };
+        return { hits: [hit("rebuilt")], nextCursor: null, generation: 9 };
       }
       if (action.method === "workspaceSearch.cancel") {
-        return { state: "degraded", generation: 8, checkpoint: "20", processed: 1, total: 2, errorCode: "workspace_search.cancelled" };
+        return { state: "degraded", generation: 9, checkpoint: "20", processed: 1, total: 2, errorCode: "workspace_search.cancelled" };
       }
       throw new Error("unexpected method");
     });
@@ -208,11 +258,168 @@ describe("workspaceSearchStore", () => {
       "workspaceSearch.query",
     ]);
     expect(store.hits[0]?.hitId).toBe("rebuilt");
+    expect(store.status).toMatchObject({ state: "ready", generation: 9 });
+    expect(store.generation).toBe(9);
 
     store.status = { ...store.status, state: "building" };
     await store.cancelRebuild();
     expect(store.status.state).toBe("degraded");
     vi.useRealTimers();
+  });
+
+  it("keeps the cancel result when an older rebuild poll arrives late", async () => {
+    vi.useFakeTimers();
+    const pendingPoll = deferred<SearchStatus>();
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "workspaceSearch.rebuild") return searchStatus("building", 8);
+      if (action.method === "workspaceSearch.status") return pendingPoll.promise;
+      if (action.method === "workspaceSearch.cancel") return searchStatus("degraded", 8);
+      throw new Error("unexpected method");
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+
+    const rebuilding = store.rebuild();
+    await vi.advanceTimersByTimeAsync(250);
+    await store.cancelRebuild();
+    expect(store.status.state).toBe("degraded");
+
+    pendingPoll.resolve(searchStatus("ready", 7));
+    await rebuilding;
+    expect(store.status.state).toBe("degraded");
+    expect(store.rebuilding).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("tracks an accepted cancel from building to the authoritative terminal state", async () => {
+    vi.useFakeTimers();
+    const methods: string[] = [];
+    let statusCalls = 0;
+    const request = vi.fn(async (action: { method: string }) => {
+      methods.push(action.method);
+      if (action.method === "workspaceSearch.rebuild") return searchStatus("building", 8);
+      if (action.method === "workspaceSearch.cancel") return searchStatus("building", 8);
+      if (action.method === "workspaceSearch.status") {
+        statusCalls += 1;
+        return statusCalls === 1
+          ? searchStatus("building", 8)
+          : searchStatus("degraded", 8);
+      }
+      throw new Error("unexpected method");
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+
+    const rebuilding = store.rebuild();
+    const cancelling = store.cancelRebuild();
+    const duplicateCancel = store.cancelRebuild();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.rebuilding).toBe(true);
+    expect(store.cancelling).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(store.status.state).toBe("building");
+    await vi.advanceTimersByTimeAsync(250);
+    await Promise.all([rebuilding, cancelling, duplicateCancel]);
+
+    expect(store.status.state).toBe("degraded");
+    expect(store.rebuilding).toBe(false);
+    expect(store.cancelling).toBe(false);
+    expect(methods).toEqual([
+      "workspaceSearch.rebuild",
+      "workspaceSearch.cancel",
+      "workspaceSearch.status",
+      "workspaceSearch.status",
+    ]);
+    vi.useRealTimers();
+  });
+
+  it("fails closed and releases lifecycle ownership when cancel stays building", async () => {
+    vi.useFakeTimers({ now: 0 });
+    let statusCalls = 0;
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "workspaceSearch.cancel") return searchStatus("building", 8);
+      if (action.method === "workspaceSearch.status") {
+        statusCalls += 1;
+        return searchStatus("building", 8);
+      }
+      throw new Error("unexpected method");
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+    store.status = searchStatus("building", 8);
+    store.rebuilding = true;
+
+    const cancelling = store.cancelRebuild();
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(store.status).toMatchObject({
+        state: "failed",
+        errorCode: "workspace_search.cancel_terminal_timeout",
+      });
+      expect(store.errorCode).toBe("workspace_search.cancel_terminal_timeout");
+      expect(store.rebuilding).toBe(false);
+      expect(store.cancelling).toBe(false);
+      const callsAtDeadline = statusCalls;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(statusCalls).toBe(callsAtDeadline);
+      await cancelling;
+    } finally {
+      store.reset();
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a terminal from a different search lifecycle generation", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "workspaceSearch.cancel") return searchStatus("building", 8);
+      if (action.method === "workspaceSearch.status") return searchStatus("degraded", 9);
+      throw new Error("unexpected method");
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+    store.status = searchStatus("building", 8);
+    store.rebuilding = true;
+
+    const cancelling = store.cancelRebuild();
+    await vi.advanceTimersByTimeAsync(250);
+    await cancelling;
+
+    expect(store.status).toMatchObject({
+      state: "failed",
+      errorCode: "workspace_search.generation_mismatch",
+    });
+    expect(store.rebuilding).toBe(false);
+    expect(store.cancelling).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("keeps reset state when an older rebuild response arrives late", async () => {
+    const pendingRebuild = deferred<SearchStatus>();
+    setWorkspaceV2UiPort({
+      request: vi.fn(async (action: { method: string }) => {
+        if (action.method === "workspaceSearch.rebuild") return pendingRebuild.promise;
+        throw new Error("unexpected method");
+      }) as WorkspaceV2UiPort["request"],
+    });
+    const store = useWorkspaceSearchStore();
+
+    const rebuilding = store.rebuild();
+    expect(store.status.state).toBe("building");
+    store.reset();
+
+    pendingRebuild.resolve(searchStatus("ready", 8));
+    await rebuilding;
+    expect(store.status).toMatchObject({
+      state: "idle",
+      generation: 0,
+      processed: 0,
+      total: null,
+    });
+    expect(store.rebuilding).toBe(false);
   });
 
   it("guards duplicate rebuild/cancel calls and exposes cancel failures", async () => {
@@ -231,6 +438,19 @@ describe("workspaceSearchStore", () => {
     store.status = { ...store.status, state: "building" };
     await store.cancelRebuild();
     expect(store.errorCode).toBe("workspace_search.storage_failed");
+    expect(store.status).toMatchObject({
+      state: "failed",
+      errorCode: "workspace_search.storage_failed",
+    });
+    expect(store.rebuilding).toBe(false);
+
+    store.status = { ...store.status, state: "building", errorCode: null };
+    await store.cancelRebuild();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(store.status).toMatchObject({
+      state: "failed",
+      errorCode: "workspace_search.storage_failed",
+    });
   });
 
   it("re-reads a hit from authority and replaces a stale search result before open", async () => {

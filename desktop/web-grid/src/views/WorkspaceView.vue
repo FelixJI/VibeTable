@@ -70,6 +70,12 @@ import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
 import { useDataIoService } from "@/services/dataIoService";
 import { useMutationService } from "@/services/mutationService";
+import {
+  createStructuredDialogFocus,
+  type StructuredGridLike,
+} from "@/services/dialogFocus";
+import { reportStructuredDialogFocusE2EOutcome } from "@/services/dialogFocusDiagnostics";
+import { createNaiveModalContentUnmountAdapter } from "@/services/naiveModalContentUnmount";
 import { useTableAdminService } from "@/services/tableAdminService";
 import { useErrorRouter } from "@/services/errorRouter";
 import { usePluginService } from "@/services/pluginService";
@@ -184,7 +190,8 @@ const {
   applying: importApplying,
   cancelling: importCancelling,
   applyError: importApplyError,
-  locked: dataIoLocked,
+  canPreviewImport: canImportTableData,
+  canExport: canExportTableData,
   previewImport: importTableData,
   applyImport: confirmTableImport,
   cancelImport: cancelActiveImport,
@@ -195,7 +202,7 @@ const {
   service: dataIoService,
   resolveContext: () => ({
     collection: workspace.currentTable,
-    schemaRevision: tableStore.revision?.schemaRevision,
+    schemaRevision: tableStore.schemaRevision,
   }),
   importSucceeded: (count) => message.success(t("dataIo.import.success", { count })),
   exportSucceeded: (result) => message.success(t("dataIo.export.success", {
@@ -247,6 +254,24 @@ function onBeforeUnload(event: BeforeUnloadEvent): void {
 const relationLookup = useRelationLookupStore();
 const tabulator = ref<TabulatorFull | null>(null);
 provide(TABULATOR_INJECTION_KEY, tabulator);
+const structuredDialogFocus = createStructuredDialogFocus({
+  getGrid: () => tabulator.value as unknown as StructuredGridLike | null,
+  getScope: () => ({
+    workspaceId: workspaceSession.activeWorkspaceId,
+    sessionEpoch: workspaceSession.sessionEpoch,
+    tableId: workspace.currentTable,
+  }),
+  subscribeScope: listener => watch(
+    () => [
+      workspaceSession.activeWorkspaceId,
+      workspaceSession.sessionEpoch,
+      workspace.currentTable,
+    ] as const,
+    listener,
+    { flush: "sync" },
+  ),
+  reportOutcome: reportStructuredDialogFocusE2EOutcome,
+});
 const tableInteractions = createWorkspaceTableInteractionController({
   workspace,
   table: tableStore,
@@ -278,18 +303,42 @@ const structuredCellDialogs = createStructuredCellDialogController({
     edit.value,
     edit.expectedDigest,
   ),
-  getGrid: () => tabulator.value,
+  dialogFocus: structuredDialogFocus,
   translate: t,
-  reportError: error => message.error(error),
+  reportError: reportStructuredDialogError,
 });
+const attachmentModalLifecycle = createNaiveModalContentUnmountAdapter({
+  claimRelease: () => structuredCellDialogs.claimCloseLease("attachment"),
+  reportError: reportStructuredDialogError,
+});
+const jsonModalLifecycle = createNaiveModalContentUnmountAdapter({
+  claimRelease: () => structuredCellDialogs.claimCloseLease("json"),
+  reportError: reportStructuredDialogError,
+});
+const vAttachmentModalContentUnmount = attachmentModalLifecycle.contentUnmountDirective;
+const vJsonModalContentUnmount = jsonModalLifecycle.contentUnmountDirective;
 const attachmentPanel = structuredCellDialogs.state.attachment;
 const jsonEditor = structuredCellDialogs.state.json;
+watch(
+  () => attachmentPanel.show,
+  show => attachmentModalLifecycle.showChanged(show),
+  { flush: "sync", immediate: true },
+);
+watch(
+  () => jsonEditor.show,
+  show => jsonModalLifecycle.showChanged(show),
+  { flush: "sync", immediate: true },
+);
 const lookupSourcesDialog = ref<HTMLElement | null>(null);
 const attachmentDialog = ref<HTMLElement | null>(null);
 const jsonEditorDialog = ref<HTMLElement | null>(null);
 
 function focusModalDialog(dialog: HTMLElement | null): void {
   dialog?.focus({ preventScroll: true });
+}
+
+function reportStructuredDialogError(error: unknown): void {
+  message.error(error instanceof Error ? error.message : String(error));
 }
 
 const lookupProvenance = createLookupProvenanceController({
@@ -643,6 +692,9 @@ onBeforeUnmount(() => {
   dashboardService.dispose();
   surfaceService.dispose();
   fieldSettingsService.dispose();
+  attachmentModalLifecycle.dispose();
+  jsonModalLifecycle.dispose();
+  structuredDialogFocus.dispose();
   window.removeEventListener("beforeunload", onBeforeUnload);
 });
 
@@ -848,7 +900,8 @@ useKeyboard({
               :history-disabled="revisionHistory.selection.scope === 'multiple'"
               :insert-row-disabled="insertRowDisabled"
               :data-io-busy="dataIoBusy"
-              :data-io-locked="dataIoLocked"
+              :data-io-import-disabled="!canImportTableData"
+              :data-io-export-disabled="!canExportTableData"
               @select-table="onSelect"
               @refresh="refreshTable"
               @insert-row="mutationService.insertRow({})"
@@ -1139,9 +1192,10 @@ useKeyboard({
       :mask-closable="true"
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'attachment.close' }) }"
       @after-enter="focusModalDialog(attachmentDialog)"
-      @after-leave="structuredCellDialogs.dispatch({ type: 'attachment.closed' })"
+      @before-leave="attachmentModalLifecycle.beforeLeave()"
     >
       <div
+        v-attachment-modal-content-unmount
         ref="attachmentDialog"
         class="attachment-panel"
         role="dialog"
@@ -1189,9 +1243,10 @@ useKeyboard({
       :mask-closable="true"
       @update:show="show => { if (!show) structuredCellDialogs.dispatch({ type: 'json.close' }) }"
       @after-enter="focusModalDialog(jsonEditorDialog)"
-      @after-leave="structuredCellDialogs.dispatch({ type: 'json.closed' })"
+      @before-leave="jsonModalLifecycle.beforeLeave()"
     >
       <div
+        v-json-modal-content-unmount
         ref="jsonEditorDialog"
         class="json-editor-dialog"
         role="dialog"

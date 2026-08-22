@@ -1487,9 +1487,9 @@ public sealed class WorkspaceStorageBrokerTests
             public ulong SessionEpoch { get; } = sessionEpoch;
             public Task StartAsync(
                 WorkspaceOpenMode mode,
-                CancellationToken cancellationToken)
+                WorkspaceActivationBudget budget)
                 => Task.CompletedTask;
-            public Task VerifyAsync(CancellationToken cancellationToken)
+            public Task VerifyAsync(WorkspaceActivationBudget budget)
                 => Task.CompletedTask;
             public Task DrainAsync(CancellationToken cancellationToken)
                 => owner.FailDrain

@@ -32,6 +32,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from pydantic.alias_generators import to_camel
 
+from backend.contracts.generated_schema_v2 import SchemaSnapshot
 from backend.contracts.selection import QuerySnapshot
 
 
@@ -239,6 +240,24 @@ class QueryCursorWindowResult(CamelModel):
     def validate_cursor_presence(self) -> QueryCursorWindowResult:
         if self.has_more != (self.next_cursor is not None):
             raise ValueError("nextCursor must be present exactly when hasMore is true")
+        return self
+
+
+class QuerySelectionProjectionResult(CamelModel):
+    """One revision-matched Schema V2 snapshot and initial cursor window."""
+
+    schema_snapshot: SchemaSnapshot
+    cursor_window: QueryCursorWindowResult
+
+    @model_validator(mode="after")
+    def validate_matched_revisions(self) -> QuerySelectionProjectionResult:
+        snapshot = self.cursor_window.query_snapshot
+        if (
+            self.schema_snapshot.table_id != snapshot.table
+            or self.schema_snapshot.schema_revision != snapshot.schema_revision
+            or self.schema_snapshot.data_revision != snapshot.data_revision
+        ):
+            raise ValueError("selection schema and cursor revisions must match")
         return self
 
 
