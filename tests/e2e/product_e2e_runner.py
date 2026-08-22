@@ -23,13 +23,11 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any, Protocol
 
 ROOT = Path(__file__).resolve().parents[2]
-SCENARIO_MANIFEST = Path(__file__).with_name("pocketbase_product_scenarios.json")
 NODE_RUNNER = Path(__file__).with_name("webview_product_scenarios.mjs")
 DEFAULT_EVIDENCE = ROOT / "build" / "qa" / "product-e2e"
 CDP_TIMEOUT_SECONDS = 60.0
@@ -42,6 +40,11 @@ if str(ROOT) not in sys.path:
 from qa.package_check import check_package  # noqa: E402
 from scripts.build_next import RepoPaths  # noqa: E402
 from tests.e2e._windows_tcp_table import query_windows_tcp_table  # noqa: E402
+from tests.e2e.product_scenario_manifest import (  # noqa: E402
+    Scenario,
+    load_scenarios,
+    select_scenarios,
+)
 from tests.e2e.windows_process_scope import (  # noqa: E402
     ProcessLaunchSpec,
     ProcessScopeSnapshot,
@@ -104,79 +107,6 @@ class _PortOwnerLease(Protocol):
     def observe_release(self, *, timeout: float) -> PortReleaseReport: ...
 
     def close(self) -> OwnerLeaseCleanupReport: ...
-
-
-@dataclass(frozen=True)
-class Scenario:
-    id: str
-    title: str
-    requirement: str
-    capabilities: tuple[str, ...] = ()
-
-
-_SCENARIO_FIELDS = frozenset({"id", "title", "requirement", "capabilities"})
-_CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$")
-
-
-def load_scenarios(path: Path = SCENARIO_MANIFEST) -> list[Scenario]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("scenario manifest must be a non-empty array")
-    scenarios: list[Scenario] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, dict) or set(item) != _SCENARIO_FIELDS:
-            raise ValueError(
-                f"scenario[{index}] must contain exactly: " + ", ".join(sorted(_SCENARIO_FIELDS))
-            )
-        capabilities = item["capabilities"]
-        if (
-            not isinstance(capabilities, list)
-            or not capabilities
-            or any(
-                not isinstance(capability, str) or _CAPABILITY_PATTERN.fullmatch(capability) is None
-                for capability in capabilities
-            )
-        ):
-            raise ValueError(f"scenario[{index}].capabilities must be non-empty stable names")
-        if len(set(capabilities)) != len(capabilities):
-            raise ValueError(f"scenario[{index}].capabilities must be unique")
-        scenario = Scenario(
-            id=str(item["id"]),
-            title=str(item["title"]),
-            requirement=str(item["requirement"]),
-            capabilities=tuple(capabilities),
-        )
-        if not scenario.id or not scenario.title or not scenario.requirement:
-            raise ValueError(f"scenario[{index}] identity, title and requirement are required")
-        scenarios.append(scenario)
-    if len({item.id for item in scenarios}) != len(scenarios):
-        raise ValueError("scenario ids must be unique")
-    return scenarios
-
-
-def select_scenarios(
-    scenarios: Sequence[Scenario],
-    *,
-    scenario_ids: Sequence[str] = (),
-    capabilities: Sequence[str] = (),
-) -> list[Scenario]:
-    known_ids = {item.id for item in scenarios}
-    unknown_ids = sorted(set(scenario_ids) - known_ids)
-    if unknown_ids:
-        raise ValueError(f"unknown scenarios: {', '.join(unknown_ids)}")
-    known_capabilities = {capability for item in scenarios for capability in item.capabilities}
-    unknown_capabilities = sorted(set(capabilities) - known_capabilities)
-    if unknown_capabilities:
-        raise ValueError(f"unknown capabilities: {', '.join(unknown_capabilities)}")
-    if not scenario_ids and not capabilities:
-        return list(scenarios)
-    selected_ids = set(scenario_ids)
-    selected_capabilities = set(capabilities)
-    return [
-        item
-        for item in scenarios
-        if item.id in selected_ids or bool(selected_capabilities.intersection(item.capabilities))
-    ]
 
 
 def _sha256(path: Path) -> str:

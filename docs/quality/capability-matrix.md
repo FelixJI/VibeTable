@@ -1,8 +1,10 @@
 # 能力闭环矩阵
 
-> 实施基线：`GitHub/main@bd06158e`。最终打包候选报告
+> 本页人工判断用户能力纵切是否闭环；当前 manifest 声明的 E2E selector tag 与场景映射见
+> [产品 E2E 能力索引](product-e2e-capability-index.md)，selector tag 不等同于 Host/runtime 广告能力。
+> 历史实施基线 `GitHub/main@bd06158e` 在 2026-08-09 的打包候选报告
 > `build/q/f2/20260809T152446Z/product-e2e-report.json` 为 16/16 passed、0 failed、0 skipped；
-> 每个场景均无未确认 bridge failure/pending request，且正常退出、子进程清理和端口释放通过。
+> 该次每个场景均无未确认 bridge failure/pending request，且正常退出、子进程清理和端口释放通过。
 > `Closed` 仍只用于 producer、Host/allowlist、Web consumer、capability 与产品 E2E 均有证据的范围。
 
 | 能力 | Producer | WPF Host / allowlist | Web consumer | capability 条件 | 产品 E2E | 当前状态与阶段 0 决策 |
@@ -27,4 +29,6 @@
 - 打包生命周期的 sidecar/BFF 证据边界不同：sidecar 异常由 supervisor 自动恢复；BFF 异常通过
   workspace 关闭/重开的受支持产品路径恢复并轮换 session epoch。场景 10 同时证明旧 epoch 写入稳定
   返回 `workspace.session_stale` 且没有改变策略，新 epoch 写入可见。
-- 真实产品证据仅指 `tests/e2e/product_e2e_runner.py` 启动打包 WPF host、附着真实 WebView2 CDP 后生成的场景报告；unit、integration 与组件测试只作支撑证据。
+- 真实产品通过证据仅指 `tests/e2e/product_e2e_runner.py` 启动打包 WPF host、附着真实
+  WebView2 CDP 后生成的对应 `required` 场景报告；[产品 E2E 能力索引](product-e2e-capability-index.md)
+  只投影当前声明，unit、integration 与组件测试只作支撑证据。
