@@ -309,12 +309,23 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "uv",
                 "run",
                 "python",
+                "scripts/generate_product_e2e_capability_index.py",
+                "--check",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            (
+                "uv",
+                "run",
+                "python",
                 "-m",
                 "pytest",
                 "tests/contract/test_v2_contracts.py",
                 "tests/contract/test_product_contracts.py",
                 "tests/contract/test_schema_v2_dto_codegen.py",
                 "tests/contract/test_workbench_dto_codegen.py",
+                "tests/contract/test_product_e2e_capability_index.py",
                 "tests/backend/contracts/test_workspace_v2_models.py",
                 "-q",
                 "--no-cov",
@@ -374,7 +385,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
 
     automation_project.quality()
 
-    assert [command for command, _cwd in observed[:7]] == [
+    assert [command for command, _cwd in observed[:8]] == [
         ("uv", "run", "python", "contracts/schema-v2/generate_dtos.py", "--check"),
         ("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check"),
         (
@@ -395,12 +406,20 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "uv",
             "run",
             "python",
+            "scripts/generate_product_e2e_capability_index.py",
+            "--check",
+        ),
+        (
+            "uv",
+            "run",
+            "python",
             "-m",
             "pytest",
             "tests/contract/test_v2_contracts.py",
             "tests/contract/test_product_contracts.py",
             "tests/contract/test_schema_v2_dto_codegen.py",
             "tests/contract/test_workbench_dto_codegen.py",
+            "tests/contract/test_product_e2e_capability_index.py",
             "tests/backend/contracts/test_workspace_v2_models.py",
             "-q",
             "--no-cov",

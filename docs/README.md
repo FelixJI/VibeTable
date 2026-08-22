@@ -11,6 +11,8 @@ VibeTable 是一个通用的建表与文件管理桌面工具。本目录存放�
 - [跨进程 seam 索引](architecture/interprocess-seams.md)：Web、WPF、Python BFF 与 Go sidecar 的
   authority、session/epoch、错误和取消语义。
 - [质量门禁](quality-gates.md)：本地最小反馈、GitHub `required` 与发布资格范围。
+- [产品 E2E 能力索引](quality/product-e2e-capability-index.md)：由权威 manifest 生成的当前场景与
+  selector tag 双向映射；实际通过状态仍以对应 `required` 报告为准。
 - [稳定化台账](quality/stabilization-ledger.md)与[能力闭环矩阵](quality/capability-matrix.md)：
   当前缺陷、验收空白、用户能力可见性与冻结退出证据。
 - [Node 开发工具链](node-toolchain.md)：锁定版本、来源、恢复方式和发布包边界。

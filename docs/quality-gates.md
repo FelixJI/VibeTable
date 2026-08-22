@@ -51,6 +51,11 @@ Go build cache 与临时二进制清理，不得通过跳过测试或放宽 race
 
 产品 E2E 结果会记录场景总耗时、每次 WebView2 bridge 往返、`requestType`、稳定错误码、未完成请求，以及历史抽屉从点击到首屏时间。以下规则用于源码冻结与发布门禁：
 
+当前 manifest 声明的场景、E2E selector tag 与双向映射由
+[产品 E2E 能力索引](quality/product-e2e-capability-index.md)确定性生成。该索引不等同于
+Host/runtime capability，也不表示场景已通过；只有与候选 source SHA 绑定的 `required` 产品报告
+才是本次运行的通过证据。
+
 - 任意未预期的 `operation.failed` 或场景结束时仍 pending 的 bridge 请求，直接判定场景失败；不能再用“稍后轮询成功”掩盖中途错误。
 - 普通历史查询以 p95 500ms 为告警线、单次 2s 为硬上限；历史抽屉首屏以 p95 750ms 为告警线、单次 2s 为硬上限。
 - sidecar 故障注入后的读取属于恢复性能：允许在宿主内等待最多 3s，但只重试 `query.page` 和 `history.queryRequested` 这类幂等读取。写入、恢复应用等操作禁止自动重试。

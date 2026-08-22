@@ -8,7 +8,8 @@
 - S0/S1 只在有最小复现、失败证据或已确认用户影响时登记为已知缺陷。
 - 无法复现、仅缺少产品级证据的项目进入“待证实”，不占用 S0/S1 结论。
 - 每项必须有所属模块、测试 seam、状态和目标阶段。能力可见性决定见
-  [能力闭环矩阵](capability-matrix.md)。
+  [能力闭环矩阵](capability-matrix.md)；当前 E2E 场景与 selector tag 声明见
+  [产品 E2E 能力索引](product-e2e-capability-index.md)，实际通过状态以对应 `required` 报告为准。
 
 ## 已知可复现缺陷
 
@@ -38,12 +39,12 @@
 ## 阶段 0 决策记录
 
 - Workspace create/open/switch、Snapshot、FileHistory/Conflict、Dashboard 生命周期与 Document Diff
-  已由最终打包产品报告闭环；Retention、plugin 与其他条件能力的精确子路径状态见能力矩阵。
+  已由 2026-08-09 的打包产品报告闭环；Retention、plugin 与其他条件能力的精确子路径状态见能力矩阵。
 - Preset/version、workspace relink 与 plugin 成功 lifecycle mutation 保持 Hidden；Replica synchronize
   保持 Internal only；Dashboard 双编辑器 conflict 不借相邻证据扩大结论。
 - 阶段 0 不新增或移除 provider/data authority，不以未验证项触发功能重构。
 
-## 当前候选验收基线
+## 历史候选验收基线（2026-08-09）
 
 - `build/q/f2/20260809T152446Z/product-e2e-report.json` 为 16/16 passed；场景 10 由真实 Host
   精确终止 `vibetable-pb.exe` 后自动恢复，再精确终止 `vibetable-backend.exe`，通过 workspace
