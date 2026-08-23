@@ -9,13 +9,14 @@ import {
   FileType2,
   AlertTriangle,
 } from "lucide-vue-next";
-import type { Component } from "vue";
+import { computed, nextTick, ref, watch, type Component } from "vue";
 import type { DocumentEntry } from "@/stores/documentWorkspaceStore";
 import { t } from "@/i18n";
 
-defineProps<{
+const props = defineProps<{
   entries: readonly DocumentEntry[];
   selectedHandles: readonly string[];
+  primaryHandle: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -26,6 +27,30 @@ const emit = defineEmits<{
   dragOut: [entry: DocumentEntry];
   selectAll: [];
 }>();
+
+const listElement = ref<HTMLElement | null>(null);
+const focusedHandle = ref<string | null>(null);
+const rovingHandle = computed(() => {
+  if (focusedHandle.value && props.entries.some(
+    (entry) => entry.entryHandle === focusedHandle.value,
+  )) return focusedHandle.value;
+  if (props.primaryHandle && props.entries.some(
+    (entry) => entry.entryHandle === props.primaryHandle,
+  )) return props.primaryHandle;
+  return props.entries[0]?.entryHandle ?? null;
+});
+
+watch(
+  [() => props.primaryHandle, () => props.entries],
+  ([primaryHandle, entries]) => {
+    if (primaryHandle && entries.some((entry) => entry.entryHandle === primaryHandle)) {
+      focusedHandle.value = primaryHandle;
+    } else if (!entries.some((entry) => entry.entryHandle === focusedHandle.value)) {
+      focusedHandle.value = entries[0]?.entryHandle ?? null;
+    }
+  },
+  { immediate: true },
+);
 
 function iconFor(entry: DocumentEntry): Component {
   const mime = entry.mimeType ?? "";
@@ -62,7 +87,20 @@ function formatRevisionTime(value: string): string {
 }
 
 function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): void {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "a") {
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const nextIndex = event.key === "ArrowDown"
+      ? Math.min(props.entries.length - 1, index + 1)
+      : Math.max(0, index - 1);
+    if (nextIndex === index) return;
+    const nextEntry = props.entries[nextIndex];
+    if (!nextEntry) return;
+    focusedHandle.value = nextEntry.entryHandle;
+    emit("select", nextIndex, { toggle: false, range: false });
+    void nextTick(() => {
+      listElement.value?.querySelectorAll<HTMLElement>(".document-row")[nextIndex]?.focus();
+    });
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "a") {
     event.preventDefault();
     emit("selectAll");
   } else if (event.key === "Enter" && entry.capabilities.includes("open")) {
@@ -80,10 +118,13 @@ function onKeydown(event: KeyboardEvent, entry: DocumentEntry, index: number): v
   }
 }
 
-function onDragStart(event: DragEvent, entry: DocumentEntry): void {
+function onDragStart(event: DragEvent, entry: DocumentEntry, index: number): void {
   if (!entry.capabilities.includes("dragOut")) {
     event.preventDefault();
     return;
+  }
+  if (props.primaryHandle !== entry.entryHandle) {
+    emit("select", index, { toggle: false, range: false });
   }
   // Never place paths or the capability handle in browser drag data. The host
   // receives the opaque intent and starts the real native FileDrop operation.
@@ -93,7 +134,7 @@ function onDragStart(event: DragEvent, entry: DocumentEntry): void {
 </script>
 
 <template>
-  <div class="document-list" role="grid" :aria-label="t('files.listLabel')">
+  <div ref="listElement" class="document-list" role="grid" :aria-label="t('files.listLabel')">
     <div class="document-head" role="row">
       <span role="columnheader">{{ t("files.column.name") }}</span>
       <span role="columnheader">{{ t("files.column.size") }}</span>
@@ -111,14 +152,16 @@ function onDragStart(event: DragEvent, entry: DocumentEntry): void {
         'document-row--missing': !['available', 'remote'].includes(entry.availability),
       }"
       :aria-selected="selectedHandles.includes(entry.entryHandle)"
+      :tabindex="entry.entryHandle === rovingHandle ? 0 : -1"
       :draggable="entry.capabilities.includes('dragOut')"
       :title="entry.capabilities.includes('dragOut') ? t('files.dragOut.hint') : undefined"
       :data-testid="`document-row-${entry.entryHandle}`"
       @click="onSelect($event, index)"
+      @focus="focusedHandle = entry.entryHandle"
       @dblclick="entry.capabilities.includes('open') && emit('open', entry)"
       @keydown="onKeydown($event, entry, index)"
       @contextmenu.prevent="emit('context', entry, { x: $event.clientX, y: $event.clientY })"
-      @dragstart="onDragStart($event, entry)"
+      @dragstart="onDragStart($event, entry, index)"
     >
       <span class="document-name" role="gridcell">
         <NIcon :size="18" class="file-icon"><component :is="iconFor(entry)" /></NIcon>
