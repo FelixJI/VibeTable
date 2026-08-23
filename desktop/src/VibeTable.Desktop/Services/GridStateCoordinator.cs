@@ -43,12 +43,13 @@ public sealed class GridStateCoordinator
 
     private readonly ITableRpcGateway _gateway;
     private readonly Action<TableNotification> _notify;
+    private readonly TimeProvider _timeProvider;
     private readonly object _databaseGate = new();
 
     private int _generation;
     private CancellationTokenSource? _queryCts;
-    private Timer? _queryDebounce;
-    private Timer? _saveDebounce;
+    private ITimer? _queryDebounce;
+    private ITimer? _saveDebounce;
     private TaskCompletionSource<bool>? _pendingSave;
 
     private QuerySnapshot? _activeSnapshot;
@@ -68,10 +69,12 @@ public sealed class GridStateCoordinator
 
     public GridStateCoordinator(
         ITableRpcGateway gateway,
-        Action<TableNotification> notify)
+        Action<TableNotification> notify,
+        TimeProvider? timeProvider = null)
     {
         _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
         _notify = notify ?? throw new ArgumentNullException(nameof(notify));
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>The currently active query snapshot, or null before the first
@@ -148,12 +151,12 @@ public sealed class GridStateCoordinator
         _queryDebounce?.Dispose();
         JsonElement stableQuery = query.Clone();
         var state = (table, stableQuery, generation, token);
-        _queryDebounce = new Timer(
+        _queryDebounce = _timeProvider.CreateTimer(
             _ => _ = ExecuteRawQueryAsync(
                 state.table, state.stableQuery, state.generation, state.token),
             null,
-            QueryDebounceMs,
-            Timeout.Infinite);
+            TimeSpan.FromMilliseconds(QueryDebounceMs),
+            Timeout.InfiniteTimeSpan);
     }
 
     public void RequestNextWindow(string cursor)
@@ -188,11 +191,11 @@ public sealed class GridStateCoordinator
         string? revision = _confirmedRevision ?? state.Revision;
         var snapshot = (_databaseId, _currentTable, state, revision);
         _saveDebounce?.Dispose();
-        _saveDebounce = new Timer(
+        _saveDebounce = _timeProvider.CreateTimer(
             _ => _ = ExecuteSaveAsync(snapshot.Item1, snapshot.Item2, snapshot.Item3, snapshot.Item4),
             null,
-            SaveDebounceMs,
-            Timeout.Infinite);
+            TimeSpan.FromMilliseconds(SaveDebounceMs),
+            Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>
