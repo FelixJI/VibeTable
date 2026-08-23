@@ -810,6 +810,12 @@ const showWorkspaceCenterScreen = computed(() =>
 const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
   ({ nextWorkspaceId }) => {
+    void structuredCellDialogs.dispatch({ type: "attachment.close" });
+    void structuredCellDialogs.dispatch({ type: "json.close" });
+    void lookupProvenance.dispatch({ type: "scope.retire" });
+    void relationEditorController.dispatch({ type: "scope.retire" });
+    contentPanelOpen.value = false;
+    contentRowKey.value = null;
     workspace.clear();
     tableStore.reset();
     history.clear();

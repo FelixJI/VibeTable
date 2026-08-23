@@ -87,6 +87,10 @@ export default defineConfig({
           lines: 90.9,
           branches: 73.9,
         },
+        "src/views/WorkspaceView.vue": {
+          lines: 75.7,
+          branches: 80,
+        },
       },
     },
   },

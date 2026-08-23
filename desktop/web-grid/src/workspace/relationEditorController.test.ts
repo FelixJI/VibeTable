@@ -457,4 +457,194 @@ describe("relationEditorController", () => {
     expect(reportSuccess).toHaveBeenCalledWith("已创建记录并写入“客户”");
     scope.stop();
   });
+
+  it("同步退役完整创建状态，阻止新 workspace 的插入结果沿用旧关联", async () => {
+    const related = { ...descriptor, relatedCollection: "customers" };
+    const service = servicePort({
+      describeCollection: vi.fn(async () => ({
+        collection: "customers",
+        primaryKey: "id",
+        primaryDisplayFieldId: "customer-name",
+        columns: [],
+        normalizedRelations: [],
+        schemaRevision: "schema-customers",
+        permissionRevision: "permission",
+        capabilityHash: "capability",
+        lookupRevision: "lookup",
+      })),
+      searchTargets: vi.fn(async () => ({ items: [], total: 0 })),
+      attachExistingTarget: vi.fn(),
+    });
+    const {
+      controller,
+      selectTable,
+      navigateTables,
+      reportInfo,
+      reportSuccess,
+      reportError,
+      scope,
+    } = setup(service, { getTableDefinition: vi.fn(async () => customerDefinition) });
+    await controller.dispatch({
+      type: "editor.open",
+      rowKey: "row-1",
+      field: "customer",
+      descriptor: related,
+      value: null,
+    });
+    await flushPromises();
+    await controller.dispatch({ type: "target.openFullEditor" });
+    expect(controller.pendingCreation.value).not.toBeNull();
+    vi.clearAllMocks();
+
+    const retirement = controller.dispatch({ type: "scope.retire" });
+    expect(controller.pendingCreation.value).toBeNull();
+    expect(controller.state).toEqual(expect.objectContaining({
+      show: false,
+      rowKey: null,
+      descriptor: null,
+      candidates: [],
+      loading: false,
+      applying: false,
+    }));
+    expect(selectTable).not.toHaveBeenCalled();
+    expect(navigateTables).not.toHaveBeenCalled();
+    expect(reportInfo).not.toHaveBeenCalled();
+    await retirement;
+
+    await controller.dispatch({
+      type: "pending.complete",
+      result: {
+        rowKey: "customer-from-workspace-b",
+        row: { name: "Workspace B customer" },
+        revision: {
+          databaseSessionId: "workspace-b",
+          schemaRevision: "schema-customers",
+          dataRevision: 1,
+        },
+      },
+    });
+    expect(service.attachExistingTarget).not.toHaveBeenCalled();
+    expect(selectTable).not.toHaveBeenCalled();
+    expect(reportSuccess).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
+    scope.stop();
+  });
+
+  it("退役后忽略已经在途的旧 workspace 自动关联结果", async () => {
+    const related = { ...descriptor, relatedCollection: "customers" };
+    const pendingAttach = deferred<{
+      outcome: "committed";
+      current: RelationTargetRef;
+      schemaRevision: string;
+      requestId: string;
+    }>();
+    const service = servicePort({
+      describeCollection: vi.fn(async () => ({
+        collection: "customers",
+        primaryKey: "id",
+        primaryDisplayFieldId: "customer-name",
+        columns: [],
+        normalizedRelations: [],
+        schemaRevision: "schema-customers",
+        permissionRevision: "permission",
+        capabilityHash: "capability",
+        lookupRevision: "lookup",
+      })),
+      searchTargets: vi.fn(async () => ({ items: [], total: 0 })),
+      attachExistingTarget: vi.fn(() => pendingAttach.promise),
+    });
+    const {
+      controller,
+      selectTable,
+      reportSuccess,
+      reportError,
+      scope,
+    } = setup(service, { getTableDefinition: vi.fn(async () => customerDefinition) });
+    await controller.dispatch({
+      type: "editor.open",
+      rowKey: "row-1",
+      field: "customer",
+      descriptor: related,
+      value: null,
+    });
+    await flushPromises();
+    await controller.dispatch({ type: "target.openFullEditor" });
+    vi.clearAllMocks();
+
+    const completion = controller.dispatch({
+      type: "pending.complete",
+      result: {
+        rowKey: "customer-2",
+        row: { name: "客户二" },
+        revision: {
+          databaseSessionId: "workspace-a",
+          schemaRevision: "schema-customers",
+          dataRevision: 2,
+        },
+      },
+    });
+    await vi.waitFor(() => expect(service.attachExistingTarget).toHaveBeenCalledOnce());
+    await controller.dispatch({ type: "scope.retire" });
+    pendingAttach.resolve({
+      outcome: "committed",
+      current: { collection: "customers", itemId: "customer-2", label: "客户二" },
+      schemaRevision: "schema",
+      requestId: "attach-request",
+    });
+    await completion;
+
+    expect(controller.pendingCreation.value).toBeNull();
+    expect(selectTable).not.toHaveBeenCalled();
+    expect(reportSuccess).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
+    scope.stop();
+  });
+
+  it("旧 workspace 创建目标晚到时不得对新 editor 发起关联写入", async () => {
+    const pendingCreate = deferred<{
+      outcome: "committed";
+      target: RelationTargetRef;
+      requestId: string;
+    }>();
+    const service = servicePort({
+      searchTargets: vi.fn(async () => ({ items: [], total: 0 })),
+      createTarget: vi.fn(() => pendingCreate.promise),
+      updateSingle: vi.fn(),
+    });
+    const { controller, scope } = setup(service);
+    await controller.dispatch({
+      type: "editor.open",
+      rowKey: "row-1",
+      field: "customer",
+      descriptor,
+      value: null,
+    });
+    const oldCreation = controller.dispatch({ type: "target.create", label: "Workspace A" });
+    await vi.waitFor(() => expect(service.createTarget).toHaveBeenCalledOnce());
+
+    await controller.dispatch({ type: "scope.retire" });
+    await controller.dispatch({
+      type: "editor.open",
+      rowKey: "row-2",
+      field: "customer",
+      descriptor,
+      value: null,
+    });
+    pendingCreate.resolve({
+      outcome: "committed",
+      target: { collection: "customers", itemId: "customer-a", label: "Workspace A" },
+      requestId: "create-a",
+    });
+    await oldCreation;
+
+    expect(service.updateSingle).not.toHaveBeenCalled();
+    expect(controller.state).toEqual(expect.objectContaining({
+      show: true,
+      rowKey: "row-2",
+      field: "customer",
+      applying: false,
+      candidates: [],
+    }));
+    scope.stop();
+  });
 });

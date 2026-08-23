@@ -35,6 +35,7 @@ interface LookupNavigationTarget {
 }
 
 export type LookupProvenanceIntent =
+  | { readonly type: "scope.retire" }
   | { readonly type: "sources.open"; readonly page: LookupSourcePageIntent }
   | { readonly type: "sources.close" }
   | { readonly type: "sources.loadMore" }
@@ -100,6 +101,22 @@ export function createLookupProvenanceController(
     state.loading = false;
   }
 
+  function retireScope(): void {
+    sourceEpoch += 1;
+    navigation = null;
+    Object.assign(state, {
+      show: false,
+      loading: false,
+      error: null,
+      fieldRef: "",
+      sourceRecordId: "",
+      items: [],
+      total: 0,
+      totalKnown: true,
+      hasMore: false,
+    });
+  }
+
   async function loadMoreSources(): Promise<void> {
     if (state.loading || !state.hasMore) return;
     const epoch = sourceEpoch;
@@ -159,12 +176,14 @@ export function createLookupProvenanceController(
       const rowKey = matchingRow.rowKey;
       if (typeof rowKey !== "string" && typeof rowKey !== "number") return;
       await nextTick();
+      if (navigation !== target) return;
       try {
         const row = (rawGrid as NavigationGrid)
           .getRows()
           .find(candidate => String(candidate.getIndex()) === String(rowKey));
         if (!row) throw new Error("lookup source row is no longer rendered");
         await row.scrollTo("center", true);
+        if (navigation !== target) return;
         row.select();
         row.getElement().classList.add("vt-row-selected");
         if (target.open === "content") {
@@ -175,7 +194,7 @@ export function createLookupProvenanceController(
         }
         dependencies.reportLocated(target.source);
       } catch {
-        dependencies.reportFiltered(target.source);
+        if (navigation === target) dependencies.reportFiltered(target.source);
       } finally {
         if (navigation === target) navigation = null;
       }
@@ -184,6 +203,9 @@ export function createLookupProvenanceController(
 
   async function dispatch(intent: LookupProvenanceIntent): Promise<void> {
     switch (intent.type) {
+      case "scope.retire":
+        retireScope();
+        return;
       case "sources.open":
         sourceEpoch += 1;
         Object.assign(state, {
