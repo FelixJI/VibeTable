@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { NButton, NIcon } from "naive-ui";
 import { AlertTriangle, Eye, FileQuestion, History } from "lucide-vue-next";
 import type { DocumentEntry, InspectorTab } from "@/stores/documentWorkspaceStore";
@@ -24,6 +24,12 @@ const effectiveTab = computed<InspectorTab>(() =>
   props.activeTab === "history" && props.entry?.capabilities.includes("history")
     ? "history"
     : "preview");
+const availableTabs = computed<InspectorTab[]>(() =>
+  props.entry?.capabilities.includes("history")
+    ? ["preview", "history"]
+    : ["preview"]);
+const previewTabElement = ref<HTMLButtonElement | null>(null);
+const historyTabElement = ref<HTMLButtonElement | null>(null);
 
 const emit = defineEmits<{
   tab: [tab: InspectorTab];
@@ -44,25 +50,56 @@ function unavailableTitle(entry: DocumentEntry): string {
 function unavailableHint(entry: DocumentEntry): string {
   return t(`files.${entry.availability}.hint`);
 }
+
+function activateTab(tab: InspectorTab): void {
+  if (tab === "history") {
+    if (!props.entry?.capabilities.includes("history")) return;
+    emit("history", props.entry);
+    return;
+  }
+  emit("tab", "preview");
+}
+
+async function moveTab(event: KeyboardEvent, currentTab: InspectorTab): Promise<void> {
+  const offset = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+  if (offset === 0) return;
+  event.preventDefault();
+  const currentIndex = availableTabs.value.indexOf(currentTab);
+  if (currentIndex < 0) return;
+  const targetIndex = (
+    currentIndex + offset + availableTabs.value.length
+  ) % availableTabs.value.length;
+  const targetTab = availableTabs.value[targetIndex];
+  if (targetTab === currentTab) return;
+  activateTab(targetTab);
+  await nextTick();
+  (targetTab === "history" ? historyTabElement.value : previewTabElement.value)?.focus();
+}
 </script>
 
 <template>
   <aside class="document-inspector" :aria-label="t('files.inspector')">
     <div class="inspector-tabs" role="tablist">
       <button
+        ref="previewTabElement"
         :class="{ active: effectiveTab === 'preview' }"
         role="tab"
         :aria-selected="effectiveTab === 'preview'"
-        @click="emit('tab', 'preview')"
+        :tabindex="effectiveTab === 'preview' ? 0 : -1"
+        @click="activateTab('preview')"
+        @keydown="moveTab($event, 'preview')"
       >
         <NIcon :size="14"><Eye /></NIcon>{{ t("files.action.preview") }}
       </button>
       <button
         v-if="entry?.capabilities.includes('history')"
+        ref="historyTabElement"
         :class="{ active: effectiveTab === 'history' }"
         role="tab"
         :aria-selected="effectiveTab === 'history'"
-        @click="entry && emit('history', entry)"
+        :tabindex="effectiveTab === 'history' ? 0 : -1"
+        @click="activateTab('history')"
+        @keydown="moveTab($event, 'history')"
       >
         <NIcon :size="14"><History /></NIcon>{{ t("files.action.history") }}
       </button>

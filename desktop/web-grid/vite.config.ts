@@ -87,9 +87,17 @@ export default defineConfig({
           lines: 90.9,
           branches: 73.9,
         },
+        "src/components/files/DocumentInspector.vue": {
+          lines: 85.1,
+          branches: 91.6,
+        },
         "src/views/WorkspaceView.vue": {
           lines: 75.7,
           branches: 80,
+        },
+        "src/workspace/**/*Controller.ts": {
+          lines: 77.5,
+          branches: 64.6,
         },
       },
     },
