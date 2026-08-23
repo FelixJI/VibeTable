@@ -8,19 +8,39 @@
     "dotnet_coverage": {
       "projects": {
         "VibeTable.Desktop": {
+          "source_project": "desktop/src/VibeTable.Desktop/VibeTable.Desktop.csproj",
           "test_project": "desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj",
           "msbuild_prefix": "VibeTableDesktop",
           "minimum": {
-            "line": 51,
-            "branch": 43
+            "line": 63,
+            "branch": 53
           }
         },
         "VibeTable.PreviewHost": {
+          "source_project": "desktop/src/VibeTable.PreviewHost/VibeTable.PreviewHost.csproj",
           "test_project": "desktop/tests/VibeTable.PreviewHost.Tests/VibeTable.PreviewHost.Tests.csproj",
           "msbuild_prefix": "VibeTablePreviewHost",
           "minimum": {
             "line": 41,
             "branch": 50
+          }
+        },
+        "VibeTable.Workspace": {
+          "source_project": "desktop/src/VibeTable.Workspace/VibeTable.Workspace.csproj",
+          "test_project": "desktop/tests/VibeTable.Workspace.Tests/VibeTable.Workspace.Tests.csproj",
+          "msbuild_prefix": "VibeTableWorkspace",
+          "minimum": {
+            "line": 92,
+            "branch": 85
+          }
+        },
+        "VibeTable.Infrastructure": {
+          "source_project": "desktop/src/VibeTable.Infrastructure/VibeTable.Infrastructure.csproj",
+          "test_project": "desktop/tests/VibeTable.Infrastructure.Tests/VibeTable.Infrastructure.Tests.csproj",
+          "msbuild_prefix": "VibeTableInfrastructure",
+          "minimum": {
+            "line": 74,
+            "branch": 64
           }
         }
       }

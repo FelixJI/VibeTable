@@ -6,15 +6,20 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
-  <!-- Workspace owns persisted revisions and refs. Keep this stricter than
-       UI/process adapters and raise it toward the repository-wide 85% goal. -->
+  <!-- Workspace owns persisted revisions and refs. Its independent line and
+       branch floors come from the central coverage inventory. -->
   <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
-    <Include>[VibeTable.Workspace]*</Include>
-    <SkipAutoProps>true</SkipAutoProps>
-    <Threshold>80</Threshold>
-    <ThresholdType>line</ThresholdType>
+    <Include>$(VibeTableWorkspaceCoverageInclude)</Include>
+    <Threshold>$(VibeTableWorkspaceLineCoverageMinimum),$(VibeTableWorkspaceBranchCoverageMinimum)</Threshold>
+    <ThresholdType>line,branch</ThresholdType>
     <ThresholdStat>total</ThresholdStat>
   </PropertyGroup>
+
+  <Target Name="ValidateVibeTableWorkspaceCoverageProperties" BeforeTargets="VSTest"
+          Condition="'$(CollectCoverage)' == 'true'">
+    <Error Condition="'$(VibeTableWorkspaceCoverageInclude)' == '' or '$(VibeTableWorkspaceLineCoverageMinimum)' == '' or '$(VibeTableWorkspaceBranchCoverageMinimum)' == ''"
+           Text="Workspace coverage properties must come from .ci/project.json via qa/next.py." />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="coverlet.msbuild" Version="6.0.4">

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import asdict, dataclass
@@ -294,8 +295,8 @@ def _resolve(name: str) -> str:
     return shutil.which(name) or name
 
 
-def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, int]:
-    """Load per-assembly Coverlet ratchets from the authoritative project config."""
+def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, int | str]:
+    """Validate the per-assembly Coverlet inventory and emit its MSBuild properties."""
 
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
@@ -305,20 +306,52 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
     if not isinstance(projects, dict) or not projects:
         raise ValueError("dotnet coverage projects must be a non-empty object")
 
-    properties: dict[str, int] = {}
+    properties: dict[str, int | str] = {}
+    prefixes: set[str] = set()
+    source_projects: set[Path] = set()
     test_projects: set[Path] = set()
+    source_root = (REPO_ROOT / "desktop" / "src").resolve()
+    tests_root = (REPO_ROOT / "desktop" / "tests").resolve()
+    active_coverage_condition = "'$(CollectCoverage)' == 'true'"
+    solution_text = DESKTOP_SLN.read_text(encoding="utf-8")
+    solution_projects = {
+        (DESKTOP_SLN.parent / project).resolve()
+        for project in re.findall(
+            r'^Project\("[^"]+"\) = "[^"]+", "([^"]+\.csproj)",',
+            solution_text,
+            re.MULTILINE,
+        )
+    }
     for assembly, raw in projects.items():
         if not isinstance(assembly, str) or not assembly or not isinstance(raw, dict):
             raise ValueError("dotnet coverage project entries must be named objects")
         prefix = raw.get("msbuild_prefix")
+        source_project = raw.get("source_project")
         test_project = raw.get("test_project")
         minimum = raw.get("minimum")
         if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", prefix):
             raise ValueError(f"invalid dotnet coverage msbuild_prefix for {assembly}")
+        if prefix in prefixes:
+            raise ValueError(f"duplicate dotnet coverage msbuild_prefix: {prefix}")
+        prefixes.add(prefix)
+        if not isinstance(source_project, str) or not source_project:
+            raise ValueError(f"invalid dotnet coverage source_project for {assembly}")
         if not isinstance(test_project, str) or not test_project:
             raise ValueError(f"invalid dotnet coverage test_project for {assembly}")
+        source_path = (REPO_ROOT / source_project).resolve()
         project_path = (REPO_ROOT / test_project).resolve()
-        tests_root = (REPO_ROOT / "desktop" / "tests").resolve()
+        if (
+            not source_path.is_relative_to(source_root)
+            or source_path.suffix != ".csproj"
+            or not source_path.is_file()
+            or source_path in source_projects
+        ):
+            raise ValueError(f"invalid dotnet coverage source_project for {assembly}")
+        source_root_xml = ET.parse(source_path).getroot()
+        assembly_name = source_root_xml.findtext(".//AssemblyName") or source_path.stem
+        if assembly_name != assembly:
+            raise ValueError(f"dotnet coverage source_project must match {assembly}")
+        source_projects.add(source_path)
         if (
             not project_path.is_relative_to(tests_root)
             or project_path.suffix != ".csproj"
@@ -327,8 +360,121 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
         ):
             raise ValueError(f"invalid dotnet coverage test_project for {assembly}")
         test_projects.add(project_path)
+        for bound_path in (source_path, project_path):
+            if bound_path not in solution_projects:
+                raise ValueError(f"dotnet coverage project is missing from solution: {bound_path}")
         if not isinstance(minimum, dict) or set(minimum) != {"line", "branch"}:
             raise ValueError(f"dotnet coverage minimum must declare line and branch for {assembly}")
+
+        project_root = ET.parse(project_path).getroot()
+        coverlet_bindings = [
+            (group, node)
+            for group in project_root.findall("ItemGroup")
+            for node in group.findall("PackageReference")
+            if node.attrib.get("Include", "").casefold() == "coverlet.msbuild"
+        ]
+        if len(coverlet_bindings) != 1:
+            raise ValueError(
+                f"dotnet coverage test_project must use coverlet.msbuild once: {assembly}"
+            )
+        coverlet_group, coverlet_reference = coverlet_bindings[0]
+        include_assets_values = {
+            value.strip()
+            for value in (
+                coverlet_reference.attrib.get("IncludeAssets"),
+                coverlet_reference.findtext("IncludeAssets"),
+            )
+            if value and value.strip()
+        }
+        exclude_assets_values = {
+            value.strip()
+            for value in (
+                coverlet_reference.attrib.get("ExcludeAssets"),
+                coverlet_reference.findtext("ExcludeAssets"),
+            )
+            if value and value.strip()
+        }
+        include_assets = next(iter(include_assets_values), None)
+        active_assets = (
+            {asset.strip().casefold() for asset in include_assets.split(";")}
+            if include_assets
+            else None
+        )
+        if (
+            coverlet_group.attrib.get("Condition")
+            or coverlet_reference.attrib.get("Condition")
+            or len(include_assets_values) > 1
+            or exclude_assets_values
+            or (active_assets is not None and "build" not in active_assets)
+        ):
+            raise ValueError(f"coverlet.msbuild reference must be active for {assembly}")
+        project_references = {
+            (project_path.parent / node.attrib["Include"]).resolve()
+            for node in project_root.findall(".//ProjectReference")
+            if "Include" in node.attrib
+        }
+        if source_path not in project_references:
+            raise ValueError(
+                f"dotnet coverage test_project must reference source_project: {assembly}"
+            )
+
+        coverage_groups = [
+            group
+            for group in project_root.findall("PropertyGroup")
+            if "CollectCoverage" in group.attrib.get("Condition", "")
+        ]
+        if len(coverage_groups) != 1:
+            raise ValueError(
+                f"dotnet coverage test_project must have one coverage group: {assembly}"
+            )
+        if coverage_groups[0].attrib.get("Condition") != active_coverage_condition:
+            raise ValueError(
+                f"dotnet coverage group must run only when CollectCoverage is true: {assembly}"
+            )
+        coverage_values = {child.tag: child.text for child in coverage_groups[0]}
+        forbidden = {
+            child.tag
+            for group in project_root.findall("PropertyGroup")
+            for child in group
+            if child.tag == "MergeWith"
+            or child.tag == "SkipAutoProps"
+            or child.tag.startswith("Exclude")
+        }
+        if forbidden:
+            raise ValueError(
+                f"dotnet coverage exclusions are not allowed for {assembly}: {forbidden}"
+            )
+
+        include_property = f"{prefix}CoverageInclude"
+        line_property = f"{prefix}LineCoverageMinimum"
+        branch_property = f"{prefix}BranchCoverageMinimum"
+        expected_values = {
+            "Include": f"$({include_property})",
+            "Threshold": f"$({line_property}),$({branch_property})",
+            "ThresholdType": "line,branch",
+            "ThresholdStat": "total",
+        }
+        if coverage_values != expected_values:
+            raise ValueError(f"dotnet coverage adapter does not match inventory: {assembly}")
+
+        target = project_root.find(f"Target[@Name='Validate{prefix}CoverageProperties']")
+        error = target.find("Error") if target is not None else None
+        if target is None or target.attrib.get("BeforeTargets") != "VSTest" or error is None:
+            raise ValueError(f"dotnet coverage adapter must fail closed before VSTest: {assembly}")
+        if target.attrib.get("Condition") != active_coverage_condition:
+            raise ValueError(
+                f"dotnet coverage validation target must run only when CollectCoverage is true: {assembly}"
+            )
+        expected_error_condition = " or ".join(
+            f"'$({name})' == ''" for name in (include_property, line_property, branch_property)
+        )
+        condition = " ".join(error.attrib.get("Condition", "").split())
+        if condition != expected_error_condition:
+            raise ValueError(
+                f"dotnet coverage validation target must reject each missing property: {assembly}"
+            )
+
+        properties[include_property] = f"[{assembly}]*"
         for metric in ("line", "branch"):
             value = minimum[metric]
             if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 100:
@@ -337,6 +483,17 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
             if property_name in properties:
                 raise ValueError(f"duplicate dotnet coverage property: {property_name}")
             properties[property_name] = value
+
+    discovered_projects = {
+        project.resolve()
+        for project in tests_root.rglob("*.csproj")
+        if any(
+            node.attrib.get("Include", "").casefold() == "coverlet.msbuild"
+            for node in ET.parse(project).getroot().findall(".//PackageReference")
+        )
+    }
+    if test_projects != discovered_projects:
+        raise ValueError("dotnet coverage inventory must match all coverlet test projects")
     return properties
 
 

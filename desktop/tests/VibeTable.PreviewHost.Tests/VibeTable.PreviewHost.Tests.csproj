@@ -9,17 +9,16 @@
   <!-- PreviewHost is a separate process/security boundary. Its executable
        coverage is measured independently from the Desktop composition host. -->
   <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
-    <Include>[VibeTable.PreviewHost]*</Include>
-    <SkipAutoProps>true</SkipAutoProps>
+    <Include>$(VibeTablePreviewHostCoverageInclude)</Include>
     <Threshold>$(VibeTablePreviewHostLineCoverageMinimum),$(VibeTablePreviewHostBranchCoverageMinimum)</Threshold>
     <ThresholdType>line,branch</ThresholdType>
     <ThresholdStat>total</ThresholdStat>
   </PropertyGroup>
 
-  <Target Name="ValidatePreviewHostCoverageThresholds" BeforeTargets="VSTest"
+  <Target Name="ValidateVibeTablePreviewHostCoverageProperties" BeforeTargets="VSTest"
           Condition="'$(CollectCoverage)' == 'true'">
-    <Error Condition="'$(VibeTablePreviewHostLineCoverageMinimum)' == '' or '$(VibeTablePreviewHostBranchCoverageMinimum)' == ''"
-           Text="PreviewHost line and branch coverage minimums must come from .ci/project.json via qa/next.py." />
+    <Error Condition="'$(VibeTablePreviewHostCoverageInclude)' == '' or '$(VibeTablePreviewHostLineCoverageMinimum)' == '' or '$(VibeTablePreviewHostBranchCoverageMinimum)' == ''"
+           Text="PreviewHost coverage properties must come from .ci/project.json via qa/next.py." />
   </Target>
 
   <ItemGroup>
