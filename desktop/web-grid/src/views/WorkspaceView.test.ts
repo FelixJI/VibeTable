@@ -24,6 +24,7 @@ import { useTableStore } from "@/stores/tableStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import { useSurfaceStore } from "@/stores/surfaceStore";
+import { useDashboardDraftStore } from "@/stores/dashboardStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { setLocale } from "@/i18n";
 import {
@@ -663,6 +664,142 @@ describe("WorkspaceView", () => {
       expect(wrapper.findComponent(FileWorkspaceView).exists()).toBe(true);
     });
     expect(surfaces.dirty).toBe(false);
+  });
+
+  it("preserves Dashboard and Interface drafts until a confirmed reconnect opens", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    vi.spyOn(window, "prompt").mockReturnValue("Operations");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const surfaces = useSurfaceStore(testPinia);
+    const dashboardDraft = useDashboardDraftStore(testPinia);
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-interfaces"]').trigger("click");
+    await flushPromises();
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="interface-workspace"]').exists()).toBe(true);
+    });
+    await wrapper.get('[data-testid="interface-create"]').trigger("click");
+    expect(surfaces.dirty).toBe(true);
+    const draftInterfaceId = surfaces.selectedInterfaceId;
+    expect(draftInterfaceId).toMatch(/^interface-/u);
+    dashboardDraft.begin(
+      { id: "dashboard-1", name: "Operations", note: "", panels: [] },
+      { configVersion: 1, globalFilters: [], interactions: [], refreshInterval: 0 },
+      "revision-1",
+    );
+    dashboardDraft.rename("Unsaved operations", "");
+    expect(dashboardDraft.dirty).toBe(true);
+
+    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
+    expect(posted.filter(item => item.type === "database.openRequested")).toHaveLength(0);
+    expect(surfaces.dirty).toBe(true);
+    expect(dashboardDraft.dirty).toBe(true);
+    confirm.mockReturnValue(true);
+
+    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
+    const request = [...posted].reverse().find(
+      item => item.type === "database.openRequested",
+    );
+    expect(request?.payload).toEqual(expect.objectContaining({
+      openId: expect.stringMatching(/^database-open:/u),
+    }));
+    expect(confirm).toHaveBeenCalledTimes(3);
+    expect(surfaces.dirty).toBe(true);
+    expect(dashboardDraft.dirty).toBe(true);
+
+    emit({
+      type: "database.openCancelled",
+      payload: {
+        openId: (request!.payload as { openId: string }).openId,
+        reason: "picker-cancelled",
+      },
+    });
+    await flushPromises();
+
+    expect(surfaces.dirty).toBe(true);
+    expect(surfaces.selectedInterfaceId).toBe(draftInterfaceId);
+    expect(dashboardDraft.dirty).toBe(true);
+    expect(dashboardDraft.draft?.name).toBe("Unsaved operations");
+
+    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
+    const failedRequest = [...posted].reverse().find(
+      item => item.type === "database.openRequested",
+    );
+    emit({
+      type: "operation.failed",
+      payload: {
+        operation: "database.openRequested",
+        operationId: (failedRequest!.payload as { openId: string }).openId,
+        code: "WORKSPACE_ERROR",
+        message: "Workspace operation failed.",
+      },
+    });
+    await flushPromises();
+    expect(surfaces.dirty).toBe(true);
+    expect(surfaces.selectedInterfaceId).toBe(draftInterfaceId);
+    expect(dashboardDraft.dirty).toBe(true);
+    expect(dashboardDraft.draft?.name).toBe("Unsaved operations");
+
+    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
+    const openedRequest = [...posted].reverse().find(
+      item => item.type === "database.openRequested",
+    );
+    expect(surfaces.dirty).toBe(true);
+    emit({
+      type: "database.opened",
+      payload: {
+        openId: (openedRequest!.payload as { openId: string }).openId,
+        tables: ["orders"],
+        views: [],
+        displayNames: { orders: "Orders" },
+      },
+    });
+    await flushPromises();
+
+    expect(confirm).toHaveBeenCalledTimes(7);
+    expect(surfaces.dirty).toBe(false);
+    expect(surfaces.selectedInterfaceId).toBeNull();
+    expect(dashboardDraft.dirty).toBe(false);
+    expect(dashboardDraft.draft).toBeNull();
+  });
+
+  it.each(["Dashboard", "Interface"] as const)(
+    "blocks beforeunload while a %s draft is dirty",
+    async (kind) => {
+      const { bridge } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      mountView();
+      await flushPromises();
+      if (kind === "Dashboard") {
+        const draft = useDashboardDraftStore(testPinia);
+        draft.begin(
+          { id: "dashboard-1", name: "Operations", note: "", panels: [] },
+          { configVersion: 1, globalFilters: [], interactions: [], refreshInterval: 0 },
+          "revision-1",
+        );
+        draft.rename("Unsaved operations", "");
+      } else {
+        useSurfaceStore(testPinia).setDraftState("interface-1", true);
+      }
+
+      const event = new Event("beforeunload", { cancelable: true });
+      expect(window.dispatchEvent(event)).toBe(false);
+      expect(event.defaultPrevented).toBe(true);
+    },
+  );
+
+  it("does not block beforeunload when both draft aggregates are clean", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    mountView();
+    await flushPromises();
+
+    const event = new Event("beforeunload", { cancelable: true });
+    expect(window.dispatchEvent(event)).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
   });
 
   it("shows a localized non-blocking recovery path for stale edits", async () => {

@@ -149,6 +149,81 @@ describe("workspaceService display names", () => {
     expect(pluginStore.projectRevision).toBe("workspace-r8");
   });
 
+  it("settles each matching renderer open after projecting its terminal state", async () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+    const workspace = useWorkspaceStore();
+
+    const cancelled = service.openDatabase();
+    const cancelledId = (posted.at(-1) as { payload: { openId: string } }).payload.openId;
+    emit("database.openCancelled", { openId: cancelledId, reason: "picker-cancelled" });
+    await expect(cancelled).resolves.toBe("not-opened");
+    expect(workspace.phase).toBe("idle");
+
+    const failed = service.openDatabase();
+    const failedId = (posted.at(-1) as { payload: { openId: string } }).payload.openId;
+    emit("operation.failed", {
+      operation: "database.openRequested",
+      operationId: failedId,
+      code: "WORKSPACE_ERROR",
+      message: "Workspace operation failed.",
+    });
+    await expect(failed).resolves.toBe("not-opened");
+    expect(workspace.phase).toBe("failed");
+
+    const opened = service.openDatabase();
+    const openedId = (posted.at(-1) as { payload: { openId: string } }).payload.openId;
+    emit("database.opened", {
+      openId: openedId,
+      tables: ["orders"],
+      views: [],
+      displayNames: { orders: "Orders" },
+    });
+    await expect(opened).resolves.toBe("opened");
+    expect(workspace.phase).toBe("opened");
+    expect(workspace.collections.map(item => item.collection)).toEqual(["orders"]);
+  });
+
+  it("settles a superseded open without letting its late terminals finish the replacement", async () => {
+    const { bridge, emit, posted } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const service = useWorkspaceService();
+    service.init();
+
+    const first = service.openDatabase();
+    const firstId = (posted.at(-1) as { payload: { openId: string } }).payload.openId;
+    const second = service.openDatabase();
+    const secondId = (posted.at(-1) as { payload: { openId: string } }).payload.openId;
+    await expect(first).resolves.toBe("not-opened");
+    let secondOutcome: string | null = null;
+    void second.then((outcome) => { secondOutcome = outcome; });
+
+    emit("database.opened", {
+      openId: firstId,
+      tables: ["stale_records"],
+      views: [],
+      displayNames: { stale_records: "Stale" },
+    });
+    emit("database.openCancelled", { openId: firstId, reason: "late-stale-terminal" });
+    await Promise.resolve();
+    expect(secondOutcome).toBeNull();
+    expect(useWorkspaceStore().phase).toBe("opening");
+
+    emit("database.opened", {
+      openId: secondId,
+      tables: ["current_records"],
+      views: [],
+      displayNames: { current_records: "Current" },
+    });
+    await expect(second).resolves.toBe("opened");
+    expect(secondOutcome).toBe("opened");
+    expect(useWorkspaceStore().collections.map(item => item.collection)).toEqual([
+      "current_records",
+    ]);
+  });
+
   it("lets only the latest overlapping open terminal change renderer state", () => {
     const { bridge, emit, posted } = makeShimBridge();
     setHostBridgeForTesting(bridge);

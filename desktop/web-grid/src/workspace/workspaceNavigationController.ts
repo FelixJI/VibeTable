@@ -12,12 +12,18 @@ export interface WorkspaceNavigationCommands {
 
 export interface WorkspaceNavigationController {
   readonly hasUnsavedChanges: () => boolean;
+  readonly authorizeDeparture: () => WorkspaceDepartureLease | null;
   readonly attempt: (action: () => void) => boolean;
 }
 
+export interface WorkspaceDepartureLease {
+  commit(): void;
+}
+
 /**
- * Coordinates leaving the current workspace surface. Callers provide only the
- * target action; confirmation order and aggregate cleanup remain local here.
+ * Coordinates authorization and one-shot cleanup when leaving a workspace
+ * surface. Synchronous navigation commits immediately; asynchronous callers
+ * retain a lease until their target operation reaches a successful terminal.
  */
 export function createWorkspaceNavigationController(
   state: WorkspaceNavigationState,
@@ -27,14 +33,27 @@ export function createWorkspaceNavigationController(
     return state.dashboardDirty() || state.surfaceDirty();
   }
 
+  function authorizeDeparture(): WorkspaceDepartureLease | null {
+    if (state.dashboardDirty() && !commands.confirmDashboardDiscard()) return null;
+    if (state.surfaceDirty() && !commands.confirmSurfaceDiscard()) return null;
+    let committed = false;
+    return {
+      commit(): void {
+        if (committed) return;
+        committed = true;
+        commands.stopDashboardDraft();
+        commands.resetSurfaceDraft();
+      },
+    };
+  }
+
   function attempt(action: () => void): boolean {
-    if (state.dashboardDirty() && !commands.confirmDashboardDiscard()) return false;
-    if (state.surfaceDirty() && !commands.confirmSurfaceDiscard()) return false;
-    commands.stopDashboardDraft();
-    commands.resetSurfaceDraft();
+    const departure = authorizeDeparture();
+    if (!departure) return false;
+    departure.commit();
     action();
     return true;
   }
 
-  return { hasUnsavedChanges, attempt };
+  return { hasUnsavedChanges, authorizeDeparture, attempt };
 }
