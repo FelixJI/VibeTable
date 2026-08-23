@@ -72,6 +72,9 @@ VibeTable 将 WPF/WebView2 界面、Python BFF 和固定版本的 PocketBase sid
 git clone https://github.com/FelixJI/VibeTable.git
 Set-Location VibeTable
 
+# 只读检查 bootstrap 前置；失败时显示稳定检查码、实际路径/版本与修复提示
+python scripts/automation_project.py doctor --profile minimum
+
 uv sync --frozen --group dev --group build
 
 Push-Location desktop/web-grid
@@ -80,6 +83,16 @@ Pop-Location
 
 uv run python scripts/dev.py
 ```
+
+完成依赖与仓库托管工具恢复后，可运行完整工具链检查：
+
+```powershell
+uv run python scripts/automation_project.py doctor --profile full
+```
+
+`doctor` 全程只读，不安装或下载工具、不执行依赖恢复，也不修改 lock、registry 或用户配置。
+`minimum` 只判断当前机器能否执行仓库 bootstrap；`full` 只判断完整质量与构建所需的工具链
+是否就绪，不检查 `node_modules`、NuGet/Python 包、WebView2 Runtime、真实构建、CI 或发布资格。
 
 `scripts/dev.py` 会构建 Go sidecar、Vue 前端和 WPF 宿主，然后由宿主管理 Python BFF 与
 PocketBase 子进程。默认开发数据位于 `.dev-data/pocketbase/`。
