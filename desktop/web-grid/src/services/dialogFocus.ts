@@ -156,7 +156,10 @@ export function createStructuredDialogFocus(
     const isCapturedGridInfrastructureFocus = (candidate: unknown): boolean =>
       capturedGridRoot !== null
       && candidate instanceof HTMLElement
-      && candidate.classList.contains("tabulator-tableholder")
+      && (
+        candidate.classList.contains("tabulator-tableholder")
+        || candidate.classList.contains("tabulator-cell")
+      )
       && candidate.closest(".tabulator") === capturedGridRoot;
 
     const onDocumentFocusIn = (event: FocusEvent) => {
@@ -165,8 +168,9 @@ export function createStructuredDialogFocus(
         reattemptRestore();
         return;
       }
-      // Tabulator's range module focuses its tableholder as an infrastructure sink
-      // when editing settles. Other controls inside the grid retain external ownership.
+      // Tabulator's range module can focus its tableholder or another cell as an
+      // infrastructure sink when editing settles. Other controls inside the grid
+      // retain external ownership; pointer/keyboard intent cancels before focusin.
       if (isCapturedGridInfrastructureFocus(event.target)) {
         reattemptRestore();
         return;
@@ -262,8 +266,9 @@ export function createStructuredDialogFocus(
  * Restore focus to the structured cell that opened a dialog.
  *
  * Tabulator can replace a cell DOM node while its range module settles. The
- * original trigger is preferred, but row/field identity lets us resolve the
- * current node when that happens. The row is resolved from one enumerated
+ * row/field identity is authoritative on every attempt, while the original
+ * trigger only identifies whether the current node was captured or reprojected.
+ * The row is resolved from one enumerated
  * `getRows` snapshot matched by `getIndex` instead of Tabulator's `getRow`,
  * whose miss path emits the "Find Error - No matching row found" console
  * warning that product E2E treats as a renderer contract violation.
@@ -284,22 +289,22 @@ function attemptStructuredDialogFocus(
   if (resolved.status !== "resolved") {
     return { state: "pending", reason: resolved.status };
   }
-  const candidates = [target.element, resolved.element];
-  const attempted = new Set<HTMLElement>();
-  for (const element of candidates) {
-    if (!element?.isConnected || attempted.has(element)) continue;
-    attempted.add(element);
-    element.focus({ preventScroll: true });
-    if (document.activeElement === element) {
-      return {
-        state: "restored",
-        via: element === target.element ? "captured" : "reprojected",
-      };
-    }
+  const element = resolved.element;
+  if (!element?.isConnected) return { state: "pending", reason: "cell" };
+  element.focus({ preventScroll: true });
+  if (document.activeElement !== element) {
+    return { state: "pending", reason: "focus-rejected" };
+  }
+  const current = resolveStructuredDialogFocusTarget(grid, target);
+  if (current.status !== "resolved") {
+    return { state: "pending", reason: current.status };
+  }
+  if (current.element !== element) {
+    return { state: "pending", reason: "cell" };
   }
   return {
-    state: "pending",
-    reason: attempted.size === 0 ? "cell" : "focus-rejected",
+    state: "restored",
+    via: element === target.element ? "captured" : "reprojected",
   };
 }
 
