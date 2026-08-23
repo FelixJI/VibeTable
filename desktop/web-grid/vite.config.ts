@@ -83,6 +83,10 @@ export default defineConfig({
           lines: 75,
           branches: 65,
         },
+        "src/components/files/DocumentList.vue": {
+          lines: 90.9,
+          branches: 73.9,
+        },
       },
     },
   },

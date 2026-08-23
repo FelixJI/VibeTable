@@ -413,6 +413,7 @@ watch(
           v-else
           :entries="store.visibleEntries"
           :selected-handles="store.selectedHandles"
+          :primary-handle="store.primaryHandle"
           @select="select"
           @select-all="store.selectAllVisible"
           @open="service.open($event.entryHandle)"

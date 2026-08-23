@@ -354,6 +354,35 @@ describe("FileWorkspaceView", () => {
     }]);
   });
 
+  it("aligns the primary selection before dragging a different document", async () => {
+    const store = useDocumentWorkspaceStore();
+    const first = entry({
+      documentId: "34343434-3434-4434-8434-343434343434",
+      entryHandle: "drag-primary",
+      displayName: "primary.txt",
+      capabilities: ["dragOut"],
+    });
+    const second = entry({
+      documentId: "35353535-3535-4535-8535-353535353535",
+      entryHandle: "drag-target",
+      displayName: "target.txt",
+      capabilities: ["dragOut"],
+    });
+    store.setEntries([first, second]);
+    const wrapper = mount(FileWorkspaceView);
+    await wrapper.get('[data-testid="document-row-drag-primary"]').trigger("click");
+
+    await wrapper.get('[data-testid="document-row-drag-target"]')
+      .trigger("dragstart", { dataTransfer: { setData: vi.fn(), types: [] } });
+
+    expect(store.primaryHandle).toBe(second.entryHandle);
+    expect(store.selectedHandles).toEqual([second.entryHandle]);
+    expect(wrapper.emitted("intent")?.at(-1)).toEqual([{
+      type: "document.dragOutRequested",
+      handle: second.entryHandle,
+    }]);
+  });
+
   it("forwards the busy diff cancel button to the closed host cancel intent", async () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries([entry({
