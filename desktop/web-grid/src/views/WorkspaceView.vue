@@ -242,7 +242,11 @@ function onNavigate(view: AppView): void {
 }
 
 function openDatabaseWithGuard(): void {
-  workspaceNavigation.attempt(() => workspaceService.openDatabase());
+  const departure = workspaceNavigation.authorizeDeparture();
+  if (!departure) return;
+  void workspaceService.openDatabase().then((outcome) => {
+    if (outcome === "opened") departure.commit();
+  });
 }
 
 function onBeforeUnload(event: BeforeUnloadEvent): void {
