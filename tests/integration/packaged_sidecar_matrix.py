@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -34,6 +35,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.build_next import RepoPaths  # noqa: E402
+from tests.integration._sidecar_process_output import (  # noqa: E402
+    EMPTY_PROCESS_OUTPUT,
+    ProcessOutputSnapshot,
+    SidecarProcessOutput,
+)
 
 PUBLISH_ROOT = RepoPaths.default(REPO_ROOT).publish_root
 SIDECAR_NAME = "vibetable-pb.exe" if os.name == "nt" else "vibetable-pb"
@@ -45,6 +51,25 @@ FENCE_EPOCH = 3
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+_DIAGNOSTIC_STATIC_PATHS = {
+    "/api/vibetable/v1/attachments/download",
+    "/api/vibetable/v1/attachments/refs",
+    "/api/vibetable/v1/formulas/preview",
+    "/api/vibetable/v1/health",
+    "/api/vibetable/v1/history/change-sets",
+    "/api/vibetable/v1/history/restore-apply",
+    "/api/vibetable/v1/history/restore-preview",
+    "/api/vibetable/v1/lookups/query",
+    "/api/vibetable/v1/mutations/apply",
+    "/api/vibetable/v1/query",
+    "/api/vibetable/v1/relations/describe",
+    "/api/vibetable/v1/shutdown",
+    "/api/vibetable/v2/capabilities",
+    "/api/vibetable/v2/field-change/apply",
+    "/api/vibetable/v2/field-change/plan",
+    "/api/vibetable/v2/rpc",
+    "/api/vibetable/v2/schema/tables",
+}
 
 
 SCHEMA_ACTOR = {"id": "release-matrix", "kind": "test"}
@@ -81,6 +106,34 @@ class Response:
         return decoded
 
 
+@dataclass(frozen=True)
+class SidecarProcessEvidence:
+    exit_code: int | None
+    output: ProcessOutputSnapshot
+
+    def diagnostic_text(self) -> str:
+        return f"exit={self.exit_code}; {self.output.diagnostic_text()}"
+
+
+class SidecarTransportError(AssertionError):
+    """Pure-data transport failure finalized by the Sidecar lifecycle owner."""
+
+    def __init__(self, message: str, evidence: SidecarProcessEvidence) -> None:
+        super().__init__(message)
+        self._message = message
+        self._evidence = evidence
+        self._lock = threading.Lock()
+
+    def finalize(self, evidence: SidecarProcessEvidence) -> None:
+        with self._lock:
+            self._evidence = evidence
+
+    def __str__(self) -> str:
+        with self._lock:
+            evidence = self._evidence
+        return f"{self._message}; {evidence.diagnostic_text()}"
+
+
 class Sidecar:
     def __init__(
         self,
@@ -95,9 +148,22 @@ class Sidecar:
         self.secret = uuid.uuid4().hex + uuid.uuid4().hex
         self.process: subprocess.Popen[str] | None = None
         self.address = ""
+        self._output: SidecarProcessOutput | None = None
+        self._last_evidence = SidecarProcessEvidence(None, EMPTY_PROCESS_OUTPUT)
+        self._stop_lock = threading.RLock()
+        self._pending_transport_errors: list[SidecarTransportError] = []
+
+    @property
+    def process_evidence(self) -> SidecarProcessEvidence:
+        process = self.process
+        output = self._output
+        if process is None or output is None:
+            return self._last_evidence
+        return SidecarProcessEvidence(process.poll(), output.snapshot())
 
     def start(self) -> None:
         assert self.process is None
+        self._last_evidence = SidecarProcessEvidence(None, EMPTY_PROCESS_OUTPUT)
         environment = os.environ.copy()
         environment["VIBETABLE_SIDECAR_SESSION_SECRET"] = self.secret
         environment["VIBETABLE_SIDECAR_DATA_DIR"] = str(self.data_dir)
@@ -116,24 +182,24 @@ class Sidecar:
         try:
             process = self.process
             assert process.stdout is not None
-            stdout = process.stdout
-            lines: queue.Queue[str] = queue.Queue(maxsize=1)
-            threading.Thread(
-                target=lambda: lines.put(stdout.readline()),
-                daemon=True,
-            ).start()
+            assert process.stderr is not None
+            self._output = SidecarProcessOutput.attach(process.stdout, process.stderr)
             try:
-                line = lines.get(timeout=30)
-            except queue.Empty as exc:
+                line = self._output.wait_readiness(timeout=30)
+            except TimeoutError as exc:
                 raise AssertionError(self._diagnostics("readiness timed out")) from exc
+            except ValueError as exc:
+                raise AssertionError(self._diagnostics(str(exc))) from exc
             try:
                 ready = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise AssertionError(
-                    self._diagnostics(f"invalid readiness line: {line!r}")
-                ) from exc
-            assert ready["contract"] == "vibetable.sidecar.ready.v1"
-            assert ready["event"] == "sidecar.ready"
+                raise AssertionError(self._diagnostics("invalid readiness line")) from exc
+            if not isinstance(ready, dict) or (
+                ready.get("contract") != "vibetable.sidecar.ready.v1"
+                or ready.get("event") != "sidecar.ready"
+                or not isinstance(ready.get("address"), str)
+            ):
+                raise AssertionError(self._diagnostics("invalid readiness contract"))
             self.address = ready["address"]
             health = self.request("GET", "/api/vibetable/v1/health").json()
             assert health["status"] == "ok"
@@ -144,10 +210,13 @@ class Sidecar:
     def _diagnostics(self, message: str) -> str:
         process = self.process
         code = None if process is None else process.poll()
-        stderr = ""
-        if process is not None and process.stderr is not None and code is not None:
-            stderr = process.stderr.read()
-        return f"{message}; exit={code}; stderr={stderr[-4000:]}"
+        output = self._output
+        evidence = SidecarProcessEvidence(
+            code,
+            EMPTY_PROCESS_OUTPUT if output is None else output.snapshot(),
+        )
+        self._last_evidence = evidence
+        return f"{message}; {evidence.diagnostic_text()}"
 
     def request(
         self,
@@ -179,6 +248,20 @@ class Sidecar:
                 result = Response(response.status, response.read(), response.headers)
         except urllib.error.HTTPError as error:
             result = Response(error.code, error.read(), error.headers)
+        except OSError as error:
+            safe_path = _diagnostic_path(path)
+            details = [f"transport={type(error).__name__}"]
+            winerror = getattr(error, "winerror", None)
+            if isinstance(winerror, int):
+                details.append(f"winerror={winerror}")
+            elif isinstance(error.errno, int):
+                details.append(f"errno={error.errno}")
+            transport_error = SidecarTransportError(
+                f"{method} {safe_path}: {'; '.join(details)}",
+                self.process_evidence,
+            )
+            self._pending_transport_errors.append(transport_error)
+            raise transport_error from None
         assert result.status == expected, (
             f"{method} {path}: expected {expected}, got {result.status}: "
             f"{result.body.decode(errors='replace')}"
@@ -218,31 +301,51 @@ class Sidecar:
         ).json()
 
     def stop(self) -> None:
-        process = self.process
-        if process is None:
-            return
-        if process.poll() is None:
-            if self.address:
-                with contextlib.suppress(Exception):
-                    self.request(
-                        "POST",
-                        "/api/vibetable/v1/shutdown",
-                        expected=202,
-                        timeout=5,
-                    )
-            else:
+        with self._stop_lock:
+            process = self.process
+            if process is None:
+                return
+            if process.poll() is None:
+                if self.address:
+                    with contextlib.suppress(Exception):
+                        self.request(
+                            "POST",
+                            "/api/vibetable/v1/shutdown",
+                            expected=202,
+                            timeout=5,
+                        )
+                else:
+                    process.kill()
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
                 process.kill()
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=10)
-        if process.stdout:
-            process.stdout.close()
-        if process.stderr:
-            process.stderr.close()
-        self.process = None
-        self.address = ""
+                process.wait(timeout=10)
+            output = self._output
+            if output is not None:
+                output.finish_after_process_exit()
+                self._last_evidence = SidecarProcessEvidence(
+                    process.poll(),
+                    output.snapshot(),
+                )
+            for error in self._pending_transport_errors:
+                error.finalize(self._last_evidence)
+            self._pending_transport_errors.clear()
+            self.process = None
+            self._output = None
+            self.address = ""
+
+
+def _diagnostic_path(path: str) -> str:
+    normalized = urllib.parse.urlsplit(path).path
+    if normalized in _DIAGNOSTIC_STATIC_PATHS:
+        return normalized
+    if re.fullmatch(r"/api/vibetable/v2/field-settings/[^/]+", normalized):
+        return "/api/vibetable/v2/field-settings/{tableId}"
+    version = re.fullmatch(r"/api/vibetable/(v1|v2)/.*", normalized)
+    if version is not None:
+        return f"/api/vibetable/{version.group(1)}/{{unclassified}}"
+    return "/{unclassified}"
 
 
 def _create_v2_workspace(root: Path) -> Path:
