@@ -47,7 +47,10 @@ function fileRevision(
 
 describe("FileWorkspaceView", () => {
   beforeEach(() => setActivePinia(createPinia()));
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    document.body.replaceChildren();
+  });
 
   it("keeps single click for selection and double-click for open", async () => {
     const store = useDocumentWorkspaceStore();
@@ -68,6 +71,81 @@ describe("FileWorkspaceView", () => {
     expect(wrapper.emitted("intent")?.length).toBe(countBeforeClick);
     await row.trigger("dblclick");
     expect(wrapper.emitted("intent")?.at(-1)).toEqual([{ type: "document.openRequested", entryHandle: "doc-1" }]);
+  });
+
+  it("moves the Inspector tab stop through the closed history capability", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const selected = entry({
+      documentId: "17171717-1717-4717-8717-171717171717",
+      entryHandle: "keyboard-history",
+      displayName: "键盘历史.txt",
+      capabilities: ["preview", "history"],
+    });
+    const revision = fileRevision(
+      selected.documentId,
+      "18181818-1818-4818-8818-181818181818",
+    );
+    store.setEntries([selected]);
+    protection.setFileTree({
+      documentId: selected.documentId,
+      effectiveRevisionId: revision.revisionId,
+      revisions: [revision],
+    });
+    const wrapper = mount(FileWorkspaceView, { attachTo: document.body });
+    await wrapper.get('[data-testid="document-row-keyboard-history"]').trigger("click");
+    const tabs = wrapper.get('[role="tablist"]').findAll('[role="tab"]');
+    const [previewTab, historyTab] = tabs;
+
+    expect(tabs).toHaveLength(2);
+    expect(previewTab.attributes("tabindex")).toBe("0");
+    expect(historyTab.attributes("tabindex")).toBe("-1");
+    (previewTab.element as HTMLElement).focus();
+
+    await previewTab.trigger("keydown", { key: "ArrowRight" });
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(document.activeElement).toBe(historyTab.element);
+    expect(previewTab.attributes("aria-selected")).toBe("false");
+    expect(previewTab.attributes("tabindex")).toBe("-1");
+    expect(historyTab.attributes("aria-selected")).toBe("true");
+    expect(historyTab.attributes("tabindex")).toBe("0");
+    expect(store.inspectorTab).toBe("history");
+    expect(wrapper.find(`[data-revision-id="${revision.revisionId}"]`).exists()).toBe(true);
+    expect(wrapper.emitted("workspaceV2Action")).toEqual([[
+      {
+        method: "fileHistory.readTree",
+        params: { documentId: selected.documentId },
+      },
+    ]]);
+
+    await historyTab.trigger("keydown", { key: "ArrowLeft" });
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(document.activeElement).toBe(previewTab.element);
+    expect(previewTab.attributes("aria-selected")).toBe("true");
+    expect(previewTab.attributes("tabindex")).toBe("0");
+    expect(historyTab.attributes("aria-selected")).toBe("false");
+    expect(historyTab.attributes("tabindex")).toBe("-1");
+    expect(store.inspectorTab).toBe("preview");
+    expect(wrapper.find(`[data-revision-id="${revision.revisionId}"]`).exists()).toBe(false);
+    expect(wrapper.emitted("workspaceV2Action")).toHaveLength(1);
+
+    await previewTab.trigger("keydown", { key: "ArrowLeft" });
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    expect(document.activeElement).toBe(historyTab.element);
+    expect(store.inspectorTab).toBe("history");
+    expect(wrapper.emitted("workspaceV2Action")).toHaveLength(2);
+
+    await historyTab.trigger("keydown", { key: "ArrowRight" });
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    expect(document.activeElement).toBe(previewTab.element);
+    expect(store.inspectorTab).toBe("preview");
+    expect(wrapper.emitted("workspaceV2Action")).toHaveLength(2);
   });
 
   it("keeps a primary document's multi-selection when its inspector opens history", async () => {
@@ -223,7 +301,12 @@ describe("FileWorkspaceView", () => {
     const wrapper = mount(FileWorkspaceView);
     await wrapper.get('[data-testid="document-row-missing-without-history"]').trigger("click");
 
-    expect(wrapper.get('[role="tablist"]').text()).not.toContain("版本历史");
+    const previewTab = wrapper.get('[role="tablist"] [role="tab"]');
+    expect(previewTab.text()).not.toContain("版本历史");
+    expect(previewTab.attributes("tabindex")).toBe("0");
+    await previewTab.trigger("keydown", { key: "ArrowRight" });
+    await wrapper.vm.$nextTick();
+    expect(store.inspectorTab).toBe("preview");
     await wrapper.get('[data-testid="document-row-missing-without-history"]')
       .trigger("contextmenu", { clientX: 20, clientY: 30 });
     expect(wrapper.get('[data-testid="document-context-menu"]').text()).not.toContain("版本历史");
