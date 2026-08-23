@@ -125,6 +125,44 @@ describe("structured dialog focus", () => {
     dialogFocus.dispose();
   });
 
+  it("reprojects when the captured node stays connected but no longer owns the identity", () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const originalCell = document.createElement("button");
+    const replacementCell = document.createElement("button");
+    gridRoot.append(originalCell, replacementCell);
+    document.body.append(gridRoot);
+    let currentCell = originalCell;
+    const reportOutcome = vi.fn();
+    const { grid } = createGridHarness(() => currentCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+      reportOutcome,
+    });
+
+    const lease = dialogFocus.capture({
+      element: originalCell,
+      rowKey: "row-7",
+      field: "payload",
+      target: "json",
+    });
+    currentCell = replacementCell;
+    lease.restore();
+
+    expect(document.activeElement).toBe(replacementCell);
+    const outcomes = reportOutcome.mock.calls.map(
+      ([outcome]) => outcome as StructuredDialogFocusOutcome,
+    );
+    expect(outcomesWithoutLeaseIdentity(outcomes).at(-1)).toEqual({
+      state: "restored",
+      target: "json",
+      via: "reprojected",
+    });
+    dialogFocus.dispose();
+  });
+
   it("keeps the lease when a closing focus owner moves focus to the document body", () => {
     document.body.tabIndex = -1;
     const cell = document.createElement("button");
@@ -172,6 +210,33 @@ describe("structured dialog focus", () => {
       field: "payload",
     }).restore();
     tableholder.focus();
+
+    expect(document.activeElement).toBe(targetCell);
+    dialogFocus.dispose();
+  });
+
+  it("reclaims focus from another Tabulator cell without user intent", () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const targetCell = document.createElement("button");
+    targetCell.className = "tabulator-cell";
+    const decoyCell = document.createElement("button");
+    decoyCell.className = "tabulator-cell";
+    gridRoot.append(targetCell, decoyCell);
+    document.body.append(gridRoot);
+    const { grid } = createGridHarness(() => targetCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+
+    dialogFocus.capture({
+      element: targetCell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    decoyCell.focus();
 
     expect(document.activeElement).toBe(targetCell);
     dialogFocus.dispose();
@@ -279,6 +344,8 @@ describe("structured dialog focus", () => {
       gridRoot.className = "tabulator";
       const targetCell = document.createElement("button");
       const intendedCell = document.createElement("button");
+      targetCell.className = "tabulator-cell";
+      intendedCell.className = "tabulator-cell";
       gridRoot.append(targetCell, intendedCell);
       document.body.append(gridRoot);
       const { grid } = createGridHarness(() => targetCell);
