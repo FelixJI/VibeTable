@@ -150,6 +150,43 @@ function seedStructuredTablePage(column: ColumnSchema): void {
   });
 }
 
+function configureWorkspaceEpochPair(): {
+  readonly session: ReturnType<typeof useWorkspaceSessionStore>;
+  readonly rotate: () => boolean;
+} {
+  const workspaceA = "11111111-1111-4111-8111-111111111111";
+  const workspaceB = "22222222-2222-4222-8222-222222222222";
+  const session = useWorkspaceSessionStore();
+  session.configureCapabilities(["workspace.session.v2"]);
+  session.setWorkspaces([workspaceA, workspaceB].map((workspaceId, index) => ({
+    contractVersion: "2.0" as const,
+    workspaceId,
+    displayName: `Workspace ${index + 1}`,
+    selectedRoot: `D:\\Workspace-${index + 1}`,
+    activityRoot: null,
+    storageKind: "fixed" as const,
+    coordinationStrength: "strong" as const,
+    lastOpenedAt: null,
+    lastKnownHealth: "healthy" as const,
+    lastSnapshotAt: null,
+    lastSyncAt: null,
+    pendingSync: false,
+  })));
+  const apply = (workspaceId: string, sessionEpoch: number) => session.applySession({
+    contractVersion: "2.0",
+    workspaceId,
+    sessionEpoch,
+    state: "openedWritable",
+    openMode: "writable",
+    writable: true,
+    provisional: false,
+    phase: "idle",
+    errorCode: null,
+  });
+  apply(workspaceA, 1);
+  return { session, rotate: () => apply(workspaceB, 2) };
+}
+
 vi.mock("@/grid/createGrid", () => ({
   createGrid: () => mockTabulatorRef.current,
   buildTabulatorColumns: () => [],
@@ -1852,6 +1889,269 @@ describe("WorkspaceView", () => {
     await vi.waitFor(() => {
       expect(document.activeElement).toBe(trigger);
     });
+  });
+
+  it("retires a structured editor when the workspace epoch rotates", async () => {
+    document.body.tabIndex = -1;
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const { rotate } = configureWorkspaceEpochPair();
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
+    workspace.selectTable("items");
+    useUiStore().navigate("tables");
+    const trigger = document.createElement("button");
+    trigger.textContent = "Open workspace A JSON";
+    document.body.append(trigger);
+    seedStructuredTablePage({
+      name: "metadata",
+      title: "Metadata",
+      dataType: "json",
+      editable: true,
+      nullable: true,
+    });
+    exposeStructuredGridCell("row-1", "metadata", trigger);
+
+    const wrapper = mountView({ realTransitions: true });
+    await flushPromises();
+    trigger.focus();
+    wrapper.findComponent(GridHost).vm.$emit("jsonEdit", {
+      rowKey: "row-1",
+      column: {
+        name: "metadata",
+        title: "Metadata",
+        dataType: "json",
+        editable: true,
+        nullable: true,
+      },
+      value: { owner: "workspace-a" },
+    });
+    await flushPromises();
+    const input = document.body.querySelector<HTMLTextAreaElement>(
+      '[data-testid="json-editor-input"]',
+    );
+    expect(input?.value).toContain("workspace-a");
+
+    rotate();
+    await flushPromises();
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="json-editor-modal"]')).toBeNull();
+      expect(document.activeElement).not.toBe(trigger);
+    });
+  });
+
+  it("retires an attachment panel when the workspace epoch rotates", async () => {
+    document.body.tabIndex = -1;
+    setHostBridgeForTesting({
+      request: vi.fn(async (method: string) => {
+        if (method === "file.list") return { attachments: [] };
+        throw new Error(`unexpected request: ${method}`);
+      }),
+      notify: vi.fn(),
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      on: vi.fn(() => vi.fn()),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as HostBridge);
+    const { rotate } = configureWorkspaceEpochPair();
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
+    workspace.selectTable("items");
+    useUiStore().navigate("tables");
+    const column: ColumnSchema = {
+      name: "photos",
+      title: "Photos",
+      fieldId: "photos-id",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+      attachmentPolicy: {
+        maxFiles: 3,
+        maxBytesPerFile: 1024,
+        allowedMimeTypes: ["image/png"],
+        thumbnailVariants: [],
+        protected: false,
+      },
+    };
+    seedStructuredTablePage(column);
+    const trigger = document.createElement("div");
+    trigger.tabIndex = 0;
+    trigger.setAttribute("role", "gridcell");
+    document.body.append(trigger);
+    exposeStructuredGridCell("row-1", "photos", trigger);
+
+    const wrapper = mountView({ realTransitions: true });
+    await flushPromises();
+    trigger.focus();
+    wrapper.findComponent(GridHost).vm.$emit("attachmentOpen", {
+      rowKey: "row-1",
+      column,
+    });
+    await flushPromises();
+    expect(document.body.querySelector('[data-testid="attachment-panel"]')).not.toBeNull();
+
+    rotate();
+    await flushPromises();
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="attachment-panel"]')).toBeNull();
+      expect(document.activeElement).not.toBe(trigger);
+    });
+  });
+
+  it("retires lookup and content panels when the workspace epoch rotates", async () => {
+    const { bridge } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const { rotate } = configureWorkspaceEpochPair();
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "items" }], { items: "Items" });
+    workspace.selectTable("items");
+    useUiStore().navigate("tables");
+    seedStructuredTablePage({
+      name: "name",
+      title: "Name",
+      dataType: "text",
+      editable: true,
+      nullable: true,
+    });
+    const wrapper = mountView({ realTransitions: true });
+    await flushPromises();
+
+    wrapper.findComponent(GridHost).vm.$emit("selectionChange", {
+      scope: "row",
+      rowKey: "row-1",
+    });
+    wrapper.findComponent(AppToolbar).vm.$emit("openContent");
+    wrapper.findComponent(GridHost).vm.$emit("lookupSourcePage", {
+      fieldRef: "customer-name",
+      sourceRecordId: "row-1",
+      cell: {
+        state: "ok",
+        value: "Customer one",
+        diagnostic: null,
+        provenance: [],
+        provenanceTotal: 0,
+        provenanceTotalKnown: true,
+        provenanceOffset: 0,
+        provenanceLimit: 100,
+        provenanceHasMore: false,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(ContentRecordPanel).props("show")).toBe(true);
+    expect(document.body.querySelector('[data-testid="lookup-sources-panel"]')).not.toBeNull();
+
+    rotate();
+    await flushPromises();
+
+    await vi.waitFor(() => {
+      expect(wrapper.findComponent(ContentRecordPanel).props("show")).toBe(false);
+      expect(wrapper.findComponent(ContentRecordPanel).props("row")).toBeNull();
+      expect(document.body.querySelector('[data-testid="lookup-sources-panel"]')).toBeNull();
+    });
+  });
+
+  it("retires a relation editor when the workspace epoch rotates", async () => {
+    const descriptor: NormalizedRelationDescriptor = {
+      relationId: "orders.contract",
+      fieldRef: "contract",
+      sourceCollection: "orders",
+      kind: "m2o",
+      relatedCollection: "contracts",
+      unique: false,
+      nullable: true,
+      onDelete: "nullify",
+      preset: "standard",
+      selfRelation: false,
+      managed: true,
+      state: "valid",
+      diagnostics: [],
+    };
+    setHostBridgeForTesting({
+      request: vi.fn(async (method: string, payload: unknown) => {
+        if (method === "schema.describe") {
+          return {
+            contract: "vibetable.schema-describe.v1",
+            collection: "orders",
+            requestGeneration: (payload as { requestGeneration: number }).requestGeneration,
+            schema: {
+              collection: "orders",
+              primaryKey: "id",
+              columns: [{
+                name: "contract",
+                title: "Contract",
+                fieldId: "orders.contract",
+                kind: "relation",
+                relationId: "orders.contract",
+                dataType: "text",
+                editable: true,
+                nullable: true,
+              }],
+              normalizedRelations: [descriptor],
+              schemaRevision: "schema-1",
+              permissionRevision: "permission-1",
+              capabilityHash: "capability-1",
+              lookupRevision: "lookup-1",
+            },
+            capabilities: {
+              contract: "vibetable.relation-capabilities.v1",
+              relationReadV1: true,
+              relationEditV1: true,
+              lookupQueryV1: true,
+            },
+          };
+        }
+        if (method === "lookup.list") {
+          return { collection: "orders", definitions: [], lookupRevision: "lookup-1" };
+        }
+        throw new Error(`unexpected request: ${method}`);
+      }),
+      notify: vi.fn(),
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      on: vi.fn(() => vi.fn()),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as HostBridge);
+    const { rotate } = configureWorkspaceEpochPair();
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    useTableStore().appendPage({
+      table: "orders",
+      columns: [{
+        name: "contract",
+        title: "Contract",
+        fieldId: "orders.contract",
+        kind: "relation",
+        relationId: "orders.contract",
+        dataType: "text",
+        editable: true,
+        nullable: true,
+      }],
+      rows: [{ rowKey: "order-1", contract: null }],
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      mode: "remote",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+
+    wrapper.findComponent(GridHost).vm.$emit("relationEdit", {
+      rowKey: "order-1",
+      field: "contract",
+      descriptor,
+      value: null,
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(RelationEditorPanel).exists()).toBe(true);
+
+    rotate();
+    await flushPromises();
+
+    expect(wrapper.findComponent(RelationEditorPanel).exists()).toBe(false);
   });
 
   it("restores attachment gridcell focus after NModal releases its focus trap", async () => {

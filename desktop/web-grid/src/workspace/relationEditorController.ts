@@ -58,6 +58,7 @@ export interface PendingRelationCreation {
 }
 
 export type RelationEditorIntent =
+  | { readonly type: "scope.retire" }
   | {
     readonly type: "editor.open";
     readonly rowKey: string | number;
@@ -137,6 +138,7 @@ export function createRelationEditorController(
   let searchGeneration = 0;
   let schemaGeneration = 0;
   let editorEpoch = 0;
+  let pendingCreationEpoch = 0;
   let nestedSearchGeneration = 0;
   const nestedSearchGenerations = new Map<string, number>();
 
@@ -148,6 +150,24 @@ export function createRelationEditorController(
     state.value.show = false;
     if (closeDraft) dependencies.relations.closeDraft();
   };
+
+  const retireScope = (): void => {
+    invalidateEditor(true);
+    pendingCreationEpoch += 1;
+    pendingCreation.value = null;
+    Object.assign(state.value, initialState());
+  };
+
+  const isEditorCurrent = (
+    epoch: number,
+    descriptor: NormalizedRelationDescriptor | null,
+    rowKey: string | number | null,
+    field: string,
+  ): boolean => epoch === editorEpoch
+    && state.value.show
+    && state.value.descriptor === descriptor
+    && state.value.rowKey === rowKey
+    && state.value.field === field;
 
   watch(
     () => dependencies.workspace.currentTable,
@@ -319,6 +339,8 @@ export function createRelationEditorController(
   async function selectTarget(target: RelationTargetRef): Promise<void> {
     const descriptor = state.value.descriptor;
     const rowKey = state.value.rowKey;
+    const field = state.value.field;
+    const capturedEpoch = editorEpoch;
     if (!descriptor || rowKey === null) return;
     if (descriptor.kind !== "m2o") {
       dependencies.relations.toggleDraftTarget(target);
@@ -332,23 +354,32 @@ export function createRelationEditorController(
         String(rowKey),
         target,
       );
+      if (!isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) return;
       if (result.outcome !== "committed") throw new Error(dependencies.changedError());
-      dependencies.table.applyRelationValue(rowKey, state.value.field, result.current);
+      dependencies.table.applyRelationValue(rowKey, field, result.current);
       invalidateEditor(true);
     } catch (error) {
-      state.value.error = errorMessage(error);
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.error = errorMessage(error);
+      }
     } finally {
-      state.value.applying = false;
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.applying = false;
+      }
     }
   }
 
   async function createTarget(label: string): Promise<void> {
     const descriptor = state.value.descriptor;
+    const rowKey = state.value.rowKey;
+    const field = state.value.field;
+    const capturedEpoch = editorEpoch;
     if (!descriptor || !label.trim()) return;
     state.value.applying = true;
     state.value.error = null;
     try {
       const result = await dependencies.service.createTarget(descriptor.relationId, label);
+      if (!isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) return;
       state.value.candidates = [
         result.target,
         ...state.value.candidates.filter(candidate => candidate.itemId !== result.target.itemId),
@@ -361,15 +392,22 @@ export function createRelationEditorController(
       dependencies.relations.toggleDraftTarget(result.target);
       state.value.query = result.target.label;
     } catch (error) {
-      state.value.error = errorMessage(error);
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.error = errorMessage(error);
+      }
     } finally {
-      state.value.applying = false;
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.applying = false;
+      }
     }
   }
 
   async function createFull(values: Readonly<Record<string, unknown>>): Promise<void> {
     const descriptor = state.value.descriptor;
+    const rowKey = state.value.rowKey;
+    const field = state.value.field;
     const displayField = state.value.targetDisplayField;
+    const capturedEpoch = editorEpoch;
     if (!descriptor || !displayField) return;
     state.value.applying = true;
     state.value.error = null;
@@ -379,13 +417,18 @@ export function createRelationEditorController(
         String(values[displayField] ?? ""),
         values,
       );
+      if (!isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) return;
       state.value.candidates = [result.target, ...state.value.candidates];
       state.value.total += 1;
       await selectTarget(result.target);
     } catch (error) {
-      state.value.error = errorMessage(error);
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.error = errorMessage(error);
+      }
     } finally {
-      state.value.applying = false;
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.applying = false;
+      }
     }
   }
 
@@ -402,6 +445,7 @@ export function createRelationEditorController(
       || !displayField
       || !schemaRevision
     ) return;
+    pendingCreationEpoch += 1;
     pendingCreation.value = {
       sourceCollection: descriptor.sourceCollection,
       sourceItemId: String(sourceItemId),
@@ -423,6 +467,7 @@ export function createRelationEditorController(
   async function completePending(result: InsertRowResult): Promise<void> {
     const pending = pendingCreation.value;
     if (!pending || dependencies.workspace.currentTable !== pending.targetCollection) return;
+    const capturedEpoch = pendingCreationEpoch;
     const label = String(result.row[pending.targetDisplayField] ?? result.rowKey);
     try {
       const attached = await dependencies.service.attachExistingTarget(
@@ -436,18 +481,23 @@ export function createRelationEditorController(
         pending.relationKind,
         pending.expectedSchemaRevision,
       );
+      if (capturedEpoch !== pendingCreationEpoch || pendingCreation.value !== pending) return;
       if (attached.outcome !== "committed") throw new Error("原记录已变化，自动关联未提交");
       pendingCreation.value = null;
       dependencies.selectTable(pending.sourceCollection);
       dependencies.reportSuccess(`已创建记录并写入“${pending.relationLabel}”`);
     } catch (error) {
-      dependencies.reportError(errorMessage(error));
+      if (capturedEpoch === pendingCreationEpoch && pendingCreation.value === pending) {
+        dependencies.reportError(errorMessage(error));
+      }
     }
   }
 
   async function clearSingle(): Promise<void> {
     const descriptor = state.value.descriptor;
     const rowKey = state.value.rowKey;
+    const field = state.value.field;
+    const capturedEpoch = editorEpoch;
     if (!descriptor || rowKey === null) return;
     state.value.applying = true;
     state.value.error = null;
@@ -457,35 +507,49 @@ export function createRelationEditorController(
         String(rowKey),
         null,
       );
+      if (!isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) return;
       if (result.outcome !== "committed") throw new Error(dependencies.changedError());
-      dependencies.table.applyRelationValue(rowKey, state.value.field, null);
+      dependencies.table.applyRelationValue(rowKey, field, null);
       invalidateEditor(true);
     } catch (error) {
-      state.value.error = errorMessage(error);
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.error = errorMessage(error);
+      }
     } finally {
-      state.value.applying = false;
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.applying = false;
+      }
     }
   }
 
   async function applyDraft(): Promise<void> {
+    const descriptor = state.value.descriptor;
     const rowKey = state.value.rowKey;
-    if (rowKey === null) return;
+    const field = state.value.field;
+    const capturedEpoch = editorEpoch;
+    if (!descriptor || rowKey === null) return;
     state.value.applying = true;
     state.value.error = null;
     try {
       const result = await dependencies.service.applyDraft();
+      if (!isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) return;
       if (result.outcome !== "committed") throw new Error(dependencies.changedError());
-      dependencies.table.applyRelationValue(rowKey, state.value.field, result.current);
+      dependencies.table.applyRelationValue(rowKey, field, result.current);
       invalidateEditor(true);
     } catch (error) {
-      state.value.error = errorMessage(error);
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.error = errorMessage(error);
+      }
     } finally {
-      state.value.applying = false;
+      if (isEditorCurrent(capturedEpoch, descriptor, rowKey, field)) {
+        state.value.applying = false;
+      }
     }
   }
 
   async function dispatch(intent: RelationEditorIntent): Promise<void> {
     switch (intent.type) {
+      case "scope.retire": retireScope(); return;
       case "editor.open": await open(intent); return;
       case "editor.close": invalidateEditor(true); return;
       case "targets.search": await searchTargets(intent.query, intent.offset); return;
@@ -508,6 +572,7 @@ export function createRelationEditorController(
       case "pending.complete": await completePending(intent.result); return;
       case "pending.cancel": {
         const sourceCollection = pendingCreation.value?.sourceCollection;
+        pendingCreationEpoch += 1;
         pendingCreation.value = null;
         if (sourceCollection) dependencies.selectTable(sourceCollection);
       }
