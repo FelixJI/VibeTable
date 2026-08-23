@@ -21,26 +21,27 @@ from pathlib import Path
 
 try:
     from scripts.node_toolchain import ensure_node
+    from scripts.toolchain_metadata import W64DEVKIT_DISTRIBUTION, resolve_executable
     from scripts.versioning import read_project_version
+    from scripts.windows_doctor import (
+        DoctorProfile,
+        diagnose_windows_toolchain,
+        render_report,
+    )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from node_toolchain import ensure_node
+    from toolchain_metadata import W64DEVKIT_DISTRIBUTION, resolve_executable
     from versioning import read_project_version
+    from windows_doctor import DoctorProfile, diagnose_windows_toolchain, render_report
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GITHUB_REPOSITORY = "FelixJI/VibeTable"
-W64DEVKIT_VERSION = "2.8.0"
-W64DEVKIT_SHA256 = "6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e"
-W64DEVKIT_URL = (
-    "https://github.com/skeeto/w64devkit/releases/download/"
-    f"v{W64DEVKIT_VERSION}/w64devkit-x64-{W64DEVKIT_VERSION}.7z.exe"
-)
 NPM_PROJECTS = (
     Path("desktop/web-grid"),
     Path("sdk/plugin"),
     Path("examples/plugins/data-overview"),
     Path("examples/plugins/normalize-text"),
 )
-PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 CI_PREPARE_MODE_ENV = "VIBETABLE_CI_PREPARE_MODE"
 
 
@@ -54,9 +55,7 @@ def _candidate_prepare_mode() -> bool:
 
 
 def _resolve_executable(name: str, *, path: str | None = None) -> str:
-    if name.casefold() == "dotnet" and PREFERRED_DOTNET.is_file():
-        return str(PREFERRED_DOTNET)
-    return shutil.which(name, path=path) or name
+    return resolve_executable(name, path=path) or name
 
 
 def _run(
@@ -88,25 +87,25 @@ def _sha256(path: Path) -> str:
 
 
 def _w64devkit_gcc() -> Path:
-    return REPO_ROOT / ".tools" / "w64devkit" / "w64devkit" / "bin" / "gcc.exe"
+    return W64DEVKIT_DISTRIBUTION.gcc_path(REPO_ROOT)
 
 
 def _install_w64devkit() -> None:
     if _w64devkit_gcc().is_file():
         return
-    archive = REPO_ROOT / "build" / "tooling" / f"w64devkit-{W64DEVKIT_VERSION}.7z.exe"
+    archive = REPO_ROOT / "build" / "tooling" / W64DEVKIT_DISTRIBUTION.archive_name
     archive.parent.mkdir(parents=True, exist_ok=True)
-    if not archive.is_file() or _sha256(archive) != W64DEVKIT_SHA256:
+    if not archive.is_file() or _sha256(archive) != W64DEVKIT_DISTRIBUTION.archive_sha256:
         if archive.exists():
             archive.unlink()
-        print(f"+ download {W64DEVKIT_URL}", flush=True)
+        print(f"+ download {W64DEVKIT_DISTRIBUTION.url}", flush=True)
         with (
-            urllib.request.urlopen(W64DEVKIT_URL, timeout=120) as response,
+            urllib.request.urlopen(W64DEVKIT_DISTRIBUTION.url, timeout=120) as response,
             archive.open("wb") as output,
         ):
             shutil.copyfileobj(response, output)
     actual = _sha256(archive)
-    if actual != W64DEVKIT_SHA256:
+    if actual != W64DEVKIT_DISTRIBUTION.archive_sha256:
         raise RuntimeError(f"w64devkit checksum mismatch: {actual}")
     destination = REPO_ROOT / ".tools" / "w64devkit"
     destination.mkdir(parents=True, exist_ok=True)
@@ -573,6 +572,7 @@ def _parser() -> argparse.ArgumentParser:
         "command",
         choices=(
             "bootstrap",
+            "doctor",
             "contracts",
             "quality",
             "pr-e2e",
@@ -581,6 +581,10 @@ def _parser() -> argparse.ArgumentParser:
             "smoke-lane",
             "smoke-aggregate",
         ),
+    )
+    parser.add_argument(
+        "--profile",
+        choices=tuple(profile.value for profile in DoctorProfile),
     )
     parser.add_argument(
         "--lane",
@@ -604,6 +608,14 @@ def main(argv: list[str] | None = None) -> int:
         "smoke": release_smoke,
     }
     try:
+        if command == "doctor":
+            if args.profile is None:
+                parser.error("doctor requires --profile")
+            report = diagnose_windows_toolchain(REPO_ROOT, DoctorProfile(args.profile))
+            print(render_report(report), end="")
+            return 0 if report.passed else 1
+        if args.profile is not None:
+            parser.error("--profile is only valid with doctor")
         if command == "smoke-lane":
             if args.lane is None or args.json_report is None:
                 parser.error("smoke-lane requires --lane and --json-report")
@@ -614,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
             aggregate_release_smoke(args.reports_dir)
         else:
             actions[command]()
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"[FAIL] VibeTable automation: {exc}", file=sys.stderr)
         return 1
     return 0

@@ -7,10 +7,39 @@ from pathlib import Path
 
 import pytest
 
-from scripts import automation_project, changelog
+from scripts import automation_project, changelog, toolchain_metadata
 from scripts.automation_core import Automation, CommandRunner, SemVer
+from scripts.windows_doctor import DoctorCheck, DoctorProfile, DoctorReport
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_doctor_dispatches_explicit_profile_and_returns_report_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observed: list[tuple[Path, DoctorProfile]] = []
+    report = DoctorReport(
+        profile=DoctorProfile.FULL,
+        checks=(DoctorCheck("go.version", False, "1.25.8", "missing", "安装 Go。"),),
+    )
+
+    def diagnose(repo_root: Path, profile: DoctorProfile) -> DoctorReport:
+        observed.append((repo_root, profile))
+        return report
+
+    monkeypatch.setattr(automation_project, "diagnose_windows_toolchain", diagnose)
+
+    assert automation_project.main(["doctor", "--profile", "full"]) == 1
+    assert observed == [(automation_project.REPO_ROOT, DoctorProfile.FULL)]
+    assert "toolchain ready: no" in capsys.readouterr().out
+
+
+def test_doctor_requires_an_explicit_profile() -> None:
+    with pytest.raises(SystemExit) as raised:
+        automation_project.main(["doctor"])
+
+    assert raised.value.code == 2
 
 
 def test_project_runner_resolves_platform_command_shims(
@@ -18,7 +47,7 @@ def test_project_runner_resolves_platform_command_shims(
 ) -> None:
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(
-        automation_project.shutil,
+        toolchain_metadata.shutil,
         "which",
         lambda command, **kwargs: "C:/node/npm.cmd" if command == "npm" else None,
     )
@@ -39,9 +68,9 @@ def test_project_runner_prefers_dotnet_install_with_sdk(
     calls: list[tuple[str, ...]] = []
     preferred = tmp_path / "dotnet.exe"
     preferred.touch()
-    monkeypatch.setattr(automation_project, "PREFERRED_DOTNET", preferred)
+    monkeypatch.setattr(toolchain_metadata, "PREFERRED_DOTNET", preferred)
     monkeypatch.setattr(
-        automation_project.shutil,
+        toolchain_metadata.shutil,
         "which",
         lambda command, **kwargs: "C:/Program Files (x86)/dotnet/dotnet.exe",
     )
