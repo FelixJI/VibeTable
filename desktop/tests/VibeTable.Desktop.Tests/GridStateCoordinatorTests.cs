@@ -35,11 +35,13 @@ public sealed class GridStateCoordinatorTests
 
     private static GridStateCoordinator NewCoordinator(
         FakeTableRpcGateway gateway,
-        Action<TableNotification>? notify = null)
+        Action<TableNotification>? notify = null,
+        TimeProvider? timeProvider = null)
     {
         var coordinator = new GridStateCoordinator(
             gateway,
-            n => notify?.Invoke(n));
+            n => notify?.Invoke(n),
+            timeProvider);
         coordinator.SetDatabase("db-identity");
         return coordinator;
     }
@@ -67,7 +69,7 @@ public sealed class GridStateCoordinatorTests
         });
 
     [TestMethod]
-    public async Task RequestQuery_Debounces_RapidRequests_IntoOne()
+    public void RequestQuery_Debounces_RapidRequests_IntoOne()
     {
         var gateway = new FakeTableRpcGateway();
         gateway.DatabaseOpenResults["db"] =
@@ -76,15 +78,18 @@ public sealed class GridStateCoordinatorTests
                 Array.Empty<string>(),
                 TestDisplayNames.For("contracts"));
         gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 3);
-        var coordinator = NewCoordinator(gateway);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, timeProvider: time);
 
         // Fire 5 rapid query requests within the debounce window.
         for (int i = 0; i < 5; i++)
         {
             coordinator.RequestQuery("contracts", Query(limit: 100));
         }
-        // Wait past the debounce window.
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        Assert.AreEqual(1, time.ScheduledTimerCount);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs - 1));
+        Assert.AreEqual(0, gateway.QueryWindowCalls.Count);
+        time.Advance(TimeSpan.FromMilliseconds(1));
 
         Assert.AreEqual(1, gateway.QueryWindowCalls.Count,
             "rapid queries should coalesce into one debounced read");
@@ -331,15 +336,19 @@ public sealed class GridStateCoordinatorTests
     public async Task RequestSave_Debounces_RapidSaves_IntoOne()
     {
         var gateway = new FakeTableRpcGateway();
-        var coordinator = NewCoordinator(gateway);
-        // RequestSave requires a current table; drive one through a query.
-        coordinator.RequestQuery("contracts", Query());
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, timeProvider: time);
+        await coordinator.SwitchTableAsync("contracts");
 
         for (int i = 0; i < 5; i++)
         {
             coordinator.RequestSave(new GridState());
         }
-        await Task.Delay(GridStateCoordinator.SaveDebounceMs + 200);
+
+        Assert.AreEqual(1, time.ScheduledTimerCount);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.SaveDebounceMs - 1));
+        Assert.AreEqual(0, gateway.SaveGridStateCalls.Count);
+        time.Advance(TimeSpan.FromMilliseconds(1));
 
         Assert.AreEqual(1, gateway.SaveGridStateCalls.Count,
             "rapid saves should coalesce into one debounced save");
