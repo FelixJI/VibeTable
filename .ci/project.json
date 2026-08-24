@@ -5,6 +5,43 @@
     "repository": "FelixJI/VibeTable"
   },
   "quality": {
+    "go_coverage": {
+      "groups": {
+        "core": {
+          "cover_packages": [
+            "./internal/schemacore",
+            "./internal/relatedcomputation",
+            "./internal/workspacesearch"
+          ],
+          "test_packages": [
+            "./internal/schemacore",
+            "./internal/relatedcomputation",
+            "./internal/workspacesearch"
+          ],
+          "minimum": {
+            "line": 85,
+            "branch": 75,
+            "diff": 90
+          }
+        },
+        "authority": {
+          "cover_packages": [
+            "./internal/filehistory",
+            "./internal/restore",
+            "./internal/query",
+            "./internal/mutation"
+          ],
+          "test_packages": [
+            "./..."
+          ],
+          "minimum": {
+            "line": 73,
+            "branch": 61,
+            "diff": 90
+          }
+        }
+      }
+    },
     "dotnet_coverage": {
       "projects": {
         "VibeTable.Desktop": {

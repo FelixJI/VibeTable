@@ -7,8 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
+	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +41,7 @@ type metric struct {
 
 type report struct {
 	FormatVersion      int                `json:"formatVersion"`
+	Group              string             `json:"group"`
 	Scope              []string           `json:"scope"`
 	BaseRef            string             `json:"baseRef"`
 	Definitions        map[string]string  `json:"definitions"`
@@ -53,35 +57,98 @@ var profilePattern = regexp.MustCompile(
 	`^(.+):(\d+)\.(\d+),(\d+)\.(\d+)\s+\d+\s+(\d+)$`,
 )
 
+type options struct {
+	group          string
+	profilePath    string
+	repositoryRoot string
+	baseRef        string
+	reportPath     string
+	lineMinimum    float64
+	branchMinimum  float64
+	diffMinimum    float64
+	scopes         stringList
+}
+
+func parseOptions(args []string) (options, error) {
+	var result options
+	flags := flag.NewFlagSet("go-coverage-report", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&result.group, "group", "", "coverage group name")
+	flags.StringVar(&result.profilePath, "profile", "", "Go count-mode coverprofile")
+	flags.StringVar(&result.repositoryRoot, "repository-root", "", "repository root")
+	flags.StringVar(&result.baseRef, "base-ref", "", "git base ref for diff coverage")
+	flags.StringVar(&result.reportPath, "report", "", "JSON report path")
+	flags.Float64Var(
+		&result.lineMinimum, "line-min", math.NaN(), "minimum executable-line coverage",
+	)
+	flags.Float64Var(
+		&result.branchMinimum, "branch-min", math.NaN(), "minimum decision-arm coverage",
+	)
+	flags.Float64Var(
+		&result.diffMinimum, "diff-min", math.NaN(), "minimum changed executable-line coverage",
+	)
+	flags.Var(&result.scopes, "scope", "repository-relative production source directory; repeatable")
+	if err := flags.Parse(args); err != nil {
+		return options{}, err
+	}
+	if result.group == "" {
+		return options{}, errors.New("coverage group is required")
+	}
+	if result.profilePath == "" || result.repositoryRoot == "" || result.reportPath == "" ||
+		len(result.scopes) == 0 {
+		return options{}, errors.New(
+			"profile, repository-root, report, and at least one scope are required",
+		)
+	}
+	thresholds := []float64{result.lineMinimum, result.branchMinimum, result.diffMinimum}
+	for _, minimum := range thresholds {
+		if math.IsNaN(minimum) {
+			return options{}, errors.New("line, branch, and diff thresholds are required")
+		}
+		if minimum <= 0 || minimum > 100 {
+			return options{}, errors.New("coverage thresholds must be between 1 and 100")
+		}
+	}
+	return result, nil
+}
+
 func main() {
-	profilePath := flag.String("profile", "", "Go count-mode coverprofile")
-	repositoryRoot := flag.String("repository-root", "", "repository root")
-	baseRef := flag.String("base-ref", "", "git base ref for diff coverage")
-	reportPath := flag.String("report", "", "JSON report path")
-	lineMinimum := flag.Float64("line-min", 85, "minimum executable-line coverage")
-	branchMinimum := flag.Float64("branch-min", 75, "minimum decision-arm coverage")
-	diffMinimum := flag.Float64("diff-min", 90, "minimum changed executable-line coverage")
-	var scopes stringList
-	flag.Var(&scopes, "scope", "repository-relative production source directory; repeatable")
-	flag.Parse()
-	if *profilePath == "" || *repositoryRoot == "" || *reportPath == "" || len(scopes) == 0 {
-		fatal(errors.New("profile, repository-root, report, and at least one scope are required"))
+	config, err := parseOptions(os.Args[1:])
+	if err != nil {
+		fatal(err)
 	}
 
-	profiles, err := parseProfile(*profilePath)
+	profiles, err := parseProfile(config.profilePath)
 	if err != nil {
 		fatal(err)
 	}
-	changed, resolvedBase, err := changedLines(*repositoryRoot, *baseRef, scopes)
+	changed, resolvedBase, err := changedLines(
+		config.repositoryRoot,
+		config.baseRef,
+		config.scopes,
+	)
 	if err != nil {
 		fatal(err)
 	}
-	result, err := analyze(*repositoryRoot, scopes, profiles, changed)
+	result, err := analyze(config.repositoryRoot, config.scopes, profiles, changed)
 	if err != nil {
 		fatal(err)
 	}
-	result.FormatVersion = 1
-	result.Scope = append([]string(nil), scopes...)
+	result = finalizeReport(result, config, resolvedBase)
+	if err := writeReport(config.reportPath, result); err != nil {
+		fatal(err)
+	}
+	fmt.Print(formatCoverageSummary(result))
+	if result.Line.Percent < config.lineMinimum || result.Branch.Percent < config.branchMinimum ||
+		result.Diff.Percent < config.diffMinimum {
+		os.Exit(1)
+	}
+}
+
+func finalizeReport(result report, config options, resolvedBase string) report {
+	result.FormatVersion = 2
+	result.Group = config.group
+	result.Scope = append([]string(nil), config.scopes...)
 	result.BaseRef = resolvedBase
 	result.Definitions = map[string]string{
 		"line":   "unique AST executable source lines reached by a Go coverprofile block",
@@ -89,21 +156,19 @@ func main() {
 		"diff":   "changed AST executable source lines reached relative to baseRef, including untracked scope files",
 	}
 	result.Thresholds = map[string]float64{
-		"line": *lineMinimum, "branch": *branchMinimum, "diff": *diffMinimum,
+		"line": config.lineMinimum, "branch": config.branchMinimum, "diff": config.diffMinimum,
 	}
-	if err := writeReport(*reportPath, result); err != nil {
-		fatal(err)
-	}
-	fmt.Printf(
-		"Go core coverage: line %.2f%% (%d/%d), branch %.2f%% (%d/%d), diff %.2f%% (%d/%d)\n",
+	return result
+}
+
+func formatCoverageSummary(result report) string {
+	return fmt.Sprintf(
+		"Go %s coverage: line %.2f%% (%d/%d), branch %.2f%% (%d/%d), diff %.2f%% (%d/%d)\n",
+		result.Group,
 		result.Line.Percent, result.Line.Covered, result.Line.Total,
 		result.Branch.Percent, result.Branch.Covered, result.Branch.Total,
 		result.Diff.Percent, result.Diff.Covered, result.Diff.Total,
 	)
-	if result.Line.Percent < *lineMinimum || result.Branch.Percent < *branchMinimum ||
-		result.Diff.Percent < *diffMinimum {
-		os.Exit(1)
-	}
 }
 
 type stringList []string
@@ -186,6 +251,7 @@ func analyze(
 	profiles map[string]fileCoverage,
 	changed map[string]map[int]bool,
 ) (report, error) {
+	buildContext := coverageBuildContext()
 	lineCovered := make(map[string]bool)
 	lineTotal := make(map[string]bool)
 	diffCovered := make(map[string]bool)
@@ -199,6 +265,13 @@ func analyze(
 			}
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") ||
 				strings.HasSuffix(entry.Name(), "_test.go") || strings.Contains(entry.Name(), ".generated.") {
+				return nil
+			}
+			matches, matchErr := buildContext.MatchFile(filepath.Dir(path), entry.Name())
+			if matchErr != nil {
+				return fmt.Errorf("match Go build constraints for %s: %w", path, matchErr)
+			}
+			if !matches {
 				return nil
 			}
 			relativePath, relErr := filepath.Rel(repositoryRoot, path)
@@ -236,6 +309,12 @@ func analyze(
 			return report{}, err
 		}
 	}
+	if len(lineTotal) == 0 {
+		return report{}, errors.New("coverage scope has no executable-line denominator")
+	}
+	if branchTotal == 0 {
+		return report{}, errors.New("coverage scope has no decision-arm denominator")
+	}
 	return report{
 		Line:               newMetric(countTrue(lineCovered), len(lineTotal)),
 		Branch:             newMetric(branchCovered, branchTotal),
@@ -243,6 +322,13 @@ func analyze(
 		UncoveredLines:     falseKeys(lineTotal, lineCovered),
 		UncoveredDiffLines: falseKeys(diffTotal, diffCovered),
 	}, nil
+}
+
+func coverageBuildContext() build.Context {
+	context := build.Default
+	context.GOOS = "windows"
+	context.GOARCH = "amd64"
+	return context
 }
 
 func executableStatement(statement ast.Stmt) bool {

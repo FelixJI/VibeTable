@@ -31,6 +31,13 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 
 - Python 85%：对核心 backend 合理，保持。
 - .NET 覆盖率由 `.ci/project.json` 的 `quality.dotnet_coverage.projects` 集中管理。Desktop、Contracts、PreviewHost、Workspace、Infrastructure 与 DocumentDiff.OpenXml 分别使用独立程序集 Include 以及 line/branch total 门槛，测试项目不得持有数值、合并程序集总量或排除手写代码；新增 Coverlet 测试项目若未进入该 inventory，质量入口会 fail closed。Contracts 只排除中央清单逐文件登记、由既有 generator 拥有且经 `scripts/automation_project.py contracts` 做 freshness/兼容性检查的 `Generated/*.g.cs`，全部手写源码仍进入 line/branch total 分母；排除模式、清单与磁盘中的生成文件闭集由质量入口 fail closed 校验。
+- Go 覆盖率由 `.ci/project.json` 的 `quality.go_coverage.groups` 集中管理。`core` 与
+  `authority` 使用互不重叠的 `-coverpkg`、测试包清单、profile、JSON 报告和
+  line/branch/diff 阈值；未知字段、空清单、重复或跨组重叠包、非法路径、缺失阈值及空
+  line/branch 分母都会 fail closed。分析器固定按产品目标 `windows/amd64` 解析 build
+  constraints，不把 `!windows` 源码计入分母。authority 组覆盖 `filehistory`、`restore`、
+  `query` 与 `mutation`，并用 `./...` 汇集自测、跨包接口测试和 integration 对这四包的
+  覆盖；完整无 instrumentation 的 `go test ./...` 与产品 E2E 仍由独立门禁执行。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
 - Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a` 与
   `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、以三个
@@ -46,6 +53,14 @@ Go build cache 与临时二进制清理，不得通过跳过测试或放宽 race
 完整 race 阶段为 815.219 秒（13.59 分钟），较两个 worker 报告的 994.422 秒下降
 18.02%。该次覆盖 46 个有测试包、575 个当前源码命名测试和 3 个无命名测试包；
 两个报告对应不同源码提交，数量只用于证明当次完整枚举，不能作为测试删减比较。
+
+2026-08-24 的 authority 覆盖率基线使用最终四包 `-coverpkg` 和 `./...` 测试驱动采样
+四份完整 profile；较低两份原始计数均为 line 4111/5502（74.72%）、branch
+2104/3388（62.10%）。本机命令最终仅触发稳定性台账 V-06 已登记的随机 Windows
+`TempDir RemoveAll` 清理错误，业务断言与 profile 均已完成；合并资格仍由 GitHub
+`required` 的干净 runner 判定。门槛按较低样本减 1 个百分点后向下取整，固定为 line
+73、branch 61；本次没有四包源码 diff，空 diff 的 100% 不作为实测基线，继续采用策略
+阈值 90。
 
 ## 产品 E2E 稳定性与性能预算
 
