@@ -15,6 +15,11 @@
     }
   },
   {
+    "name": "unsupported logical type",
+    "path": ["logicalType"],
+    "value": "password"
+  },
+  {
     "name": "missing provider identity",
     "path": ["identity", "providerFieldId"],
     "remove": true

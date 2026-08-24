@@ -25,7 +25,8 @@ public sealed class ProductContractV2RoundTripTests
         "task-changed-event.json",
     ];
 
-    private static readonly string FixturesDirectory = FindFixturesDirectory();
+    private static readonly string FixturesDirectory = FindFixturesDirectory("v2");
+    private static readonly string SchemaV2FixturesDirectory = FindFixturesDirectory("schema-v2");
 
     [TestMethod]
     public void AllProductFixtures_SystemTextJsonRoundTripWithoutShapeChanges()
@@ -280,6 +281,67 @@ public sealed class ProductContractV2RoundTripTests
         Assert.AreEqual("unsupported field contract", reason);
     }
 
+    [TestMethod]
+    public void SchemaSnapshotRejectsSharedObjectRangeBoundary()
+        => AssertSchemaSnapshotRejectsSharedInvalidFieldCase("object range boundary");
+
+    [TestMethod]
+    public void SchemaSnapshotRejectsSharedUnsupportedLogicalType()
+        => AssertSchemaSnapshotRejectsSharedInvalidFieldCase("unsupported logical type");
+
+    [TestMethod]
+    public void SchemaSnapshotAcceptsSupportedRangeBoundaries()
+    {
+        var boundaries = new (string Name, JsonNode? Value)[]
+        {
+            ("null", null),
+            ("number", JsonValue.Create(1.25)),
+            ("string", JsonValue.Create("2026-08-24T00:00:00Z")),
+        };
+        foreach ((string name, JsonNode? boundary) in boundaries)
+        {
+            JsonObject field = ReadSchemaV2Node("field-definition.json").AsObject();
+            field["constraints"]!["range"]!["min"] = boundary?.DeepClone();
+            SchemaSnapshotV2 snapshot = CreateSchemaSnapshotWithField(field);
+
+            Assert.IsTrue(
+                SchemaV2Contract.ValidateResult(snapshot, out string reason),
+                $"{name}: {reason}");
+            Assert.AreEqual("", reason, name);
+        }
+    }
+
+    private static void AssertSchemaSnapshotRejectsSharedInvalidFieldCase(string caseName)
+    {
+        JsonArray cases = ReadSchemaV2Node("invalid/field-definition-cases.json").AsArray();
+        JsonObject testCase = cases
+            .Select(node => node!.AsObject())
+            .Single(item => item["name"]!.GetValue<string>() == caseName);
+        JsonObject field = ReadSchemaV2Node("field-definition.json").AsObject();
+        ApplyInvalidFieldCase(field, testCase);
+
+        SchemaSnapshotV2 invalidSnapshot = CreateSchemaSnapshotWithField(field);
+        Assert.IsFalse(
+            SchemaV2Contract.ValidateResult(invalidSnapshot, out string reason));
+        Assert.IsFalse(string.IsNullOrWhiteSpace(reason), caseName);
+    }
+
+    private static SchemaSnapshotV2 CreateSchemaSnapshotWithField(JsonObject field)
+    {
+        var definition = field.Deserialize<FieldDefinitionV2>();
+        Assert.IsNotNull(definition);
+
+        JsonObject catalog = ReadObject("product-rpc-catalog.json");
+        JsonObject result = catalog["rpcCases"]!.AsArray()
+            .Select(node => node!.AsObject())
+            .Single(item => item["method"]!.GetValue<string>() == "schema.getTable")
+            ["success"]!["result"]!.AsObject();
+        var snapshot = result.Deserialize<SchemaSnapshotV2>();
+        Assert.IsNotNull(snapshot);
+
+        return snapshot with { Fields = [definition] };
+    }
+
     private static object DeserializeSchemaResult(string method, JsonObject result)
         => method switch
         {
@@ -296,7 +358,30 @@ public sealed class ProductContractV2RoundTripTests
         return (JsonObject)node!;
     }
 
-    private static string FindFixturesDirectory()
+    private static JsonNode ReadSchemaV2Node(string name)
+        => JsonNode.Parse(File.ReadAllText(Path.Combine(SchemaV2FixturesDirectory, name)))!;
+
+    private static void ApplyInvalidFieldCase(JsonObject field, JsonObject testCase)
+    {
+        string[] path = testCase["path"]!.AsArray()
+            .Select(node => node!.GetValue<string>())
+            .ToArray();
+        JsonObject target = field;
+        foreach (string segment in path[..^1])
+        {
+            target = target[segment]!.AsObject();
+        }
+
+        string key = path[^1];
+        if (testCase["remove"]?.GetValue<bool>() is true)
+        {
+            target.Remove(key);
+            return;
+        }
+        target[key] = testCase["value"]!.DeepClone();
+    }
+
+    private static string FindFixturesDirectory(string contractDirectory)
     {
         string[] starts = [Environment.CurrentDirectory, AppContext.BaseDirectory];
         foreach (var start in starts)
@@ -308,7 +393,7 @@ public sealed class ProductContractV2RoundTripTests
                 var candidate = Path.Combine(
                     current.FullName,
                     "contracts",
-                    "v2",
+                    contractDirectory,
                     "fixtures");
                 if (Directory.Exists(candidate))
                 {
@@ -318,6 +403,7 @@ public sealed class ProductContractV2RoundTripTests
         }
 
         throw new DirectoryNotFoundException(
-            "Could not locate contracts/v2/fixtures from the test cwd or output directory.");
+            $"Could not locate contracts/{contractDirectory}/fixtures "
+            + "from the test cwd or output directory.");
     }
 }
