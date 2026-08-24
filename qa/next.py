@@ -329,6 +329,18 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
         source_project = raw.get("source_project")
         test_project = raw.get("test_project")
         minimum = raw.get("minimum")
+        generated_source_exclusion = raw.get("generated_source_exclusion")
+        generated_source_files = raw.get("generated_source_files")
+        allowed_entry_fields = {
+            "source_project",
+            "test_project",
+            "msbuild_prefix",
+            "minimum",
+            "generated_source_exclusion",
+            "generated_source_files",
+        }
+        if not set(raw) <= allowed_entry_fields:
+            raise ValueError(f"unknown dotnet coverage configuration for {assembly}")
         if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", prefix):
             raise ValueError(f"invalid dotnet coverage msbuild_prefix for {assembly}")
         if prefix in prefixes:
@@ -352,6 +364,49 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
         if assembly_name != assembly:
             raise ValueError(f"dotnet coverage source_project must match {assembly}")
         source_projects.add(source_path)
+        exclusion_property: str | None = None
+        has_generated_exclusion = "generated_source_exclusion" in raw
+        has_generated_files = "generated_source_files" in raw
+        if has_generated_exclusion != has_generated_files:
+            raise ValueError(f"invalid generated source exclusion for {assembly}")
+        if has_generated_exclusion:
+            expected_exclusion = f"**/{source_path.parent.name}/Generated/*.g.cs"
+            generated_dir = source_path.parent / "Generated"
+            generated_files = {path.resolve() for path in generated_dir.glob("*.g.cs")}
+            all_generated_files = {
+                path.resolve()
+                for path in source_path.parent.rglob("*.g.cs")
+                if not {"bin", "obj"}.intersection(path.relative_to(source_path.parent).parts)
+            }
+            valid_source_files = (
+                isinstance(generated_source_files, list)
+                and bool(generated_source_files)
+                and all(isinstance(path, str) for path in generated_source_files)
+                and len(generated_source_files) == len(set(generated_source_files))
+                and generated_source_files == sorted(generated_source_files)
+                and all(
+                    path.startswith("Generated/")
+                    and path.count("/") == 1
+                    and path.endswith(".g.cs")
+                    and not any(token in path for token in ("..", "\\"))
+                    for path in generated_source_files
+                )
+            )
+            declared_generated_files = (
+                {(source_path.parent / path).resolve() for path in generated_source_files}
+                if valid_source_files
+                else set()
+            )
+            if (
+                not isinstance(generated_source_exclusion, str)
+                or generated_source_exclusion != expected_exclusion
+                or any(token in generated_source_exclusion for token in (",", ";", "..", "\\"))
+                or not generated_files
+                or generated_files != all_generated_files
+                or generated_files != declared_generated_files
+            ):
+                raise ValueError(f"invalid generated source exclusion for {assembly}")
+            exclusion_property = f"{prefix}CoverageExcludeByFile"
         if (
             not project_path.is_relative_to(tests_root)
             or project_path.suffix != ".csproj"
@@ -431,14 +486,22 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
             raise ValueError(
                 f"dotnet coverage group must run only when CollectCoverage is true: {assembly}"
             )
-        coverage_values = {child.tag: child.text for child in coverage_groups[0]}
+        coverage_group = coverage_groups[0]
+        coverage_values = {child.tag: child.text for child in coverage_group}
         forbidden = {
             child.tag
             for group in project_root.findall("PropertyGroup")
             for child in group
             if child.tag == "MergeWith"
             or child.tag == "SkipAutoProps"
-            or child.tag.startswith("Exclude")
+            or (
+                child.tag.startswith("Exclude")
+                and not (
+                    child.tag == "ExcludeByFile"
+                    and exclusion_property is not None
+                    and group is coverage_group
+                )
+            )
         }
         if forbidden:
             raise ValueError(
@@ -454,6 +517,8 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
             "ThresholdType": "line,branch",
             "ThresholdStat": "total",
         }
+        if exclusion_property is not None:
+            expected_values["ExcludeByFile"] = f"$({exclusion_property})"
         if coverage_values != expected_values:
             raise ValueError(f"dotnet coverage adapter does not match inventory: {assembly}")
 
@@ -465,9 +530,10 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
             raise ValueError(
                 f"dotnet coverage validation target must run only when CollectCoverage is true: {assembly}"
             )
-        expected_error_condition = " or ".join(
-            f"'$({name})' == ''" for name in (include_property, line_property, branch_property)
-        )
+        required_properties = [include_property, line_property, branch_property]
+        if exclusion_property is not None:
+            required_properties.append(exclusion_property)
+        expected_error_condition = " or ".join(f"'$({name})' == ''" for name in required_properties)
         condition = " ".join(error.attrib.get("Condition", "").split())
         if condition != expected_error_condition:
             raise ValueError(
@@ -475,6 +541,8 @@ def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, 
             )
 
         properties[include_property] = f"[{assembly}]*"
+        if exclusion_property is not None:
+            properties[exclusion_property] = generated_source_exclusion
         for metric in ("line", "branch"):
             value = minimum[metric]
             if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 100:

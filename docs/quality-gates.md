@@ -30,7 +30,7 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 ## 当前阈值评价
 
 - Python 85%：对核心 backend 合理，保持。
-- .NET 覆盖率由 `.ci/project.json` 的 `quality.dotnet_coverage.projects` 集中管理。Desktop、PreviewHost、Workspace、Infrastructure 与 DocumentDiff.OpenXml 分别使用独立程序集 Include 以及 line/branch total 门槛，测试项目不得持有数值、合并程序集总量或排除手写代码；新增 Coverlet 测试项目若未进入该 inventory，质量入口会 fail closed。
+- .NET 覆盖率由 `.ci/project.json` 的 `quality.dotnet_coverage.projects` 集中管理。Desktop、Contracts、PreviewHost、Workspace、Infrastructure 与 DocumentDiff.OpenXml 分别使用独立程序集 Include 以及 line/branch total 门槛，测试项目不得持有数值、合并程序集总量或排除手写代码；新增 Coverlet 测试项目若未进入该 inventory，质量入口会 fail closed。Contracts 只排除中央清单逐文件登记、由既有 generator 拥有且经 `scripts/automation_project.py contracts` 做 freshness/兼容性检查的 `Generated/*.g.cs`，全部手写源码仍进入 line/branch total 分母；排除模式、清单与磁盘中的生成文件闭集由质量入口 fail closed 校验。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
 - Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a` 与
   `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、以三个

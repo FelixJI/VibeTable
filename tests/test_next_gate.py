@@ -1450,7 +1450,7 @@ def test_dotnet_coverage_inventory_matches_coverlet_projects_bidirectionally() -
     }
 
     assert configured_projects == discovered_projects
-    assert not any("Contracts.Tests" in project for project in configured_projects)
+    assert any("Contracts.Tests" in project for project in configured_projects)
 
 
 def test_dotnet_coverage_inventory_registers_openxml_as_an_independent_assembly() -> None:
@@ -1463,6 +1463,25 @@ def test_dotnet_coverage_inventory_registers_openxml_as_an_independent_assembly(
     assert properties[f"{prefix}CoverageInclude"] == "[VibeTable.DocumentDiff.OpenXml]*"
     assert isinstance(properties[f"{prefix}LineCoverageMinimum"], int)
     assert isinstance(properties[f"{prefix}BranchCoverageMinimum"], int)
+
+
+def test_dotnet_coverage_inventory_registers_contracts_with_generated_only_denominator() -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    inventory = payload["quality"]["dotnet_coverage"]["projects"]
+    entry = inventory["VibeTable.Contracts"]
+    prefix = entry["msbuild_prefix"]
+    properties = next_gate.dotnet_coverage_properties()
+
+    assert properties[f"{prefix}CoverageInclude"] == "[VibeTable.Contracts]*"
+    assert isinstance(properties[f"{prefix}LineCoverageMinimum"], int)
+    assert isinstance(properties[f"{prefix}BranchCoverageMinimum"], int)
+    assert properties[f"{prefix}CoverageExcludeByFile"] == (
+        "**/VibeTable.Contracts/Generated/*.g.cs"
+    )
+    assert entry["generated_source_files"] == [
+        "Generated/SchemaV2Contracts.g.cs",
+        "Generated/WorkbenchContracts.g.cs",
+    ]
 
 
 def test_dotnet_gate_emits_unique_coverage_properties_for_every_inventory_entry() -> None:
@@ -1479,8 +1498,13 @@ def test_dotnet_gate_emits_unique_coverage_properties_for_every_inventory_entry(
         expected_properties[f"{prefix}CoverageInclude"] = f"[{assembly}]*"
         expected_properties[f"{prefix}LineCoverageMinimum"] = entry["minimum"]["line"]
         expected_properties[f"{prefix}BranchCoverageMinimum"] = entry["minimum"]["branch"]
+        if exclusion := entry.get("generated_source_exclusion"):
+            expected_properties[f"{prefix}CoverageExcludeByFile"] = exclusion
     assert next_gate.dotnet_coverage_properties() == expected_properties
-    assert len(expected_properties) == len(set(expected_properties)) == 3 * len(inventory)
+    expected_count = sum(
+        3 + int("generated_source_exclusion" in entry) for entry in inventory.values()
+    )
+    assert len(expected_properties) == len(set(expected_properties)) == expected_count
     for property_name, value in expected_properties.items():
         assert f"/p:{property_name}={value}" in command
 
@@ -1502,6 +1526,11 @@ def test_dotnet_coverage_projects_consume_central_properties_and_fail_closed() -
         )
         assert properties["ThresholdType"] == "line,branch"
         assert properties["ThresholdStat"] == "total"
+        exclusion_property = f"{prefix}CoverageExcludeByFile"
+        if "generated_source_exclusion" in entry:
+            assert properties["ExcludeByFile"] == f"$({exclusion_property})"
+        else:
+            assert "ExcludeByFile" not in properties
         target = root.find(f"Target[@Name='Validate{prefix}CoverageProperties']")
         assert target is not None
         assert target.attrib["BeforeTargets"] == "VSTest"
@@ -1511,6 +1540,8 @@ def test_dotnet_coverage_projects_consume_central_properties_and_fail_closed() -
         assert f"$({prefix}CoverageInclude)" in condition
         assert f"$({prefix}LineCoverageMinimum)" in condition
         assert f"$({prefix}BranchCoverageMinimum)" in condition
+        if "generated_source_exclusion" in entry:
+            assert f"$({exclusion_property})" in condition
 
 
 def test_dotnet_coverage_projects_measure_the_complete_single_assembly_denominator() -> None:
@@ -1522,7 +1553,68 @@ def test_dotnet_coverage_projects_measure_the_complete_single_assembly_denominat
         property_names = {child.tag for group in root.findall("PropertyGroup") for child in group}
         assert "SkipAutoProps" not in property_names
         assert "MergeWith" not in property_names
-        assert not any(name.startswith("Exclude") for name in property_names)
+        allowed_exclusions = {"ExcludeByFile"} if "generated_source_exclusion" in entry else set()
+        assert not any(
+            name.startswith("Exclude") and name not in allowed_exclusions for name in property_names
+        )
+
+
+@pytest.mark.parametrize(
+    "exclusion",
+    [
+        "**/*.g.cs",
+        "**/VibeTable.Contracts/Generated/*.cs",
+        "../VibeTable.Contracts/Generated/*.g.cs",
+        "**/Generated/*.g.cs,**/Models/*.cs",
+    ],
+)
+def test_dotnet_coverage_inventory_rejects_broad_generated_source_exclusion(
+    tmp_path: Path,
+    exclusion: str,
+) -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    payload["quality"]["dotnet_coverage"]["projects"]["VibeTable.Contracts"][
+        "generated_source_exclusion"
+    ] = exclusion
+    config = tmp_path / "project.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"invalid generated source exclusion for VibeTable\.Contracts",
+    ):
+        next_gate.dotnet_coverage_properties(config)
+
+
+def test_dotnet_coverage_inventory_rejects_unregistered_generated_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_dir = (next_gate.REPO_ROOT / "desktop/src/VibeTable.Contracts/Generated").resolve()
+    unregistered = generated_dir / "Manual.g.cs"
+    real_glob = Path.glob
+    real_rglob = Path.rglob
+
+    def glob_with_unregistered(path: Path, pattern: str):
+        results = list(real_glob(path, pattern))
+        if path.resolve() == generated_dir and pattern == "*.g.cs":
+            results.append(unregistered)
+        return iter(results)
+
+    def rglob_with_unregistered(path: Path, pattern: str):
+        results = list(real_rglob(path, pattern))
+        contracts_root = generated_dir.parent
+        if path.resolve() == contracts_root and pattern == "*.g.cs":
+            results.append(unregistered)
+        return iter(results)
+
+    monkeypatch.setattr(Path, "glob", glob_with_unregistered)
+    monkeypatch.setattr(Path, "rglob", rglob_with_unregistered)
+
+    with pytest.raises(
+        ValueError,
+        match=r"invalid generated source exclusion for VibeTable\.Contracts",
+    ):
+        next_gate.dotnet_coverage_properties()
 
 
 def test_dotnet_coverage_inventory_rejects_source_binding_drift(
@@ -1599,6 +1691,65 @@ def test_dotnet_coverage_inventory_rejects_inactive_or_partial_xml_wiring(
         else:
             exclusion_group = ET.SubElement(root, "PropertyGroup")
             ET.SubElement(exclusion_group, "ExcludeByFile").text = "**/Models/*.cs"
+        return tree
+
+    monkeypatch.setattr(next_gate.ET, "parse", parse_with_drift)
+
+    with pytest.raises(ValueError, match=message):
+        next_gate.dotnet_coverage_properties()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("adapter-drift", "coverage adapter does not match inventory"),
+        ("unconditional-exclusion", "coverage exclusions are not allowed"),
+        ("missing-fail-closed-property", "must reject each missing property"),
+        ("extra-exclusion", "coverage exclusions are not allowed"),
+    ],
+)
+def test_dotnet_coverage_inventory_rejects_generated_exclusion_wiring_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+) -> None:
+    project = (
+        next_gate.REPO_ROOT
+        / "desktop/tests/VibeTable.Contracts.Tests/VibeTable.Contracts.Tests.csproj"
+    ).resolve()
+    real_parse = next_gate.ET.parse
+
+    def parse_with_drift(path: Path) -> ET.ElementTree:
+        tree = real_parse(path)
+        if Path(path).resolve() != project:
+            return tree
+        root = tree.getroot()
+        coverage_group = next(
+            group
+            for group in root.findall("PropertyGroup")
+            if "CollectCoverage" in group.attrib.get("Condition", "")
+        )
+        target = root.find("Target[@Name='ValidateVibeTableContractsCoverageProperties']")
+        assert target is not None
+        error = target.find("Error")
+        assert error is not None
+        if mutation == "adapter-drift":
+            exclusion = coverage_group.find("ExcludeByFile")
+            assert exclusion is not None
+            exclusion.text = "**/*.g.cs"
+        elif mutation == "unconditional-exclusion":
+            external_group = ET.SubElement(root, "PropertyGroup")
+            ET.SubElement(external_group, "ExcludeByFile").text = "**/*.g.cs"
+        elif mutation == "missing-fail-closed-property":
+            error.set(
+                "Condition",
+                error.attrib["Condition"].replace(
+                    " or '$(VibeTableContractsCoverageExcludeByFile)' == ''",
+                    "",
+                ),
+            )
+        else:
+            ET.SubElement(coverage_group, "ExcludeByAttribute").text = "GeneratedCodeAttribute"
         return tree
 
     monkeypatch.setattr(next_gate.ET, "parse", parse_with_drift)

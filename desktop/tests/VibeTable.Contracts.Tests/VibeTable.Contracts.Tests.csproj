@@ -6,7 +6,25 @@
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
+    <Include>$(VibeTableContractsCoverageInclude)</Include>
+    <ExcludeByFile>$(VibeTableContractsCoverageExcludeByFile)</ExcludeByFile>
+    <Threshold>$(VibeTableContractsLineCoverageMinimum),$(VibeTableContractsBranchCoverageMinimum)</Threshold>
+    <ThresholdType>line,branch</ThresholdType>
+    <ThresholdStat>total</ThresholdStat>
+  </PropertyGroup>
+
+  <Target Name="ValidateVibeTableContractsCoverageProperties" BeforeTargets="VSTest"
+          Condition="'$(CollectCoverage)' == 'true'">
+    <Error Condition="'$(VibeTableContractsCoverageInclude)' == '' or '$(VibeTableContractsLineCoverageMinimum)' == '' or '$(VibeTableContractsBranchCoverageMinimum)' == '' or '$(VibeTableContractsCoverageExcludeByFile)' == ''"
+           Text="Contracts coverage properties must come from .ci/project.json via qa/next.py." />
+  </Target>
+
   <ItemGroup>
+    <PackageReference Include="coverlet.msbuild" Version="6.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="MSTest.TestAdapter" Version="4.2.3" />
     <PackageReference Include="MSTest.TestFramework" Version="4.2.3" />
