@@ -234,6 +234,60 @@ public sealed class ProductContractV2RoundTripTests
         }
     }
 
+    [TestMethod]
+    public void SchemaV2CatalogResultsRejectUnsupportedContracts()
+    {
+        JsonObject catalog = ReadObject("product-rpc-catalog.json");
+        var cases = catalog["rpcCases"]!.AsArray()
+            .Select(node => node!.AsObject())
+            .ToDictionary(
+                item => item["method"]!.GetValue<string>(),
+                StringComparer.Ordinal);
+
+        foreach (string method in new[] { "schema.table.create", "schema.getTable" })
+        {
+            JsonObject result = cases[method]["success"]!["result"]!.AsObject();
+            object valid = DeserializeSchemaResult(method, result);
+            Assert.IsTrue(
+                SchemaV2Contract.ValidateResult(valid, out string validReason),
+                $"{method}: {validReason}");
+
+            JsonObject invalidResult = result.DeepClone().AsObject();
+            invalidResult["contract"] = "vibetable.schema.v1";
+            object invalid = DeserializeSchemaResult(method, invalidResult);
+            Assert.IsFalse(
+                SchemaV2Contract.ValidateResult(invalid, out string invalidReason),
+                method);
+            Assert.AreEqual("unsupported contract", invalidReason, method);
+        }
+    }
+
+    [TestMethod]
+    public void SchemaSnapshotRejectsUnsupportedNestedFieldContract()
+    {
+        JsonObject catalog = ReadObject("product-rpc-catalog.json");
+        JsonObject result = catalog["rpcCases"]!.AsArray()
+            .Select(node => node!.AsObject())
+            .Single(item => item["method"]!.GetValue<string>() == "schema.getTable")
+            ["success"]!["result"]!.AsObject()
+            .DeepClone().AsObject();
+        result["fields"]!.AsArray()[0]!["contract"] = "vibetable.schema.v1";
+
+        var snapshot = result.Deserialize<SchemaSnapshotV2>();
+        Assert.IsNotNull(snapshot);
+        Assert.IsFalse(
+            SchemaV2Contract.ValidateResult(snapshot, out string reason));
+        Assert.AreEqual("unsupported field contract", reason);
+    }
+
+    private static object DeserializeSchemaResult(string method, JsonObject result)
+        => method switch
+        {
+            "schema.table.create" => result.Deserialize<SchemaTableCreateReceiptV2>()!,
+            "schema.getTable" => result.Deserialize<SchemaSnapshotV2>()!,
+            _ => throw new ArgumentOutOfRangeException(nameof(method), method, null),
+        };
+
     private static JsonObject ReadObject(string name)
     {
         var json = File.ReadAllText(Path.Combine(FixturesDirectory, name));
