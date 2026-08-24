@@ -86,6 +86,19 @@ interface InternalStructuredDialogFocusLease extends StructuredDialogFocusLease 
 // window never aliases a new lease to an older producer instance.
 let nextStructuredDialogFocusLeaseId = 0;
 
+const KEYBOARD_FOCUS_NAVIGATION_KEYS = new Set([
+  "Tab",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "F6",
+]);
+
 function sameScope(left: StructuredGridFocusScope, right: StructuredGridFocusScope): boolean {
   return left.workspaceId === right.workspaceId
     && left.sessionEpoch === right.sessionEpoch
@@ -178,7 +191,13 @@ export function createStructuredDialogFocus(
       lease.cancelFor("external");
     };
 
-    const onDocumentFocusIntent = () => lease.cancelFor("external");
+    const onDocumentPointerFocusIntent = () => lease.cancelFor("external");
+
+    const onDocumentKeyboardFocusIntent = (event: KeyboardEvent) => {
+      if (KEYBOARD_FOCUS_NAVIGATION_KEYS.has(event.key)) {
+        lease.cancelFor("external");
+      }
+    };
 
     const onRenderComplete = () => reattemptRestore();
 
@@ -217,8 +236,8 @@ export function createStructuredDialogFocus(
         if (cancelled) return;
         document.addEventListener("focusin", onDocumentFocusIn);
         observingDocumentFocus = true;
-        document.addEventListener("pointerdown", onDocumentFocusIntent, true);
-        document.addEventListener("keydown", onDocumentFocusIntent, true);
+        document.addEventListener("pointerdown", onDocumentPointerFocusIntent, true);
+        document.addEventListener("keydown", onDocumentKeyboardFocusIntent, true);
         observingDocumentIntent = true;
       },
       cancel(): void {
@@ -233,8 +252,8 @@ export function createStructuredDialogFocus(
           document.removeEventListener("focusin", onDocumentFocusIn);
         }
         if (observingDocumentIntent) {
-          document.removeEventListener("pointerdown", onDocumentFocusIntent, true);
-          document.removeEventListener("keydown", onDocumentFocusIntent, true);
+          document.removeEventListener("pointerdown", onDocumentPointerFocusIntent, true);
+          document.removeEventListener("keydown", onDocumentKeyboardFocusIntent, true);
         }
         if (observingWindowFocus) {
           window.removeEventListener("blur", onWindowBlur);

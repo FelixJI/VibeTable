@@ -337,36 +337,78 @@ describe("structured dialog focus", () => {
     dialogFocus.dispose();
   });
 
-  it.each(["pointerdown", "keydown"])(
-    "allows %s intent to move focus within the grid",
-    (eventType) => {
-      const gridRoot = document.createElement("div");
-      gridRoot.className = "tabulator";
-      const targetCell = document.createElement("button");
-      const intendedCell = document.createElement("button");
-      targetCell.className = "tabulator-cell";
-      intendedCell.className = "tabulator-cell";
-      gridRoot.append(targetCell, intendedCell);
-      document.body.append(gridRoot);
-      const { grid } = createGridHarness(() => targetCell);
-      const dialogFocus = createStructuredDialogFocus({
-        getGrid: () => grid,
-        getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
-        subscribeScope: () => () => undefined,
-      });
+  it("preserves the focus lease across the native Shift+F10 command sequence", () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const targetCell = document.createElement("button");
+    const infrastructureCell = document.createElement("button");
+    targetCell.className = "tabulator-cell";
+    infrastructureCell.className = "tabulator-cell";
+    gridRoot.append(targetCell, infrastructureCell);
+    document.body.append(gridRoot);
+    const { grid } = createGridHarness(() => targetCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
 
-      dialogFocus.capture({
-        element: targetCell,
-        rowKey: "row-7",
-        field: "payload",
-      }).restore();
-      intendedCell.dispatchEvent(new Event(eventType, { bubbles: true }));
-      intendedCell.focus();
+    dialogFocus.capture({
+      element: targetCell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    targetCell.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      key: "Shift",
+      shiftKey: true,
+    }));
+    infrastructureCell.focus();
+    expect(document.activeElement).toBe(targetCell);
 
-      expect(document.activeElement).toBe(intendedCell);
-      dialogFocus.dispose();
-    },
-  );
+    targetCell.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      key: "F10",
+      shiftKey: true,
+    }));
+    infrastructureCell.focus();
+    expect(document.activeElement).toBe(targetCell);
+    dialogFocus.dispose();
+  });
+
+  it.each([
+    ["pointer", () => new PointerEvent("pointerdown", { bubbles: true })],
+    ["keyboard navigation", () => new KeyboardEvent("keydown", {
+      bubbles: true,
+      key: "ArrowRight",
+    })],
+  ])("allows %s intent to move focus within the grid", (_intent, createEvent) => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const targetCell = document.createElement("button");
+    const intendedCell = document.createElement("button");
+    targetCell.className = "tabulator-cell";
+    intendedCell.className = "tabulator-cell";
+    gridRoot.append(targetCell, intendedCell);
+    document.body.append(gridRoot);
+    const { grid } = createGridHarness(() => targetCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+
+    dialogFocus.capture({
+      element: targetCell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    intendedCell.dispatchEvent(createEvent());
+    intendedCell.focus();
+
+    expect(document.activeElement).toBe(intendedCell);
+    dialogFocus.dispose();
+  });
 
   it("restores the logical cell after the row is temporarily absent during reprojection", () => {
     const originalCell = document.createElement("button");
