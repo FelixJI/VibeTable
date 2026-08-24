@@ -1436,89 +1436,164 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
     assert Path(product_cwd) == next_gate.REPO_ROOT
 
 
-def test_dotnet_gate_keeps_project_coverage_ratchets_enabled() -> None:
+def test_dotnet_coverage_inventory_matches_coverlet_projects_bidirectionally() -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    configured_projects = {
+        entry["test_project"]
+        for entry in payload["quality"]["dotnet_coverage"]["projects"].values()
+    }
+    discovered_projects = {
+        project.relative_to(next_gate.REPO_ROOT).as_posix()
+        for project in (next_gate.REPO_ROOT / "desktop" / "tests").rglob("*.csproj")
+        if "coverlet.msbuild" in project.read_text(encoding="utf-8")
+        and "CollectCoverage" in project.read_text(encoding="utf-8")
+    }
+
+    assert configured_projects == discovered_projects
+    assert not any("Contracts.Tests" in project for project in configured_projects)
+    assert not any("DocumentDiff.OpenXml.Tests" in project for project in configured_projects)
+
+
+def test_dotnet_gate_emits_unique_coverage_properties_for_every_inventory_entry() -> None:
     command, cwd = next_gate.stage_command("dotnet")
     assert "/p:CollectCoverage=true" in command
     assert "/p:CoverletOutputFormat=cobertura" in command
     assert Path(cwd) == next_gate.REPO_ROOT
 
-    expected_thresholds = {
-        "VibeTableDesktopLineCoverageMinimum": 51,
-        "VibeTableDesktopBranchCoverageMinimum": 43,
-        "VibeTablePreviewHostLineCoverageMinimum": 41,
-        "VibeTablePreviewHostBranchCoverageMinimum": 50,
-    }
-    assert next_gate.dotnet_coverage_properties() == expected_thresholds
-    for property_name, threshold in expected_thresholds.items():
-        assert f"/p:{property_name}={threshold}" in command
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    inventory = payload["quality"]["dotnet_coverage"]["projects"]
+    expected_properties = {}
+    for assembly, entry in inventory.items():
+        prefix = entry["msbuild_prefix"]
+        expected_properties[f"{prefix}CoverageInclude"] = f"[{assembly}]*"
+        expected_properties[f"{prefix}LineCoverageMinimum"] = entry["minimum"]["line"]
+        expected_properties[f"{prefix}BranchCoverageMinimum"] = entry["minimum"]["branch"]
+    assert next_gate.dotnet_coverage_properties() == expected_properties
+    assert len(expected_properties) == len(set(expected_properties)) == 3 * len(inventory)
+    for property_name, value in expected_properties.items():
+        assert f"/p:{property_name}={value}" in command
 
-    measured_baselines = {
-        "VibeTableDesktopLineCoverageMinimum": 52.54,
-        "VibeTableDesktopBranchCoverageMinimum": 44.88,
-        "VibeTablePreviewHostLineCoverageMinimum": 42.13,
-        "VibeTablePreviewHostBranchCoverageMinimum": 51.78,
-    }
-    for property_name, measured in measured_baselines.items():
-        margin = measured - expected_thresholds[property_name]
-        assert 0 < margin <= 2
 
-    expected_projects = {
-        "VibeTable.Desktop.Tests": (
-            "$(VibeTableDesktopLineCoverageMinimum),$(VibeTableDesktopBranchCoverageMinimum)",
-            "ValidateDesktopCoverageThresholds",
-        ),
-        "VibeTable.PreviewHost.Tests": (
-            "$(VibeTablePreviewHostLineCoverageMinimum),$(VibeTablePreviewHostBranchCoverageMinimum)",
-            "ValidatePreviewHostCoverageThresholds",
-        ),
-    }
-    for project_name, (threshold, validation_target) in expected_projects.items():
-        project = (
-            next_gate.REPO_ROOT / "desktop" / "tests" / project_name / f"{project_name}.csproj"
-        )
+def test_dotnet_coverage_projects_consume_central_properties_and_fail_closed() -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    inventory = payload["quality"]["dotnet_coverage"]["projects"]
+
+    for entry in inventory.values():
+        prefix = entry["msbuild_prefix"]
+        project = next_gate.REPO_ROOT / entry["test_project"]
         root = ET.parse(project).getroot()
         properties = {
             child.tag: child.text for group in root.findall("PropertyGroup") for child in group
         }
-        assert properties["Threshold"] == threshold
+        assert properties["Include"] == f"$({prefix}CoverageInclude)"
+        assert properties["Threshold"] == (
+            f"$({prefix}LineCoverageMinimum),$({prefix}BranchCoverageMinimum)"
+        )
         assert properties["ThresholdType"] == "line,branch"
         assert properties["ThresholdStat"] == "total"
-        target = root.find(f"Target[@Name='{validation_target}']")
+        target = root.find(f"Target[@Name='Validate{prefix}CoverageProperties']")
         assert target is not None
-        assert target.find("Error") is not None
+        assert target.attrib["BeforeTargets"] == "VSTest"
+        error = target.find("Error")
+        assert error is not None
+        condition = error.attrib["Condition"]
+        assert f"$({prefix}CoverageInclude)" in condition
+        assert f"$({prefix}LineCoverageMinimum)" in condition
+        assert f"$({prefix}BranchCoverageMinimum)" in condition
+
+
+def test_dotnet_coverage_projects_measure_the_complete_single_assembly_denominator() -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    inventory = payload["quality"]["dotnet_coverage"]["projects"]
+
+    for entry in inventory.values():
+        root = ET.parse(next_gate.REPO_ROOT / entry["test_project"]).getroot()
+        property_names = {child.tag for group in root.findall("PropertyGroup") for child in group}
+        assert "SkipAutoProps" not in property_names
+        assert "MergeWith" not in property_names
+        assert not any(name.startswith("Exclude") for name in property_names)
+
+
+def test_dotnet_coverage_inventory_rejects_source_binding_drift(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    projects = payload["quality"]["dotnet_coverage"]["projects"]
+    projects["VibeTable.Desktop"]["source_project"] = (
+        "desktop/src/VibeTable.Workspace/VibeTable.Workspace.csproj"
+    )
+    config = tmp_path / "project.json"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"source_project must match VibeTable\.Desktop"):
+        next_gate.dotnet_coverage_properties(config)
 
 
 @pytest.mark.parametrize(
-    ("failed_property", "passing_property", "measured"),
+    ("mutation", "message"),
     [
-        (
-            "VibeTableDesktopLineCoverageMinimum",
-            "VibeTablePreviewHostLineCoverageMinimum",
-            50.99,
-        ),
-        (
-            "VibeTablePreviewHostBranchCoverageMinimum",
-            "VibeTableDesktopBranchCoverageMinimum",
-            49.99,
-        ),
+        ("coverage-condition", "coverage group must run only when CollectCoverage is true"),
+        ("target-condition", "validation target must run only when CollectCoverage is true"),
+        ("error-and", "validation target must reject each missing property"),
+        ("package-condition", "coverlet.msbuild reference must be active"),
+        ("package-exclude-attribute", "coverlet.msbuild reference must be active"),
+        ("package-include-attribute", "coverlet.msbuild reference must be active"),
+        ("external-exclude", "coverage exclusions are not allowed"),
     ],
 )
-def test_dotnet_coverage_projects_are_independent_fail_closed_ratchets(
-    tmp_path: Path,
-    failed_property: str,
-    passing_property: str,
-    measured: float,
+def test_dotnet_coverage_inventory_rejects_inactive_or_partial_xml_wiring(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
 ) -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    config = tmp_path / "project.json"
-    config.write_text(json.dumps(payload), encoding="utf-8")
-    properties = next_gate.dotnet_coverage_properties(config)
-    assert measured < properties[failed_property]
-    assert measured != properties[passing_property]
-    assert (
-        failed_property.split("CoverageMinimum", maxsplit=1)[0]
-        != passing_property.split("CoverageMinimum", maxsplit=1)[0]
-    )
+    project = (
+        next_gate.REPO_ROOT / "desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj"
+    ).resolve()
+    real_parse = next_gate.ET.parse
+
+    def parse_with_drift(path: Path) -> ET.ElementTree:
+        tree = real_parse(path)
+        if Path(path).resolve() != project:
+            return tree
+        root = tree.getroot()
+        coverage_group = next(
+            group
+            for group in root.findall("PropertyGroup")
+            if "CollectCoverage" in group.attrib.get("Condition", "")
+        )
+        target = root.find("Target[@Name='ValidateVibeTableDesktopCoverageProperties']")
+        assert target is not None
+        error = target.find("Error")
+        assert error is not None
+        package = next(
+            node
+            for node in root.findall(".//PackageReference")
+            if node.attrib.get("Include") == "coverlet.msbuild"
+        )
+        if mutation == "coverage-condition":
+            coverage_group.set("Condition", "'$(CollectCoverage)' != 'true'")
+        elif mutation == "target-condition":
+            target.set("Condition", "'$(CollectCoverage)' != 'true'")
+        elif mutation == "error-and":
+            error.set("Condition", error.attrib["Condition"].replace(" or ", " and "))
+        elif mutation == "package-condition":
+            package.set("Condition", "'$(NeverEnableCoverage)' == 'true'")
+        elif mutation == "package-exclude-attribute":
+            package.set("ExcludeAssets", "build")
+        elif mutation == "package-include-attribute":
+            include_assets = package.find("IncludeAssets")
+            assert include_assets is not None
+            package.remove(include_assets)
+            package.set("IncludeAssets", "runtime")
+        else:
+            exclusion_group = ET.SubElement(root, "PropertyGroup")
+            ET.SubElement(exclusion_group, "ExcludeByFile").text = "**/Models/*.cs"
+        return tree
+
+    monkeypatch.setattr(next_gate.ET, "parse", parse_with_drift)
+
+    with pytest.raises(ValueError, match=message):
+        next_gate.dotnet_coverage_properties()
 
 
 def test_dotnet_coverage_config_rejects_missing_metric_instead_of_disabling_gate(

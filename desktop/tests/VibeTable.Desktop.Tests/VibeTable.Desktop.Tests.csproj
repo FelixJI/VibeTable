@@ -16,17 +16,16 @@
        its own test project and threshold, so neither assembly can hide the
        other's uncovered lines in a merged total. -->
   <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
-    <Include>[VibeTable.Desktop]*</Include>
-    <SkipAutoProps>true</SkipAutoProps>
+    <Include>$(VibeTableDesktopCoverageInclude)</Include>
     <Threshold>$(VibeTableDesktopLineCoverageMinimum),$(VibeTableDesktopBranchCoverageMinimum)</Threshold>
     <ThresholdType>line,branch</ThresholdType>
     <ThresholdStat>total</ThresholdStat>
   </PropertyGroup>
 
-  <Target Name="ValidateDesktopCoverageThresholds" BeforeTargets="VSTest"
+  <Target Name="ValidateVibeTableDesktopCoverageProperties" BeforeTargets="VSTest"
           Condition="'$(CollectCoverage)' == 'true'">
-    <Error Condition="'$(VibeTableDesktopLineCoverageMinimum)' == '' or '$(VibeTableDesktopBranchCoverageMinimum)' == ''"
-           Text="Desktop line and branch coverage minimums must come from .ci/project.json via qa/next.py." />
+    <Error Condition="'$(VibeTableDesktopCoverageInclude)' == '' or '$(VibeTableDesktopLineCoverageMinimum)' == '' or '$(VibeTableDesktopBranchCoverageMinimum)' == ''"
+           Text="Desktop coverage properties must come from .ci/project.json via qa/next.py." />
   </Target>
 
   <ItemGroup>
