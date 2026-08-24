@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json;
 
 namespace VibeTable.Contracts;
 
@@ -143,6 +144,17 @@ public static class SchemaV2Contract
             reason = "unsupported display settings";
             return false;
         }
+        if (!IsValidRangeBoundary(field.Constraints.Range.Min)
+            || !IsValidRangeBoundary(field.Constraints.Range.Max))
+        {
+            reason = "range boundaries must be null, number, or string";
+            return false;
+        }
+        if (!IsSupportedLogicalType(field.LogicalType))
+        {
+            reason = $"unsupported logical type {field.LogicalType}";
+            return false;
+        }
         string? expected = field.LogicalType switch
         {
             "select" or "multiSelect" => nameof(field.Select),
@@ -187,4 +199,17 @@ public static class SchemaV2Contract
         }
         return true;
     }
+
+    private static bool IsValidRangeBoundary(JsonElement? boundary)
+        => boundary is null
+            || boundary.Value.ValueKind is JsonValueKind.Null
+                or JsonValueKind.Number
+                or JsonValueKind.String;
+
+    private static bool IsSupportedLogicalType(string logicalType)
+        => logicalType is "text" or "editor" or "number" or "bool"
+            or "date" or "dateTime" or "time" or "autoDate"
+            or "email" or "url" or "select" or "multiSelect"
+            or "relation" or "file" or "geoPoint" or "json"
+            or "formula" or "lookup";
 }
