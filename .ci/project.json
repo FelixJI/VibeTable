@@ -42,6 +42,15 @@
             "line": 74,
             "branch": 64
           }
+        },
+        "VibeTable.DocumentDiff.OpenXml": {
+          "source_project": "desktop/src/VibeTable.DocumentDiff.OpenXml/VibeTable.DocumentDiff.OpenXml.csproj",
+          "test_project": "desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/VibeTable.DocumentDiff.OpenXml.Tests.csproj",
+          "msbuild_prefix": "VibeTableDocumentDiffOpenXml",
+          "minimum": {
+            "line": 78,
+            "branch": 79
+          }
         }
       }
     }

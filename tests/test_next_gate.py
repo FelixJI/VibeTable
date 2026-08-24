@@ -1451,7 +1451,18 @@ def test_dotnet_coverage_inventory_matches_coverlet_projects_bidirectionally() -
 
     assert configured_projects == discovered_projects
     assert not any("Contracts.Tests" in project for project in configured_projects)
-    assert not any("DocumentDiff.OpenXml.Tests" in project for project in configured_projects)
+
+
+def test_dotnet_coverage_inventory_registers_openxml_as_an_independent_assembly() -> None:
+    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
+    inventory = payload["quality"]["dotnet_coverage"]["projects"]
+    entry = inventory["VibeTable.DocumentDiff.OpenXml"]
+    prefix = entry["msbuild_prefix"]
+    properties = next_gate.dotnet_coverage_properties()
+
+    assert properties[f"{prefix}CoverageInclude"] == "[VibeTable.DocumentDiff.OpenXml]*"
+    assert isinstance(properties[f"{prefix}LineCoverageMinimum"], int)
+    assert isinstance(properties[f"{prefix}BranchCoverageMinimum"], int)
 
 
 def test_dotnet_gate_emits_unique_coverage_properties_for_every_inventory_entry() -> None:
