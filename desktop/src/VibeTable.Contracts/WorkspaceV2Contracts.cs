@@ -31,7 +31,9 @@ public static class WorkspaceV2Json
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
             PropertyNameCaseInsensitive = false,
         };
-        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        options.Converters.Add(new JsonStringEnumConverter(
+            JsonNamingPolicy.CamelCase,
+            allowIntegerValues: false));
         return options;
     }
 

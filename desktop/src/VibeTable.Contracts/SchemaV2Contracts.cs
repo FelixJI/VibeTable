@@ -84,6 +84,27 @@ public static class SchemaV2Contract
                     }
                 }
                 return true;
+            case SchemaTableCreateReceiptV2 receipt:
+                if (receipt.Contract != Name)
+                {
+                    reason = "unsupported contract";
+                    return false;
+                }
+                return true;
+            case SchemaSnapshotV2 snapshot:
+                if (snapshot.Contract != Name)
+                {
+                    reason = "unsupported contract";
+                    return false;
+                }
+                foreach (FieldDefinitionV2 field in snapshot.Fields)
+                {
+                    if (!ValidateField(field, out reason))
+                    {
+                        return false;
+                    }
+                }
+                return true;
             default:
                 return true;
         }
