@@ -16,6 +16,20 @@
             "branch": 53
           }
         },
+        "VibeTable.Contracts": {
+          "source_project": "desktop/src/VibeTable.Contracts/VibeTable.Contracts.csproj",
+          "test_project": "desktop/tests/VibeTable.Contracts.Tests/VibeTable.Contracts.Tests.csproj",
+          "msbuild_prefix": "VibeTableContracts",
+          "generated_source_exclusion": "**/VibeTable.Contracts/Generated/*.g.cs",
+          "generated_source_files": [
+            "Generated/SchemaV2Contracts.g.cs",
+            "Generated/WorkbenchContracts.g.cs"
+          ],
+          "minimum": {
+            "line": 49,
+            "branch": 56
+          }
+        },
         "VibeTable.PreviewHost": {
           "source_project": "desktop/src/VibeTable.PreviewHost/VibeTable.PreviewHost.csproj",
           "test_project": "desktop/tests/VibeTable.PreviewHost.Tests/VibeTable.PreviewHost.Tests.csproj",
