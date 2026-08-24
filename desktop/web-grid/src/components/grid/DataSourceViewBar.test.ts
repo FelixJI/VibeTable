@@ -20,6 +20,24 @@ describe("DataSourceViewBar", () => {
     expect(wrapper.get('[data-testid="view-all-records"]').text()).toContain("默认字段视图");
   });
 
+  it("keeps a failed local draft visible until the user explicitly reloads views", async () => {
+    const wrapper = mount(DataSourceViewBar, {
+      props: {
+        collection: "orders",
+        views: [],
+        activeId: null,
+        loading: false,
+        dirty: true,
+        error: "视图已在其他位置更新",
+      },
+    });
+
+    expect(wrapper.get('[data-testid="view-operation-error"]').text())
+      .toContain("视图已在其他位置更新");
+    await wrapper.get('[data-testid="view-reload"]').trigger("click");
+    expect(wrapper.emitted("reload")).toHaveLength(1);
+  });
+
   it("renders collection views as first-class tabs and emits switching", async () => {
     const wrapper = mount(DataSourceViewBar, {
       props: {

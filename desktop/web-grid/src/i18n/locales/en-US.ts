@@ -22,6 +22,7 @@ export const messages: Record<string, string> = {
   "views.action.rename": "Rename",
   "views.action.default": "Set as default",
   "views.action.delete": "Delete view",
+  "views.action.reload": "Reload authoritative view",
   "views.deleteConfirm": "Delete “{name}”? Data records are not deleted.",
   "views.defaultCompensationFailed": "Updating the default view failed and automatic compensation did not complete. Refresh the views before retrying.",
   "views.dialog.create": "Create view",

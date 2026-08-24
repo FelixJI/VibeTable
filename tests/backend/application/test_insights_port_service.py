@@ -14,7 +14,10 @@ from backend.application.insights_service import (
     normalize_panel_type,
     parse_panel_type,
 )
-from backend.application.revisioned_metadata_port import DashboardRevisionConflictError
+from backend.application.revisioned_metadata_port import (
+    DashboardRevisionConflictError,
+    MetadataConflictError,
+)
 from backend.contracts.presets_versions_dashboards import (
     DashboardAggregateQuery,
     DashboardFilterState,
@@ -46,6 +49,7 @@ class FakeMetadataPort:
         dashboard_commit_result: SaveDashboardDraftResult | None = None,
         dashboard_commit_error: DashboardRevisionConflictError | None = None,
         next_upsert_result: dict[str, Any] | None = None,
+        upsert_error: Exception | None = None,
     ) -> None:
         self.rows = rows or {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -53,6 +57,7 @@ class FakeMetadataPort:
         self.dashboard_commit_error = dashboard_commit_error
         self.dashboard_commit_calls: list[SaveDashboardDraftParams] = []
         self.next_upsert_result = next_upsert_result
+        self.upsert_error = upsert_error
 
     async def list_metadata(
         self,
@@ -66,6 +71,8 @@ class FakeMetadataPort:
 
     async def upsert_metadata(self, namespace: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("upsert", {"namespace": namespace, **kwargs}))
+        if self.upsert_error is not None:
+            raise self.upsert_error
         if self.next_upsert_result is not None:
             return self.next_upsert_result
         return {"recordId": kwargs.get("record_id") or "generated"}
@@ -219,8 +226,9 @@ async def test_save_preset_submits_internal_metadata_mutation() -> None:
             group_field="status",
             cover_field="cover",
         ),
-        "p1",
-        "preset-op-1",
+        preset_id="p1",
+        expected_revision="sha256:" + "a" * 64,
+        operation_id="preset-op-1",
     )
 
     assert saved.id == "p1"
@@ -228,6 +236,7 @@ async def test_save_preset_submits_internal_metadata_mutation() -> None:
     assert operation == "upsert"
     assert payload["namespace"] == "presets"
     assert payload["record_id"] == "p1"
+    assert payload["expected_revision"] == "sha256:" + "a" * 64
     assert payload["values"]["scope"] == "orders"
     assert payload["values"]["presetScope"] == "system"
     assert payload["values"]["view"]["kind"] == "kanban"
@@ -235,6 +244,27 @@ async def test_save_preset_submits_internal_metadata_mutation() -> None:
     assert payload["values"]["view"]["groupField"] == "status"
     assert payload["values"]["view"]["coverField"] == "cover"
     assert "token" not in repr(payload).lower()
+
+
+@pytest.mark.asyncio
+async def test_save_preset_maps_stale_metadata_to_a_stable_product_conflict() -> None:
+    service = InsightsService(
+        metadata_port=FakeMetadataPort(upsert_error=MetadataConflictError()),
+        query_port=FakeQueryPort(),
+    )
+
+    with pytest.raises(InsightsError) as raised:
+        await service.save_preset(
+            "orders",
+            "Open",
+            PresetView(),
+            preset_id="preset-1",
+            expected_revision="sha256:" + "a" * 64,
+            operation_id="preset-op-stale",
+        )
+
+    assert raised.value.code == "preset_edit_conflict"
+    assert raised.value.field == "expectedRevision"
 
 
 @pytest.mark.asyncio
@@ -450,7 +480,14 @@ def test_insights_error_carries_code_and_optional_field() -> None:
 async def test_save_preset_requires_operation_id() -> None:
     service = InsightsService(metadata_port=FakeMetadataPort(), query_port=FakeQueryPort())
     with pytest.raises(InsightsError, match="operationId is required"):
-        await service.save_preset("orders", "n", PresetView(), "p1", "")
+        await service.save_preset(
+            "orders",
+            "n",
+            PresetView(),
+            preset_id="p1",
+            expected_revision="revision-p1",
+            operation_id="",
+        )
 
 
 @pytest.mark.asyncio

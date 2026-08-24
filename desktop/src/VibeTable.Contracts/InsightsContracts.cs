@@ -86,13 +86,22 @@ public sealed record PresetEntry(
     string Name,
     string Scope,
     PresetView View,
-    string? UserId);
+    string? UserId,
+    string Revision,
+    string? ChangeSetId,
+    IReadOnlyList<string> EmittedEvents);
 
 public sealed record ListPresetsParams(string Collection);
 
 public sealed record PresetsResult(string Collection, IReadOnlyList<PresetEntry> Presets);
 
-public sealed record SavePresetParams(string Collection, string Name, PresetView View, string? PresetId);
+public sealed record SavePresetParams(
+    string Collection,
+    string Name,
+    PresetView View,
+    string? PresetId,
+    string? ExpectedRevision,
+    string OperationId);
 
 public sealed record DeletePresetParams(string PresetId);
 

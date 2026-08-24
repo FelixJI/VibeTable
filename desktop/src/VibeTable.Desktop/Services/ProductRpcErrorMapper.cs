@@ -29,6 +29,18 @@ internal static class ProductRpcErrorMapper
         {
             return false;
         }
+        if (string.IsNullOrEmpty(path)
+            && source.TryGetProperty("field", out var fieldElement))
+        {
+            if (fieldElement.ValueKind == JsonValueKind.String)
+            {
+                path = fieldElement.GetString() ?? "";
+            }
+            else if (fieldElement.ValueKind is not JsonValueKind.Null)
+            {
+                return false;
+            }
+        }
         bool retryable = source.TryGetProperty("retryable", out var retryableElement)
             && retryableElement.ValueKind == JsonValueKind.True;
         object? details = source.TryGetProperty("details", out var detailsElement)

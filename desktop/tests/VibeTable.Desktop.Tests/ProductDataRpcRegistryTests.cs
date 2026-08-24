@@ -360,6 +360,48 @@ public sealed class ProductDataRpcRegistryTests
         }
     }
 
+    [TestMethod]
+    public void PresetSaveRequiresPairedIdentityAndRevision()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("preset.save", out var endpoint));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonSerializer.SerializeToElement(new
+        {
+            collection = "orders",
+            name = "New view",
+            view = new { },
+            presetId = (string?)null,
+            expectedRevision = (string?)null,
+            operationId = "op-create",
+        })));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonSerializer.SerializeToElement(new
+        {
+            collection = "orders",
+            name = "Updated view",
+            view = new { },
+            presetId = "preset-1",
+            expectedRevision = "rev-preset-1",
+            operationId = "op-update",
+        })));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonSerializer.SerializeToElement(new
+        {
+            collection = "orders",
+            name = "Unsafe update",
+            view = new { },
+            presetId = "preset-1",
+            expectedRevision = (string?)null,
+            operationId = "op-unsafe",
+        })));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonSerializer.SerializeToElement(new
+        {
+            collection = "orders",
+            name = "Unsafe create",
+            view = new { },
+            presetId = (string?)null,
+            expectedRevision = "rev-preset-1",
+            operationId = "op-unsafe",
+        })));
+    }
+
     private static JsonElement ValidPlanPayload(
         string action,
         object? relationPair = null)

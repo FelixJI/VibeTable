@@ -23,6 +23,8 @@ from backend.contracts.presets_versions_dashboards import (
                 "collection": "orders",
                 "name": "My view",
                 "view": {},
+                "presetId": None,
+                "expectedRevision": None,
             },
         ),
         (
@@ -91,11 +93,69 @@ def test_operation_id_uses_camel_case_on_the_wire() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_target"),
+    [
+        (
+            {
+                "collection": "orders",
+                "name": "New view",
+                "view": {},
+                "presetId": None,
+                "expectedRevision": None,
+                "operationId": "op-create-preset-1",
+            },
+            (None, None),
+        ),
+        (
+            {
+                "collection": "orders",
+                "name": "Updated view",
+                "view": {},
+                "presetId": "preset-1",
+                "expectedRevision": "sha256:" + "a" * 64,
+                "operationId": "op-update-preset-1",
+            },
+            ("preset-1", "sha256:" + "a" * 64),
+        ),
+    ],
+)
+def test_save_preset_requires_an_explicit_revision_bound_target(
+    payload: dict,
+    expected_target: tuple[str | None, str | None],
+) -> None:
+    params = SavePresetParams.model_validate(payload)
+
+    assert (params.preset_id, params.expected_revision) == expected_target
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"presetId": "preset-1", "expectedRevision": None},
+        {"presetId": None, "expectedRevision": "sha256:" + "a" * 64},
+    ],
+)
+def test_save_preset_rejects_unpaired_identity_and_revision(payload: dict) -> None:
+    with pytest.raises(ValidationError, match="presetId and expectedRevision"):
+        SavePresetParams.model_validate(
+            {
+                "collection": "orders",
+                "name": "Unsafe update",
+                "view": {},
+                "operationId": "op-unsafe-preset-1",
+                **payload,
+            }
+        )
+
+
 def test_preset_view_round_trips_typed_filter_groups_and_group_summaries() -> None:
     payload = {
         "collection": "orders",
         "name": "Open orders by month",
         "operationId": "op-save-preset-1",
+        "presetId": None,
+        "expectedRevision": None,
         "view": {
             "filters": [
                 {
@@ -165,6 +225,8 @@ def test_preset_view_rejects_filter_groups_deeper_than_three_levels() -> None:
                 "collection": "orders",
                 "name": "Too deep",
                 "operationId": "op-save-preset-too-deep",
+                "presetId": None,
+                "expectedRevision": None,
                 "view": {"filters": [expression]},
             }
         )
@@ -188,6 +250,8 @@ def test_preset_view_rejects_more_than_fifty_conditions_across_groups() -> None:
                 "collection": "orders",
                 "name": "Too many filters",
                 "operationId": "op-save-preset-too-many-filters",
+                "presetId": None,
+                "expectedRevision": None,
                 "view": {"filters": groups},
             }
         )
@@ -201,6 +265,8 @@ def test_preset_view_rejects_legacy_query_json(legacy_key: str) -> None:
                 "collection": "orders",
                 "name": "Legacy query",
                 "operationId": f"op-reject-{legacy_key}",
+                "presetId": None,
+                "expectedRevision": None,
                 "view": {
                     "filters": [],
                     "sorts": [],

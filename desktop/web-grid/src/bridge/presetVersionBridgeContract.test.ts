@@ -17,7 +17,8 @@ describe("preset/version bridge whitelist", () => {
 
     bridge.notify("preset.list", { collection: "orders" });
     bridge.notify("preset.save", {
-      collection: "orders", name: "My view", view, operationId: "op-1",
+      collection: "orders", name: "My view", view,
+      presetId: null, expectedRevision: null, operationId: "op-1",
     });
     bridge.notify("preset.delete", {
       presetId: "p1", expectedRevision: "rev-p1", operationId: "op-2",

@@ -1952,7 +1952,8 @@ export interface WebPayloadMap {
     readonly collection: string;
     readonly name: string;
     readonly view: PresetView;
-    readonly presetId?: string | null;
+    readonly presetId: string | null;
+    readonly expectedRevision: string | null;
     readonly operationId: string;
   };
   "preset.delete": {

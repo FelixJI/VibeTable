@@ -22,6 +22,7 @@ export const messages: Record<string, string> = {
   "views.action.rename": "重命名",
   "views.action.default": "设为默认",
   "views.action.delete": "删除视图",
+  "views.action.reload": "重新加载权威视图",
   "views.deleteConfirm": "删除视图“{name}”？数据记录不会被删除。",
   "views.defaultCompensationFailed": "默认视图更新失败，且自动补偿未完成。请刷新视图后重试。",
   "views.dialog.create": "新建视图",

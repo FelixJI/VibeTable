@@ -77,7 +77,8 @@ export type PresetViewIntent =
   | { readonly type: "view.duplicate"; readonly view: PresetEntry; readonly name: string }
   | { readonly type: "view.rename"; readonly view: PresetEntry; readonly name: string }
   | { readonly type: "view.delete"; readonly view: PresetEntry }
-  | { readonly type: "view.setDefault"; readonly view: PresetEntry };
+  | { readonly type: "view.setDefault"; readonly view: PresetEntry }
+  | { readonly type: "view.reload" };
 
 interface FieldOption {
   readonly label: string;
@@ -213,21 +214,27 @@ export function createPresetViewController(
     requestAuthoritative();
   }
 
-  async function loadCollection(collection: string): Promise<void> {
+  async function loadCollection(collection: string, preserveActive = false): Promise<void> {
     const generation = ++loadGeneration;
+    const requestedActiveId = preserveActive ? dependencies.presets.activePresetId : null;
     dependencies.presets.begin();
     try {
       const result = await dependencies.service.listPresets(collection);
       if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return;
       dependencies.presets.receivePresets(result);
-      const selected = result.presets.find(view => view.view.isDefault) ?? result.presets[0];
+      const selected = result.presets.find(view => view.id === requestedActiveId)
+        ?? result.presets.find(view => view.view.isDefault)
+        ?? result.presets[0];
       dependencies.presets.activatePreset(selected?.id ?? null);
       if (selected) await applyView(selected.view);
       else if (dependencies.grid.current.value && !memoryDefaults.has(collection)) {
         memoryDefaults.set(collection, captureCurrent());
       }
     } catch (error) {
-      if (generation === loadGeneration) dependencies.reportError(error);
+      if (generation === loadGeneration) {
+        dependencies.presets.fail(error);
+        dependencies.reportError(error);
+      }
     }
   }
 
@@ -235,13 +242,13 @@ export function createPresetViewController(
     collection: string,
     name: string,
     view: PresetView,
-    presetId?: string | null,
+    target: Pick<PresetEntry, "id" | "revision"> | null = null,
   ): Promise<PresetEntry | null> {
     if (dependencies.workspace.currentTable !== collection) return null;
     const generation = loadGeneration;
     dependencies.presets.begin();
     try {
-      const saved = await dependencies.service.savePreset(collection, name, view, presetId);
+      const saved = await dependencies.service.savePreset(collection, name, view, target);
       if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return null;
       dependencies.presets.upsertPreset(saved);
       return saved;
@@ -253,13 +260,17 @@ export function createPresetViewController(
     }
   }
 
+  function saveTarget(view: PresetEntry): Pick<PresetEntry, "id" | "revision"> {
+    return { id: view.id, revision: view.revision };
+  }
+
   async function save(view: PresetEntry): Promise<PresetEntry | null> {
     const collection = dependencies.workspace.currentTable;
     if (!collection || view.collection !== collection) return null;
     const saved = await persist(collection, view.name, {
       ...captureCurrent(view.view.isDefault),
       isDefault: view.view.isDefault,
-    }, view.id);
+    }, saveTarget(view));
     if (saved) dependencies.presets.markSaved();
     return saved;
   }
@@ -271,18 +282,18 @@ export function createPresetViewController(
     const source = view.id === dependencies.presets.activePresetId
       ? captureCurrent(true)
       : { ...view.view, isDefault: true };
-    const saved = await persist(view.collection, view.name, source, view.id);
+    const saved = await persist(view.collection, view.name, source, saveTarget(view));
     if (!saved) return;
     if (previous) {
       const demoted = await persist(previous.collection, previous.name, {
         ...previous.view,
         isDefault: false,
-      }, previous.id);
+      }, saveTarget(previous));
       if (!demoted && dependencies.workspace.currentTable === view.collection) {
         const compensated = await persist(view.collection, view.name, {
           ...source,
           isDefault: false,
-        }, view.id);
+        }, saveTarget(saved));
         if (!compensated) {
           dependencies.presets.fail(dependencies.defaultCompensationError());
           return;
@@ -411,7 +422,7 @@ export function createPresetViewController(
           intent.view.collection,
           intent.name,
           source,
-          intent.view.id,
+          saveTarget(intent.view),
         );
         if (saved) dependencies.presets.activatePreset(saved.id);
         return;
@@ -443,6 +454,12 @@ export function createPresetViewController(
       }
       case "view.setDefault":
         await setDefault(intent.view);
+        return;
+      case "view.reload": {
+        const collection = dependencies.workspace.currentTable;
+        if (collection) await loadCollection(collection, true);
+        return;
+      }
     }
   }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { NButton, NDropdown, NIcon, NInput, NModal, NSelect, NTag } from "naive-ui";
+import { NAlert, NButton, NDropdown, NIcon, NInput, NModal, NSelect, NTag } from "naive-ui";
 import {
   CalendarDays,
   Check,
@@ -20,6 +20,7 @@ const props = defineProps<{
   activeId: string | null;
   loading: boolean;
   dirty: boolean;
+  error?: string | null;
   dateFields?: readonly { label: string; value: string }[];
   titleFields?: readonly { label: string; value: string }[];
   groupFields?: readonly { label: string; value: string }[];
@@ -42,6 +43,7 @@ const emit = defineEmits<{
   rename: [view: PresetEntry, name: string];
   delete: [view: PresetEntry];
   setDefault: [view: PresetEntry];
+  reload: [];
 }>();
 
 const dialog = ref<"create" | "duplicate" | "rename" | "delete" | null>(null);
@@ -125,7 +127,16 @@ function confirm(): void {
 </script>
 
 <template>
-  <nav class="data-source-view-bar" :aria-label="t('views.ariaLabel')" data-testid="data-source-view-bar">
+  <div class="data-source-view-shell">
+    <NAlert v-if="error" type="warning" data-testid="view-operation-error">
+      <div class="view-error-content">
+        <span>{{ error }}</span>
+        <NButton size="tiny" data-testid="view-reload" @click="emit('reload')">
+          {{ t("views.action.reload") }}
+        </NButton>
+      </div>
+    </NAlert>
+    <nav class="data-source-view-bar" :aria-label="t('views.ariaLabel')" data-testid="data-source-view-bar">
     <div class="view-context"><NIcon :size="15"><Table2 /></NIcon><span>{{ t("views.tableType") }}</span></div>
     <div class="view-scroll">
       <button v-if="views.length === 0" class="view-tab active" type="button" data-testid="view-all-records">
@@ -177,10 +188,13 @@ function confirm(): void {
       </div>
       <template #footer><div class="dialog-actions"><NButton @click="dialog = null">{{ t("common.cancel") }}</NButton><NButton :type="dialog === 'delete' ? 'error' : 'primary'" :disabled="dialog !== 'delete' && (!input.trim() || (dialog === 'create' && createConfigurationMissing))" data-testid="view-dialog-confirm" @click="confirm">{{ t("common.confirm") }}</NButton></div></template>
     </NModal>
-  </nav>
+    </nav>
+  </div>
 </template>
 
 <style scoped>
+.data-source-view-shell { display: flex; min-width: 0; flex-direction: column; }
+.view-error-content { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .data-source-view-bar { display: flex; min-width: 0; min-height: 40px; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--vt-border); background: color-mix(in srgb, var(--vt-bg-subtle) 76%, var(--vt-bg)); }
 .view-context { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; padding-right: 8px; color: var(--vt-fg-muted); border-right: 1px solid var(--vt-border); font-size: var(--vt-font-caption); }
 .view-scroll { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: thin; }

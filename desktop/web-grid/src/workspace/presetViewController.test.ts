@@ -100,7 +100,10 @@ describe("presetViewController", () => {
   it("默认视图降级失败时撤销刚完成的提升并重新加载权威列表", async () => {
     const first = preset("first", "orders", true);
     const second = preset("second", "orders");
-    const saves: Array<{ id: string | null | undefined; isDefault: boolean }> = [];
+    const saves: Array<{
+      target: unknown;
+      isDefault: boolean;
+    }> = [];
     const listPresets = vi.fn(async () => ({
       collection: "orders",
       presets: [first, second],
@@ -109,15 +112,19 @@ describe("presetViewController", () => {
       collection: string,
       name: string,
       view: PresetEntry["view"],
-      id?: string | null,
+      target?: unknown,
     ) => {
-      saves.push({ id, isDefault: !!view.isDefault });
+      saves.push({ target, isDefault: !!view.isDefault });
+      const id = typeof target === "object" && target !== null && "id" in target
+        ? String(target.id)
+        : typeof target === "string" ? target : null;
       if (id === first.id && !view.isDefault) throw new Error("demotion failed");
       return {
         ...(id === first.id ? first : second),
         collection,
         name,
         view,
+        revision: `${id}-saved-${saves.length}`,
       };
     });
     const service: PresetServicePort = {
@@ -135,13 +142,80 @@ describe("presetViewController", () => {
     await flushPromises();
 
     expect(saves).toEqual([
-      { id: "second", isDefault: true },
-      { id: "first", isDefault: false },
-      { id: "second", isDefault: false },
+      { target: { id: "second", revision: "revision-second" }, isDefault: true },
+      { target: { id: "first", revision: "revision-first" }, isDefault: false },
+      { target: { id: "second", revision: "second-saved-1" }, isDefault: false },
     ]);
     expect(listPresets).toHaveBeenCalledTimes(2);
     expect(deps.presets.presets.find(item => item.id === "first")?.view.isDefault).toBe(true);
     expect(deps.presets.activePresetId).toBe("first");
+    scope.stop();
+  });
+
+  it("冲突后保留本地 dirty 状态，直到用户显式重载权威 revision", async () => {
+    const initial = preset("calendar", "orders", true);
+    const winner = { ...initial, revision: "revision-calendar-winner", name: "服务器视图" };
+    const listPresets = vi.fn()
+      .mockResolvedValueOnce({ collection: "orders", presets: [initial] })
+      .mockResolvedValueOnce({ collection: "orders", presets: [winner] });
+    const savePreset = vi.fn(async () => {
+      throw new Error("Preset changed elsewhere.");
+    });
+    const service: PresetServicePort = {
+      listPresets,
+      savePreset,
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    deps.presets.markDirty();
+    await controller.dispatch({ type: "view.save", view: initial });
+
+    expect(savePreset).toHaveBeenCalledWith(
+      "orders",
+      "calendar",
+      expect.any(Object),
+      { id: "calendar", revision: "revision-calendar" },
+    );
+    expect(deps.presets.dirty).toBe(true);
+    expect(deps.presets.error).toBe("Preset changed elsewhere.");
+
+    await controller.dispatch({ type: "view.reload" });
+
+    expect(listPresets).toHaveBeenCalledTimes(2);
+    expect(deps.presets.activePresetId).toBe("calendar");
+    expect(deps.presets.presets[0]?.revision).toBe("revision-calendar-winner");
+    expect(deps.presets.dirty).toBe(false);
+    expect(deps.presets.error).toBeNull();
+    scope.stop();
+  });
+
+  it("权威重载失败后恢复可操作错误状态并保留本地 dirty", async () => {
+    const initial = preset("calendar", "orders", true);
+    const listPresets = vi.fn()
+      .mockResolvedValueOnce({ collection: "orders", presets: [initial] })
+      .mockRejectedValueOnce(new Error("authoritative reload failed"));
+    const service: PresetServicePort = {
+      listPresets,
+      savePreset: vi.fn(async () => initial),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    deps.presets.markDirty();
+    await controller.dispatch({ type: "view.reload" });
+
+    expect(deps.presets.loading).toBe(false);
+    expect(deps.presets.error).toBe("authoritative reload failed");
+    expect(deps.presets.dirty).toBe(true);
     scope.stop();
   });
 });

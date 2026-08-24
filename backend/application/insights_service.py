@@ -21,6 +21,7 @@ from backend.application.revisioned_metadata_port import (
     DashboardRevisionConflictError,
     JsonObject,
     JsonValue,
+    MetadataConflictError,
 )
 from backend.contracts.presets_versions_dashboards import (
     CompiledDashboardQuery,
@@ -234,7 +235,8 @@ class InsightsService:
         collection: str,
         name: str,
         view: PresetView,
-        preset_id: str | None = None,
+        preset_id: str | None,
+        expected_revision: str | None,
         operation_id: str = "",
     ) -> PresetEntry:
         if not operation_id:
@@ -248,13 +250,20 @@ class InsightsService:
             "presetScope": "system",
             "view": _model_object(view),
         }
-        receipt = await self._metadata.upsert_metadata(
-            "presets",
-            record_id=record_id,
-            values=values,
-            expected_revision=None,
-            idempotency_key=f"preset:save:{operation_id}",
-        )
+        try:
+            receipt = await self._metadata.upsert_metadata(
+                "presets",
+                record_id=record_id,
+                values=values,
+                expected_revision=expected_revision,
+                idempotency_key=f"preset:save:{operation_id}",
+            )
+        except MetadataConflictError as error:
+            raise InsightsError(
+                "Preset changed elsewhere.",
+                code="preset_edit_conflict",
+                field="expectedRevision",
+            ) from error
         return PresetEntry(
             id=record_id,
             collection=collection,

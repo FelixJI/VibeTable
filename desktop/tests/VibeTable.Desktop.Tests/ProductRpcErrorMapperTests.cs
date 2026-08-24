@@ -48,6 +48,21 @@ public sealed class ProductRpcErrorMapperTests
     }
 
     [TestMethod]
+    public void MapsBackendFieldToProductErrorPath()
+    {
+        JsonElement source = JsonDocument.Parse(
+            """
+            {"code":"preset_edit_conflict","field":"expectedRevision",
+             "message":"Preset changed elsewhere.","retryable":false}
+            """).RootElement.Clone();
+
+        Assert.IsTrue(ProductRpcErrorMapper.TryMap(source, out var response));
+        Assert.AreEqual(
+            "expectedRevision",
+            response.GetProperty("error").GetProperty("path").GetString());
+    }
+
+    [TestMethod]
     public void RejectsMalformedOrProviderNamedErrors()
     {
         JsonElement malformed = JsonDocument.Parse("""{"message":"bad"}""").RootElement.Clone();
