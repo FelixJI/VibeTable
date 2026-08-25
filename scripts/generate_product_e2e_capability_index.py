@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import html
 import re
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = REPO_ROOT / "tests/e2e/pocketbase_product_scenarios.json"
@@ -43,16 +45,29 @@ _CURRENT_RESULT_PATTERN = re.compile(
     r"(?<![0-9])([0-9]+)/([0-9]+)\s+passed[、,]\s*"
     r"([0-9]+)\s+failed[、,]\s*([0-9]+)\s+skipped"
 )
+_MANIFEST_GAP_LINE_PATTERN = re.compile(r"(?m)^- 当前 manifest gap：([^\r\n]+)$")
+_MANIFEST_SURPLUS_LINE_PATTERN = re.compile(r"(?m)^- 当前 manifest surplus：([^\r\n]+)$")
 _TEMPORARY_REPORT_PATTERN = re.compile(
     r"build[\\/](?:q|qa)(?:[\\/]|(?=[\s`)]|$))",
     re.IGNORECASE,
 )
-_SCENARIO_REFERENCE_PATTERN = re.compile(r"(?<![0-9a-z])([0-9]{2}-[a-z][a-z0-9-]*)")
+_TRUSTED_REPOSITORY_IDENTITY = ("github.com", "felixji", "vibetable")
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tests.e2e.product_scenario_manifest import Scenario, load_scenarios  # noqa: E402
+from tests.e2e.product_scenario_manifest import (  # noqa: E402
+    SCENARIO_ID_PATTERN_TEXT,
+    Scenario,
+    load_scenarios,
+    parse_scenarios_text,
+)
+
+_MANIFEST_DELTA_DETAILS_PATTERN = re.compile(
+    rf"^([1-9][0-9]*)（(`{SCENARIO_ID_PATTERN_TEXT}`"
+    rf"(?:、`{SCENARIO_ID_PATTERN_TEXT}`)*)）。$"
+)
+_SCENARIO_REFERENCE_PATTERN = re.compile(rf"`({SCENARIO_ID_PATTERN_TEXT})`")
 
 
 def _normalized_document_path(path: Path) -> str:
@@ -93,14 +108,125 @@ def _contains_product_e2e_run_metadata(content: str) -> bool:
     )
 
 
+def _parse_manifest_delta(
+    current_evidence: str,
+    *,
+    line_pattern: re.Pattern[str],
+    label: str,
+    display_path: str,
+    errors: list[str],
+) -> tuple[Counter[str], str]:
+    matches = list(line_pattern.finditer(current_evidence))
+    if len(matches) != 1:
+        errors.append(f"{display_path}: current manifest {label} must be declared exactly once")
+        return Counter(), current_evidence
+    match = matches[0]
+    declaration = match.group(1)
+    evidence_without_delta = current_evidence[: match.start()] + current_evidence[match.end() :]
+    if declaration == "无。":
+        return Counter(), evidence_without_delta
+    details = _MANIFEST_DELTA_DETAILS_PATTERN.fullmatch(declaration)
+    if details is None:
+        errors.append(
+            f"{display_path}: current manifest {label} must be '无。' or an exact "
+            "positive count with backtick-delimited scenario ids"
+        )
+        return Counter(), evidence_without_delta
+    declared_count = int(details.group(1))
+    scenario_ids = Counter(_SCENARIO_REFERENCE_PATTERN.findall(details.group(2)))
+    if declared_count != sum(scenario_ids.values()) or any(
+        count != 1 for count in scenario_ids.values()
+    ):
+        errors.append(
+            f"{display_path}: current manifest {label} count and scenario ids must match "
+            "exactly without duplicates"
+        )
+    return scenario_ids, evidence_without_delta
+
+
+def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        check=check,
+        capture_output=True,
+    )
+
+
+def _repository_identity(remote_url: str) -> tuple[str, str, str] | None:
+    value = remote_url.strip()
+    if "://" in value:
+        parsed = urlparse(value)
+        if parsed.scheme.lower() not in {"https", "ssh"} or parsed.hostname is None:
+            return None
+        host = parsed.hostname
+        path = parsed.path
+    else:
+        scp = re.fullmatch(r"(?:[^@/:]+@)?([^/:]+):(.+)", value)
+        if scp is None:
+            return None
+        host, path = scp.groups()
+    parts = path.strip("/").split("/")
+    if len(parts) != 2:
+        return None
+    owner, repository = parts
+    if repository.lower().endswith(".git"):
+        repository = repository[:-4]
+    return host.lower(), owner.lower(), repository.lower()
+
+
+def _is_trusted_repository_url(remote_url: str) -> bool:
+    return _repository_identity(remote_url) == _TRUSTED_REPOSITORY_IDENTITY
+
+
+def _trusted_main_refs() -> list[str]:
+    refs = (
+        _run_git("for-each-ref", "--format=%(refname)", "refs/remotes")
+        .stdout.decode("utf-8")
+        .splitlines()
+    )
+    trusted: list[str] = []
+    for ref in refs:
+        match = re.fullmatch(r"refs/remotes/([^/]+)/main", ref)
+        if match is None:
+            continue
+        remote = match.group(1)
+        remote_url = _run_git("remote", "get-url", remote).stdout.decode("utf-8").strip()
+        if _is_trusted_repository_url(remote_url):
+            trusted.append(ref)
+    return trusted
+
+
+def _load_verified_scenarios(source_sha: str) -> list[Scenario]:
+    try:
+        trusted_refs = _trusted_main_refs()
+    except (subprocess.CalledProcessError, UnicodeDecodeError) as error:
+        raise ValueError("trusted GitHub main refs cannot be inspected") from error
+    if not trusted_refs or not any(
+        _run_git("merge-base", "--is-ancestor", source_sha, ref, check=False).returncode == 0
+        for ref in trusted_refs
+    ):
+        raise ValueError("source SHA is not reachable from a trusted GitHub main ref")
+    manifest_ref = f"{source_sha}:{MANIFEST_PATH.relative_to(REPO_ROOT).as_posix()}"
+    try:
+        content = _run_git("show", manifest_ref).stdout.decode("utf-8")
+        return parse_scenarios_text(content)
+    except (subprocess.CalledProcessError, UnicodeDecodeError, ValueError) as error:
+        raise ValueError("source manifest cannot be read or validated") from error
+
+
 def check_product_e2e_evidence_documents(
     documents: Mapping[Path, str],
     scenarios: Sequence[Scenario],
     *,
     report_contract_version: str,
+    verified_scenarios: Sequence[Scenario] | None = None,
+    require_closed: bool = False,
 ) -> list[str]:
     """Validate the single current-run claim shared by product E2E documents."""
     errors: list[str] = []
+    verified = list(verified_scenarios if verified_scenarios is not None else scenarios)
+    verified_result_counts: tuple[int, int] | None = None
     required_suffixes = (_CANONICAL_EVIDENCE_SUFFIX, *_LINKED_EVIDENCE_SUFFIXES)
     resolved_documents: dict[str, tuple[Path, str]] = {}
     for suffix in required_suffixes:
@@ -144,7 +270,65 @@ def check_product_e2e_evidence_documents(
                 f"{display_path}: current product E2E evidence must declare "
                 f"contractVersion={report_contract_version}"
             )
-        expected_result = (len(scenarios), len(scenarios), 0, 0)
+        current_by_id = {scenario.id: scenario for scenario in scenarios}
+        verified_by_id = {scenario.id: scenario for scenario in verified}
+        rewritten_ids = sorted(
+            scenario_id
+            for scenario_id in current_by_id.keys() & verified_by_id.keys()
+            if current_by_id[scenario_id] != verified_by_id[scenario_id]
+        )
+        if rewritten_ids:
+            errors.append(
+                f"{display_path}: same-id scenario semantics differ from the source manifest: "
+                + ", ".join(rewritten_ids)
+            )
+
+        manifest_gap, verified_evidence = _parse_manifest_delta(
+            current_evidence,
+            line_pattern=_MANIFEST_GAP_LINE_PATTERN,
+            label="gap",
+            display_path=display_path,
+            errors=errors,
+        )
+        manifest_surplus, verified_evidence = _parse_manifest_delta(
+            verified_evidence,
+            line_pattern=_MANIFEST_SURPLUS_LINE_PATTERN,
+            label="surplus",
+            display_path=display_path,
+            errors=errors,
+        )
+        expected_gap = Counter(current_by_id.keys() - verified_by_id.keys())
+        expected_surplus = Counter(verified_by_id.keys() - current_by_id.keys())
+        if manifest_gap != expected_gap:
+            errors.append(
+                f"{display_path}: current manifest gap must exactly list scenarios added "
+                "since the source manifest"
+            )
+        if manifest_surplus != expected_surplus:
+            errors.append(
+                f"{display_path}: current manifest surplus must exactly list source "
+                "manifest scenarios absent from the current manifest"
+            )
+        if require_closed and (expected_gap or expected_surplus):
+            errors.append(
+                f"{display_path}: release evidence reconciliation must be closed; "
+                "current manifest gap and surplus must both be empty"
+            )
+
+        observed_scenarios = Counter(_SCENARIO_REFERENCE_PATTERN.findall(verified_evidence))
+        expected_verified_scenarios = Counter(verified_by_id.keys())
+        if observed_scenarios != expected_verified_scenarios:
+            errors.append(
+                f"{display_path}: current product E2E evidence must list every manifest "
+                "scenario exactly once as defined by the source manifest"
+            )
+        verified_scenario_count = len(verified)
+        expected_result = (
+            verified_scenario_count,
+            verified_scenario_count,
+            0,
+            0,
+        )
         observed_results = [
             tuple(int(value) for value in match)
             for match in _CURRENT_RESULT_PATTERN.findall(current_evidence)
@@ -154,13 +338,8 @@ def check_product_e2e_evidence_documents(
                 f"{display_path}: current product E2E result must be "
                 f"{expected_result[0]}/{expected_result[1]} passed, 0 failed, 0 skipped"
             )
-        expected_scenarios = Counter(scenario.id for scenario in scenarios)
-        observed_scenarios = Counter(_SCENARIO_REFERENCE_PATTERN.findall(current_evidence))
-        if observed_scenarios != expected_scenarios:
-            errors.append(
-                f"{display_path}: current product E2E evidence must list every manifest "
-                "scenario exactly once"
-            )
+        else:
+            verified_result_counts = expected_result[:2]
         canonical_without_current = canonical.replace(current_evidence, "", 1)
         if _contains_product_e2e_run_metadata(canonical_without_current):
             errors.append(
@@ -168,16 +347,15 @@ def check_product_e2e_evidence_documents(
                 "canonical evidence section"
             )
 
-    scenario_ids = {scenario.id for scenario in scenarios}
-    expected_counts = (len(scenarios), len(scenarios))
+    scenario_ids = {scenario.id for scenario in (*scenarios, *verified)}
     for suffix, (path, content) in resolved_documents.items():
         display_path = _normalized_document_path(path)
         for passed_text in _PASS_COUNT_PATTERN.finditer(content):
             observed_counts = (int(passed_text.group(1)), int(passed_text.group(2)))
-            if observed_counts != expected_counts:
+            if verified_result_counts is not None and observed_counts != verified_result_counts:
                 errors.append(
                     f"{display_path}: current product E2E result must be "
-                    f"{expected_counts[0]}/{expected_counts[1]} passed; found "
+                    f"{verified_result_counts[0]}/{verified_result_counts[1]} passed; found "
                     f"{passed_text.group(0)}"
                 )
         if _TEMPORARY_REPORT_PATTERN.search(content):
@@ -203,13 +381,32 @@ def check_product_e2e_evidence_documents(
 def check_repository_product_e2e_evidence(
     document_paths: Sequence[Path] = PRODUCT_E2E_EVIDENCE_PATHS,
     manifest_path: Path = MANIFEST_PATH,
+    *,
+    require_closed: bool = False,
 ) -> list[str]:
     documents = {path: path.read_text(encoding="utf-8") for path in document_paths}
-    return check_product_e2e_evidence_documents(
+    scenarios = load_scenarios(manifest_path)
+    verified_scenarios = scenarios
+    source_error: str | None = None
+    canonical_document = _document_by_suffix(documents, _CANONICAL_EVIDENCE_SUFFIX)
+    if canonical_document is not None:
+        current_evidence = _markdown_section(canonical_document[1], _CURRENT_EVIDENCE_HEADING)
+        source_shas = _SOURCE_SHA_PATTERN.findall(current_evidence)
+        if len(source_shas) == 1:
+            try:
+                verified_scenarios = _load_verified_scenarios(source_shas[0])
+            except ValueError as error:
+                source_error = str(error)
+    errors = check_product_e2e_evidence_documents(
         documents,
-        load_scenarios(manifest_path),
+        scenarios,
         report_contract_version=PRODUCT_E2E_REPORT_CONTRACT_VERSION,
+        verified_scenarios=verified_scenarios,
+        require_closed=require_closed,
     )
+    if source_error is not None:
+        errors.append(f"source manifest verification failed: {source_error}")
+    return errors
 
 
 def _escape_cell(value: str) -> str:
@@ -335,18 +532,23 @@ def _parser() -> argparse.ArgumentParser:
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--write", action="store_true")
     action.add_argument("--check", action="store_true")
+    parser.add_argument("--require-closed-evidence", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.write and args.require_closed_evidence:
+        _parser().error("--require-closed-evidence is only valid with --check")
     try:
         if args.write:
             for path in write_index():
                 print(_display_path(path))
             return 0
         errors = check_generated()
-        errors.extend(check_repository_product_e2e_evidence())
+        errors.extend(
+            check_repository_product_e2e_evidence(require_closed=args.require_closed_evidence)
+        )
     except (OSError, ValueError) as exc:
         errors = [str(exc)]
     if errors:

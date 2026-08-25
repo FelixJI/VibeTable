@@ -21,10 +21,13 @@ class Scenario:
 
 _SCENARIO_FIELDS = frozenset({"id", "title", "requirement", "capabilities"})
 _CAPABILITY_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$")
+SCENARIO_ID_PATTERN_TEXT = r"[0-9]+-[a-z][a-z0-9-]*"
+_SCENARIO_ID_PATTERN = re.compile(rf"^{SCENARIO_ID_PATTERN_TEXT}$")
 
 
-def load_scenarios(path: Path = SCENARIO_MANIFEST) -> list[Scenario]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+def parse_scenarios_text(content: str) -> list[Scenario]:
+    """Parse and validate a scenario manifest from a trusted text source."""
+    raw = json.loads(content)
     if not isinstance(raw, list) or not raw:
         raise ValueError("scenario manifest must be a non-empty array")
     scenarios: list[Scenario] = []
@@ -45,8 +48,13 @@ def load_scenarios(path: Path = SCENARIO_MANIFEST) -> list[Scenario]:
             raise ValueError(f"scenario[{index}].capabilities must be non-empty stable names")
         if len(set(capabilities)) != len(capabilities):
             raise ValueError(f"scenario[{index}].capabilities must be unique")
+        scenario_id = str(item["id"])
+        if _SCENARIO_ID_PATTERN.fullmatch(scenario_id) is None:
+            raise ValueError(
+                f"scenario id must match {SCENARIO_ID_PATTERN_TEXT!r}: {scenario_id!r}"
+            )
         scenario = Scenario(
-            id=str(item["id"]),
+            id=scenario_id,
             title=str(item["title"]),
             requirement=str(item["requirement"]),
             capabilities=tuple(capabilities),
@@ -57,6 +65,10 @@ def load_scenarios(path: Path = SCENARIO_MANIFEST) -> list[Scenario]:
     if len({item.id for item in scenarios}) != len(scenarios):
         raise ValueError("scenario ids must be unique")
     return scenarios
+
+
+def load_scenarios(path: Path = SCENARIO_MANIFEST) -> list[Scenario]:
+    return parse_scenarios_text(path.read_text(encoding="utf-8"))
 
 
 def select_scenarios(

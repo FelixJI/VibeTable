@@ -59,6 +59,8 @@ def _evidence_documents() -> dict[Path, str]:
 - GitHub run：https://github.com/FelixJI/VibeTable/actions/runs/123456789
 - 报告契约：`contractVersion=2.0`
 - 结果：2/2 passed、0 failed、0 skipped。
+- 当前 manifest gap：无。
+- 当前 manifest surplus：无。
 - 场景：`01-first`、`02-second`。
 """,
         Path("docs/quality/capability-matrix.md"): (
@@ -213,7 +215,7 @@ def test_evidence_document_contract_requires_exact_scenario_and_zero_result() ->
     assert any("must list every manifest scenario exactly once" in error for error in errors)
 
 
-def test_evidence_document_contract_detects_manifest_growth() -> None:
+def test_evidence_document_contract_requires_explicit_manifest_growth_gap() -> None:
     scenarios = _evidence_scenarios()
     scenarios.append(
         Scenario(
@@ -228,9 +230,299 @@ def test_evidence_document_contract_detects_manifest_growth() -> None:
         _evidence_documents(),
         scenarios,
         report_contract_version="2.0",
+        verified_scenarios=_evidence_scenarios(),
     )
 
-    assert any("3/3 passed" in error for error in errors)
+    assert any("current manifest gap" in error for error in errors)
+
+
+def test_evidence_document_contract_accepts_explicit_manifest_growth_gap() -> None:
+    scenarios = _evidence_scenarios()
+    scenarios.append(
+        Scenario(
+            id="03-added",
+            title="新增场景",
+            requirement="新场景必须等下一次 main 运行后才能成为已验证证据。",
+            capabilities=("example.added",),
+        )
+    )
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "- 当前 manifest gap：无。",
+        "- 当前 manifest gap：1（`03-added`）。",
+    )
+
+    assert (
+        capability_index.check_product_e2e_evidence_documents(
+            documents,
+            scenarios,
+            report_contract_version="2.0",
+            verified_scenarios=_evidence_scenarios(),
+        )
+        == []
+    )
+
+    release_errors = capability_index.check_product_e2e_evidence_documents(
+        documents,
+        scenarios,
+        report_contract_version="2.0",
+        verified_scenarios=_evidence_scenarios(),
+        require_closed=True,
+    )
+    assert any(
+        "release evidence reconciliation must be closed" in error for error in release_errors
+    )
+
+
+def test_evidence_document_contract_accepts_three_digit_scenario_id_growth() -> None:
+    verified = _evidence_scenarios()
+    scenarios = [
+        *verified,
+        Scenario(
+            id="100-long-lived-suite",
+            title="三位数场景",
+            requirement="场景数量增长后仍可诚实声明证据差距。",
+            capabilities=("example.long-lived",),
+        ),
+    ]
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "- 当前 manifest gap：无。",
+        "- 当前 manifest gap：1（`100-long-lived-suite`）。",
+    )
+
+    assert (
+        capability_index.check_product_e2e_evidence_documents(
+            documents,
+            scenarios,
+            report_contract_version="2.0",
+            verified_scenarios=verified,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "fabricated_reference",
+    ["`X01-first`", "`01-first_SUFFIX`"],
+)
+def test_evidence_document_contract_rejects_scenario_id_embedded_in_another_token(
+    fabricated_reference: str,
+) -> None:
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "`01-first`",
+        fabricated_reference,
+    )
+
+    errors = capability_index.check_product_e2e_evidence_documents(
+        documents,
+        _evidence_scenarios(),
+        report_contract_version="2.0",
+    )
+
+    assert any("must list every manifest scenario exactly once" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "https://github.com/FelixJI/VibeTable",
+        "https://github.com/FelixJI/VibeTable.git",
+        "git@github.com:FelixJI/VibeTable.git",
+        "ssh://git@github.com/FelixJI/VibeTable.git",
+        "ssh://github.com/FelixJI/VibeTable.git",
+    ],
+)
+def test_repository_identity_accepts_equivalent_github_remote_urls(remote_url: str) -> None:
+    assert capability_index._is_trusted_repository_url(remote_url)
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "https://github.example.com/FelixJI/VibeTable.git",
+        "https://github.com/other/VibeTable.git",
+        "https://github.com/FelixJI/VibeTable-lookalike.git",
+        "git@github.com:FelixJI/other.git",
+    ],
+)
+def test_repository_identity_rejects_lookalike_remote_urls(remote_url: str) -> None:
+    assert not capability_index._is_trusted_repository_url(remote_url)
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "- 当前 manifest gap：2（`03-added`）。",
+        "- 当前 manifest gap：1（`03-unknown`）。",
+        "- 当前 manifest gap：2（`03-added`、`03-added`）。",
+        "- 当前 manifest gap：1（`01-first`）。",
+        "- 当前 manifest gap：1（前缀 `03-added`）。",
+        "- 当前 manifest gap：1（`03-added`、任意文字）。",
+    ],
+)
+def test_evidence_document_contract_rejects_invalid_manifest_gap(gap: str) -> None:
+    scenarios = _evidence_scenarios()
+    scenarios.append(
+        Scenario(
+            id="03-added",
+            title="新增场景",
+            requirement="gap 必须精确、唯一且与已验证场景不重叠。",
+            capabilities=("example.added",),
+        )
+    )
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "- 当前 manifest gap：无。",
+        gap,
+    )
+
+    errors = capability_index.check_product_e2e_evidence_documents(
+        documents,
+        scenarios,
+        report_contract_version="2.0",
+        verified_scenarios=_evidence_scenarios(),
+    )
+
+    assert any("current manifest gap" in error for error in errors)
+
+
+def test_evidence_document_contract_rejects_fabricated_verified_growth() -> None:
+    verified = _evidence_scenarios()
+    scenarios = [
+        *verified,
+        Scenario(
+            id="03-added",
+            title="新增场景",
+            requirement="旧 source SHA 不可能验证这个场景。",
+            capabilities=("example.added",),
+        ),
+    ]
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = (
+        documents[canonical_path]
+        .replace("2/2 passed", "3/3 passed")
+        .replace("`01-first`、`02-second`", "`01-first`、`02-second`、`03-added`")
+    )
+
+    errors = capability_index.check_product_e2e_evidence_documents(
+        documents,
+        scenarios,
+        report_contract_version="2.0",
+        verified_scenarios=verified,
+    )
+
+    assert any("source manifest" in error for error in errors)
+
+
+def test_evidence_document_contract_rejects_same_id_semantic_rewrite() -> None:
+    verified = _evidence_scenarios()
+    scenarios = [
+        verified[0],
+        Scenario(
+            id=verified[1].id,
+            title=verified[1].title,
+            requirement="原地扩写后的新验收语义。",
+            capabilities=(*verified[1].capabilities, "example.expanded"),
+        ),
+    ]
+
+    errors = capability_index.check_product_e2e_evidence_documents(
+        _evidence_documents(),
+        scenarios,
+        report_contract_version="2.0",
+        verified_scenarios=verified,
+    )
+
+    assert any("same-id scenario semantics" in error for error in errors)
+
+
+def test_evidence_document_contract_accepts_explicit_manifest_surplus() -> None:
+    verified = _evidence_scenarios()
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "- 当前 manifest surplus：无。",
+        "- 当前 manifest surplus：1（`02-second`）。",
+    )
+
+    assert (
+        capability_index.check_product_e2e_evidence_documents(
+            documents,
+            [verified[0]],
+            report_contract_version="2.0",
+            verified_scenarios=verified,
+        )
+        == []
+    )
+
+
+def test_evidence_document_contract_requires_explicit_manifest_surplus() -> None:
+    verified = _evidence_scenarios()
+
+    errors = capability_index.check_product_e2e_evidence_documents(
+        _evidence_documents(),
+        [verified[0]],
+        report_contract_version="2.0",
+        verified_scenarios=verified,
+    )
+
+    assert any("current manifest surplus" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "surplus",
+    [
+        "- 当前 manifest surplus：2（`02-second`）。",
+        "- 当前 manifest surplus：1（`01-first`）。",
+        "- 当前 manifest surplus：2（`02-second`、`02-second`）。",
+        "- 当前 manifest surplus：1（`02-second`、任意文字）。",
+    ],
+)
+def test_evidence_document_contract_rejects_invalid_manifest_surplus(surplus: str) -> None:
+    verified = _evidence_scenarios()
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "- 当前 manifest surplus：无。",
+        surplus,
+    )
+
+    errors = capability_index.check_product_e2e_evidence_documents(
+        documents,
+        [verified[0]],
+        report_contract_version="2.0",
+        verified_scenarios=verified,
+    )
+
+    assert any("current manifest surplus" in error for error in errors)
+
+
+def test_repository_evidence_fails_closed_for_unreachable_source(tmp_path: Path) -> None:
+    documents = _evidence_documents()
+    document_paths: list[Path] = []
+    for relative_path, content in documents.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        document_paths.append(path)
+    manifest_path = tmp_path / "tests/e2e/pocketbase_product_scenarios.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_manifest(manifest_path, _evidence_scenarios())
+
+    errors = capability_index.check_repository_product_e2e_evidence(
+        document_paths,
+        manifest_path,
+    )
+
+    assert any("source manifest verification failed" in error for error in errors)
+    assert any("trusted GitHub main" in error for error in errors)
 
 
 def test_report_contract_version_matches_document_checker(tmp_path: Path) -> None:
@@ -344,13 +636,17 @@ def test_main_check_includes_product_e2e_evidence_contract(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(capability_index, "check_generated", lambda: [])
-    monkeypatch.setattr(
-        capability_index,
-        "check_repository_product_e2e_evidence",
-        lambda: ["stale product E2E evidence"],
-    )
+    observed: list[bool] = []
+
+    def check_repository(*, require_closed: bool = False) -> list[str]:
+        observed.append(require_closed)
+        return ["stale product E2E evidence"]
+
+    monkeypatch.setattr(capability_index, "check_repository_product_e2e_evidence", check_repository)
 
     assert capability_index.main(["--check"]) == 1
+    assert capability_index.main(["--check", "--require-closed-evidence"]) == 1
+    assert observed == [False, True]
     assert "stale product E2E evidence" in capsys.readouterr().err
 
 

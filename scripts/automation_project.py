@@ -566,6 +566,15 @@ def aggregate_release_smoke(reports_dir: Path) -> None:
     _run(*command)
 
 
+def verify_release_evidence() -> None:
+    _run(
+        sys.executable,
+        "scripts/generate_product_e2e_capability_index.py",
+        "--check",
+        "--require-closed-evidence",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -580,6 +589,7 @@ def _parser() -> argparse.ArgumentParser:
             "smoke",
             "smoke-lane",
             "smoke-aggregate",
+            "release-evidence",
         ),
     )
     parser.add_argument(
@@ -606,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         "pr-e2e": pr_e2e,
         "build": build_candidate,
         "smoke": release_smoke,
+        "release-evidence": verify_release_evidence,
     }
     try:
         if command == "doctor":
