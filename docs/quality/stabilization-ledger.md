@@ -1,7 +1,7 @@
 # 稳定化台账
 
-> 历史实施基线：`GitHub/main@bd06158e`（2026-08-08）；历史候选证据截止 2026-08-09。
-> 后续验收增量按下文日期单独记录。本台账只记录可复现缺陷、已关闭根因和仍待证的明确边界，
+> source SHA、GitHub run、报告契约和当前通过状态见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)。
+> 历史候选与后续验收增量按下文日期记录。本台账只记录可复现缺陷、已关闭根因和仍待证的明确边界，
 > 不以静态搜索把未知问题伪装为 bug。
 
 ## 使用规则
@@ -49,13 +49,13 @@
 
 - 场景 16 扩展为四类面板、键盘布局、全局筛选与清空、联动/钻取，以及单 UI + 竞争公开
   writer 的 CAS conflict 与权威 note 重载；不扩大为双真实编辑器并发。
-- 本地 `build/qa/product-e2e/20260825T114135Z/product-e2e-report.json` 为 1/1 passed，场景内
-  17 条产品断言全部通过且最终清理无残留进程；完整发布状态仍以对应 GitHub `required` 报告为准。
+- 聚焦运行曾验证场景内 17 条产品断言与最终清理；当前完整发布状态统一以本页顶部链接的
+  main `required` 产品报告为准，不引用会被清理的本机证据路径。
 
 ## 历史候选验收基线（2026-08-09）
 
-- `build/q/f2/20260809T152446Z/product-e2e-report.json` 为 16/16 passed；场景 10 由真实 Host
-  精确终止 `vibetable-pb.exe` 后自动恢复，再精确终止 `vibetable-backend.exe`，通过 workspace
+- 当时的打包候选覆盖了 16 个场景；场景 10 由真实 Host 精确终止 `vibetable-pb.exe` 后自动恢复，
+  再精确终止 `vibetable-backend.exe`，通过 workspace
   关闭/重开取得新 epoch。旧 epoch 的 `retention.update` 返回 `workspace.session_stale` 且策略未改变，
   新 epoch 的 mutation 成功；全部场景 Host exit code 为 0、无后代进程且端口释放。
 - 当前程序处于开发阶段，不再构建历史候选或把跨版本 workspace 升级作为发布门禁；发布资产继续
