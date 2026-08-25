@@ -202,6 +202,49 @@ def test_manifest_accepts_capability_tagged_scenarios_without_a_fixed_count(
     assert scenarios[0].capabilities == ("view-query.window", "release.smoke")
 
 
+def test_manifest_accepts_three_digit_scenario_ids(tmp_path: Path) -> None:
+    manifest = tmp_path / "scenarios.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "100-long-lived-suite",
+                    "title": "三位数场景",
+                    "requirement": "场景序号可在长期演进后超过两位数。",
+                    "capabilities": ["release.smoke"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert runner.load_scenarios(manifest)[0].id == "100-long-lived-suite"
+
+
+@pytest.mark.parametrize("scenario_id", ["scenario", "01_Invalid", "01-"])
+def test_manifest_rejects_ids_outside_the_evidence_contract(
+    tmp_path: Path,
+    scenario_id: str,
+) -> None:
+    manifest = tmp_path / "scenarios.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "id": scenario_id,
+                    "title": "非法 ID",
+                    "requirement": "manifest 与证据边界必须共享同一 ID 契约。",
+                    "capabilities": ["release.smoke"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="scenario id"):
+        runner.load_scenarios(manifest)
+
+
 def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     scenarios = runner.load_scenarios()
 

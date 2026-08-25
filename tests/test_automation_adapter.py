@@ -567,6 +567,41 @@ def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
     assert "token:" not in checkout
 
 
+def test_publish_requires_closed_product_e2e_evidence_after_staging() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
+    after_stage = workflow.split("- name: Stage release", maxsplit=1)[1]
+    closed_evidence = after_stage.split("- name: Verify closed product E2E evidence", maxsplit=1)[
+        1
+    ].split("- name: Attest release provenance", maxsplit=1)[0]
+
+    assert "if: steps.stage.outputs.publish == 'true'" in closed_evidence
+    assert (
+        "uv run --frozen python scripts/automation_project.py release-evidence"
+    ) in closed_evidence
+    assert "generate_product_e2e_capability_index.py" not in closed_evidence
+
+
+def test_release_evidence_delegates_through_the_managed_project_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        automation_project,
+        "_run",
+        lambda *command, **_kwargs: observed.append(command),
+    )
+
+    assert automation_project.main(["release-evidence"]) == 0
+    assert observed == [
+        (
+            automation_project.sys.executable,
+            "scripts/generate_product_e2e_capability_index.py",
+            "--check",
+            "--require-closed-evidence",
+        )
+    ]
+
+
 def test_mirror_pushes_main_and_only_tags_missing_from_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
