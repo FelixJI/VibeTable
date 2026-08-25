@@ -26,16 +26,16 @@ function selectValue(value: unknown): Array<string | number> {
   <div v-if="filters.length" class="dashboard-filter-bar" :aria-label="t('dashboard.filters.title')">
     <div v-for="filter in filters" :key="filter.key" class="filter-control">
       <span>{{ filter.label }}</span>
-      <NDatePicker v-if="filter.type === 'date-range'" size="small" type="datetimerange" clearable :value="(values[filter.key] ?? filter.defaultValue) as [number, number] | null" @update:value="emit('change', filter.key, $event)" />
+      <NDatePicker v-if="filter.type === 'date-range'" size="small" type="datetimerange" clearable :value="(values[filter.key] ?? filter.defaultValue) as [number, number] | null" :data-testid="`dashboard-filter-value-${filter.key}`" @update:value="emit('change', filter.key, $event)" />
       <div v-else-if="filter.type === 'number-range'" class="number-range">
-        <NInputNumber size="small" :placeholder="t('dashboard.filters.min')" :value="range(values[filter.key] ?? filter.defaultValue, 0)" @update:value="updateRange(filter.key, values[filter.key] ?? filter.defaultValue, 0, $event)" />
+        <NInputNumber size="small" :placeholder="t('dashboard.filters.min')" :value="range(values[filter.key] ?? filter.defaultValue, 0)" :data-testid="`dashboard-filter-value-${filter.key}-min`" @update:value="updateRange(filter.key, values[filter.key] ?? filter.defaultValue, 0, $event)" />
         <i>–</i>
-        <NInputNumber size="small" :placeholder="t('dashboard.filters.max')" :value="range(values[filter.key] ?? filter.defaultValue, 1)" @update:value="updateRange(filter.key, values[filter.key] ?? filter.defaultValue, 1, $event)" />
+        <NInputNumber size="small" :placeholder="t('dashboard.filters.max')" :value="range(values[filter.key] ?? filter.defaultValue, 1)" :data-testid="`dashboard-filter-value-${filter.key}-max`" @update:value="updateRange(filter.key, values[filter.key] ?? filter.defaultValue, 1, $event)" />
       </div>
-      <NSelect v-else-if="filter.type === 'enum'" size="small" multiple tag filterable clearable :options="[]" :value="selectValue(values[filter.key] ?? filter.defaultValue)" @update:value="emit('change', filter.key, $event)" />
-      <NInput v-else size="small" clearable :value="String(values[filter.key] ?? filter.defaultValue ?? '')" @update:value="emit('change', filter.key, $event)" />
+      <NSelect v-else-if="filter.type === 'enum'" size="small" multiple tag filterable clearable :options="[]" :value="selectValue(values[filter.key] ?? filter.defaultValue)" :data-testid="`dashboard-filter-value-${filter.key}`" @update:value="emit('change', filter.key, $event)" />
+      <NInput v-else size="small" clearable :value="String(values[filter.key] ?? filter.defaultValue ?? '')" :data-testid="`dashboard-filter-value-${filter.key}`" @update:value="emit('change', filter.key, $event)" />
     </div>
-    <NButton quaternary size="small" :aria-label="t('dashboard.filters.clear')" @click="emit('clear')"><NIcon><X /></NIcon></NButton>
+    <NButton quaternary size="small" :aria-label="t('dashboard.filters.clear')" data-testid="dashboard-filters-clear" @click="emit('clear')"><NIcon><X /></NIcon></NButton>
   </div>
 </template>
 

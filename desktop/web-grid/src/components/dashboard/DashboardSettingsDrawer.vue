@@ -243,15 +243,15 @@ function filterType(value: unknown): value is DashboardFilterVariablePayload["ty
     <NDrawerContent :title="t('dashboard.settings.title')" closable @close="emit('close')">
       <div class="settings-form" data-testid="dashboard-settings">
         <label>{{ t("dashboard.field.name") }}<NInput v-model:value="name" maxlength="128" /></label>
-        <label>{{ t("dashboard.field.note") }}<NInput v-model:value="note" type="textarea" maxlength="512" /></label>
+        <label>{{ t("dashboard.field.note") }}<NInput v-model:value="note" type="textarea" maxlength="512" data-testid="dashboard-settings-note" /></label>
         <div v-if="schemaLoading" class="schema-state"><NSpin size="small" />{{ t("dashboard.schema.loading") }}</div>
         <NAlert v-else-if="schemaError" type="error">{{ schemaError }}</NAlert>
         <section>
           <header><div><strong>{{ t("dashboard.filters.title") }}</strong><small>{{ t("dashboard.filters.hint") }}</small></div><NButton size="tiny" :disabled="schemaLoading" data-testid="dashboard-add-filter" @click="addFilter">{{ t("common.add") }}</NButton></header>
           <NAlert v-if="hasIncompatibleFilterBindings" type="error">{{ t("dashboard.filters.incompatible") }}</NAlert>
           <div v-for="(filter, index) in filters" :key="`${filter.key}:${index}`" class="config-card">
-            <NInput size="small" :value="filter.label" :placeholder="t('dashboard.filters.label')" @update:value="updateFilter(index, 'label', $event)" />
-            <NInput size="small" :value="filter.key" :placeholder="t('dashboard.filters.key')" @update:value="updateFilter(index, 'key', $event)" />
+            <NInput size="small" :value="filter.label" :placeholder="t('dashboard.filters.label')" :data-testid="`dashboard-filter-label-${index}`" @update:value="updateFilter(index, 'label', $event)" />
+            <NInput size="small" :value="filter.key" :placeholder="t('dashboard.filters.key')" :data-testid="`dashboard-filter-key-${index}`" @update:value="updateFilter(index, 'key', $event)" />
             <NSelect size="small" :value="filter.type" :options="filterTypes" :data-testid="`dashboard-filter-type-${index}`" @update:value="updateFilter(index, 'type', $event)" />
             <NSelect size="small" multiple filterable :value="[...filter.targetPanels]" :options="panelOptions.filter((panel) => fieldOptionsForFilter(filter.type, panel.value).length > 0)" :placeholder="t('dashboard.filters.targets')" :data-testid="`dashboard-filter-targets-${index}`" @update:value="updateFilterTargets(index, $event)" />
             <div v-for="panelId in filter.targetPanels" :key="panelId" class="binding-line">

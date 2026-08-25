@@ -134,8 +134,16 @@ describe("DashboardSettingsDrawer", () => {
     await wrapper.setProps({ show: true });
     await flushPromises();
     expect(loadSchema).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-testid="dashboard-settings-note"]').attributes("data-testid"))
+      .toBe("dashboard-settings-note");
 
     await wrapper.get('[data-testid="dashboard-add-filter"]').trigger("click");
+    expect(wrapper.get('[data-testid="dashboard-filter-label-0"]').attributes("data-testid"))
+      .toBe("dashboard-filter-label-0");
+    expect(wrapper.get('[data-testid="dashboard-filter-key-0"]').attributes("data-testid"))
+      .toBe("dashboard-filter-key-0");
+    expect(wrapper.get('[data-testid="dashboard-filter-type-0"]').attributes("data-testid"))
+      .toBe("dashboard-filter-type-0");
     const filterTargets = wrapper.getComponent('[data-testid="dashboard-filter-targets-0"]') as VueWrapper;
     filterTargets.vm.$emit("update:value", ["source", "target", 99]);
     await wrapper.vm.$nextTick();
