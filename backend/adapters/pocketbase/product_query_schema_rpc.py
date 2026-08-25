@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
+
 from backend.adapters.pocketbase.client import (
     QueryCursorOpenCommand,
     QueryCursorWindowResult,
@@ -281,6 +283,10 @@ class ProductQuerySchemaRpc:
             raise ValueError("PocketBase returned an invalid lookup path capability")
         schema_revision = _text(definition, "schemaRevision")
         lookup_revision = _lookup_revision(schema_revision, lookups)
+        lookup_filter_operators = await _resolve_lookup_filter_operators(
+            definition,
+            self._context.client.describe_table,
+        )
         return _result_object(
             {
                 "contract": "vibetable.schema-describe.v1",
@@ -290,7 +296,7 @@ class ProductQuerySchemaRpc:
                     "collection": table_id,
                     "primaryKey": "id",
                     "primaryDisplayFieldId": _primary_display_field_id(definition),
-                    "columns": _renderer_columns(definition),
+                    "columns": _renderer_columns(definition, lookup_filter_operators),
                     "normalizedRelations": [
                         _renderer_relation(item, definition)
                         for item in relations
@@ -416,7 +422,10 @@ def _primary_display_field_id(definition: JsonObject) -> str:
     return ""
 
 
-def _renderer_columns(definition: JsonObject) -> list[JsonObject]:
+def _renderer_columns(
+    definition: JsonObject,
+    lookup_filter_operators: Mapping[str, list[str]],
+) -> list[JsonObject]:
     table_id = _text(definition, "tableId")
     fields = definition.get("fields")
     if not isinstance(fields, list):
@@ -444,6 +453,7 @@ def _renderer_columns(definition: JsonObject) -> list[JsonObject]:
                 "scale": None,
                 "precision": None,
                 "attachmentPolicy": None,
+                "filterOperators": _product_query_filter_operators({"logicalType": "text"}),
             }
         )
     ]
@@ -471,6 +481,13 @@ def _renderer_columns(definition: JsonObject) -> list[JsonObject]:
         value = field.get("value")
         nullable = not (isinstance(value, dict) and value.get("required") is True)
         file_policy = field.get("file")
+        filter_operators = (
+            lookup_filter_operators.get(field_id)
+            if field.get("logicalType") == "lookup"
+            else _product_query_filter_operators(field)
+        )
+        if filter_operators is None:
+            raise ValueError("Lookup field omitted its query operator projection")
         columns.append(
             _result_object(
                 {
@@ -496,9 +513,7 @@ def _renderer_columns(definition: JsonObject) -> list[JsonObject]:
                         if kind == "attachment" and isinstance(file_policy, dict)
                         else None
                     ),
-                    "filterOperators": _optional_string_list(
-                        capability.get("filterOperators") if isinstance(capability, dict) else None
-                    ),
+                    "filterOperators": filter_operators,
                     "groupable": isinstance(capability, dict)
                     and capability.get("groupable") is True,
                     "summaryOperations": _optional_string_list(
@@ -510,6 +525,108 @@ def _renderer_columns(definition: JsonObject) -> list[JsonObject]:
             )
         )
     return columns
+
+
+async def _resolve_lookup_filter_operators(
+    definition: JsonObject,
+    describe_table: Callable[[str], Awaitable[JsonObject]],
+) -> dict[str, list[str]]:
+    fields = definition.get("fields")
+    if not isinstance(fields, list):
+        raise ValueError("PocketBase returned an invalid field catalog")
+    tables = {_text(definition, "tableId"): definition}
+    result: dict[str, list[str]] = {}
+
+    async def load_table(table_id: str) -> JsonObject:
+        cached = tables.get(table_id)
+        if cached is not None:
+            return cached
+        loaded = await describe_table(table_id)
+        tables[table_id] = loaded
+        return loaded
+
+    for field in fields:
+        if not isinstance(field, dict) or field.get("logicalType") != "lookup":
+            continue
+        lookup = field.get("lookup")
+        if not isinstance(lookup, dict):
+            raise ValueError("Lookup field omitted its lookup definition")
+        path = lookup.get("path")
+        if not isinstance(path, list) or not path:
+            raise ValueError("Lookup field omitted its relation path")
+
+        current = definition
+        result_many = False
+        for step in path:
+            if not isinstance(step, dict):
+                raise ValueError("Lookup field returned an invalid relation path")
+            relation_field = _schema_v2_field_by_id(
+                current,
+                _text(step, "relationFieldId"),
+            )
+            relation = relation_field.get("relation")
+            if not isinstance(relation, dict):
+                raise ValueError("Lookup path relation metadata is unavailable")
+            cardinality = _text(relation, "cardinality")
+            if cardinality not in {"one", "many"}:
+                raise ValueError("Lookup path relation cardinality is invalid")
+            result_many = result_many or cardinality == "many"
+            current = await load_table(_text(relation, "targetTableId"))
+
+        target = _schema_v2_field_by_id(current, _text(lookup, "targetFieldId"))
+        effective_target: JsonObject = target
+        if result_many or target.get("logicalType") == "lookup":
+            effective_target = {"logicalType": "json"}
+        result[_schema_v2_identity_text(field, "fieldId")] = _product_query_filter_operators(
+            effective_target
+        )
+
+    return result
+
+
+def _schema_v2_field_by_id(definition: JsonObject, field_id: str) -> JsonObject:
+    fields = definition.get("fields")
+    if not isinstance(fields, list):
+        raise ValueError("PocketBase returned an invalid field catalog")
+    for field in fields:
+        if isinstance(field, dict) and _schema_v2_identity_text(field, "fieldId") == field_id:
+            return field
+    raise ValueError("Lookup target field is unavailable")
+
+
+_TEXT_FILTER_OPERATORS = ("eq", "ne", "in", "contains", "starts_with", "ends_with")
+_ORDERED_FILTER_OPERATORS = ("eq", "ne", "in", "gt", "lt", "gte", "lte", "between")
+_SCALAR_FILTER_OPERATORS = ("eq", "ne", "in")
+_JSON_FILTER_OPERATORS = ("contains",)
+_NULL_FILTER_OPERATORS = ("is_null", "is_not_null")
+
+
+def _product_query_filter_operators(field: JsonObject) -> list[str]:
+    """Describe only operators accepted by the sidecar Product Query compiler."""
+    logical_type = _text(field, "logicalType")
+    if logical_type == "formula":
+        formula = field.get("formula")
+        if not isinstance(formula, dict):
+            raise ValueError("Formula field omitted its formula definition")
+        logical_type = _text(formula, "resultType")
+
+    value_operators: tuple[str, ...]
+    if logical_type in {"text", "editor", "time", "email", "url", "select"}:
+        value_operators = _TEXT_FILTER_OPERATORS
+    elif logical_type == "number":
+        value_operators = _ORDERED_FILTER_OPERATORS
+    elif logical_type == "bool":
+        value_operators = _SCALAR_FILTER_OPERATORS
+    elif logical_type in {"date", "dateTime", "autoDate"}:
+        value_operators = _ORDERED_FILTER_OPERATORS
+    elif logical_type == "relation":
+        value_operators = _SCALAR_FILTER_OPERATORS
+    elif logical_type in {"json", "geoPoint", "file", "multiSelect"}:
+        value_operators = _JSON_FILTER_OPERATORS
+    else:
+        raise ValueError("PocketBase returned an unsupported query field type")
+
+    return [*value_operators, *_NULL_FILTER_OPERATORS]
 
 
 def _precision_scale(field: JsonObject) -> tuple[int | None, int | None]:

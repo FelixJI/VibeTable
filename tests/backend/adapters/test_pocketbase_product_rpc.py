@@ -9,8 +9,12 @@ import pytest
 from pydantic import ValidationError
 
 from backend.adapters.pocketbase.client import PocketBaseClient
+from backend.adapters.pocketbase.product_query_schema_rpc import (
+    _product_query_filter_operators,
+)
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
+from backend.contracts.schema_v2 import FieldDefinitionV2
 
 
 def _formula_v2_field() -> dict[str, Any]:
@@ -36,6 +40,40 @@ def _schema_v2_field(
     }
     field["displayName"] = display_name
     field["logicalType"] = logical_type
+    storage_kind, display_kind = {
+        "text": ("pocketbase-text", "text"),
+        "editor": ("pocketbase-editor", "editor"),
+        "number": ("pocketbase-number", "number"),
+        "bool": ("pocketbase-bool", "bool"),
+        "date": ("pocketbase-date", "date"),
+        "dateTime": ("pocketbase-date", "dateTime"),
+        "time": ("pocketbase-text", "time"),
+        "autoDate": ("pocketbase-autodate", "readonly"),
+        "email": ("pocketbase-email", "email"),
+        "url": ("pocketbase-url", "url"),
+        "select": ("pocketbase-select", "select"),
+        "multiSelect": ("pocketbase-select", "select"),
+        "relation": ("pocketbase-relation", "relation"),
+        "file": ("pocketbase-file", "file"),
+        "geoPoint": ("pocketbase-geo-point", "geoPoint"),
+        "json": ("pocketbase-json", "json"),
+        "formula": ("computed", "readonly"),
+        "lookup": ("computed", "readonly"),
+    }[logical_type]
+    field["storage"]["kind"] = storage_kind
+    field["display"]["kind"] = display_kind
+    if logical_type in {"autoDate", "formula", "lookup"}:
+        field["value"]["presence"] = {"mode": "computed"}
+    elif logical_type in {"json"}:
+        field["value"]["presence"] = {"mode": "native"}
+    else:
+        field["value"]["presence"] = {"mode": "companion"}
+    if logical_type == "select":
+        field["constraints"]["selection"]["max"] = 1
+    elif logical_type == "json":
+        field["storage"]["options"]["maxSize"] = 1024 * 1024
+        field["display"]["mode"] = "code"
+        field["display"]["indent"] = 2
     if logical_type == "relation":
         field["relation"] = {
             "targetTableId": "customers",
@@ -255,6 +293,317 @@ async def test_schema_description_rejects_path_and_query_delimiters() -> None:
             )
 
     assert transport.requests == []
+
+
+@pytest.mark.parametrize("logical_type", ["editor", "email", "url"])
+def test_product_query_text_family_uses_portable_text_operators(logical_type: str) -> None:
+    assert _product_query_filter_operators({"logicalType": logical_type}) == [
+        "eq",
+        "ne",
+        "in",
+        "contains",
+        "starts_with",
+        "ends_with",
+        "is_null",
+        "is_not_null",
+    ]
+
+
+@pytest.mark.parametrize("logical_type", ["dateTime", "autoDate"])
+def test_product_query_date_family_uses_ordered_operators(logical_type: str) -> None:
+    assert _product_query_filter_operators({"logicalType": logical_type}) == [
+        "eq",
+        "ne",
+        "in",
+        "gt",
+        "lt",
+        "gte",
+        "lte",
+        "between",
+        "is_null",
+        "is_not_null",
+    ]
+
+
+def test_product_query_geo_point_uses_json_operators() -> None:
+    assert _product_query_filter_operators({"logicalType": "geoPoint"}) == [
+        "contains",
+        "is_null",
+        "is_not_null",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_schema_description_adapts_filter_operators_to_query_execution_types() -> None:
+    formula = _formula_v2_field()
+    formula["identity"] = {
+        "fieldId": "fld_formula1",
+        "physicalName": "f_formula1",
+        "providerFieldId": "pb_formula1",
+    }
+    formula["displayName"] = "Score"
+    lookup = _schema_v2_field(
+        field_id="fld_lookup01",
+        physical_name="f_lookup01",
+        display_name="Lookup",
+        logical_type="lookup",
+    )
+    lookup["value"]["presence"] = {"mode": "computed"}
+    lookup["storage"]["kind"] = "computed"
+    lookup["display"]["kind"] = "readonly"
+    lookup["lookup"] = {
+        "path": [{"relationFieldId": "fld_customer"}],
+        "targetFieldId": "fld_metric01",
+    }
+    many_relation = _schema_v2_field(
+        field_id="fld_customers",
+        physical_name="f_customers",
+        display_name="Customers",
+        logical_type="relation",
+    )
+    many_relation["relation"]["cardinality"] = "many"
+    many_lookup = _schema_v2_field(
+        field_id="fld_manylook",
+        physical_name="f_manylook",
+        display_name="Many lookup",
+        logical_type="lookup",
+    )
+    many_lookup["value"]["presence"] = {"mode": "computed"}
+    many_lookup["storage"]["kind"] = "computed"
+    many_lookup["display"]["kind"] = "readonly"
+    many_lookup["lookup"] = {
+        "path": [{"relationFieldId": "fld_customers"}],
+        "targetFieldId": "fld_metric01",
+    }
+    select = _schema_v2_field(
+        field_id="fld_status01",
+        physical_name="f_status01",
+        display_name="Status",
+        logical_type="select",
+    )
+    select["select"] = {
+        "options": [
+            {
+                "optionId": "opt_active01",
+                "label": "Active",
+                "color": "green",
+                "order": 0,
+                "state": "active",
+            }
+        ]
+    }
+    multi_select = _schema_v2_field(
+        field_id="fld_tags0001",
+        physical_name="f_tags0001",
+        display_name="Tags",
+        logical_type="multiSelect",
+    )
+    multi_select["select"] = select["select"]
+    json_field = _schema_v2_field(
+        field_id="fld_metadata",
+        physical_name="f_metadata",
+        display_name="Metadata",
+        logical_type="json",
+    )
+    json_field["json"] = {
+        "rootType": "object",
+        "maxSize": 65536,
+        "schema": {},
+    }
+    file_field = _schema_v2_field(
+        field_id="fld_file0001",
+        physical_name="f_file0001",
+        display_name="Files",
+        logical_type="file",
+    )
+    file_field["file"] = {
+        "maxFiles": 1,
+        "maxBytesPerFile": 1048576,
+        "allowedMimeTypes": [],
+        "thumbs": [],
+        "protected": False,
+    }
+    definition = _schema_v2_snapshot(
+        [
+            _schema_v2_field(
+                field_id="fld_region01",
+                physical_name="f_region01",
+                display_name="Region",
+                logical_type="text",
+            ),
+            _schema_v2_field(
+                field_id="fld_amount01",
+                physical_name="f_amount01",
+                display_name="Amount",
+                logical_type="number",
+            ),
+            _schema_v2_field(
+                field_id="fld_due_date",
+                physical_name="f_due_date",
+                display_name="Due date",
+                logical_type="date",
+            ),
+            _schema_v2_field(
+                field_id="fld_time0001",
+                physical_name="f_time0001",
+                display_name="Time",
+                logical_type="time",
+            ),
+            select,
+            multi_select,
+            _schema_v2_field(
+                field_id="fld_active01",
+                physical_name="f_active01",
+                display_name="Active",
+                logical_type="bool",
+            ),
+            json_field,
+            file_field,
+            _schema_v2_field(
+                field_id="fld_customer",
+                physical_name="f_customer",
+                display_name="Customer",
+                logical_type="relation",
+            ),
+            many_relation,
+            lookup,
+            many_lookup,
+            formula,
+        ]
+    )
+    target_definition = _schema_v2_snapshot(
+        [
+            _schema_v2_field(
+                field_id="fld_metric01",
+                physical_name="f_metric01",
+                display_name="Metric",
+                logical_type="number",
+            )
+        ],
+        table_id="customers",
+    )
+    for field in [*definition["fields"], *target_definition["fields"]]:
+        FieldDefinitionV2.model_validate(field)
+    capability_path = Path(__file__).parents[3] / "contracts/schema-v2/fixtures/capability.json"
+    capability_template = json.loads(capability_path.read_text(encoding="utf-8"))
+    definition["capabilities"] = []
+    for logical_type in (
+        "text",
+        "number",
+        "date",
+        "time",
+        "select",
+        "multiSelect",
+        "bool",
+        "json",
+        "file",
+        "relation",
+        "lookup",
+        "formula",
+    ):
+        capability = dict(capability_template)
+        capability["logicalType"] = logical_type
+        capability["filterOperators"] = ["eq", "ne", "isEmpty", "isNotEmpty"]
+        definition["capabilities"].append(capability)
+    service, _ = _service(
+        [
+            definition,
+            {
+                "tableId": "orders",
+                "schemaRevision": "schema_4",
+                "lookupMaxDepth": 8,
+                "relations": [],
+                "lookups": [
+                    {
+                        "lookupId": "orders.fld_lookup01",
+                        "tableId": "orders",
+                        "fieldId": "fld_lookup01",
+                        "physicalName": "f_lookup01",
+                        "displayName": "Lookup",
+                        "relationFieldId": "fld_customer",
+                        "path": [{"relationId": "orders.fld_customer"}],
+                        "targetFieldId": "fld_metric01",
+                        "resultCardinality": "one",
+                        "outputStorage": "decimal",
+                        "revision": 1,
+                    },
+                    {
+                        "lookupId": "orders.fld_manylook",
+                        "tableId": "orders",
+                        "fieldId": "fld_manylook",
+                        "physicalName": "f_manylook",
+                        "displayName": "Many lookup",
+                        "relationFieldId": "fld_customers",
+                        "path": [{"relationId": "orders.fld_customers"}],
+                        "targetFieldId": "fld_metric01",
+                        "resultCardinality": "many",
+                        "outputStorage": "decimal",
+                        "revision": 1,
+                    },
+                ],
+            },
+            target_definition,
+        ]
+    )
+
+    described = await service.invoke(
+        "schema.describe",
+        ProductParams.model_validate(
+            {
+                "collection": "orders",
+                "requestGeneration": 1,
+                "accepts": [
+                    "vibetable.relation-capabilities.v1",
+                    "vibetable.lookup-query.v1",
+                ],
+            }
+        ),
+    )
+
+    operators = {
+        column["fieldId"]: column["filterOperators"] for column in described["schema"]["columns"]
+    }
+    text_operators = [
+        "eq",
+        "ne",
+        "in",
+        "contains",
+        "starts_with",
+        "ends_with",
+        "is_null",
+        "is_not_null",
+    ]
+    ordered_operators = [
+        "eq",
+        "ne",
+        "in",
+        "gt",
+        "lt",
+        "gte",
+        "lte",
+        "between",
+        "is_null",
+        "is_not_null",
+    ]
+    scalar_operators = ["eq", "ne", "in", "is_null", "is_not_null"]
+    json_operators = ["contains", "is_null", "is_not_null"]
+    assert operators == {
+        "id": text_operators,
+        "fld_region01": text_operators,
+        "fld_amount01": ordered_operators,
+        "fld_due_date": ordered_operators,
+        "fld_time0001": text_operators,
+        "fld_status01": text_operators,
+        "fld_tags0001": json_operators,
+        "fld_active01": scalar_operators,
+        "fld_metadata": json_operators,
+        "fld_file0001": json_operators,
+        "fld_customer": scalar_operators,
+        "fld_customers": scalar_operators,
+        "fld_lookup01": ordered_operators,
+        "fld_manylook": json_operators,
+        "fld_formula1": ordered_operators,
+    }
 
 
 @pytest.mark.asyncio
