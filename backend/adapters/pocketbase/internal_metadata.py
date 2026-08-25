@@ -15,6 +15,7 @@ from backend.application.revisioned_metadata_port import (
     DashboardRevisionConflictError,
     JsonObject,
     JsonValue,
+    raise_metadata_transport_error,
 )
 from backend.contracts.presets_versions_dashboards import (
     DashboardManagedConfig,
@@ -113,15 +114,18 @@ class PocketBaseInternalMetadataPort:
             key: value for key, value in (current or {}).items() if key not in {"id", "revision"}
         }
         payload.update(_json_object(values, "metadata values"))
-        response = await self._client.upsert_internal_metadata(
-            namespace,
-            {
-                "logicalId": logical_id,
-                "payload": payload,
-                "expectedRevision": revision or "",
-                "idempotencyKey": idempotency_key,
-            },
-        )
+        try:
+            response = await self._client.upsert_internal_metadata(
+                namespace,
+                {
+                    "logicalId": logical_id,
+                    "payload": payload,
+                    "expectedRevision": revision or "",
+                    "idempotencyKey": idempotency_key,
+                },
+            )
+        except Exception as error:
+            raise_metadata_transport_error(error)
         item = response.get("item")
         if not isinstance(item, dict):
             raise ValueError("internal metadata mutation returned an invalid item")

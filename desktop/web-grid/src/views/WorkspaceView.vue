@@ -932,6 +932,7 @@ useKeyboard({
               :active-id="presetViews.activePresetId"
               :loading="presetViews.loading"
               :dirty="presetViews.dirty"
+              :error="presetViews.error"
               :date-fields="dateFieldOptions"
               :title-fields="titleFieldOptions"
               :group-fields="groupFieldOptions"
@@ -943,6 +944,7 @@ useKeyboard({
               @rename="(view, name) => presetViewController.dispatch({ type: 'view.rename', view, name })"
               @delete="presetViewController.dispatch({ type: 'view.delete', view: $event })"
               @set-default="presetViewController.dispatch({ type: 'view.setDefault', view: $event })"
+              @reload="presetViewController.dispatch({ type: 'view.reload' })"
             />
             <section
               v-if="pendingRelationCreation && workspace.currentTable === pendingRelationCreation.targetCollection"

@@ -149,7 +149,12 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.ReconcileAsync(p, t)),
         new("preset.list", p => Safe(p) && HasString(p, "collection"),
             (g, p, t) => g.ListPresetsAsync(p, t)),
-        new("preset.save", p => Safe(p) && HasStrings(p, "collection", "name", "operationId") && HasObject(p, "view"),
+        new("preset.save", p => Safe(p)
+            && HasExactProperties(
+                p, "collection", "name", "view", "presetId", "expectedRevision", "operationId")
+            && HasStrings(p, "collection", "name", "operationId")
+            && HasObject(p, "view")
+            && HasPairedNullableStrings(p, "presetId", "expectedRevision"),
             (g, p, t) => g.SavePresetAsync(p, t),
             MutatesWorkspace: true),
         new("preset.delete", p => Safe(p) && HasStrings(p, "presetId", "expectedRevision", "operationId"),
@@ -248,6 +253,19 @@ internal static class ProductDataRpcRegistry
     private static bool HasNullableString(JsonElement payload, string name)
         => payload.TryGetProperty(name, out var value)
             && value.ValueKind is JsonValueKind.String or JsonValueKind.Null;
+    private static bool HasPairedNullableStrings(JsonElement payload, string left, string right)
+    {
+        if (!payload.TryGetProperty(left, out var leftValue)
+            || !payload.TryGetProperty(right, out var rightValue))
+        {
+            return false;
+        }
+        if (leftValue.ValueKind == JsonValueKind.Null || rightValue.ValueKind == JsonValueKind.Null)
+        {
+            return leftValue.ValueKind == JsonValueKind.Null && rightValue.ValueKind == JsonValueKind.Null;
+        }
+        return HasString(payload, left) && HasString(payload, right);
+    }
     private static bool HasOnlyProperties(JsonElement payload, params string[] names)
     {
         var allowed = new HashSet<string>(names, StringComparer.Ordinal);

@@ -355,26 +355,39 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_DropsStaleResponse_WhenGenerationAdvances()
+    public void RequestQuery_DropsStaleResponse_WhenGenerationAdvances()
     {
         var gateway = new FakeTableRpcGateway();
-        gateway.DatabaseOpenResults["db"] =
-            new DatabaseOpenResult(
-                new[] { "contracts" },
-                Array.Empty<string>(),
-                TestDisplayNames.For("contracts"));
-        gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 3);
-        TableNotification? captured = null;
-        var coordinator = NewCoordinator(gateway, n => captured = n);
+        var firstResponse = new TaskCompletionSource<TablePage>();
+        int requestCount = 0;
+        gateway.CursorOpenOverride = (_, _, _) =>
+            ++requestCount == 1
+                ? firstResponse.Task
+                : Task.FromResult(SamplePage("contracts", 2));
+        var notifications = new List<TableNotification>();
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(
+            gateway,
+            notifications.Add,
+            timeProvider: time);
 
         coordinator.RequestQuery("contracts", Query());
-        // Immediately supersede before the debounce fires.
-        coordinator.RequestQuery("contracts", Query());
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 150);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
-        // The second request's page is emitted (not the first). Either way,
-        // no exception and exactly one call reached the gateway after debounce.
-        Assert.IsTrue(gateway.QueryWindowCalls.Count >= 1);
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
+        Assert.AreEqual(0, notifications.Count);
+
+        coordinator.RequestQuery("contracts", Query());
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+
+        Assert.AreEqual(2, gateway.QueryWindowCalls.Count);
+        Assert.AreEqual(1, notifications.Count);
+        Assert.AreEqual(2, notifications[0].Page?.TotalRows);
+
+        firstResponse.SetResult(SamplePage("contracts", 1));
+
+        Assert.AreEqual(1, notifications.Count,
+            "a response from the superseded generation must not be emitted");
     }
 
     [TestMethod]

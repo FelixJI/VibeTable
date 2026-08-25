@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Never, Protocol, TypeAlias, runtime_checkable
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -120,8 +120,7 @@ class RevisionedMetadataTransportAdapter:
                 idempotency_key=command.idempotency_key,
             )
         except Exception as error:
-            _raise_typed_transport_error(error)
-            raise
+            raise_metadata_transport_error(error)
         item = receipt.get("item")
         if not isinstance(item, dict):
             raise ValueError("metadata mutation returned an invalid item")
@@ -136,8 +135,7 @@ class RevisionedMetadataTransportAdapter:
                 idempotency_key=command.idempotency_key,
             )
         except Exception as error:
-            _raise_typed_transport_error(error)
-            raise
+            raise_metadata_transport_error(error)
 
 
 def json_object(value: Mapping[str, object]) -> JsonObject:
@@ -176,9 +174,12 @@ def _json_value(value: object) -> JsonValue:
     raise ValueError("metadata value is not JSON-compatible")
 
 
-def _raise_typed_transport_error(error: Exception) -> None:
+def raise_metadata_transport_error(error: Exception) -> Never:
+    """Raise the application error represented by one metadata transport failure."""
+
     if isinstance(error, _CodedTransportError) and error.code == "metadata.revision_conflict":
         raise MetadataConflictError() from error
+    raise error
 
 
 __all__ = [
@@ -194,4 +195,5 @@ __all__ = [
     "RevisionedMetadataPort",
     "RevisionedMetadataTransportAdapter",
     "json_object",
+    "raise_metadata_transport_error",
 ]

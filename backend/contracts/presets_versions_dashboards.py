@@ -125,8 +125,15 @@ class SavePresetParams(CamelModel):
     collection: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=256)
     view: PresetView
-    preset_id: str | None = Field(default=None, max_length=128)
+    preset_id: str | None = Field(min_length=1, max_length=128)
+    expected_revision: str | None = Field(min_length=1, max_length=128)
     operation_id: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_revision_bound_target(self) -> Self:
+        if (self.preset_id is None) != (self.expected_revision is None):
+            raise ValueError("presetId and expectedRevision must both be null or non-null")
+        return self
 
 
 class DeletePresetParams(CamelModel):

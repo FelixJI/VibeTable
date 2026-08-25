@@ -62,7 +62,10 @@ describe("presetVersionService", () => {
       layout: "table",
     } as const;
 
-    await service.savePreset("orders", "My view", view);
+    await service.savePreset("orders", "My view", view, {
+      id: "p1",
+      revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
     await service.deletePreset("p1", "rev-p1");
     await service.createVersion("orders", "row-1", "draft", "Draft");
     await service.saveVersion("orders", "row-1", "v1");
@@ -84,6 +87,10 @@ describe("presetVersionService", () => {
     expect(requests.find(({ type }) => type === "preset.delete")?.payload.expectedRevision)
       .toBe("rev-p1");
     expect(requests.find(({ type }) => type === "preset.save")?.payload.view).toEqual(view);
+    expect(requests.find(({ type }) => type === "preset.save")?.payload).toMatchObject({
+      presetId: "p1",
+      expectedRevision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
     expect(requests.find(({ type }) => type === "version.delete")?.payload.expectedRevision)
       .toBe("rev-v1");
   });
@@ -109,5 +116,35 @@ describe("presetVersionService", () => {
     expect(requests).toEqual([
       { type: "preset.list", payload: { collection: "orders" } },
     ]);
+  });
+
+  it("rejects the product error envelope returned for a stale preset save", async () => {
+    setHostBridgeForTesting({
+      request: vi.fn(async () => ({
+        error: {
+          code: "preset_edit_conflict",
+          path: "expectedRevision",
+          message: "Preset changed elsewhere.",
+          details: null,
+          retryable: false,
+        },
+      })),
+    } as unknown as HostBridge);
+    const service = usePresetVersionService();
+
+    await expect(service.savePreset("orders", "My view", {
+      filters: [],
+      sorts: [],
+      search: "",
+      visibleFields: [],
+      layout: "table",
+    }, {
+      id: "p1",
+      revision: "revision-stale",
+    })).rejects.toMatchObject({
+      code: "preset_edit_conflict",
+      path: "expectedRevision",
+      message: "Preset changed elsewhere.",
+    });
   });
 });

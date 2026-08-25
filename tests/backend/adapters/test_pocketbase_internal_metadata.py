@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMetadataPort
+from backend.application.revisioned_metadata_port import MetadataConflictError
 from backend.contracts.presets_versions_dashboards import SaveDashboardDraftParams
 
 
@@ -66,6 +67,10 @@ class _ProductClient:
     async def commit_dashboard_metadata(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.dashboard_commits.append(dict(request))
         return {"status": "applied"}
+
+
+class _CodedMetadataError(RuntimeError):
+    code = "metadata.revision_conflict"
 
 
 def test_internal_metadata_port_accepts_only_the_product_metadata_client() -> None:
@@ -185,6 +190,27 @@ async def test_internal_metadata_partial_upsert_preserves_existing_payload() -> 
     assert request["payload"]["key"] == "holiday"
     assert request["payload"]["value"] == {"kind": "workday"}
     assert request["expectedRevision"] == "sha256:" + "1" * 64
+
+
+@pytest.mark.asyncio
+async def test_internal_metadata_translates_stale_upsert_to_the_application_conflict() -> None:
+    class _ConflictClient(_ProductClient):
+        async def upsert_internal_metadata(
+            self, namespace: str, request: Mapping[str, Any]
+        ) -> dict[str, Any]:
+            del namespace, request
+            raise _CodedMetadataError("stale")
+
+    port = PocketBaseInternalMetadataPort(client=_ConflictClient())
+
+    with pytest.raises(MetadataConflictError):
+        await port.upsert_metadata(
+            "presets",
+            record_id="preset-1",
+            values={"scope": "orders"},
+            expected_revision="sha256:" + "a" * 64,
+            idempotency_key="preset:save:operation-1",
+        )
 
 
 @pytest.mark.asyncio

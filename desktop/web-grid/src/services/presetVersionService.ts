@@ -8,6 +8,9 @@ import type {
 } from "@/contracts";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { useHostBridge } from "./bridgeContext";
+import { unwrapProductRpcResult } from "./productRpcResult";
+
+export type PresetSaveTarget = Pick<PresetEntry, "id" | "revision">;
 
 function operationId(): string {
   return crypto.randomUUID();
@@ -18,31 +21,40 @@ export function usePresetVersionService() {
   const store = usePresetVersionStore();
 
   async function listPresets(collection: string): Promise<PresetsResult> {
-    return await bridge.request("preset.list", { collection }) as PresetsResult;
+    return unwrapProductRpcResult<PresetsResult>(
+      await bridge.request("preset.list", { collection }),
+    );
   }
 
   async function savePreset(
     collection: string,
     name: string,
     view: PresetView,
-    presetId?: string | null,
+    target: PresetSaveTarget | null,
   ): Promise<PresetEntry> {
-    return await bridge.request("preset.save", {
-      collection, name, view, presetId, operationId: operationId(),
-    }) as PresetEntry;
+    return unwrapProductRpcResult<PresetEntry>(await bridge.request("preset.save", {
+      collection,
+      name,
+      view,
+      presetId: target?.id ?? null,
+      expectedRevision: target?.revision ?? null,
+      operationId: operationId(),
+    }));
   }
 
   async function deletePreset(presetId: string, expectedRevision: string): Promise<void> {
-    await bridge.request("preset.delete", {
+    unwrapProductRpcResult(await bridge.request("preset.delete", {
       presetId, expectedRevision, operationId: operationId(),
-    });
+    }));
   }
 
   async function listVersions(collection: string, itemId: string): Promise<void> {
     store.begin();
     try {
       store.receiveVersions(
-        await bridge.request("version.list", { collection, itemId }) as VersionsResult,
+        unwrapProductRpcResult<VersionsResult>(
+          await bridge.request("version.list", { collection, itemId }),
+        ),
       );
     } catch (error) {
       store.fail(error);
@@ -57,9 +69,9 @@ export function usePresetVersionService() {
   ): Promise<ContentVersionEntry> {
     store.begin();
     try {
-      const created = await bridge.request("version.create", {
+      const created = unwrapProductRpcResult<ContentVersionEntry>(await bridge.request("version.create", {
         collection, itemId, key, name, operationId: operationId(),
-      }) as ContentVersionEntry;
+      }));
       store.upsertVersion(created);
       return created;
     } catch (error) {
@@ -75,9 +87,9 @@ export function usePresetVersionService() {
   ): Promise<void> {
     store.begin();
     try {
-      await bridge.request("version.save", {
+      unwrapProductRpcResult(await bridge.request("version.save", {
         collection, itemId, versionId, values: {}, operationId: operationId(),
-      });
+      }));
       await listVersions(collection, itemId);
     } catch (error) {
       store.fail(error);
@@ -92,10 +104,10 @@ export function usePresetVersionService() {
   ): Promise<VersionCompareResult> {
     store.begin();
     try {
-      const result = await bridge.request(
+      const result = unwrapProductRpcResult<VersionCompareResult>(await bridge.request(
         "version.compare",
         { collection, itemId, versionId },
-      ) as VersionCompareResult;
+      ));
       store.receiveComparison(result);
       return result;
     } catch (error) {
@@ -112,9 +124,9 @@ export function usePresetVersionService() {
   ): Promise<void> {
     store.begin();
     try {
-      await bridge.request("version.promote", {
+      unwrapProductRpcResult(await bridge.request("version.promote", {
         collection, itemId, versionId, mainHash, operationId: operationId(),
-      });
+      }));
       await listVersions(collection, itemId);
     } catch (error) {
       store.fail(error);
@@ -130,9 +142,9 @@ export function usePresetVersionService() {
   ): Promise<void> {
     store.begin();
     try {
-      await bridge.request("version.delete", {
+      unwrapProductRpcResult(await bridge.request("version.delete", {
         collection, itemId, versionId, expectedRevision, operationId: operationId(),
-      });
+      }));
       store.removeVersion(versionId);
     } catch (error) {
       store.fail(error);
