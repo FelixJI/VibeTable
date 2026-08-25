@@ -876,6 +876,7 @@ export const messages: Record<string, string> = {
   "dashboard.chart.keyboardSelect": "使用键盘选择图表数据点",
   "dashboard.filters.title": "全局筛选",
   "dashboard.filters.hint": "筛选值仅在当前会话生效，不写入仪表盘。",
+  "dashboard.filters.incompatible": "所选字段不支持该筛选类型，请重新选择字段。",
   "dashboard.filters.new": "新筛选器",
   "dashboard.filters.label": "显示名称",
   "dashboard.filters.key": "唯一键",

@@ -3,6 +3,8 @@ import {
   BindingRuntime,
   enforceManifestMinimum,
   getDashboardTemplate,
+  resolveDashboardFilterField,
+  runtimeDashboardFilterOperator,
   type Dashboard,
   type DashboardPanel,
   type DashboardTemplateId,
@@ -622,21 +624,17 @@ function withRuntimeFilters(
 ): DashboardPanelQueryPayload {
   const filters = [...(query.filters ?? [])];
   for (const item of config.globalFilters ?? []) {
-    if (item.targetPanels.length > 0 && !item.targetPanels.includes(panelId)) continue;
     const value = Object.prototype.hasOwnProperty.call(values, item.key)
       ? values[item.key]
       : item.defaultValue;
-    const field = item.fieldBindings?.[panelId]
-      ?? (item.allowedFields.length === 1 ? item.allowedFields[0] : undefined);
+    const field = resolveDashboardFilterField(item, panelId);
     if (!field || value === null || value === undefined || value === "") continue;
     const normalizedValue = item.type === "date-range" && Array.isArray(value)
       ? value.map((part) => typeof part === "number" ? new Date(part).toISOString() : part)
       : value;
     filters.push({
       field,
-      operator: item.type === "date-range" || item.type === "number-range"
-        ? "between"
-        : Array.isArray(normalizedValue) ? "in" : "eq",
+      operator: runtimeDashboardFilterOperator(item.type, normalizedValue),
       value: normalizedValue,
     });
   }

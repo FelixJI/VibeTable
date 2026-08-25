@@ -2,6 +2,7 @@ import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { defineComponent } from "vue";
 import { describe, expect, it, vi } from "vitest";
 import type { BindingCollectionSchema, DashboardPanel } from "@/dashboard";
+import type { DashboardManagedConfig } from "@/stores/dashboardStore";
 import DashboardSettingsDrawer from "./DashboardSettingsDrawer.vue";
 
 const schema: BindingCollectionSchema = {
@@ -81,12 +82,7 @@ describe("DashboardSettingsDrawer", () => {
 
   function mountDrawer(options: {
     panels?: DashboardPanel[];
-    config?: {
-      configVersion: 1;
-      refreshInterval: 0;
-      globalFilters: never[];
-      interactions: never[];
-    };
+    config?: DashboardManagedConfig;
     loadSchema?: (collectionId: string, signal: AbortSignal) => Promise<BindingCollectionSchema>;
   } = {}): VueWrapper {
     return mount(DashboardSettingsDrawer, {
@@ -168,6 +164,205 @@ describe("DashboardSettingsDrawer", () => {
         allowedFields: ["status"],
       }],
       interactions: [{ sourcePanelId: "missing", sourceField: null, targetField: "" }],
+    });
+  });
+
+  it("binds filter types only to fields that support their runtime operator", async () => {
+    const compatibilitySchema: BindingCollectionSchema = {
+      collectionId: "orders",
+      revision: "schema_compatibility",
+      fields: [
+        { ...schema.fields[0]!, ref: "note", label: "Note", filterOperators: ["eq"] },
+        { ...schema.fields[0]!, ref: "status", label: "Status", filterOperators: ["eq", "in"] },
+        { ...schema.fields[0]!, ref: "amount", label: "Amount", filterOperators: ["eq", "between"] },
+      ],
+    };
+    const incompatibleTargetSchema: BindingCollectionSchema = {
+      collectionId: "notes",
+      revision: "schema_incompatible_target",
+      fields: [{ ...schema.fields[0]!, ref: "note", label: "Note", filterOperators: ["eq"] }],
+    };
+    const panels = [
+      panel("target", "Target", "list", {
+        kind: "records", collection: "orders", fields: ["note", "status", "amount"],
+      }),
+      panel("notes", "Notes", "list", {
+        kind: "records", collection: "notes", fields: ["note"],
+      }),
+    ];
+    const wrapper = mountDrawer({
+      panels,
+      loadSchema: vi.fn(async (collectionId) =>
+        collectionId === "orders" ? compatibilitySchema : incompatibleTargetSchema),
+    });
+    await wrapper.setProps({ show: true });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="dashboard-add-filter"]').trigger("click");
+    const binding = wrapper.getComponent('[data-testid="dashboard-filter-binding-0-target"]') as VueWrapper;
+    expect((binding.props() as { options: unknown }).options)
+      .toEqual([{ value: "status", label: "Status" }]);
+    const targets = wrapper.getComponent('[data-testid="dashboard-filter-targets-0"]') as VueWrapper;
+    expect((targets.props() as { options: unknown }).options)
+      .toEqual([{ value: "target", label: "Target" }]);
+    targets.vm.$emit("update:value", ["target", "notes"]);
+    await wrapper.vm.$nextTick();
+    await wrapper.get('[data-testid="dashboard-settings-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)?.[2]).toMatchObject({
+      globalFilters: [{
+        type: "enum", targetPanels: ["target"], fieldBindings: { target: "status" },
+      }],
+    });
+
+    const type = wrapper.getComponent('[data-testid="dashboard-filter-type-0"]') as VueWrapper;
+    type.vm.$emit("update:value", "number-range");
+    await wrapper.vm.$nextTick();
+    expect((binding.props() as { options: unknown }).options)
+      .toEqual([{ value: "amount", label: "Amount" }]);
+    await wrapper.get('[data-testid="dashboard-settings-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)?.[2]).toMatchObject({
+      globalFilters: [{ type: "number-range", fieldBindings: { target: "amount" } }],
+    });
+  });
+
+  it("fails closed for persisted bindings that do not support the filter operator", async () => {
+    const panels = [panel("target", "Target", "list", {
+      kind: "records", collection: "orders", fields: ["region", "status"],
+    })];
+    const config: DashboardManagedConfig = {
+      configVersion: 1,
+      refreshInterval: 0,
+      globalFilters: [{
+        key: "region", label: "Region", type: "enum", allowedFields: ["region"],
+        targetPanels: ["target"], fieldBindings: { target: "region" },
+      }],
+      interactions: [],
+    };
+    const incompatibleSchema: BindingCollectionSchema = {
+      ...schema,
+      fields: [
+        { ...schema.fields[0]!, ref: "region", label: "Region", filterOperators: ["eq"] },
+        { ...schema.fields[0]!, ref: "status", label: "Status", filterOperators: ["eq", "in"] },
+      ],
+    };
+    const wrapper = mountDrawer({
+      panels,
+      config,
+      loadSchema: vi.fn(async () => incompatibleSchema),
+    });
+    await wrapper.setProps({ show: true });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("所选字段不支持该筛选类型");
+    expect(wrapper.get('[data-testid="dashboard-settings-submit"]').attributes("disabled"))
+      .toBeDefined();
+    const binding = wrapper.getComponent('[data-testid="dashboard-filter-binding-0-target"]') as VueWrapper;
+    binding.vm.$emit("update:value", "status");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).not.toContain("所选字段不支持该筛选类型");
+    expect(wrapper.get('[data-testid="dashboard-settings-submit"]').attributes("disabled"))
+      .toBeUndefined();
+  });
+
+  it("accepts and normalizes a compatible legacy allowed-field fallback", async () => {
+    const panels = [panel("target", "Target", "list", {
+      kind: "records", collection: "orders", fields: ["status"],
+    })];
+    const config: DashboardManagedConfig = {
+      configVersion: 1,
+      refreshInterval: 0,
+      globalFilters: [{
+        key: "status", label: "Status", type: "enum", allowedFields: ["status"],
+        targetPanels: ["target"], fieldBindings: {},
+      }],
+      interactions: [],
+    };
+    const wrapper = mountDrawer({ panels, config });
+    await wrapper.setProps({ show: true });
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain("所选字段不支持该筛选类型");
+    expect(wrapper.get('[data-testid="dashboard-settings-submit"]').attributes("disabled"))
+      .toBeUndefined();
+    await wrapper.get('[data-testid="dashboard-settings-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)?.[2]).toMatchObject({
+      globalFilters: [{
+        targetPanels: ["target"], fieldBindings: { target: "status" }, allowedFields: ["status"],
+      }],
+    });
+  });
+
+  it("preserves a compatible all-panel field fallback when the filter type changes", async () => {
+    const panels = [panel("target", "Target", "list", {
+      kind: "records", collection: "orders", fields: ["status"],
+    })];
+    const config: DashboardManagedConfig = {
+      configVersion: 1,
+      refreshInterval: 0,
+      globalFilters: [{
+        key: "status", label: "Status", type: "enum", allowedFields: ["status"],
+        targetPanels: [], fieldBindings: {},
+      }],
+      interactions: [],
+    };
+    const wrapper = mountDrawer({ panels, config });
+    await wrapper.setProps({ show: true });
+    await flushPromises();
+
+    const type = wrapper.getComponent('[data-testid="dashboard-filter-type-0"]') as VueWrapper;
+    type.vm.$emit("update:value", "user");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).not.toContain("所选字段不支持该筛选类型");
+    expect(wrapper.get('[data-testid="dashboard-settings-submit"]').attributes("disabled"))
+      .toBeUndefined();
+    await wrapper.get('[data-testid="dashboard-settings-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)?.[2]).toMatchObject({
+      globalFilters: [{ type: "user", targetPanels: [], allowedFields: ["status"] }],
+    });
+  });
+
+  it("fails closed for an incompatible legacy all-panel field fallback", async () => {
+    const panels = [panel("target", "Target", "list", {
+      kind: "records", collection: "orders", fields: ["region", "status"],
+    })];
+    const config: DashboardManagedConfig = {
+      configVersion: 1,
+      refreshInterval: 0,
+      globalFilters: [{
+        key: "region", label: "Region", type: "enum", allowedFields: ["region"],
+        targetPanels: [], fieldBindings: {},
+      }],
+      interactions: [],
+    };
+    const incompatibleSchema: BindingCollectionSchema = {
+      ...schema,
+      fields: [
+        { ...schema.fields[0]!, ref: "region", label: "Region", filterOperators: ["eq"] },
+        { ...schema.fields[0]!, ref: "status", label: "Status", filterOperators: ["eq", "in"] },
+      ],
+    };
+    const wrapper = mountDrawer({
+      panels,
+      config,
+      loadSchema: vi.fn(async () => incompatibleSchema),
+    });
+    await wrapper.setProps({ show: true });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("所选字段不支持该筛选类型");
+    expect(wrapper.get('[data-testid="dashboard-settings-submit"]').attributes("disabled"))
+      .toBeDefined();
+    const targets = wrapper.getComponent('[data-testid="dashboard-filter-targets-0"]') as VueWrapper;
+    targets.vm.$emit("update:value", ["target"]);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).not.toContain("所选字段不支持该筛选类型");
+    expect(wrapper.get('[data-testid="dashboard-settings-submit"]').attributes("disabled"))
+      .toBeUndefined();
+    await wrapper.get('[data-testid="dashboard-settings-submit"]').trigger("click");
+    expect(wrapper.emitted("submit")?.at(-1)?.[2]).toMatchObject({
+      globalFilters: [{
+        targetPanels: ["target"], fieldBindings: { target: "status" }, allowedFields: ["status"],
+      }],
     });
   });
 

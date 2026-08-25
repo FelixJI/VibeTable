@@ -876,6 +876,7 @@ export const messages: Record<string, string> = {
   "dashboard.chart.keyboardSelect": "Select a chart data point with the keyboard",
   "dashboard.filters.title": "Global filters",
   "dashboard.filters.hint": "Filter values only live in this session and are not saved.",
+  "dashboard.filters.incompatible": "The selected field does not support this filter type. Choose another field.",
   "dashboard.filters.new": "New filter",
   "dashboard.filters.label": "Display label",
   "dashboard.filters.key": "Unique key",
