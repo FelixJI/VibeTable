@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：18
-- 唯一能力：30
-- 场景—能力关联：39
+- 场景：19
+- 唯一能力：32
+- 场景—能力关联：41
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -28,6 +28,7 @@
 | `file-history.diff` | <code>14-document-diff</code>（真实文件历史版本比较） |
 | `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
+| `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `history.restore` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
@@ -35,6 +36,7 @@
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
 | `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
 | `plugin.mutation` | <code>11-plugin-mutation</code>（插件 mutation plan 与越权拒绝） |
+| `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `relation.fanout` | <code>06-relation-fanout</code>（关系 cascade 方向与影响预览） |
@@ -69,3 +71,4 @@
 | <code>16-dashboard-lifecycle</code> | Dashboard 创建、保存与刷新 | 通过真实 Dashboard UI 创建空白 Dashboard、保存、刷新列表并重新选择，验证持久化后的 Dashboard 仍可打开。 | `dashboard.lifecycle`、`release.smoke` |
 | <code>17-interface-lifecycle</code> | Interface 构建、运行与重开 | 通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，证明构建器和运行时消费同一原子定义及既有插件任务生命周期。 | `interface.lifecycle`、`interface.runtime`、`plugin.action.lifecycle` |
 | <code>18-workspace-search</code> | 内容、文件关联与统一搜索闭环 | 通过真实内容 UI 配置并编辑 ContentProfile 记录，经 host picker 导入 Markdown/JSON 文件并验证 FileDocument 元数据 AND/OR；建立显式 RecordDocumentLink，unlink 后显示 broken 并修复到另一文档，精确重启 sidecar 后重开仍一致；统一搜索重建后由键盘查询 records/files/attachments、metadata/content/current/history，并对 stale open 显式重解析。 | `workspace-search.query`、`workspace-search.rebuild`、`content.record`、`file-history.query`、`record-document-link.lifecycle`、`attachment.search` |
+| <code>19-gallery-lifecycle</code> | Gallery 创建、重开与冲突恢复 | 通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。 | `gallery.lifecycle`、`preset.conflict` |

@@ -226,6 +226,22 @@ def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     assert "Markdown/JSON" in by_id["18-workspace-search"]
 
 
+def test_node_runner_inventory_matches_the_product_scenario_manifest() -> None:
+    completed = subprocess.run(
+        [
+            str(ensure_node(runner.ROOT)),
+            str(runner.NODE_RUNNER),
+            "--list-scenarios",
+        ],
+        cwd=runner.ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(completed.stdout) == [scenario.id for scenario in runner.load_scenarios()]
+
+
 def test_capability_selection_drives_the_release_smoke_subset() -> None:
     selected = runner.select_scenarios(
         runner.load_scenarios(),
@@ -1763,8 +1779,6 @@ def test_node_runner_only_attaches_to_existing_webview2() -> None:
     assert "chromium.launchPersistentContext(" not in source
     assert "CAPABILITY_MISSING" not in source
     assert "pendingScenario" not in source
-    for scenario in runner.load_scenarios():
-        assert f'"{scenario.id}": scenario{scenario.id[:2]}' in source
 
 
 def test_node_runner_enforces_closed_history_and_no_external_http() -> None:

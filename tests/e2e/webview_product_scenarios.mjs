@@ -5343,6 +5343,169 @@ async function scenario18(page, recorder, _network, runtime) {
   });
 }
 
+async function waitForGalleryProjection(page, expectedCount) {
+  const gallery = page.getByTestId("record-gallery-view");
+  await gallery.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(count => (
+    document.querySelectorAll('[data-testid="gallery-card"]').length === count
+      && document.querySelectorAll('[data-testid="gallery-cover-placeholder"]').length === count
+  ), expectedCount, { timeout: 30_000 });
+  return gallery;
+}
+
+async function scenario19(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  await page.getByTestId("nav-tables").click();
+  const tableId = await createEmptyTable(page, "E2E Gallery Records");
+  const titleField = await createV2Field(page, tableId, "Title", "text");
+  const coverField = await createV2Field(page, tableId, "Cover", "file");
+  await closeFieldSettingsDrawer(page);
+  await selectTable(page, "E2E Gallery Records");
+  await chooseToolbarMore(page, "refresh");
+  await page.locator(
+    `.tabulator-col[tabulator-field="${titleField.physicalName}"]`,
+  ).waitFor({ timeout: 30_000 });
+  await page.locator(
+    `.tabulator-col[tabulator-field="${coverField.physicalName}"]`,
+  ).waitFor({ timeout: 30_000 });
+  const seeded = await applyProductMutation(page, tableId, [
+    {
+      kind: "insert",
+      recordId: null,
+      values: { [titleField.physicalName]: "Gallery Alpha" },
+    },
+    {
+      kind: "insert",
+      recordId: null,
+      values: { [titleField.physicalName]: "Gallery Beta" },
+    },
+  ], "gallery-seed");
+  recorder.check("Gallery seed commits two authoritative records",
+    seeded.type === "mutation.apply" && seeded.payload?.status === "applied",
+  { seeded });
+  await chooseToolbarMore(page, "refresh");
+  await waitForVisibleRowCount(page, 2);
+
+  await page.getByTestId("view-create").click();
+  const createDialog = page.locator(".view-dialog:visible");
+  await createDialog.waitFor({ state: "visible", timeout: 10_000 });
+  await createDialog.locator(".n-input input").fill("E2E Gallery");
+  await page.getByTestId("view-kind-gallery").click();
+  await selectVisibleNOption(page, "view-gallery-cover-field", "Cover");
+  await selectVisibleNOption(page, "view-gallery-title-field", "Title");
+  await page.getByTestId("view-dialog-confirm").click();
+
+  const gallery = await waitForGalleryProjection(page, 2);
+  const initialCardText = await page.getByTestId("gallery-card").allInnerTexts();
+  recorder.check("Gallery projects both records with the configured empty-cover fallback",
+    initialCardText.some(text => text.includes("Gallery Alpha"))
+      && initialCardText.some(text => text.includes("Gallery Beta")),
+  { initialCardText });
+
+  const listed = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  const persisted = listed.payload?.presets?.find(item => item.name === "E2E Gallery");
+  recorder.check("Gallery configuration is persisted through the public preset interface",
+    persisted?.collection === tableId
+      && persisted.view?.kind === "gallery"
+      && persisted.view?.layout === "gallery"
+      && persisted.view?.titleField === titleField.physicalName
+      && persisted.view?.coverField === coverField.physicalName
+      && typeof persisted.revision === "string",
+  { persisted });
+  if (!persisted?.id || !persisted?.revision) {
+    throw new Error(`persisted Gallery preset is unavailable: ${JSON.stringify(listed)}`);
+  }
+
+  const persistedTab = page.getByTestId(`view-tab-${persisted.id}`);
+  await persistedTab.waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByTestId("nav-settings").click();
+  await gallery.waitFor({ state: "hidden", timeout: 10_000 });
+  await page.getByTestId("nav-tables").click();
+  await persistedTab.waitFor({ state: "visible", timeout: 30_000 });
+  await persistedTab.click();
+  await waitForGalleryProjection(page, 2);
+  const reopened = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  recorder.check("Gallery reopens from the same persisted preset after leaving Tables",
+    reopened.payload?.presets?.some(item => (
+      item.id === persisted.id
+        && item.revision === persisted.revision
+        && item.view?.kind === "gallery"
+    )),
+  { reopened });
+
+  const competing = await rawBridgeRequest(page, "preset.save", {
+    collection: tableId,
+    name: "E2E Gallery Winner",
+    view: persisted.view,
+    presetId: persisted.id,
+    expectedRevision: persisted.revision,
+    operationId: crypto.randomUUID(),
+  });
+  recorder.check("a competing preset save advances the authoritative revision",
+    competing.type === "preset.save"
+      && competing.payload?.id === persisted.id
+      && typeof competing.payload?.revision === "string"
+      && competing.payload.revision !== persisted.revision,
+  { before: persisted.revision, competing });
+  if (competing.type === "operation.failed") {
+    throw new Error(`competing Gallery save failed: ${JSON.stringify(competing)}`);
+  }
+
+  await page.getByTestId(`view-actions-${persisted.id}`).click();
+  const rename = page.locator(".n-dropdown-option-body:visible")
+    .filter({ hasText: /重命名|Rename/i })
+    .last();
+  await rename.waitFor({ state: "visible", timeout: 10_000 });
+  await rename.click();
+  const renameDialog = page.locator(".view-dialog:visible");
+  await renameDialog.waitFor({ state: "visible", timeout: 10_000 });
+  await renameDialog.locator(".n-input input").fill("E2E Gallery Local Stale");
+  await page.getByTestId("view-dialog-confirm").click();
+
+  const conflictAlert = page.getByTestId("view-operation-error");
+  await conflictAlert.waitFor({ state: "visible", timeout: 30_000 });
+  const conflictText = await conflictAlert.innerText();
+  await page.waitForFunction(() => (
+    window.__vibetableE2EBridgeDiagnostics?.roundTrips
+      ?.some(roundTrip => (
+        roundTrip.requestType === "preset.save"
+          && roundTrip.responseType === "preset.save"
+          && roundTrip.code === "preset_edit_conflict"
+      )) === true
+  ), undefined, { timeout: 30_000 });
+  const diagnostics = await readBridgeDiagnostics(page);
+  const conflictRoundTrip = diagnostics?.roundTrips?.find(
+    roundTrip => (
+      roundTrip.requestType === "preset.save"
+        && roundTrip.responseType === "preset.save"
+        && roundTrip.code === "preset_edit_conflict"
+    ),
+  );
+  recorder.check("the stale Gallery rename exposes the typed preset conflict before recovery",
+    Boolean(conflictText.trim()) && conflictRoundTrip?.code === "preset_edit_conflict",
+  { conflictText, conflictRoundTrip });
+
+  await page.getByTestId("view-reload").click();
+  await conflictAlert.waitFor({ state: "hidden", timeout: 30_000 });
+  await page.waitForFunction(({ presetId, winner }) => {
+    const tab = document.querySelector(`[data-testid="view-tab-${presetId}"]`);
+    return tab?.textContent?.includes(winner) && tab.classList.contains("active");
+  }, { presetId: persisted.id, winner: "E2E Gallery Winner" }, { timeout: 30_000 });
+  await waitForGalleryProjection(page, 2);
+  const authoritative = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  const winner = authoritative.payload?.presets?.find(item => item.id === persisted.id);
+  recorder.check("explicit reload adopts the winning revision and preserves the Gallery projection",
+    winner?.name === "E2E Gallery Winner"
+      && winner.revision === competing.payload?.revision
+      && winner.view?.kind === "gallery",
+  { winner, cardCount: await page.getByTestId("gallery-card").count() });
+
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "19-gallery-lifecycle.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -5362,10 +5525,16 @@ const scenarios = {
   "16-dashboard-lifecycle": scenario16,
   "17-interface-lifecycle": scenario17,
   "18-workspace-search": scenario18,
+  "19-gallery-lifecycle": scenario19,
 };
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv.length === 1 && argv[0] === "--list-scenarios") {
+    fsSync.writeSync(1, `${JSON.stringify(Object.keys(scenarios))}\n`);
+    return;
+  }
+  const args = parseArgs(argv);
   const evidenceDir = path.resolve(args["evidence-dir"]);
   await fs.mkdir(evidenceDir, { recursive: true });
   const recorder = makeRecorder();

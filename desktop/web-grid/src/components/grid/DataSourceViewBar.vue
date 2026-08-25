@@ -150,7 +150,7 @@ function confirm(): void {
           <i v-if="dirty && activeId === view.id" :title="t('views.unsaved')"></i>
         </button>
         <NDropdown trigger="click" :disabled="loading" :options="options" @select="key => menu(String(key), view)">
-          <NButton quaternary size="tiny" :disabled="loading" :aria-label="t('views.actionsFor', { name: view.name })"><template #icon><NIcon><MoreHorizontal /></NIcon></template></NButton>
+          <NButton quaternary size="tiny" :disabled="loading" :aria-label="t('views.actionsFor', { name: view.name })" :data-testid="`view-actions-${view.id}`"><template #icon><NIcon><MoreHorizontal /></NIcon></template></NButton>
         </NDropdown>
       </div>
     </div>
@@ -179,8 +179,8 @@ function confirm(): void {
             <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
           </div>
           <div v-else-if="viewKind === 'gallery'" class="view-field-options">
-            <label><span>{{ t("views.field.cover") }}</span><NSelect v-model:value="coverField" :options="selectableCoverFields" clearable /></label>
-            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
+            <label><span>{{ t("views.field.cover") }}</span><NSelect v-model:value="coverField" :options="selectableCoverFields" clearable data-testid="view-gallery-cover-field" /></label>
+            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable data-testid="view-gallery-title-field" /></label>
           </div>
           <small v-if="isTemporalView && !dateFields?.length" class="view-kind-hint">{{ t("views.kind.noDateFields") }}</small>
           <small v-if="viewKind === 'kanban' && !groupFields?.length" class="view-kind-hint">{{ t("views.kind.noGroupFields") }}</small>

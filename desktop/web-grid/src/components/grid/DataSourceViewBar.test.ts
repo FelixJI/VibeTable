@@ -66,6 +66,8 @@ describe("DataSourceViewBar", () => {
     });
     const tab = wrapper.get('[data-testid="view-tab-view-1"]');
     expect(tab.text()).toContain("本月待办");
+    expect(wrapper.get('[data-testid="view-actions-view-1"]').attributes("aria-label"))
+      .toContain("本月待办");
     await tab.trigger("click");
     expect(wrapper.emitted("switch")?.[0]?.[0]).toMatchObject({ id: "view-1" });
   });
@@ -151,6 +153,8 @@ describe("DataSourceViewBar", () => {
     await wrapper.get('[data-testid="view-create"]').trigger("click");
     document.body.querySelector<HTMLElement>('[data-testid="view-kind-gallery"]')?.click();
     await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="view-gallery-cover-field"]')).toBeTruthy();
+    expect(document.body.querySelector('[data-testid="view-gallery-title-field"]')).toBeTruthy();
     const input = document.body.querySelector<HTMLInputElement>("input");
     input!.value = "素材画册";
     input!.dispatchEvent(new Event("input", { bubbles: true }));

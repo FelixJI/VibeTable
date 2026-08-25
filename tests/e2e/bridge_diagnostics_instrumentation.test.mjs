@@ -280,6 +280,46 @@ test("accepts an observed protocol operation without a duplicated static catalog
   }
 });
 
+test("records preset conflict product envelopes as typed completed round trips", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    webview.postMessage({
+      type: "preset.save",
+      requestId: "preset-save-1",
+      payload: { presetId: "private-preset", expectedRevision: "private-revision" },
+    });
+    listeners[0]({
+      data: {
+        type: "preset.save",
+        requestId: "preset-save-1",
+        payload: {
+          error: {
+            code: "preset_edit_conflict",
+            message: "Preset changed elsewhere.",
+          },
+        },
+      },
+    });
+
+    const snapshot = readBridgeDiagnosticsInPage();
+    assert.equal(snapshot.roundTrips.at(-1).code, "preset_edit_conflict");
+    assert.equal(snapshot.roundTrips.at(-1).requestType, "preset.save");
+    assert.equal(snapshot.failures.length, 0);
+    assert.equal(JSON.stringify(snapshot).includes("private-preset"), false);
+    assert.equal(JSON.stringify(snapshot).includes("private-revision"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 test("late failure reconnects to an already completed request without losing identity", () => {
   const listeners = [];
   const webview = {
