@@ -119,6 +119,7 @@ import { createWorkspaceNavigationController } from "@/workspace/workspaceNaviga
 import { createStructuredCellDialogController } from "@/workspace/structuredCellDialogController";
 import { createLookupProvenanceController } from "@/workspace/lookupProvenanceController";
 import { createPresetViewController } from "@/workspace/presetViewController";
+import { createAlternativeViewInteractionController } from "@/workspace/alternativeViewInteractionController";
 import { createRelationEditorController } from "@/workspace/relationEditorController";
 import { createWorkspacePluginController } from "@/workspace/workspacePluginController";
 import {
@@ -529,6 +530,15 @@ const dateFieldOptions = presetViewController.dateFields;
 const titleFieldOptions = presetViewController.titleFields;
 const groupFieldOptions = presetViewController.groupFields;
 const coverFieldOptions = presetViewController.coverFields;
+const alternativeViewInteractionController = createAlternativeViewInteractionController({
+  getActiveView: () => activePresetView.value,
+  getSchema: () => tableStore.schema ?? [],
+  getRows: () => tableStore.allRows,
+  updateCell: (rowKey, column, oldValue, newValue, expectedDigest) => {
+    mutationService.updateCell(rowKey, column, oldValue, newValue, expectedDigest);
+  },
+});
+const kanbanInteraction = computed(() => alternativeViewInteractionController.kanbanState());
 
 const pluginController = createWorkspacePluginController({
   workspace,
@@ -1074,6 +1084,9 @@ useKeyboard({
                 :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
                 :view="activePresetView"
+                :interaction-enabled="kanbanInteraction.enabled"
+                :lane-options="kanbanInteraction.lanes"
+                @card-move="alternativeViewInteractionController.dispatch({ type: 'kanban.card.move', ...$event })"
               />
               <RecordGalleryView
                 v-else-if="activeViewKind === 'gallery' && activePresetView"

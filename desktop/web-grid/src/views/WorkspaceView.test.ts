@@ -546,6 +546,145 @@ describe("WorkspaceView", () => {
     }
   });
 
+  it("routes a Kanban option-id drop through updateCell and waits for host authority", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    const table = useTableStore();
+    const revision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    };
+    const digest = `sha256:${"a".repeat(64)}`;
+    const committedDigest = `sha256:${"b".repeat(64)}`;
+    const columns: ColumnSchema[] = [
+      { name: "title", title: "标题", dataType: "text", editable: true, nullable: false },
+      {
+        name: "status",
+        title: "状态",
+        dataType: "text",
+        editable: true,
+        nullable: true,
+        filterInput: "select",
+        filterOptions: [
+          { value: "opt_todo", label: "待处理" },
+          { value: "opt_done", label: "已完成" },
+        ],
+      },
+    ];
+    const seedTable = () => {
+      table.setDatasetReady({
+        table: "orders",
+        columns,
+        rows: [{
+          rowKey: "row-1",
+          title: "准备合同",
+          status: "opt_todo",
+          __vibetableDigest: digest,
+        }],
+        offset: 0,
+        limit: 100,
+        totalRows: 1,
+        mode: "remote",
+        revision,
+      });
+      table.setEditSchema([
+        {
+          name: "status",
+          storageName: "status",
+          dataType: "single_select",
+          editable: true,
+          nullable: true,
+          primaryKey: false,
+          editor: {
+            kind: "single_select",
+            options: ["opt_todo", "opt_done"],
+            allowCustom: false,
+          },
+          validation: [{
+            kind: "choice",
+            options: ["opt_todo", "opt_done"],
+            allowCustom: false,
+          }],
+        },
+      ], revision);
+    };
+    seedTable();
+    const presets = usePresetVersionStore();
+    const kanban: PresetEntry = {
+      id: "view-kanban",
+      collection: "orders",
+      name: "任务看板",
+      scope: "personal",
+      revision: "preset-1",
+      emittedEvents: [],
+      view: {
+        kind: "kanban",
+        layout: "kanban",
+        filters: [],
+        sorts: [],
+        search: "",
+        visibleFields: ["title", "status"],
+        groupField: "status",
+        titleField: "title",
+      },
+    };
+    presets.receivePresets({ collection: "orders", presets: [kanban] });
+    presets.activatePreset(kanban.id);
+
+    const wrapper = mountView();
+    await flushPromises();
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    seedTable();
+    presets.receivePresets({ collection: "orders", presets: [kanban] });
+    presets.activatePreset(kanban.id);
+    await flushPromises();
+
+    expect(wrapper.get('[data-option-id="opt_done"]').text()).toContain("已完成");
+    await wrapper.get('[data-row-key="row-1"]').trigger("dragstart");
+    await wrapper.get('[data-option-id="opt_done"]').trigger("drop");
+    await flushPromises();
+
+    const update = posted.filter(message => message.type === "table.updateCellRequested").at(-1);
+    expect(update?.payload).toEqual({
+      table: "orders",
+      rowKey: "row-1",
+      column: "status",
+      oldValue: "opt_todo",
+      newValue: "opt_done",
+      expectedDigest: digest,
+      schemaRevision: "schema-1",
+    });
+    expect(table.allRows[0]?.status).toBe("opt_todo");
+    expect(wrapper.get('[data-option-id="opt_todo"]').text()).toContain("准备合同");
+    expect(wrapper.get('[data-option-id="opt_done"]').text()).not.toContain("准备合同");
+
+    emit({
+      type: "table.editCommitted",
+      payload: {
+        rowKey: "row-1",
+        column: "status",
+        storedValue: "opt_done",
+        currentRow: {
+          rowKey: "row-1",
+          title: "准备合同",
+          status: "opt_done",
+          __vibetableDigest: committedDigest,
+        },
+        revision: { ...revision, dataRevision: 2 },
+      },
+    });
+    await flushPromises();
+
+    expect(table.allRows[0]?.status).toBe("opt_done");
+    expect(wrapper.get('[data-option-id="opt_done"]').text()).toContain("准备合同");
+  });
+
   it("manages persisted views through create, duplicate, rename, default, switch, save, and delete", async () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);

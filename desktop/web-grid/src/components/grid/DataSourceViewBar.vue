@@ -175,8 +175,8 @@ function confirm(): void {
             <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
           </div>
           <div v-else-if="viewKind === 'kanban'" class="view-field-options">
-            <label><span>{{ t("views.field.group") }}</span><NSelect v-model:value="groupField" :options="selectableGroupFields" /></label>
-            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
+            <label><span>{{ t("views.field.group") }}</span><NSelect v-model:value="groupField" :options="selectableGroupFields" data-testid="view-kanban-group-field" /></label>
+            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable data-testid="view-kanban-title-field" /></label>
           </div>
           <div v-else-if="viewKind === 'gallery'" class="view-field-options">
             <label><span>{{ t("views.field.cover") }}</span><NSelect v-model:value="coverField" :options="selectableCoverFields" clearable data-testid="view-gallery-cover-field" /></label>

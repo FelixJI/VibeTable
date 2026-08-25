@@ -112,5 +112,11 @@
     "title": "Gallery 创建、重开与冲突恢复",
     "requirement": "通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。",
     "capabilities": ["gallery.lifecycle", "preset.conflict"]
+  },
+  {
+    "id": "20-kanban-lane-drag",
+    "title": "Kanban 单选泳道拖拽持久化",
+    "requirement": "通过真实 Tables UI 创建并配置以单选字段分组的 Kanban；泳道显示 label 但拖拽只提交稳定 optionId，host 权威提交后移动卡片；刷新以及离开 Tables 后重开仍保持移动结果。",
+    "capabilities": ["kanban.lifecycle", "mutation.authority"]
   }
 ]

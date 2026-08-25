@@ -5631,6 +5631,176 @@ async function scenario19(page, recorder, _network, runtime) {
   });
 }
 
+async function waitForKanbanCardInLane(page, optionId, title) {
+  const lane = page.locator(
+    `[data-testid="kanban-lane"][data-option-id="${optionId}"]`,
+  );
+  await lane.waitFor({ state: "visible", timeout: 30_000 });
+  await lane.getByTestId("kanban-card")
+    .filter({ hasText: title })
+    .waitFor({ state: "visible", timeout: 30_000 });
+  return lane;
+}
+
+async function scenario20(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  await page.getByTestId("nav-tables").click();
+  const tableId = await createEmptyTable(page, "E2E Kanban Records");
+
+  const createFieldThroughUi = async (displayName, typeLabel, optionLabels = []) => {
+    const displayNameInput = page.getByTestId("field-display-name");
+    if (!(await displayNameInput.isVisible())) {
+      await page.getByTestId("toolbar-field-manager").click();
+      await displayNameInput.waitFor({ state: "visible", timeout: 30_000 });
+    }
+    await displayNameInput.locator("input").fill(displayName);
+    await selectVisibleNOption(page, "field-logical-type", typeLabel);
+    if (optionLabels.length > 0) {
+      const optionSection = page.locator(".settings-section").filter({ hasText: "选项" });
+      const optionInputs = optionSection.locator('.option-row input:not([type="color"])');
+      await optionInputs.first().waitFor({ state: "visible", timeout: 10_000 });
+      await optionInputs.first().fill(optionLabels[0]);
+      for (let index = 1; index < optionLabels.length; index += 1) {
+        await optionSection.getByRole("button", { name: "添加" }).click();
+        await optionInputs.nth(index).fill(optionLabels[index]);
+      }
+    }
+    await page.getByTestId("field-plan-button").click();
+    await page.getByTestId("field-change-plan").waitFor({ state: "visible", timeout: 30_000 });
+    const applyButton = page.getByTestId("field-apply-button");
+    await page.waitForFunction(() => {
+      const button = document.querySelector('[data-testid="field-apply-button"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    }, undefined, { timeout: 30_000 });
+    await applyButton.click();
+    await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
+    await page.getByTestId("field-close-button").click();
+    await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
+  };
+
+  await createFieldThroughUi("Title", "单行文本");
+  await createFieldThroughUi("Status", "单选", ["Todo", "Done"]);
+  await selectTable(page, "E2E Kanban Records");
+  await chooseToolbarMore(page, "refresh");
+  const titleHeader = page.locator(".tabulator-col").filter({ hasText: "Title" }).first();
+  const statusHeader = page.locator(".tabulator-col").filter({ hasText: "Status" }).first();
+  await titleHeader.waitFor({ state: "visible", timeout: 30_000 });
+  await statusHeader.waitFor({ state: "visible", timeout: 30_000 });
+  const titlePhysicalName = await titleHeader.getAttribute("tabulator-field");
+  const statusPhysicalName = await statusHeader.getAttribute("tabulator-field");
+  if (!titlePhysicalName || !statusPhysicalName) {
+    throw new Error(`Kanban field authority is unavailable: ${JSON.stringify({
+      titlePhysicalName,
+      statusPhysicalName,
+    })}`);
+  }
+
+  await page.getByTestId("view-create").click();
+  const createDialog = page.locator(".view-dialog:visible");
+  await createDialog.waitFor({ state: "visible", timeout: 10_000 });
+  await createDialog.locator(".n-input input").fill("E2E Kanban");
+  await page.getByTestId("view-kind-kanban").click();
+  await selectVisibleNOption(page, "view-kanban-group-field", "Status");
+  await selectVisibleNOption(page, "view-kanban-title-field", "Title");
+  await page.getByTestId("view-dialog-confirm").click();
+
+  const kanban = page.getByTestId("record-kanban-view");
+  await kanban.waitFor({ state: "visible", timeout: 30_000 });
+  const todoLane = page.getByTestId("kanban-lane").filter({ hasText: "Todo" }).first();
+  const doneLane = page.getByTestId("kanban-lane").filter({ hasText: "Done" }).first();
+  await todoLane.waitFor({ state: "visible", timeout: 30_000 });
+  await doneLane.waitFor({ state: "visible", timeout: 30_000 });
+  const todoOption = { optionId: await todoLane.getAttribute("data-option-id"), label: "Todo" };
+  const doneOption = { optionId: await doneLane.getAttribute("data-option-id"), label: "Done" };
+  if (!todoOption.optionId || !doneOption.optionId) {
+    throw new Error(`Kanban option authority is unavailable: ${JSON.stringify({
+      todoOption,
+      doneOption,
+    })}`);
+  }
+
+  const seeded = await applyProductMutation(page, tableId, [
+    {
+      kind: "insert",
+      recordId: null,
+      values: {
+        [titlePhysicalName]: "Kanban Alpha",
+        [statusPhysicalName]: todoOption.optionId,
+      },
+    },
+    {
+      kind: "insert",
+      recordId: null,
+      values: {
+        [titlePhysicalName]: "Kanban Beta",
+        [statusPhysicalName]: todoOption.optionId,
+      },
+    },
+  ], "kanban-seed");
+  recorder.check("Kanban seed commits stable option IDs for two authoritative records",
+    seeded.type === "mutation.apply" && seeded.payload?.status === "applied",
+  { seeded, todoOptionId: todoOption.optionId });
+  await chooseToolbarMore(page, "refresh");
+  await waitForKanbanCardInLane(page, todoOption.optionId, "Kanban Alpha");
+  const initialText = await kanban.innerText();
+  recorder.check("Kanban renders active labels and an empty authoritative target lane",
+    initialText.includes("Todo")
+      && initialText.includes("Done")
+      && !initialText.includes(todoOption.optionId)
+      && !initialText.includes(doneOption.optionId)
+      && await todoLane.getByTestId("kanban-card").count() === 2
+      && await doneLane.getByTestId("kanban-card").count() === 0,
+  { initialText, todoOptionId: todoOption.optionId, doneOptionId: doneOption.optionId });
+
+  const alphaCard = todoLane.getByTestId("kanban-card")
+    .filter({ hasText: "Kanban Alpha" });
+  await alphaCard.dragTo(doneLane.locator(".kanban-cards"));
+  await waitForKanbanCardInLane(page, doneOption.optionId, "Kanban Alpha");
+  const authoritative = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  const moved = authoritative.payload?.rows?.find(
+    row => row[titlePhysicalName] === "Kanban Alpha",
+  );
+  recorder.check("drag waits for host authority and persists the target optionId rather than its label",
+    authoritative.type === "query.page"
+      && moved?.[statusPhysicalName] === doneOption.optionId
+      && moved?.[statusPhysicalName] !== doneOption.label,
+  { moved, authoritative });
+
+  await chooseToolbarMore(page, "refresh");
+  await waitForKanbanCardInLane(page, doneOption.optionId, "Kanban Alpha");
+  const listed = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  const persisted = listed.payload?.presets?.find(item => item.name === "E2E Kanban");
+  recorder.check("Kanban definition persists the selected group and title fields",
+    persisted?.collection === tableId
+      && persisted.view?.kind === "kanban"
+      && persisted.view?.layout === "kanban"
+      && persisted.view?.groupField === statusPhysicalName
+      && persisted.view?.titleField === titlePhysicalName,
+  { persisted });
+  if (!persisted?.id) {
+    throw new Error(`persisted Kanban preset is unavailable: ${JSON.stringify(listed)}`);
+  }
+
+  await page.getByTestId("nav-settings").click();
+  await kanban.waitFor({ state: "hidden", timeout: 10_000 });
+  await page.getByTestId("nav-tables").click();
+  const persistedTab = page.getByTestId(`view-tab-${persisted.id}`);
+  await persistedTab.waitFor({ state: "visible", timeout: 30_000 });
+  await persistedTab.click();
+  await waitForKanbanCardInLane(page, doneOption.optionId, "Kanban Alpha");
+  recorder.check("Kanban moved card survives refresh and leaving then reopening Tables",
+    await doneLane.getByTestId("kanban-card").filter({ hasText: "Kanban Alpha" }).count() === 1,
+  { presetId: persisted.id, doneOptionId: doneOption.optionId });
+
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "20-kanban-lane-drag.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -5651,6 +5821,7 @@ const scenarios = {
   "17-interface-lifecycle": scenario17,
   "18-workspace-search": scenario18,
   "19-gallery-lifecycle": scenario19,
+  "20-kanban-lane-drag": scenario20,
 };
 
 async function main() {
