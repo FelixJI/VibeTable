@@ -5658,10 +5658,9 @@ async function scenario20(page, recorder, _network, runtime) {
     if (optionLabels.length > 0) {
       const optionSection = page.locator(".settings-section").filter({ hasText: "选项" });
       const optionInputs = optionSection.locator('.option-row input:not([type="color"])');
-      await optionInputs.first().waitFor({ state: "visible", timeout: 10_000 });
-      await optionInputs.first().fill(optionLabels[0]);
-      for (let index = 1; index < optionLabels.length; index += 1) {
+      for (let index = 0; index < optionLabels.length; index += 1) {
         await optionSection.getByRole("button", { name: "添加" }).click();
+        await optionInputs.nth(index).waitFor({ state: "visible", timeout: 10_000 });
         await optionInputs.nth(index).fill(optionLabels[index]);
       }
     }

@@ -94,6 +94,26 @@ describe("Schema v2 contracts", () => {
     );
   });
 
+  it("accepts an unallocated select option identity only inside a plan draft", () => {
+    const definition = mutableObject(structuredClone(fixture()));
+    definition.logicalType = "select";
+    definition.select = { options: [{
+      optionId: "", label: "Todo", color: "#64748b", order: 0, state: "active",
+    }] };
+
+    const draft = structuredClone(definition);
+    delete draft.contract;
+    delete draft.identity;
+    delete draft.lifecycle;
+    const plan = mutableObject(structuredClone(fixture("field-change-plan.json")));
+    mutableObject(plan.intent).draft = draft;
+
+    expect(parseFieldChangePlanV2(plan).intent.draft?.select?.options[0]?.optionId).toBe("");
+    expect(() => parseFieldDefinitionV2(definition)).toThrow(
+      "field.contract.invalid at $.select.options[0].optionId: expected string",
+    );
+  });
+
   it("rejects every shared negative field fixture", () => {
     const cases = fixture("invalid/field-definition-cases.json") as Array<{
       name: string;

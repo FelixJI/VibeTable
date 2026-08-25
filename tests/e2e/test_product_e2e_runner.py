@@ -333,6 +333,12 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("view-kind-kanban")' in kanban
     assert 'getByTestId("field-display-name")' in kanban
     assert '"field-logical-type"' in kanban
+    add_select_option = 'await optionSection.getByRole("button", { name: "添加" }).click();'
+    fill_select_option = "await optionInputs.nth(index).fill(optionLabels[index]);"
+    assert add_select_option in kanban
+    assert fill_select_option in kanban
+    assert kanban.index(add_select_option) < kanban.index(fill_select_option)
+    assert "optionInputs.first().fill(optionLabels[0])" not in kanban
     assert 'getByTestId("field-plan-button")' in kanban
     assert 'getByTestId("field-apply-button")' in kanban
     assert '"view-kanban-group-field"' in kanban
