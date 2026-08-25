@@ -131,6 +131,17 @@ def test_ci_prepare_failure_preserves_product_e2e_evidence() -> None:
     assert "retention-days: 3" in evidence_step
 
 
+def test_ci_downloads_lane_reports_and_evidence_at_the_automation_root() -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    download_step = ci.split("- name: Download lane evidence", 1)[1]
+    download_step = download_step.split("- name: Verify repository", 1)[0]
+
+    assert "pattern: ci-lane-*" in download_step
+    assert "path: build/automation\n" in download_step
+    assert "path: build/automation/lane-reports" not in download_step
+    assert "merge-multiple: true" in download_step
+
+
 def test_candidate_prepare_bootstraps_only_release_build_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1089,7 +1089,7 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     (workspace_logs / "backend.log").write_text("backend", encoding="utf-8")
     (workspace_logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
 
-    destination = next_gate.persist_product_e2e_failure_evidence(
+    destination = next_gate.persist_product_e2e_evidence(
         source_root,
         tmp_path / "destination",
     )
@@ -1107,23 +1107,6 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     assert (copied_runtime / "vibetable-trace.log").is_file()
     assert (copied_runtime / "workspace-logs" / "workspace-id" / "backend.log").is_file()
     assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
-
-
-def test_product_e2e_failure_evidence_skips_passing_run(tmp_path: Path) -> None:
-    run_root = tmp_path / "source" / "20260817T010203Z"
-    run_root.mkdir(parents=True)
-    (run_root / "product-e2e-report.json").write_text(
-        json.dumps({"status": "passed", "scenarios": [{"status": "passed"}]}),
-        encoding="utf-8",
-    )
-
-    destination = next_gate.persist_product_e2e_failure_evidence(
-        tmp_path / "source",
-        tmp_path / "destination",
-    )
-
-    assert destination is None
-    assert not (tmp_path / "destination").exists()
 
 
 def test_product_e2e_failure_evidence_finds_nested_fault_injection_run(
@@ -1148,7 +1131,7 @@ def test_product_e2e_failure_evidence_finds_nested_fault_injection_run(
         encoding="utf-8",
     )
 
-    destination = next_gate.persist_product_e2e_failure_evidence(
+    destination = next_gate.persist_product_e2e_evidence(
         source_root,
         tmp_path / "destination",
     )
@@ -1156,6 +1139,142 @@ def test_product_e2e_failure_evidence_finds_nested_fault_injection_run(
     assert destination == tmp_path / "destination" / product_run.name
     assert (destination / "product-e2e-report.json").is_file()
     assert (destination / scenario_id / f"{scenario_id}-result.json").is_file()
+
+
+def test_product_e2e_evidence_copies_only_the_latest_passed_report(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    older_run = source_root / "20260817T010000Z"
+    latest_run = source_root / "20260817T010203Z"
+    scenario_id = "19-gallery-lifecycle"
+    scenario_root = latest_run / scenario_id
+    scenario_root.mkdir(parents=True)
+    older_run.mkdir()
+    (older_run / "product-e2e-report.json").write_text(
+        json.dumps({"status": "passed", "scenarios": [{"status": "passed"}]}),
+        encoding="utf-8",
+    )
+    report = {
+        "status": "passed",
+        "scenarios": [{"scenario": scenario_id, "status": "passed"}],
+    }
+    (latest_run / "product-e2e-report.json").write_text(
+        json.dumps(report),
+        encoding="utf-8",
+    )
+    for filename in (
+        f"{scenario_id}-result.json",
+        f"{scenario_id}-trace.zip",
+        f"{scenario_id}.png",
+        "host-stderr.log",
+        "runner-stdout.log",
+    ):
+        (scenario_root / filename).write_text(filename, encoding="utf-8")
+    runtime_root = latest_run / "_runtime" / "19" / "host"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
+    workspace_logs = (
+        runtime_root / "local-data" / "workspaces" / "workspace-id" / ".vibetable" / "temp" / "logs"
+    )
+    workspace_logs.mkdir(parents=True)
+    (workspace_logs / "backend.log").write_text("backend", encoding="utf-8")
+    (workspace_logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
+
+    destination = next_gate.persist_product_e2e_evidence(
+        source_root,
+        tmp_path / "destination",
+    )
+
+    expected_destination = tmp_path / "destination" / latest_run.name
+    assert destination == expected_destination
+    copied_report = expected_destination / "product-e2e-report.json"
+    assert json.loads(copied_report.read_text(encoding="utf-8")) == report
+    copied_files = [
+        path.relative_to(expected_destination)
+        for path in expected_destination.rglob("*")
+        if path.is_file()
+    ]
+    assert copied_files == [Path("product-e2e-report.json")]
+    assert not (tmp_path / "destination" / older_run.name).exists()
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        [],
+        {"status": "unknown", "scenarios": []},
+        {"status": "passed", "scenarios": [None]},
+        {
+            "status": "passed",
+            "scenarios": [{"scenario": "01-offline-first-launch", "status": "failed"}],
+        },
+    ],
+    ids=("top-level-list", "unknown-status", "non-object-scenario", "failed-under-passed"),
+)
+def test_product_e2e_evidence_rejects_invalid_report_contract(
+    tmp_path: Path,
+    report: object,
+) -> None:
+    run_root = tmp_path / "source" / "20260817T010203Z"
+    run_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(report),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="product E2E report"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
+
+
+def test_product_e2e_evidence_rejects_failed_report_when_passing_is_required(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "source" / "20260817T010203Z"
+    run_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "scenarios": [{"scenario": "01-offline-first-launch", "status": "passed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="passing report"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+            require_passing_report=True,
+        )
+
+
+def test_product_e2e_evidence_fails_when_report_copy_is_lost(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "source" / "20260817T010203Z"
+    run_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "scenarios": [{"scenario": "01-offline-first-launch", "status": "passed"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(next_gate, "_copy_if_file", lambda *_args: False)
+
+    with pytest.raises(OSError, match="could not copy product E2E report"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+        )
 
 
 def test_full_ci_report_rejects_source_change_while_gate_is_running(
@@ -1315,18 +1434,16 @@ def test_lane_report_is_candidate_bound_but_never_release_eligible(
     assert payload["releaseCandidate"]["archive"]["sha256"]
 
 
-@pytest.mark.parametrize(
-    ("stage", "source_directory"),
-    [("product-e2e", "p"), ("fault-injection", "fault-injection")],
-)
-def test_failed_product_lane_persists_product_diagnostics(
+def _prepare_product_lane(
     monkeypatch,
     tmp_path: Path,
+    *,
     stage: str,
-    source_directory: str,
-) -> None:
-    qa_temp = tmp_path / "qa-failure"
-    qa_temp.mkdir()
+    returncode: int,
+) -> Path:
+    qa_temp = tmp_path / ("qa-success" if returncode == 0 else "qa-failure")
+    source_directory = "p" if stage == "product-e2e" else "fault-injection"
+    (qa_temp / source_directory).mkdir(parents=True)
     monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
     monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
@@ -1344,12 +1461,12 @@ def test_failed_product_lane_persists_product_diagnostics(
         next_gate,
         "run_lane",
         lambda lane, package_root, package_archive: (
-            1,
+            returncode,
             [
                 next_gate.StageResult(
                     stage=stage,
                     command=["test"],
-                    returncode=1,
+                    returncode=returncode,
                     elapsed=0.01,
                     stdout="",
                     stderr="",
@@ -1358,13 +1475,38 @@ def test_failed_product_lane_persists_product_diagnostics(
             ],
         ),
     )
+    return qa_temp
+
+
+@pytest.mark.parametrize(
+    ("stage", "source_directory"),
+    [("product-e2e", "p"), ("fault-injection", "fault-injection")],
+)
+def test_failed_product_lane_persists_product_diagnostics(
+    monkeypatch,
+    tmp_path: Path,
+    stage: str,
+    source_directory: str,
+) -> None:
+    qa_temp = _prepare_product_lane(
+        monkeypatch,
+        tmp_path,
+        stage=stage,
+        returncode=1,
+    )
     observed: list[tuple[Path, Path]] = []
 
-    def persist(source: Path, destination: Path) -> Path:
+    def persist(
+        source: Path,
+        destination: Path,
+        *,
+        require_passing_report: bool,
+    ) -> Path:
+        assert not require_passing_report
         observed.append((source, destination))
         return destination / "20260817T010203Z"
 
-    monkeypatch.setattr(next_gate, "persist_product_e2e_failure_evidence", persist)
+    monkeypatch.setattr(next_gate, "persist_product_e2e_evidence", persist)
     report = tmp_path / "lane-reports" / "resilience.json"
 
     assert (
@@ -1386,6 +1528,99 @@ def test_failed_product_lane_persists_product_diagnostics(
         )
     ]
     assert report.is_file()
+
+
+def test_successful_product_lane_persists_report_before_qa_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    qa_temp = _prepare_product_lane(
+        monkeypatch,
+        tmp_path,
+        stage="product-e2e",
+        returncode=0,
+    )
+    product_evidence = qa_temp / "p"
+    observed: list[tuple[Path, Path]] = []
+
+    def persist(
+        source: Path,
+        destination: Path,
+        *,
+        require_passing_report: bool,
+    ) -> Path:
+        assert source.is_dir()
+        assert require_passing_report
+        observed.append((source, destination))
+        return destination / "20260817T010203Z"
+
+    monkeypatch.setattr(next_gate, "persist_product_e2e_evidence", persist)
+    report = tmp_path / "lane-reports" / "resilience.json"
+
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "resilience",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == 0
+    )
+    assert not qa_temp.exists()
+    assert next_gate.QA_RUN_TEMP_DIR is None
+    assert report.is_file()
+    assert observed == [
+        (
+            product_evidence,
+            next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / "resilience",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "persistence_failure",
+    [None, OSError("copy failed")],
+    ids=("report-missing", "copy-error"),
+)
+def test_successful_product_lane_fails_closed_when_report_cannot_be_persisted(
+    monkeypatch,
+    tmp_path: Path,
+    persistence_failure: OSError | None,
+) -> None:
+    qa_temp = _prepare_product_lane(
+        monkeypatch,
+        tmp_path,
+        stage="product-e2e",
+        returncode=0,
+    )
+
+    def persist(*_args, **kwargs):
+        assert kwargs == {"require_passing_report": True}
+        if persistence_failure is not None:
+            raise persistence_failure
+        return None
+
+    monkeypatch.setattr(next_gate, "persist_product_e2e_evidence", persist)
+    report = tmp_path / "lane-reports" / "resilience.json"
+
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "resilience",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == 1
+    )
+    assert qa_temp.is_dir()
+    assert qa_temp == next_gate.QA_RUN_TEMP_DIR
+    assert json.loads(report.read_text(encoding="utf-8"))["ok"] is False
 
 
 def test_full_ci_report_rejects_candidate_mutation(

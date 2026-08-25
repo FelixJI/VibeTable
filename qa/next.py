@@ -1350,8 +1350,13 @@ def _copy_if_file(source: Path, destination: Path) -> bool:
     return True
 
 
-def persist_product_e2e_failure_evidence(source_root: Path, destination_root: Path) -> Path | None:
-    """Persist a bounded diagnostic bundle for the newest failed product E2E run."""
+def persist_product_e2e_evidence(
+    source_root: Path,
+    destination_root: Path,
+    *,
+    require_passing_report: bool = False,
+) -> Path | None:
+    """Persist the newest product E2E report and bounded diagnostics for failures."""
 
     reports = sorted(
         (
@@ -1364,18 +1369,32 @@ def persist_product_e2e_failure_evidence(source_root: Path, destination_root: Pa
         return None
     report_path = reports[0]
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(report, dict):
+        raise ValueError(f"product E2E report must be an object: {report_path}")
+    report_status = report.get("status")
+    if report_status not in {"passed", "failed"}:
+        raise ValueError(f"product E2E report has invalid status: {report_path}")
     scenarios = report.get("scenarios")
-    if not isinstance(scenarios, list):
+    if not isinstance(scenarios, list) or not scenarios:
         raise ValueError(f"product E2E report has invalid scenarios: {report_path}")
-    failed_scenarios = [
-        item for item in scenarios if isinstance(item, dict) and item.get("status") != "passed"
-    ]
-    if not failed_scenarios:
-        return None
+    for item in scenarios:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("scenario"), str)
+            or not item["scenario"]
+            or item.get("status") not in {"passed", "failed"}
+        ):
+            raise ValueError(f"product E2E report has invalid scenario entries: {report_path}")
+    failed_scenarios = [item for item in scenarios if item["status"] != "passed"]
+    if report_status == "passed" and failed_scenarios:
+        raise ValueError(f"product E2E report passed with failed scenarios: {report_path}")
+    if require_passing_report and report_status != "passed":
+        raise ValueError(f"product E2E stage did not produce a passing report: {report_path}")
 
     run_source = report_path.parent
     run_destination = destination_root / run_source.name
-    _copy_if_file(report_path, run_destination / report_path.name)
+    if not _copy_if_file(report_path, run_destination / report_path.name):
+        raise OSError(f"could not copy product E2E report: {report_path}")
     for item in failed_scenarios:
         scenario_id = item.get("scenario")
         if (
@@ -1519,27 +1538,39 @@ def _main(argv: list[str] | None = None) -> int:
         and has_required_webview2_evidence(results)
     )
     if args.lane:
-        failed_product_sources = [
-            source_root
-            for stage, source_root in (
-                ("product-e2e", _qa_temp_dir() / "p"),
-                ("fault-injection", _qa_temp_dir() / "fault-injection"),
-            )
-            if any(result.stage == stage and result.returncode != 0 for result in results)
-        ]
-        for source_root in failed_product_sources:
+        evidence_sources: list[tuple[Path, bool]] = []
+        product_e2e_result = next(
+            (result for result in results if result.stage == "product-e2e"),
+            None,
+        )
+        if product_e2e_result is not None:
+            evidence_sources.append((_qa_temp_dir() / "p", product_e2e_result.returncode == 0))
+        if any(result.stage == "fault-injection" and result.returncode != 0 for result in results):
+            evidence_sources.append((_qa_temp_dir() / "fault-injection", False))
+
+        for source_root, required in evidence_sources:
             try:
-                evidence_path = persist_product_e2e_failure_evidence(
+                evidence_path = persist_product_e2e_evidence(
                     source_root,
                     REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane,
+                    require_passing_report=required,
                 )
-                if evidence_path is not None:
+                if evidence_path is None:
                     print(
-                        f"product E2E failure evidence persisted at {evidence_path}",
+                        f"no product E2E report found under {source_root}",
+                        file=sys.stderr,
+                    )
+                    if required:
+                        code = code or 1
+                else:
+                    print(
+                        f"product E2E evidence persisted at {evidence_path}",
                         file=sys.stderr,
                     )
             except (OSError, ValueError, json.JSONDecodeError) as exc:
-                print(f"could not persist product E2E failure evidence: {exc}", file=sys.stderr)
+                print(f"could not persist product E2E evidence: {exc}", file=sys.stderr)
+                if required:
+                    code = code or 1
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)
         args.json_report.write_text(

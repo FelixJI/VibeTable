@@ -10,9 +10,9 @@ VibeTable 是仅支持 Windows 10/11 的桌面产品，同时包含 Python、Vue
 |---|---|
 | `bootstrap` | 锁定 Python、Node、Go 与 .NET 依赖及项目所需工具 |
 | `quality` | 版本/包契约、Ruff、Pyright、mypy、Python 覆盖率、四个 Node 项目、Go format/vet/test/build、.NET tests |
-| `e2e` | 当前无独立命令；产品级 E2E 由 release smoke 统一执行 |
+| `e2e` | 执行 `pr-e2e`，构建真实包并运行 `release.smoke` 产品场景与工作台资格检查 |
 | `release_build` | 构建真实 Windows x64 离线发布包及 identity/checksum/SBOM |
-| `release_smoke` | 执行 `qa/next.py --ci`，覆盖 Go race、sidecar、升级/故障注入、WPF/WebView2 E2E、包契约和最终只读 smoke |
+| `release_smoke` | 并行执行 `qa/next.py --lane` 后聚合，覆盖 Go race、sidecar、升级/故障注入、WPF/WebView2 产品 E2E、包契约和最终只读 smoke |
 
 CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号陈旧运行可以取消，`main` 运行使用唯一 run id，绝不互相取消。PR 会完整执行 release build/smoke，但不会上传正式候选；只有 `main` push 会把与 source SHA 绑定的固定名 `release-candidate` 保留 14 天。完整矩阵以严格分支保护要求的 `required` check 为权威。
 
@@ -70,6 +70,11 @@ Go build cache 与临时二进制清理，不得通过跳过测试或放宽 race
 [产品 E2E 能力索引](quality/product-e2e-capability-index.md)确定性生成。该索引不等同于
 Host/runtime capability，也不表示场景已通过；只有与候选 source SHA 绑定的 `required` 产品报告
 才是本次运行的通过证据。
+
+`resilience` lane 会在 QA 临时目录清理前，把最新 `product-e2e-report.json` 交接到
+`build/automation/lane-evidence/resilience`，并随 `ci-lane-resilience` artifact 上传；失败运行在报告
+已经生成且可读取时还会附带有界的失败场景与 runtime 日志，不复制 workspace 数据库或无关通过
+场景产物。成功 stage 若缺少有效的通过报告或复制失败，lane 会 fail closed 并保留 QA 临时证据。
 
 - 任意未预期的 `operation.failed` 或场景结束时仍 pending 的 bridge 请求，直接判定场景失败；不能再用“稍后轮询成功”掩盖中途错误。
 - 普通历史查询以 p95 500ms 为告警线、单次 2s 为硬上限；历史抽屉首屏以 p95 750ms 为告警线、单次 2s 为硬上限。
