@@ -94,6 +94,7 @@ export function installBridgeDiagnosticsInPage() {
     "WORKSPACE_ERROR",
     "dashboard_edit_conflict",
     "history.field_not_found",
+    "preset_edit_conflict",
     "retention.policy_revision_stale",
     "snapshot.package_invalid",
     "workspace.operation_failed",

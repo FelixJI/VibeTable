@@ -106,5 +106,11 @@
     "title": "内容、文件关联与统一搜索闭环",
     "requirement": "通过真实内容 UI 配置并编辑 ContentProfile 记录，经 host picker 导入 Markdown/JSON 文件并验证 FileDocument 元数据 AND/OR；建立显式 RecordDocumentLink，unlink 后显示 broken 并修复到另一文档，精确重启 sidecar 后重开仍一致；统一搜索重建后由键盘查询 records/files/attachments、metadata/content/current/history，并对 stale open 显式重解析。",
     "capabilities": ["workspace-search.query", "workspace-search.rebuild", "content.record", "file-history.query", "record-document-link.lifecycle", "attachment.search"]
+  },
+  {
+    "id": "19-gallery-lifecycle",
+    "title": "Gallery 创建、重开与冲突恢复",
+    "requirement": "通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。",
+    "capabilities": ["gallery.lifecycle", "preset.conflict"]
   }
 ]
