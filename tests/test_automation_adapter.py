@@ -307,6 +307,11 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
     observed: list[tuple[tuple[str, ...], Path]] = []
     monkeypatch.setattr(
         automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
+    monkeypatch.setattr(
+        automation_project,
         "_run",
         lambda *command, cwd=automation_project.REPO_ROOT, **_kwargs: observed.append(
             (command, cwd)
@@ -415,6 +420,11 @@ def test_full_quality_starts_with_the_stable_contract_gate(
 ) -> None:
     observed: list[tuple[tuple[str, ...], Path]] = []
     monkeypatch.delenv("VIBETABLE_CI_PREPARE_MODE", raising=False)
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
     monkeypatch.setattr(
         automation_project,
         "_run",
@@ -681,6 +691,11 @@ def test_smoke_lane_prepares_only_its_required_toolchain(
 ) -> None:
     observed: list[str] = []
     monkeypatch.setattr(automation_project, "bootstrap", lambda: observed.append("bootstrap"))
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
     monkeypatch.setattr(
         automation_project,
         "_install_w64devkit",

@@ -2,9 +2,8 @@
 
 > 本页人工判断用户能力纵切是否闭环；当前 manifest 声明的 E2E selector tag 与场景映射见
 > [产品 E2E 能力索引](product-e2e-capability-index.md)，selector tag 不等同于 Host/runtime 广告能力。
-> 历史实施基线 `GitHub/main@bd06158e` 在 2026-08-09 的打包候选报告
-> `build/q/f2/20260809T152446Z/product-e2e-report.json` 为 16/16 passed、0 failed、0 skipped；
-> 该次每个场景均无未确认 bridge failure/pending request，且正常退出、子进程清理和端口释放通过。
+> source SHA、GitHub run、报告契约和通过状态统一见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)；
+> 本页不维护第二套运行元数据，也不把生成索引误当作运行通过证明。
 > `Closed` 仍只用于 producer、Host/allowlist、Web consumer、capability 与产品 E2E 均有证据的范围。
 
 | 能力 | Producer | WPF Host / allowlist | Web consumer | capability 条件 | 产品 E2E | 当前状态与阶段 0 决策 |
