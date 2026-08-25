@@ -6,3 +6,4 @@ export * from "./format";
 export * from "./templates";
 export * from "./bindingRuntime";
 export * from "./panelManifest";
+export * from "./filterCompatibility";
