@@ -42,6 +42,45 @@ describe("alternative record views", () => {
     expect(wrapper.text()).toContain("已完成");
     expect(wrapper.text()).toContain("未分组");
     expect(wrapper.findAll('[data-testid="kanban-card"]')).toHaveLength(3);
+    expect(wrapper.get('[data-testid="kanban-card"]').attributes("draggable")).toBe("false");
+  });
+
+  it("renders active select labels and emits an option-id move without mutating rows", async () => {
+    const rowDigest = `sha256:${"a".repeat(64)}`;
+    const rows = [
+      { rowKey: "1", title: "准备合同", status: "opt_todo", __vibetableDigest: rowDigest },
+      { rowKey: "2", title: "等待确认", status: null, __vibetableDigest: `sha256:${"b".repeat(64)}` },
+    ];
+    const wrapper = mount(RecordKanbanView, {
+      props: {
+        rows,
+        schema,
+        view: view({ kind: "kanban", groupField: "status", titleField: "title" }),
+        interactionEnabled: true,
+        laneOptions: [
+          { optionId: "opt_todo", label: "待处理" },
+          { optionId: "opt_doing", label: "进行中" },
+          { optionId: "opt_done", label: "已完成" },
+        ],
+      },
+    });
+
+    expect(wrapper.findAll('[data-testid="kanban-lane"]')).toHaveLength(4);
+    expect(wrapper.text()).toContain("待处理");
+    expect(wrapper.text()).toContain("进行中");
+    expect(wrapper.text()).toContain("已完成");
+    expect(wrapper.text()).toContain("未分组");
+    expect(wrapper.text()).not.toContain("opt_todo");
+    expect(wrapper.get('[data-option-id="opt_done"]').findAll('[data-testid="kanban-card"]'))
+      .toHaveLength(0);
+
+    await wrapper.get('[data-row-key="1"]').trigger("dragstart");
+    await wrapper.get('[data-option-id="opt_done"]').trigger("drop");
+
+    expect(wrapper.emitted("cardMove")).toEqual([[
+      { rowKey: "1", targetOptionId: "opt_done", expectedDigest: rowDigest },
+    ]]);
+    expect(rows[0]?.status).toBe("opt_todo");
   });
 
   it("renders local gallery covers and falls back for missing or failed covers", async () => {

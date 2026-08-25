@@ -76,6 +76,13 @@ const FIELD_KEYS = [
 ] as const;
 
 export function parseFieldDefinitionV2(value: unknown): FieldDefinitionV2 {
+  return parseFieldDefinition(value, false);
+}
+
+function parseFieldDefinition(
+  value: unknown,
+  allowUnallocatedSelectOptionIds: boolean,
+): FieldDefinitionV2 {
   const field = {
     ...exactObject(value, "$", FIELD_KEYS, FIELD_KEYS.slice(0, 10)),
   };
@@ -204,7 +211,7 @@ export function parseFieldDefinitionV2(value: unknown): FieldDefinitionV2 {
       fail("$.display.indent", "expected one of 0, 2, 4");
     }
   }
-  validateOptionalFieldSpecs(field);
+  validateOptionalFieldSpecs(field, allowUnallocatedSelectOptionIds);
   validateLogicalTypeSpec(field, field.logicalType as LogicalTypeV2);
   return field as unknown as FieldDefinitionV2;
 }
@@ -354,7 +361,10 @@ export function parseFieldRecycleBinResultV2(value: unknown): FieldRecycleBinRes
   return result as unknown as FieldRecycleBinResultV2;
 }
 
-function validateOptionalFieldSpecs(field: Readonly<Record<string, unknown>>): void {
+function validateOptionalFieldSpecs(
+  field: Readonly<Record<string, unknown>>,
+  allowUnallocatedSelectOptionIds = false,
+): void {
   if (field.select !== undefined) {
     const select = exactObject(field.select, "$.select", ["options"]);
     if (!Array.isArray(select.options)) fail("$.select.options", "expected array");
@@ -365,7 +375,7 @@ function validateOptionalFieldSpecs(field: Readonly<Record<string, unknown>>): v
         path,
         ["optionId", "label", "color", "order", "state"],
       );
-      expectString(item.optionId, `${path}.optionId`);
+      expectString(item.optionId, `${path}.optionId`, allowUnallocatedSelectOptionIds);
       expectString(item.label, `${path}.label`);
       expectString(item.color, `${path}.color`, true);
       expectSafeInteger(item.order, `${path}.order`);
@@ -552,7 +562,7 @@ function parseIntent(value: unknown, path: string): void {
       );
       definitionFormula = { ...formula, resultType: "text" };
     }
-    parseFieldDefinitionV2({
+    parseFieldDefinition({
       ...draft,
       formula: definitionFormula,
       contract: SCHEMA_V2_CONTRACT,
@@ -562,7 +572,7 @@ function parseIntent(value: unknown, path: string): void {
         providerFieldId: "pb_contract_validation",
       },
       lifecycle: { state: "active", retiredAt: null },
-    });
+    }, true);
   }
 }
 

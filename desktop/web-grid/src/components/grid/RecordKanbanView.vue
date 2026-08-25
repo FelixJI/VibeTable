@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { Kanban } from "lucide-vue-next";
 import type { ColumnSchema, PresetView } from "@/contracts";
 import { t } from "@/i18n";
@@ -9,7 +9,30 @@ const props = defineProps<{
   rows: readonly Record<string, unknown>[];
   schema: readonly ColumnSchema[];
   view: PresetView;
+  interactionEnabled?: boolean;
+  laneOptions?: readonly { readonly optionId: string; readonly label: string }[];
 }>();
+const emit = defineEmits<{
+  cardMove: [intent: {
+    readonly rowKey: string | number;
+    readonly targetOptionId: string;
+    readonly expectedDigest: string;
+  }];
+}>();
+
+interface KanbanLane {
+  readonly key: string;
+  readonly label: string;
+  readonly targetOptionId: string | null;
+  readonly records: Record<string, unknown>[];
+}
+
+interface DraggedCard {
+  readonly rowKey: string | number;
+  readonly expectedDigest: string;
+}
+
+const draggedCard = ref<DraggedCard | null>(null);
 
 const details = computed(() => metadataFields(
   props.schema,
@@ -18,18 +41,69 @@ const details = computed(() => metadataFields(
 ));
 const lanes = computed(() => {
   if (!props.view.groupField) return [];
-  const grouped = new Map<string, Record<string, unknown>[]>();
+  const grouped = new Map<string, KanbanLane>();
+  const optionIds = new Set<string>();
+  for (const option of props.laneOptions ?? []) {
+    optionIds.add(option.optionId);
+    grouped.set(`option:${option.optionId}`, {
+      key: `option:${option.optionId}`,
+      label: option.label,
+      targetOptionId: option.optionId,
+      records: [],
+    });
+  }
   for (const row of props.rows) {
     const raw = row[props.view.groupField];
-    const label = raw === null || raw === undefined || String(raw).trim() === ""
-      ? t("views.kanban.ungrouped")
-      : displayValue(raw);
-    const records = grouped.get(label) ?? [];
-    records.push(row);
-    grouped.set(label, records);
+    const blank = raw === null || raw === undefined || String(raw).trim() === "";
+    const optionId = typeof raw === "string" && optionIds.has(raw) ? raw : null;
+    const key = optionId ? `option:${optionId}` : blank ? "ungrouped" : `unknown:${String(raw)}`;
+    let lane = grouped.get(key);
+    if (!lane) {
+      lane = {
+        key,
+        label: blank ? t("views.kanban.ungrouped") : displayValue(raw),
+        targetOptionId: null,
+        records: [],
+      };
+      grouped.set(key, lane);
+    }
+    lane.records.push(row);
   }
-  return [...grouped].map(([label, records]) => ({ label, records }));
+  return [...grouped.values()];
 });
+
+function canDrag(row: Record<string, unknown>): boolean {
+  return props.interactionEnabled === true
+    && (typeof row.rowKey === "string" || typeof row.rowKey === "number")
+    && typeof row.__vibetableDigest === "string";
+}
+
+function onDragStart(event: DragEvent, row: Record<string, unknown>): void {
+  if (!canDrag(row)) {
+    event.preventDefault();
+    draggedCard.value = null;
+    return;
+  }
+  const rowKey = row.rowKey as string | number;
+  const expectedDigest = row.__vibetableDigest as string;
+  draggedCard.value = { rowKey, expectedDigest };
+  event.dataTransfer?.setData("text/plain", String(rowKey));
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
+
+function onDragOver(event: DragEvent, targetOptionId: string | null): void {
+  if (!draggedCard.value || !targetOptionId || props.interactionEnabled !== true) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+}
+
+function onDrop(event: DragEvent, targetOptionId: string | null): void {
+  const dragged = draggedCard.value;
+  draggedCard.value = null;
+  if (!dragged || !targetOptionId || props.interactionEnabled !== true) return;
+  event.preventDefault();
+  emit("cardMove", { ...dragged, targetOptionId });
+}
 </script>
 
 <template>
@@ -38,10 +112,26 @@ const lanes = computed(() => {
       <div><strong>{{ t("views.kind.kanban") }}</strong><small>{{ t("views.kanban.summary", { laneCount: lanes.length, count: rows.length }) }}</small></div>
     </header>
     <div v-if="lanes.length" class="kanban-lanes">
-      <section v-for="lane in lanes" :key="lane.label" class="kanban-lane">
+      <section
+        v-for="lane in lanes"
+        :key="lane.key"
+        class="kanban-lane"
+        data-testid="kanban-lane"
+        :data-option-id="lane.targetOptionId ?? undefined"
+        @dragover="onDragOver($event, lane.targetOptionId)"
+        @drop="onDrop($event, lane.targetOptionId)"
+      >
         <header><strong>{{ lane.label }}</strong><span>{{ lane.records.length }}</span></header>
         <div class="kanban-cards">
-          <article v-for="row in lane.records" :key="String(row.rowKey ?? rowTitle(row, view))" data-testid="kanban-card">
+          <article
+            v-for="row in lane.records"
+            :key="String(row.rowKey ?? rowTitle(row, view))"
+            data-testid="kanban-card"
+            :data-row-key="String(row.rowKey ?? '')"
+            :draggable="canDrag(row)"
+            @dragstart="onDragStart($event, row)"
+            @dragend="draggedCard = null"
+          >
             <strong>{{ rowTitle(row, view) }}</strong>
             <dl v-if="details.length">
               <template v-for="field in details" :key="field.name">

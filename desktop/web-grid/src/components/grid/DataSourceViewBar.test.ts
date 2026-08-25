@@ -121,6 +121,8 @@ describe("DataSourceViewBar", () => {
     await wrapper.get('[data-testid="view-create"]').trigger("click");
     document.body.querySelector<HTMLElement>('[data-testid="view-kind-kanban"]')?.click();
     await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="view-kanban-group-field"]')).toBeTruthy();
+    expect(document.body.querySelector('[data-testid="view-kanban-title-field"]')).toBeTruthy();
     const input = document.body.querySelector<HTMLInputElement>("input");
     input!.value = "任务看板";
     input!.dispatchEvent(new Event("input", { bubbles: true }));

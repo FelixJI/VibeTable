@@ -267,6 +267,9 @@ def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     assert "Dashboard" in by_id["16-dashboard-lifecycle"]
     assert "RecordDocumentLink" in by_id["18-workspace-search"]
     assert "Markdown/JSON" in by_id["18-workspace-search"]
+    assert "真实 Tables UI" in by_id["20-kanban-lane-drag"]
+    assert "稳定 optionId" in by_id["20-kanban-lane-drag"]
+    assert "重开" in by_id["20-kanban-lane-drag"]
 
 
 def test_node_runner_inventory_matches_the_product_scenario_manifest() -> None:
@@ -309,6 +312,7 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
         source.index("async function scenario17") : source.index("async function scenario18")
     ]
     search = source[source.index("async function scenario18") : source.index("const scenarios")]
+    kanban = source[source.index("async function scenario20") : source.index("const scenarios")]
 
     assert 'getByTestId("workspace-create")' in workspace
     assert 'getByTestId("snapshot-create")' in workspace
@@ -325,6 +329,24 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("interface-run")' in interface
     assert 'getByTestId("nav-search")' in search
     assert 'getByTestId("workspace-search-submit")' in source
+    assert 'getByTestId("view-create")' in kanban
+    assert 'getByTestId("view-kind-kanban")' in kanban
+    assert 'getByTestId("field-display-name")' in kanban
+    assert '"field-logical-type"' in kanban
+    add_select_option = 'await optionSection.getByRole("button", { name: "添加" }).click();'
+    fill_select_option = "await optionInputs.nth(index).fill(optionLabels[index]);"
+    assert add_select_option in kanban
+    assert fill_select_option in kanban
+    assert kanban.index(add_select_option) < kanban.index(fill_select_option)
+    assert "optionInputs.first().fill(optionLabels[0])" not in kanban
+    assert 'getByTestId("field-plan-button")' in kanban
+    assert 'getByTestId("field-apply-button")' in kanban
+    assert '"view-kanban-group-field"' in kanban
+    assert '"view-kanban-title-field"' in kanban
+    assert ".dragTo(" in kanban
+    assert '"query.page"' in kanban
+    assert '"table.updateCellRequested"' not in kanban
+    assert "createV2Field(page, tableId" not in kanban
 
 
 def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries() -> None:
