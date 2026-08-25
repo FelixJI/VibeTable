@@ -91,9 +91,9 @@
   },
   {
     "id": "16-dashboard-lifecycle",
-    "title": "Dashboard 创建、保存与刷新",
-    "requirement": "通过真实 Dashboard UI 创建空白 Dashboard、保存、刷新列表并重新选择，验证持久化后的 Dashboard 仍可打开。",
-    "capabilities": ["dashboard.lifecycle", "release.smoke"]
+    "title": "Dashboard 可视化、筛选与冲突闭环",
+    "requirement": "通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision。",
+    "capabilities": ["dashboard.lifecycle", "dashboard.visualization", "dashboard.filtering", "dashboard.drilldown", "dashboard.conflict", "release.smoke"]
   },
   {
     "id": "17-interface-lifecycle",

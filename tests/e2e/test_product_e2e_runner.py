@@ -1690,6 +1690,48 @@ def test_dashboard_scenario_clears_the_default_name_before_asserting_empty_valid
     assert scenario.index(clear) < scenario.index(disabled)
 
 
+def test_dashboard_filter_waits_for_the_unbound_metric_to_settle() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[source.index("async function scenario16") : source.index("const scenarios")]
+    filter_action = scenario.index(
+        'await addVisibleNTagOption(page, "dashboard-filter-value-region"'
+    )
+    assertion = scenario.index(
+        'recorder.check("the real FilterBar limits only its explicitly bound record panel"'
+    )
+    setup = scenario[:filter_action]
+    synchronization = scenario[filter_action:assertion]
+
+    assert "const filterQueryStart = await page.evaluate" in setup
+    assert "__vibetableE2EBridgeDiagnostics?.roundTrips" in synchronization
+    assert ".slice(start)" in synchronization
+    assert 'item.requestType === "dashboard.queryRequested"' in synchronization
+    assert 'item.responseType === "dashboard.queryLoaded"' in synchronization
+    assert 'querySelector(".metric-panel strong")?.textContent?.trim()' in synchronization
+    assert 'metricValue === "2"' in synchronization
+    assert 'locator(".metric-panel strong").innerText()' in synchronization
+    assert 'metricValue.trim() === "2"' in scenario[filter_action:]
+
+
+def test_dashboard_conflict_reload_reads_the_winning_note_through_settings() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[source.index("async function scenario16") : source.index("const scenarios")]
+    reload_conflict = scenario.index('getByTestId("dashboard-reload-conflict").click()')
+    setup = scenario[:reload_conflict]
+    recovery = scenario[reload_conflict:]
+
+    assert "const conflictReloadStart = await page.evaluate" in setup
+    assert ".slice(start)" in recovery
+    assert 'item.requestType === "dashboard.readRequested"' in recovery
+    assert 'item.responseType === "dashboard.loaded"' in recovery
+    assert 'const editAfterReload = page.getByTestId("dashboard-edit")' in recovery
+    assert "await editAfterReload.click()" in recovery
+    assert 'const configureAfterReload = page.getByTestId("dashboard-configure")' in recovery
+    assert "await configureAfterReload.click()" in recovery
+    assert 'getByTestId("dashboard-settings-note")' in recovery
+    assert 'reloadedNote === "competing E2E save"' in recovery
+
+
 def test_workspace_switch_scenario_accepts_the_closed_stale_session_error() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[

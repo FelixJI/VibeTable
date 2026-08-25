@@ -409,6 +409,22 @@ async function selectVisibleNOptions(page, testId, labels) {
   }
 }
 
+async function addVisibleNTagOption(page, testId, label) {
+  const select = page.getByTestId(testId);
+  const selection = select.locator(".n-base-selection");
+  await selection.waitFor({ state: "visible", timeout: 10_000 });
+  await selection.click();
+  const input = select.locator("input");
+  await input.fill(label);
+  const option = page.locator(".n-base-select-option:visible")
+    .filter({ hasText: label })
+    .first();
+  await option.waitFor({ state: "visible", timeout: 10_000 });
+  await option.click();
+  await select.getByText(label, { exact: true }).first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
 async function closeVisibleNSelectMenu(page) {
   const visibleMenu = page.locator(".n-base-select-menu:visible").first();
   if (!await visibleMenu.count()) return;
@@ -4668,8 +4684,24 @@ async function scenario16(page, recorder, _network, runtime) {
     layoutAfter.x !== layoutBefore.x && layoutAfter.height !== layoutBefore.height,
   { layoutBefore, layoutAfter });
 
+  const dataPanelId = await dataPanel.evaluate((node) =>
+    node.closest("[data-panel-id]")?.getAttribute("data-panel-id") ?? null,
+  );
+  if (!dataPanelId) throw new Error("Dashboard record panel id is unavailable");
+
   await page.getByTestId("dashboard-configure").click();
   await page.getByTestId("dashboard-settings").waitFor({ state: "visible" });
+  await page.getByTestId("dashboard-add-filter").click();
+  await fillNInput(page, "dashboard-filter-label-0", "Region");
+  await fillNInput(page, "dashboard-filter-key-0", "region");
+  await selectVisibleNOption(page, "dashboard-filter-type-0", /^(枚举多选|Enum multi-select)$/u);
+  const filterTargets = page.getByTestId("dashboard-filter-targets-0");
+  await filterTargets.locator(".n-tag")
+    .filter({ hasText: "Regional bars" })
+    .locator(".n-tag__close")
+    .click();
+  await selectVisibleNOptions(page, "dashboard-filter-targets-0", ["Regional records"]);
+  await selectVisibleNOption(page, `dashboard-filter-binding-0-${dataPanelId}`, "Region");
   await page.getByTestId("dashboard-add-interaction").click();
   const interactionSource = page.getByTestId("dashboard-interaction-source-0");
   const interactionSourceField = page.getByTestId("dashboard-interaction-source-field-0");
@@ -4697,6 +4729,9 @@ async function scenario16(page, recorder, _network, runtime) {
     hasText: "E2E Dashboard",
   });
   await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  const dashboardId = (await persisted.getAttribute("data-testid"))
+    ?.replace("dashboard-select-", "");
+  if (!dashboardId) throw new Error("persisted Dashboard id is unavailable");
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("nav-dashboard").click();
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
@@ -4706,6 +4741,73 @@ async function scenario16(page, recorder, _network, runtime) {
   const reopenedPanel = workspace.locator(".dashboard-panel").filter({ hasText: "Regional records" });
   await reopenedPanel.waitFor({ state: "visible", timeout: 30_000 });
   const reopenedBar = workspace.locator(".dashboard-panel").filter({ hasText: "Regional bars" });
+  const reopenedMetric = workspace.locator(".dashboard-panel").filter({ hasText: "Record count" });
+  const reopened = await rawBridgeRequest(page, "dashboard.readRequested", {
+    dashboardId,
+  }, 20_000, ["dashboard.loaded"]);
+  const persistedFilter = reopened.payload?.config?.globalFilters?.find((filter) =>
+    filter.key === "region",
+  );
+  const persistedDataPanelId = reopened.payload?.dashboard?.panels?.find((panel) =>
+    panel.name === "Regional records",
+  )?.id;
+  recorder.check("Dashboard persists the visual global-filter definition and explicit field binding",
+    persistedFilter?.label === "Region"
+      && persistedFilter?.type === "enum"
+      && persistedFilter?.targetPanels?.length === 1
+      && persistedFilter.targetPanels[0] === persistedDataPanelId
+      && persistedFilter?.fieldBindings?.[persistedDataPanelId] === seeded.field.physicalName
+      && !Object.prototype.hasOwnProperty.call(persistedFilter, "value"),
+  { persistedFilter, draftDataPanelId: dataPanelId, persistedDataPanelId, field: seeded.field.physicalName });
+
+  const filterQueryStart = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.roundTrips.length ?? 0,
+  );
+  await addVisibleNTagOption(page, "dashboard-filter-value-region", "North");
+  await page.waitForFunction(
+    ({ start }) => window.__vibetableE2EBridgeDiagnostics?.roundTrips
+      .slice(start)
+      .filter((item) => item.requestType === "dashboard.queryRequested"
+        && item.responseType === "dashboard.queryLoaded").length >= 4,
+    { start: filterQueryStart },
+    { timeout: 30_000 },
+  );
+  await page.waitForFunction(
+    () => {
+      const panels = [...document.querySelectorAll(".dashboard-panel")];
+      const panel = panels
+        .find((item) => item.textContent?.includes("Regional records"));
+      const metric = panels.find((item) => item.textContent?.includes("Record count"));
+      const metricValue = metric?.querySelector(".metric-panel strong")?.textContent?.trim();
+      return panel?.textContent?.includes("North")
+        && !panel?.textContent?.includes("South")
+        && metricValue === "2";
+    },
+    undefined,
+    { timeout: 30_000 },
+  );
+  const globallyFilteredText = await reopenedPanel.innerText();
+  const metricText = await reopenedMetric.innerText();
+  const metricValue = await reopenedMetric.locator(".metric-panel strong").innerText();
+  recorder.check("the real FilterBar limits only its explicitly bound record panel",
+    globallyFilteredText.includes("North")
+      && !globallyFilteredText.includes("South")
+      && metricValue.trim() === "2",
+  { globallyFilteredText, metricText, metricValue });
+  await page.getByTestId("dashboard-filters-clear").click();
+  await page.waitForFunction(
+    () => {
+      const panel = [...document.querySelectorAll(".dashboard-panel")]
+        .find((item) => item.textContent?.includes("Regional records"));
+      return panel?.textContent?.includes("North") && panel?.textContent?.includes("South");
+    },
+    undefined,
+    { timeout: 30_000 },
+  );
+  recorder.check("clearing global filters restores all authoritative record rows",
+    (await reopenedPanel.innerText()).includes("North")
+      && (await reopenedPanel.innerText()).includes("South"));
+
   const chartSelection = reopenedBar.getByTestId("dashboard-chart-selection");
   await chartSelection.waitFor({ state: "visible", timeout: 30_000 });
   await chartSelection.selectOption({ label: "North" });
@@ -4740,9 +4842,6 @@ async function scenario16(page, recorder, _network, runtime) {
     undefined,
     { timeout: 10_000 },
   );
-  const dashboardId = (await persisted.getAttribute("data-testid"))
-    ?.replace("dashboard-select-", "");
-  if (!dashboardId) throw new Error("persisted Dashboard id is unavailable");
   const current = await rawBridgeRequest(page, "dashboard.readRequested", {
     dashboardId,
   }, 20_000, ["dashboard.loaded"]);
@@ -4783,16 +4882,42 @@ async function scenario16(page, recorder, _network, runtime) {
   const conflict = page.getByTestId("dashboard-conflict-error");
   await conflict.waitFor({ state: "visible", timeout: 30_000 });
   const conflictText = await conflict.innerText();
+  const conflictReloadStart = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.roundTrips.length ?? 0,
+  );
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByTestId("dashboard-reload-conflict").click();
+  await page.waitForFunction(
+    ({ start }) => window.__vibetableE2EBridgeDiagnostics?.roundTrips
+      .slice(start)
+      .some((item) => item.requestType === "dashboard.readRequested"
+        && item.responseType === "dashboard.loaded") ?? false,
+    { start: conflictReloadStart },
+    { timeout: 30_000 },
+  );
   await conflict.waitFor({ state: "hidden", timeout: 30_000 });
   await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "dashboard_edit_conflict");
   while (await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "DASHBOARD_CANCELLED")) {
     // Rapid Dashboard reloads intentionally cancel superseded panel reads.
   }
+  const editAfterReload = page.getByTestId("dashboard-edit");
+  await editAfterReload.waitFor({ state: "visible", timeout: 30_000 });
+  await editAfterReload.click();
+  const configureAfterReload = page.getByTestId("dashboard-configure");
+  await configureAfterReload.waitFor({ state: "visible", timeout: 30_000 });
+  await configureAfterReload.click();
+  const reloadedSettings = page.getByTestId("dashboard-settings");
+  await reloadedSettings.waitFor({ state: "visible", timeout: 30_000 });
+  const reloadedNote = await page.getByTestId("dashboard-settings-note")
+    .locator("textarea")
+    .inputValue();
   recorder.check("Dashboard exposes a CAS conflict and reloads the winning revision",
-    (await page.getByTestId("dashboard-edit").isVisible()) && !(await save.isVisible()),
-  { conflictText });
+    conflictText.trim().length > 0 && reloadedNote === "competing E2E save",
+  {
+    conflictText,
+    reloadedNote,
+    winningRevision: competing.payload?.workspace?.revision,
+  });
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "16-dashboard-lifecycle.png"),
     fullPage: true,

@@ -125,6 +125,16 @@ describe("Dashboard shell components", () => {
     expect(wrapper.findComponent(NDatePicker).exists()).toBe(true);
     expect(wrapper.findAllComponents(NInputNumber)).toHaveLength(2);
     expect(wrapper.findComponent(NSelect).exists()).toBe(true);
+    for (const testId of [
+      "dashboard-filter-value-when",
+      "dashboard-filter-value-amount-min",
+      "dashboard-filter-value-amount-max",
+      "dashboard-filter-value-status",
+      "dashboard-filter-value-owner",
+      "dashboard-filters-clear",
+    ]) {
+      expect(wrapper.get(`[data-testid="${testId}"]`).attributes("data-testid")).toBe(testId);
+    }
 
     wrapper.findComponent(NDatePicker).vm.$emit("update:value", [10, 20]);
     const numbers = wrapper.findAllComponents(NInputNumber);

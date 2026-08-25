@@ -8,8 +8,8 @@
 ## 当前声明范围
 
 - 场景：19
-- 唯一能力：32
-- 场景—能力关联：41
+- 唯一能力：36
+- 场景—能力关联：45
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -21,7 +21,11 @@
 | `audit.ledger` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `content.record` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `contract.diagnostics` | <code>03-schema-errors</code>（前端与服务端 typed diagnostic） |
-| `dashboard.lifecycle` | <code>16-dashboard-lifecycle</code>（Dashboard 创建、保存与刷新） |
+| `dashboard.conflict` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
+| `dashboard.drilldown` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
+| `dashboard.filtering` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
+| `dashboard.lifecycle` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
+| `dashboard.visualization` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `data-import.atomic` | <code>09-atomic-import-scale</code>（粘贴或导入中途失败无半提交） |
 | `data-io.round-trip` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
 | `data.json` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
@@ -40,7 +44,7 @@
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `relation.fanout` | <code>06-relation-fanout</code>（关系 cascade 方向与影响预览） |
-| `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 创建、保存与刷新） |
+| `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
 | `snapshot.package` | <code>15-workspace-snapshot-package</code>（工作区切换与快照包） |
 | `snapshot.restore` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
@@ -68,7 +72,7 @@
 | <code>13-protection-policy</code> | 工作区保护策略与仓库验证 | 通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup，并仅在计划确认为零删除时一次性执行 retention.apply；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，Apply 必须返回零删除数与零回收字节数。 | `workspace.protection` |
 | <code>14-document-diff</code> | 真实文件历史版本比较 | 通过 host-only picker 导入真实 TXT 历史版本，以真实 restore revision 建立当前版本后，从 FileRevisionTree 的“与当前版本比较”执行 closed document.diffRequested；验证本地化 identical 结果、两阶段 effective CAS 的 stale 失败，以及 renderer 原始 fileHistory.materializeDiffPair 请求被拒绝。 | `file-history.diff` |
 | <code>15-workspace-snapshot-package</code> | 工作区切换与快照包 | 通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。 | `workspace.lifecycle`、`snapshot.package` |
-| <code>16-dashboard-lifecycle</code> | Dashboard 创建、保存与刷新 | 通过真实 Dashboard UI 创建空白 Dashboard、保存、刷新列表并重新选择，验证持久化后的 Dashboard 仍可打开。 | `dashboard.lifecycle`、`release.smoke` |
+| <code>16-dashboard-lifecycle</code> | Dashboard 可视化、筛选与冲突闭环 | 通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision。 | `dashboard.lifecycle`、`dashboard.visualization`、`dashboard.filtering`、`dashboard.drilldown`、`dashboard.conflict`、`release.smoke` |
 | <code>17-interface-lifecycle</code> | Interface 构建、运行与重开 | 通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，证明构建器和运行时消费同一原子定义及既有插件任务生命周期。 | `interface.lifecycle`、`interface.runtime`、`plugin.action.lifecycle` |
 | <code>18-workspace-search</code> | 内容、文件关联与统一搜索闭环 | 通过真实内容 UI 配置并编辑 ContentProfile 记录，经 host picker 导入 Markdown/JSON 文件并验证 FileDocument 元数据 AND/OR；建立显式 RecordDocumentLink，unlink 后显示 broken 并修复到另一文档，精确重启 sidecar 后重开仍一致；统一搜索重建后由键盘查询 records/files/attachments、metadata/content/current/history，并对 stale open 显式重解析。 | `workspace-search.query`、`workspace-search.rebuild`、`content.record`、`file-history.query`、`record-document-link.lifecycle`、`attachment.search` |
 | <code>19-gallery-lifecycle</code> | Gallery 创建、重开与冲突恢复 | 通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。 | `gallery.lifecycle`、`preset.conflict` |
