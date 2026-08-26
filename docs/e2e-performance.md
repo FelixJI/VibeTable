@@ -4,11 +4,11 @@
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@f9f83cbb8c7a950e054ba534ac64829bb7c912c7`
-- GitHub run：[main CI 32865525272](https://github.com/FelixJI/VibeTable/actions/runs/32865525272)
+- source SHA：`GitHub/main@c069294b597b1b162ff39c460f374923363f2bf1`
+- GitHub run：[main CI 32906566213](https://github.com/FelixJI/VibeTable/actions/runs/32906566213)
 - 报告契约：`contractVersion=2.0`
-- 结果：19/19 passed、0 failed、0 skipped。
-- 当前 manifest gap：1（`20-kanban-lane-drag`）。
+- 结果：20/20 passed、0 failed、0 skipped。
+- 当前 manifest gap：无。
 - 当前 manifest surplus：无。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
@@ -16,33 +16,34 @@
 该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
 保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。
 
-### 当前 19 场景耗时（2026-08-25）
+### 当前 20 场景耗时（2026-08-26）
 
 | 场景 | 耗时 |
 |---|---:|
-| `01-offline-first-start` | 82.927s |
-| `02-all-field-schema` | 54.589s |
-| `03-schema-errors` | 38.731s |
-| `04-json-round-trip` | 36.833s |
-| `05-formula-lifecycle` | 17.229s |
-| `06-relation-fanout` | 16.298s |
-| `07-attachment-history` | 29.586s |
-| `08-stale-conflict` | 17.158s |
-| `09-atomic-import-scale` | 18.701s |
-| `10-sse-reconnect` | 31.423s |
-| `11-plugin-mutation` | 20.012s |
-| `12-backup-consistency` | 49.170s |
-| `13-protection-policy` | 9.849s |
-| `14-document-diff` | 10.575s |
-| `15-workspace-snapshot-package` | 63.372s |
-| `16-dashboard-lifecycle` | 50.208s |
-| `17-interface-lifecycle` | 33.150s |
-| `18-workspace-search` | 54.105s |
-| `19-gallery-lifecycle` | 23.794s |
+| `01-offline-first-start` | 6.872s |
+| `02-all-field-schema` | 51.627s |
+| `03-schema-errors` | 51.887s |
+| `04-json-round-trip` | 31.056s |
+| `05-formula-lifecycle` | 20.804s |
+| `06-relation-fanout` | 15.622s |
+| `07-attachment-history` | 27.492s |
+| `08-stale-conflict` | 17.740s |
+| `09-atomic-import-scale` | 19.007s |
+| `10-sse-reconnect` | 35.477s |
+| `11-plugin-mutation` | 20.563s |
+| `12-backup-consistency` | 55.533s |
+| `13-protection-policy` | 11.167s |
+| `14-document-diff` | 7.710s |
+| `15-workspace-snapshot-package` | 64.913s |
+| `16-dashboard-lifecycle` | 55.284s |
+| `17-interface-lifecycle` | 35.956s |
+| `18-workspace-search` | 64.931s |
+| `19-gallery-lifecycle` | 28.360s |
+| `20-kanban-lane-drag` | 37.015s |
 
-当前 `history.query` 共 8 次，p50 26.8ms、p95/max 317.4ms，低于 500ms 告警线；
-`history.drawer.initialLoad` 共 2 次，p50 119.39ms、p95/max 317.69ms，低于 750ms 告警线。
-场景耗时范围为 9.849s–82.927s，均低于 180s 防挂死上限；这些耗时包含应用启动与 fixture
+当前 `history.query` 共 8 次，p50 25.2ms、p95/max 185.7ms，低于 500ms 告警线；
+`history.drawer.initialLoad` 共 2 次，p50 147.17ms、p95/max 226.32ms，低于 750ms 告警线。
+场景耗时范围为 6.872s–64.931s，均低于 180s 防挂死上限；这些耗时包含应用启动与 fixture
 准备，不能解释为单次用户交互延迟。
 
 ## 测量口径
