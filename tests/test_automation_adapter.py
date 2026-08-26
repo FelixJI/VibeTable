@@ -160,9 +160,30 @@ def test_ci_runs_advanced_codeql_with_repository_toolchains() -> None:
     assert "if: matrix.language == 'go'" in codeql
     assert "go-version-file: sidecar/go.mod" in codeql
     action = "db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28"
-    assert f"github/codeql-action/init@{action}" in codeql
+    assert codeql.count(f"github/codeql-action/init@{action}") == 2
     assert f"github/codeql-action/analyze@{action}" in codeql
     assert "build-mode: ${{ matrix.build-mode }}" in codeql
+    go_bundle = (
+        "https://github.com/github/codeql-action/releases/download/"
+        "codeql-bundle-v2.26.4/codeql-bundle-win64.tar.gz"
+    )
+    assert "Initialize CodeQL with default bundle" in codeql
+    assert "Initialize CodeQL with Go 1.27 bundle" in codeql
+    default_init = codeql.split("- name: Initialize CodeQL with default bundle", maxsplit=1)[
+        1
+    ].split("- name: Initialize CodeQL with Go 1.27 bundle", maxsplit=1)[0]
+    go_init = codeql.split("- name: Initialize CodeQL with Go 1.27 bundle", maxsplit=1)[1].split(
+        "- name: Analyze", maxsplit=1
+    )[0]
+    matrix_include = codeql.split("        include:\n", maxsplit=1)[1].split(
+        "    steps:\n", maxsplit=1
+    )[0]
+    assert "if: matrix.language != 'go'" in default_init
+    assert "tools:" not in default_init
+    assert "if: matrix.language == 'go'" in go_init
+    assert f"tools: {go_bundle}" in go_init
+    assert codeql.count(go_bundle) == 1
+    assert "tools:" not in matrix_include
     assert 'category: "/language:${{ matrix.language }}"' in codeql
     assert "github.event_name != 'schedule'" in ci.split("\n  plan:\n", maxsplit=1)[1]
 
