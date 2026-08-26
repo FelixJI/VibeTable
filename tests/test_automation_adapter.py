@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts import automation_project, changelog, toolchain_metadata
+from qa import fault_injection
+from qa import next as next_gate
+from scripts import automation_project, build_next, changelog, dev, toolchain_metadata
 from scripts.automation_core import Automation, CommandRunner, SemVer
-from scripts.windows_doctor import DoctorCheck, DoctorProfile, DoctorReport
+from scripts.windows_doctor import DoctorCheck, DoctorProfile, DoctorReport, SystemAdapter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,6 +70,9 @@ def test_project_runner_prefers_dotnet_install_with_sdk(
     calls: list[tuple[str, ...]] = []
     preferred = tmp_path / "dotnet.exe"
     preferred.touch()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    monkeypatch.setattr(automation_project, "REPO_ROOT", repository)
     monkeypatch.setattr(toolchain_metadata, "PREFERRED_DOTNET", preferred)
     monkeypatch.setattr(
         toolchain_metadata.shutil,
@@ -89,6 +94,37 @@ def test_project_runner_prefers_dotnet_install_with_sdk(
             "desktop/VibeTable.Desktop.sln",
         )
     ]
+
+
+def test_worktree_resolvers_prefer_repository_managed_dotnet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    common_root = tmp_path / "vibetable"
+    worktree_root = tmp_path / ".worktrees" / "vibetable" / "deps"
+    bundled = common_root / ".tools" / "dotnet" / "dotnet.exe"
+    system = tmp_path / "Program Files" / "dotnet" / "dotnet.exe"
+    bundled.parent.mkdir(parents=True)
+    system.parent.mkdir(parents=True)
+    bundled.touch()
+    system.touch()
+    worktree_root.mkdir(parents=True)
+    (worktree_root / ".git").write_text(
+        f"gitdir: {common_root / '.git' / 'worktrees' / 'deps'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(toolchain_metadata, "PREFERRED_DOTNET", system)
+    monkeypatch.setattr(automation_project, "REPO_ROOT", worktree_root)
+    monkeypatch.setattr(dev, "ROOT", worktree_root)
+    monkeypatch.setattr(fault_injection, "ROOT", worktree_root)
+    monkeypatch.setattr(next_gate, "REPO_ROOT", worktree_root)
+
+    assert automation_project._resolve_executable("dotnet") == str(bundled)
+    assert build_next._resolve_executable("dotnet", repo_root=worktree_root) == str(bundled)
+    assert SystemAdapter(worktree_root).which("dotnet") == str(bundled)
+    assert dev._resolve("dotnet") == str(bundled)
+    assert fault_injection._resolve("dotnet") == str(bundled)
+    assert next_gate._resolve("dotnet") == str(bundled)
 
 
 def test_only_canonical_workflows_remain_and_delegate_to_stable_cli() -> None:

@@ -79,6 +79,9 @@ class DoctorAdapter(Protocol):
 
 
 class SystemAdapter:
+    def __init__(self, repo_root: Path | None = None) -> None:
+        self._repo_root = repo_root
+
     def platform(self) -> PlatformSnapshot:
         windows_version = getattr(sys, "getwindowsversion", None)
         build = windows_version().build if windows_version is not None else 0
@@ -91,7 +94,7 @@ class SystemAdapter:
         )
 
     def which(self, executable: str) -> str | None:
-        return resolve_executable(executable)
+        return resolve_executable(executable, repo_root=self._repo_root)
 
     def read_text(self, path: Path) -> str | None:
         try:
@@ -121,7 +124,6 @@ class SystemAdapter:
         return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 
-SYSTEM_ADAPTER = SystemAdapter()
 _VERSION_PATTERN = re.compile(r"(?<!\d)(\d+)\.(\d+)(?:\.(\d+))?")
 
 
@@ -477,11 +479,12 @@ def diagnose_windows_toolchain(
     repo_root: Path,
     profile: DoctorProfile,
     *,
-    adapter: DoctorAdapter = SYSTEM_ADAPTER,
+    adapter: DoctorAdapter | None = None,
 ) -> DoctorReport:
-    checks = _minimum_checks(repo_root, adapter)
+    selected_adapter = adapter or SystemAdapter(repo_root)
+    checks = _minimum_checks(repo_root, selected_adapter)
     if profile is DoctorProfile.FULL:
-        checks.extend(_full_checks(repo_root, adapter))
+        checks.extend(_full_checks(repo_root, selected_adapter))
     return DoctorReport(profile=profile, checks=tuple(checks))
 
 

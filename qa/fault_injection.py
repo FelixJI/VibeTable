@@ -26,6 +26,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from scripts.toolchain_metadata import resolve_executable
+
 ROOT = Path(__file__).resolve().parents[1]
 SIDECAR = ROOT / "sidecar"
 EVIDENCE_ROOT = Path(
@@ -165,14 +167,7 @@ def _resolve(tool: str) -> str:
             if _go_executable_version(candidate) == go_version:
                 return candidate
         raise RuntimeError(f"Go {go_version} toolchain is required but was not found")
-    if tool == "dotnet":
-        bundled = ROOT / ".tools" / "dotnet" / "dotnet.exe"
-        if bundled.is_file():
-            return str(bundled)
-        system = Path(r"C:\Program Files\dotnet\dotnet.exe")
-        if system.is_file():
-            return str(system)
-    return shutil.which(tool) or tool
+    return resolve_executable(tool, repo_root=ROOT) or tool
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:

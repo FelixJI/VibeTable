@@ -55,7 +55,7 @@ def _candidate_prepare_mode() -> bool:
 
 
 def _resolve_executable(name: str, *, path: str | None = None) -> str:
-    return resolve_executable(name, path=path) or name
+    return resolve_executable(name, path=path, repo_root=REPO_ROOT) or name
 
 
 def _run(

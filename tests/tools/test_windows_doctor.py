@@ -266,6 +266,9 @@ def test_system_and_bootstrap_resolvers_prefer_the_same_dotnet_install(
 ) -> None:
     preferred = tmp_path / "dotnet.exe"
     preferred.touch()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    monkeypatch.setattr(automation_project, "REPO_ROOT", repository)
     monkeypatch.setattr(toolchain_metadata, "PREFERRED_DOTNET", preferred)
     monkeypatch.setattr(
         toolchain_metadata.shutil,
