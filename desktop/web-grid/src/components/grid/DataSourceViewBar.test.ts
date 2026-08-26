@@ -88,6 +88,8 @@ describe("DataSourceViewBar", () => {
     await wrapper.get('[data-testid="view-create"]').trigger("click");
     document.body.querySelector<HTMLElement>('[data-testid="view-kind-calendar"]')?.click();
     await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="view-temporal-date-field"]')).toBeTruthy();
+    expect(document.body.querySelector('[data-testid="view-temporal-title-field"]')).toBeTruthy();
     const input = document.body.querySelector<HTMLInputElement>("input");
     expect(input).toBeTruthy();
     input!.value = "库存预警";

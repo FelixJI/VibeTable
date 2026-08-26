@@ -1,4 +1,5 @@
 import type { ColumnSchema, PresetView } from "@/contracts";
+import { isCalendarDateValue, replaceCalendarDateValue } from "@/grid/calendarDateValue";
 
 const ROW_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
@@ -12,15 +13,35 @@ export interface KanbanInteractionState {
   readonly lanes: readonly KanbanLaneOption[];
 }
 
-export type AlternativeViewInteractionIntent = {
+export interface CalendarMovableRecord {
+  readonly rowKey: string | number;
+  readonly expectedDigest: string;
+}
+
+export interface CalendarInteractionState {
+  readonly enabled: boolean;
+  readonly movableRecords: readonly CalendarMovableRecord[];
+}
+
+export interface KanbanCardMoveIntent {
   readonly type: "kanban.card.move";
   readonly rowKey: string | number;
   readonly targetOptionId: string;
   readonly expectedDigest: string;
-};
+}
+
+export interface CalendarRecordMoveIntent {
+  readonly type: "calendar.record.move";
+  readonly rowKey: string | number;
+  readonly targetDate: string;
+  readonly expectedDigest: string;
+}
+
+export type AlternativeViewInteractionIntent = KanbanCardMoveIntent | CalendarRecordMoveIntent;
 
 export interface AlternativeViewInteractionController {
   kanbanState(): KanbanInteractionState;
+  calendarState(): CalendarInteractionState;
   dispatch(intent: AlternativeViewInteractionIntent): boolean;
 }
 
@@ -40,6 +61,10 @@ export interface AlternativeViewInteractionDependencies {
 interface KanbanAuthority {
   readonly field: string;
   readonly lanes: readonly KanbanLaneOption[];
+}
+
+interface CalendarAuthority {
+  readonly field: string;
 }
 
 function resolveKanbanAuthority(
@@ -62,6 +87,17 @@ function resolveKanbanAuthority(
   return { field, lanes };
 }
 
+function resolveCalendarAuthority(
+  dependencies: AlternativeViewInteractionDependencies,
+): CalendarAuthority | null {
+  const view = dependencies.getActiveView();
+  const field = view?.kind === "calendar" ? view.dateField : null;
+  if (!field) return null;
+  const column = dependencies.getSchema().find(candidate => candidate.name === field);
+  if (!column?.editable || column.dataType !== "date") return null;
+  return { field };
+}
+
 export function createAlternativeViewInteractionController(
   dependencies: AlternativeViewInteractionDependencies,
 ): AlternativeViewInteractionController {
@@ -72,7 +108,40 @@ export function createAlternativeViewInteractionController(
         ? { enabled: true, lanes: authority.lanes }
         : { enabled: false, lanes: [] };
     },
+    calendarState() {
+      const authority = resolveCalendarAuthority(dependencies);
+      if (!authority) return { enabled: false, movableRecords: [] };
+      const movableRecords = dependencies.getRows().flatMap((row): CalendarMovableRecord[] => {
+        const rowKey = row.rowKey;
+        const expectedDigest = row.__vibetableDigest;
+        if ((typeof rowKey !== "string" && typeof rowKey !== "number")
+          || typeof expectedDigest !== "string"
+          || !ROW_DIGEST_PATTERN.test(expectedDigest)
+          || !isCalendarDateValue(row[authority.field], "date")) {
+          return [];
+        }
+        return [{ rowKey, expectedDigest }];
+      });
+      return { enabled: true, movableRecords };
+    },
     dispatch(intent) {
+      if (intent.type === "calendar.record.move") {
+        const authority = resolveCalendarAuthority(dependencies);
+        if (!authority || !ROW_DIGEST_PATTERN.test(intent.expectedDigest)) return false;
+        const row = dependencies.getRows().find(candidate => candidate.rowKey === intent.rowKey);
+        if (!row || row.__vibetableDigest !== intent.expectedDigest) return false;
+        const oldValue = row[authority.field];
+        const newValue = replaceCalendarDateValue(oldValue, intent.targetDate, "date");
+        if (newValue === null || newValue === oldValue) return false;
+        dependencies.updateCell(
+          intent.rowKey,
+          authority.field,
+          oldValue,
+          newValue,
+          intent.expectedDigest,
+        );
+        return true;
+      }
       const authority = resolveKanbanAuthority(dependencies);
       if (!authority) return false;
       if (!authority.lanes.some(lane => lane.optionId === intent.targetOptionId)) return false;

@@ -43,6 +43,36 @@ describe("calendarDateEditor", () => {
     expect(success).toHaveBeenCalledWith("2026-07-20T14:30");
   });
 
+  it("preserves optional datetime seconds and zone when only the date changes", () => {
+    const success = vi.fn();
+    createCalendarDateEditor("datetime")(
+      { getValue: () => "2026-07-01T14:30:45+08:00" },
+      (callback) => callback(),
+      success,
+      vi.fn(),
+    );
+    document.querySelector<HTMLButtonElement>('[data-date="2026-07-20"]')!.click();
+    const apply = [...document.querySelectorAll<HTMLButtonElement>(".work-date-popup__action")]
+      .find((item) => item.textContent === "确定")!;
+    apply.click();
+    expect(success).toHaveBeenCalledWith("2026-07-20T14:30:45+08:00");
+  });
+
+  it("preserves PocketBase datetime storage formatting when only the date changes", () => {
+    const success = vi.fn();
+    createCalendarDateEditor("datetime")(
+      { getValue: () => "2026-07-01 14:30:45.123Z" },
+      (callback) => callback(),
+      success,
+      vi.fn(),
+    );
+    document.querySelector<HTMLButtonElement>('[data-date="2026-07-20"]')!.click();
+    const apply = [...document.querySelectorAll<HTMLButtonElement>(".work-date-popup__action")]
+      .find((item) => item.textContent === "确定")!;
+    apply.click();
+    expect(success).toHaveBeenCalledWith("2026-07-20 14:30:45.123Z");
+  });
+
   it("preserves a time-only value without injecting a date", () => {
     const success = vi.fn();
     const input = createCalendarDateEditor("time")(

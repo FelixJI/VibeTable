@@ -16,7 +16,7 @@
 | Replica synchronize | `workspacev2/replica_*` | `ProductionWorkspaceHooks` 是保留 consumer；renderer raw request 返回 `CAPABILITY_NOT_PUBLIC` | mirrored 手动同步按钮由 public policy 隐藏 | 不向 renderer 公开 | raw route 拒绝测试；无 mirrored 产品运行 | **Internal only**；不把内部协调钩子广告成用户能力。 |
 | Plugin install/enable/action | plugin producer | `JsonRpcPluginGateway.cs` | plugin bridge 与 Plugins 页面 | public plugin allowlist | `11-plugin-mutation`：安装、授权/拒绝 mutation、disable/enable、无效升级候选拒绝 | **Closed**。 |
 | Plugin upgrade/rollback/uninstall mutation | plugin lifecycle producer/service | 内部 catalog 保留；renderer raw request 返回 `CAPABILITY_NOT_PUBLIC` | 成功提交、回滚和卸载入口由 public policy 隐藏 | 不向 renderer 公开 | raw route 拒绝与组件测试；无成功产品 E2E | **Hidden**；检查候选仍可见，成功 mutation 重新公开前必须补完整产品生命周期。 |
-| Alternative view / Gallery | `backend/application/insights_service.py` 的 preset producer 与 `ViewQuery` | `JsonRpcProductDataGateway.cs`、`ProductDataRpcRegistry.cs` 的 public preset RPC | `DataSourceViewBar.vue`、`RecordGalleryView.vue`、`presetViewController.ts` | public `preset.list/save` 与 Tables 导航 | `19-gallery-lifecycle`：真实 UI 创建/配置、两条权威记录与空封面占位、离开后重开、stale revision 冲突与显式 reload | **Closed（Gallery 生命周期与冲突恢复范围）**；Kanban/Calendar/Timeline 及拖拽、日期移动仍未取得对应产品证据。 |
+| Alternative views / Gallery、Kanban、Calendar | `backend/application/insights_service.py` 的 preset producer、`ViewQuery` 与 mutation authority | `JsonRpcProductDataGateway.cs`、`ProductDataRpcRegistry.cs` 的 public preset/query/mutation RPC | `DataSourceViewBar.vue`、三个 Record view 与 `alternativeViewInteractionController.ts` | public `preset.list/save`、`query.page`、host-owned cell mutation 与 Tables 导航 | `19-gallery-lifecycle`：Gallery 创建/重开/CAS；`20-kanban-lane-drag`：稳定 optionId 拖动/保存/重开；`21-calendar-date-move`：date 字段拖动/权威保存/重开 | **Gallery、Kanban 已 Closed；Calendar date 字段实现完成、待 main 产品证据同步后关闭**。Calendar datetime 与 Timeline 日期移动仍未取得对应产品证据。 |
 | Preset / version | preset/version producer 与 RPC | Host/plugin method 闭集 | `PresetVersionPanel.vue` 存在，但全仓无产品挂载点 | 无可见导航或 capability 广告 | 无；组件测试不计 E2E | **Hidden**；provider 保留，本轮不新增 UI，不把未挂载组件伪报为用户能力。恢复开发后若决定公开，必须作为新的完整纵切重新进入矩阵。 |
 | Dashboard | dashboard producer，经 workspace v2 coordinated business write | `JsonRpcDashboardGateway.cs` | `nav-dashboard`、Dashboard workspace | Dashboard host feature gate，默认开启 | `16-dashboard-lifecycle`：四类面板、键盘布局、全局筛选定义/绑定持久化、FilterBar 筛选/清空、图表联动/钻取、竞争公开写入 CAS 冲突与显式重载 | **Closed（场景声明范围）**；双真实编辑器并发仍未取得独立产品证据。 |
 | Document Diff | Host-only materialize/assert RPC、streaming diff/OpenXml engine | strict WPF adapter/coordinator | Web generation/cancel/tree UI | closed bridge；raw materialize 拒绝 | `14-document-diff`：历史两 revision、identical、stale CAS 与 raw route 拒绝 | **Closed**；只承诺受预算约束的可见文本摘要。 |
@@ -25,7 +25,7 @@
 
 - 首版广告范围已按真实产品证据收口；workspace relink、手动 Replica synchronize 与 plugin 成功升级/回滚/卸载同时在 UI 和 renderer 路由隐藏，内部 producer 不算用户广告。
 - Dashboard 双编辑器冲突继续明确标注未验证，不因相邻生命周期通过而扩大结论。
-- Alternative view 只关闭 Gallery 创建、持久重开与 preset 冲突恢复；其他视图种类和交互仍保持未验收。
+- Alternative views 已关闭 Gallery 与 Kanban；Calendar date 字段实现完成但仍等待 main 产品证据同步，Calendar datetime 与 Timeline 日期移动继续保持未验收，不从相邻 Calendar seam 推断通过。
 - Preset/version 经产品树复核确认从未挂载，保持 Hidden；若未来公开，必须作为新的完整纵切进入矩阵。
 - 打包生命周期的 sidecar/BFF 证据边界不同：sidecar 异常由 supervisor 自动恢复；BFF 异常通过
   workspace 关闭/重开的受支持产品路径恢复并轮换 session epoch。场景 10 同时证明旧 epoch 写入稳定

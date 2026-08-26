@@ -4,14 +4,33 @@ import { ChevronLeft, ChevronRight } from "@lucide/vue";
 import type { ColumnSchema, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { useUiStore } from "@/stores/uiStore";
+import { calendarDateKey } from "@/grid/calendarDateValue";
+import type {
+  CalendarMovableRecord,
+  CalendarRecordMoveIntent,
+} from "@/workspace/alternativeViewInteractionController";
 
 const props = defineProps<{
   rows: readonly Record<string, unknown>[];
   schema: readonly ColumnSchema[];
   view: PresetView;
+  interactionEnabled?: boolean;
+  movableRecords?: readonly CalendarMovableRecord[];
+}>();
+const emit = defineEmits<{
+  intent: [intent: CalendarRecordMoveIntent];
 }>();
 const ui = useUiStore();
 const month = ref(startOfMonth(new Date()));
+const draggedRecord = ref<CalendarMovableRecord | null>(null);
+const movableByRowKey = computed(() => new Map(
+  (props.movableRecords ?? []).map(record => [record.rowKey, record.expectedDigest] as const),
+));
+const dateFieldType = computed<"date" | "datetime">(() => (
+  props.schema.find(column => column.name === props.view.dateField)?.dataType === "date"
+    ? "date"
+    : "datetime"
+));
 
 function startOfMonth(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), 1);
@@ -34,7 +53,7 @@ const itemsByDate = computed(() => {
   const grouped = new Map<string, Record<string, unknown>[]>();
   if (!props.view.dateField) return grouped;
   for (const row of props.rows) {
-    const key = dateKey(row[props.view.dateField]);
+    const key = calendarDateKey(row[props.view.dateField], dateFieldType.value);
     if (!key) continue;
     const items = grouped.get(key) ?? [];
     items.push(row);
@@ -79,6 +98,39 @@ const cells = computed(() => {
 function moveMonth(offset: number): void {
   month.value = new Date(month.value.getFullYear(), month.value.getMonth() + offset, 1);
 }
+
+function movableRecord(row: Record<string, unknown>): CalendarMovableRecord | null {
+  if (!props.interactionEnabled) return null;
+  const rowKey = row.rowKey;
+  if (typeof rowKey !== "string" && typeof rowKey !== "number") return null;
+  const expectedDigest = movableByRowKey.value.get(rowKey);
+  return expectedDigest && expectedDigest === row.__vibetableDigest
+    ? { rowKey, expectedDigest }
+    : null;
+}
+
+function startRecordDrag(row: Record<string, unknown>, event: DragEvent): void {
+  const record = movableRecord(row);
+  draggedRecord.value = record;
+  if (record && event.dataTransfer) {
+    event.dataTransfer.setData("text/plain", String(record.rowKey));
+    event.dataTransfer.effectAllowed = "move";
+  }
+}
+
+function allowRecordDrop(event: DragEvent): void {
+  if (!draggedRecord.value) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+}
+
+function dropRecord(targetDate: string, event: DragEvent): void {
+  const record = draggedRecord.value;
+  draggedRecord.value = null;
+  if (!record) return;
+  event.preventDefault();
+  emit("intent", { type: "calendar.record.move", ...record, targetDate });
+}
 </script>
 
 <template>
@@ -93,10 +145,26 @@ function moveMonth(offset: number): void {
     </header>
     <div class="calendar-grid calendar-weekdays"><span v-for="weekday in weekdays" :key="weekday">{{ weekday }}</span></div>
     <div class="calendar-grid calendar-days">
-      <article v-for="cell in cells" :key="cell.key" :class="{ outside: cell.outside, today: cell.today }">
+      <article
+        v-for="cell in cells"
+        :key="cell.key"
+        data-testid="calendar-day"
+        :data-date="cell.key"
+        :class="{ outside: cell.outside, today: cell.today }"
+        @dragover="allowRecordDrop"
+        @drop="dropRecord(cell.key, $event)"
+      >
         <b>{{ cell.day }}</b>
         <div>
-          <span v-for="row in cell.items.slice(0, 3)" :key="String(row.rowKey ?? rowTitle(row))" :title="rowTitle(row)">{{ rowTitle(row) }}</span>
+          <span
+            v-for="row in cell.items.slice(0, 3)"
+            :key="String(row.rowKey ?? rowTitle(row))"
+            data-testid="calendar-record"
+            :title="rowTitle(row)"
+            :draggable="Boolean(movableRecord(row))"
+            @dragstart="startRecordDrag(row, $event)"
+            @dragend="draggedRecord = null"
+          >{{ rowTitle(row) }}</span>
           <small v-if="cell.items.length > 3">{{ t("views.calendar.more", { count: cell.items.length - 3 }) }}</small>
         </div>
       </article>

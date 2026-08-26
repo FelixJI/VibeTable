@@ -21,6 +21,48 @@ function view(overrides: Partial<PresetView> = {}): PresetView {
 }
 
 describe("RecordCalendarView", () => {
+  it("emits an opaque move intent only for a controller-authorized record", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const wrapper = mount(RecordCalendarView, {
+      props: {
+        rows: [
+          { rowKey: "row-1", due: "2026-08-13", title: "可移动", __vibetableDigest: digest },
+          { rowKey: "row-2", due: "2026-08-14", title: "不可移动", __vibetableDigest: digest },
+        ],
+        schema: [],
+        view: view(),
+        interactionEnabled: true,
+        movableRecords: [{ rowKey: "row-1", expectedDigest: digest }],
+      },
+      global: { plugins: [createPinia()] },
+    });
+
+    const records = wrapper.findAll('[data-testid="calendar-record"]');
+    expect(records).toHaveLength(2);
+    expect(records[0]!.attributes("draggable")).toBe("true");
+    expect(records[1]!.attributes("draggable")).toBe("false");
+    expect(wrapper.text()).not.toContain("row-1");
+    expect(wrapper.text()).not.toContain(digest);
+
+    const setData = vi.fn();
+    const dataTransfer = { setData, effectAllowed: "none" };
+    await records[0]!.trigger("dragstart", { dataTransfer });
+    expect(setData).toHaveBeenCalledWith("text/plain", "row-1");
+    expect(dataTransfer.effectAllowed).toBe("move");
+    const target = wrapper.find('[data-testid="calendar-day"][data-date="2026-08-20"]');
+    expect(target.exists()).toBe(true);
+    await target.trigger("drop");
+
+    expect(wrapper.emitted("intent")).toEqual([[
+      {
+        type: "calendar.record.move",
+        rowKey: "row-1",
+        targetDate: "2026-08-20",
+        expectedDigest: digest,
+      },
+    ]]);
+  });
+
   it("groups valid dates, limits visible items and navigates months", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-13T12:00:00"));

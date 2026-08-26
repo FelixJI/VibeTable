@@ -8,7 +8,7 @@
 - GitHub run：[main CI 32906566213](https://github.com/FelixJI/VibeTable/actions/runs/32906566213)
 - 报告契约：`contractVersion=2.0`
 - 结果：20/20 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`21-calendar-date-move`）。
 - 当前 manifest surplus：无。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
