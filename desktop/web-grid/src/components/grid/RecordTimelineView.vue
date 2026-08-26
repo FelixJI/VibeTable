@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { CalendarClock } from "lucide-vue-next";
+import { CalendarClock } from "@lucide/vue";
 import type { ColumnSchema, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { useUiStore } from "@/stores/uiStore";

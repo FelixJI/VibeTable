@@ -8,7 +8,7 @@ import {
   FileText,
   FileType2,
   AlertTriangle,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { computed, nextTick, ref, watch, type Component } from "vue";
 import type { DocumentEntry } from "@/stores/documentWorkspaceStore";
 import { t } from "@/i18n";

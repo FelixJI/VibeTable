@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -13,8 +12,10 @@ from pathlib import Path
 
 if __package__:
     from ._host_paths import host_bin_exe
+    from .toolchain_metadata import resolve_executable
 else:
     from _host_paths import host_bin_exe
+    from toolchain_metadata import resolve_executable
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = ROOT / "desktop" / "web-grid"
@@ -42,11 +43,7 @@ def _resolve(name: str) -> str:
         bundled = ROOT / ".tools" / "go-full" / "go" / "bin" / suffix
         if bundled.is_file():
             return str(bundled)
-    if name == "dotnet":
-        preferred = Path(r"C:\Program Files\dotnet\dotnet.exe")
-        if preferred.is_file():
-            return str(preferred)
-    return shutil.which(name) or name
+    return resolve_executable(name, repo_root=ROOT) or name
 
 
 def _run(command: list[str], *, cwd: Path) -> None:

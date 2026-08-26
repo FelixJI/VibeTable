@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { NButton, NIcon, NInput, NInputNumber, NProgress, NSelect, NTag } from "naive-ui";
-import { FileSearch, Paperclip, RefreshCw, Search, Table2 } from "lucide-vue-next";
+import { FileSearch, Paperclip, RefreshCw, Search, Table2 } from "@lucide/vue";
 import type { SearchFilter, SearchHit, SearchSort } from "@/contracts/generated/workbench";
 import { t } from "@/i18n";
 import { useWorkspaceSearchStore } from "./workspaceSearchStore";

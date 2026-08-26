@@ -35,7 +35,7 @@ let narrow = false;
 function initialize(): void {
   if (!root.value) return;
   grid?.destroy(false);
-  grid = GridStack.init({
+  const initializedGrid = GridStack.init({
     column: 12,
     cellHeight: 72,
     margin: 8,
@@ -46,7 +46,9 @@ function initialize(): void {
     draggable: { handle: ".panel-drag" },
     resizable: { handles: "e,se,s,sw,w" },
   }, root.value);
-  grid.on("change", (_event, items) => {
+  if (!initializedGrid) return;
+  grid = initializedGrid;
+  initializedGrid.on("change", (_event, items) => {
     if (!props.editing || narrow) return;
     for (const item of items) emitNode(item);
   });

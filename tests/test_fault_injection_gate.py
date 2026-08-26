@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -10,6 +11,20 @@ import pytest
 
 from qa import fault_injection
 from scripts import build_next
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_fault_injection_file_entrypoint_can_import_repository_tools() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "qa" / "fault_injection.py"), "--help"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_release_gate_has_all_required_named_faults() -> None:
@@ -82,6 +97,7 @@ def test_go_gate_rejects_success_when_required_tests_are_missing(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(fault_injection, "_resolve", lambda _tool: "go")
     event = json.dumps(
         {
             "Action": "pass",
@@ -111,6 +127,7 @@ def test_go_gate_rejects_zero_test_success(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(fault_injection, "_resolve", lambda _tool: "go")
     completed = subprocess.CompletedProcess(
         args=["go", "test"],
         returncode=0,

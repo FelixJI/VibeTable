@@ -38,7 +38,7 @@ describe("SettingsView", () => {
           operatingSystem: "Windows 11",
           programVersion: "0.1.0",
           dotnetVersion: "10.0.0",
-          pocketBaseVersion: "0.39.9",
+          pocketBaseVersion: "0.40.1",
           memoryBytes: 64 * 1024 * 1024,
           components: [{ component: "sidecar", state: "ready" }],
           jobs: { queued: 0, running: 0, succeeded: 1, failed: 0, cancelled: 0 },

@@ -30,7 +30,7 @@ import {
   Search,
   ShieldAlert,
   UserRound,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import type { HistoryChangeSet, HistoryRecordChange } from "@/contracts";
 import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";

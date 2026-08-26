@@ -1,6 +1,6 @@
 module github.com/vibetable/vibetable/tools/recovery-tools
 
-go 1.25.8
+go 1.27.0
 
 require (
 	filippo.io/age v1.3.1

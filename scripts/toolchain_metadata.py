@@ -9,10 +9,39 @@ from pathlib import Path
 PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 
 
-def resolve_executable(executable: str, *, path: str | None = None) -> str | None:
+def _repository_tool_roots(repo_root: Path) -> tuple[Path, ...]:
+    roots = [repo_root.resolve()]
+    git_marker = roots[0] / ".git"
+    if git_marker.is_file():
+        try:
+            marker = git_marker.read_text(encoding="utf-8").strip()
+            if marker.startswith("gitdir:"):
+                git_dir = Path(marker.removeprefix("gitdir:").strip())
+                if not git_dir.is_absolute():
+                    git_dir = roots[0] / git_dir
+                common_root = git_dir.resolve().parents[2]
+                if common_root not in roots:
+                    roots.append(common_root)
+        except (OSError, IndexError):
+            pass
+    return tuple(roots)
+
+
+def resolve_executable(
+    executable: str,
+    *,
+    path: str | None = None,
+    repo_root: Path | None = None,
+) -> str | None:
     """Resolve repository commands with the same Windows-specific preferences."""
-    if executable.casefold() == "dotnet" and PREFERRED_DOTNET.is_file():
-        return str(PREFERRED_DOTNET)
+    if executable.casefold() == "dotnet":
+        if repo_root is not None:
+            for tool_root in _repository_tool_roots(repo_root):
+                bundled = tool_root / ".tools" / "dotnet" / "dotnet.exe"
+                if bundled.is_file():
+                    return str(bundled)
+        if PREFERRED_DOTNET.is_file():
+            return str(PREFERRED_DOTNET)
     return shutil.which(executable, path=path)
 
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { NButton, NIcon, NSpin, NTooltip } from "naive-ui";
-import { AlertTriangle, Download, Grip, ImageDown, Pencil, RefreshCw, Table2, Trash2 } from "lucide-vue-next";
+import { AlertTriangle, Download, Grip, ImageDown, Pencil, RefreshCw, Table2, Trash2 } from "@lucide/vue";
 import type { DashboardPanel } from "@/dashboard";
 import { formatDashboardNumber, type NumberFormatSpec } from "@/dashboard";
 import { numericValue } from "@/dashboard/charts/chartOptionAdapter";

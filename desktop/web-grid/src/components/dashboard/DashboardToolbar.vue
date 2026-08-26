@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NButton, NButtonGroup, NIcon, NSelect, NTooltip } from "naive-ui";
-import { Check, Copy, Download, Edit3, Plus, Printer, RefreshCw, RotateCcw, Settings2, Trash2 } from "lucide-vue-next";
+import { Check, Copy, Download, Edit3, Plus, Printer, RefreshCw, RotateCcw, Settings2, Trash2 } from "@lucide/vue";
 import { t } from "@/i18n";
 
 defineProps<{

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { NAlert, NButton, NSelect, NTag } from "naive-ui";
 import type { SelectOption } from "naive-ui";
-import { ArrowRight, ChevronLeft, GitBranch, Minus, PencilLine, Plus } from "lucide-vue-next";
+import { ArrowRight, ChevronLeft, GitBranch, Minus, PencilLine, Plus } from "@lucide/vue";
 import type { FieldDraftV2 } from "@/contracts";
 
 type LookupDefinition = NonNullable<FieldDraftV2["lookup"]>;

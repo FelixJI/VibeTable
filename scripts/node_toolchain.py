@@ -30,8 +30,8 @@ class NodeDistribution:
 
 
 NODE_DISTRIBUTION = NodeDistribution(
-    version="24.18.0",
-    archive_sha256="0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821",
+    version="24.19.0",
+    archive_sha256="57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73",
 )
 
 

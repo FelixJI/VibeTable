@@ -7,7 +7,7 @@ import {
   GitCompareArrows,
   RefreshCw,
   ShieldAlert,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { t } from "@/i18n";
 import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
@@ -115,7 +115,7 @@ function inspect(conflictId: string): void {
 
     <NAlert v-if="advisory" type="warning" :title="t('workspaceV2.conflict.advisoryTitle')">
       {{ t("workspaceV2.conflict.advisoryHint") }}
-      <template #action>
+      <div class="advisory-action">
         <NButton
           size="small"
           type="warning"
@@ -123,7 +123,7 @@ function inspect(conflictId: string): void {
         >
           {{ t("workspaceV2.conflict.takeover") }}
         </NButton>
-      </template>
+      </div>
     </NAlert>
 
     <div v-if="conflictSets.length" class="conflict-workbench">
@@ -269,6 +269,7 @@ function inspect(conflictId: string): void {
 .conflict-title h1 { margin: 2px 0; font-size: var(--vt-font-heading); font-weight: 650; letter-spacing: -.02em; }
 .conflict-title small { color: var(--vt-fg-muted); }
 .conflict-center > :deep(.n-alert) { max-width: 1080px; margin: 0 auto 14px; }
+.advisory-action { display: flex; justify-content: flex-end; margin-top: 10px; }
 .conflict-workbench {
   display: grid;
   grid-template-columns: minmax(280px, .75fr) minmax(420px, 1.25fr);

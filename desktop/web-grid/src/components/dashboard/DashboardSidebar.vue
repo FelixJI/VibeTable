@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NButton, NIcon, NInput } from "naive-ui";
-import { LayoutDashboard, Plus, Search } from "lucide-vue-next";
+import { LayoutDashboard, Plus, Search } from "@lucide/vue";
 import { computed, ref } from "vue";
 import type { DashboardListEntry } from "@/stores/dashboardStore";
 import { t } from "@/i18n";

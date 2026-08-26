@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { GalleryHorizontal } from "lucide-vue-next";
+import { GalleryHorizontal } from "@lucide/vue";
 import type { ColumnSchema, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { displayValue, metadataFields, rowTitle, safeImageUrl } from "./recordViewUtils";

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { NButton, NCheckbox, NIcon, NInput, NInputNumber, NPopover, NSelect } from "naive-ui";
-import { EyeOff, Filter, Layers3, Sigma } from "lucide-vue-next";
+import { EyeOff, Filter, Layers3, Sigma } from "@lucide/vue";
 import type {
   ColumnSchema,
   FilterExpression,

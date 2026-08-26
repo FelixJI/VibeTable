@@ -12,8 +12,8 @@
     },
     "sidecar": {
       "version": "0.5.1",
-      "pocketBaseVersion": "0.39.9",
-      "celVersion": "0.29.0",
+      "pocketBaseVersion": "0.40.1",
+      "celVersion": "0.31.0",
       "contractVersion": "2.0",
       "schemaVersion": "10",
       "migrationHash": "125efc10962d65fbe0103efda320d632d3aea8ab9d49f48ff2fcf21067390db9",
@@ -21,7 +21,7 @@
     }
   },
   "webview2": {
-    "sdk": "1.0.4078.44"
+    "sdk": "1.0.4129.50"
   },
   "webGrid": {
     "tabulator": "6.5.2"

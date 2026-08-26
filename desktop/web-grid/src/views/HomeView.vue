@@ -12,7 +12,7 @@ import {
   Clock3,
   Sparkles,
   Table2,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useUiStore } from "@/stores/uiStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";

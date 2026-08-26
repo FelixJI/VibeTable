@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { NButton, NIcon, NInput, NTooltip } from "naive-ui";
-import { Plus, Search, Table2, Trash2 } from "lucide-vue-next";
+import { Plus, Search, Table2, Trash2 } from "@lucide/vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";

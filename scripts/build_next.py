@@ -20,6 +20,7 @@ from typing import Any
 
 try:
     from scripts._host_paths import host_assembly_name
+    from scripts.toolchain_metadata import resolve_executable as resolve_toolchain_executable
     from scripts.versioning import (
         check_versions,
         collect_release_versions,
@@ -27,6 +28,7 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     from _host_paths import host_assembly_name
+    from toolchain_metadata import resolve_executable as resolve_toolchain_executable
     from versioning import (
         check_versions,
         collect_release_versions,
@@ -34,7 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
     )
 
 PROTOCOL_VERSION = "2.0"
-WEBVIEW2_SDK = "1.0.4078.44"
+WEBVIEW2_SDK = "1.0.4129.50"
 TABULATOR_VERSION = "6.5.2"
 HOST_EXE_NAME = "VibeTable.Next.exe"
 ARCHIVE_ROOT_NAME = "VibeTable"
@@ -51,13 +53,11 @@ RECOVERY_TOOLS_RELATIVE_ROOT = Path("tools") / "recovery-tools"
 RECOVERY_PROVENANCE_NAME = "recovery-tools.provenance.json"
 RECOVERY_TOOL_SIZE_LIMIT = 220 * 1024 * 1024
 CONTRACT_COPY_IGNORES = ("__pycache__", ".pytest_cache", "*.pyc", "*.pyo")
-PREFERRED_DOTNET = Path(r"C:\Program Files\dotnet\dotnet.exe")
 BACKEND_HIDDEN_IMPORTS = (
     "pydantic",
     "pydantic.deprecated.decorator",
     "openpyxl",
     "openpyxl.workbook",
-    "websockets",
 )
 _DEV_PACKAGES_FORBIDDEN_IN_BUNDLE = frozenset({"mypy", "numpy", "pandas", "pytest", "_pytest"})
 DEV_SKIP_FLAGS = (
@@ -212,12 +212,10 @@ class RepoPaths:
         )
 
 
-def _resolve_executable(name: str) -> str:
-    if name.lower() == "dotnet" and PREFERRED_DOTNET.is_file():
-        return str(PREFERRED_DOTNET)
+def _resolve_executable(name: str, *, repo_root: Path | None = None) -> str:
     if os.path.sep in name or (os.path.altsep and os.path.altsep in name):
         return name
-    return shutil.which(name) or name
+    return resolve_toolchain_executable(name, repo_root=repo_root) or name
 
 
 def resolve_go(repo_root: Path) -> str:
@@ -1018,7 +1016,7 @@ def _run(
     capture: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    resolved = [_resolve_executable(command[0]), *command[1:]]
+    resolved = [_resolve_executable(command[0], repo_root=cwd), *command[1:]]
     try:
         return subprocess.run(
             resolved,

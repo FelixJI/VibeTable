@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts import automation_project, changelog, toolchain_metadata
+from qa import fault_injection
+from qa import next as next_gate
+from scripts import automation_project, build_next, changelog, dev, toolchain_metadata
 from scripts.automation_core import Automation, CommandRunner, SemVer
-from scripts.windows_doctor import DoctorCheck, DoctorProfile, DoctorReport
+from scripts.windows_doctor import DoctorCheck, DoctorProfile, DoctorReport, SystemAdapter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,7 +23,7 @@ def test_doctor_dispatches_explicit_profile_and_returns_report_status(
     observed: list[tuple[Path, DoctorProfile]] = []
     report = DoctorReport(
         profile=DoctorProfile.FULL,
-        checks=(DoctorCheck("go.version", False, "1.25.8", "missing", "安装 Go。"),),
+        checks=(DoctorCheck("go.version", False, "1.27.0", "missing", "安装 Go。"),),
     )
 
     def diagnose(repo_root: Path, profile: DoctorProfile) -> DoctorReport:
@@ -68,6 +70,9 @@ def test_project_runner_prefers_dotnet_install_with_sdk(
     calls: list[tuple[str, ...]] = []
     preferred = tmp_path / "dotnet.exe"
     preferred.touch()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    monkeypatch.setattr(automation_project, "REPO_ROOT", repository)
     monkeypatch.setattr(toolchain_metadata, "PREFERRED_DOTNET", preferred)
     monkeypatch.setattr(
         toolchain_metadata.shutil,
@@ -91,6 +96,37 @@ def test_project_runner_prefers_dotnet_install_with_sdk(
     ]
 
 
+def test_worktree_resolvers_prefer_repository_managed_dotnet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    common_root = tmp_path / "vibetable"
+    worktree_root = tmp_path / ".worktrees" / "vibetable" / "deps"
+    bundled = common_root / ".tools" / "dotnet" / "dotnet.exe"
+    system = tmp_path / "Program Files" / "dotnet" / "dotnet.exe"
+    bundled.parent.mkdir(parents=True)
+    system.parent.mkdir(parents=True)
+    bundled.touch()
+    system.touch()
+    worktree_root.mkdir(parents=True)
+    (worktree_root / ".git").write_text(
+        f"gitdir: {common_root / '.git' / 'worktrees' / 'deps'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(toolchain_metadata, "PREFERRED_DOTNET", system)
+    monkeypatch.setattr(automation_project, "REPO_ROOT", worktree_root)
+    monkeypatch.setattr(dev, "ROOT", worktree_root)
+    monkeypatch.setattr(fault_injection, "ROOT", worktree_root)
+    monkeypatch.setattr(next_gate, "REPO_ROOT", worktree_root)
+
+    assert automation_project._resolve_executable("dotnet") == str(bundled)
+    assert build_next._resolve_executable("dotnet", repo_root=worktree_root) == str(bundled)
+    assert SystemAdapter(worktree_root).which("dotnet") == str(bundled)
+    assert dev._resolve("dotnet") == str(bundled)
+    assert fault_injection._resolve("dotnet") == str(bundled)
+    assert next_gate._resolve("dotnet") == str(bundled)
+
+
 def test_only_canonical_workflows_remain_and_delegate_to_stable_cli() -> None:
     workflows = REPO_ROOT / ".github/workflows"
     assert {path.name for path in workflows.glob("*.yml")} == {"ci.yml", "cd.yml"}
@@ -106,6 +142,29 @@ def test_only_canonical_workflows_remain_and_delegate_to_stable_cli() -> None:
     assert "github.event.workflow_run.event == 'push'" in cd
     assert "draft" not in cd.lower()
     assert "release-please" not in (ci + cd).lower()
+
+
+def test_ci_runs_advanced_codeql_with_repository_toolchains() -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    codeql = ci.split("\n  codeql:\n", maxsplit=1)[1].split("\n  plan:\n", maxsplit=1)[0]
+
+    assert 'cron: "17 3 * * 1"' in ci
+    assert "security-events: write" in codeql
+    assert [
+        line.strip().removeprefix("- language: ")
+        for line in codeql.splitlines()
+        if line.strip().startswith("- language: ")
+    ] == ["actions", "csharp", "go", "javascript-typescript", "python"]
+    assert "if: matrix.language == 'csharp'" in codeql
+    assert "global-json-file: global.json" in codeql
+    assert "if: matrix.language == 'go'" in codeql
+    assert "go-version-file: sidecar/go.mod" in codeql
+    action = "db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28"
+    assert f"github/codeql-action/init@{action}" in codeql
+    assert f"github/codeql-action/analyze@{action}" in codeql
+    assert "build-mode: ${{ matrix.build-mode }}" in codeql
+    assert 'category: "/language:${{ matrix.language }}"' in codeql
+    assert "github.event_name != 'schedule'" in ci.split("\n  plan:\n", maxsplit=1)[1]
 
 
 def test_ci_prepare_scopes_candidate_mode_to_the_prepare_step() -> None:
@@ -150,7 +209,7 @@ def test_candidate_prepare_bootstraps_only_release_build_dependencies(
     monkeypatch.setattr(
         automation_project,
         "ensure_node",
-        lambda _root: Path("C:/node/node-v24.18.0-win-x64/node.exe"),
+        lambda _root: Path("C:/node/node-v24.19.0-win-x64/node.exe"),
     )
     monkeypatch.setattr(
         automation_project,
@@ -188,7 +247,7 @@ def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
-    node = tmp_path / ".tools" / "node" / "node-v24.18.0-win-x64" / "node.exe"
+    node = tmp_path / ".tools" / "node" / "node-v24.19.0-win-x64" / "node.exe"
     node.parent.mkdir(parents=True)
     node.touch()
     monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
@@ -861,8 +920,8 @@ def test_spdx_is_derived_from_the_built_package_sbom(
         json.dumps(
             {
                 "components": [
-                    {"name": "PocketBase", "version": "0.39.9"},
-                    {"name": "PocketBase", "version": "0.39.9"},
+                    {"name": "PocketBase", "version": "0.40.1"},
+                    {"name": "PocketBase", "version": "0.40.1"},
                 ]
             }
         ),
@@ -881,8 +940,8 @@ def test_spdx_is_derived_from_the_built_package_sbom(
     assert document["name"] == "VibeTable-1.2.3"
     assert [item["versionInfo"] for item in document["packages"]] == [
         "1.2.3",
-        "0.39.9",
-        "0.39.9",
+        "0.40.1",
+        "0.40.1",
     ]
     assert len({item["SPDXID"] for item in document["packages"]}) == 3
     assert document["packages"][0]["checksums"] == [

@@ -13,7 +13,7 @@ import {
   GitCompareArrows,
   Settings,
   Table2,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import type { AppView } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";

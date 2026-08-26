@@ -15,15 +15,15 @@ func (fakeFrozenSource) Freeze(
 	intent writecoordinator.CaptureIntent,
 ) (BarrierView, writecoordinator.FrozenRoots, error) {
 	return BarrierView{
-			BusinessSchemaVersion: 1,
-			Database:              []byte("db"),
-			Files:                 map[string][]byte{"file": []byte("content")},
-		}, writecoordinator.FrozenRoots{
-			DatabaseView: "fixed-read-view",
-			TopologyRoot: objectrepo.ManifestID("manifest_topology"),
-			FileRoot:     objectrepo.ManifestID("manifest_files"),
-			AuditAnchor:  digest([]byte("audit")),
-		}, nil
+		BusinessSchemaVersion: 1,
+		Database:              []byte("db"),
+		Files:                 map[string][]byte{"file": []byte("content")},
+	}, writecoordinator.FrozenRoots{
+		DatabaseView: "fixed-read-view",
+		TopologyRoot: objectrepo.ManifestID("manifest_topology"),
+		FileRoot:     objectrepo.ManifestID("manifest_files"),
+		AuditAnchor:  digest([]byte("audit")),
+	}, nil
 }
 
 func TestCoordinatedBarrierUsesSharedMutationCountersAndRoots(t *testing.T) {

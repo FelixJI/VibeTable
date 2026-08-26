@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { NAlert, NButton, NIcon, NInput, NModal, NSelect } from "naive-ui";
-import { FileQuestion, FilePlus2, Files, RefreshCw, Search } from "lucide-vue-next";
+import { FileQuestion, FilePlus2, Files, RefreshCw, Search } from "@lucide/vue";
 import DocumentList from "@/components/files/DocumentList.vue";
 import DocumentContextMenu from "@/components/files/DocumentContextMenu.vue";
 import DocumentInspector from "@/components/files/DocumentInspector.vue";

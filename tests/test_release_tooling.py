@@ -93,8 +93,8 @@ def _release_modules(
 def test_repository_versions_are_consistent() -> None:
     assert check_versions(REPO_ROOT) == []
     versions = collect_release_versions(REPO_ROOT)
-    assert versions.pocketbase == "0.39.9"
-    assert versions.cel == "0.29.0"
+    assert versions.pocketbase == "0.40.1"
+    assert versions.cel == "0.31.0"
     assert versions.contract == "v1"
     assert versions.schema == "10"
     assert len(versions.migration_hash) == 64
@@ -115,7 +115,7 @@ def test_release_dependency_versions_fail_fast_before_packaging(tmp_path: Path) 
     go_mod = tmp_path / "sidecar/go.mod"
     go_mod.write_text(
         go_mod.read_text(encoding="utf-8").replace(
-            "github.com/google/cel-go v0.29.0",
+            "github.com/google/cel-go v0.31.0",
             "github.com/google/cel-go v0.26.1",
         ),
         encoding="utf-8",
@@ -123,7 +123,7 @@ def test_release_dependency_versions_fail_fast_before_packaging(tmp_path: Path) 
 
     assert check_release_dependency_versions(tmp_path) == [
         "sidecar go.mod dependency version mismatch: github.com/google/cel-go "
-        "(expected v0.29.0, got v0.26.1)"
+        "(expected v0.31.0, got v0.26.1)"
     ]
 
 
@@ -143,6 +143,16 @@ def test_version_dry_run_no_longer_targets_provider_extensions() -> None:
     assert relative == {"backend/_version.py", "desktop/publish-layout.json"}
     assert all(removed_provider not in item.lower() for item in relative)
     assert read_project_version(REPO_ROOT) == original
+
+
+def test_backend_bundle_omits_removed_directus_websocket_runtime() -> None:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert all(
+        not dependency.startswith("websockets")
+        for dependency in pyproject["project"]["dependencies"]
+    )
+    assert "websockets" not in build_next.BACKEND_HIDDEN_IMPORTS
 
 
 def test_application_version_has_one_editable_source() -> None:
@@ -184,8 +194,8 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
     assert manifest["components"]["web"] == {"version": version}
     assert manifest["components"]["sidecar"] == {
         "version": version,
-        "pocketBaseVersion": "0.39.9",
-        "celVersion": "0.29.0",
+        "pocketBaseVersion": "0.40.1",
+        "celVersion": "0.31.0",
         "contractVersion": "2.0",
         "schemaVersion": "10",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
@@ -338,7 +348,7 @@ def test_stage_release_assets_records_binary_hash_build_info_and_sbom(
         build_info=build_info,
         modules=_release_modules(
             license_dir,
-            ("github.com/pocketbase/pocketbase", "v0.39.9"),
+            ("github.com/pocketbase/pocketbase", "v0.40.1"),
         ),
     )
 
@@ -442,8 +452,8 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
             "dir": str(license_dir),
         }
         for name, version in (
-            ("github.com/pocketbase/pocketbase", "v0.39.9"),
-            ("github.com/google/cel-go", "v0.29.0"),
+            ("github.com/pocketbase/pocketbase", "v0.40.1"),
+            ("github.com/google/cel-go", "v0.31.0"),
             ("github.com/kopia/kopia", build_next.KOPIA_VERSION),
             ("filippo.io/age", build_next.AGE_VERSION),
         )

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronLeft, ChevronRight } from "lucide-vue-next";
+import { ChevronLeft, ChevronRight } from "@lucide/vue";
 import type { ColumnSchema, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { useUiStore } from "@/stores/uiStore";

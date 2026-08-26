@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted } from "vue";
 import { NIcon } from "naive-ui";
-import { ExternalLink, Eye, FolderSearch, History, LocateFixed, Trash2 } from "lucide-vue-next";
+import { ExternalLink, Eye, FolderSearch, History, LocateFixed, Trash2 } from "@lucide/vue";
 import type { DocumentCapability, DocumentEntry } from "@/stores/documentWorkspaceStore";
 import { t } from "@/i18n";
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { NButton, NIcon, NSpin, NTooltip } from "naive-ui";
-import { AlertCircle, Cloud, CloudOff } from "lucide-vue-next";
+import { AlertCircle, Cloud, CloudOff } from "@lucide/vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { t } from "@/i18n";
 

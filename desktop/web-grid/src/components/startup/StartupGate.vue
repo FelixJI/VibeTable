@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { NButton, NIcon } from "naive-ui";
-import { AlertCircle, DatabaseZap, RotateCw, X } from "lucide-vue-next";
+import { AlertCircle, DatabaseZap, RotateCw, X } from "@lucide/vue";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 import type { StartupPhase, StartupLogEntry } from "@/contracts";
 import { t } from "@/i18n";
