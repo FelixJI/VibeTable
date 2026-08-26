@@ -26,9 +26,12 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from scripts.toolchain_metadata import resolve_executable
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.toolchain_metadata import resolve_executable  # noqa: E402
+
 SIDECAR = ROOT / "sidecar"
 EVIDENCE_ROOT = Path(
     os.environ.get(
