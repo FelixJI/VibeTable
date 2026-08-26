@@ -56,11 +56,19 @@ jobs:
         with:
           go-version-file: sidecar/go.mod
           cache-dependency-path: sidecar/go.sum
-      - name: Initialize CodeQL
+      - name: Initialize CodeQL with default bundle
+        if: matrix.language != 'go'
         uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+      - name: Initialize CodeQL with Go 1.27 bundle
+        if: matrix.language == 'go'
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          tools: https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.26.4/codeql-bundle-win64.tar.gz
       - name: Analyze
         uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
