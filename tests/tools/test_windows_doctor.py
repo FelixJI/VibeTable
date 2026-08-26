@@ -388,7 +388,7 @@ def test_system_adapter_reads_go_metadata_without_starting_go_or_touching_user_c
     go_root = tmp_path / "go"
     go_root.mkdir()
     version_file = go_root / "VERSION"
-    version_file.write_text("go1.25.8\ntime 2026-01-01T00:00:00Z\n", encoding="utf-8")
+    version_file.write_text("go1.27.0\ntime 2026-01-01T00:00:00Z\n", encoding="utf-8")
     user_config = tmp_path / "user-config"
     user_config.mkdir()
     monkeypatch.setenv("APPDATA", str(user_config))
@@ -409,7 +409,7 @@ def test_render_report_uses_stable_codes_without_claiming_release_readiness() ->
             DoctorCheck(
                 code="go.version",
                 passed=False,
-                expected="1.25.8",
+                expected="1.27.0",
                 actual="go1.24.0 (C:/Go/bin/go.exe)",
                 remediation="安装声明版本。",
             ),
@@ -420,7 +420,7 @@ def test_render_report_uses_stable_codes_without_claiming_release_readiness() ->
 
     assert "Windows toolchain doctor (full): FAIL" in rendered
     assert "[FAIL] go.version" in rendered
-    assert "expected: 1.25.8" in rendered
+    assert "expected: 1.27.0" in rendered
     assert "actual: go1.24.0 (C:/Go/bin/go.exe)" in rendered
     assert "toolchain ready: no" in rendered
     assert "release ready" not in rendered.casefold()

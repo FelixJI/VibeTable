@@ -8,7 +8,7 @@ import {
   NIcon,
   NTag,
 } from "naive-ui";
-import { AlertTriangle, FileSpreadsheet, ShieldCheck, X } from "lucide-vue-next";
+import { AlertTriangle, FileSpreadsheet, ShieldCheck, X } from "@lucide/vue";
 import type { ImportCellDiagnostic, ImportPlanRow } from "@/contracts";
 import type { ImportPreviewSession } from "@/services/dataIoService";
 import { getLocale, t } from "@/i18n";

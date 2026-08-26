@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { NAlert, NButton, NEmpty, NIcon, NSpin, useMessage } from "naive-ui";
-import { LayoutDashboard, Plus } from "lucide-vue-next";
+import { LayoutDashboard, Plus } from "@lucide/vue";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar.vue";
 import DashboardToolbar from "@/components/dashboard/DashboardToolbar.vue";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.vue";

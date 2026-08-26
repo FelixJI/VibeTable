@@ -12,7 +12,7 @@
  */
 import { computed } from "vue";
 import { NCard, NButton, NSpace, NCheckbox, NIcon, NTag, NText } from "naive-ui";
-import { X } from "lucide-vue-next";
+import { X } from "@lucide/vue";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useUiStore } from "@/stores/uiStore";
 import { errorsByRow } from "@/stores/pasteFlowHelpers";

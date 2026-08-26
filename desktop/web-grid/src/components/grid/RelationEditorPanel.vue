@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { NButton, NEmpty, NInput, NInputNumber, NModal, NSelect, NSpin, NSwitch } from "naive-ui";
-import { Check, ExternalLink, Link2, Plus, Search, X } from "lucide-vue-next";
+import { Check, ExternalLink, Link2, Plus, Search, X } from "@lucide/vue";
 import type {
   NormalizedRelationDescriptor,
   FieldDefinitionV2,

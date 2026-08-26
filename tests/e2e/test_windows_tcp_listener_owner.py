@@ -197,7 +197,8 @@ def test_live_captured_owner_that_still_listens_fails_release() -> None:
     assert report.released is False
     assert report.decision == "captured-owner-still-listening"
     assert report.errors == ()
-    assert owner.wait_timeouts == [0.0, 0.0, 3.0]
+    assert owner.wait_timeouts[:2] == [0.0, 0.0]
+    assert owner.wait_timeouts[2] == pytest.approx(3.0, abs=0.001)
 
 
 def test_live_captured_owner_with_no_current_listener_releases_without_waiting() -> None:

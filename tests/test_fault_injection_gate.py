@@ -82,6 +82,7 @@ def test_go_gate_rejects_success_when_required_tests_are_missing(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(fault_injection, "_resolve", lambda _tool: "go")
     event = json.dumps(
         {
             "Action": "pass",
@@ -111,6 +112,7 @@ def test_go_gate_rejects_zero_test_success(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(fault_injection, "_resolve", lambda _tool: "go")
     completed = subprocess.CompletedProcess(
         args=["go", "test"],
         returncode=0,

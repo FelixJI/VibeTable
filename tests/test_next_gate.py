@@ -1829,14 +1829,14 @@ def test_dotnet_coverage_inventory_rejects_unregistered_generated_source(
     real_glob = Path.glob
     real_rglob = Path.rglob
 
-    def glob_with_unregistered(path: Path, pattern: str):
-        results = list(real_glob(path, pattern))
+    def glob_with_unregistered(path: Path, pattern: str, **kwargs: object):
+        results = list(real_glob(path, pattern, **kwargs))
         if path.resolve() == generated_dir and pattern == "*.g.cs":
             results.append(unregistered)
         return iter(results)
 
-    def rglob_with_unregistered(path: Path, pattern: str):
-        results = list(real_rglob(path, pattern))
+    def rglob_with_unregistered(path: Path, pattern: str, **kwargs: object):
+        results = list(real_rglob(path, pattern, **kwargs))
         contracts_root = generated_dir.parent
         if path.resolve() == contracts_root and pattern == "*.g.cs":
             results.append(unregistered)

@@ -456,7 +456,7 @@ public sealed class PocketBaseSupervisorTests
     private static PocketBaseExpectedIdentity ExpectedIdentity() => new(
         ReadyContract: "vibetable.sidecar.ready.v1",
         ContractVersion: "v1",
-        PocketBaseVersion: "0.39.9",
+        PocketBaseVersion: "0.40.1",
         SchemaVersion: "1",
         MigrationHash: "migration-hash");
 
@@ -468,7 +468,7 @@ public sealed class PocketBaseSupervisorTests
         StorageWritable: true,
         Build: new PocketBaseBuildIdentity(
             ContractVersion: "v1",
-            PocketBaseVersion: "0.39.9",
+            PocketBaseVersion: "0.40.1",
             SchemaVersion: "1",
             MigrationHash: migrationHash));
 
@@ -487,8 +487,8 @@ public sealed class PocketBaseSupervisorTests
                 commit = "unknown",
                 buildTime = "unknown",
                 contractVersion = "v1",
-                pocketBaseVersion = "0.39.9",
-                celVersion = "0.29.0",
+                pocketBaseVersion = "0.40.1",
+                celVersion = "0.31.0",
                 schemaVersion = "1",
                 migrationHash,
             },

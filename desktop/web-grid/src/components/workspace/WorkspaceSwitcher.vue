@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { NButton, NDropdown, NIcon, NTag } from "naive-ui";
 import type { DropdownOption } from "naive-ui";
-import { ChevronDown, CircleDotDashed, FolderKanban } from "lucide-vue-next";
+import { ChevronDown, CircleDotDashed, FolderKanban } from "@lucide/vue";
 import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { t } from "@/i18n";

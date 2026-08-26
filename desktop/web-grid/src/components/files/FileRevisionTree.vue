@@ -7,7 +7,7 @@ import {
   GitBranch,
   RotateCcw,
   Sparkles,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { useUiStore } from "@/stores/uiStore";
 import type { FileRevisionTreeProjection } from "@/stores/workspaceProtectionStore";
 import type { FileRevisionV2 } from "@/contracts/workspaceV2";

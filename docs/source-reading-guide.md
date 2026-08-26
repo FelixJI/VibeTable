@@ -36,9 +36,9 @@ flowchart LR
 
 - Windows 10/11 x64
 - Python 3.13+ 与 `uv`
-- Node.js 24.x（仓库锁定 24.18.0）
-- .NET SDK 10.0.100
-- Go 1.25.8
+- Node.js 24.x（仓库锁定 24.19.0）
+- .NET SDK 10.0.400
+- Go 1.27.0
 - WebView2 Runtime
 
 在仓库根目录执行：

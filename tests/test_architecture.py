@@ -151,7 +151,7 @@ class TestLayerDependencies:
     def test_nvmrc_pins_node_24(self):
         nvmrc = ROOT / ".nvmrc"
         assert nvmrc.is_file(), ".nvmrc must exist"
-        assert nvmrc.read_text(encoding="utf-8").strip() == "24.18.0"
+        assert nvmrc.read_text(encoding="utf-8").strip() == "24.19.0"
 
     def test_product_renderer_csp_forbids_direct_network_access(self):
         index = ROOT / "desktop" / "web-grid" / "index.html"

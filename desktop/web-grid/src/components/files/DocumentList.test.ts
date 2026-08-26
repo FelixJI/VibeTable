@@ -27,7 +27,7 @@ describe("DocumentList", () => {
   });
 
   it("moves the single grid tab stop and selection with vertical arrows without wrapping", async () => {
-    const entries = [entry("document-a"), entry("document-b")];
+    const entries = [entry("document-a"), { ...entry("document-b"), sizeBytes: 2048 }];
     const select = vi.fn();
     const wrapper = mount(DocumentList, {
       attachTo: document.body,
@@ -43,6 +43,7 @@ describe("DocumentList", () => {
 
     expect(first.attributes("tabindex")).toBe("0");
     expect(second.attributes("tabindex")).toBe("-1");
+    expect(second.text()).toContain("2.0 KB");
     (first.element as HTMLElement).focus();
     await first.trigger("keydown", { key: "ArrowDown" });
 

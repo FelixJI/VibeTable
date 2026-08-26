@@ -25,7 +25,7 @@ import {
   LogOut,
   Trash2,
   ShieldCheck,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import { NButton, NIcon } from "naive-ui";
-import { AlertTriangle, Eye, FileQuestion, History } from "lucide-vue-next";
+import { AlertTriangle, Eye, FileQuestion, History } from "@lucide/vue";
 import type { DocumentEntry, InspectorTab } from "@/stores/documentWorkspaceStore";
 import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 import type { FileRevisionTreeProjection } from "@/stores/workspaceProtectionStore";

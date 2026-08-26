@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { NIcon } from "naive-ui";
-import { Box, Github, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "lucide-vue-next";
+import { Box, GitBranch, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "@lucide/vue";
 import type { PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
 import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { usePluginStore } from "@/stores/pluginStore";
@@ -201,7 +201,7 @@ onBeforeUnmount(() => service.dispose());
           title="Release metadata 直连 GitHub，.vtplugin 使用设置中的下载通道"
           @click="inspectGitHubInstall"
         >
-          <NIcon :size="15"><Github /></NIcon> 从 GitHub 检查
+          <NIcon :size="15"><GitBranch /></NIcon> 从 GitHub 检查
         </button>
         <button class="install-button" type="button" data-testid="plugin-install-package" :disabled="!store.projectContextReady || store.busy" @click="inspectInstall('host-picker:package')">
           <NIcon :size="15"><Upload /></NIcon> 选择 .vtplugin

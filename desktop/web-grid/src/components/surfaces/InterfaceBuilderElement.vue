@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NButton, NIcon } from "naive-ui";
-import { Plus, Trash2 } from "lucide-vue-next";
+import { Plus, Trash2 } from "@lucide/vue";
 import type { InterfaceElement } from "@/contracts/generated/workbench";
 
 defineOptions({ name: "InterfaceBuilderElement" });

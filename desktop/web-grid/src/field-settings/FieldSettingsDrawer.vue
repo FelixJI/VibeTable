@@ -18,7 +18,7 @@ import {
   NTabs,
   NTag,
 } from "naive-ui";
-import { ArchiveRestore, Plus, RefreshCw, Trash2 } from "lucide-vue-next";
+import { ArchiveRestore, Plus, RefreshCw, Trash2 } from "@lucide/vue";
 import type {
   FieldDraftV2,
   JsonValueV2,

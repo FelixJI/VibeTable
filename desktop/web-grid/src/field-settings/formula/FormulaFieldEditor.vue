@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { NAlert, NButton, NInput, NSelect, NSpin, NTag } from "naive-ui";
 import type { SelectOption } from "naive-ui";
-import { Braces, ChevronLeft, FunctionSquare, PencilLine, Plus } from "lucide-vue-next";
+import { Braces, ChevronLeft, FunctionSquare, PencilLine, Plus } from "@lucide/vue";
 import type {
   FieldDraftV2,
   FormulaDraftValidationResult,

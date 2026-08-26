@@ -10,7 +10,7 @@ import {
   MoreHorizontal,
   Plus,
   Table2,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import type { PresetEntry } from "@/contracts";
 import { t } from "@/i18n";
 

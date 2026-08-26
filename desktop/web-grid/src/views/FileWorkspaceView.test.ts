@@ -133,6 +133,9 @@ describe("FileWorkspaceView", () => {
     expect(wrapper.find(`[data-revision-id="${revision.revisionId}"]`).exists()).toBe(false);
     expect(wrapper.emitted("workspaceV2Action")).toHaveLength(1);
 
+    await previewTab.trigger("click");
+    expect(store.inspectorTab).toBe("preview");
+
     await previewTab.trigger("keydown", { key: "ArrowLeft" });
     await wrapper.vm.$nextTick();
     await wrapper.vm.$nextTick();

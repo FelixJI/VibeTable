@@ -22,7 +22,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useMessage } from "naive-ui";
 import { NButton, NDropdown, NIcon, NModal } from "naive-ui";
-import { FilePlus2 } from "lucide-vue-next";
+import { FilePlus2 } from "@lucide/vue";
 import type { TabulatorFull } from "tabulator-tables";
 import AppNavigation from "@/components/layout/AppNavigation.vue";
 import AppSidebar from "@/components/layout/AppSidebar.vue";

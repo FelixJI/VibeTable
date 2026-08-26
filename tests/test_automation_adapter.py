@@ -21,7 +21,7 @@ def test_doctor_dispatches_explicit_profile_and_returns_report_status(
     observed: list[tuple[Path, DoctorProfile]] = []
     report = DoctorReport(
         profile=DoctorProfile.FULL,
-        checks=(DoctorCheck("go.version", False, "1.25.8", "missing", "安装 Go。"),),
+        checks=(DoctorCheck("go.version", False, "1.27.0", "missing", "安装 Go。"),),
     )
 
     def diagnose(repo_root: Path, profile: DoctorProfile) -> DoctorReport:
@@ -150,7 +150,7 @@ def test_candidate_prepare_bootstraps_only_release_build_dependencies(
     monkeypatch.setattr(
         automation_project,
         "ensure_node",
-        lambda _root: Path("C:/node/node-v24.18.0-win-x64/node.exe"),
+        lambda _root: Path("C:/node/node-v24.19.0-win-x64/node.exe"),
     )
     monkeypatch.setattr(
         automation_project,
@@ -188,7 +188,7 @@ def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
-    node = tmp_path / ".tools" / "node" / "node-v24.18.0-win-x64" / "node.exe"
+    node = tmp_path / ".tools" / "node" / "node-v24.19.0-win-x64" / "node.exe"
     node.parent.mkdir(parents=True)
     node.touch()
     monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
@@ -861,8 +861,8 @@ def test_spdx_is_derived_from_the_built_package_sbom(
         json.dumps(
             {
                 "components": [
-                    {"name": "PocketBase", "version": "0.39.9"},
-                    {"name": "PocketBase", "version": "0.39.9"},
+                    {"name": "PocketBase", "version": "0.40.1"},
+                    {"name": "PocketBase", "version": "0.40.1"},
                 ]
             }
         ),
@@ -881,8 +881,8 @@ def test_spdx_is_derived_from_the_built_package_sbom(
     assert document["name"] == "VibeTable-1.2.3"
     assert [item["versionInfo"] for item in document["packages"]] == [
         "1.2.3",
-        "0.39.9",
-        "0.39.9",
+        "0.40.1",
+        "0.40.1",
     ]
     assert len({item["SPDXID"] for item in document["packages"]}) == 3
     assert document["packages"][0]["checksums"] == [

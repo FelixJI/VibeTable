@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
     )
 
 PROTOCOL_VERSION = "2.0"
-WEBVIEW2_SDK = "1.0.4078.44"
+WEBVIEW2_SDK = "1.0.4129.50"
 TABULATOR_VERSION = "6.5.2"
 HOST_EXE_NAME = "VibeTable.Next.exe"
 ARCHIVE_ROOT_NAME = "VibeTable"
@@ -57,7 +57,6 @@ BACKEND_HIDDEN_IMPORTS = (
     "pydantic.deprecated.decorator",
     "openpyxl",
     "openpyxl.workbook",
-    "websockets",
 )
 _DEV_PACKAGES_FORBIDDEN_IN_BUNDLE = frozenset({"mypy", "numpy", "pandas", "pytest", "_pytest"})
 DEV_SKIP_FLAGS = (

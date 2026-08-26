@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NButton, NDatePicker, NIcon, NInput, NInputNumber, NSelect } from "naive-ui";
-import { X } from "lucide-vue-next";
+import { X } from "@lucide/vue";
 import { t } from "@/i18n";
 
 interface FilterItem { key: string; label: string; type: string; defaultValue?: unknown }

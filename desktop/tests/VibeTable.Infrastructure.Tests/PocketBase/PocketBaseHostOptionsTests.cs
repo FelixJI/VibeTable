@@ -20,7 +20,7 @@ public sealed class PocketBaseHostOptionsTests
             """
             {
               "contractVersion": "v1",
-              "pocketBaseVersion": "0.39.9",
+              "pocketBaseVersion": "0.40.1",
               "schemaVersion": "3",
               "migrationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             }
@@ -111,7 +111,7 @@ public sealed class PocketBaseHostOptionsTests
             """
             {
               "contractVersion": "v1",
-              "pocketBaseVersion": "0.39.9",
+              "pocketBaseVersion": "0.40.1",
               "schemaVersion": "3",
               "migrationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             }
@@ -174,7 +174,7 @@ public sealed class PocketBaseHostOptionsTests
             $$"""
             {
               "contractVersion": "v1",
-              "pocketBaseVersion": "0.39.9",
+              "pocketBaseVersion": "0.40.1",
               "schemaVersion": "{{schemaVersion}}",
               "migrationHash": "{{migrationHash}}"
             }

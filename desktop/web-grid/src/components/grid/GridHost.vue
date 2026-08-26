@@ -16,7 +16,7 @@
 import { inject, ref } from "vue";
 import type { Ref } from "vue";
 import { NButton, NIcon } from "naive-ui";
-import { Plus } from "lucide-vue-next";
+import { Plus } from "@lucide/vue";
 import type { TabulatorFull } from "tabulator-tables";
 import { useTabulator } from "@/composables/useTabulator";
 import type { CellEditedHandler, CellValidationErrorHandler } from "@/grid/createGrid";

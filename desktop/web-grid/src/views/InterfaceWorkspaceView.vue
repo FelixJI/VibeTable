@@ -23,7 +23,7 @@ import {
   Tablet,
   Trash2,
   Wrench,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import type {
   DataBinding,
   InterfaceAction,

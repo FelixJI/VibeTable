@@ -165,7 +165,7 @@ describe("workspace protection UI capability gates", () => {
     await wrapper.vm.$nextTick();
 
     const modal = document.body.querySelector<HTMLElement>(".workspace-flow-modal");
-    const content = modal?.querySelector<HTMLElement>(".n-card__content");
+    const content = modal?.querySelector<HTMLElement>(".n-card-content");
     try {
       expect(modal?.style.maxHeight).toBe("calc(100dvh - 32px)");
       expect(content?.style.minHeight).toBe("0px");

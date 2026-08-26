@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { NDatePicker, NIcon, NInput, NPopover } from "naive-ui";
-import { CalendarDays, ChevronDown } from "lucide-vue-next";
+import { CalendarDays, ChevronDown } from "@lucide/vue";
 import { t } from "@/i18n";
 import {
   formatMonthKey,

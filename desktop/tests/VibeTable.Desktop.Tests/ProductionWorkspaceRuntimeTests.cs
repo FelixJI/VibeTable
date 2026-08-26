@@ -208,7 +208,7 @@ public sealed class ProductionWorkspaceRuntimeTests
                 ExpectedIdentity = new PocketBaseExpectedIdentity(
                     "vibetable.sidecar.ready.v1",
                     "2.0",
-                    "0.39.9",
+                    "0.40.1",
                     "5",
                     "hash"),
             },

@@ -23,7 +23,7 @@ import {
   Keyboard,
   Palette,
   SlidersHorizontal,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 import changelog from "@/generated/changelog.json";
 import { QUOTE_STYLES_BY_SOURCE, useUiStore } from "@/stores/uiStore";

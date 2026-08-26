@@ -146,9 +146,9 @@ flowchart LR
 | --- | --- |
 | 操作系统 | Windows 10/11 x64 |
 | Python | 3.13+，依赖统一由 `uv` 和 `uv.lock` 管理 |
-| Node.js | 24.18.0；允许 24.x，见 `.nvmrc` 与各 `package.json` |
-| .NET SDK | 10.0.100，见 `global.json` |
-| Go | 1.25.8，见 `sidecar/go.mod` |
+| Node.js | 24.19.0；允许 24.x，见 `.nvmrc` 与各 `package.json` |
+| .NET SDK | 10.0.400，见 `global.json` |
+| Go | 1.27.0，见 `sidecar/go.mod` |
 | WebView2 Runtime | Windows 桌面界面运行必需 |
 
 Go、Node.js 和 Python 构建工具只用于源码开发与打包；正式发布包不会在运行时从网络下载组件。

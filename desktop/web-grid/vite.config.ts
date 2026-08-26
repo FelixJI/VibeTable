@@ -30,10 +30,12 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes("node_modules")) {
+            // The scoped package path contains `/vue/`; classify it before
+            // the framework check so icon code does not inflate the Vue core chunk.
+            if (id.includes("/@lucide/vue/")) return "icons";
             if (id.includes("/pinia/") || id.includes("/vue/")) return "vue";
             if (id.includes("/naive-ui/")) return "naive";
             if (id.includes("/tabulator-tables/")) return "tabulator";
-            if (id.includes("/lucide-vue-next/")) return "icons";
             if (id.includes("/echarts/") || id.includes("/zrender/")) return "charts";
             if (id.includes("/gridstack/")) return "dashboard-layout";
           }

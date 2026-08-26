@@ -25,7 +25,7 @@ import {
   RotateCw,
   ShieldAlert,
   ShieldCheck,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { t } from "@/i18n";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceProtectionStore, type SnapshotTimelineItem } from "@/stores/workspaceProtectionStore";

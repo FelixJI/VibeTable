@@ -5,11 +5,11 @@ Node、npm 或 `node_modules`。
 
 ## 锁定来源
 
-- 版本来源：仓库根目录 `.node-version` 与 `.nvmrc`，当前均为 `24.18.0`。
-- 官方制品：`https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip`。
+- 版本来源：仓库根目录 `.node-version` 与 `.nvmrc`，当前均为 `24.19.0`。
+- 官方制品：`https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip`。
 - 官方 SHA-256：`0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821`。
-- 恢复位置：`.tools/node/node-v24.18.0-win-x64/`；下载缓存位于
-  `build/tooling/node-v24.18.0-win-x64.zip`。两者均为仓库声明的本地生成目录，不提交到 Git。
+- 恢复位置：`.tools/node/node-v24.19.0-win-x64/`；下载缓存位于
+  `build/tooling/node-v24.19.0-win-x64.zip`。两者均为仓库声明的本地生成目录，不提交到 Git。
 
 `scripts/node_toolchain.py` 在外部制品导入时验证一次官方 SHA-256，并拒绝 ZIP 危险路径；提交后
 依赖 Git、锁文件和既有 package contract，不维护逐文件 hash 清单。
