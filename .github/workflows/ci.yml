@@ -5,6 +5,8 @@ on:
     types: [opened, synchronize, reopened, closed]
   push:
     branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -18,8 +20,54 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  plan:
+  codeql:
     if: github.event_name != 'pull_request' || github.event.action != 'closed'
+    name: CodeQL (${{ matrix.language }})
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: csharp
+            build-mode: autobuild
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        if: matrix.language == 'csharp'
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: matrix.language == 'go'
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Analyze
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  plan:
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.action != 'closed')
     runs-on: windows-latest
     outputs:
       sharded: ${{ steps.plan.outputs.sharded }}
@@ -167,7 +215,7 @@ jobs:
 
   required:
     needs: [plan, prepare, shard]
-    if: always() && (github.event_name != 'pull_request' || github.event.action != 'closed')
+    if: always() && github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.action != 'closed')
     name: required
     runs-on: windows-latest
     steps:

@@ -144,6 +144,29 @@ def test_only_canonical_workflows_remain_and_delegate_to_stable_cli() -> None:
     assert "release-please" not in (ci + cd).lower()
 
 
+def test_ci_runs_advanced_codeql_with_repository_toolchains() -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    codeql = ci.split("\n  codeql:\n", maxsplit=1)[1].split("\n  plan:\n", maxsplit=1)[0]
+
+    assert 'cron: "17 3 * * 1"' in ci
+    assert "security-events: write" in codeql
+    assert [
+        line.strip().removeprefix("- language: ")
+        for line in codeql.splitlines()
+        if line.strip().startswith("- language: ")
+    ] == ["actions", "csharp", "go", "javascript-typescript", "python"]
+    assert "if: matrix.language == 'csharp'" in codeql
+    assert "global-json-file: global.json" in codeql
+    assert "if: matrix.language == 'go'" in codeql
+    assert "go-version-file: sidecar/go.mod" in codeql
+    action = "db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28"
+    assert f"github/codeql-action/init@{action}" in codeql
+    assert f"github/codeql-action/analyze@{action}" in codeql
+    assert "build-mode: ${{ matrix.build-mode }}" in codeql
+    assert 'category: "/language:${{ matrix.language }}"' in codeql
+    assert "github.event_name != 'schedule'" in ci.split("\n  plan:\n", maxsplit=1)[1]
+
+
 def test_ci_prepare_scopes_candidate_mode_to_the_prepare_step() -> None:
     ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     prepare_step = ci.split("- name: Build immutable candidate after pre-release gates", 1)[1]
