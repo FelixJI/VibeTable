@@ -273,6 +273,10 @@ def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     assert "真实 Tables UI" in by_id["21-calendar-date-move"]
     assert "日期" in by_id["21-calendar-date-move"]
     assert "重开" in by_id["21-calendar-date-move"]
+    assert "真实 Tables UI" in by_id["22-timeline-date-move"]
+    assert "无结束字段" in by_id["22-timeline-date-move"]
+    assert "mutation authority" in by_id["22-timeline-date-move"]
+    assert "重开" in by_id["22-timeline-date-move"]
 
 
 def test_node_runner_inventory_matches_the_product_scenario_manifest() -> None:
@@ -320,7 +324,22 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
             "async function waitForCalendarRecordOnDate"
         )
     ]
-    calendar = source[source.index("async function scenario21") : source.index("const scenarios")]
+    calendar = source[
+        source.index("async function scenario21") : source.index(
+            "async function waitForTimelineRecordInRange"
+        )
+    ]
+    timeline_wait = source[
+        source.index("async function waitForTimelineRecordInRange") : source.index(
+            "async function dragTimelineRecordToDate"
+        )
+    ]
+    timeline_drag = source[
+        source.index("async function dragTimelineRecordToDate") : source.index(
+            "async function scenario22"
+        )
+    ]
+    timeline = source[source.index("async function scenario22") : source.index("const scenarios")]
 
     assert 'getByTestId("workspace-create")' in workspace
     assert 'getByTestId("snapshot-create")' in workspace
@@ -376,6 +395,28 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert '"query.page"' in calendar
     assert '"table.updateCellRequested"' not in calendar
     assert "createV2Field(page, tableId" not in calendar
+    assert 'getByTestId("field-display-name")' in timeline
+    assert '"field-logical-type"' in timeline
+    assert 'getByTestId("field-plan-button")' in timeline
+    assert 'getByTestId("field-apply-button")' in timeline
+    assert 'getByTestId("view-kind-timeline")' in timeline
+    assert '"view-temporal-date-field"' in timeline
+    assert '"view-temporal-title-field"' in timeline
+    assert "Timeline Anchor" not in timeline
+    assert "record.dataset.date === target" in timeline_wait
+    assert "start <= target" in timeline_wait
+    assert "target <= end" in timeline_wait
+    assert "getClientRects().length > 0" in timeline_wait
+    assert 'data-start-date="${date}"' not in timeline_wait
+    assert "dragTimelineRecordToDate(page" in timeline
+    assert "new DataTransfer()" in timeline_drag
+    assert "new DragEvent(type" in timeline_drag
+    assert 'dispatch(record, "dragstart")' in timeline_drag
+    assert 'dispatch(track, "drop")' in timeline_drag
+    assert "rawBridgeRequest" not in timeline_drag
+    assert '"query.page"' in timeline
+    assert '"table.updateCellRequested"' not in timeline
+    assert "createV2Field(page, tableId" not in timeline
 
 
 def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries() -> None:

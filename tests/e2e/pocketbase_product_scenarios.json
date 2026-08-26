@@ -124,5 +124,11 @@
     "title": "Calendar 日期拖动持久化",
     "requirement": "通过真实 Tables UI 创建 date 字段并配置 Calendar；把权威记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。",
     "capabilities": ["calendar.lifecycle", "mutation.authority"]
+  },
+  {
+    "id": "22-timeline-date-move",
+    "title": "Timeline 单日期拖动持久化",
+    "requirement": "通过真实 Tables UI 创建 date 字段并配置无结束字段的 Timeline；把权威 point 记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。",
+    "capabilities": ["timeline.lifecycle", "mutation.authority"]
   }
 ]
