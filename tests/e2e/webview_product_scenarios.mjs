@@ -5800,6 +5800,183 @@ async function scenario20(page, recorder, _network, runtime) {
   });
 }
 
+async function waitForCalendarRecordOnDate(page, date, title) {
+  const day = page.locator(
+    `[data-testid="calendar-day"][data-date="${date}"]`,
+  );
+  await day.waitFor({ state: "visible", timeout: 30_000 });
+  await day.getByTestId("calendar-record")
+    .filter({ hasText: title })
+    .waitFor({ state: "visible", timeout: 30_000 });
+  return day;
+}
+
+async function dragCalendarRecordToDate(page, sourceDate, targetDate, title) {
+  await page.evaluate(({ sourceDate: source, targetDate: target, title: recordTitle }) => {
+    const sourceDay = document.querySelector(
+      `[data-testid="calendar-day"][data-date="${source}"]`,
+    );
+    const targetDay = document.querySelector(
+      `[data-testid="calendar-day"][data-date="${target}"]`,
+    );
+    const record = [...(sourceDay?.querySelectorAll('[data-testid="calendar-record"]') ?? [])]
+      .find(element => element.textContent?.includes(recordTitle));
+    if (!(record instanceof HTMLElement) || !(targetDay instanceof HTMLElement)
+      || record.draggable !== true) {
+      throw new Error(`Calendar drag endpoints are unavailable: ${JSON.stringify({
+        source,
+        target,
+        recordTitle,
+      })}`);
+    }
+    const dataTransfer = new DataTransfer();
+    const dispatch = (element, type) => element.dispatchEvent(new DragEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer,
+    }));
+    dispatch(record, "dragstart");
+    dispatch(targetDay, "dragenter");
+    dispatch(targetDay, "dragover");
+    dispatch(targetDay, "drop");
+    dispatch(record, "dragend");
+  }, { sourceDate, targetDate, title });
+}
+
+async function scenario21(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  await page.getByTestId("nav-tables").click();
+  const tableId = await createEmptyTable(page, "E2E Calendar Records");
+
+  const createFieldThroughUi = async (displayName, typeLabel) => {
+    const displayNameInput = page.getByTestId("field-display-name");
+    if (!(await displayNameInput.isVisible())) {
+      await page.getByTestId("toolbar-field-manager").click();
+      await displayNameInput.waitFor({ state: "visible", timeout: 30_000 });
+    }
+    await displayNameInput.locator("input").fill(displayName);
+    await selectVisibleNOption(page, "field-logical-type", typeLabel);
+    await page.getByTestId("field-plan-button").click();
+    await page.getByTestId("field-change-plan").waitFor({ state: "visible", timeout: 30_000 });
+    const applyButton = page.getByTestId("field-apply-button");
+    await page.waitForFunction(() => {
+      const button = document.querySelector('[data-testid="field-apply-button"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    }, undefined, { timeout: 30_000 });
+    await applyButton.click();
+    await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
+    await page.getByTestId("field-close-button").click();
+    await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
+  };
+
+  await createFieldThroughUi("Title", "单行文本");
+  await createFieldThroughUi("Due Date", "日期");
+  await selectTable(page, "E2E Calendar Records");
+  await chooseToolbarMore(page, "refresh");
+  const titleHeader = page.locator(".tabulator-col").filter({ hasText: "Title" }).first();
+  const dateHeader = page.locator(".tabulator-col").filter({ hasText: "Due Date" }).first();
+  await titleHeader.waitFor({ state: "visible", timeout: 30_000 });
+  await dateHeader.waitFor({ state: "visible", timeout: 30_000 });
+  const titlePhysicalName = await titleHeader.getAttribute("tabulator-field");
+  const datePhysicalName = await dateHeader.getAttribute("tabulator-field");
+  if (!titlePhysicalName || !datePhysicalName) {
+    throw new Error(`Calendar field authority is unavailable: ${JSON.stringify({
+      titlePhysicalName,
+      datePhysicalName,
+    })}`);
+  }
+
+  await page.getByTestId("view-create").click();
+  const createDialog = page.locator(".view-dialog:visible");
+  await createDialog.waitFor({ state: "visible", timeout: 10_000 });
+  await createDialog.locator(".n-input input").fill("E2E Calendar");
+  await page.getByTestId("view-kind-calendar").click();
+  await selectVisibleNOption(page, "view-temporal-date-field", "Due Date");
+  await selectVisibleNOption(page, "view-temporal-title-field", "Title");
+  await page.getByTestId("view-dialog-confirm").click();
+
+  const calendar = page.getByTestId("record-calendar-view");
+  await calendar.waitFor({ state: "visible", timeout: 30_000 });
+  const sourceDate = "2026-08-12";
+  const targetDate = "2026-08-20";
+  const seeded = await applyProductMutation(page, tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: {
+      [titlePhysicalName]: "Calendar Alpha",
+      [datePhysicalName]: sourceDate,
+    },
+  }], "calendar-seed");
+  recorder.check("Calendar seed commits one authoritative date record",
+    seeded.type === "mutation.apply" && seeded.payload?.status === "applied",
+  { seeded, sourceDate });
+  await chooseToolbarMore(page, "refresh");
+
+  const sourceDay = await waitForCalendarRecordOnDate(page, sourceDate, "Calendar Alpha");
+  const targetDay = page.locator(
+    `[data-testid="calendar-day"][data-date="${targetDate}"]`,
+  );
+  await targetDay.waitFor({ state: "visible", timeout: 30_000 });
+  const record = sourceDay.getByTestId("calendar-record")
+    .filter({ hasText: "Calendar Alpha" });
+  const recordDraggable = await record.getAttribute("draggable");
+  const sourceDayDate = await sourceDay.getAttribute("data-date");
+  const targetDayDate = await targetDay.getAttribute("data-date");
+  recorder.check("Calendar exposes only an enabled draggable record and a dated drop target",
+    recordDraggable === "true"
+      && sourceDayDate === sourceDate
+      && targetDayDate === targetDate,
+  { sourceDate, targetDate, recordDraggable, sourceDayDate, targetDayDate });
+  await dragCalendarRecordToDate(page, sourceDate, targetDate, "Calendar Alpha");
+  await waitForCalendarRecordOnDate(page, targetDate, "Calendar Alpha");
+
+  const authoritative = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  const moved = authoritative.payload?.rows?.find(
+    row => row[titlePhysicalName] === "Calendar Alpha",
+  );
+  recorder.check("Calendar drag waits for mutation authority and persists the target date",
+    authoritative.type === "query.page"
+      && String(moved?.[datePhysicalName] ?? "").startsWith(targetDate),
+  { moved, authoritative });
+
+  await chooseToolbarMore(page, "refresh");
+  await waitForCalendarRecordOnDate(page, targetDate, "Calendar Alpha");
+  const listed = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  const persisted = listed.payload?.presets?.find(item => item.name === "E2E Calendar");
+  recorder.check("Calendar definition persists the selected date and title fields",
+    persisted?.collection === tableId
+      && persisted.view?.kind === "calendar"
+      && persisted.view?.layout === "calendar"
+      && persisted.view?.dateField === datePhysicalName
+      && persisted.view?.titleField === titlePhysicalName,
+  { persisted });
+  if (!persisted?.id) {
+    throw new Error(`persisted Calendar preset is unavailable: ${JSON.stringify(listed)}`);
+  }
+
+  await page.getByTestId("nav-settings").click();
+  await calendar.waitFor({ state: "hidden", timeout: 10_000 });
+  await page.getByTestId("nav-tables").click();
+  const persistedTab = page.getByTestId(`view-tab-${persisted.id}`);
+  await persistedTab.waitFor({ state: "visible", timeout: 30_000 });
+  await persistedTab.click();
+  await waitForCalendarRecordOnDate(page, targetDate, "Calendar Alpha");
+  recorder.check("Calendar moved record survives refresh and leaving then reopening Tables",
+    await page.locator(`[data-testid="calendar-day"][data-date="${targetDate}"]`)
+      .getByTestId("calendar-record")
+      .filter({ hasText: "Calendar Alpha" })
+      .count() === 1,
+  { presetId: persisted.id, targetDate });
+
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "21-calendar-date-move.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -5821,6 +5998,7 @@ const scenarios = {
   "18-workspace-search": scenario18,
   "19-gallery-lifecycle": scenario19,
   "20-kanban-lane-drag": scenario20,
+  "21-calendar-date-move": scenario21,
 };
 
 async function main() {

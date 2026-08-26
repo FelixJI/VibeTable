@@ -170,9 +170,9 @@ function confirm(): void {
             <button type="button" :class="{ active: viewKind === 'gallery' }" :aria-pressed="viewKind === 'gallery'" data-testid="view-kind-gallery" @click="viewKind = 'gallery'"><GalleryHorizontal :size="17" />{{ t("views.kind.gallery") }}</button>
           </div>
           <div v-if="isTemporalView" class="view-field-options">
-            <label><span>{{ t("views.field.date") }}</span><NSelect v-model:value="dateField" :options="selectableDateFields" /></label>
+            <label><span>{{ t("views.field.date") }}</span><NSelect v-model:value="dateField" :options="selectableDateFields" data-testid="view-temporal-date-field" /></label>
             <label v-if="viewKind === 'timeline'"><span>{{ t("views.field.endDate") }}</span><NSelect v-model:value="endDateField" :options="selectableDateFields" clearable /></label>
-            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable /></label>
+            <label><span>{{ t("views.field.title") }}</span><NSelect v-model:value="titleField" :options="selectableTitleFields" clearable data-testid="view-temporal-title-field" /></label>
           </div>
           <div v-else-if="viewKind === 'kanban'" class="view-field-options">
             <label><span>{{ t("views.field.group") }}</span><NSelect v-model:value="groupField" :options="selectableGroupFields" data-testid="view-kanban-group-field" /></label>

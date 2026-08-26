@@ -270,6 +270,9 @@ def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     assert "真实 Tables UI" in by_id["20-kanban-lane-drag"]
     assert "稳定 optionId" in by_id["20-kanban-lane-drag"]
     assert "重开" in by_id["20-kanban-lane-drag"]
+    assert "真实 Tables UI" in by_id["21-calendar-date-move"]
+    assert "日期" in by_id["21-calendar-date-move"]
+    assert "重开" in by_id["21-calendar-date-move"]
 
 
 def test_node_runner_inventory_matches_the_product_scenario_manifest() -> None:
@@ -312,7 +315,12 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
         source.index("async function scenario17") : source.index("async function scenario18")
     ]
     search = source[source.index("async function scenario18") : source.index("const scenarios")]
-    kanban = source[source.index("async function scenario20") : source.index("const scenarios")]
+    kanban = source[
+        source.index("async function scenario20") : source.index(
+            "async function waitForCalendarRecordOnDate"
+        )
+    ]
+    calendar = source[source.index("async function scenario21") : source.index("const scenarios")]
 
     assert 'getByTestId("workspace-create")' in workspace
     assert 'getByTestId("snapshot-create")' in workspace
@@ -347,6 +355,27 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert '"query.page"' in kanban
     assert '"table.updateCellRequested"' not in kanban
     assert "createV2Field(page, tableId" not in kanban
+    assert 'getByTestId("field-display-name")' in calendar
+    assert '"field-logical-type"' in calendar
+    assert 'getByTestId("field-plan-button")' in calendar
+    assert 'getByTestId("field-apply-button")' in calendar
+    assert 'getByTestId("view-kind-calendar")' in calendar
+    assert '"view-temporal-date-field"' in calendar
+    assert '"view-temporal-title-field"' in calendar
+    assert "dragCalendarRecordToDate(page" in calendar
+    calendar_drag = source[
+        source.index("async function dragCalendarRecordToDate") : source.index(
+            "async function scenario21"
+        )
+    ]
+    assert "new DataTransfer()" in calendar_drag
+    assert "new DragEvent(type" in calendar_drag
+    assert 'dispatch(record, "dragstart")' in calendar_drag
+    assert 'dispatch(targetDay, "drop")' in calendar_drag
+    assert "rawBridgeRequest" not in calendar_drag
+    assert '"query.page"' in calendar
+    assert '"table.updateCellRequested"' not in calendar
+    assert "createV2Field(page, tableId" not in calendar
 
 
 def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries() -> None:

@@ -685,6 +685,119 @@ describe("WorkspaceView", () => {
     expect(wrapper.get('[data-option-id="opt_done"]').text()).toContain("准备合同");
   });
 
+  it("routes a Calendar date drop through updateCell and waits for host authority", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    const table = useTableStore();
+    const revision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    };
+    const digest = `sha256:${"a".repeat(64)}`;
+    const committedDigest = `sha256:${"b".repeat(64)}`;
+    const columns: ColumnSchema[] = [
+      { name: "title", title: "标题", dataType: "text", editable: true, nullable: false },
+      { name: "due", title: "截止日期", dataType: "date", editable: true, nullable: true },
+    ];
+    const seedTable = () => {
+      table.setDatasetReady({
+        table: "orders",
+        columns,
+        rows: [{
+          rowKey: "row-1",
+          title: "准备合同",
+          due: "2026-08-13 00:00:00.000Z",
+          __vibetableDigest: digest,
+        }],
+        offset: 0,
+        limit: 100,
+        totalRows: 1,
+        mode: "remote",
+        revision,
+      });
+      table.setEditSchema([], revision);
+    };
+    seedTable();
+    const presets = usePresetVersionStore();
+    const calendar: PresetEntry = {
+      id: "view-calendar",
+      collection: "orders",
+      name: "任务日历",
+      scope: "personal",
+      revision: "preset-1",
+      emittedEvents: [],
+      view: {
+        kind: "calendar",
+        layout: "calendar",
+        filters: [],
+        sorts: [],
+        search: "",
+        visibleFields: ["title", "due"],
+        dateField: "due",
+        titleField: "title",
+      },
+    };
+    presets.receivePresets({ collection: "orders", presets: [calendar] });
+    presets.activatePreset(calendar.id);
+
+    const wrapper = mountView();
+    await flushPromises();
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    seedTable();
+    presets.receivePresets({ collection: "orders", presets: [calendar] });
+    presets.activatePreset(calendar.id);
+    await flushPromises();
+
+    const record = wrapper.get('[data-testid="calendar-record"]');
+    expect(record.attributes("draggable")).toBe("true");
+    await record.trigger("dragstart");
+    await wrapper.get('[data-testid="calendar-day"][data-date="2026-08-20"]').trigger("drop");
+    await flushPromises();
+
+    const update = posted.filter(message => message.type === "table.updateCellRequested").at(-1);
+    expect(update?.payload).toEqual({
+      table: "orders",
+      rowKey: "row-1",
+      column: "due",
+      oldValue: "2026-08-13 00:00:00.000Z",
+      newValue: "2026-08-20",
+      expectedDigest: digest,
+      schemaRevision: "schema-1",
+    });
+    expect(table.allRows[0]?.due).toBe("2026-08-13 00:00:00.000Z");
+    expect(wrapper.get('[data-testid="calendar-day"][data-date="2026-08-13"]').text())
+      .toContain("准备合同");
+    expect(wrapper.get('[data-testid="calendar-day"][data-date="2026-08-20"]').text())
+      .not.toContain("准备合同");
+
+    emit({
+      type: "table.editCommitted",
+      payload: {
+        rowKey: "row-1",
+        column: "due",
+        storedValue: "2026-08-20",
+        currentRow: {
+          rowKey: "row-1",
+          title: "准备合同",
+          due: "2026-08-20 00:00:00.000Z",
+          __vibetableDigest: committedDigest,
+        },
+        revision: { ...revision, dataRevision: 2 },
+      },
+    });
+    await flushPromises();
+
+    expect(table.allRows[0]?.due).toBe("2026-08-20");
+    expect(wrapper.get('[data-testid="calendar-day"][data-date="2026-08-20"]').text())
+      .toContain("准备合同");
+  });
+
   it("manages persisted views through create, duplicate, rename, default, switch, save, and delete", async () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);

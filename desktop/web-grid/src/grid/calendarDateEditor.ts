@@ -7,6 +7,7 @@ import {
 } from "@/calendar/workCalendar";
 import { getLocale } from "@/i18n";
 import { readStoredWorkCalendar } from "@/stores/workCalendarStore";
+import { replaceCalendarDateValue } from "./calendarDateValue";
 
 interface DateEditorCell {
   getValue(): unknown;
@@ -29,7 +30,7 @@ function valueDate(value: unknown): string {
 }
 
 function valueTime(value: unknown): string {
-  return /T(\d{2}:\d{2})/.exec(String(value ?? ""))?.[1] ?? "09:00";
+  return /[T ](\d{2}:\d{2})/.exec(String(value ?? ""))?.[1] ?? "09:00";
 }
 
 function button(label: string, className: string, onClick: () => void): HTMLButtonElement {
@@ -105,6 +106,14 @@ export function createCalendarDateEditor(
       finish();
     };
 
+    const selectedValue = (): string => {
+      if (dateType === "date") return selectedDate;
+      const preserved = replaceCalendarDateValue(cell.getValue(), selectedDate, "datetime");
+      return preserved && valueTime(preserved) === selectedTime
+        ? preserved
+        : `${selectedDate}T${selectedTime}`;
+    };
+
     const render = (): void => {
       popup.replaceChildren();
       const header = document.createElement("div");
@@ -139,7 +148,7 @@ export function createCalendarDateEditor(
       for (const day of buildMonthDays(visibleMonth, readStoredWorkCalendar())) {
         const dayButton = button(String(day.day), `work-calendar__day work-calendar__day--${day.kind}`, () => {
           selectedDate = day.date;
-          input.value = dateType === "datetime" ? `${selectedDate}T${selectedTime}` : selectedDate;
+          input.value = selectedValue();
           if (dateType === "date") finish(selectedDate);
           else render();
         });
@@ -176,7 +185,7 @@ export function createCalendarDateEditor(
         time.addEventListener("input", () => { selectedTime = time.value || "09:00"; });
         footer.append(time);
         footer.append(button(locale === "zh-CN" ? "确定" : "Apply", "work-date-popup__action", () => {
-          finish(`${selectedDate}T${selectedTime}`);
+          finish(selectedValue());
         }));
       }
       popup.append(footer);
@@ -185,7 +194,7 @@ export function createCalendarDateEditor(
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") finish();
       if (event.key === "Enter") {
-        finish(dateType === "datetime" ? `${selectedDate}T${selectedTime}` : selectedDate);
+        finish(selectedValue());
       }
     });
 
