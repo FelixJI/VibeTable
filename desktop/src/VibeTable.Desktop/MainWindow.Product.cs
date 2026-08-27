@@ -64,6 +64,7 @@ public partial class MainWindow : Window
     private readonly string _activityRootBase;
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
+    private readonly IUpdateActivationGate? _updateActivation;
     private readonly string? _e2eControlsDir;
     private readonly AppPreferencesService _appPreferencesService;
     private readonly TestModeHostController? _testModeHost;
@@ -94,7 +95,13 @@ public partial class MainWindow : Window
             : new WindowsWorkspacePathPicker();
 
     public MainWindow()
+        : this(null)
     {
+    }
+
+    internal MainWindow(IUpdateActivationGate? updateActivation)
+    {
+        _updateActivation = updateActivation;
         InitializeComponent();
 
         HostStartupOptions startup = HostStartupOptions.Current();
@@ -868,6 +875,7 @@ public partial class MainWindow : Window
             && _router.IsReady)
         {
             _readiness?.WriteShellReady();
+            _updateActivation?.ConfirmShellReady();
         }
     }
 

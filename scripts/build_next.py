@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,9 @@ DEV_SKIP_FLAGS = (
 )
 SELF_UPDATE_SMOKE_TOKEN_ENV = "VIBETABLE_SELF_UPDATE_SMOKE_TOKEN"
 SELF_UPDATE_SMOKE_COMPLETION_FILE = ".self-update-smoke-complete"
+SELF_UPDATE_SMOKE_PROCESS_FILE = ".self-update-smoke-process.json"
+SELF_UPDATE_SMOKE_READINESS_DIR = "self-update-readiness"
+SHELL_READINESS_FILE = "vibetable-readiness.json"
 
 
 def release_archive_name(version: str) -> str:
@@ -1232,19 +1236,22 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
 
 def _stage_self_update_smoke_package(
     root: Path,
-    host_exe: Path,
+    package_root: Path,
     *,
     version: str,
     resource_marker: str,
 ) -> None:
-    resources = root / "resources"
-    resources.mkdir(parents=True)
-    destination = root / HOST_EXE_NAME
-    try:
-        os.link(host_exe, destination)
-    except OSError:
-        shutil.copy2(host_exe, destination)
-    (root / "release.json").write_text(
+    def link_or_copy(source: str, destination: str) -> str:
+        try:
+            os.link(source, destination)
+            return destination
+        except OSError:
+            return shutil.copy2(source, destination)
+
+    shutil.copytree(package_root, root, copy_function=link_or_copy)
+    identity = root / "release.json"
+    identity.unlink()
+    identity.write_text(
         json.dumps(
             {
                 "product": "VibeTable",
@@ -1256,11 +1263,147 @@ def _stage_self_update_smoke_package(
         ),
         encoding="utf-8",
     )
+    resources = root / "resources"
     (resources / "self-update-smoke.txt").write_text(resource_marker, encoding="utf-8")
 
 
+def wait_for_self_update_activation(
+    completion: Path,
+    readiness: Path,
+    token: str,
+    target_version: str,
+    process_id: int,
+    *,
+    timeout_seconds: float = 120,
+) -> dict[str, Any]:
+    """Wait until full shell readiness authorizes the updater cleanup."""
+    deadline = time.monotonic() + timeout_seconds
+    readiness_payload: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        if completion.is_file() and not readiness.is_file():
+            raise BuildError("desktop self-update smoke cleaned staging before shell readiness")
+        if readiness.is_file():
+            try:
+                payload = json.loads(readiness.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise BuildError("desktop self-update smoke readiness is invalid") from exc
+            if payload.get("ready") is not True:
+                raise BuildError(
+                    "desktop self-update smoke shell failed: "
+                    + str(payload.get("error") or "unknown readiness failure")
+                )
+            if (
+                not all(
+                    payload.get(field) is True
+                    for field in ("backendReady", "webViewReady", "rendererReady")
+                )
+                or payload.get("mode") != "shell"
+            ):
+                raise BuildError("desktop self-update smoke readiness is incomplete")
+            readiness_payload = payload
+            if completion.is_file():
+                try:
+                    completion_payload = json.loads(completion.read_text(encoding="utf-8-sig"))
+                    readiness_at = datetime.fromisoformat(str(payload["writtenAt"]))
+                    confirmed_at = datetime.fromisoformat(str(completion_payload["confirmedAt"]))
+                except (KeyError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                    raise BuildError(
+                        "desktop self-update smoke completion evidence is invalid"
+                    ) from exc
+                if (
+                    completion_payload.get("token") != token
+                    or completion_payload.get("targetVersion") != target_version
+                    or completion_payload.get("processId") != process_id
+                ):
+                    raise BuildError("desktop self-update smoke completion identity is invalid")
+                if readiness_at.utcoffset() is None or confirmed_at.utcoffset() is None:
+                    raise BuildError(
+                        "desktop self-update smoke evidence timestamps require offsets"
+                    )
+                if confirmed_at < readiness_at:
+                    raise BuildError("desktop self-update smoke completed before shell readiness")
+                return payload
+        if wait_for_windows_process_exit(process_id, timeout_seconds=0):
+            raise BuildError("desktop self-update smoke process exited before activation completed")
+        time.sleep(0.1)
+    if readiness_payload is None:
+        raise BuildError("desktop self-update smoke shell did not become ready")
+    raise BuildError("desktop self-update smoke restart handoff did not complete")
+
+
+def wait_for_windows_process_exit(process_id: int, *, timeout_seconds: float) -> bool:
+    """Wait for one exact Windows process without guessing by executable name."""
+    if os.name != "nt":
+        raise BuildError("desktop self-update process waiting requires Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    wait_object_0 = 0
+    wait_timeout = 0x00000102
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(synchronize, False, process_id)
+    if not handle:
+        return windows_process_exited_after_open_failure(ctypes.get_last_error())
+    try:
+        milliseconds = max(0, min(int(timeout_seconds * 1000), 0xFFFFFFFE))
+        result = kernel32.WaitForSingleObject(handle, milliseconds)
+        if result == wait_object_0:
+            return True
+        if result == wait_timeout:
+            return False
+        raise BuildError("desktop self-update process wait failed")
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def windows_process_exited_after_open_failure(error_code: int) -> bool:
+    """Interpret only a nonexistent PID as an already-exited process."""
+    error_invalid_parameter = 87
+    if error_code == error_invalid_parameter:
+        return True
+    raise BuildError(f"desktop self-update process open failed: Win32 error {error_code}")
+
+
+def terminate_windows_process_tree(process_id: int) -> None:
+    """Best-effort cleanup for the exact smoke process and its child tree."""
+    subprocess.run(
+        ["taskkill", "/PID", str(process_id), "/T", "/F"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+
+
+def read_self_update_process_evidence(
+    path: Path,
+    *,
+    token: str,
+    target_version: str,
+) -> int:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BuildError("desktop self-update smoke process evidence is missing") from exc
+    process_id = payload.get("processId")
+    if (
+        payload.get("token") != token
+        or payload.get("targetVersion") != target_version
+        or not isinstance(process_id, int)
+        or process_id <= 0
+    ):
+        raise BuildError("desktop self-update smoke process evidence is invalid")
+    return process_id
+
+
 def run_desktop_self_update_smoke(
-    host_exe: Path,
+    package_root: Path,
     smoke_root: Path,
     *,
     repo_root: Path,
@@ -1268,9 +1411,10 @@ def run_desktop_self_update_smoke(
     """Exercise the published host's process-out update path without user data access."""
     if os.name != "nt":
         raise BuildError("desktop self-update smoke requires Windows")
-    executable = host_exe.resolve()
-    if not executable.is_file():
-        raise BuildError("desktop self-update smoke host is missing")
+    package = package_root.resolve()
+    executable = package / HOST_EXE_NAME
+    if not package.is_dir() or not executable.is_file():
+        raise BuildError("desktop self-update smoke package is missing")
     repository = Path(os.path.abspath(repo_root))
     root = Path(os.path.abspath(smoke_root))
     expected_root = repository / "build" / "self-update-smoke"
@@ -1287,13 +1431,13 @@ def run_desktop_self_update_smoke(
     source = stage / "package" / ARCHIVE_ROOT_NAME
     _stage_self_update_smoke_package(
         target,
-        executable,
+        package,
         version="1.0.0",
         resource_marker="old",
     )
     _stage_self_update_smoke_package(
         source,
-        executable,
+        package,
         version="1.0.1",
         resource_marker="new",
     )
@@ -1338,11 +1482,28 @@ def run_desktop_self_update_smoke(
         raise BuildError(f"desktop self-update smoke updater exited with {applied.returncode}")
 
     completion = target / SELF_UPDATE_SMOKE_COMPLETION_FILE
-    deadline = time.monotonic() + 120
-    while not completion.is_file() and time.monotonic() < deadline:
-        time.sleep(0.1)
-    if not completion.is_file() or completion.read_text(encoding="ascii") != token:
-        raise BuildError("desktop self-update smoke restart handoff did not complete")
+    readiness_root = root / SELF_UPDATE_SMOKE_READINESS_DIR
+    readiness = readiness_root / SHELL_READINESS_FILE
+    process_id: int | None = None
+    try:
+        process_id = read_self_update_process_evidence(
+            readiness_root / SELF_UPDATE_SMOKE_PROCESS_FILE,
+            token=token,
+            target_version="1.0.1",
+        )
+        wait_for_self_update_activation(
+            completion,
+            readiness,
+            token,
+            "1.0.1",
+            process_id,
+        )
+        if not wait_for_windows_process_exit(process_id, timeout_seconds=30):
+            raise BuildError("desktop self-update smoke process did not exit")
+    except Exception:
+        if process_id is not None:
+            terminate_windows_process_tree(process_id)
+        raise
     if stage.exists():
         raise BuildError("desktop self-update smoke did not clean its staging directory")
     identity = json.loads((target / "release.json").read_text(encoding="utf-8"))
@@ -1454,7 +1615,7 @@ def run_build(paths: RepoPaths, args: argparse.Namespace) -> int:
     write_release_manifest(stage)
     if args.release:
         run_desktop_self_update_smoke(
-            stage.host_exe,
+            stage.publish_root,
             paths.repo_root / "build" / "self-update-smoke",
             repo_root=paths.repo_root,
         )

@@ -282,8 +282,8 @@ def test_release_build_runs_self_update_smoke_before_atomic_publish(
     monkeypatch.setattr(build_next, "write_manifest", lambda _paths: None)
     monkeypatch.setattr(build_next, "write_release_manifest", lambda _paths: None)
 
-    def smoke(host: Path, root: Path, *, repo_root: Path) -> None:
-        assert host == paths.staging_root / build_next.HOST_EXE_NAME
+    def smoke(package: Path, root: Path, *, repo_root: Path) -> None:
+        assert package == paths.staging_root
         assert root == REPO_ROOT / "build" / "self-update-smoke"
         assert repo_root == REPO_ROOT
         events.append("smoke")
@@ -298,6 +298,111 @@ def test_release_build_runs_self_update_smoke_before_atomic_publish(
 
     assert build_next.run_build(paths, args) == 0
     assert events == expected
+
+
+def test_self_update_activation_rejects_cleanup_before_shell_readiness(
+    tmp_path: Path,
+) -> None:
+    completion = tmp_path / build_next.SELF_UPDATE_SMOKE_COMPLETION_FILE
+    readiness = (
+        tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR / build_next.SHELL_READINESS_FILE
+    )
+    completion.write_text("token", encoding="ascii")
+
+    with pytest.raises(
+        build_next.BuildError,
+        match="cleaned staging before shell readiness",
+    ):
+        build_next.wait_for_self_update_activation(
+            completion,
+            readiness,
+            "token",
+            "1.0.1",
+            123,
+            timeout_seconds=0.1,
+        )
+
+
+def test_self_update_activation_requires_all_shell_boundaries(tmp_path: Path) -> None:
+    completion = tmp_path / build_next.SELF_UPDATE_SMOKE_COMPLETION_FILE
+    readiness = (
+        tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR / build_next.SHELL_READINESS_FILE
+    )
+    readiness.parent.mkdir()
+    readiness.write_text(
+        json.dumps(
+            {
+                "ready": True,
+                "mode": "shell",
+                "backendReady": True,
+                "webViewReady": True,
+                "rendererReady": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(build_next.BuildError, match="readiness is incomplete"):
+        build_next.wait_for_self_update_activation(
+            completion,
+            readiness,
+            "token",
+            "1.0.1",
+            123,
+            timeout_seconds=0.1,
+        )
+
+
+def test_self_update_activation_binds_readiness_before_completion(
+    tmp_path: Path,
+) -> None:
+    completion = tmp_path / build_next.SELF_UPDATE_SMOKE_COMPLETION_FILE
+    readiness = (
+        tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR / build_next.SHELL_READINESS_FILE
+    )
+    readiness.parent.mkdir()
+    readiness.write_text(
+        json.dumps(
+            {
+                "ready": True,
+                "mode": "shell",
+                "backendReady": True,
+                "webViewReady": True,
+                "rendererReady": True,
+                "writtenAt": "2026-08-27T03:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    completion.write_text(
+        json.dumps(
+            {
+                "token": "token",
+                "targetVersion": "1.0.1",
+                "processId": os.getpid(),
+                "confirmedAt": "2026-08-27T03:00:01+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_next.wait_for_self_update_activation(
+        completion,
+        readiness,
+        "token",
+        "1.0.1",
+        os.getpid(),
+        timeout_seconds=0.1,
+    )
+
+    assert payload["ready"] is True
+
+
+def test_windows_process_open_failure_only_accepts_a_missing_pid() -> None:
+    assert build_next.windows_process_exited_after_open_failure(87) is True
+
+    with pytest.raises(build_next.BuildError, match="Win32 error 5"):
+        build_next.windows_process_exited_after_open_failure(5)
 
 
 def test_release_archive_name_contains_version_platform_and_architecture() -> None:
