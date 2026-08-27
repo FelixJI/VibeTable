@@ -2,6 +2,7 @@ import { useHostBridge } from "./bridgeContext";
 import type {
   ApplyImportResult,
   DataTaskStatus,
+  ExportFormat,
   ExportResult,
   ImportPlan,
   SessionPathGrant,
@@ -93,7 +94,7 @@ export function useDataIoService() {
   async function exportData(
     collection: string,
     query: Readonly<Record<string, unknown>>,
-    format: "csv" | "xlsx" = "csv",
+    format: ExportFormat = "csv",
   ): Promise<ExportResult> {
     const grant = await bridge.request("data.exportTargetRequested", {
       defaultName: `${collection}-export.${format}`,

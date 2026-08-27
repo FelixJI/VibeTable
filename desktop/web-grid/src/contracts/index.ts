@@ -1697,9 +1697,11 @@ export interface ImportChunkResult {
   readonly idempotencyKey: string;
 }
 
+export type ExportFormat = "csv" | "xlsx";
+
 export interface ExportResult {
   readonly collection: string;
-  readonly format: "csv" | "xlsx";
+  readonly format: ExportFormat;
   readonly rowsWritten: number;
   readonly schemaRevision: string;
   readonly capabilityHash: string;
@@ -2005,7 +2007,7 @@ export interface WebPayloadMap {
   "data.importSourceRequested": { readonly accept: readonly string[] };
   "data.exportTargetRequested": {
     readonly defaultName: string;
-    readonly format: "csv" | "xlsx";
+    readonly format: ExportFormat;
   };
   "data.previewImport": {
     readonly grantId: string;
@@ -2025,7 +2027,7 @@ export interface WebPayloadMap {
     readonly grantId: string;
     readonly collection: string;
     readonly query: Readonly<Record<string, unknown>>;
-    readonly format: "csv" | "xlsx";
+    readonly format: ExportFormat;
     readonly includeRelations: boolean;
     readonly lookupIds: readonly string[];
   };

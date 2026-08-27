@@ -1332,19 +1332,27 @@ describe("WorkspaceView", () => {
     await flushPromises();
     posted.length = 0;
 
-    wrapper.findComponent(AppToolbar).vm.$emit("exportData");
+    wrapper.findComponent(AppToolbar).vm.$emit("exportData", "xlsx");
     await flushPromises();
     const grantRequest = posted.at(-1)!;
     expect(grantRequest.type).toBe("data.exportTargetRequested");
+    expect(grantRequest.payload).toEqual({
+      defaultName: "orders-export.xlsx",
+      format: "xlsx",
+    });
     emit({
       type: "data.exportTargetRequested",
       requestId: grantRequest.requestId,
-      payload: { grantId: "grant-export", displayName: "orders-export.csv" },
+      payload: { grantId: "grant-export", displayName: "orders-export.xlsx" },
     });
     await flushPromises();
 
     const taskRequest = posted.at(-1)!;
     expect(taskRequest.type).toBe("task.create");
+    expect(taskRequest.payload).toMatchObject({
+      kind: "data.export",
+      params: { format: "xlsx" },
+    });
     emit({
       type: "task.create",
       requestId: taskRequest.requestId,
@@ -1357,8 +1365,8 @@ describe("WorkspaceView", () => {
         result: {
           grantId: "grant-export",
           rowsWritten: 3,
-          outputDisplayName: "orders-export.csv",
-          format: "csv",
+          outputDisplayName: "orders-export.xlsx",
+          format: "xlsx",
           lookupRevision: null,
         },
         error: null,
@@ -1370,7 +1378,7 @@ describe("WorkspaceView", () => {
       "data.exportTargetRequested",
       "task.create",
     ]);
-    expect(document.body.textContent).toContain("已导出 3 行至 orders-export.csv。");
+    expect(document.body.textContent).toContain("已导出 3 行至 orders-export.xlsx。");
   });
 
   it("starts import from the retained edit schema during a data-only refresh", async () => {

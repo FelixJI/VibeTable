@@ -195,6 +195,44 @@ async def test_export_xlsx_writes_rows(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_export_csv_and_xlsx_preserve_interoperable_multi_field_values(
+    tmp_path: Any,
+) -> None:
+    manifest = _manifest()
+    source = {
+        "id": "1",
+        "title": 'North, "quoted"',
+        "number": 0,
+        "payload": {"a": [0, True], "z": 2},
+    }
+    csv_path = tmp_path / "out.csv"
+    xlsx_path = tmp_path / "out.xlsx"
+
+    csv_result = await _service(FakeQueryPort([[source]]), manifest, str(csv_path)).export(
+        ExportParams(grant_id="g1", collection="vibetable_demo", query={}, format="csv")
+    )
+    xlsx_result = await _service(FakeQueryPort([[source]]), manifest, str(xlsx_path)).export(
+        ExportParams(grant_id="g2", collection="vibetable_demo", query={}, format="xlsx")
+    )
+
+    with open(csv_path, encoding="utf-8-sig") as fh:
+        csv_row = next(csv.DictReader(fh))
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(xlsx_path, read_only=True)
+    worksheet = workbook.active
+    rows = list(worksheet.values)
+    workbook.close()
+    xlsx_row = dict(zip(rows[0], rows[1], strict=True))
+
+    assert csv_result.rows_written == xlsx_result.rows_written == 1
+    for exported in (csv_row, xlsx_row):
+        assert exported["title"] == source["title"]
+        assert str(exported["number"]) == "0"
+        assert json.loads(exported["payload"]) == source["payload"]
+
+
+@pytest.mark.asyncio
 async def test_export_cancellation_stops_at_page_boundary(tmp_path: Any) -> None:
     manifest = _manifest()
     page1 = [{"id": "1", "number": "A-1"}, {"id": "2", "number": "A-2"}]

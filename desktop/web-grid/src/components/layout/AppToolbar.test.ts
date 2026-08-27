@@ -60,7 +60,7 @@ describe("AppToolbar", () => {
     expect(wrapper.emitted("selectTable")).toEqual([["users"]]);
   });
 
-  it("exposes data, refresh, and help intents through the More menu", () => {
+  it("exposes closed CSV/XLSX export intents with data, refresh, and help through More", () => {
     const workspace = useWorkspaceStore();
     workspace.selectTable("orders");
     const wrapper = mount(AppToolbar);
@@ -70,11 +70,12 @@ describe("AppToolbar", () => {
     expect(dropdown).toBeTruthy();
     const select = dropdown!.props("onSelect") as (key: string) => void;
     select("import");
-    select("export");
+    select("export-csv");
+    select("export-xlsx");
     select("refresh");
     select("help");
     expect(wrapper.emitted("importData")).toHaveLength(1);
-    expect(wrapper.emitted("exportData")).toHaveLength(1);
+    expect(wrapper.emitted("exportData")).toEqual([["csv"], ["xlsx"]]);
     expect(wrapper.emitted("refresh")).toHaveLength(1);
     expect(wrapper.emitted("openHelp")).toHaveLength(1);
   });
@@ -92,7 +93,8 @@ describe("AppToolbar", () => {
     expect(keys).toEqual([
       "cancel-data-task",
       "import",
-      "export",
+      "export-csv",
+      "export-xlsx",
       "refresh",
       "help",
     ]);
@@ -111,7 +113,8 @@ describe("AppToolbar", () => {
 
     expect(options.find((option) => option.key === "cancel-data-task")?.disabled).toBe(false);
     expect(options.find((option) => option.key === "import")?.disabled).toBe(true);
-    expect(options.find((option) => option.key === "export")?.disabled).toBe(true);
+    expect(options.find((option) => option.key === "export-csv")?.disabled).toBe(true);
+    expect(options.find((option) => option.key === "export-xlsx")?.disabled).toBe(true);
   });
 
   it("keeps export available when only the import schema is unavailable", () => {
@@ -128,7 +131,8 @@ describe("AppToolbar", () => {
     const options = dropdown!.props("options") as Array<{ key: string; disabled: boolean }>;
 
     expect(options.find((option) => option.key === "import")?.disabled).toBe(true);
-    expect(options.find((option) => option.key === "export")?.disabled).toBe(false);
+    expect(options.find((option) => option.key === "export-csv")?.disabled).toBe(false);
+    expect(options.find((option) => option.key === "export-xlsx")?.disabled).toBe(false);
   });
 
   it("provides an accessible tooltip trigger for More", () => {

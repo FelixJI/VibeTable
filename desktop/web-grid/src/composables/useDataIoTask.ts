@@ -1,5 +1,5 @@
 import { computed, readonly, ref, type Ref } from "vue";
-import type { ApplyImportResult, ExportResult } from "@/contracts";
+import type { ApplyImportResult, ExportFormat, ExportResult } from "@/contracts";
 import type { ImportPreviewSession } from "@/services/dataIoService";
 
 export interface DataIoTaskPort {
@@ -9,6 +9,7 @@ export interface DataIoTaskPort {
   exportData(
     collection: string,
     query: Readonly<Record<string, unknown>>,
+    format: ExportFormat,
   ): Promise<ExportResult>;
   cancelActive(): Promise<void>;
 }
@@ -119,12 +120,12 @@ export function useDataIoTask(options: DataIoTaskOptions) {
     applyError.value = null;
   }
 
-  async function exportData(): Promise<void> {
+  async function exportData(format: ExportFormat): Promise<void> {
     const collection = resolveExportCollection();
     if (!collection) return;
     exporting.value = true;
     try {
-      options.exportSucceeded(await options.service.exportData(collection, {}));
+      options.exportSucceeded(await options.service.exportData(collection, {}, format));
     } catch (error) {
       options.reportError(errorMessage(error));
     } finally {
