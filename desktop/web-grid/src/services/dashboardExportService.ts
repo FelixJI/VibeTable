@@ -48,7 +48,13 @@ function csvCell(value: unknown): string {
 }
 
 function safeFileName(value: string): string {
-  return value.trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").slice(0, 120) || "dashboard";
+  const sanitized = value.trim().replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").slice(0, 120)
+    || "dashboard";
+  const basename = sanitized.split(".", 1)[0]?.toUpperCase();
+  const normalized = basename && /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/.test(basename)
+    ? `_${sanitized}`
+    : sanitized;
+  return normalized.slice(0, 120);
 }
 
 function downloadBlob(fileName: string, blob: Blob): void {
