@@ -5977,6 +5977,216 @@ async function scenario21(page, recorder, _network, runtime) {
   });
 }
 
+async function waitForTimelineRecordInRange(page, targetDate, title) {
+  await page.waitForFunction(({ target, recordTitle }) => {
+    const record = [...document.querySelectorAll('[data-testid="timeline-record"]')]
+      .find(element => element instanceof HTMLElement
+        && element.getClientRects().length > 0
+        && element.textContent?.includes(recordTitle));
+    const track = record?.closest('[data-testid="timeline-track"]');
+    if (!(record instanceof HTMLElement)
+      || !(track instanceof HTMLElement)
+      || track.getClientRects().length === 0) return false;
+    const start = track.dataset.startDate;
+    const end = track.dataset.endDate;
+    return Boolean(
+      record.dataset.date === target
+      && start
+      && end
+      && start <= target
+      && target <= end,
+    );
+  }, { target: targetDate, recordTitle: title }, { timeout: 30_000 });
+  return page.getByTestId("timeline-record")
+    .filter({ hasText: title })
+    .locator('xpath=ancestor::*[@data-testid="timeline-track"]')
+    .first();
+}
+
+async function dragTimelineRecordToDate(page, title, targetDate) {
+  await page.evaluate(({ title: recordTitle, targetDate: target }) => {
+    const record = [...document.querySelectorAll('[data-testid="timeline-record"]')]
+      .find(element => element.textContent?.includes(recordTitle));
+    const track = record?.closest('[data-testid="timeline-track"]');
+    if (!(record instanceof HTMLElement) || !(track instanceof HTMLElement)
+      || record.draggable !== true) {
+      throw new Error(`Timeline drag endpoints are unavailable: ${JSON.stringify({
+        recordTitle,
+        target,
+      })}`);
+    }
+    const start = track.dataset.startDate;
+    const end = track.dataset.endDate;
+    const dates = [];
+    const cursor = start ? new Date(`${start}T00:00:00.000Z`) : new Date(Number.NaN);
+    const last = end ? new Date(`${end}T00:00:00.000Z`) : new Date(Number.NaN);
+    while (!Number.isNaN(cursor.valueOf())
+      && !Number.isNaN(last.valueOf())
+      && cursor <= last
+      && dates.length < 10_000) {
+      dates.push(cursor.toISOString().slice(0, 10));
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    const targetOffset = dates.indexOf(target);
+    if (targetOffset < 0) {
+      throw new Error(`Timeline target is outside the rendered range: ${JSON.stringify({
+        start,
+        end,
+        target,
+      })}`);
+    }
+    const bounds = track.getBoundingClientRect();
+    const clientX = bounds.left + ((targetOffset + 0.5) / dates.length) * bounds.width;
+    const dataTransfer = new DataTransfer();
+    const dispatch = (element, type) => element.dispatchEvent(new DragEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX,
+      dataTransfer,
+    }));
+    dispatch(record, "dragstart");
+    dispatch(track, "dragenter");
+    dispatch(track, "dragover");
+    dispatch(track, "drop");
+    dispatch(record, "dragend");
+  }, { title, targetDate });
+}
+
+async function scenario22(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  await page.getByTestId("nav-tables").click();
+  const tableId = await createEmptyTable(page, "E2E Timeline Records");
+
+  const createFieldThroughUi = async (displayName, typeLabel) => {
+    const displayNameInput = page.getByTestId("field-display-name");
+    if (!(await displayNameInput.isVisible())) {
+      await page.getByTestId("toolbar-field-manager").click();
+      await displayNameInput.waitFor({ state: "visible", timeout: 30_000 });
+    }
+    await displayNameInput.locator("input").fill(displayName);
+    await selectVisibleNOption(page, "field-logical-type", typeLabel);
+    await page.getByTestId("field-plan-button").click();
+    await page.getByTestId("field-change-plan").waitFor({ state: "visible", timeout: 30_000 });
+    const applyButton = page.getByTestId("field-apply-button");
+    await page.waitForFunction(() => {
+      const button = document.querySelector('[data-testid="field-apply-button"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    }, undefined, { timeout: 30_000 });
+    await applyButton.click();
+    await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
+    await page.getByTestId("field-close-button").click();
+    await displayNameInput.waitFor({ state: "hidden", timeout: 10_000 });
+  };
+
+  await createFieldThroughUi("Title", "单行文本");
+  await createFieldThroughUi("Start Date", "日期");
+  await selectTable(page, "E2E Timeline Records");
+  await chooseToolbarMore(page, "refresh");
+  const titleHeader = page.locator(".tabulator-col").filter({ hasText: "Title" }).first();
+  const dateHeader = page.locator(".tabulator-col").filter({ hasText: "Start Date" }).first();
+  await titleHeader.waitFor({ state: "visible", timeout: 30_000 });
+  await dateHeader.waitFor({ state: "visible", timeout: 30_000 });
+  const titlePhysicalName = await titleHeader.getAttribute("tabulator-field");
+  const datePhysicalName = await dateHeader.getAttribute("tabulator-field");
+  if (!titlePhysicalName || !datePhysicalName) {
+    throw new Error(`Timeline field authority is unavailable: ${JSON.stringify({
+      titlePhysicalName,
+      datePhysicalName,
+    })}`);
+  }
+
+  await page.getByTestId("view-create").click();
+  const createDialog = page.locator(".view-dialog:visible");
+  await createDialog.waitFor({ state: "visible", timeout: 10_000 });
+  await createDialog.locator(".n-input input").fill("E2E Timeline");
+  await page.getByTestId("view-kind-timeline").click();
+  await selectVisibleNOption(page, "view-temporal-date-field", "Start Date");
+  await selectVisibleNOption(page, "view-temporal-title-field", "Title");
+  await page.getByTestId("view-dialog-confirm").click();
+
+  const timeline = page.getByTestId("record-timeline-view");
+  await timeline.waitFor({ state: "visible", timeout: 30_000 });
+  const sourceDate = "2026-08-12";
+  const targetDate = "2026-08-16";
+  const seeded = await applyProductMutation(page, tableId, [{
+    kind: "insert",
+    recordId: null,
+    values: {
+      [titlePhysicalName]: "Timeline Alpha",
+      [datePhysicalName]: sourceDate,
+    },
+  }], "timeline-seed");
+  recorder.check("Timeline seed commits one authoritative point-date record",
+    seeded.type === "mutation.apply" && seeded.payload?.status === "applied",
+  { seeded, sourceDate });
+  await chooseToolbarMore(page, "refresh");
+
+  const sourceTrack = await waitForTimelineRecordInRange(
+    page,
+    sourceDate,
+    "Timeline Alpha",
+  );
+  const record = page.getByTestId("timeline-record").filter({ hasText: "Timeline Alpha" });
+  const recordDraggable = await record.getAttribute("draggable");
+  const renderedStartDate = await sourceTrack.getAttribute("data-start-date");
+  const renderedEndDate = await sourceTrack.getAttribute("data-end-date");
+  recorder.check("Timeline exposes an enabled point record and a padded logical-day viewport",
+    recordDraggable === "true"
+      && typeof renderedStartDate === "string"
+      && typeof renderedEndDate === "string"
+      && renderedStartDate <= targetDate
+      && targetDate <= renderedEndDate,
+  { recordDraggable, sourceDate, targetDate, renderedStartDate, renderedEndDate });
+  await dragTimelineRecordToDate(page, "Timeline Alpha", targetDate);
+  await waitForTimelineRecordInRange(page, targetDate, "Timeline Alpha");
+
+  const authoritative = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  const moved = authoritative.payload?.rows?.find(
+    row => row[titlePhysicalName] === "Timeline Alpha",
+  );
+  recorder.check("Timeline drag waits for mutation authority and persists the target date",
+    authoritative.type === "query.page"
+      && String(moved?.[datePhysicalName] ?? "").startsWith(targetDate),
+  { moved, authoritative });
+
+  await chooseToolbarMore(page, "refresh");
+  await waitForTimelineRecordInRange(page, targetDate, "Timeline Alpha");
+  const listed = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  const persisted = listed.payload?.presets?.find(item => item.name === "E2E Timeline");
+  recorder.check("Timeline definition persists one date field without a range end",
+    persisted?.collection === tableId
+      && persisted.view?.kind === "timeline"
+      && persisted.view?.layout === "timeline"
+      && persisted.view?.dateField === datePhysicalName
+      && persisted.view?.endDateField == null
+      && persisted.view?.titleField === titlePhysicalName,
+  { persisted });
+  if (!persisted?.id) {
+    throw new Error(`persisted Timeline preset is unavailable: ${JSON.stringify(listed)}`);
+  }
+
+  await page.getByTestId("nav-settings").click();
+  await timeline.waitFor({ state: "hidden", timeout: 10_000 });
+  await page.getByTestId("nav-tables").click();
+  const persistedTab = page.getByTestId(`view-tab-${persisted.id}`);
+  await persistedTab.waitFor({ state: "visible", timeout: 30_000 });
+  await persistedTab.click();
+  await waitForTimelineRecordInRange(page, targetDate, "Timeline Alpha");
+  recorder.check("Timeline moved record survives refresh and leaving then reopening Tables",
+    await page.getByTestId("timeline-record")
+      .filter({ hasText: "Timeline Alpha" })
+      .count() === 1,
+  { presetId: persisted.id, targetDate });
+
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "22-timeline-date-move.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -5999,6 +6209,7 @@ const scenarios = {
   "19-gallery-lifecycle": scenario19,
   "20-kanban-lane-drag": scenario20,
   "21-calendar-date-move": scenario21,
+  "22-timeline-date-move": scenario22,
 };
 
 async function main() {

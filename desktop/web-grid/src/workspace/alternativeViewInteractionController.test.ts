@@ -31,6 +31,20 @@ function calendarView(dateField = "startsAt"): PresetView {
   };
 }
 
+function timelineView(dateField = "startsAt"): PresetView {
+  return {
+    kind: "timeline",
+    layout: "timeline",
+    filters: [],
+    sorts: [],
+    search: "",
+    visibleFields: ["title", dateField],
+    dateField,
+    endDateField: null,
+    titleField: "title",
+  };
+}
+
 function statusColumn(overrides: Partial<ColumnSchema> = {}): ColumnSchema {
   return {
     name: "status",
@@ -186,6 +200,115 @@ describe("alternative view interaction controller", () => {
       "2026-08-20",
       digest,
     );
+  });
+
+  it("authorizes and routes a point Timeline date move through updateCell", () => {
+    const state = harness();
+    state.setView(timelineView("startsAt"));
+    state.setSchema([{
+      name: "startsAt",
+      title: "开始日期",
+      dataType: "date",
+      editable: true,
+      nullable: true,
+    }]);
+    state.setRows([{
+      rowKey: "row-1",
+      startsAt: "2026-08-12",
+      __vibetableDigest: digest,
+    }]);
+
+    expect(state.controller.timelineState()).toEqual({
+      enabled: true,
+      movableRecords: [{ rowKey: "row-1", expectedDigest: digest }],
+    });
+    expect(state.controller.dispatch({
+      type: "timeline.record.move",
+      rowKey: "row-1",
+      targetDate: "2026-08-20",
+      expectedDigest: digest,
+    })).toBe(true);
+    expect(state.updateCell).toHaveBeenCalledWith(
+      "row-1",
+      "startsAt",
+      "2026-08-12",
+      "2026-08-20",
+      digest,
+    );
+  });
+
+  it("fails closed when point Timeline move authority is unavailable or stale", () => {
+    const arrangeTimeline = (state: ReturnType<typeof harness>): void => {
+      state.setView(timelineView());
+      state.setSchema([{
+        name: "startsAt",
+        title: "开始日期",
+        dataType: "date",
+        editable: true,
+        nullable: true,
+      }]);
+      state.setRows([{
+        rowKey: "row-1",
+        startsAt: "2026-08-12",
+        __vibetableDigest: digest,
+      }]);
+    };
+    const cases: Array<{
+      name: string;
+      arrange: (state: ReturnType<typeof harness>) => void;
+      targetDate?: string;
+      expectedDigest?: string;
+    }> = [
+      { name: "non-timeline", arrange: state => state.setView(calendarView()) },
+      {
+        name: "range timeline",
+        arrange: state => state.setView({ ...timelineView(), endDateField: "endsAt" }),
+      },
+      { name: "missing date field", arrange: state => state.setView(timelineView("missing")) },
+      {
+        name: "read-only",
+        arrange: state => state.setSchema([{
+          name: "startsAt", title: "开始日期", dataType: "date", editable: false, nullable: true,
+        }]),
+      },
+      {
+        name: "datetime",
+        arrange: state => state.setSchema([{
+          name: "startsAt", title: "开始时间", dataType: "datetime", editable: true, nullable: true,
+        }]),
+      },
+      { name: "invalid target date", arrange: () => undefined, targetDate: "2026-02-30" },
+      { name: "missing row", arrange: state => state.setRows([]) },
+      {
+        name: "stale digest",
+        arrange: state => state.setRows([{
+          rowKey: "row-1",
+          startsAt: "2026-08-12",
+          __vibetableDigest: `sha256:${"b".repeat(64)}`,
+        }]),
+      },
+      { name: "malformed digest", arrange: () => undefined, expectedDigest: "stale" },
+      {
+        name: "invalid old value",
+        arrange: state => state.setRows([{
+          rowKey: "row-1", startsAt: "not-a-date", __vibetableDigest: digest,
+        }]),
+      },
+      { name: "same value", arrange: () => undefined, targetDate: "2026-08-12" },
+    ];
+
+    for (const testCase of cases) {
+      const state = harness();
+      arrangeTimeline(state);
+      testCase.arrange(state);
+      expect(state.controller.dispatch({
+        type: "timeline.record.move",
+        rowKey: "row-1",
+        targetDate: testCase.targetDate ?? "2026-08-20",
+        expectedDigest: testCase.expectedDigest ?? digest,
+      }), testCase.name).toBe(false);
+      expect(state.updateCell, testCase.name).not.toHaveBeenCalled();
+    }
   });
 
   it("fails closed for invalid or stale calendar move authority", () => {

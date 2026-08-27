@@ -23,6 +23,16 @@ export interface CalendarInteractionState {
   readonly movableRecords: readonly CalendarMovableRecord[];
 }
 
+export interface TimelineMovableRecord {
+  readonly rowKey: string | number;
+  readonly expectedDigest: string;
+}
+
+export interface TimelineInteractionState {
+  readonly enabled: boolean;
+  readonly movableRecords: readonly TimelineMovableRecord[];
+}
+
 export interface KanbanCardMoveIntent {
   readonly type: "kanban.card.move";
   readonly rowKey: string | number;
@@ -37,11 +47,22 @@ export interface CalendarRecordMoveIntent {
   readonly expectedDigest: string;
 }
 
-export type AlternativeViewInteractionIntent = KanbanCardMoveIntent | CalendarRecordMoveIntent;
+export interface TimelineRecordMoveIntent {
+  readonly type: "timeline.record.move";
+  readonly rowKey: string | number;
+  readonly targetDate: string;
+  readonly expectedDigest: string;
+}
+
+export type AlternativeViewInteractionIntent =
+  | KanbanCardMoveIntent
+  | CalendarRecordMoveIntent
+  | TimelineRecordMoveIntent;
 
 export interface AlternativeViewInteractionController {
   kanbanState(): KanbanInteractionState;
   calendarState(): CalendarInteractionState;
+  timelineState(): TimelineInteractionState;
   dispatch(intent: AlternativeViewInteractionIntent): boolean;
 }
 
@@ -64,6 +85,10 @@ interface KanbanAuthority {
 }
 
 interface CalendarAuthority {
+  readonly field: string;
+}
+
+interface TimelineAuthority {
   readonly field: string;
 }
 
@@ -98,6 +123,34 @@ function resolveCalendarAuthority(
   return { field };
 }
 
+function resolveTimelineAuthority(
+  dependencies: AlternativeViewInteractionDependencies,
+): TimelineAuthority | null {
+  const view = dependencies.getActiveView();
+  const field = view?.kind === "timeline" && !view.endDateField ? view.dateField : null;
+  if (!field) return null;
+  const column = dependencies.getSchema().find(candidate => candidate.name === field);
+  if (!column?.editable || column.dataType !== "date") return null;
+  return { field };
+}
+
+function movableDateRecords(
+  dependencies: AlternativeViewInteractionDependencies,
+  field: string,
+): readonly TimelineMovableRecord[] {
+  return dependencies.getRows().flatMap((row): TimelineMovableRecord[] => {
+    const rowKey = row.rowKey;
+    const expectedDigest = row.__vibetableDigest;
+    if ((typeof rowKey !== "string" && typeof rowKey !== "number")
+      || typeof expectedDigest !== "string"
+      || !ROW_DIGEST_PATTERN.test(expectedDigest)
+      || !isCalendarDateValue(row[field], "date")) {
+      return [];
+    }
+    return [{ rowKey, expectedDigest }];
+  });
+}
+
 export function createAlternativeViewInteractionController(
   dependencies: AlternativeViewInteractionDependencies,
 ): AlternativeViewInteractionController {
@@ -111,22 +164,33 @@ export function createAlternativeViewInteractionController(
     calendarState() {
       const authority = resolveCalendarAuthority(dependencies);
       if (!authority) return { enabled: false, movableRecords: [] };
-      const movableRecords = dependencies.getRows().flatMap((row): CalendarMovableRecord[] => {
-        const rowKey = row.rowKey;
-        const expectedDigest = row.__vibetableDigest;
-        if ((typeof rowKey !== "string" && typeof rowKey !== "number")
-          || typeof expectedDigest !== "string"
-          || !ROW_DIGEST_PATTERN.test(expectedDigest)
-          || !isCalendarDateValue(row[authority.field], "date")) {
-          return [];
-        }
-        return [{ rowKey, expectedDigest }];
-      });
-      return { enabled: true, movableRecords };
+      return { enabled: true, movableRecords: movableDateRecords(dependencies, authority.field) };
+    },
+    timelineState() {
+      const authority = resolveTimelineAuthority(dependencies);
+      if (!authority) return { enabled: false, movableRecords: [] };
+      return { enabled: true, movableRecords: movableDateRecords(dependencies, authority.field) };
     },
     dispatch(intent) {
       if (intent.type === "calendar.record.move") {
         const authority = resolveCalendarAuthority(dependencies);
+        if (!authority || !ROW_DIGEST_PATTERN.test(intent.expectedDigest)) return false;
+        const row = dependencies.getRows().find(candidate => candidate.rowKey === intent.rowKey);
+        if (!row || row.__vibetableDigest !== intent.expectedDigest) return false;
+        const oldValue = row[authority.field];
+        const newValue = replaceCalendarDateValue(oldValue, intent.targetDate, "date");
+        if (newValue === null || newValue === oldValue) return false;
+        dependencies.updateCell(
+          intent.rowKey,
+          authority.field,
+          oldValue,
+          newValue,
+          intent.expectedDigest,
+        );
+        return true;
+      }
+      if (intent.type === "timeline.record.move") {
+        const authority = resolveTimelineAuthority(dependencies);
         if (!authority || !ROW_DIGEST_PATTERN.test(intent.expectedDigest)) return false;
         const row = dependencies.getRows().find(candidate => candidate.rowKey === intent.rowKey);
         if (!row || row.__vibetableDigest !== intent.expectedDigest) return false;

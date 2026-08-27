@@ -650,7 +650,9 @@ describe("WorkspaceView", () => {
     await wrapper.get('[data-option-id="opt_done"]').trigger("drop");
     await flushPromises();
 
-    const update = posted.filter(message => message.type === "table.updateCellRequested").at(-1);
+    const updates = posted.filter(message => message.type === "table.updateCellRequested");
+    expect(updates).toHaveLength(1);
+    const update = updates[0];
     expect(update?.payload).toEqual({
       table: "orders",
       rowKey: "row-1",
@@ -796,6 +798,149 @@ describe("WorkspaceView", () => {
     expect(table.allRows[0]?.due).toBe("2026-08-20");
     expect(wrapper.get('[data-testid="calendar-day"][data-date="2026-08-20"]').text())
       .toContain("准备合同");
+  });
+
+  it("routes a point Timeline date drop through updateCell and waits for host authority", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders", metadata: {} }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    const table = useTableStore();
+    const revision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    };
+    const digest = `sha256:${"a".repeat(64)}`;
+    const anchorDigest = `sha256:${"b".repeat(64)}`;
+    const committedDigest = `sha256:${"c".repeat(64)}`;
+    const columns: ColumnSchema[] = [
+      { name: "title", title: "标题", dataType: "text", editable: true, nullable: false },
+      { name: "start", title: "开始日期", dataType: "date", editable: true, nullable: true },
+    ];
+    const seedTable = () => {
+      table.setDatasetReady({
+        table: "orders",
+        columns,
+        rows: [
+          {
+            rowKey: "row-1",
+            title: "准备合同",
+            start: "2026-08-12 00:00:00.000Z",
+            __vibetableDigest: digest,
+          },
+          {
+            rowKey: "row-2",
+            title: "范围锚点",
+            start: "2026-08-20 00:00:00.000Z",
+            __vibetableDigest: anchorDigest,
+          },
+        ],
+        offset: 0,
+        limit: 100,
+        totalRows: 2,
+        mode: "remote",
+        revision,
+      });
+      table.setEditSchema([], revision);
+    };
+    seedTable();
+    const presets = usePresetVersionStore();
+    const timeline: PresetEntry = {
+      id: "view-timeline",
+      collection: "orders",
+      name: "任务时间线",
+      scope: "personal",
+      revision: "preset-1",
+      emittedEvents: [],
+      view: {
+        kind: "timeline",
+        layout: "timeline",
+        filters: [],
+        sorts: [],
+        search: "",
+        visibleFields: ["title", "start"],
+        dateField: "start",
+        endDateField: null,
+        titleField: "title",
+      },
+    };
+    presets.receivePresets({ collection: "orders", presets: [timeline] });
+    presets.activatePreset(timeline.id);
+
+    const wrapper = mountView();
+    await flushPromises();
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    seedTable();
+    presets.receivePresets({ collection: "orders", presets: [timeline] });
+    presets.activatePreset(timeline.id);
+    await flushPromises();
+
+    const record = wrapper.findAll('[data-testid="timeline-record"]')[0]!;
+    const track = wrapper.findAll('[data-testid="timeline-track"]')[0]!;
+    expect(record.attributes("draggable")).toBe("true");
+    const initialStyle = record.attributes("style");
+    vi.spyOn(track.element, "getBoundingClientRect").mockReturnValue({
+      left: 100,
+      right: 900,
+      top: 0,
+      bottom: 64,
+      width: 800,
+      height: 64,
+      x: 100,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    await record.trigger("dragstart");
+    await track.trigger("drop", { clientX: 500 });
+    await flushPromises();
+
+    const updates = posted.filter(message => message.type === "table.updateCellRequested");
+    expect(updates).toHaveLength(1);
+    const update = updates[0];
+    expect(update?.payload).toEqual({
+      table: "orders",
+      rowKey: "row-1",
+      column: "start",
+      oldValue: "2026-08-12 00:00:00.000Z",
+      newValue: "2026-08-16",
+      expectedDigest: digest,
+      schemaRevision: "schema-1",
+    });
+    expect(table.allRows[0]?.start).toBe("2026-08-12 00:00:00.000Z");
+    expect(record.attributes("style")).toBe(initialStyle);
+
+    emit({
+      type: "table.editCommitted",
+      payload: {
+        rowKey: "row-1",
+        column: "start",
+        storedValue: "2026-08-16",
+        currentRow: {
+          rowKey: "row-1",
+          title: "准备合同",
+          start: "2026-08-16 00:00:00.000Z",
+          __vibetableDigest: committedDigest,
+        },
+        revision: { ...revision, dataRevision: 2 },
+      },
+    });
+    await flushPromises();
+
+    expect(table.allRows[0]?.start).toBe("2026-08-16");
+    expect(wrapper.findAll('[data-testid="timeline-record"]')[0]!.attributes("style"))
+      .not.toBe(initialStyle);
+    expect(wrapper.findAll('[data-testid="timeline-record"]')[0]!.attributes("data-date"))
+      .toBe("2026-08-16");
+    const updatedTrack = wrapper.findAll('[data-testid="timeline-track"]')[0]!;
+    const updatedStartDate = updatedTrack.attributes("data-start-date");
+    const updatedEndDate = updatedTrack.attributes("data-end-date");
+    if (!updatedStartDate || !updatedEndDate) throw new Error("Timeline viewport is unavailable");
+    expect(updatedStartDate <= "2026-08-16").toBe(true);
+    expect("2026-08-16" <= updatedEndDate).toBe(true);
   });
 
   it("manages persisted views through create, duplicate, rename, default, switch, save, and delete", async () => {

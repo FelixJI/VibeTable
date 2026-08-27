@@ -1,9 +1,19 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { CalendarClock } from "@lucide/vue";
 import type { ColumnSchema, PresetView } from "@/contracts";
+import { calendarDateKey } from "@/grid/calendarDateValue";
+import {
+  createTimelineInteractionRange,
+  timelineDateAtTrackOffset,
+  timelineDatePosition,
+} from "@/grid/timelineDateGeometry";
 import { t } from "@/i18n";
 import { useUiStore } from "@/stores/uiStore";
+import type {
+  TimelineMovableRecord,
+  TimelineRecordMoveIntent,
+} from "@/workspace/alternativeViewInteractionController";
 import { rowTitle } from "./recordViewUtils";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -11,8 +21,17 @@ const props = defineProps<{
   rows: readonly Record<string, unknown>[];
   schema: readonly ColumnSchema[];
   view: PresetView;
+  interactionEnabled?: boolean;
+  movableRecords?: readonly TimelineMovableRecord[];
+}>();
+const emit = defineEmits<{
+  intent: [intent: TimelineRecordMoveIntent];
 }>();
 const ui = useUiStore();
+const draggedRecord = ref<TimelineMovableRecord | null>(null);
+const movableByRowKey = computed(() => new Map(
+  (props.movableRecords ?? []).map(record => [record.rowKey, record.expectedDigest] as const),
+));
 
 function parseDate(value: unknown): Date | null {
   if (typeof value !== "string" && !(value instanceof Date)) return null;
@@ -27,9 +46,15 @@ const items = computed(() => {
     if (!start) return [];
     const parsedEnd = props.view.endDateField ? parseDate(row[props.view.endDateField]) : null;
     const end = parsedEnd && parsedEnd.valueOf() >= start.valueOf() ? parsedEnd : start;
-    return [{ row, start, end }];
+    const startDateKey = calendarDateKey(row[props.view.dateField!], "date");
+    return [{ row, start, end, startDateKey }];
   }).sort((left, right) => left.start.valueOf() - right.start.valueOf());
 });
+const interactionRange = computed(() => props.interactionEnabled
+  ? createTimelineInteractionRange(
+    items.value.flatMap(item => item.startDateKey ? [item.startDateKey] : []),
+  )
+  : null);
 const range = computed(() => {
   if (!items.value.length) return null;
   const start = new Date(Math.min(...items.value.map((item) => item.start.valueOf())));
@@ -37,25 +62,101 @@ const range = computed(() => {
   const days = Math.max(1, Math.ceil((end.valueOf() - start.valueOf()) / DAY) + 1);
   return { start, end, days };
 });
-const formatter = computed(() => new Intl.DateTimeFormat(ui.locale, { month: "short", day: "numeric" }));
+const localFormatter = computed(() => new Intl.DateTimeFormat(
+  ui.locale,
+  { month: "short", day: "numeric" },
+));
+const logicalDateFormatter = computed(() => new Intl.DateTimeFormat(
+  ui.locale,
+  { month: "short", day: "numeric", timeZone: "UTC" },
+));
+
+function logicalDateLabel(dateKey: string): string {
+  return logicalDateFormatter.value.format(new Date(`${dateKey}T00:00:00.000Z`));
+}
+
 const ticks = computed(() => {
+  if (interactionRange.value) {
+    const count = Math.min(6, interactionRange.value.dayCount + 1);
+    return Array.from({ length: count }, (_, index) => {
+      const ratio = count === 1 ? 0 : index / (count - 1);
+      const dateKey = timelineDateAtTrackOffset(interactionRange.value!, ratio, 1);
+      return { label: dateKey ? logicalDateLabel(dateKey) : "", left: ratio * 100 };
+    });
+  }
   if (!range.value) return [];
   const count = Math.min(6, range.value.days + 1);
   return Array.from({ length: count }, (_, index) => {
     const ratio = count === 1 ? 0 : index / (count - 1);
     const value = new Date(range.value!.start.valueOf() + ratio * (range.value!.days - 1) * DAY);
-    return { label: formatter.value.format(value), left: ratio * 100 };
+    return { label: localFormatter.value.format(value), left: ratio * 100 };
   });
 });
 
+function startLabel(item: (typeof items.value)[number]): string {
+  return interactionRange.value && item.startDateKey
+    ? logicalDateLabel(item.startDateKey)
+    : localFormatter.value.format(item.start);
+}
+
 function barStyle(item: (typeof items.value)[number]): Record<string, string> {
   if (!range.value) return {};
+  if (interactionRange.value && item.startDateKey) {
+    const position = timelineDatePosition(item.startDateKey, interactionRange.value);
+    if (position !== null) {
+      return {
+        left: `${position * 100}%`,
+        width: `${Math.max(3, 100 / interactionRange.value.dayCount)}%`,
+      };
+    }
+  }
   const leftDays = Math.max(0, (item.start.valueOf() - range.value.start.valueOf()) / DAY);
   const durationDays = Math.max(1, (item.end.valueOf() - item.start.valueOf()) / DAY + 1);
   return {
     left: `${(leftDays / range.value.days) * 100}%`,
     width: `${Math.max(3, (durationDays / range.value.days) * 100)}%`,
   };
+}
+
+function movableRecord(row: Record<string, unknown>): TimelineMovableRecord | null {
+  if (!props.interactionEnabled) return null;
+  const rowKey = row.rowKey;
+  if (typeof rowKey !== "string" && typeof rowKey !== "number") return null;
+  const expectedDigest = movableByRowKey.value.get(rowKey);
+  return expectedDigest && expectedDigest === row.__vibetableDigest
+    ? { rowKey, expectedDigest }
+    : null;
+}
+
+function startRecordDrag(row: Record<string, unknown>, event: DragEvent): void {
+  const record = movableRecord(row);
+  draggedRecord.value = record;
+  if (record && event.dataTransfer) {
+    event.dataTransfer.setData("text/plain", String(record.rowKey));
+    event.dataTransfer.effectAllowed = "move";
+  }
+}
+
+function allowRecordDrop(event: DragEvent): void {
+  if (!draggedRecord.value || !interactionRange.value) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+}
+
+function dropRecord(event: DragEvent): void {
+  const record = draggedRecord.value;
+  draggedRecord.value = null;
+  const track = event.currentTarget;
+  if (!record || !interactionRange.value || !(track instanceof HTMLElement)) return;
+  const bounds = track.getBoundingClientRect();
+  const targetDate = timelineDateAtTrackOffset(
+    interactionRange.value,
+    event.clientX - bounds.left,
+    bounds.width,
+  );
+  if (!targetDate) return;
+  event.preventDefault();
+  emit("intent", { type: "timeline.record.move", ...record, targetDate });
 }
 </script>
 
@@ -67,10 +168,24 @@ function barStyle(item: (typeof items.value)[number]): Record<string, string> {
         <span v-for="tick in ticks" :key="`${tick.left}-${tick.label}`" :style="{ left: `${tick.left}%` }">{{ tick.label }}</span>
       </div>
       <article v-for="item in items" :key="String(item.row.rowKey ?? `${item.start.valueOf()}-${rowTitle(item.row, view)}`)">
-        <div class="timeline-title"><strong>{{ rowTitle(item.row, view) }}</strong><small>{{ formatter.format(item.start) }}<template v-if="item.end.valueOf() !== item.start.valueOf()"> → {{ formatter.format(item.end) }}</template></small></div>
-        <div class="timeline-track">
+        <div class="timeline-title"><strong>{{ rowTitle(item.row, view) }}</strong><small>{{ startLabel(item) }}<template v-if="item.end.valueOf() !== item.start.valueOf()"> → {{ localFormatter.format(item.end) }}</template></small></div>
+        <div
+          class="timeline-track"
+          data-testid="timeline-track"
+          :data-start-date="interactionRange?.startDate"
+          :data-end-date="interactionRange?.endDate"
+          @dragover="allowRecordDrop"
+          @drop="dropRecord"
+        >
           <i v-for="tick in ticks" :key="tick.left" :style="{ left: `${tick.left}%` }"></i>
-          <span :style="barStyle(item)" data-testid="timeline-bar"><CalendarClock :size="13" /><b>{{ rowTitle(item.row, view) }}</b></span>
+          <span
+            :style="barStyle(item)"
+            data-testid="timeline-record"
+            :data-date="item.startDateKey ?? undefined"
+            :draggable="Boolean(movableRecord(item.row))"
+            @dragstart="startRecordDrag(item.row, $event)"
+            @dragend="draggedRecord = null"
+          ><CalendarClock :size="13" /><b>{{ rowTitle(item.row, view) }}</b></span>
         </div>
       </article>
     </div>

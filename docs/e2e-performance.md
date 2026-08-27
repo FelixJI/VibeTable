@@ -8,10 +8,13 @@
 - GitHub run：[main CI 32970854772](https://github.com/FelixJI/VibeTable/actions/runs/32970854772)
 - 报告契约：`contractVersion=2.0`
 - 结果：21/21 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`22-timeline-date-move`）。
 - 当前 manifest surplus：无。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
+
+当前 feature manifest 已增加 Timeline point/date 移动场景，但该实现尚无 `main` 打包产品
+E2E 证据，因此不计入上述 21/21 结论；必须等待包含场景 22 的 `main` CI 报告后才能闭合 gap。
 
 该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
 保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。

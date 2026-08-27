@@ -540,6 +540,7 @@ const alternativeViewInteractionController = createAlternativeViewInteractionCon
 });
 const kanbanInteraction = computed(() => alternativeViewInteractionController.kanbanState());
 const calendarInteraction = computed(() => alternativeViewInteractionController.calendarState());
+const timelineInteraction = computed(() => alternativeViewInteractionController.timelineState());
 
 const pluginController = createWorkspacePluginController({
   workspace,
@@ -1082,6 +1083,9 @@ useKeyboard({
                 :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
                 :view="activePresetView"
+                :interaction-enabled="timelineInteraction.enabled"
+                :movable-records="timelineInteraction.movableRecords"
+                @intent="alternativeViewInteractionController.dispatch($event)"
               />
               <RecordKanbanView
                 v-else-if="activeViewKind === 'kanban' && activePresetView"
