@@ -132,6 +132,7 @@ def contracts() -> None:
     _run("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_product_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_rpc_catalog.py", "--check")
+    _run("uv", "run", "python", "contracts/v2/generate_compatibility_package.py", "--check")
     _run(
         "uv",
         "run",
@@ -158,6 +159,8 @@ def contracts() -> None:
         "tests/contract/test_schema_v2_dto_codegen.py",
         "tests/contract/test_workbench_dto_codegen.py",
         "tests/contract/test_product_e2e_capability_index.py",
+        "tests/contract/test_workspace_version_policy.py",
+        "tests/contract/test_workspace_compatibility_corpus.py",
         "tests/backend/contracts/test_workspace_v2_models.py",
         "-q",
         "--no-cov",

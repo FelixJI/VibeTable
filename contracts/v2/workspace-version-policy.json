@@ -1,0 +1,49 @@
+{
+  "contractVersion": "2.0",
+  "policyRevision": 1,
+  "currentWriter": {
+    "appVersion": "0.5.1",
+    "workspaceManifestFormat": 2,
+    "snapshotPackageFormat": 2,
+    "internalSnapshotManifestFormat": 2
+  },
+  "writerCompatibility": {
+    "window": "current-and-one-previous-formal-release",
+    "verificationGate": "disabled-until-packaged-runtime-evidence",
+    "nMinusOneTarget": "0.5.0",
+    "accepted": [
+      {
+        "appVersion": "0.5.1",
+        "status": "current"
+      }
+    ],
+    "pending": [
+      {
+        "appVersion": "0.5.0",
+        "status": "pending",
+        "compatibility": "unverified"
+      }
+    ]
+  },
+  "workspaceManifest": {
+    "supportedFormat": 2,
+    "topologySchemaVersion": 1,
+    "businessSchemaVersion": 1,
+    "olderFormatDisposition": "reject-zero-write-no-automatic-migration",
+    "newerFormatDisposition": "reject-newer-zero-write"
+  },
+  "snapshotPackage": {
+    "currentFormat": 2,
+    "minimumSupportedFormat": 2,
+    "unsupportedFormatDisposition": "reject-zero-write"
+  },
+  "compatibilityCorpus": {
+    "mutationPolicy": "append-only",
+    "immutablePrefix": {
+      "anchorCommit": "b28a0fc3f0829ed9fd7c9b974daf41d350eba560",
+      "path": "contracts/v2/compatibility-corpus.json",
+      "baselineCount": 1,
+      "formalReleaseCount": 0
+    }
+  }
+}
