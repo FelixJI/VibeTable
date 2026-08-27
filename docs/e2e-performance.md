@@ -4,50 +4,51 @@
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@9fd4c4d364dfb0e811b76ac77a0c9071bbb9b968`
-- GitHub run：[main CI 32970854772](https://github.com/FelixJI/VibeTable/actions/runs/32970854772)
+- source SHA：`GitHub/main@24c7d3ec7c3766f46b8a3e5879fd9f12e12b434a`
+- GitHub run：[main CI 33028988918](https://github.com/FelixJI/VibeTable/actions/runs/33028988918)
 - 报告契约：`contractVersion=2.0`
-- 结果：21/21 passed、0 failed、0 skipped。
-- 当前 manifest gap：1（`22-timeline-date-move`）。
+- 结果：22/22 passed、0 failed、0 skipped。
+- 当前 manifest gap：无。
 - 当前 manifest surplus：无。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
-当前 feature manifest 已增加 Timeline point/date 移动场景，但该实现尚无 `main` 打包产品
-E2E 证据，因此不计入上述 21/21 结论；必须等待包含场景 22 的 `main` CI 报告后才能闭合 gap。
+Timeline point/date 移动已在同一 `main` 打包候选上通过，并确认正常退出后的 Host、WebView2、
+BFF 与 sidecar 生命周期清理完成；对应声明范围由此闭环。
 
 该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
 保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。
 
-### 当前 21 场景耗时（2026-08-26）
+### 当前 22 场景耗时（2026-08-27）
 
 | 场景 | 耗时 |
 |---|---:|
-| `01-offline-first-start` | 8.187s |
-| `02-all-field-schema` | 56.059s |
-| `03-schema-errors` | 34.865s |
-| `04-json-round-trip` | 40.058s |
-| `05-formula-lifecycle` | 20.387s |
-| `06-relation-fanout` | 16.346s |
-| `07-attachment-history` | 34.483s |
-| `08-stale-conflict` | 20.348s |
-| `09-atomic-import-scale` | 20.071s |
-| `10-sse-reconnect` | 33.086s |
-| `11-plugin-mutation` | 29.276s |
-| `12-backup-consistency` | 69.538s |
-| `13-protection-policy` | 9.893s |
-| `14-document-diff` | 8.796s |
-| `15-workspace-snapshot-package` | 57.970s |
-| `16-dashboard-lifecycle` | 55.322s |
-| `17-interface-lifecycle` | 29.605s |
-| `18-workspace-search` | 53.628s |
-| `19-gallery-lifecycle` | 24.153s |
-| `20-kanban-lane-drag` | 30.401s |
-| `21-calendar-date-move` | 29.531s |
+| `01-offline-first-start` | 7.739s |
+| `02-all-field-schema` | 56.809s |
+| `03-schema-errors` | 31.333s |
+| `04-json-round-trip` | 32.527s |
+| `05-formula-lifecycle` | 20.491s |
+| `06-relation-fanout` | 30.876s |
+| `07-attachment-history` | 33.075s |
+| `08-stale-conflict` | 18.379s |
+| `09-atomic-import-scale` | 17.947s |
+| `10-sse-reconnect` | 31.743s |
+| `11-plugin-mutation` | 23.227s |
+| `12-backup-consistency` | 55.677s |
+| `13-protection-policy` | 10.133s |
+| `14-document-diff` | 11.230s |
+| `15-workspace-snapshot-package` | 71.576s |
+| `16-dashboard-lifecycle` | 49.583s |
+| `17-interface-lifecycle` | 34.577s |
+| `18-workspace-search` | 67.268s |
+| `19-gallery-lifecycle` | 36.683s |
+| `20-kanban-lane-drag` | 41.138s |
+| `21-calendar-date-move` | 42.814s |
+| `22-timeline-date-move` | 46.657s |
 
-当前 `history.query` 共 8 次，p50 29.4ms、p95/max 239.7ms，低于 500ms 告警线；
-`history.drawer.initialLoad` 共 2 次，p50 130.34ms、p95/max 383.96ms，低于 750ms 告警线。
-场景耗时范围为 8.187s–69.538s，均低于 180s 防挂死上限；这些耗时包含应用启动与 fixture
+当前 `history.query` 共 8 次，p50 50.6ms、p95/max 240.1ms，低于 500ms 告警线；
+`history.drawer.initialLoad` 共 2 次，p50 110.57ms、p95/max 318.45ms，低于 750ms 告警线。
+场景耗时范围为 7.739s–71.576s，均低于 180s 防挂死上限；这些耗时包含应用启动与 fixture
 准备，不能解释为单次用户交互延迟。
 
 ## 测量口径
