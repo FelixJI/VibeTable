@@ -26,7 +26,11 @@ from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from openpyxl.cell.cell import Cell
+    from openpyxl.worksheet._write_only import WriteOnlyWorksheet
 
 from backend.contracts.data_io import ExportParams, ExportResult, TemplateResult
 from backend.contracts.data_profile import CollectionProfile
@@ -79,7 +83,7 @@ class AuthoritativeLookupExportProvider(Protocol):
         fields: list[str],
         lookup_ids: list[str],
         lookup_revision: str,
-        query: dict[str, Any],
+        query: dict[str, object],
         offset: int,
         limit: int,
     ) -> AuthoritativeLookupExportPage: ...
@@ -96,7 +100,7 @@ class QueryPagePort(Protocol):
         self,
         *,
         table_id: str,
-        query: dict[str, Any],
+        query: dict[str, object],
     ) -> QueryPage: ...
 
 
@@ -299,7 +303,7 @@ class ExportService:
                     if params.format == "csv":
                         writer.writerow(rendered)
                     else:
-                        writer.append(rendered)
+                        writer.append(_xlsx_row(writer, rendered))
                     written += 1
                 if progress:
                     await progress(written, page.filtered_rows, f"exported {written} rows")
@@ -387,7 +391,8 @@ class ExportService:
             if offset == 0:
                 total_estimate = page.filtered_rows
             for row in page.rows:
-                ws.append([_render_cell(row, col) for col in columns])
+                rendered = [_render_cell(row, col) for col in columns]
+                ws.append(_xlsx_row(ws, rendered))
                 written += 1
             if progress:
                 await progress(written, total_estimate, f"exported {written} rows")
@@ -433,6 +438,20 @@ def _render_cell(row: dict[str, Any], column: str) -> Any:
         # consume the manifest through a separate capability.
         return '{"kind":"binary_omitted"}'
     return value
+
+
+def _xlsx_row[T](worksheet: WriteOnlyWorksheet, values: list[T]) -> list[T | Cell]:
+    from openpyxl.cell import WriteOnlyCell
+
+    cells: list[T | Cell] = []
+    for value in values:
+        if isinstance(value, str) and value.startswith("="):
+            cell = WriteOnlyCell(worksheet, value=value)
+            cell.data_type = "s"
+            cells.append(cell)
+        else:
+            cells.append(value)
+    return cells
 
 
 def _safe_int(value: Any) -> int | None:
