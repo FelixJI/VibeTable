@@ -136,6 +136,13 @@ def contracts() -> None:
         "uv",
         "run",
         "python",
+        "contracts/v2/generate_workspace_rpc_capability_manifest.py",
+        "--check",
+    )
+    _run(
+        "uv",
+        "run",
+        "python",
         "scripts/generate_product_e2e_capability_index.py",
         "--check",
     )
@@ -147,6 +154,7 @@ def contracts() -> None:
         "pytest",
         "tests/contract/test_v2_contracts.py",
         "tests/contract/test_product_contracts.py",
+        "tests/contract/test_workspace_rpc_capability_manifest.py",
         "tests/contract/test_schema_v2_dto_codegen.py",
         "tests/contract/test_workbench_dto_codegen.py",
         "tests/contract/test_product_e2e_capability_index.py",
@@ -172,6 +180,16 @@ def contracts() -> None:
         "--configuration",
         "Release",
         "--no-restore",
+    )
+    _run(
+        "dotnet",
+        "test",
+        "desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj",
+        "--configuration",
+        "Release",
+        "--no-restore",
+        "--filter",
+        "FullyQualifiedName~VibeTable.Desktop.Tests.WorkspaceRpcCapabilityManifestTests",
     )
     _run(
         "go",

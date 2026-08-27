@@ -381,7 +381,7 @@ def test_pr_e2e_builds_a_package_and_selects_exact_release_smoke_capability(
     assert observed[2][-2:] == ("--capability", "release.smoke")
 
 
-def test_contract_gate_runs_generation_and_all_four_consumers(
+def test_contract_gate_runs_generation_and_all_runtime_consumers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[tuple[tuple[str, ...], Path]] = []
@@ -434,6 +434,16 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "uv",
                 "run",
                 "python",
+                "contracts/v2/generate_workspace_rpc_capability_manifest.py",
+                "--check",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            (
+                "uv",
+                "run",
+                "python",
                 "scripts/generate_product_e2e_capability_index.py",
                 "--check",
             ),
@@ -448,6 +458,7 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "pytest",
                 "tests/contract/test_v2_contracts.py",
                 "tests/contract/test_product_contracts.py",
+                "tests/contract/test_workspace_rpc_capability_manifest.py",
                 "tests/contract/test_schema_v2_dto_codegen.py",
                 "tests/contract/test_workbench_dto_codegen.py",
                 "tests/contract/test_product_e2e_capability_index.py",
@@ -477,6 +488,19 @@ def test_contract_gate_runs_generation_and_all_four_consumers(
                 "--configuration",
                 "Release",
                 "--no-restore",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            (
+                "dotnet",
+                "test",
+                "desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj",
+                "--configuration",
+                "Release",
+                "--no-restore",
+                "--filter",
+                "FullyQualifiedName~VibeTable.Desktop.Tests.WorkspaceRpcCapabilityManifestTests",
             ),
             automation_project.REPO_ROOT,
         ),
@@ -515,7 +539,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
 
     automation_project.quality()
 
-    assert [command for command, _cwd in observed[:8]] == [
+    assert [command for command, _cwd in observed[:10]] == [
         ("uv", "run", "python", "contracts/schema-v2/generate_dtos.py", "--check"),
         ("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check"),
         (
@@ -536,6 +560,13 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "uv",
             "run",
             "python",
+            "contracts/v2/generate_workspace_rpc_capability_manifest.py",
+            "--check",
+        ),
+        (
+            "uv",
+            "run",
+            "python",
             "scripts/generate_product_e2e_capability_index.py",
             "--check",
         ),
@@ -547,6 +578,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "pytest",
             "tests/contract/test_v2_contracts.py",
             "tests/contract/test_product_contracts.py",
+            "tests/contract/test_workspace_rpc_capability_manifest.py",
             "tests/contract/test_schema_v2_dto_codegen.py",
             "tests/contract/test_workbench_dto_codegen.py",
             "tests/contract/test_product_e2e_capability_index.py",
@@ -570,6 +602,16 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "--configuration",
             "Release",
             "--no-restore",
+        ),
+        (
+            "dotnet",
+            "test",
+            "desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj",
+            "--configuration",
+            "Release",
+            "--no-restore",
+            "--filter",
+            "FullyQualifiedName~VibeTable.Desktop.Tests.WorkspaceRpcCapabilityManifestTests",
         ),
     ]
     assert (

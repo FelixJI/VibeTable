@@ -244,6 +244,41 @@ test("drops code and operation names outside the protocol diagnostic catalog", (
   }
 });
 
+test("retains closed renderer capability rejection codes", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    webview.postMessage({
+      type: "workspace.v2.request",
+      requestId: "host-only-1",
+      payload: { method: "fileHistory.materializeDiffPair", params: {} },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: "host-only-1",
+        payload: {
+          code: "CAPABILITY_NOT_PUBLIC",
+          message: "Workspace method is not a public renderer capability.",
+        },
+      },
+    });
+
+    const [failure] = readBridgeDiagnosticsInPage().failures;
+    assert.equal(failure.requestType, "fileHistory.materializeDiffPair");
+    assert.equal(failure.code, "CAPABILITY_NOT_PUBLIC");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 test("accepts an observed protocol operation without a duplicated static catalog", () => {
   const listeners = [];
   const webview = {

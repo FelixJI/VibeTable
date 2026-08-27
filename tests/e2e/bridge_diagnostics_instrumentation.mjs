@@ -85,6 +85,7 @@ export function installBridgeDiagnosticsInPage() {
     "BACKEND_UNAVAILABLE",
     "BAD_PAYLOAD",
     "CANCELLED",
+    "CAPABILITY_NOT_PUBLIC",
     "DASHBOARD_CANCELLED",
     "PRODUCT_DATA_FAILED",
     "SCHEMA_LIFECYCLE_CANCELLED",

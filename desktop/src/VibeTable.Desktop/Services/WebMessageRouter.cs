@@ -158,13 +158,6 @@ public sealed class WebMessageRouter
             "plugin.lifecycle.uninstall",
         };
 
-    private static readonly HashSet<string> RendererInternalOnlyWorkspaceV2Methods =
-        new(StringComparer.Ordinal)
-        {
-            "workspace.relink",
-            "replica.synchronize",
-        };
-
     /// <summary>
     /// The host -&gt; web notification types. Phase A defines the framework;
     /// B1 adds mutation outcomes; B3 reuses <c>table.pageLoaded</c> for query
@@ -256,68 +249,6 @@ public sealed class WebMessageRouter
         "workspace.v2.event",
     };
 
-    private static readonly IReadOnlyDictionary<string, string> WorkspaceV2Methods =
-        new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["workspace.list"] = "global",
-            ["workspace.create"] = "global",
-            ["workspace.register"] = "global",
-            ["workspace.relink"] = "global",
-            ["workspace.open"] = "global",
-            ["workspace.switch"] = "workspace",
-            ["workspace.close"] = "workspace",
-            ["workspace.remove"] = "global",
-            ["workspace.planDelete"] = "global",
-            ["workspace.applyDelete"] = "global",
-            ["workspace.storage.preview"] = "global",
-            ["workspace.storage.apply"] = "global",
-            ["snapshot.request"] = "workspace",
-            ["snapshot.list"] = "workspace",
-            ["snapshot.inspect"] = "workspace",
-            ["snapshot.update"] = "workspace",
-            ["snapshot.previewRestore"] = "workspace",
-            ["snapshot.applyRestore"] = "workspace",
-            ["snapshot.openAsNewWorkspace"] = "workspace",
-            ["snapshot.previewExtract"] = "workspace",
-            ["snapshot.applyExtract"] = "workspace",
-            ["snapshot.export"] = "workspace",
-            ["snapshot.inspectPackage"] = "global",
-            ["snapshot.import"] = "global",
-            ["history.query"] = "workspace",
-            ["history.previewRestore"] = "workspace",
-            ["history.applyRestore"] = "workspace",
-            ["repository.verify"] = "workspace",
-            ["repository.previewKeyRotation"] = "workspace",
-            ["repository.applyKeyRotation"] = "workspace",
-            ["fileHistory.queryDocuments"] = "workspace",
-            ["fileHistory.listPendingChanges"] = "workspace",
-            ["fileHistory.import"] = "workspace",
-            ["fileHistory.relink"] = "workspace",
-            ["fileHistory.unlink"] = "workspace",
-            ["fileHistory.readTree"] = "workspace",
-            ["fileHistory.restore"] = "workspace",
-            ["fileHistory.upgrade"] = "workspace",
-            ["fileHistory.activateLeaf"] = "workspace",
-            ["fileHistory.applyPendingChange"] = "workspace",
-            ["workspaceSearch.query"] = "workspace",
-            ["workspaceSearch.resolveHit"] = "workspace",
-            ["workspaceSearch.status"] = "workspace",
-            ["workspaceSearch.rebuild"] = "workspace",
-            ["workspaceSearch.cancel"] = "workspace",
-            ["retention.get"] = "workspace",
-            ["retention.status"] = "workspace",
-            ["retention.update"] = "workspace",
-            ["retention.plan"] = "workspace",
-            ["retention.apply"] = "workspace",
-            ["replica.status"] = "workspace",
-            ["replica.synchronize"] = "workspace",
-            ["replica.forceTakeover"] = "workspace",
-            ["conflict.list"] = "workspace",
-            ["conflict.inspect"] = "workspace",
-            ["conflict.preview"] = "workspace",
-            ["conflict.apply"] = "workspace",
-        };
-
     static WebMessageRouter()
     {
         WebRequestWhitelist.UnionWith(ProductDataRpcRegistry.RequestTypes);
@@ -330,14 +261,24 @@ public sealed class WebMessageRouter
     }
 
     private readonly Action<RoutedWebRequest> _dispatch;
+    private readonly WorkspaceRpcCapabilityManifest _workspaceRpcCapabilities;
 
     /// <summary>
     /// Constructs the router. <paramref name="dispatch"/> is invoked for every
     /// accepted inbound web request; the router itself performs no I/O.
     /// </summary>
     public WebMessageRouter(Action<RoutedWebRequest> dispatch)
+        : this(dispatch, WorkspaceRpcCapabilityManifest.Default)
+    {
+    }
+
+    internal WebMessageRouter(
+        Action<RoutedWebRequest> dispatch,
+        WorkspaceRpcCapabilityManifest workspaceRpcCapabilities)
     {
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
+        _workspaceRpcCapabilities = workspaceRpcCapabilities
+            ?? throw new ArgumentNullException(nameof(workspaceRpcCapabilities));
     }
 
     /// <summary>
@@ -459,9 +400,9 @@ public sealed class WebMessageRouter
                 if (payload.ValueKind != JsonValueKind.Object
                     || !payload.TryGetProperty("method", out JsonElement methodElement)
                     || methodElement.ValueKind != JsonValueKind.String
-                    || !WorkspaceV2Methods.TryGetValue(
+                    || !_workspaceRpcCapabilities.TryGet(
                         methodElement.GetString() ?? string.Empty,
-                        out string? expectedScope))
+                        out WorkspaceRpcCapability capability))
                 {
                     return BuildOperationFailed(
                         requestId,
@@ -469,7 +410,7 @@ public sealed class WebMessageRouter
                         "UNKNOWN_V2_METHOD");
                 }
                 v2Method = methodElement.GetString();
-                if (RendererInternalOnlyWorkspaceV2Methods.Contains(v2Method ?? string.Empty))
+                if (capability.Audience != WorkspaceRpcAudience.RendererPublic)
                 {
                     return BuildOperationFailed(
                         requestId,
@@ -484,7 +425,7 @@ public sealed class WebMessageRouter
                         "BAD_WORKSPACE_WIRE");
                 try
                 {
-                    if (expectedScope == "workspace")
+                    if (capability.Scope == "workspace")
                     {
                         scope = WorkspaceV2Json.DeserializeStrict<WorkspaceWireScope>(
                             wireElement.GetRawText());

@@ -40,6 +40,8 @@
              Link="contracts\v2\provider-support.json"
              CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
+    <EmbeddedResource Include="..\..\..\contracts\v2\workspace-rpc-capability-manifest.json"
+                      LogicalName="VibeTable.Desktop.workspace-rpc-capability-manifest.json" />
   </ItemGroup>
 
   <Target Name="CopyPreviewHostOutput"
