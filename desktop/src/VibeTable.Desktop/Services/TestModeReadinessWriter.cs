@@ -82,6 +82,43 @@ public sealed class TestModeReadinessWriter
     }
 
     /// <summary>
+    /// Writes shell readiness together with the update-only workspace health
+    /// evidence. Keeping <c>mode=shell</c> preserves the packaged-host smoke
+    /// contract while the nested receipt proves whether a real workspace was
+    /// checked or no workspace was registered in the isolated profile.
+    /// </summary>
+    internal void WriteUpdateReady(UpdateWorkspaceHealthProbeReceipt receipt)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        if (System.Threading.Interlocked.Exchange(ref _written, 1) != 0)
+        {
+            return;
+        }
+        var payload = new
+        {
+            ready = true,
+            mode = "shell",
+            backendReady = true,
+            webViewReady = true,
+            rendererReady = true,
+            workspaceProbe = new
+            {
+                status = receipt.Status switch
+                {
+                    UpdateWorkspaceHealthProbeStatus.Healthy => "healthy",
+                    _ => "skippedNoRegisteredWorkspace",
+                },
+                workspaceId = receipt.WorkspaceId?.ToString("D"),
+                sessionEpoch = receipt.SessionEpoch,
+                tableCount = receipt.TableCount,
+            },
+            error = (string?)null,
+            writtenAt = DateTimeOffset.UtcNow.ToString("o"),
+        };
+        Write(payload);
+    }
+
+    /// <summary>
     /// Writes a failure readiness report (the smoke test surfaces this as an
     /// error rather than timing out).
     /// </summary>

@@ -1301,6 +1301,28 @@ def wait_for_self_update_activation(
                 or payload.get("mode") != "shell"
             ):
                 raise BuildError("desktop self-update smoke readiness is incomplete")
+            workspace_probe = payload.get("workspaceProbe")
+            workspace_probe_valid = False
+            if isinstance(workspace_probe, dict):
+                status = workspace_probe.get("status")
+                if status == "skippedNoRegisteredWorkspace":
+                    workspace_probe_valid = all(
+                        workspace_probe.get(field) is None
+                        for field in ("workspaceId", "sessionEpoch", "tableCount")
+                    )
+                elif status == "healthy":
+                    session_epoch = workspace_probe.get("sessionEpoch")
+                    table_count = workspace_probe.get("tableCount")
+                    workspace_probe_valid = (
+                        isinstance(workspace_probe.get("workspaceId"), str)
+                        and bool(workspace_probe["workspaceId"])
+                        and type(session_epoch) is int
+                        and session_epoch > 0
+                        and type(table_count) is int
+                        and table_count >= 0
+                    )
+            if not workspace_probe_valid:
+                raise BuildError("desktop self-update smoke workspace probe evidence is invalid")
             readiness_payload = payload
             if completion.is_file():
                 try:

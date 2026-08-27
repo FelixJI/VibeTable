@@ -125,11 +125,16 @@ internal sealed class WorkspaceRegistryTopologyTestContext : IDisposable
         public WorkspaceV2HttpGateway? CurrentGateway => null;
         public WorkspaceV2SidecarCapabilities? CurrentCapabilities { get; set; }
         public (Guid WorkspaceId, bool Switching)? LastOpen { get; private set; }
+        public WorkspaceOpenMode? LastOpenMode { get; private set; }
+        public int CloseCount { get; private set; }
+        public bool LastCloseTokenCanBeCanceled { get; private set; }
         public Func<Guid, WorkspaceOpenMode, bool, CancellationToken,
             Task<WorkspaceSessionV2>> Open
         { get; set; } =
             (_, _, _, _) => throw new InvalidOperationException(
                 "Open behavior was not configured.");
+        public Func<string, CancellationToken, Task<WorkspaceSessionV2>>? Close
+        { get; set; }
 
         public bool TryCapture(
             WorkspaceWireScope? scope,
@@ -150,12 +155,19 @@ internal sealed class WorkspaceRegistryTopologyTestContext : IDisposable
             CancellationToken cancellationToken)
         {
             LastOpen = (workspaceId, switching);
+            LastOpenMode = mode;
             return Open(workspaceId, mode, switching, cancellationToken);
         }
 
         public Task<WorkspaceSessionV2> CloseAsync(
             string reason,
-            CancellationToken cancellationToken) => Task.FromResult(CurrentSession);
+            CancellationToken cancellationToken)
+        {
+            CloseCount++;
+            LastCloseTokenCanBeCanceled = cancellationToken.CanBeCanceled;
+            return Close?.Invoke(reason, cancellationToken)
+                ?? Task.FromResult(CurrentSession);
+        }
 
         public Task<WorkspaceSessionV2> RestartAfterRestoreAsync(
             Guid workspaceId,

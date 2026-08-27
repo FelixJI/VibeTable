@@ -65,6 +65,7 @@ public partial class MainWindow : Window
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
     private readonly IUpdateActivationGate? _updateActivation;
+    private readonly UpdateActivationWorkspaceHealthGate? _updateWorkspaceHealth;
     private readonly string? _e2eControlsDir;
     private readonly AppPreferencesService _appPreferencesService;
     private readonly TestModeHostController? _testModeHost;
@@ -77,6 +78,9 @@ public partial class MainWindow : Window
     private TrayIconController? _trayIcon;
     private bool _explicitExitRequested;
     private int _closing;
+    private int _rendererBootstrapCompleted;
+    private int _updateHealthProbeInProgress;
+    private int _updateHealthProbeStarted;
     private bool _startHidden;
 
     /// <summary>
@@ -265,6 +269,16 @@ public partial class MainWindow : Window
             _runtime,
             _workspaceSessions,
             _workspaceSessionFilter);
+        _updateWorkspaceHealth = updateActivation is null
+            ? null
+            : new UpdateActivationWorkspaceHealthGate(
+                _workspaceRegistry,
+                workspaceSession,
+                new CurrentRuntimeUpdateWorkspaceSchemaReader(_runtime),
+                reportReady: receipt => _readiness?.WriteUpdateReady(receipt),
+                reportFailure: exception => _readiness?.WriteError(
+                    "Post-update workspace health probe failed: "
+                    + $"{exception.GetType().Name}: {exception.Message}"));
         var storageMeter = new WorkspaceStorageMeter();
         var bootstrap = new WorkspaceBootstrapPublisher(
             workspaceReply,
@@ -593,7 +607,9 @@ public partial class MainWindow : Window
             _session.Token);
 
         _productWorkspace.ResetBinding();
-        if (_router.IsReady)
+        if (_router.IsReady
+            && Volatile.Read(ref _rendererBootstrapCompleted) != 0
+            && Volatile.Read(ref _updateHealthProbeInProgress) == 0)
         {
             PostRuntimeReady();
             OpenProductWorkspaceWhenReady();
@@ -661,6 +677,10 @@ public partial class MainWindow : Window
         object? sender,
         WorkspaceSessionChangedEventArgs args)
     {
+        if (Volatile.Read(ref _updateHealthProbeInProgress) != 0)
+        {
+            return;
+        }
         PluginProjectContext? context = PluginProjectContext.FromSession(args.Session);
         _authorityTransition.Transition(context, _session.Token);
         if (context is null)
@@ -741,6 +761,19 @@ public partial class MainWindow : Window
         _router.IsReady = true;
         _dispatcher.RotateDocumentCapabilityEpoch();
         _pluginResources.CloseAllSurfaces();
+        if (_updateWorkspaceHealth is null)
+        {
+            CompleteRendererBootstrap();
+        }
+        TryWriteReadiness();
+    }
+
+    private void CompleteRendererBootstrap()
+    {
+        if (Interlocked.Exchange(ref _rendererBootstrapCompleted, 1) != 0)
+        {
+            return;
+        }
         _workspaceProduct.PostBootstrap();
         if (_runtime.CurrentBackend?.State == BackendState.Ready
             && _productGateway is not null)
@@ -763,7 +796,6 @@ public partial class MainWindow : Window
                     canCancel = false,
                 });
         }
-        TryWriteReadiness();
     }
 
     private void RetryStartup()
@@ -871,11 +903,79 @@ public partial class MainWindow : Window
 
     private void TryWriteReadiness()
     {
-        if (_viewModel.State == StartupState.Ready
-            && _router.IsReady)
+        if (_viewModel.State != StartupState.Ready || !_router.IsReady)
+        {
+            return;
+        }
+        if (_updateActivation is null || _updateWorkspaceHealth is null)
         {
             _readiness?.WriteShellReady();
-            _updateActivation?.ConfirmActivation();
+            return;
+        }
+        if (Interlocked.Exchange(ref _updateHealthProbeStarted, 1) != 0)
+        {
+            return;
+        }
+        Volatile.Write(ref _updateHealthProbeInProgress, 1);
+        _ = ConfirmUpdateActivationAsync();
+    }
+
+    private async Task ConfirmUpdateActivationAsync()
+    {
+        try
+        {
+            _ = await _updateWorkspaceHealth!.ConfirmAsync(
+                _updateActivation!,
+                _session.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_session.IsCancellationRequested)
+        {
+            // Window shutdown owns cancellation; the pending activation stays
+            // prepared and may be retried on the next launch.
+        }
+        catch (Exception exception)
+        {
+            _readiness?.Trace(
+                $"Post-update workspace health probe failed: {exception}");
+        }
+        finally
+        {
+            bool probeSessionClosed =
+                _workspaceSessions.Current.State == WorkspaceSessionState.Closed;
+            if (probeSessionClosed)
+            {
+                Volatile.Write(ref _updateHealthProbeInProgress, 0);
+                if (Volatile.Read(ref _closing) == 0)
+                {
+                    _ = Dispatcher.BeginInvoke(CompleteRendererBootstrap);
+                }
+            }
+            else if (Volatile.Read(ref _closing) == 0)
+            {
+                // Keep the temporary runtime quarantined. CloseAsync restores
+                // its read-only session after a failed stop, so normal product
+                // bootstrap must not inherit that binding.
+                _ = Dispatcher.BeginInvoke(() =>
+                {
+                    const string reason =
+                        "更新后工作区健康探测无法关闭临时会话。";
+                    _readiness?.Trace(reason);
+                    _webBridge.PostNotification(
+                        "host.startupStateChanged",
+                        new
+                        {
+                            phase = "faulted",
+                            stage = "runtime",
+                            detail = reason,
+                            canRetry = false,
+                            canCancel = false,
+                        });
+                    if (_viewModel.State is StartupState.LoadingWeb or StartupState.Ready)
+                    {
+                        _viewModel.MoveToFaulted(reason);
+                    }
+                });
+            }
         }
     }
 

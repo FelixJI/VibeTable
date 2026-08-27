@@ -17,6 +17,8 @@ internal interface IUpdateActivationGate
     Task<bool> Completion { get; }
 
     void ConfirmActivation();
+
+    void FailActivation();
 }
 
 internal static class UpdateProcessCommand
