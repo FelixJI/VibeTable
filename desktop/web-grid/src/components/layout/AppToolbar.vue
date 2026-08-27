@@ -3,6 +3,7 @@ import { computed, h } from "vue";
 import { NButton, NButtonGroup, NDropdown, NIcon, NTooltip } from "naive-ui";
 import { BookOpenText, ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2, Upload } from "@lucide/vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import type { ExportFormat } from "@/contracts";
 import { collectionLabel } from "./collectionLabel";
 import { t } from "@/i18n";
 
@@ -32,7 +33,7 @@ const emit = defineEmits<{
   openFieldManager: [];
   openContent: [];
   importData: [];
-  exportData: [];
+  exportData: [format: ExportFormat];
   cancelDataTask: [];
   pluginAction: [key: string];
 }>();
@@ -60,8 +61,14 @@ const moreOptions = computed(() => [
     disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoImportDisabled,
   },
   {
-    label: "导出数据",
-    key: "export",
+    label: "导出 CSV",
+    key: "export-csv",
+    icon: () => h(Download),
+    disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoExportDisabled,
+  },
+  {
+    label: "导出 XLSX",
+    key: "export-xlsx",
     icon: () => h(Download),
     disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoExportDisabled,
   },
@@ -88,7 +95,8 @@ function onMore(key: string) {
   if (key === "refresh") emit("refresh");
   if (key === "help") emit("openHelp");
   if (key === "import") emit("importData");
-  if (key === "export") emit("exportData");
+  if (key === "export-csv") emit("exportData", "csv");
+  if (key === "export-xlsx") emit("exportData", "xlsx");
   if (key === "cancel-data-task") emit("cancelDataTask");
 }
 

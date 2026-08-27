@@ -63,7 +63,7 @@ describe("dataIoService", () => {
 
     const preview = await service.previewImport("orders", "schema-7");
     await service.applyImport(preview);
-    await service.exportData("orders", {});
+    await service.exportData("orders", {}, "xlsx");
 
     expect(methods).toEqual([
       "data.importSourceRequested",
@@ -74,6 +74,21 @@ describe("dataIoService", () => {
     ]);
     expect(request.mock.calls[0]?.[1]).toEqual({
       accept: [".xlsx", ".xlsm", ".csv"],
+    });
+    expect(request).toHaveBeenCalledWith("data.exportTargetRequested", {
+      defaultName: "orders-export.xlsx",
+      format: "xlsx",
+    });
+    expect(request).toHaveBeenCalledWith("task.create", {
+      kind: "data.export",
+      params: {
+        grantId: "grant-out",
+        collection: "orders",
+        query: {},
+        format: "xlsx",
+        includeRelations: true,
+        lookupIds: [],
+      },
     });
     expect(JSON.stringify(request.mock.calls)).not.toContain("\\\\");
   });

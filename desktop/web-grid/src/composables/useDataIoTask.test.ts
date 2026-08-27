@@ -156,7 +156,7 @@ describe("useDataIoTask", () => {
     });
 
     const pending = task.previewImport();
-    await task.exportData();
+    await task.exportData("csv");
     expect(service.exportData).not.toHaveBeenCalled();
     resolvePreview(session);
     await pending;
@@ -164,9 +164,17 @@ describe("useDataIoTask", () => {
     task.dismissPreview();
     await task.cancelActiveTask();
     expect(service.cancelActive).toHaveBeenCalledOnce();
-    await task.exportData();
+    await task.exportData("csv");
     expect(exportSucceeded).not.toHaveBeenCalled();
     expect(reportError).toHaveBeenCalledWith("disk full");
+  });
+
+  it("forwards the selected interoperable export format through the task seam", async () => {
+    const { task, service } = setup();
+
+    await task.exportData("xlsx");
+
+    expect(service.exportData).toHaveBeenCalledWith("orders", {}, "xlsx");
   });
 
   it("admits only one export while the target picker is pending", async () => {
@@ -176,8 +184,8 @@ describe("useDataIoTask", () => {
       exportData: vi.fn(() => pendingExport),
     });
 
-    const first = task.exportData();
-    const second = task.exportData();
+    const first = task.exportData("csv");
+    const second = task.exportData("csv");
     expect(service.exportData).toHaveBeenCalledOnce();
     expect(task.canPreviewImport.value).toBe(false);
     expect(task.canExport.value).toBe(false);
