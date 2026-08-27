@@ -508,6 +508,70 @@ public sealed class ReleaseUpdateServiceTests
 
     [TestMethod]
     [DoNotParallelize]
+    public async Task FailedWorkspaceHealthProbeEndsSmokeWithoutConsumingPreparedActivation()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-health-failure");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string token = new('d', 64);
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            token,
+            SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                [
+                    "--cleanup-update",
+                    stage,
+                    "--updater-pid",
+                    int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--update-token",
+                    token,
+                    "--self-update-smoke",
+                ],
+                out IUpdateActivationGate? gate,
+                runningRoot: target));
+            Assert.IsNotNull(gate);
+
+            gate.FailActivation();
+
+            Assert.IsFalse(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsTrue(Directory.Exists(stage));
+            Assert.IsTrue(File.Exists(PendingUpdateActivationJournal.GetPointerPath(target)));
+            Assert.IsFalse(File.Exists(Path.Combine(
+                target,
+                UpdateProcessCommand.SmokeCompletionFileName)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
     public async Task ShellReadyConfirmationRetainsBackupWhenTargetIdentityChanged()
     {
         string container = Root();

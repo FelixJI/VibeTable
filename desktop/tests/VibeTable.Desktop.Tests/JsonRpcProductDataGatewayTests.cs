@@ -301,7 +301,7 @@ public sealed class JsonRpcProductDataGatewayTests
     }
 
     [TestMethod]
-    public async Task CancellationIsPropagatedBeforeTransportWrite()
+    public async Task SchemaListCancellationIsPropagatedBeforeTransportWrite()
     {
         var transport = new AutoRespondTransport();
         await using var client = new JsonRpcClient(transport);
@@ -310,8 +310,8 @@ public sealed class JsonRpcProductDataGatewayTests
         cancelled.Cancel();
 
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
-            gateway.QueryPageAsync(
-                JsonDocument.Parse("""{"tableId":"tbl_orders"}""").RootElement.Clone(),
+            gateway.ListTablesAsync(
+                JsonDocument.Parse("{}").RootElement.Clone(),
                 cancelled.Token));
         Assert.HasCount(0, transport.Methods);
     }

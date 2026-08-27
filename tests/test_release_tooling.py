@@ -403,6 +403,36 @@ def test_self_update_activation_requires_all_shell_boundaries(tmp_path: Path) ->
         )
 
 
+def test_self_update_activation_requires_workspace_probe_evidence(tmp_path: Path) -> None:
+    completion = tmp_path / build_next.SELF_UPDATE_SMOKE_COMPLETION_FILE
+    readiness = (
+        tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR / build_next.SHELL_READINESS_FILE
+    )
+    readiness.parent.mkdir()
+    readiness.write_text(
+        json.dumps(
+            {
+                "ready": True,
+                "mode": "shell",
+                "backendReady": True,
+                "webViewReady": True,
+                "rendererReady": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(build_next.BuildError, match="workspace probe evidence is invalid"):
+        build_next.wait_for_self_update_activation(
+            completion,
+            readiness,
+            "token",
+            "1.0.1",
+            123,
+            timeout_seconds=0.1,
+        )
+
+
 def test_self_update_activation_binds_readiness_before_completion(
     tmp_path: Path,
 ) -> None:
@@ -419,6 +449,12 @@ def test_self_update_activation_binds_readiness_before_completion(
                 "backendReady": True,
                 "webViewReady": True,
                 "rendererReady": True,
+                "workspaceProbe": {
+                    "status": "skippedNoRegisteredWorkspace",
+                    "workspaceId": None,
+                    "sessionEpoch": None,
+                    "tableCount": None,
+                },
                 "writtenAt": "2026-08-27T03:00:00+00:00",
             }
         ),

@@ -683,6 +683,15 @@ internal static class PendingUpdateActivationJournal
             _ = Task.Run(() => CompleteAsync(confirm: true));
         }
 
+        public void FailActivation()
+        {
+            if (Interlocked.Exchange(ref _confirmationStarted, 1) != 0)
+            {
+                return;
+            }
+            _completion.TrySetResult(false);
+        }
+
         public void ResumeConfirmedCleanup()
         {
             if (Interlocked.Exchange(ref _confirmationStarted, 1) != 0)
