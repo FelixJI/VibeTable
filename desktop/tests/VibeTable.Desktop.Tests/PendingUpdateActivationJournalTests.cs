@@ -431,6 +431,120 @@ public sealed class PendingUpdateActivationJournalTests
         }
     }
 
+    [TestMethod]
+    public void PublishRejectsAncestorJunctionBeforeWritingOutsideControlledVolumePath()
+    {
+        string root = Root();
+        string outside = Path.Combine(root, "outside-publish-ancestor");
+        string installParent = Path.Combine(outside, "install-parent");
+        string junction = Path.Combine(root, "controlled-publish-ancestor");
+        Directory.CreateDirectory(installParent);
+        string sentinel = Path.Combine(outside, "sentinel.txt");
+        File.WriteAllText(sentinel, "outside");
+        if (!TryCreateJunction(junction, outside))
+        {
+            Assert.Inconclusive("当前 Windows 环境无法创建目录 junction。");
+        }
+        string target = Path.Combine(junction, "install-parent", "VibeTable.Next");
+        string stage = Path.Combine(
+            junction,
+            "install-parent",
+            ".VibeTable.Next.update-ancestor");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(target, "1.0.0", "old");
+        CreatePackageTree(source, "1.1.0", "new");
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            new string('7', 64));
+
+        try
+        {
+            ReleaseUpdateException error = Assert.ThrowsExactly<ReleaseUpdateException>(() =>
+                PendingUpdateActivationJournal.Publish(
+                    plan,
+                    new UpdateProcessIdentity(123, DateTimeOffset.UtcNow)));
+
+            Assert.AreEqual("UPDATE_REPARSE_POINT_REJECTED", error.Code);
+            Assert.AreEqual("outside", File.ReadAllText(sentinel));
+            Assert.IsFalse(File.Exists(Path.Combine(
+                installParent,
+                ".VibeTable.Next.update-pending.json")));
+        }
+        finally
+        {
+            if (Directory.Exists(junction))
+            {
+                Directory.Delete(junction);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void StartupReadRejectsAncestorJunctionWithoutChangingExternalState()
+    {
+        string root = Root();
+        string controlled = Path.Combine(root, "controlled-read-ancestor");
+        string installParent = Path.Combine(controlled, "install-parent");
+        string target = Path.Combine(installParent, "VibeTable.Next");
+        string stage = Path.Combine(installParent, ".VibeTable.Next.update-read-ancestor");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(target, "1.0.0", "old");
+        CreatePackageTree(source, "1.1.0", "new");
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            new string('8', 64));
+        var updater = new UpdateProcessIdentity(123, DateTimeOffset.UtcNow);
+        PendingUpdateActivationJournal.Publish(plan, updater);
+        string outside = Path.Combine(root, "outside-read-ancestor");
+        Directory.Move(controlled, outside);
+        string sentinel = Path.Combine(outside, "sentinel.txt");
+        File.WriteAllText(sentinel, "outside");
+        if (!TryCreateJunction(controlled, outside))
+        {
+            Directory.Move(outside, controlled);
+            Assert.Inconclusive("当前 Windows 环境无法创建目录 junction。");
+        }
+
+        try
+        {
+            UpdateActivationStartupResolution resolution =
+                PendingUpdateActivationJournal.ResolveStartup(
+                    [],
+                    target,
+                    new UpdateProcessIdentity(124, updater.StartedAtUtc.AddSeconds(1)),
+                    new NoOpLifetime(),
+                    _ => Task.FromResult(true),
+                    _ => true);
+
+            Assert.AreEqual(UpdateActivationStartupDisposition.Blocked, resolution.Disposition);
+            Assert.AreEqual("UPDATE_ACTIVATION_INVALID", resolution.ErrorCode);
+            Assert.AreEqual("outside", File.ReadAllText(sentinel));
+        }
+        finally
+        {
+            if (Directory.Exists(controlled))
+            {
+                Directory.Delete(controlled);
+            }
+            if (Directory.Exists(outside) && !Directory.Exists(controlled))
+            {
+                Directory.Move(outside, controlled);
+            }
+        }
+    }
+
     private UpdateApplyPlan CreatePendingPlan(string suffix, char tokenCharacter)
     {
         string container = Root();
@@ -479,6 +593,39 @@ public sealed class PendingUpdateActivationJournalTests
 
     private static string ReleaseJson(string version) =>
         $$"""{"product":"VibeTable","version":"{{version}}","platform":"windows","architecture":"x64"}""";
+
+    private static bool TryCreateJunction(string junction, string target)
+    {
+        string command = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe";
+        var start = new ProcessStartInfo
+        {
+            FileName = command,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("/d");
+        start.ArgumentList.Add("/c");
+        start.ArgumentList.Add("mklink");
+        start.ArgumentList.Add("/J");
+        start.ArgumentList.Add(junction);
+        start.ArgumentList.Add(target);
+        using Process? process = Process.Start(start);
+        if (process is null)
+        {
+            return false;
+        }
+        process.WaitForExit();
+        return process.ExitCode == 0;
+    }
+
+    private sealed class NoOpLifetime : IUpdateHostLifetimePort
+    {
+        public void RequestExit(int exitCode)
+        {
+        }
+    }
 
     private string Root()
     {

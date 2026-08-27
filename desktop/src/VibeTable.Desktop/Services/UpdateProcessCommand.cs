@@ -10,6 +10,57 @@ using System.Threading.Tasks;
 
 namespace VibeTable.Desktop.Services;
 
+internal static class UpdatePackageOwnedEntries
+{
+    internal static IReadOnlyList<string> InInstallOrder { get; } =
+        ["resources", "release.json", "VibeTable.Next.exe"];
+
+    internal static bool AllExistAt(string root) => InInstallOrder.All(name =>
+        File.Exists(Path.Combine(root, name))
+        || Directory.Exists(Path.Combine(root, name)));
+
+    internal static bool IsFullyRestored(IReadOnlyList<UpdateOwnedEntryLedger> ledger) =>
+        ledger.Count == InInstallOrder.Count
+        && InInstallOrder.All(name => ledger.SingleOrDefault(
+            entry => entry.Name == name)?.Phase == "restored");
+
+    internal static void ValidatePackageAt(string root, string expectedVersion)
+    {
+        try
+        {
+            if (!AllExistAt(root))
+            {
+                throw new InvalidDataException("Owned package entry is missing.");
+            }
+            foreach (string name in InInstallOrder)
+            {
+                string path = Path.Combine(root, name);
+                if (Directory.Exists(path))
+                {
+                    UpdateProcessCommand.RejectReparsePointsRecursively(path);
+                }
+                else
+                {
+                    UpdateProcessCommand.RejectReparsePoint(path);
+                }
+            }
+            if (InstalledPackageIdentity.Read(root).Version != expectedVersion)
+            {
+                throw new InvalidDataException("Installed package version drifted.");
+            }
+        }
+        catch (Exception exception) when (exception is
+            IOException or UnauthorizedAccessException or ReleaseUpdateException
+            or InvalidDataException)
+        {
+            throw new ReleaseUpdateException(
+                "当前安装形状无法作为完整回退基线。",
+                "UPDATE_CURRENT_PACKAGE_INVALID",
+                exception);
+        }
+    }
+}
+
 internal interface IUpdateActivationGate
 {
     bool ExitAfterConfirmation { get; }
@@ -33,13 +84,6 @@ internal static class UpdateProcessCommand
         new(JsonSerializerDefaults.Web);
     private static readonly Encoding Utf8NoBom =
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-    private static readonly string[] OwnedRootEntries =
-    [
-        "VibeTable.Next.exe",
-        "release.json",
-        "resources",
-    ];
-
     public static bool TryApply(
         IReadOnlyList<string> arguments,
         out int exitCode,
@@ -47,6 +91,25 @@ internal static class UpdateProcessCommand
     {
         exitCode = 0;
         errorMessage = null;
+        if (arguments is ["--rollback-update", string targetRoot,
+                "--worker-nonce", string workerNonce])
+        {
+            try
+            {
+                PendingUpdateActivationJournal.RunRollbackWorker(
+                    targetRoot,
+                    workerNonce,
+                    PendingUpdateActivationJournal.CurrentProcessIdentity());
+            }
+            catch (Exception)
+            {
+                exitCode = 1;
+                // The retained journal is the worker's stable diagnostic
+                // surface; a process-out worker must never display WPF UI.
+                errorMessage = null;
+            }
+            return true;
+        }
         if (arguments.Count != 2 || arguments[0] != "--apply-update") return false;
 
         UpdateApplyPlan? plan = null;
@@ -58,7 +121,10 @@ internal static class UpdateProcessCommand
             PendingUpdateActivationJournal.Publish(plan, updaterIdentity);
             WaitForParentExit(plan.ParentProcessId);
             ApplyPackageOwnedFiles(plan);
-            StartUpdatedApplication(plan);
+            new UpdateRecoveryWatchdog(new WindowsUpdateRecoveryProcessAdapter())
+                .RunUpdatedPackageAsync(plan, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
         }
         catch (Exception exception)
         {
@@ -69,13 +135,27 @@ internal static class UpdateProcessCommand
                 WriteFailureEvidence(plan.StagingRoot, exception);
                 if (updaterIdentity is not null)
                 {
-                    PendingUpdateActivationJournal.TryAbandonPrepared(
+                    _ = TryRestartAfterApplyFailure(
                         plan,
-                        updaterIdentity);
+                        updaterIdentity,
+                        TryRestartExistingApplication);
                 }
-                TryRestartExistingApplication(plan.TargetRoot);
             }
         }
+        return true;
+    }
+
+    internal static bool TryRestartAfterApplyFailure(
+        UpdateApplyPlan plan,
+        UpdateProcessIdentity updaterIdentity,
+        Action<string> restart)
+    {
+        ArgumentNullException.ThrowIfNull(restart);
+        if (!PendingUpdateActivationJournal.TryAbandonPrepared(plan, updaterIdentity))
+        {
+            return false;
+        }
+        restart(plan.TargetRoot);
         return true;
     }
 
@@ -182,6 +262,12 @@ internal static class UpdateProcessCommand
         string targetRoot = NormalizeDirectory(plan.TargetRoot);
         string sourceRoot = NormalizeDirectory(plan.SourceRoot);
         string backupRoot = NormalizeDirectory(Path.Combine(plan.StagingRoot, "backup"));
+        RejectReparsePointChainsToVolumeRoot(
+            targetRoot,
+            plan.StagingRoot,
+            sourceRoot,
+            backupRoot);
+        UpdatePackageOwnedEntries.ValidatePackageAt(targetRoot, plan.CurrentVersion);
         if (Directory.Exists(backupRoot) || File.Exists(backupRoot))
         {
             throw new ReleaseUpdateException(
@@ -194,7 +280,7 @@ internal static class UpdateProcessCommand
         var copied = new List<string>();
         try
         {
-            foreach (string name in OwnedRootEntries)
+            foreach (string name in UpdatePackageOwnedEntries.InInstallOrder)
             {
                 string target = Path.Combine(targetRoot, name);
                 string backup = Path.Combine(backupRoot, name);
@@ -212,7 +298,7 @@ internal static class UpdateProcessCommand
                 }
             }
 
-            foreach (string name in OwnedRootEntries)
+            foreach (string name in UpdatePackageOwnedEntries.InInstallOrder)
             {
                 string source = Path.Combine(sourceRoot, name);
                 string target = Path.Combine(targetRoot, name);
@@ -290,69 +376,6 @@ internal static class UpdateProcessCommand
         }
     }
 
-    private static void StartUpdatedApplication(UpdateApplyPlan plan)
-    {
-        string executable = Path.Combine(plan.TargetRoot, "VibeTable.Next.exe");
-        string? smokeReadinessRoot = plan.SmokeTest
-            ? Path.Combine(
-                Directory.GetParent(plan.StagingRoot.TrimEnd(
-                    Path.DirectorySeparatorChar,
-                    Path.AltDirectorySeparatorChar))!.FullName,
-                "self-update-readiness")
-            : null;
-        var start = new ProcessStartInfo
-        {
-            FileName = executable,
-            WorkingDirectory = plan.TargetRoot,
-            UseShellExecute = false,
-        };
-        start.ArgumentList.Add("--cleanup-update");
-        start.ArgumentList.Add(plan.StagingRoot);
-        start.ArgumentList.Add("--updater-pid");
-        start.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        start.ArgumentList.Add("--update-token");
-        start.ArgumentList.Add(plan.Token);
-        if (plan.SmokeTest)
-        {
-            start.ArgumentList.Add("--self-update-smoke");
-            start.ArgumentList.Add("--test-mode");
-            start.ArgumentList.Add("--readiness-dir");
-            start.ArgumentList.Add(smokeReadinessRoot!);
-        }
-        using Process? process = Process.Start(start);
-        if (process is null)
-        {
-            throw new ReleaseUpdateException(
-                "更新已写入，但无法重新启动 VibeTable。",
-                "UPDATE_RESTART_FAILED");
-        }
-        if (plan.SmokeTest)
-        {
-            try
-            {
-                Directory.CreateDirectory(smokeReadinessRoot!);
-                WriteJsonAtomically(
-                    Path.Combine(smokeReadinessRoot!, SmokeProcessFileName),
-                    new SmokeProcessEvidence(
-                        plan.Token,
-                        plan.TargetVersion,
-                        process.Id));
-            }
-            catch
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (Exception)
-                {
-                    // Preserve the original evidence-write failure.
-                }
-                throw;
-            }
-        }
-    }
-
     internal static bool TryCleanupStage(UpdateApplyPlan plan)
     {
         try
@@ -369,6 +392,23 @@ internal static class UpdateProcessCommand
         {
             return false;
         }
+    }
+
+    internal static void WriteSmokeProcessEvidence(UpdateApplyPlan plan, int processId)
+    {
+        if (!plan.SmokeTest)
+        {
+            return;
+        }
+        string readinessRoot = Path.Combine(
+            Directory.GetParent(plan.StagingRoot.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar))!.FullName,
+            "self-update-readiness");
+        Directory.CreateDirectory(readinessRoot);
+        WriteJsonAtomically(
+            Path.Combine(readinessRoot, SmokeProcessFileName),
+            new SmokeProcessEvidence(plan.Token, plan.TargetVersion, processId));
     }
 
     private static void WriteJsonAtomically(string path, object value)
@@ -430,6 +470,69 @@ internal static class UpdateProcessCommand
                 "更新目录包含重解析点，已拒绝继续。",
                 "UPDATE_REPARSE_POINT_REJECTED");
         }
+    }
+
+    internal static void RejectReparsePointChain(string path, string boundary)
+    {
+        string current = NormalizeDirectory(path);
+        string normalizedBoundary = NormalizeDirectory(boundary);
+        string relative = Path.GetRelativePath(normalizedBoundary, current);
+        if (Path.IsPathRooted(relative)
+            || relative == ".."
+            || relative.StartsWith($"..{Path.DirectorySeparatorChar}",
+                StringComparison.Ordinal))
+        {
+            throw new ReleaseUpdateException(
+                "更新目录超出受控边界。",
+                "UPDATE_PLAN_PATH_INVALID");
+        }
+        while (true)
+        {
+            if (File.Exists(current) || Directory.Exists(current))
+            {
+                RejectReparsePoint(current);
+            }
+            if (PathsEqual(current, normalizedBoundary))
+            {
+                return;
+            }
+            DirectoryInfo? parent = Directory.GetParent(
+                current.TrimEnd(Path.DirectorySeparatorChar));
+            if (parent is null)
+            {
+                throw new ReleaseUpdateException(
+                    "更新目录超出受控边界。",
+                    "UPDATE_PLAN_PATH_INVALID");
+            }
+            current = NormalizeDirectory(parent.FullName);
+        }
+    }
+
+    internal static string RejectReparsePointChainsToVolumeRoot(params string[] paths)
+    {
+        if (paths.Length == 0)
+        {
+            throw new ArgumentException("At least one controlled path is required.", nameof(paths));
+        }
+        string? volumeRoot = null;
+        foreach (string path in paths)
+        {
+            string normalized = NormalizeDirectory(path);
+            string currentVolume = Path.GetPathRoot(normalized)
+                ?? throw new ReleaseUpdateException(
+                    "无法确定更新目录卷边界。",
+                    "UPDATE_PLAN_PATH_INVALID");
+            currentVolume = NormalizeDirectory(currentVolume);
+            if (volumeRoot is not null && !PathsEqual(volumeRoot, currentVolume))
+            {
+                throw new ReleaseUpdateException(
+                    "更新目标与阶段目录不在同一卷。",
+                    "UPDATE_PLAN_PATH_INVALID");
+            }
+            volumeRoot ??= currentVolume;
+            RejectReparsePointChain(normalized, volumeRoot);
+        }
+        return volumeRoot!;
     }
 
     private static void DeleteExactEntry(string path)
