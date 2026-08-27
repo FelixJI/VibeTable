@@ -300,6 +300,56 @@ def test_release_build_runs_self_update_smoke_before_atomic_publish(
     assert events == expected
 
 
+def test_self_update_activation_pointer_requires_exact_prepared_identity(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "VibeTable.Next"
+    stage = tmp_path / ".VibeTable.Next.update-smoke"
+    pointer = tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER
+    token = "a" * 64
+    pointer.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "state": "prepared",
+                "targetRoot": str(target),
+                "stagingRoot": str(stage),
+                "currentVersion": "1.0.0",
+                "targetVersion": "1.0.1",
+                "token": token,
+                "smokeTest": True,
+                "updaterProcessId": 321,
+                "updaterStartedAtUtc": "2026-08-27T04:00:00+00:00",
+                "createdAtUtc": "2026-08-27T04:00:01+00:00",
+                "confirmedAt": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    build_next.wait_for_self_update_activation_pointer(
+        pointer,
+        target=target,
+        stage=stage,
+        token=token,
+        updater_process_id=321,
+        timeout_seconds=0.1,
+    )
+
+    payload = json.loads(pointer.read_text(encoding="utf-8"))
+    payload["unexpected"] = True
+    pointer.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(build_next.BuildError, match="pointer fields are invalid"):
+        build_next.wait_for_self_update_activation_pointer(
+            pointer,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=321,
+            timeout_seconds=0.1,
+        )
+
+
 def test_self_update_activation_rejects_cleanup_before_shell_readiness(
     tmp_path: Path,
 ) -> None:

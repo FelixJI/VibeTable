@@ -16,7 +16,7 @@ internal interface IUpdateActivationGate
 
     Task<bool> Completion { get; }
 
-    void ConfirmShellReady();
+    void ConfirmActivation();
 }
 
 internal static class UpdateProcessCommand
@@ -48,9 +48,12 @@ internal static class UpdateProcessCommand
         if (arguments.Count != 2 || arguments[0] != "--apply-update") return false;
 
         UpdateApplyPlan? plan = null;
+        UpdateProcessIdentity? updaterIdentity = null;
         try
         {
             plan = ReadAndValidatePlan(arguments[1], requireCurrentSource: true);
+            updaterIdentity = PendingUpdateActivationJournal.CurrentProcessIdentity();
+            PendingUpdateActivationJournal.Publish(plan, updaterIdentity);
             WaitForParentExit(plan.ParentProcessId);
             ApplyPackageOwnedFiles(plan);
             StartUpdatedApplication(plan);
@@ -62,6 +65,12 @@ internal static class UpdateProcessCommand
             if (plan is not null)
             {
                 WriteFailureEvidence(plan.StagingRoot, exception);
+                if (updaterIdentity is not null)
+                {
+                    PendingUpdateActivationJournal.TryAbandonPrepared(
+                        plan,
+                        updaterIdentity);
+                }
                 TryRestartExistingApplication(plan.TargetRoot);
             }
         }
@@ -72,44 +81,15 @@ internal static class UpdateProcessCommand
         IReadOnlyList<string> arguments,
         out IUpdateActivationGate? gate,
         string? runningRoot = null,
-        Func<int, Task<bool>>? waitForUpdaterExit = null,
+        Func<UpdateProcessIdentity, Task<bool>>? waitForUpdaterExit = null,
         Func<UpdateApplyPlan, bool>? cleanupStage = null)
     {
-        gate = null;
-        if (!TryParseCleanup(
-                arguments,
-                out string? stageRoot,
-                out int updaterProcessId,
-                out string? token,
-                out bool smokeArgument))
-        {
-            return false;
-        }
-        try
-        {
-            string planPath = Path.Combine(stageRoot!, "update-plan.json");
-            UpdateApplyPlan plan = ReadAndValidatePlan(
-                planPath,
-                requireCurrentSource: false,
-                targetAlreadyUpdated: true);
-            if (!PathsEqual(plan.TargetRoot, runningRoot ?? AppContext.BaseDirectory)
-                || !FixedTimeTokenEquals(plan.Token, token!)
-                || plan.SmokeTest != smokeArgument)
-            {
-                return false;
-            }
-            gate = new PendingUpdateActivationGate(
-                plan,
-                updaterProcessId,
-                waitForUpdaterExit ?? WaitForUpdaterExitAsync,
-                cleanupStage ?? TryCleanupStage);
-            return true;
-        }
-        catch (Exception)
-        {
-            // An invalid activation must retain the exact staging directory.
-            return false;
-        }
+        return PendingUpdateActivationJournal.TryLoad(
+            arguments,
+            runningRoot ?? AppContext.BaseDirectory,
+            out gate,
+            waitForUpdaterExit,
+            cleanupStage);
     }
 
     internal static UpdateApplyPlan ReadAndValidatePlan(
@@ -371,84 +351,7 @@ internal static class UpdateProcessCommand
         }
     }
 
-    private static bool TryParseCleanup(
-        IReadOnlyList<string> arguments,
-        out string? stageRoot,
-        out int updaterProcessId,
-        out string? token,
-        out bool smokeTest)
-    {
-        stageRoot = null;
-        updaterProcessId = 0;
-        token = null;
-        smokeTest = false;
-        string? updaterProcessIdText = null;
-        for (int index = 0; index < arguments.Count; index++)
-        {
-            string argument = arguments[index];
-            switch (argument)
-            {
-                case "--cleanup-update":
-                    if (stageRoot is not null || index + 1 >= arguments.Count)
-                    {
-                        return false;
-                    }
-                    stageRoot = arguments[++index];
-                    break;
-                case "--updater-pid":
-                    if (updaterProcessIdText is not null || index + 1 >= arguments.Count)
-                    {
-                        return false;
-                    }
-                    updaterProcessIdText = arguments[++index];
-                    break;
-                case "--update-token":
-                    if (token is not null || index + 1 >= arguments.Count)
-                    {
-                        return false;
-                    }
-                    token = arguments[++index];
-                    break;
-                case "--self-update-smoke":
-                    if (smokeTest)
-                    {
-                        return false;
-                    }
-                    smokeTest = true;
-                    break;
-            }
-        }
-        return stageRoot is not null
-            && token is not null
-            && int.TryParse(updaterProcessIdText, out updaterProcessId)
-            && updaterProcessId > 0;
-    }
-
-    private static async Task<bool> WaitForUpdaterExitAsync(int updaterProcessId)
-    {
-        if (updaterProcessId == Environment.ProcessId)
-        {
-            return false;
-        }
-        try
-        {
-            using Process updater = Process.GetProcessById(updaterProcessId);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-            await updater.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            // The updater already exited.
-            return true;
-        }
-        catch (OperationCanceledException)
-        {
-            return false;
-        }
-    }
-
-    private static bool TryCleanupStage(UpdateApplyPlan plan)
+    internal static bool TryCleanupStage(UpdateApplyPlan plan)
     {
         try
         {
@@ -466,131 +369,6 @@ internal static class UpdateProcessCommand
         }
     }
 
-    private sealed class PendingUpdateActivationGate(
-        UpdateApplyPlan plan,
-        int updaterProcessId,
-        Func<int, Task<bool>> waitForUpdaterExit,
-        Func<UpdateApplyPlan, bool> cleanupStage) : IUpdateActivationGate
-    {
-        private const string ConfirmationLockSuffix =
-            ".activation.lock";
-        private readonly TaskCompletionSource<bool> _completion =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int _confirmationStarted;
-
-        public bool ExitAfterConfirmation => plan.SmokeTest;
-
-        public Task<bool> Completion => _completion.Task;
-
-        public void ConfirmShellReady()
-        {
-            if (Interlocked.Exchange(ref _confirmationStarted, 1) != 0)
-            {
-                return;
-            }
-            _ = Task.Run(ConfirmAsync);
-        }
-
-        private async Task ConfirmAsync()
-        {
-            try
-            {
-                if (!await waitForUpdaterExit(updaterProcessId).ConfigureAwait(false))
-                {
-                    _completion.TrySetResult(false);
-                    return;
-                }
-                UpdateApplyPlan current = ReadAndValidatePlan(
-                    Path.Combine(plan.StagingRoot, "update-plan.json"),
-                    requireCurrentSource: false,
-                    targetAlreadyUpdated: true);
-                if (current != plan)
-                {
-                    _completion.TrySetResult(false);
-                    return;
-                }
-                string claimPath = plan.StagingRoot.TrimEnd(
-                    Path.DirectorySeparatorChar,
-                    Path.AltDirectorySeparatorChar) + ConfirmationLockSuffix;
-                FileStream? claim = null;
-                try
-                {
-                    if (File.Exists(claimPath))
-                    {
-                        RejectReparsePoint(claimPath);
-                    }
-                    claim = new FileStream(
-                        claimPath,
-                        FileMode.OpenOrCreate,
-                        FileAccess.ReadWrite,
-                        FileShare.None,
-                        bufferSize: 4096,
-                        FileOptions.WriteThrough);
-                    claim.SetLength(0);
-                    using (var writer = new StreamWriter(
-                               claim,
-                               Encoding.ASCII,
-                               bufferSize: 1024,
-                               leaveOpen: true))
-                    {
-                        writer.Write(plan.Token);
-                        writer.Flush();
-                    }
-                    claim.Flush(flushToDisk: true);
-                    if (!cleanupStage(plan))
-                    {
-                        _completion.TrySetResult(false);
-                        return;
-                    }
-                    if (plan.SmokeTest)
-                    {
-                        WriteJsonAtomically(
-                            Path.Combine(plan.TargetRoot, SmokeCompletionFileName),
-                            new SmokeCompletionEvidence(
-                                plan.Token,
-                                plan.TargetVersion,
-                                Environment.ProcessId,
-                                DateTimeOffset.UtcNow));
-                    }
-                    _completion.TrySetResult(true);
-                }
-                finally
-                {
-                    if (claim is not null)
-                    {
-                        claim.Dispose();
-                        try
-                        {
-                            File.Delete(claimPath);
-                        }
-                        catch (IOException)
-                        {
-                            // A regular stale lock file is recoverable because
-                            // the next process must acquire its OS handle anew.
-                        }
-                        catch (UnauthorizedAccessException)
-                        {
-                            // Keep the exact lock path for diagnostics.
-                        }
-                    }
-                }
-            }
-            catch (Exception exception)
-            {
-                try
-                {
-                    WriteActivationFailureEvidence(plan.StagingRoot, exception);
-                }
-                catch (Exception)
-                {
-                    // The activation result remains failed even when its
-                    // diagnostic directory cannot be written safely.
-                }
-                _completion.TrySetResult(false);
-            }
-        }
-    }
-
     private static void WriteJsonAtomically(string path, object value)
     {
         string temporary = path + $".tmp-{Environment.ProcessId}";
@@ -605,24 +383,6 @@ internal static class UpdateProcessCommand
         string Token,
         string TargetVersion,
         int ProcessId);
-
-    private sealed record SmokeCompletionEvidence(
-        string Token,
-        string TargetVersion,
-        int ProcessId,
-        DateTimeOffset ConfirmedAt);
-
-    private static void WriteActivationFailureEvidence(
-        string stageRoot,
-        Exception exception)
-    {
-        string path = stageRoot.TrimEnd(
-            Path.DirectorySeparatorChar,
-            Path.AltDirectorySeparatorChar) + ".activation-error.txt";
-        File.WriteAllText(
-            path,
-            $"[{DateTimeOffset.UtcNow:O}] {exception}{Environment.NewLine}");
-    }
 
     private static void CopyDirectory(string source, string destination)
     {
@@ -648,7 +408,7 @@ internal static class UpdateProcessCommand
         }
     }
 
-    private static void RejectReparsePointsRecursively(string root)
+    internal static void RejectReparsePointsRecursively(string root)
     {
         RejectReparsePoint(root);
         foreach (string path in Directory.EnumerateFileSystemEntries(
@@ -660,7 +420,7 @@ internal static class UpdateProcessCommand
         }
     }
 
-    private static void RejectReparsePoint(string path)
+    internal static void RejectReparsePoint(string path)
     {
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
         {

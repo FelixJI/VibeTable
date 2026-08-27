@@ -72,6 +72,7 @@ SELF_UPDATE_SMOKE_COMPLETION_FILE = ".self-update-smoke-complete"
 SELF_UPDATE_SMOKE_PROCESS_FILE = ".self-update-smoke-process.json"
 SELF_UPDATE_SMOKE_READINESS_DIR = "self-update-readiness"
 SHELL_READINESS_FILE = "vibetable-readiness.json"
+PENDING_UPDATE_ACTIVATION_POINTER = ".VibeTable.Next.update-pending.json"
 
 
 def release_archive_name(version: str) -> str:
@@ -1402,6 +1403,63 @@ def read_self_update_process_evidence(
     return process_id
 
 
+def wait_for_self_update_activation_pointer(
+    path: Path,
+    *,
+    target: Path,
+    stage: Path,
+    token: str,
+    updater_process_id: int,
+    timeout_seconds: float = 30,
+) -> None:
+    """Wait for the updater's durable prepared journal and validate its exact identity."""
+    expected_fields = {
+        "schemaVersion",
+        "state",
+        "targetRoot",
+        "stagingRoot",
+        "currentVersion",
+        "targetVersion",
+        "token",
+        "smokeTest",
+        "updaterProcessId",
+        "updaterStartedAtUtc",
+        "createdAtUtc",
+        "confirmedAt",
+    }
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if set(payload) != expected_fields:
+                raise BuildError("desktop self-update activation pointer fields are invalid")
+            if (
+                payload.get("schemaVersion") != 1
+                or payload.get("state") != "prepared"
+                or Path(payload.get("targetRoot", "")).resolve() != target.resolve()
+                or Path(payload.get("stagingRoot", "")).resolve() != stage.resolve()
+                or payload.get("currentVersion") != "1.0.0"
+                or payload.get("targetVersion") != "1.0.1"
+                or payload.get("token") != token
+                or payload.get("smokeTest") is not True
+                or payload.get("updaterProcessId") != updater_process_id
+                or payload.get("confirmedAt") is not None
+            ):
+                raise BuildError("desktop self-update activation pointer identity is invalid")
+            updater_started = datetime.fromisoformat(str(payload["updaterStartedAtUtc"]))
+            created_at = datetime.fromisoformat(str(payload["createdAtUtc"]))
+            if updater_started.utcoffset() is None or created_at.utcoffset() is None:
+                raise BuildError(
+                    "desktop self-update activation pointer timestamps require offsets"
+                )
+            return
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise BuildError("desktop self-update activation pointer was not persisted") from last_error
+
+
 def run_desktop_self_update_smoke(
     package_root: Path,
     smoke_root: Path,
@@ -1447,18 +1505,17 @@ def run_desktop_self_update_smoke(
     external_sentinel.parent.mkdir()
     external_sentinel.write_text("preserve-user-data", encoding="utf-8")
 
-    exited_parent = subprocess.Popen(
-        [sys.executable, "-c", "pass"],
+    blocking_parent = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
         cwd=root,
     )
-    exited_parent.wait(timeout=30)
     token = secrets.token_hex(32)
     plan = {
         "SchemaVersion": 1,
         "TargetRoot": str(target),
         "SourceRoot": str(source),
         "StagingRoot": str(stage),
-        "ParentProcessId": exited_parent.pid,
+        "ParentProcessId": blocking_parent.pid,
         "CurrentVersion": "1.0.0",
         "TargetVersion": "1.0.1",
         "Token": token,
@@ -1468,18 +1525,35 @@ def run_desktop_self_update_smoke(
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
     environment = os.environ.copy()
     environment[SELF_UPDATE_SMOKE_TOKEN_ENV] = token
+    applied: subprocess.Popen[bytes] | None = None
     try:
-        applied = subprocess.run(
+        applied = subprocess.Popen(
             [str(source / HOST_EXE_NAME), "--apply-update", str(plan_path)],
             cwd=source,
             env=environment,
-            check=False,
-            timeout=120,
         )
+        wait_for_self_update_activation_pointer(
+            root / PENDING_UPDATE_ACTIVATION_POINTER,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=applied.pid,
+        )
+        blocking_parent.terminate()
+        blocking_parent.wait(timeout=30)
+        applied_returncode = applied.wait(timeout=120)
     except (OSError, subprocess.SubprocessError) as exc:
         raise BuildError("desktop self-update smoke could not run the published host") from exc
-    if applied.returncode != 0:
-        raise BuildError(f"desktop self-update smoke updater exited with {applied.returncode}")
+    finally:
+        try:
+            if blocking_parent.poll() is None:
+                blocking_parent.terminate()
+                blocking_parent.wait(timeout=30)
+        finally:
+            if applied is not None and applied.poll() is None:
+                terminate_windows_process_tree(applied.pid)
+    if applied_returncode != 0:
+        raise BuildError(f"desktop self-update smoke updater exited with {applied_returncode}")
 
     completion = target / SELF_UPDATE_SMOKE_COMPLETION_FILE
     readiness_root = root / SELF_UPDATE_SMOKE_READINESS_DIR
@@ -1506,6 +1580,8 @@ def run_desktop_self_update_smoke(
         raise
     if stage.exists():
         raise BuildError("desktop self-update smoke did not clean its staging directory")
+    if (root / PENDING_UPDATE_ACTIVATION_POINTER).exists():
+        raise BuildError("desktop self-update smoke retained its activation pointer")
     identity = json.loads((target / "release.json").read_text(encoding="utf-8"))
     if identity.get("version") != "1.0.1":
         raise BuildError("desktop self-update smoke retained the old package identity")

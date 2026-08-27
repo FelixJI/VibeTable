@@ -372,6 +372,7 @@ public sealed class ReleaseUpdateServiceTests
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
         string? previous = Environment.GetEnvironmentVariable(
             UpdateProcessCommand.SmokeTokenEnvironmentVariable);
 
@@ -450,6 +451,7 @@ public sealed class ReleaseUpdateServiceTests
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
         string? previous = Environment.GetEnvironmentVariable(
             UpdateProcessCommand.SmokeTokenEnvironmentVariable);
 
@@ -472,9 +474,11 @@ public sealed class ReleaseUpdateServiceTests
                 runningRoot: target));
             Assert.IsNotNull(gate);
 
-            gate.ConfirmShellReady();
-            gate.ConfirmShellReady();
-            Assert.IsTrue(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+            gate.ConfirmActivation();
+            gate.ConfirmActivation();
+            Assert.IsTrue(
+                await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)),
+                ReadActivationFailure(stage));
 
             Assert.IsFalse(Directory.Exists(stage));
             using System.Text.Json.JsonDocument completion =
@@ -530,6 +534,7 @@ public sealed class ReleaseUpdateServiceTests
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
         string? previous = Environment.GetEnvironmentVariable(
             UpdateProcessCommand.SmokeTokenEnvironmentVariable);
 
@@ -553,7 +558,7 @@ public sealed class ReleaseUpdateServiceTests
             Assert.IsNotNull(gate);
 
             CreatePackageTree(target, "1.0.0", "changed");
-            gate.ConfirmShellReady();
+            gate.ConfirmActivation();
 
             Assert.IsFalse(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.IsTrue(Directory.Exists(stage));
@@ -594,6 +599,7 @@ public sealed class ReleaseUpdateServiceTests
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
         string? previous = Environment.GetEnvironmentVariable(
             UpdateProcessCommand.SmokeTokenEnvironmentVariable);
         using var cleanupEntered = new ManualResetEventSlim();
@@ -627,12 +633,12 @@ public sealed class ReleaseUpdateServiceTests
                 }));
             Assert.IsNotNull(gate);
 
-            Task confirmationCall = Task.Run(gate.ConfirmShellReady);
+            Task confirmationCall = Task.Run(gate.ConfirmActivation);
             try
             {
                 Assert.IsTrue(cleanupEntered.Wait(TimeSpan.FromSeconds(2)));
                 await confirmationCall.WaitAsync(TimeSpan.FromSeconds(1));
-                gate.ConfirmShellReady();
+                gate.ConfirmActivation();
                 Assert.IsFalse(gate.Completion.IsCompleted);
                 Assert.AreEqual(0, Volatile.Read(ref cleanupCalls));
             }
@@ -670,6 +676,7 @@ public sealed class ReleaseUpdateServiceTests
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
         string? previous = Environment.GetEnvironmentVariable(
             UpdateProcessCommand.SmokeTokenEnvironmentVariable);
         string[] arguments =
@@ -695,7 +702,7 @@ public sealed class ReleaseUpdateServiceTests
                 waitForUpdaterExit: _ => Task.FromResult(true),
                 cleanupStage: _ => false));
             Assert.IsNotNull(first);
-            first.ConfirmShellReady();
+            first.ConfirmActivation();
             Assert.IsFalse(await first.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.IsTrue(Directory.Exists(stage));
 
@@ -704,7 +711,7 @@ public sealed class ReleaseUpdateServiceTests
                 out IUpdateActivationGate? retry,
                 runningRoot: target));
             Assert.IsNotNull(retry);
-            retry.ConfirmShellReady();
+            retry.ConfirmActivation();
             Assert.IsTrue(await retry.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.IsFalse(Directory.Exists(stage));
         }
@@ -736,6 +743,7 @@ public sealed class ReleaseUpdateServiceTests
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
         string? previous = Environment.GetEnvironmentVariable(
             UpdateProcessCommand.SmokeTokenEnvironmentVariable);
 
@@ -755,7 +763,7 @@ public sealed class ReleaseUpdateServiceTests
                 runningRoot: target,
                 waitForUpdaterExit: _ => Task.FromResult(false)));
             Assert.IsNotNull(gate);
-            gate.ConfirmShellReady();
+            gate.ConfirmActivation();
 
             Assert.IsFalse(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.IsTrue(Directory.Exists(stage));
@@ -789,6 +797,7 @@ public sealed class ReleaseUpdateServiceTests
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             System.Text.Json.JsonSerializer.Serialize(plan));
+        PublishActivation(plan, int.MaxValue);
         string? previous = Environment.GetEnvironmentVariable(
             UpdateProcessCommand.SmokeTokenEnvironmentVariable);
         string[] arguments =
@@ -812,8 +821,8 @@ public sealed class ReleaseUpdateServiceTests
             Assert.IsNotNull(second);
 
             await Task.WhenAll(
-                Task.Run(first.ConfirmShellReady),
-                Task.Run(second.ConfirmShellReady));
+                Task.Run(first.ConfirmActivation),
+                Task.Run(second.ConfirmActivation));
             bool[] results = await Task.WhenAll(
                 first.Completion.WaitAsync(TimeSpan.FromSeconds(5)),
                 second.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -960,6 +969,23 @@ public sealed class ReleaseUpdateServiceTests
 
     private static string ReleaseJson(string version) =>
         $$"""{"product":"VibeTable","version":"{{version}}","platform":"windows","architecture":"x64"}""";
+
+    private static void PublishActivation(UpdateApplyPlan plan, int updaterProcessId) =>
+        PendingUpdateActivationJournal.Publish(
+            plan,
+            new UpdateProcessIdentity(
+                updaterProcessId,
+                new DateTimeOffset(2026, 8, 27, 4, 0, 0, TimeSpan.Zero)));
+
+    private static string ReadActivationFailure(string stageRoot)
+    {
+        string path = stageRoot.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar) + ".activation-error.txt";
+        return File.Exists(path)
+            ? File.ReadAllText(path)
+            : "No activation failure evidence was written.";
+    }
 
     private string Root()
     {
