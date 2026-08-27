@@ -64,7 +64,7 @@ public partial class MainWindow : Window
     private readonly string _activityRootBase;
     private readonly MainWindowViewModel _viewModel;
     private readonly TestModeReadinessWriter? _readiness;
-    private readonly IUpdateActivationGate? _updateActivation;
+    private readonly IUpdateActivationSettlement? _updateActivation;
     private readonly UpdateActivationWorkspaceHealthGate? _updateWorkspaceHealth;
     private readonly string? _e2eControlsDir;
     private readonly AppPreferencesService _appPreferencesService;
@@ -103,7 +103,7 @@ public partial class MainWindow : Window
     {
     }
 
-    internal MainWindow(IUpdateActivationGate? updateActivation)
+    internal MainWindow(IUpdateActivationSettlement? updateActivation)
     {
         _updateActivation = updateActivation;
         InitializeComponent();
@@ -930,8 +930,8 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException) when (_session.IsCancellationRequested)
         {
-            // Window shutdown owns cancellation; the pending activation stays
-            // prepared and may be retried on the next launch.
+            // The settlement receives Failed with CancellationToken.None before
+            // this cancellation is rethrown, so rollback remains durable.
         }
         catch (Exception exception)
         {

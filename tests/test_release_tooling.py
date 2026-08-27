@@ -349,6 +349,90 @@ def test_self_update_activation_pointer_requires_exact_prepared_identity(
             timeout_seconds=0.1,
         )
 
+    payload.pop("unexpected")
+    for invalid_schema_version in (True, 3):
+        payload["schemaVersion"] = invalid_schema_version
+        pointer.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(build_next.BuildError, match="pointer fields are invalid"):
+            build_next.wait_for_self_update_activation_pointer(
+                pointer,
+                target=target,
+                stage=stage,
+                token=token,
+                updater_process_id=321,
+                timeout_seconds=0.1,
+            )
+
+
+def test_self_update_activation_pointer_accepts_exact_schema_v2_prepared_identity(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "VibeTable.Next"
+    stage = tmp_path / ".VibeTable.Next.update-smoke"
+    pointer = tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER
+    token = "b" * 64
+    payload = {
+        "schemaVersion": 2,
+        "state": "prepared",
+        "targetRoot": str(target),
+        "stagingRoot": str(stage),
+        "currentVersion": "1.0.0",
+        "targetVersion": "1.0.1",
+        "token": token,
+        "smokeTest": True,
+        "updaterProcessId": 654,
+        "updaterStartedAtUtc": "2026-08-27T04:00:00+00:00",
+        "createdAtUtc": "2026-08-27T04:00:01+00:00",
+        "confirmedAt": None,
+        "watchdogProcessId": None,
+        "watchdogStartedAtUtc": None,
+        "ownedGroupId": None,
+        "launchNonce": None,
+        "updatedProcessId": None,
+        "updatedStartedAtUtc": None,
+        "failureCode": None,
+        "rollbackRequestedAtUtc": None,
+        "ownedGroupQuiescedAtUtc": None,
+        "workerLaunchNonce": None,
+        "workerProcessId": None,
+        "workerStartedAtUtc": None,
+        "workerReplacementCount": 0,
+        "ownedEntryLedger": [],
+        "rollbackAttempt": None,
+        "rollbackErrorCode": None,
+        "rolledBackAtUtc": None,
+    }
+    pointer.write_text(json.dumps(payload), encoding="utf-8")
+
+    build_next.wait_for_self_update_activation_pointer(
+        pointer,
+        target=target,
+        stage=stage,
+        token=token,
+        updater_process_id=654,
+        timeout_seconds=0.1,
+    )
+
+    invalid_mutations = (
+        ("watchdogProcessId", 655, "pointer identity is invalid"),
+        ("workerReplacementCount", False, "pointer identity is invalid"),
+        ("workerReplacementCount", 0.0, "pointer identity is invalid"),
+        ("state", "launchingUpdatedApp", "pointer identity is invalid"),
+        ("unexpected", True, "pointer fields are invalid"),
+    )
+    for field, value, error in invalid_mutations:
+        invalid = {**payload, field: value}
+        pointer.write_text(json.dumps(invalid), encoding="utf-8")
+        with pytest.raises(build_next.BuildError, match=error):
+            build_next.wait_for_self_update_activation_pointer(
+                pointer,
+                target=target,
+                stage=stage,
+                token=token,
+                updater_process_id=654,
+                timeout_seconds=0.1,
+            )
+
 
 def test_self_update_activation_rejects_cleanup_before_shell_readiness(
     tmp_path: Path,

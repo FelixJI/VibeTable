@@ -49,9 +49,30 @@ public partial class App : Application
             Shutdown(updateExitCode);
             return;
         }
-        _ = Services.UpdateProcessCommand.TryCreateActivationGate(
-            e.Args,
-            out Services.IUpdateActivationGate? updateActivation);
+        Services.UpdateActivationStartupResolution updateStartup =
+            Services.PendingUpdateActivationJournal.ResolveStartup(
+                e.Args,
+                AppContext.BaseDirectory,
+                Services.PendingUpdateActivationJournal.CurrentProcessIdentity(),
+                new Services.WpfUpdateHostLifetimeAdapter(this),
+                Services.PendingUpdateActivationJournal.WaitForUpdaterExitAsync,
+                Services.UpdateProcessCommand.TryCleanupStage);
+        if (updateStartup.Disposition ==
+            Services.UpdateActivationStartupDisposition.Blocked)
+        {
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(
+                    Services.UpdateProcessCommand.SmokeTokenEnvironmentVariable)))
+            {
+                MessageBox.Show(
+                    "检测到未完成或无效的更新恢复事务，已阻止普通启动。",
+                    "VibeTable 更新恢复",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            Shutdown(2);
+            return;
+        }
+        Services.IUpdateActivationSettlement? updateActivation = updateStartup.Settlement;
         _ = SetCurrentProcessExplicitAppUserModelID(
             ApplicationUserModelId);
         base.OnStartup(e);
@@ -121,17 +142,6 @@ public partial class App : Application
             window.Hide();
         }
         window.ReportTestModeStartupVisibility();
-        if (updateActivation is { ExitAfterConfirmation: true })
-        {
-            _ = ShutdownAfterUpdateActivationAsync(updateActivation);
-        }
-    }
-
-    private async Task ShutdownAfterUpdateActivationAsync(
-        Services.IUpdateActivationGate updateActivation)
-    {
-        bool activated = await updateActivation.Completion.ConfigureAwait(false);
-        await Dispatcher.InvokeAsync(() => Shutdown(activated ? 0 : 1));
     }
 
     private static void InstallCrashDiagnostics()

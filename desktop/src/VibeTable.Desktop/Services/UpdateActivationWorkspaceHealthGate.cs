@@ -71,10 +71,10 @@ internal sealed class UpdateActivationWorkspaceHealthGate
     }
 
     public async Task<UpdateWorkspaceHealthProbeReceipt> ConfirmAsync(
-        IUpdateActivationGate activation,
+        IUpdateActivationSettlement settlement,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(activation);
+        ArgumentNullException.ThrowIfNull(settlement);
         bool opened = false;
         Exception? failure = null;
         UpdateWorkspaceHealthProbeReceipt? receipt = null;
@@ -134,7 +134,7 @@ internal sealed class UpdateActivationWorkspaceHealthGate
 
         if (failure is not null)
         {
-            ReportFailureAndFailActivation(activation, failure);
+            await ReportFailureAndSettleAsync(settlement, failure).ConfigureAwait(false);
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
@@ -144,15 +144,17 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         }
         catch (Exception exception)
         {
-            ReportFailureAndFailActivation(activation, exception);
+            await ReportFailureAndSettleAsync(settlement, exception).ConfigureAwait(false);
             throw;
         }
-        activation.ConfirmActivation();
+        await settlement.CompleteHealthCheckAsync(
+            new UpdateActivationHealth.Healthy(receipt!),
+            cancellationToken).ConfigureAwait(false);
         return receipt!;
     }
 
-    private void ReportFailureAndFailActivation(
-        IUpdateActivationGate activation,
+    private async Task ReportFailureAndSettleAsync(
+        IUpdateActivationSettlement settlement,
         Exception failure)
     {
         try
@@ -164,7 +166,10 @@ internal sealed class UpdateActivationWorkspaceHealthGate
             // Diagnostics cannot replace the probe result or leave the
             // smoke gate waiting indefinitely.
         }
-        activation.FailActivation();
+        await settlement.CompleteHealthCheckAsync(
+            new UpdateActivationHealth.Failed(
+                UpdateActivationFailureCode.WorkspaceHealthProbeFailed),
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task<int> ReadTableCountAsync(

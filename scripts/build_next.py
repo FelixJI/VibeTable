@@ -73,6 +73,60 @@ SELF_UPDATE_SMOKE_PROCESS_FILE = ".self-update-smoke-process.json"
 SELF_UPDATE_SMOKE_READINESS_DIR = "self-update-readiness"
 SHELL_READINESS_FILE = "vibetable-readiness.json"
 PENDING_UPDATE_ACTIVATION_POINTER = ".VibeTable.Next.update-pending.json"
+_SELF_UPDATE_ACTIVATION_POINTER_V1_FIELDS = frozenset(
+    {
+        "schemaVersion",
+        "state",
+        "targetRoot",
+        "stagingRoot",
+        "currentVersion",
+        "targetVersion",
+        "token",
+        "smokeTest",
+        "updaterProcessId",
+        "updaterStartedAtUtc",
+        "createdAtUtc",
+        "confirmedAt",
+    }
+)
+_SELF_UPDATE_ACTIVATION_POINTER_V2_FIELDS = _SELF_UPDATE_ACTIVATION_POINTER_V1_FIELDS | {
+    "watchdogProcessId",
+    "watchdogStartedAtUtc",
+    "ownedGroupId",
+    "launchNonce",
+    "updatedProcessId",
+    "updatedStartedAtUtc",
+    "failureCode",
+    "rollbackRequestedAtUtc",
+    "ownedGroupQuiescedAtUtc",
+    "workerLaunchNonce",
+    "workerProcessId",
+    "workerStartedAtUtc",
+    "workerReplacementCount",
+    "ownedEntryLedger",
+    "rollbackAttempt",
+    "rollbackErrorCode",
+    "rolledBackAtUtc",
+}
+_SELF_UPDATE_ACTIVATION_POINTER_V2_PREPARED_NULL_FIELDS = frozenset(
+    {
+        "watchdogProcessId",
+        "watchdogStartedAtUtc",
+        "ownedGroupId",
+        "launchNonce",
+        "updatedProcessId",
+        "updatedStartedAtUtc",
+        "failureCode",
+        "rollbackRequestedAtUtc",
+        "ownedGroupQuiescedAtUtc",
+        "workerLaunchNonce",
+        "workerProcessId",
+        "workerStartedAtUtc",
+        "rollbackAttempt",
+        "rollbackErrorCode",
+        "rolledBackAtUtc",
+    }
+)
 
 
 def release_archive_name(version: str) -> str:
@@ -1435,38 +1489,44 @@ def wait_for_self_update_activation_pointer(
     timeout_seconds: float = 30,
 ) -> None:
     """Wait for the updater's durable prepared journal and validate its exact identity."""
-    expected_fields = {
-        "schemaVersion",
-        "state",
-        "targetRoot",
-        "stagingRoot",
-        "currentVersion",
-        "targetVersion",
-        "token",
-        "smokeTest",
-        "updaterProcessId",
-        "updaterStartedAtUtc",
-        "createdAtUtc",
-        "confirmedAt",
-    }
     deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if set(payload) != expected_fields:
+            schema_version = payload.get("schemaVersion")
+            expected_fields = (
+                {
+                    1: _SELF_UPDATE_ACTIVATION_POINTER_V1_FIELDS,
+                    2: _SELF_UPDATE_ACTIVATION_POINTER_V2_FIELDS,
+                }.get(schema_version)
+                if type(schema_version) is int
+                else None
+            )
+            if expected_fields is None or set(payload) != expected_fields:
                 raise BuildError("desktop self-update activation pointer fields are invalid")
             if (
-                payload.get("schemaVersion") != 1
-                or payload.get("state") != "prepared"
+                payload.get("state") != "prepared"
                 or Path(payload.get("targetRoot", "")).resolve() != target.resolve()
                 or Path(payload.get("stagingRoot", "")).resolve() != stage.resolve()
                 or payload.get("currentVersion") != "1.0.0"
                 or payload.get("targetVersion") != "1.0.1"
                 or payload.get("token") != token
                 or payload.get("smokeTest") is not True
+                or type(payload.get("updaterProcessId")) is not int
                 or payload.get("updaterProcessId") != updater_process_id
                 or payload.get("confirmedAt") is not None
+            ):
+                raise BuildError("desktop self-update activation pointer identity is invalid")
+            if schema_version == 2 and (
+                any(
+                    payload.get(field) is not None
+                    for field in _SELF_UPDATE_ACTIVATION_POINTER_V2_PREPARED_NULL_FIELDS
+                )
+                or type(payload.get("workerReplacementCount")) is not int
+                or payload.get("workerReplacementCount") != 0
+                or type(payload.get("ownedEntryLedger")) is not list
+                or payload.get("ownedEntryLedger") != []
             ):
                 raise BuildError("desktop self-update activation pointer identity is invalid")
             updater_started = datetime.fromisoformat(str(payload["updaterStartedAtUtc"]))

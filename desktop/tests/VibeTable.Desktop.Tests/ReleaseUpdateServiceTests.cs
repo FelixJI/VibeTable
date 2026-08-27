@@ -315,6 +315,35 @@ public sealed class ReleaseUpdateServiceTests
     }
 
     [TestMethod]
+    public void ApplyRejectsIncompleteCurrentPackageBeforeCreatingBackup()
+    {
+        string target = CreateInstalledPackage("1.0.0");
+        Directory.Delete(Path.Combine(target, "resources"), recursive: true);
+        string stage = Path.Combine(
+            Path.GetDirectoryName(target)!,
+            ".VibeTable.Next.update-incomplete-current");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            new string('f', 64));
+
+        ReleaseUpdateException exception = Assert.ThrowsExactly<ReleaseUpdateException>(() =>
+            UpdateProcessCommand.ApplyPackageOwnedFiles(plan));
+
+        Assert.AreEqual("UPDATE_CURRENT_PACKAGE_INVALID", exception.Code);
+        Assert.IsFalse(Directory.Exists(Path.Combine(stage, "backup")));
+        Assert.AreEqual("old", File.ReadAllText(Path.Combine(target, "VibeTable.Next.exe")));
+        Assert.AreEqual("1.0.0", InstalledPackageIdentity.Read(target).Version);
+    }
+
+    [TestMethod]
     public void CleanupValidationRequiresTargetToContainTheNewVersion()
     {
         string container = Root();

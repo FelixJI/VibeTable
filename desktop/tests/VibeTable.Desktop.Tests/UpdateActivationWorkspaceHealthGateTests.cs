@@ -26,9 +26,9 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
             return Task.FromResult(OpenReadOnly(workspaceId, epoch));
         };
         var reader = new RecordingSchemaReader(4);
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         bool readyReported = false;
-        activation.BeforeConfirm = () => Assert.IsTrue(readyReported);
+        activation.BeforeHealthy = () => Assert.IsTrue(readyReported);
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
             fixture.Session,
@@ -47,8 +47,8 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         Assert.AreEqual(WorkspaceOpenMode.ReadOnly, fixture.Session.LastOpenMode);
         Assert.AreEqual(1, fixture.Session.CloseCount);
         Assert.AreEqual(OpenReadOnly(recent.WorkspaceId, epoch), reader.Session);
-        Assert.AreEqual(1, activation.ConfirmationCount);
-        Assert.AreEqual(0, activation.FailureCount);
+        Assert.AreEqual(1, activation.HealthyCount);
+        Assert.AreEqual(0, activation.FailedCount);
         Assert.AreNotEqual(older.WorkspaceId, receipt.WorkspaceId);
     }
 
@@ -58,7 +58,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         using var fixture = new WorkspaceRegistryTopologyTestContext(
             "vibetable-update-health-empty-");
         var reader = new RecordingSchemaReader(0);
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
             fixture.Session,
@@ -74,8 +74,8 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
             receipt.Status);
         Assert.IsNull(fixture.Session.LastOpen);
         Assert.IsNull(reader.Session);
-        Assert.AreEqual(1, activation.ConfirmationCount);
-        Assert.AreEqual(0, activation.FailureCount);
+        Assert.AreEqual(1, activation.HealthyCount);
+        Assert.AreEqual(0, activation.FailedCount);
     }
 
     [TestMethod]
@@ -86,7 +86,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         WorkspaceRegistryEntryV2 workspace = fixture.AddDirectWorkspace("Busy");
         fixture.Session.CurrentSession = OpenWritable(workspace.WorkspaceId, 11);
         var reader = new RecordingSchemaReader(0);
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
             fixture.Session,
@@ -102,8 +102,8 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         Assert.IsNull(fixture.Session.LastOpen);
         Assert.AreEqual(0, fixture.Session.CloseCount);
         Assert.IsNull(reader.Session);
-        Assert.AreEqual(0, activation.ConfirmationCount);
-        Assert.AreEqual(1, activation.FailureCount);
+        Assert.AreEqual(0, activation.HealthyCount);
+        Assert.AreEqual(1, activation.FailedCount);
     }
 
     [TestMethod]
@@ -116,9 +116,9 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
             Task.FromResult(OpenReadOnly(workspaceId, 19));
         var expected = new InvalidOperationException("schema unavailable");
         var reader = new RecordingSchemaReader(expected);
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         bool failureReported = false;
-        activation.BeforeFail = () => Assert.IsTrue(failureReported);
+        activation.BeforeFailed = () => Assert.IsTrue(failureReported);
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
             fixture.Session,
@@ -137,8 +137,8 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
 
         Assert.AreSame(expected, error);
         Assert.AreEqual(1, fixture.Session.CloseCount);
-        Assert.AreEqual(0, activation.ConfirmationCount);
-        Assert.AreEqual(1, activation.FailureCount);
+        Assert.AreEqual(0, activation.HealthyCount);
+        Assert.AreEqual(1, activation.FailedCount);
     }
 
     [TestMethod]
@@ -153,7 +153,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         var closeFailure = new IOException("runtime did not stop");
         fixture.Session.Close = (_, _) =>
             Task.FromException<WorkspaceSessionV2>(closeFailure);
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         Exception? reportedFailure = null;
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
@@ -170,8 +170,8 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
             error.InnerExceptions);
         Assert.AreSame(error, reportedFailure);
         Assert.AreEqual(1, fixture.Session.CloseCount);
-        Assert.AreEqual(0, activation.ConfirmationCount);
-        Assert.AreEqual(1, activation.FailureCount);
+        Assert.AreEqual(0, activation.HealthyCount);
+        Assert.AreEqual(1, activation.FailedCount);
     }
 
     [TestMethod]
@@ -183,7 +183,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         fixture.Session.Open = (workspaceId, _, _, _) =>
             Task.FromResult(OpenWritable(workspaceId, 23));
         var reader = new RecordingSchemaReader(0);
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
             fixture.Session,
@@ -198,7 +198,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         Assert.AreEqual("update.workspace_probe_session_invalid", error.Code);
         Assert.IsNull(reader.Session);
         Assert.AreEqual(1, fixture.Session.CloseCount);
-        Assert.AreEqual(1, activation.FailureCount);
+        Assert.AreEqual(1, activation.FailedCount);
     }
 
     [TestMethod]
@@ -210,7 +210,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         fixture.Session.Open = (workspaceId, _, _, _) =>
             Task.FromResult(OpenReadOnly(workspaceId, 29));
         var reader = new RecordingSchemaReader();
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
             fixture.Session,
@@ -224,7 +224,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
 
         Assert.AreEqual("update.workspace_probe_timeout", error.Code);
         Assert.AreEqual(1, fixture.Session.CloseCount);
-        Assert.AreEqual(1, activation.FailureCount);
+        Assert.AreEqual(1, activation.FailedCount);
     }
 
     [TestMethod]
@@ -236,7 +236,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         fixture.Session.Open = (workspaceId, _, _, _) =>
             Task.FromResult(OpenReadOnly(workspaceId, 31));
         var reader = new RecordingSchemaReader();
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
             fixture.Session,
@@ -249,7 +249,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
 
         Assert.AreEqual(1, fixture.Session.CloseCount);
         Assert.IsFalse(fixture.Session.LastCloseTokenCanBeCanceled);
-        Assert.AreEqual(1, activation.FailureCount);
+        Assert.AreEqual(1, activation.FailedCount);
     }
 
     [TestMethod]
@@ -257,7 +257,7 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
     {
         using var fixture = new WorkspaceRegistryTopologyTestContext(
             "vibetable-update-health-readiness-");
-        var activation = new RecordingActivationGate();
+        var activation = new RecordingSettlement();
         var expected = new IOException("readiness unavailable");
         var gate = new UpdateActivationWorkspaceHealthGate(
             fixture.Registry,
@@ -270,8 +270,8 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
             gate.ConfirmAsync(activation, CancellationToken.None));
 
         Assert.AreSame(expected, error);
-        Assert.AreEqual(0, activation.ConfirmationCount);
-        Assert.AreEqual(1, activation.FailureCount);
+        Assert.AreEqual(0, activation.HealthyCount);
+        Assert.AreEqual(1, activation.FailedCount);
     }
 
     private static WorkspaceSessionV2 OpenReadOnly(Guid workspaceId, ulong epoch) => new()
@@ -334,24 +334,28 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         }
     }
 
-    private sealed class RecordingActivationGate : IUpdateActivationGate
+    private sealed class RecordingSettlement : IUpdateActivationSettlement
     {
-        public bool ExitAfterConfirmation => false;
-        public Task<bool> Completion => Task.FromResult(false);
-        public int ConfirmationCount { get; private set; }
-        public int FailureCount { get; private set; }
-        public Action? BeforeConfirm { get; set; }
-        public Action? BeforeFail { get; set; }
+        public int HealthyCount { get; private set; }
+        public int FailedCount { get; private set; }
+        public Action? BeforeHealthy { get; set; }
+        public Action? BeforeFailed { get; set; }
 
-        public void ConfirmActivation()
+        public Task CompleteHealthCheckAsync(
+            UpdateActivationHealth health,
+            CancellationToken cancellationToken)
         {
-            BeforeConfirm?.Invoke();
-            ConfirmationCount++;
-        }
-        public void FailActivation()
-        {
-            BeforeFail?.Invoke();
-            FailureCount++;
+            if (health is UpdateActivationHealth.Healthy)
+            {
+                BeforeHealthy?.Invoke();
+                HealthyCount++;
+            }
+            else
+            {
+                BeforeFailed?.Invoke();
+                FailedCount++;
+            }
+            return Task.CompletedTask;
         }
     }
 }
