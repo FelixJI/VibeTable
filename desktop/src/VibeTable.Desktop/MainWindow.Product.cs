@@ -875,7 +875,7 @@ public partial class MainWindow : Window
             && _router.IsReady)
         {
             _readiness?.WriteShellReady();
-            _updateActivation?.ConfirmShellReady();
+            _updateActivation?.ConfirmActivation();
         }
     }
 
