@@ -10,12 +10,27 @@ using System.Threading.Tasks;
 
 namespace VibeTable.Desktop.Services;
 
+internal interface IUpdateActivationGate
+{
+    bool ExitAfterConfirmation { get; }
+
+    Task<bool> Completion { get; }
+
+    void ConfirmShellReady();
+}
+
 internal static class UpdateProcessCommand
 {
     internal const string SmokeTokenEnvironmentVariable =
         "VIBETABLE_SELF_UPDATE_SMOKE_TOKEN";
     internal const string SmokeCompletionFileName =
         ".self-update-smoke-complete";
+    internal const string SmokeProcessFileName =
+        ".self-update-smoke-process.json";
+    private static readonly JsonSerializerOptions WebJson =
+        new(JsonSerializerDefaults.Web);
+    private static readonly Encoding Utf8NoBom =
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private static readonly string[] OwnedRootEntries =
     [
         "VibeTable.Next.exe",
@@ -53,10 +68,20 @@ internal static class UpdateProcessCommand
         return true;
     }
 
-    public static bool TryScheduleCleanup(IReadOnlyList<string> arguments)
+    internal static bool TryCreateActivationGate(
+        IReadOnlyList<string> arguments,
+        out IUpdateActivationGate? gate,
+        string? runningRoot = null,
+        Func<int, Task<bool>>? waitForUpdaterExit = null,
+        Func<UpdateApplyPlan, bool>? cleanupStage = null)
     {
-        if (!TryParseCleanup(arguments, out string? stageRoot, out int updaterProcessId,
-                out string? token, out bool smokeArgument))
+        gate = null;
+        if (!TryParseCleanup(
+                arguments,
+                out string? stageRoot,
+                out int updaterProcessId,
+                out string? token,
+                out bool smokeArgument))
         {
             return false;
         }
@@ -67,28 +92,24 @@ internal static class UpdateProcessCommand
                 planPath,
                 requireCurrentSource: false,
                 targetAlreadyUpdated: true);
-            if (!PathsEqual(plan.TargetRoot, AppContext.BaseDirectory)
+            if (!PathsEqual(plan.TargetRoot, runningRoot ?? AppContext.BaseDirectory)
                 || !FixedTimeTokenEquals(plan.Token, token!)
                 || plan.SmokeTest != smokeArgument)
             {
                 return false;
             }
-            if (plan.SmokeTest)
-            {
-                CleanupAfterUpdaterExit(plan, updaterProcessId);
-                File.WriteAllText(
-                    Path.Combine(plan.TargetRoot, SmokeCompletionFileName),
-                    plan.Token,
-                    Encoding.ASCII);
-                return true;
-            }
-            _ = Task.Run(() => CleanupAfterUpdaterExit(plan, updaterProcessId));
+            gate = new PendingUpdateActivationGate(
+                plan,
+                updaterProcessId,
+                waitForUpdaterExit ?? WaitForUpdaterExitAsync,
+                cleanupStage ?? TryCleanupStage);
+            return true;
         }
         catch (Exception)
         {
-            // A retained update directory is safer than deleting an unverified path.
+            // An invalid activation must retain the exact staging directory.
+            return false;
         }
-        return false;
     }
 
     internal static UpdateApplyPlan ReadAndValidatePlan(
@@ -290,6 +311,13 @@ internal static class UpdateProcessCommand
     private static void StartUpdatedApplication(UpdateApplyPlan plan)
     {
         string executable = Path.Combine(plan.TargetRoot, "VibeTable.Next.exe");
+        string? smokeReadinessRoot = plan.SmokeTest
+            ? Path.Combine(
+                Directory.GetParent(plan.StagingRoot.TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar))!.FullName,
+                "self-update-readiness")
+            : null;
         var start = new ProcessStartInfo
         {
             FileName = executable,
@@ -305,6 +333,9 @@ internal static class UpdateProcessCommand
         if (plan.SmokeTest)
         {
             start.ArgumentList.Add("--self-update-smoke");
+            start.ArgumentList.Add("--test-mode");
+            start.ArgumentList.Add("--readiness-dir");
+            start.ArgumentList.Add(smokeReadinessRoot!);
         }
         using Process? process = Process.Start(start);
         if (process is null)
@@ -312,6 +343,31 @@ internal static class UpdateProcessCommand
             throw new ReleaseUpdateException(
                 "更新已写入，但无法重新启动 VibeTable。",
                 "UPDATE_RESTART_FAILED");
+        }
+        if (plan.SmokeTest)
+        {
+            try
+            {
+                Directory.CreateDirectory(smokeReadinessRoot!);
+                WriteJsonAtomically(
+                    Path.Combine(smokeReadinessRoot!, SmokeProcessFileName),
+                    new SmokeProcessEvidence(
+                        plan.Token,
+                        plan.TargetVersion,
+                        process.Id));
+            }
+            catch
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception)
+                {
+                    // Preserve the original evidence-write failure.
+                }
+                throw;
+            }
         }
     }
 
@@ -326,46 +382,246 @@ internal static class UpdateProcessCommand
         updaterProcessId = 0;
         token = null;
         smokeTest = false;
-        if (arguments.Count is not (6 or 7)
-            || arguments[0] != "--cleanup-update"
-            || arguments[2] != "--updater-pid"
-            || arguments[4] != "--update-token"
-            || (arguments.Count == 7 && arguments[6] != "--self-update-smoke")
-            || !int.TryParse(arguments[3], out updaterProcessId)
-            || updaterProcessId <= 0)
+        string? updaterProcessIdText = null;
+        for (int index = 0; index < arguments.Count; index++)
+        {
+            string argument = arguments[index];
+            switch (argument)
+            {
+                case "--cleanup-update":
+                    if (stageRoot is not null || index + 1 >= arguments.Count)
+                    {
+                        return false;
+                    }
+                    stageRoot = arguments[++index];
+                    break;
+                case "--updater-pid":
+                    if (updaterProcessIdText is not null || index + 1 >= arguments.Count)
+                    {
+                        return false;
+                    }
+                    updaterProcessIdText = arguments[++index];
+                    break;
+                case "--update-token":
+                    if (token is not null || index + 1 >= arguments.Count)
+                    {
+                        return false;
+                    }
+                    token = arguments[++index];
+                    break;
+                case "--self-update-smoke":
+                    if (smokeTest)
+                    {
+                        return false;
+                    }
+                    smokeTest = true;
+                    break;
+            }
+        }
+        return stageRoot is not null
+            && token is not null
+            && int.TryParse(updaterProcessIdText, out updaterProcessId)
+            && updaterProcessId > 0;
+    }
+
+    private static async Task<bool> WaitForUpdaterExitAsync(int updaterProcessId)
+    {
+        if (updaterProcessId == Environment.ProcessId)
         {
             return false;
         }
-        stageRoot = arguments[1];
-        token = arguments[5];
-        smokeTest = arguments.Count == 7;
-        return true;
-    }
-
-    private static void CleanupAfterUpdaterExit(UpdateApplyPlan plan, int updaterProcessId)
-    {
         try
         {
             using Process updater = Process.GetProcessById(updaterProcessId);
-            if (!updater.WaitForExit((int)TimeSpan.FromMinutes(2).TotalMilliseconds)) return;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            await updater.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            return true;
         }
         catch (ArgumentException)
         {
             // The updater already exited.
+            return true;
         }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryCleanupStage(UpdateApplyPlan plan)
+    {
         try
         {
             RejectReparsePointsRecursively(plan.StagingRoot);
             Directory.Delete(plan.StagingRoot, recursive: true);
+            return true;
         }
         catch (IOException)
         {
-            // Keep the exact staging directory for the next diagnostic/cleanup pass.
+            return false;
         }
         catch (UnauthorizedAccessException)
         {
-            // Keep the exact staging directory for the next diagnostic/cleanup pass.
+            return false;
         }
+    }
+
+    private sealed class PendingUpdateActivationGate(
+        UpdateApplyPlan plan,
+        int updaterProcessId,
+        Func<int, Task<bool>> waitForUpdaterExit,
+        Func<UpdateApplyPlan, bool> cleanupStage) : IUpdateActivationGate
+    {
+        private const string ConfirmationLockSuffix =
+            ".activation.lock";
+        private readonly TaskCompletionSource<bool> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _confirmationStarted;
+
+        public bool ExitAfterConfirmation => plan.SmokeTest;
+
+        public Task<bool> Completion => _completion.Task;
+
+        public void ConfirmShellReady()
+        {
+            if (Interlocked.Exchange(ref _confirmationStarted, 1) != 0)
+            {
+                return;
+            }
+            _ = Task.Run(ConfirmAsync);
+        }
+
+        private async Task ConfirmAsync()
+        {
+            try
+            {
+                if (!await waitForUpdaterExit(updaterProcessId).ConfigureAwait(false))
+                {
+                    _completion.TrySetResult(false);
+                    return;
+                }
+                UpdateApplyPlan current = ReadAndValidatePlan(
+                    Path.Combine(plan.StagingRoot, "update-plan.json"),
+                    requireCurrentSource: false,
+                    targetAlreadyUpdated: true);
+                if (current != plan)
+                {
+                    _completion.TrySetResult(false);
+                    return;
+                }
+                string claimPath = plan.StagingRoot.TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar) + ConfirmationLockSuffix;
+                FileStream? claim = null;
+                try
+                {
+                    if (File.Exists(claimPath))
+                    {
+                        RejectReparsePoint(claimPath);
+                    }
+                    claim = new FileStream(
+                        claimPath,
+                        FileMode.OpenOrCreate,
+                        FileAccess.ReadWrite,
+                        FileShare.None,
+                        bufferSize: 4096,
+                        FileOptions.WriteThrough);
+                    claim.SetLength(0);
+                    using (var writer = new StreamWriter(
+                               claim,
+                               Encoding.ASCII,
+                               bufferSize: 1024,
+                               leaveOpen: true))
+                    {
+                        writer.Write(plan.Token);
+                        writer.Flush();
+                    }
+                    claim.Flush(flushToDisk: true);
+                    if (!cleanupStage(plan))
+                    {
+                        _completion.TrySetResult(false);
+                        return;
+                    }
+                    if (plan.SmokeTest)
+                    {
+                        WriteJsonAtomically(
+                            Path.Combine(plan.TargetRoot, SmokeCompletionFileName),
+                            new SmokeCompletionEvidence(
+                                plan.Token,
+                                plan.TargetVersion,
+                                Environment.ProcessId,
+                                DateTimeOffset.UtcNow));
+                    }
+                    _completion.TrySetResult(true);
+                }
+                finally
+                {
+                    if (claim is not null)
+                    {
+                        claim.Dispose();
+                        try
+                        {
+                            File.Delete(claimPath);
+                        }
+                        catch (IOException)
+                        {
+                            // A regular stale lock file is recoverable because
+                            // the next process must acquire its OS handle anew.
+                        }
+                        catch (UnauthorizedAccessException)
+                        {
+                            // Keep the exact lock path for diagnostics.
+                        }
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                try
+                {
+                    WriteActivationFailureEvidence(plan.StagingRoot, exception);
+                }
+                catch (Exception)
+                {
+                    // The activation result remains failed even when its
+                    // diagnostic directory cannot be written safely.
+                }
+                _completion.TrySetResult(false);
+            }
+        }
+    }
+
+    private static void WriteJsonAtomically(string path, object value)
+    {
+        string temporary = path + $".tmp-{Environment.ProcessId}";
+        File.WriteAllText(
+            temporary,
+            JsonSerializer.Serialize(value, WebJson),
+            Utf8NoBom);
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    private sealed record SmokeProcessEvidence(
+        string Token,
+        string TargetVersion,
+        int ProcessId);
+
+    private sealed record SmokeCompletionEvidence(
+        string Token,
+        string TargetVersion,
+        int ProcessId,
+        DateTimeOffset ConfirmedAt);
+
+    private static void WriteActivationFailureEvidence(
+        string stageRoot,
+        Exception exception)
+    {
+        string path = stageRoot.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar) + ".activation-error.txt";
+        File.WriteAllText(
+            path,
+            $"[{DateTimeOffset.UtcNow:O}] {exception}{Environment.NewLine}");
     }
 
     private static void CopyDirectory(string source, string destination)

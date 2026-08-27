@@ -346,6 +346,499 @@ public sealed class ReleaseUpdateServiceTests
 
     [TestMethod]
     [DoNotParallelize]
+    public void PendingUpdateKeepsStageAndBackupUntilShellReadyConfirmation()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-pending");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string backup = Path.Combine(stage, "backup");
+        Directory.CreateDirectory(backup);
+        string backupSentinel = Path.Combine(backup, "VibeTable.Next.exe");
+        File.WriteAllText(backupSentinel, "old");
+        string token = new('e', 64);
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            token,
+            SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            bool recognized = UpdateProcessCommand.TryCreateActivationGate(
+                [
+                    "--cleanup-update",
+                    stage,
+                    "--updater-pid",
+                    int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--update-token",
+                    token,
+                    "--self-update-smoke",
+                    "--test-mode",
+                    "--readiness-dir",
+                    Path.Combine(container, "readiness"),
+                ],
+                out IUpdateActivationGate? gate,
+                runningRoot: target);
+
+            Assert.IsTrue(recognized);
+            Assert.IsNotNull(gate);
+            Assert.IsTrue(Directory.Exists(stage));
+            Assert.AreEqual("old", File.ReadAllText(backupSentinel));
+            Assert.IsFalse(UpdateProcessCommand.TryCreateActivationGate(
+                [
+                    "--cleanup-update",
+                    stage,
+                    "--updater-pid",
+                    int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--update-token",
+                    token,
+                    "--update-token",
+                    token,
+                    "--self-update-smoke",
+                ],
+                out _,
+                runningRoot: target));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ShellReadyConfirmationCleansStageAndWritesCompletionOnce()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-confirm");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string backup = Path.Combine(stage, "backup");
+        Directory.CreateDirectory(backup);
+        File.WriteAllText(Path.Combine(backup, "VibeTable.Next.exe"), "old");
+        string token = new('f', 64);
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            token,
+            SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                [
+                    "--cleanup-update",
+                    stage,
+                    "--updater-pid",
+                    int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--update-token",
+                    token,
+                    "--self-update-smoke",
+                ],
+                out IUpdateActivationGate? gate,
+                runningRoot: target));
+            Assert.IsNotNull(gate);
+
+            gate.ConfirmShellReady();
+            gate.ConfirmShellReady();
+            Assert.IsTrue(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.IsFalse(Directory.Exists(stage));
+            using System.Text.Json.JsonDocument completion =
+                System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(
+                    target,
+                    UpdateProcessCommand.SmokeCompletionFileName)));
+            Assert.AreEqual(
+                token,
+                completion.RootElement.GetProperty("token").GetString());
+            Assert.AreEqual(
+                "1.1.0",
+                completion.RootElement.GetProperty("targetVersion").GetString());
+            Assert.AreEqual(
+                Environment.ProcessId,
+                completion.RootElement.GetProperty("processId").GetInt32());
+            Assert.IsTrue(DateTimeOffset.TryParse(
+                completion.RootElement.GetProperty("confirmedAt").GetString(),
+                out _));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ShellReadyConfirmationRetainsBackupWhenTargetIdentityChanged()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-revalidate");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string backup = Path.Combine(stage, "backup");
+        Directory.CreateDirectory(backup);
+        string backupSentinel = Path.Combine(backup, "VibeTable.Next.exe");
+        File.WriteAllText(backupSentinel, "old");
+        string token = new('a', 64);
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            token,
+            SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                [
+                    "--cleanup-update",
+                    stage,
+                    "--updater-pid",
+                    int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--update-token",
+                    token,
+                    "--self-update-smoke",
+                ],
+                out IUpdateActivationGate? gate,
+                runningRoot: target));
+            Assert.IsNotNull(gate);
+
+            CreatePackageTree(target, "1.0.0", "changed");
+            gate.ConfirmShellReady();
+
+            Assert.IsFalse(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsTrue(Directory.Exists(stage));
+            Assert.AreEqual("old", File.ReadAllText(backupSentinel));
+            Assert.IsFalse(File.Exists(Path.Combine(
+                target,
+                UpdateProcessCommand.SmokeCompletionFileName)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ShellReadyConfirmationIsNonBlockingAndSingleUse()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-async");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string token = new('b', 64);
+        var plan = new UpdateApplyPlan(
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            token,
+            SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+        using var cleanupEntered = new ManualResetEventSlim();
+        using var cleanupRelease = new ManualResetEventSlim();
+        int cleanupCalls = 0;
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                [
+                    "--cleanup-update",
+                    stage,
+                    "--updater-pid",
+                    int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--update-token",
+                    token,
+                    "--self-update-smoke",
+                ],
+                out IUpdateActivationGate? gate,
+                runningRoot: target,
+                waitForUpdaterExit: _ => Task.FromResult(true),
+                cleanupStage: _ =>
+                {
+                    cleanupEntered.Set();
+                    cleanupRelease.Wait(TimeSpan.FromSeconds(5));
+                    Interlocked.Increment(ref cleanupCalls);
+                    return true;
+                }));
+            Assert.IsNotNull(gate);
+
+            Task confirmationCall = Task.Run(gate.ConfirmShellReady);
+            try
+            {
+                Assert.IsTrue(cleanupEntered.Wait(TimeSpan.FromSeconds(2)));
+                await confirmationCall.WaitAsync(TimeSpan.FromSeconds(1));
+                gate.ConfirmShellReady();
+                Assert.IsFalse(gate.Completion.IsCompleted);
+                Assert.AreEqual(0, Volatile.Read(ref cleanupCalls));
+            }
+            finally
+            {
+                cleanupRelease.Set();
+            }
+            Assert.IsTrue(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.AreEqual(1, Volatile.Read(ref cleanupCalls));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task FailedCleanupRetainsStageAndAllowsANewGateToRetry()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-retry");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string backup = Path.Combine(stage, "backup");
+        Directory.CreateDirectory(backup);
+        File.WriteAllText(Path.Combine(backup, "VibeTable.Next.exe"), "old");
+        string token = new('c', 64);
+        var plan = new UpdateApplyPlan(
+            1, target, source, stage, 123, "1.0.0", "1.1.0", token, SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+        string[] arguments =
+        [
+            "--cleanup-update",
+            stage,
+            "--updater-pid",
+            int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--update-token",
+            token,
+            "--self-update-smoke",
+        ];
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                arguments,
+                out IUpdateActivationGate? first,
+                runningRoot: target,
+                waitForUpdaterExit: _ => Task.FromResult(true),
+                cleanupStage: _ => false));
+            Assert.IsNotNull(first);
+            first.ConfirmShellReady();
+            Assert.IsFalse(await first.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsTrue(Directory.Exists(stage));
+
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                arguments,
+                out IUpdateActivationGate? retry,
+                runningRoot: target));
+            Assert.IsNotNull(retry);
+            retry.ConfirmShellReady();
+            Assert.IsTrue(await retry.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsFalse(Directory.Exists(stage));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task UpdaterWaitFailureRetainsStageAndBackup()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-wait-failure");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        string backup = Path.Combine(stage, "backup");
+        Directory.CreateDirectory(backup);
+        string backupSentinel = Path.Combine(backup, "VibeTable.Next.exe");
+        File.WriteAllText(backupSentinel, "old");
+        string token = new('d', 64);
+        var plan = new UpdateApplyPlan(
+            1, target, source, stage, 123, "1.0.0", "1.1.0", token, SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                [
+                    "--cleanup-update", stage,
+                    "--updater-pid", int.MaxValue.ToString(),
+                    "--update-token", token,
+                    "--self-update-smoke",
+                ],
+                out IUpdateActivationGate? gate,
+                runningRoot: target,
+                waitForUpdaterExit: _ => Task.FromResult(false)));
+            Assert.IsNotNull(gate);
+            gate.ConfirmShellReady();
+
+            Assert.IsFalse(await gate.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsTrue(Directory.Exists(stage));
+            Assert.AreEqual("old", File.ReadAllText(backupSentinel));
+            Assert.IsFalse(File.Exists(Path.Combine(
+                target,
+                UpdateProcessCommand.SmokeCompletionFileName)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ConcurrentActivationGatesAllowOnlyOneCleanupWinner()
+    {
+        string container = Root();
+        string target = Path.Combine(container, "VibeTable.Next");
+        CreatePackageTree(target, "1.1.0", "new");
+        string stage = Path.Combine(container, ".VibeTable.Next.update-race");
+        string source = Path.Combine(stage, "package", "VibeTable");
+        CreatePackageTree(source, "1.1.0", "new");
+        Directory.CreateDirectory(Path.Combine(stage, "backup"));
+        string token = new('9', 64);
+        var plan = new UpdateApplyPlan(
+            1, target, source, stage, 123, "1.0.0", "1.1.0", token, SmokeTest: true);
+        File.WriteAllText(
+            Path.Combine(stage, "update-plan.json"),
+            System.Text.Json.JsonSerializer.Serialize(plan));
+        string? previous = Environment.GetEnvironmentVariable(
+            UpdateProcessCommand.SmokeTokenEnvironmentVariable);
+        string[] arguments =
+        [
+            "--cleanup-update", stage,
+            "--updater-pid", int.MaxValue.ToString(),
+            "--update-token", token,
+            "--self-update-smoke",
+        ];
+
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                token);
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                arguments, out IUpdateActivationGate? first, runningRoot: target));
+            Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+                arguments, out IUpdateActivationGate? second, runningRoot: target));
+            Assert.IsNotNull(first);
+            Assert.IsNotNull(second);
+
+            await Task.WhenAll(
+                Task.Run(first.ConfirmShellReady),
+                Task.Run(second.ConfirmShellReady));
+            bool[] results = await Task.WhenAll(
+                first.Completion.WaitAsync(TimeSpan.FromSeconds(5)),
+                second.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.AreEqual(1, results.Count(result => result));
+            Assert.IsFalse(
+                Directory.Exists(stage),
+                Directory.Exists(stage)
+                    ? string.Join(", ", Directory.EnumerateFileSystemEntries(
+                        stage, "*", SearchOption.AllDirectories))
+                    : "stage absent");
+            Assert.IsTrue(File.Exists(Path.Combine(
+                target,
+                UpdateProcessCommand.SmokeCompletionFileName)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                UpdateProcessCommand.SmokeTokenEnvironmentVariable,
+                previous);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
     public void SmokePlanRequiresTheMatchingProcessEnvironmentToken()
     {
         string target = CreateInstalledPackage("1.0.0");

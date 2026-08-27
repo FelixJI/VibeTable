@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.PreviewHost;
@@ -48,11 +49,9 @@ public partial class App : Application
             Shutdown(updateExitCode);
             return;
         }
-        if (Services.UpdateProcessCommand.TryScheduleCleanup(e.Args))
-        {
-            Shutdown(0);
-            return;
-        }
+        _ = Services.UpdateProcessCommand.TryCreateActivationGate(
+            e.Args,
+            out Services.IUpdateActivationGate? updateActivation);
         _ = SetCurrentProcessExplicitAppUserModelID(
             ApplicationUserModelId);
         base.OnStartup(e);
@@ -110,7 +109,7 @@ public partial class App : Application
                 // Best-effort trace.
             }
         }
-        var window = new MainWindow();
+        var window = new MainWindow(updateActivation);
         MainWindow = window;
         // Show before Hide: with the default ShutdownMode=OnLastWindowClose,
         // hiding a window that was never shown can let WPF tear down the app
@@ -122,6 +121,17 @@ public partial class App : Application
             window.Hide();
         }
         window.ReportTestModeStartupVisibility();
+        if (updateActivation is { ExitAfterConfirmation: true })
+        {
+            _ = ShutdownAfterUpdateActivationAsync(updateActivation);
+        }
+    }
+
+    private async Task ShutdownAfterUpdateActivationAsync(
+        Services.IUpdateActivationGate updateActivation)
+    {
+        bool activated = await updateActivation.Completion.ConfigureAwait(false);
+        await Dispatcher.InvokeAsync(() => Shutdown(activated ? 0 : 1));
     }
 
     private static void InstallCrashDiagnostics()
