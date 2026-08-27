@@ -2140,7 +2140,7 @@ async function scenario04(page, recorder, _network, runtime) {
     { englishGridLabels, chineseGridLabels },
   );
 
-  await chooseToolbarMore(page, "export");
+  await chooseToolbarMore(page, "export-csv");
   const exportTarget = path.join(runtime.controlsDir, "export-result.csv");
   const deadline = Date.now() + 60_000;
   let exported = "";
@@ -2828,7 +2828,8 @@ async function waitForMutationBarrier(runtime, timeoutMs = 60_000) {
 async function chooseToolbarMore(page, key) {
   const labels = {
     import: /导入数据|Import data/i,
-    export: /导出数据|Export data/i,
+    "export-csv": /导出 CSV|Export CSV/i,
+    "export-xlsx": /导出 XLSX|Export XLSX/i,
     refresh: /刷新|Refresh/i,
   };
   if (!labels[key]) throw new Error(`missing toolbar menu label mapping: ${key}`);
