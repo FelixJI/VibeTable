@@ -597,15 +597,16 @@ internal sealed class UpdateRecoveryWatchdog(
         };
         if (plan.SmokeTest)
         {
+            string stageParent = Directory.GetParent(plan.StagingRoot.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar))!.FullName;
             arguments.AddRange([
                 "--self-update-smoke",
                 "--test-mode",
                 "--readiness-dir",
-                Path.Combine(
-                    Directory.GetParent(plan.StagingRoot.TrimEnd(
-                        Path.DirectorySeparatorChar,
-                        Path.AltDirectorySeparatorChar))!.FullName,
-                    "self-update-readiness"),
+                Path.Combine(stageParent, "self-update-readiness"),
+                "--e2e-controls-dir",
+                Path.Combine(stageParent, "self-update-updated-controls"),
             ]);
         }
         return new UpdateUpdatedPackageLaunch(
