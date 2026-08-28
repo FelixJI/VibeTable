@@ -598,7 +598,7 @@ def _write_strict_self_update_rollback_fixture(
             encoding="utf-8",
         )
     if consumed_request is not None:
-        consumed_request.parent.mkdir(parents=True)
+        consumed_request.parent.mkdir(parents=True, exist_ok=True)
     restored_readiness_root = root / "self-update-restored-readiness"
     restored_controls_root = root / "self-update-restored-controls"
     restored_readiness_root.mkdir()
@@ -700,7 +700,7 @@ def _write_strict_self_update_rollback_fixture(
     )
 
 
-def test_strict_self_update_rollback_fixture_builder_supports_both_scenarios(
+def test_strict_self_update_rollback_fixture_builder_supports_all_scenarios(
     tmp_path: Path,
 ) -> None:
     health = _write_strict_self_update_rollback_fixture(
@@ -713,6 +713,12 @@ def test_strict_self_update_rollback_fixture_builder_supports_both_scenarios(
         tmp_path / "updated",
         failure_code="updatedProcessExited",
         consumed_request=updated_request,
+    )
+    timeout_request = tmp_path / "timeout" / "updated-controls" / "hold.request"
+    timeout = _write_strict_self_update_rollback_fixture(
+        tmp_path / "timeout",
+        failure_code="healthTimeout",
+        consumed_request=timeout_request,
     )
 
     assert set(health.receipt) == {
@@ -749,6 +755,8 @@ def test_strict_self_update_rollback_fixture_builder_supports_both_scenarios(
     assert health.receipt["failureCode"] == "workspaceHealthProbeFailed"
     assert updated.receipt["failureCode"] == "updatedProcessExited"
     assert updated.consumed_request == updated_request
+    assert timeout.receipt["failureCode"] == "healthTimeout"
+    assert timeout.consumed_request == timeout_request
 
 
 def test_self_update_health_failure_requires_exact_rollback_and_restored_readiness(
@@ -938,6 +946,51 @@ def test_self_update_updated_exit_accepts_strict_rollback_without_health_failure
             consumed_request=close_request,
             timeout_seconds=0.1,
         )
+
+
+def test_self_update_health_timeout_accepts_strict_rollback_after_hold_consumption(
+    tmp_path: Path,
+) -> None:
+    scenario = build_next._HEALTH_TIMEOUT_ROLLBACK_SCENARIO
+    evidence = scenario.arrange_failure(tmp_path)
+    assert evidence.consumed_request is not None
+    hold_request = evidence.consumed_request.path
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="healthTimeout",
+        consumed_request=hold_request,
+    )
+
+    def wait_for_rollback() -> int:
+        return build_next._wait_for_self_update_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            scenario_slug=scenario.slug,
+            expected_failure_code=scenario.failure_code,
+            health_failure_readiness=evidence.health_failure_readiness,
+            consumed_request=evidence.consumed_request,
+            timeout_seconds=0.1,
+        )
+
+    hold_request.unlink()
+    assert wait_for_rollback() == fixture.restored_process_id
+
+    fixture.receipt_path.write_text(
+        json.dumps({**fixture.receipt, "failureCode": "updatedProcessExited"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(build_next.BuildError, match="rollback receipt identity is invalid"):
+        wait_for_rollback()
+
+    fixture.receipt_path.write_text(json.dumps(fixture.receipt), encoding="utf-8")
+    hold_request.write_text("", encoding="utf-8")
+    with pytest.raises(build_next.BuildError, match="did not consume health-timeout hold request"):
+        wait_for_rollback()
 
 
 def test_restored_self_update_host_close_rejects_process_that_already_exited(
@@ -1146,7 +1199,7 @@ def test_self_update_cleanup_terminates_the_owned_scope_only(
     assert calls == [("wait", 0), ("terminate", 30)]
 
 
-def test_self_update_rollback_scenarios_delegate_to_shared_harness(
+def test_self_update_rollback_batch_delegates_scenarios_in_release_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1169,19 +1222,20 @@ def test_self_update_rollback_scenarios_delegate_to_shared_harness(
     monkeypatch.setattr(build_next, "_run_desktop_self_update_rollback_smoke", run_shared)
 
     package = tmp_path / "package"
-    build_next._run_desktop_self_update_health_failure_smoke(
-        package,
-        tmp_path / "health-failure",
-    )
-    build_next._run_desktop_self_update_updated_exit_smoke(
-        package,
-        tmp_path / "updated-exit",
-    )
+    build_next._run_desktop_self_update_rollback_smokes(package, tmp_path)
 
     assert calls == [
         ("health-failure", "health-failure", "workspaceHealthProbeFailed"),
         ("updated-exit", "updated-exit", "updatedProcessExited"),
+        ("health-timeout", "health-timeout", "healthTimeout"),
     ]
+
+
+def test_self_update_rollback_scenarios_bound_updater_wait_to_failure_budget() -> None:
+    assert [
+        scenario.updater_wait_timeout_seconds
+        for scenario in build_next._SELF_UPDATE_ROLLBACK_SCENARIOS
+    ] == [120, 120, 180]
 
 
 def test_health_failure_blocker_is_owned_before_plan_preparation(
@@ -1218,9 +1272,10 @@ def test_health_failure_blocker_is_owned_before_plan_preparation(
     )
 
     with pytest.raises(RuntimeError, match="plan preparation failed"):
-        build_next._run_desktop_self_update_health_failure_smoke(
+        build_next._run_desktop_self_update_rollback_smoke(
             tmp_path / "package",
             tmp_path / "health-failure",
+            scenario=build_next._HEALTH_FAILURE_ROLLBACK_SCENARIO,
         )
 
     assert calls == [("terminate", None), ("wait", 30)]
