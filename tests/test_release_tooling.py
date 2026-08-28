@@ -21,10 +21,12 @@ from scripts.release import (
     prepare_upgrade,
 )
 from scripts.versioning import (
+    VersionError,
     bump_version,
     check_release_dependency_versions,
     check_versions,
     collect_release_versions,
+    collect_versions,
     read_project_version,
     update_versions,
     validate_version,
@@ -140,9 +142,146 @@ def test_version_dry_run_no_longer_targets_provider_extensions() -> None:
     original = read_project_version(REPO_ROOT)
     changed = update_versions(REPO_ROOT, "9.8.7", dry_run=True)
     relative = {path.relative_to(REPO_ROOT).as_posix() for path in changed}
-    assert relative == {"backend/_version.py", "desktop/publish-layout.json"}
+    assert relative == {
+        "backend/_version.py",
+        "contracts/v2/workspace-version-policy.json",
+        "desktop/publish-layout.json",
+    }
     assert all(removed_provider not in item.lower() for item in relative)
     assert read_project_version(REPO_ROOT) == original
+
+
+def test_version_update_derives_workspace_policy_without_claiming_n_minus_one(
+    tmp_path: Path,
+) -> None:
+    for relative in (
+        Path("backend/_version.py"),
+        Path("contracts/v2/compatibility-corpus.json"),
+        Path("contracts/v2/workspace-version-policy.json"),
+        Path("contracts/v2/workspace-version-policy.schema.json"),
+        Path("desktop/publish-layout.json"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+
+    changed = update_versions(tmp_path, "0.5.2")
+    policy = json.loads(
+        (tmp_path / "contracts/v2/workspace-version-policy.json").read_text(encoding="utf-8")
+    )
+
+    assert {path.relative_to(tmp_path).as_posix() for path in changed} == {
+        "backend/_version.py",
+        "contracts/v2/workspace-version-policy.json",
+        "desktop/publish-layout.json",
+    }
+    assert policy["currentWriter"]["appVersion"] == "0.5.2"
+    assert policy["writerCompatibility"] == {
+        "window": "current-and-one-previous-formal-release",
+        "verificationGate": "disabled-until-packaged-runtime-evidence",
+        "nMinusOneTarget": "0.5.0",
+        "accepted": [{"appVersion": "0.5.2", "status": "current"}],
+        "pending": [
+            {
+                "appVersion": "0.5.0",
+                "status": "pending",
+                "compatibility": "unverified",
+            }
+        ],
+    }
+
+
+def test_version_update_rejects_verified_state_while_runtime_evidence_gate_is_disabled(
+    tmp_path: Path,
+) -> None:
+    for relative in (
+        Path("backend/_version.py"),
+        Path("contracts/v2/compatibility-corpus.json"),
+        Path("contracts/v2/workspace-version-policy.json"),
+        Path("contracts/v2/workspace-version-policy.schema.json"),
+        Path("desktop/publish-layout.json"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    policy_path = tmp_path / "contracts/v2/workspace-version-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy["writerCompatibility"]["accepted"] = [
+        {"appVersion": "0.5.1", "status": "current"},
+        {"appVersion": "0.5.0", "status": "verified"},
+    ]
+    policy["writerCompatibility"]["pending"] = []
+    policy["compatibilityCorpus"]["immutablePrefix"]["formalReleaseCount"] = 1
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    corpus_path = tmp_path / "contracts/v2/compatibility-corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    artifacts = []
+    for artifact_id, kind in (
+        ("workspace", "workspace-archive"),
+        ("snapshot", "snapshot-package"),
+        ("invalid", "workspace-archive"),
+    ):
+        artifact_path = corpus_path.parent / f"{artifact_id}.bin"
+        artifact_path.write_bytes(artifact_id.encode())
+        artifacts.append(
+            {
+                "id": artifact_id,
+                "kind": kind,
+                "path": artifact_path.name,
+                "sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            }
+        )
+    corpus["previousFormalReleases"] = [
+        {
+            "writerVersion": "0.5.0",
+            "sourceRelease": {
+                "tag": "v0.5.0",
+                "sourceCommit": "a" * 40,
+                "assetName": "VibeTable-v0.5.0-win-x64.zip",
+            },
+            "artifacts": artifacts,
+            "cases": [
+                {"operation": "workspace.open", "artifactId": "workspace", "expected": "read"},
+                {"operation": "snapshot.import", "artifactId": "snapshot", "expected": "migrate"},
+                {
+                    "operation": "workspace.open",
+                    "artifactId": "invalid",
+                    "expected": "reject-zero-write",
+                },
+            ],
+        }
+    ]
+    corpus_path.write_text(json.dumps(corpus), encoding="utf-8")
+
+    with pytest.raises(VersionError, match="promotion is disabled"):
+        update_versions(tmp_path, "0.5.2")
+
+    assert read_project_version(tmp_path) == "0.5.1"
+    assert (
+        json.loads(policy_path.read_text(encoding="utf-8"))["writerCompatibility"][
+            "verificationGate"
+        ]
+        == "disabled-until-packaged-runtime-evidence"
+    )
+
+
+def test_version_snapshot_detects_workspace_policy_current_writer_drift(
+    tmp_path: Path,
+) -> None:
+    for relative in (
+        Path("backend/_version.py"),
+        Path("contracts/v2/workspace-version-policy.json"),
+        Path("desktop/publish-layout.json"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / relative, target)
+    policy_path = tmp_path / "contracts/v2/workspace-version-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy["currentWriter"]["appVersion"] = "0.5.0"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+
+    assert collect_versions(tmp_path).mismatches == {"workspace policy current writer": "0.5.0"}
 
 
 def test_backend_bundle_omits_removed_directus_websocket_runtime() -> None:
@@ -806,6 +945,113 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
     assert any(
         "SBOM dependency version mismatch: github.com/kopia/kopia" in error
         for error in check_package(stage.publish_root)
+    )
+
+    (desktop_contracts / "workspace-version-policy.json").unlink()
+    assert "missing workspace contract asset: workspace-version-policy.json" in check_package(
+        stage.publish_root
+    )
+
+    policy_path = desktop_contracts / "workspace-version-policy.json"
+    shutil.copy2(REPO_ROOT / "contracts/v2/workspace-version-policy.json", policy_path)
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy["fabricatedCompatibilityClaim"] = "verified"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    assert "packaged workspace version policy violates its closed schema" in check_package(
+        stage.publish_root
+    )
+
+    shutil.copy2(REPO_ROOT / "contracts/v2/workspace-version-policy.json", policy_path)
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy["writerCompatibility"]["accepted"][0]["appVersion"] = "0.4.0"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    assert any(
+        "accepted current writer must match currentWriter.appVersion" in error
+        for error in check_package(stage.publish_root)
+    )
+
+    shutil.copy2(REPO_ROOT / "contracts/v2/workspace-version-policy.json", policy_path)
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy["compatibilityCorpus"]["immutablePrefix"]["formalReleaseCount"] = 1
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    corpus_path = desktop_contracts / "compatibility-corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    corpus["previousFormalReleases"] = [
+        {
+            "writerVersion": "0.5.0",
+            "sourceRelease": {
+                "tag": "v0.5.0",
+                "sourceCommit": "a" * 40,
+                "assetName": "VibeTable-v0.5.0-win-x64.zip",
+            },
+            "artifacts": [
+                {
+                    "id": "workspace",
+                    "kind": "workspace-archive",
+                    "path": "fixtures/missing-formal-workspace.zip",
+                    "sha256": "a" * 64,
+                },
+                {
+                    "id": "snapshot",
+                    "kind": "snapshot-package",
+                    "path": "fixtures/missing-formal-snapshot.vtsnapshot",
+                    "sha256": "b" * 64,
+                },
+                {
+                    "id": "invalid",
+                    "kind": "workspace-archive",
+                    "path": "fixtures/missing-formal-invalid.zip",
+                    "sha256": "c" * 64,
+                },
+            ],
+            "cases": [
+                {
+                    "operation": "workspace.open",
+                    "artifactId": "workspace",
+                    "expected": "read",
+                },
+                {
+                    "operation": "snapshot.import",
+                    "artifactId": "snapshot",
+                    "expected": "migrate",
+                },
+                {
+                    "operation": "workspace.open",
+                    "artifactId": "invalid",
+                    "expected": "reject-zero-write",
+                },
+            ],
+        }
+    ]
+    corpus_path.write_text(json.dumps(corpus), encoding="utf-8")
+    assert any(
+        "formal release corpus evidence prefix is invalid" in error
+        for error in check_package(stage.publish_root)
+    )
+
+    shutil.copy2(REPO_ROOT / "contracts/v2/workspace-version-policy.json", policy_path)
+    shutil.copy2(REPO_ROOT / "contracts/v2/compatibility-corpus.json", corpus_path)
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    policy["currentWriter"]["appVersion"] = "9.9.9"
+    policy["writerCompatibility"]["accepted"][0]["appVersion"] = "9.9.9"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    errors = check_package(stage.publish_root)
+    assert "packaged workspace version policy does not match source" in errors
+    assert "packaged workspace version policy does not match release identity" in errors
+
+    shutil.copy2(REPO_ROOT / "contracts/v2/workspace-version-policy.json", policy_path)
+    restored_policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    assert restored_policy["compatibilityCorpus"]["immutablePrefix"]["formalReleaseCount"] == 0
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    baseline_artifact = corpus["baselines"][0]["artifacts"][0]
+    baseline_path = desktop_contracts / baseline_artifact["path"]
+    baseline_path.write_bytes(b"fabricated packaged baseline")
+    baseline_artifact["sha256"] = hashlib.sha256(baseline_path.read_bytes()).hexdigest()
+    corpus_path.write_text(json.dumps(corpus), encoding="utf-8")
+    errors = check_package(stage.publish_root)
+    assert "packaged workspace compatibility corpus does not match source" in errors
+    assert not any(
+        "workspace compatibility corpus artifact is missing or changed" in error for error in errors
     )
 
 

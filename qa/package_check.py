@@ -27,7 +27,11 @@ from scripts.build_next import (
     resolve_go,
     sha256_file,
 )
-from scripts.versioning import check_versions, collect_release_versions
+from scripts.versioning import (
+    check_versions,
+    collect_release_versions,
+    validate_workspace_version_policy_document,
+)
 
 FORBIDDEN_LEGACY_PROVIDER = "".join(["di", "rectus"])
 FORBIDDEN_NAMES = frozenset(
@@ -298,6 +302,8 @@ def check_package(
                 "negative-fixtures.json",
                 "provider-support.json",
                 "compatibility-corpus.json",
+                "workspace-version-policy.json",
+                "workspace-version-policy.schema.json",
                 "legacy-surface.json",
             ):
                 if not (contracts_root / required_contract).is_file():
@@ -332,6 +338,81 @@ def check_package(
                                 )
                 except (KeyError, OSError, json.JSONDecodeError, TypeError):
                     errors.append("workspace compatibility corpus is invalid")
+            policy_path = contracts_root / "workspace-version-policy.json"
+            policy_schema_path = contracts_root / "workspace-version-policy.schema.json"
+            if policy_path.is_file() and policy_schema_path.is_file() and corpus_path.is_file():
+                try:
+                    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+                    policy_schema = json.loads(policy_schema_path.read_text(encoding="utf-8"))
+                    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+                    source_contracts_root = source_root / "contracts" / "v2"
+                    source_policy = json.loads(
+                        (source_contracts_root / "workspace-version-policy.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    source_corpus = json.loads(
+                        (source_contracts_root / "compatibility-corpus.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    source_schema = json.loads(
+                        (source_contracts_root / "workspace-version-policy.schema.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    if policy_schema != source_schema:
+                        errors.append(
+                            "packaged workspace version policy schema differs from source"
+                        )
+                    if not all(
+                        isinstance(value, dict)
+                        for value in (
+                            policy,
+                            policy_schema,
+                            corpus,
+                            source_policy,
+                            source_corpus,
+                        )
+                    ):
+                        raise TypeError
+                    if policy != source_policy:
+                        errors.append("packaged workspace version policy does not match source")
+                    if corpus != source_corpus:
+                        errors.append(
+                            "packaged workspace compatibility corpus does not match source"
+                        )
+                    current_writer = policy.get("currentWriter")
+                    packaged_writer_version = (
+                        current_writer.get("appVersion")
+                        if isinstance(current_writer, dict)
+                        else None
+                    )
+                    release_version = release.get("version") if isinstance(release, dict) else None
+                    if (
+                        packaged_writer_version != expected.app
+                        or packaged_writer_version != release_version
+                    ):
+                        errors.append(
+                            "packaged workspace version policy does not match release identity"
+                        )
+                    policy_errors = validate_workspace_version_policy_document(
+                        policy,
+                        policy_schema,
+                        corpus,
+                        contracts_root,
+                    )
+                    if any("violates its closed schema" in error for error in policy_errors):
+                        errors.append(
+                            "packaged workspace version policy violates its closed schema"
+                        )
+                    errors.extend(
+                        f"packaged workspace version policy is invalid: {error}"
+                        for error in policy_errors
+                        if "violates its closed schema" not in error
+                    )
+                except (OSError, json.JSONDecodeError, TypeError):
+                    errors.append("packaged workspace version policy is invalid")
     if "sidecar binary" not in resolved:
         return errors
     tool_labels = (
