@@ -9,12 +9,15 @@ import sys
 import tomllib
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from qa import fault_injection, package_check, release_candidate
 from qa.package_check import check_package
 from scripts import build_next
+from scripts.qa.windows_process_scope import WindowsProcessScope
 from scripts.release import (
     _ensure_clean_worktree,
     activate_upgrade,
@@ -571,6 +574,337 @@ def test_self_update_activation_pointer_accepts_exact_schema_v2_prepared_identit
                 updater_process_id=654,
                 timeout_seconds=0.1,
             )
+
+
+def test_self_update_health_failure_requires_exact_rollback_and_restored_readiness(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "VibeTable.Next"
+    stage = tmp_path / ".VibeTable.Next.update-health-failure"
+    token = "c" * 64
+    updater_process_id = 699
+    updated_process_id = 700
+    restored_process_id = 701
+    readiness_root = tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR
+    restored_readiness_root = tmp_path / "self-update-restored-readiness"
+    restored_controls_root = tmp_path / "self-update-restored-controls"
+    readiness_root.mkdir()
+    restored_readiness_root.mkdir()
+    restored_controls_root.mkdir()
+    (readiness_root / build_next.SHELL_READINESS_FILE).write_text(
+        json.dumps(
+            {
+                "ready": False,
+                "mode": None,
+                "error": "Post-update workspace health probe failed",
+                "writtenAt": "2026-08-28T04:00:03+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (restored_readiness_root / build_next.SHELL_READINESS_FILE).write_text(
+        json.dumps(
+            {
+                "ready": True,
+                "mode": "shell",
+                "backendReady": True,
+                "webViewReady": True,
+                "rendererReady": True,
+                "error": None,
+                "writtenAt": "2026-08-28T04:00:08+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (restored_controls_root / "host-lifecycle-state.json").write_text(
+        json.dumps(
+            {
+                "evidenceKind": "packaged-host-control",
+                "action": "visible-startup",
+                "hostExecutable": build_next.HOST_EXE_NAME,
+                "hostProcessId": restored_process_id,
+                "windowVisible": True,
+                "trayVisible": False,
+                "workspaceId": None,
+                "sessionEpoch": None,
+                "sessionState": None,
+                "error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    receipt = {
+        "schemaVersion": 2,
+        "state": "rollbackComplete",
+        "targetRoot": str(target),
+        "stagingRoot": str(stage),
+        "currentVersion": "1.0.0",
+        "targetVersion": "1.0.1",
+        "token": token,
+        "smokeTest": True,
+        "updaterProcessId": updater_process_id,
+        "updaterStartedAtUtc": "2026-08-28T04:00:00+00:00",
+        "createdAtUtc": "2026-08-28T04:00:01+00:00",
+        "confirmedAt": None,
+        "watchdogProcessId": updater_process_id,
+        "watchdogStartedAtUtc": "2026-08-28T04:00:00+00:00",
+        "ownedGroupId": "d" * 32,
+        "launchNonce": None,
+        "updatedProcessId": updated_process_id,
+        "updatedStartedAtUtc": "2026-08-28T04:00:02+00:00",
+        "failureCode": "workspaceHealthProbeFailed",
+        "rollbackRequestedAtUtc": "2026-08-28T04:00:04+00:00",
+        "ownedGroupQuiescedAtUtc": "2026-08-28T04:00:05+00:00",
+        "workerLaunchNonce": None,
+        "workerProcessId": 697,
+        "workerStartedAtUtc": "2026-08-28T04:00:06+00:00",
+        "workerReplacementCount": 0,
+        "ownedEntryLedger": [
+            {"name": "resources", "phase": "restored"},
+            {"name": "release.json", "phase": "restored"},
+            {"name": build_next.HOST_EXE_NAME, "phase": "restored"},
+        ],
+        "rollbackAttempt": "f" * 32,
+        "rollbackErrorCode": None,
+        "rolledBackAtUtc": "2026-08-28T04:00:07+00:00",
+    }
+    (tmp_path / f".VibeTable.Next.update-rollback-{'f' * 32}.json").write_text(
+        json.dumps(receipt),
+        encoding="utf-8",
+    )
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(
+            snapshot=lambda: SimpleNamespace(
+                members=(
+                    SimpleNamespace(
+                        pid=restored_process_id,
+                        executable_name=build_next.HOST_EXE_NAME,
+                        identity_verified=True,
+                    ),
+                )
+            )
+        ),
+    )
+
+    assert (
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=process_scope,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=updater_process_id,
+            updated_process_id=updated_process_id,
+            timeout_seconds=0.1,
+        )
+        == restored_process_id
+    )
+
+    invalid_members = (
+        SimpleNamespace(
+            pid=restored_process_id,
+            executable_name=build_next.HOST_EXE_NAME,
+            identity_verified=False,
+        ),
+        SimpleNamespace(
+            pid=restored_process_id,
+            executable_name="wrong-host.exe",
+            identity_verified=True,
+        ),
+    )
+    for invalid_member in invalid_members:
+        invalid_scope = cast(
+            WindowsProcessScope,
+            SimpleNamespace(
+                snapshot=lambda member=invalid_member: SimpleNamespace(members=(member,))
+            ),
+        )
+        with pytest.raises(
+            build_next.BuildError,
+            match="health-failure rollback did not complete",
+        ):
+            build_next.wait_for_self_update_health_failure_rollback(
+                tmp_path,
+                process_scope=invalid_scope,
+                target=target,
+                stage=stage,
+                token=token,
+                updater_process_id=updater_process_id,
+                updated_process_id=updated_process_id,
+                timeout_seconds=0.01,
+            )
+
+    invalid_receipts = (
+        {**receipt, "schemaVersion": 2.0},
+        {**receipt, "updaterProcessId": True},
+        {**receipt, "updaterStartedAtUtc": "2026-08-28T04:00:00"},
+        {**receipt, "createdAtUtc": "2026-08-28T03:59:59+00:00"},
+        {**receipt, "updaterProcessId": 698, "watchdogProcessId": 698},
+        {**receipt, "watchdogProcessId": 698},
+        {**receipt, "watchdogStartedAtUtc": "2026-08-28T04:00:01+00:00"},
+        {**receipt, "ownedGroupId": "not-lower-hex"},
+        {**receipt, "launchNonce": "a" * 64},
+        {**receipt, "updatedProcessId": float(updated_process_id)},
+        {**receipt, "updatedStartedAtUtc": "2026-08-28T04:00:00+00:00"},
+        {**receipt, "rollbackRequestedAtUtc": 0},
+        {**receipt, "ownedGroupQuiescedAtUtc": None},
+        {**receipt, "workerLaunchNonce": "b" * 64},
+        {**receipt, "workerProcessId": 0},
+        {**receipt, "workerStartedAtUtc": "2026-08-28T04:00:04+00:00"},
+        {**receipt, "workerReplacementCount": True},
+        {**receipt, "workerReplacementCount": 2},
+        {
+            **receipt,
+            "ownedEntryLedger": [
+                {"name": "resources", "phase": "restored", "unexpected": True},
+                *receipt["ownedEntryLedger"][1:],
+            ],
+        },
+        {
+            **receipt,
+            "ownedEntryLedger": [
+                {"name": ["resources"], "phase": "restored"},
+                *receipt["ownedEntryLedger"][1:],
+            ],
+        },
+        {**receipt, "rolledBackAtUtc": "2026-08-28T04:00:05+00:00"},
+    )
+    receipt_path = tmp_path / f".VibeTable.Next.update-rollback-{'f' * 32}.json"
+    for invalid_receipt in invalid_receipts:
+        receipt_path.write_text(json.dumps(invalid_receipt), encoding="utf-8")
+        with pytest.raises(
+            build_next.BuildError,
+            match="rollback receipt identity is invalid",
+        ):
+            build_next.wait_for_self_update_health_failure_rollback(
+                tmp_path,
+                process_scope=process_scope,
+                target=target,
+                stage=stage,
+                token=token,
+                updater_process_id=updater_process_id,
+                updated_process_id=updated_process_id,
+                timeout_seconds=0.01,
+            )
+
+
+def test_restored_self_update_host_close_rejects_process_that_already_exited(
+    tmp_path: Path,
+) -> None:
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(snapshot=lambda: SimpleNamespace(members=())),
+    )
+
+    with pytest.raises(
+        build_next.BuildError,
+        match="restored process exited before close request",
+    ):
+        build_next.request_restored_self_update_host_close(controls, 701, process_scope)
+
+    assert not (controls / "host-normal-close.request").exists()
+
+
+def test_restored_self_update_host_close_requires_control_consumption(tmp_path: Path) -> None:
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(
+            snapshot=lambda: SimpleNamespace(members=(SimpleNamespace(pid=701),)),
+            wait_empty=lambda *, timeout: SimpleNamespace(success=True),
+        ),
+    )
+
+    with pytest.raises(
+        build_next.BuildError,
+        match="restored process did not consume close request",
+    ):
+        build_next.request_restored_self_update_host_close(controls, 701, process_scope)
+
+    assert (controls / "host-normal-close.request").is_file()
+
+
+def test_health_failure_cleanup_terminates_the_owned_scope_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, float]] = []
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(
+            wait_empty=lambda *, timeout: (
+                calls.append(("wait", timeout)) or SimpleNamespace(success=False)
+            ),
+            terminate_all=lambda *, timeout: (
+                calls.append(("terminate", timeout)) or SimpleNamespace(success=True)
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        build_next,
+        "terminate_windows_process_tree",
+        lambda process_id: pytest.fail(f"unexpected bare-PID termination: {process_id}"),
+    )
+
+    build_next.cleanup_self_update_health_failure_scope(process_scope)
+
+    assert calls == [("wait", 0), ("terminate", 30)]
+
+
+def test_health_failure_blocker_is_owned_before_plan_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, float | None]] = []
+
+    class FakeBlocker:
+        pid = 123
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        @staticmethod
+        def terminate() -> None:
+            calls.append(("terminate", None))
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            calls.append(("wait", timeout))
+            return 0
+
+    def stage(destination: Path, *_args: object, **_kwargs: object) -> None:
+        destination.mkdir(parents=True)
+
+    monkeypatch.setattr(build_next, "_stage_self_update_smoke_package", stage)
+    monkeypatch.setattr(build_next.subprocess, "Popen", lambda *_args, **_kwargs: FakeBlocker())
+    monkeypatch.setattr(
+        build_next.secrets,
+        "token_hex",
+        lambda _size: (_ for _ in ()).throw(RuntimeError("plan preparation failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="plan preparation failed"):
+        build_next._run_desktop_self_update_health_failure_smoke(
+            tmp_path / "package",
+            tmp_path / "health-failure",
+        )
+
+    assert calls == [("terminate", None), ("wait", 30)]
+
+
+def test_health_failure_user_data_sentinel_uses_packaged_host_local_data_root(
+    tmp_path: Path,
+) -> None:
+    local_data = build_next.self_update_smoke_local_data_root(tmp_path)
+
+    assert local_data == (tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR / "local-data")
+    assert local_data / "user-data.db" != (
+        local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
+    )
 
 
 def test_self_update_activation_rejects_cleanup_before_shell_readiness(

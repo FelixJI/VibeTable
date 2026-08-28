@@ -17,8 +17,8 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
+from scripts.qa.windows_process_scope import WindowsProcessScope
 from tests.e2e import product_e2e_runner as product_runner
-from tests.e2e.windows_process_scope import WindowsProcessScope
 from tests.e2e.windows_tcp_listener_owner import WindowsTcpListenerOwnerLease
 
 ROOT = Path(__file__).resolve().parents[2]

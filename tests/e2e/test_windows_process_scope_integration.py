@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.windows_process_scope import (
+from scripts.qa.windows_process_scope import (
     ProcessLaunchSpec,
     ProcessScopeClosedError,
     ProcessScopeLaunchError,
@@ -80,7 +80,7 @@ def _launch_named_process_scope(
     spec: ProcessLaunchSpec,
     job_name: str,
 ) -> WindowsProcessScope:
-    from tests.e2e._windows_process_scope_win32 import _Win32ProcessScopeAdapter
+    from scripts.qa._windows_process_scope_win32 import _Win32ProcessScopeAdapter
 
     return _launch_with_adapter(spec, _Win32ProcessScopeAdapter(job_name=job_name))
 
@@ -322,7 +322,7 @@ def test_close_kills_members_without_leaking_the_job_handle(tmp_path: Path) -> N
 
 
 def test_handle_keeps_ownership_when_close_handle_fails() -> None:
-    from tests.e2e._windows_process_scope_win32 import _OwnedHandle
+    from scripts.qa._windows_process_scope_win32 import _OwnedHandle
 
     close_results = iter((False, True))
 
@@ -343,7 +343,7 @@ def test_handle_keeps_ownership_when_close_handle_fails() -> None:
 
 
 def test_scope_close_attempts_every_owned_handle_and_retries_failures() -> None:
-    from tests.e2e._windows_process_scope_win32 import _OwnedHandle, _Win32PlatformScope
+    from scripts.qa._windows_process_scope_win32 import _OwnedHandle, _Win32PlatformScope
 
     root_results = iter((False, True))
 
@@ -380,7 +380,7 @@ def test_repeated_launch_and_close_does_not_leak_parent_handles() -> None:
 
 
 def test_job_member_query_expands_the_pid_buffer_to_the_reported_size() -> None:
-    from tests.e2e._windows_process_scope_win32 import _query_job_member_pids
+    from scripts.qa._windows_process_scope_win32 import _query_job_member_pids
 
     expected = tuple(range(100, 117))
     capacities: list[int] = []
@@ -409,7 +409,7 @@ def test_job_member_query_expands_the_pid_buffer_to_the_reported_size() -> None:
 
 
 def test_attribute_list_sizing_reports_the_unexpected_win32_error() -> None:
-    from tests.e2e._windows_process_scope_win32 import _initialize_attribute_list
+    from scripts.qa._windows_process_scope_win32 import _initialize_attribute_list
 
     def fail_sizing(
         _attributes: object,

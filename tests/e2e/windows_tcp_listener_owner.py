@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import PureWindowsPath
 from typing import Protocol
 
-from tests.e2e._windows_tcp_table import WindowsTcpRow
+from scripts.qa._windows_tcp_table import WindowsTcpRow
 
 TcpListenerRow = WindowsTcpRow
 
@@ -308,7 +308,7 @@ class WindowsTcpListenerOwnerLease:
             raise RuntimeError("TCP listener owner leases require Windows")
         if not 1 <= port <= 65535:
             raise ValueError("port must be between 1 and 65535")
-        from tests.e2e._windows_process_scope_win32 import _Win32TcpListenerOwnerAdapter
+        from scripts.qa._windows_process_scope_win32 import _Win32TcpListenerOwnerAdapter
 
         return _capture_with_adapter(port, _Win32TcpListenerOwnerAdapter())
 

@@ -1,4 +1,4 @@
-"""Private Win32 adapter for :mod:`tests.e2e.windows_process_scope`."""
+"""Private Win32 adapter for :mod:`scripts.qa.windows_process_scope`."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from ctypes import wintypes
 from pathlib import PureWindowsPath
 from typing import IO, Protocol
 
-from tests.e2e._windows_tcp_table import WindowsTcpRow, query_windows_tcp_table
-from tests.e2e.windows_process_scope import ProcessLaunchSpec
+from ._windows_tcp_table import WindowsTcpRow, query_windows_tcp_table
+from .windows_process_scope import ProcessLaunchSpec
 
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
 EXTENDED_STARTUPINFO_PRESENT = 0x00080000
