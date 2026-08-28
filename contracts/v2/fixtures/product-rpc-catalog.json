@@ -12662,28 +12662,7 @@
             "additionalProperties": false,
             "properties": {
               "logicalType": {
-                "enum": [
-                  "text",
-                  "editor",
-                  "number",
-                  "bool",
-                  "date",
-                  "dateTime",
-                  "time",
-                  "autoDate",
-                  "email",
-                  "url",
-                  "select",
-                  "multiSelect",
-                  "relation",
-                  "file",
-                  "geoPoint",
-                  "json",
-                  "formula",
-                  "lookup"
-                ],
-                "title": "Logicaltype",
-                "type": "string"
+                "$ref": "#/$defs/LogicalType"
               },
               "generalSettings": {
                 "items": {
@@ -12734,27 +12713,7 @@
               },
               "conversionTargets": {
                 "items": {
-                  "enum": [
-                    "text",
-                    "editor",
-                    "number",
-                    "bool",
-                    "date",
-                    "dateTime",
-                    "time",
-                    "autoDate",
-                    "email",
-                    "url",
-                    "select",
-                    "multiSelect",
-                    "relation",
-                    "file",
-                    "geoPoint",
-                    "json",
-                    "formula",
-                    "lookup"
-                  ],
-                  "type": "string"
+                  "$ref": "#/$defs/LogicalType"
                 },
                 "title": "Conversiontargets",
                 "type": "array"
@@ -13116,28 +13075,7 @@
                 "type": "string"
               },
               "logicalType": {
-                "enum": [
-                  "text",
-                  "editor",
-                  "number",
-                  "bool",
-                  "date",
-                  "dateTime",
-                  "time",
-                  "autoDate",
-                  "email",
-                  "url",
-                  "select",
-                  "multiSelect",
-                  "relation",
-                  "file",
-                  "geoPoint",
-                  "json",
-                  "formula",
-                  "lookup"
-                ],
-                "title": "Logicaltype",
-                "type": "string"
+                "$ref": "#/$defs/LogicalType"
               },
               "lifecycle": {
                 "$ref": "#/$defs/Lifecycle"
@@ -13330,28 +13268,7 @@
                 "type": "string"
               },
               "resultType": {
-                "enum": [
-                  "text",
-                  "editor",
-                  "number",
-                  "bool",
-                  "date",
-                  "dateTime",
-                  "time",
-                  "autoDate",
-                  "email",
-                  "url",
-                  "select",
-                  "multiSelect",
-                  "relation",
-                  "file",
-                  "geoPoint",
-                  "json",
-                  "formula",
-                  "lookup"
-                ],
-                "title": "Resulttype",
-                "type": "string"
+                "$ref": "#/$defs/LogicalType"
               }
             },
             "required": [
@@ -13464,6 +13381,29 @@
             ],
             "title": "Lifecycle",
             "type": "object"
+          },
+          "LogicalType": {
+            "enum": [
+              "text",
+              "editor",
+              "number",
+              "bool",
+              "date",
+              "dateTime",
+              "time",
+              "autoDate",
+              "email",
+              "url",
+              "select",
+              "multiSelect",
+              "relation",
+              "file",
+              "geoPoint",
+              "json",
+              "formula",
+              "lookup"
+            ],
+            "type": "string"
           },
           "LookupPathStep": {
             "additionalProperties": false,
@@ -16413,27 +16353,7 @@
             "additionalProperties": false,
             "properties": {
               "logicalType": {
-                "enum": [
-                  "text",
-                  "editor",
-                  "number",
-                  "bool",
-                  "date",
-                  "dateTime",
-                  "time",
-                  "autoDate",
-                  "email",
-                  "url",
-                  "select",
-                  "multiSelect",
-                  "relation",
-                  "file",
-                  "geoPoint",
-                  "json",
-                  "formula",
-                  "lookup"
-                ],
-                "type": "string"
+                "$ref": "#/$defs/LogicalType"
               },
               "generalSettings": {
                 "items": {
@@ -16476,27 +16396,7 @@
               },
               "conversionTargets": {
                 "items": {
-                  "enum": [
-                    "text",
-                    "editor",
-                    "number",
-                    "bool",
-                    "date",
-                    "dateTime",
-                    "time",
-                    "autoDate",
-                    "email",
-                    "url",
-                    "select",
-                    "multiSelect",
-                    "relation",
-                    "file",
-                    "geoPoint",
-                    "json",
-                    "formula",
-                    "lookup"
-                  ],
-                  "type": "string"
+                  "$ref": "#/$defs/LogicalType"
                 },
                 "type": "array"
               },
@@ -16818,27 +16718,7 @@
                 "type": "string"
               },
               "logicalType": {
-                "enum": [
-                  "text",
-                  "editor",
-                  "number",
-                  "bool",
-                  "date",
-                  "dateTime",
-                  "time",
-                  "autoDate",
-                  "email",
-                  "url",
-                  "select",
-                  "multiSelect",
-                  "relation",
-                  "file",
-                  "geoPoint",
-                  "json",
-                  "formula",
-                  "lookup"
-                ],
-                "type": "string"
+                "$ref": "#/$defs/LogicalType"
               },
               "lifecycle": {
                 "$ref": "#/$defs/Lifecycle"
@@ -17018,27 +16898,7 @@
                 "type": "string"
               },
               "resultType": {
-                "enum": [
-                  "text",
-                  "editor",
-                  "number",
-                  "bool",
-                  "date",
-                  "dateTime",
-                  "time",
-                  "autoDate",
-                  "email",
-                  "url",
-                  "select",
-                  "multiSelect",
-                  "relation",
-                  "file",
-                  "geoPoint",
-                  "json",
-                  "formula",
-                  "lookup"
-                ],
-                "type": "string"
+                "$ref": "#/$defs/LogicalType"
               }
             },
             "required": [
@@ -17140,6 +17000,29 @@
               "retiredAt"
             ],
             "type": "object"
+          },
+          "LogicalType": {
+            "enum": [
+              "text",
+              "editor",
+              "number",
+              "bool",
+              "date",
+              "dateTime",
+              "time",
+              "autoDate",
+              "email",
+              "url",
+              "select",
+              "multiSelect",
+              "relation",
+              "file",
+              "geoPoint",
+              "json",
+              "formula",
+              "lookup"
+            ],
+            "type": "string"
           },
           "LookupPathStep": {
             "additionalProperties": false,

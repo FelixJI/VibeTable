@@ -154,9 +154,14 @@ def _text(name: str) -> str:
     return "sample-value"
 
 
+def _annotation_parts(annotation: object) -> tuple[object, object | None, tuple[object, ...]]:
+    while isinstance(annotation, typing.TypeAliasType):
+        annotation = annotation.__value__
+    return annotation, typing.get_origin(annotation), typing.get_args(annotation)
+
+
 def _model_annotation(annotation: object) -> type[BaseModel] | None:
-    origin = typing.get_origin(annotation)
-    arguments = typing.get_args(annotation)
+    annotation, origin, arguments = _annotation_parts(annotation)
     if origin is typing.Annotated:
         return _model_annotation(arguments[0])
     if origin in (typing.Union, types.UnionType):
@@ -176,8 +181,7 @@ def _value(
 ) -> object:
     if name == "archive_policy":
         return {"mode": "none", "fieldId": None, "archivedValue": None}
-    origin = typing.get_origin(annotation)
-    arguments = typing.get_args(annotation)
+    annotation, origin, arguments = _annotation_parts(annotation)
     if origin is typing.Annotated:
         return _value(arguments[0], name, model_stack)
     if origin in (typing.Union, types.UnionType):
