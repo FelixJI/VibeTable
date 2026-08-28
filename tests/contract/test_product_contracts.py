@@ -6,6 +6,8 @@ import ast
 import json
 import math
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,7 @@ ROOT = Path(__file__).parents[2]
 CONTRACT_ROOT = ROOT / "contracts" / "v2"
 SCHEMA_PATH = CONTRACT_ROOT / "product-contracts.schema.json"
 FIXTURES = CONTRACT_ROOT / "fixtures"
+PRODUCT_RPC_CATALOG_GENERATOR = CONTRACT_ROOT / "generate_product_rpc_catalog.py"
 
 FIXTURE_DEFINITIONS = {
     "table-definition.json": "TableDefinition",
@@ -43,6 +46,54 @@ CONSTRAINT_KINDS = {
     "relation",
     "attachment",
 }
+EXPECTED_LOGICAL_TYPES = [
+    "text",
+    "editor",
+    "number",
+    "bool",
+    "date",
+    "dateTime",
+    "time",
+    "autoDate",
+    "email",
+    "url",
+    "select",
+    "multiSelect",
+    "relation",
+    "file",
+    "geoPoint",
+    "json",
+    "formula",
+    "lookup",
+]
+
+
+def test_product_rpc_catalog_is_current_with_pep695_schema_aliases() -> None:
+    result = subprocess.run(
+        [sys.executable, str(PRODUCT_RPC_CATALOG_GENERATOR), "--check"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_schema_rpc_result_logical_types_are_closed_string_enums() -> None:
+    catalog = _load(FIXTURES / "product-rpc-catalog.json")
+    cases = {case["method"]: case for case in catalog["rpcCases"]}
+
+    for method in ("schema.getTable", "query.selectionOpen"):
+        definitions = cases[method]["resultSchema"]["$defs"]
+        for definition in ("Capability", "FieldDefinition"):
+            logical_type_schema = definitions[definition]["properties"]["logicalType"]
+            ref = logical_type_schema.get("$ref")
+            assert ref == "#/$defs/LogicalType", (method, definition)
+            assert definitions[ref.removeprefix("#/$defs/")] == {
+                "enum": EXPECTED_LOGICAL_TYPES,
+                "type": "string",
+            }, (method, definition)
 
 
 class SchemaMismatchError(AssertionError):
