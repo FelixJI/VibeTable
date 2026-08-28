@@ -596,11 +596,18 @@ func TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance(
 		App: app, DataDir: dataDir,
 		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		DeferBackgroundWorkers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runtime.Close(ctx)
+	defer func() {
+		if runtime != nil {
+			_ = runtime.Close(ctx)
+		}
+	}()
+	now := time.Now().UTC()
+	installRetentionTestClock(runtime, &now)
 	// The fixture writes history directly to construct exact retention roots.
 	// A production files/ watcher would race the materialized files back into
 	// history and invalidate the expected revision chain.
@@ -774,7 +781,7 @@ func TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance(
 		t.Fatalf("retention.update = %#v", update.Error)
 	}
 	token, _ = runtime.coordinator.Current()
-	garbageContent := []byte("maintenance-garbage")
+	garbageContent := []byte("maintenance-garbage-physical-retirement")
 	garbageCommit, err := runtime.repository.Commit(
 		ctx,
 		objectrepo.CommitRequest{
@@ -810,36 +817,39 @@ func TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance(
 	if applied.Error != nil {
 		t.Fatalf("retention.apply = %#v", applied.Error)
 	}
-	retentionDB, err := sql.Open(
-		"sqlite",
-		filepath.Join(
-			root,
-			".vibetable",
-			"coordination",
-			"retention.db",
-		),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := retentionDB.ExecContext(
-		ctx,
-		`UPDATE retention_tombstones SET grace_until = ?
-		  WHERE object_id = ?`,
-		time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano),
-		string(garbage),
-	); err != nil {
-		_ = retentionDB.Close()
-		t.Fatal(err)
-	}
-	if err := retentionDB.Close(); err != nil {
-		t.Fatal(err)
-	}
+	now = now.Add(91 * 24 * time.Hour)
 	maintenance, err := runtime.retention.sweep(ctx)
 	if err != nil ||
 		maintenance.DeletedObjects != 1 ||
+		maintenance.ReclaimedBytes < 0 ||
+		maintenance.AfterRevision <= maintenance.BeforeRevision ||
 		!maintenance.VerificationRun {
 		t.Fatalf("retention maintenance = %#v, %v", maintenance, err)
+	}
+	// Kopia SafetyFull retires the object and runs verified pack maintenance,
+	// but a newly-written pack is not guaranteed to shrink in the same run.
+	if reader, err := runtime.repository.Open(ctx, garbage); !errors.Is(
+		err,
+		objectrepo.ErrNotFound,
+	) {
+		if err == nil {
+			_ = reader.Close()
+		}
+		t.Fatalf("retired object Open error = %v", err)
+	}
+	repositoryInventory, err := runtime.repository.RetentionInventory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := false
+	for _, item := range repositoryInventory.CompletedRetirements {
+		if item.ID == garbage {
+			completed = true
+			break
+		}
+	}
+	if !completed {
+		t.Fatalf("completed retirements = %#v", repositoryInventory.CompletedRetirements)
 	}
 	if err := snapshot.ValidateSnapshotBundle(
 		ctx,
@@ -868,10 +878,51 @@ func TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance(
 	); err != nil {
 		t.Fatalf("current FileHistory root failed to reopen: %v", err)
 	}
+	if err := runtime.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runtime = nil
+	reopened, err := Open(ctx, Options{
+		App: app, DataDir: dataDir,
+		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
+		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		DeferBackgroundWorkers: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime = reopened
+	installRetentionTestClock(runtime, &now)
+	replayed, err := runtime.retention.sweep(ctx)
+	if err != nil || replayed.DeletedObjects != 0 {
+		t.Fatalf("maintained tombstone replay = %#v, %v", replayed, err)
+	}
 }
 
 func retentionOperationID(sequence uint64) string {
 	return fmt.Sprintf("bbbbbbbb-bbbb-4bbb-8bbb-%012d", sequence)
+}
+
+type retentionTestClock struct {
+	now *time.Time
+}
+
+func (clock retentionTestClock) Now() time.Time {
+	return clock.now.UTC()
+}
+
+func installRetentionTestClock(runtime *Runtime, now *time.Time) {
+	runtime.retention.source.now = func() time.Time { return now.UTC() }
+	runtime.retention.production = retention.NewProduction(
+		runtime.retention.source,
+		&workspaceRetentionMaintainer{repository: runtime.repository},
+		runtime.retention.store,
+		func() objectrepo.Authority {
+			token, _ := runtime.coordinator.Current()
+			return token.Authority()
+		},
+		retention.WithClock(retentionTestClock{now: now}),
+	)
 }
 
 func retentionRequestJSON(

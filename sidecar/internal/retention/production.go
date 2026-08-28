@@ -12,6 +12,29 @@ import (
 
 const defaultPlanTTL = 10 * time.Minute
 
+// Clock is the internal time seam shared by retention planning and
+// maintenance. Production uses realUTCClock; tests may supply a controlled
+// adapter without changing the system clock or persisted retention state.
+type Clock interface {
+	Now() time.Time
+}
+
+type realUTCClock struct{}
+
+func (realUTCClock) Now() time.Time {
+	return time.Now().UTC()
+}
+
+type ProductionOption func(*Production)
+
+func WithClock(clock Clock) ProductionOption {
+	return func(production *Production) {
+		if clock != nil {
+			production.now = clock.Now
+		}
+	}
+}
+
 type MaintenanceResult struct {
 	DeletedObjects  int
 	ReclaimedBytes  int64
@@ -63,12 +86,19 @@ func NewProduction(
 	maintainer Maintainer,
 	store *Store,
 	authority func() objectrepo.Authority,
+	options ...ProductionOption,
 ) *Production {
-	return &Production{
+	production := &Production{
 		source: source, maintainer: maintainer, store: store,
 		authority: authority,
-		now:       func() time.Time { return time.Now().UTC() },
+		now:       realUTCClock{}.Now,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(production)
+		}
+	}
+	return production
 }
 
 func (production *Production) Plan(
