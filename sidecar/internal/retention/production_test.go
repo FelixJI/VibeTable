@@ -465,7 +465,7 @@ func newProductionFixture(
 	store *Store,
 	now *time.Time,
 ) *Production {
-	result := NewProduction(
+	return NewProduction(
 		source,
 		maintainer,
 		store,
@@ -476,7 +476,14 @@ func newProductionFixture(
 				ClaimID:     "claim",
 			}
 		},
+		WithClock(productionTestClock{now: now}),
 	)
-	result.now = func() time.Time { return now.UTC() }
-	return result
+}
+
+type productionTestClock struct {
+	now *time.Time
+}
+
+func (clock productionTestClock) Now() time.Time {
+	return clock.now.UTC()
 }
