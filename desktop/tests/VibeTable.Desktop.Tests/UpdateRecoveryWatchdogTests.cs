@@ -196,6 +196,63 @@ public sealed class UpdateRecoveryWatchdogTests
     }
 
     [TestMethod]
+    public async Task SmokeRollbackStartsRestoredPackageWithIsolatedTestEnvelope()
+    {
+        const string groupId = "failed-owned-group";
+        (UpdateApplyPlan plan, UpdateProcessIdentity watchdog, UpdateProcessIdentity updated) =
+            PrepareAwaitingHealth("restored-smoke-envelope", groupId, smokeTest: true);
+        var processes = new RecordingProcessPort(watchdog);
+        using UpdateOwnedProcessGroup failedGroup = RecordingProcessPort.Group(groupId, updated);
+        var recovery = new UpdateRecoveryWatchdog(processes);
+
+        await recovery.RecoverAsync(
+            plan,
+            watchdog,
+            failedGroup,
+            groupId,
+            UpdateActivationFailureCode.WorkspaceHealthProbeFailed,
+            CancellationToken.None);
+
+        Assert.IsNotNull(processes.RestoredLaunch);
+        string stageParent = Directory.GetParent(plan.StagingRoot.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar))!.FullName;
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "--test-mode",
+                "--readiness-dir",
+                Path.Combine(stageParent, "self-update-restored-readiness"),
+                "--e2e-controls-dir",
+                Path.Combine(stageParent, "self-update-restored-controls"),
+            },
+            processes.RestoredLaunch.Arguments.ToArray());
+        Assert.IsFalse(processes.RestoredLaunch.Arguments.Contains("--self-update-smoke"));
+    }
+
+    [TestMethod]
+    public async Task NonSmokeRollbackKeepsRestoredLaunchArgumentsEmpty()
+    {
+        const string groupId = "failed-owned-group";
+        (UpdateApplyPlan plan, UpdateProcessIdentity watchdog, UpdateProcessIdentity updated) =
+            PrepareAwaitingHealth("restored-production-envelope", groupId);
+        var processes = new RecordingProcessPort(watchdog);
+        using UpdateOwnedProcessGroup failedGroup = RecordingProcessPort.Group(groupId, updated);
+        var recovery = new UpdateRecoveryWatchdog(processes);
+
+        await recovery.RecoverAsync(
+            plan,
+            watchdog,
+            failedGroup,
+            groupId,
+            UpdateActivationFailureCode.WorkspaceHealthProbeFailed,
+            CancellationToken.None);
+
+        Assert.IsNotNull(processes.RestoredLaunch);
+        Assert.AreEqual(0, processes.RestoredLaunch.Arguments.Count);
+    }
+
+    [TestMethod]
     public async Task ReceiptUpdateFailureAfterRestoredLaunchRemainsTerminal()
     {
         const string groupId = "failed-owned-group";
@@ -738,7 +795,10 @@ public sealed class UpdateRecoveryWatchdogTests
     }
 
     private (UpdateApplyPlan Plan, UpdateProcessIdentity Watchdog,
-        UpdateProcessIdentity Updated) PrepareAwaitingHealth(string suffix, string groupId)
+        UpdateProcessIdentity Updated) PrepareAwaitingHealth(
+            string suffix,
+            string groupId,
+            bool smokeTest = false)
     {
         string root = Root();
         string target = Path.Combine(root, "VibeTable.Next");
@@ -748,7 +808,15 @@ public sealed class UpdateRecoveryWatchdogTests
         CreatePackageTree(source, "1.1.0", "new");
         CreatePackageTree(Path.Combine(stage, "backup"), "1.0.0", "old");
         var plan = new UpdateApplyPlan(
-            1, target, source, stage, 123, "1.0.0", "1.1.0", new string('b', 64));
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            new string('b', 64),
+            SmokeTest: smokeTest);
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             JsonSerializer.Serialize(plan));
@@ -955,6 +1023,8 @@ public sealed class UpdateRecoveryWatchdogTests
         private string? _updatedGroupId;
         public List<string> Events { get; } = [];
 
+        public UpdateRestoredPackageLaunch? RestoredLaunch { get; private set; }
+
         public UpdateProcessIdentity Current() => _watchdog;
 
         public UpdateOwnedProcessGroup StartUpdatedPackage(UpdateUpdatedPackageLaunch launch)
@@ -1088,6 +1158,7 @@ public sealed class UpdateRecoveryWatchdogTests
         public void StartRestoredPackage(UpdateRestoredPackageLaunch launch)
         {
             Events.Add("start-restored");
+            RestoredLaunch = launch;
             if (failRestoredLaunch)
             {
                 throw new InvalidOperationException("simulated restored launch failure");

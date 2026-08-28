@@ -539,10 +539,7 @@ internal sealed class UpdateRecoveryWatchdog(
         bool launched = false;
         try
         {
-            _processes.StartRestoredPackage(new UpdateRestoredPackageLaunch(
-                Path.Combine(plan.TargetRoot, "VibeTable.Next.exe"),
-                plan.TargetRoot,
-                []));
+            _processes.StartRestoredPackage(RestoredLaunch(plan));
             launched = true;
         }
         catch (Exception)
@@ -562,6 +559,28 @@ internal sealed class UpdateRecoveryWatchdog(
                 // terminal receipt. Never re-enter pending recovery from here.
             }
         }
+    }
+
+    private static UpdateRestoredPackageLaunch RestoredLaunch(UpdateApplyPlan plan)
+    {
+        IReadOnlyList<string> arguments = [];
+        if (plan.SmokeTest)
+        {
+            string stageParent = Directory.GetParent(plan.StagingRoot.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar))!.FullName;
+            arguments = [
+                "--test-mode",
+                "--readiness-dir",
+                Path.Combine(stageParent, "self-update-restored-readiness"),
+                "--e2e-controls-dir",
+                Path.Combine(stageParent, "self-update-restored-controls"),
+            ];
+        }
+        return new UpdateRestoredPackageLaunch(
+            Path.Combine(plan.TargetRoot, "VibeTable.Next.exe"),
+            plan.TargetRoot,
+            arguments);
     }
 
     private static UpdateUpdatedPackageLaunch UpdatedLaunch(
