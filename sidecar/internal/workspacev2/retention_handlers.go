@@ -520,16 +520,13 @@ func (source *workspaceRetentionInventory) Inventory(
 			ID: completed.ID, Size: completed.Size,
 		}
 	}
-	for _, pin := range repositoryInventory.Pins {
-		if pin.WorkspaceID != source.runtime.manifest.WorkspaceID {
-			result.UnknownManifest = true
-			continue
-		}
-		result.PinnedRoots = append(
-			result.PinnedRoots,
-			pin.Roots...,
-		)
-	}
+	pinnedRoots, foreignPin := activeRetentionPinRoots(
+		repositoryInventory.Pins,
+		source.runtime.manifest.WorkspaceID,
+		source.now(),
+	)
+	result.PinnedRoots = append(result.PinnedRoots, pinnedRoots...)
+	result.UnknownManifest = result.UnknownManifest || foreignPin
 	tombstonedSnapshots, err := source.store.TombstonedSnapshotIDs(ctx)
 	if err != nil {
 		return retention.Inventory{}, err
@@ -623,6 +620,27 @@ func (source *workspaceRetentionInventory) Inventory(
 	result.Roots = append(result.Roots, planRoots...)
 	sortRetentionInventory(&result)
 	return result, nil
+}
+
+func activeRetentionPinRoots(
+	pins []objectrepo.RootPin,
+	workspaceID string,
+	now time.Time,
+) ([]objectrepo.ObjectID, bool) {
+	activeRoots := make([]objectrepo.ObjectID, 0)
+	foreignPin := false
+	now = now.UTC()
+	for _, pin := range pins {
+		if pin.WorkspaceID != workspaceID {
+			foreignPin = true
+			continue
+		}
+		if pin.ExpiresAt != nil && !now.Before(pin.ExpiresAt.UTC()) {
+			continue
+		}
+		activeRoots = append(activeRoots, pin.Roots...)
+	}
+	return activeRoots, foreignPin
 }
 
 func (source *workspaceRetentionInventory) pendingPlanRoots(
