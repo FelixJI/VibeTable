@@ -35,7 +35,6 @@ import {
   HOST_SNAPSHOT_IMPORT_GRANT,
   HOST_WORKSPACE_ROOT_GRANT,
 } from "@/services/workspaceV2HostAdapter";
-import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
 
 const emit = defineEmits<{
@@ -358,24 +357,6 @@ watch(
             </span>
           </div>
           <div class="card-actions">
-            <NButton
-              v-if="publicCapabilityPolicy.workspaceRelink
-                && workspace.lastKnownHealth !== 'healthy'"
-              size="small"
-              quaternary
-              :title="t('workspaceV2.center.relinkHint')"
-              :data-testid="`workspace-relink-${workspace.workspaceId}`"
-              @click="emit('action', {
-                method: 'workspace.relink',
-                params: {
-                  workspaceId: workspace.workspaceId,
-                  selectedRootGrant: HOST_WORKSPACE_ROOT_GRANT,
-                },
-              })"
-            >
-              <template #icon><NIcon><FolderInput /></NIcon></template>
-              {{ t("workspaceV2.center.relink") }}
-            </NButton>
             <NButton
               size="small"
               quaternary

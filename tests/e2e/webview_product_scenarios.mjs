@@ -4355,9 +4355,8 @@ async function scenario14(page, recorder, _network, runtime) {
     rawMaterializeFailure = String(error);
   }
   recorder.check("renderer cannot invoke raw diff materialization",
-    rawMaterializeFailure.includes("CAPABILITY_NOT_PUBLIC"),
+    rawMaterializeFailure.includes("workspace.method_not_public"),
   { rawMaterializeFailure });
-  await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "CAPABILITY_NOT_PUBLIC");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff.png"), fullPage: true });
 }
 

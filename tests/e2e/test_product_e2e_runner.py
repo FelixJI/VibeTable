@@ -1712,9 +1712,10 @@ def test_document_diff_scenario_uses_closed_ui_operation_and_rejects_raw_materia
     assert 'getByTestId("diff-result")' in scenario
     assert "operationId: crypto.randomUUID()" in scenario
     assert 'rawWorkspaceV2Request(page, "fileHistory.materializeDiffPair"' in scenario
-    assert 'rawMaterializeFailure.includes("CAPABILITY_NOT_PUBLIC")' in scenario
+    assert 'rawMaterializeFailure.includes("workspace.method_not_public")' in scenario
     assert (
-        'acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "CAPABILITY_NOT_PUBLIC")' in scenario
+        'acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "CAPABILITY_NOT_PUBLIC")'
+        not in scenario
     )
     assert 'rawMaterializeFailure.includes("UNKNOWN_V2_METHOD")' not in scenario
 
