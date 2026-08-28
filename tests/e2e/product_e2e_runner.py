@@ -39,19 +39,19 @@ if str(ROOT) not in sys.path:
 
 from qa.package_check import check_package  # noqa: E402
 from scripts.build_next import RepoPaths  # noqa: E402
-from tests.e2e._windows_tcp_table import query_windows_tcp_table  # noqa: E402
-from tests.e2e.product_scenario_manifest import (  # noqa: E402
-    Scenario,
-    load_scenarios,
-    select_scenarios,
-)
-from tests.e2e.windows_process_scope import (  # noqa: E402
+from scripts.qa._windows_tcp_table import query_windows_tcp_table  # noqa: E402
+from scripts.qa.windows_process_scope import (  # noqa: E402
     ProcessLaunchSpec,
     ProcessScopeSnapshot,
     ScopeTerminationResult,
     ScopeWaitResult,
     TargetTerminationResult,
     WindowsProcessScope,
+)
+from tests.e2e.product_scenario_manifest import (  # noqa: E402
+    Scenario,
+    load_scenarios,
+    select_scenarios,
 )
 from tests.e2e.windows_tcp_listener_owner import (  # noqa: E402
     OwnerLeaseCleanupReport,

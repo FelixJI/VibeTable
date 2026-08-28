@@ -10,7 +10,7 @@ import sys
 from ctypes import wintypes
 from pathlib import Path
 
-from tests.e2e.windows_process_scope import ProcessLaunchSpec, _launch_with_adapter
+from scripts.qa.windows_process_scope import ProcessLaunchSpec, _launch_with_adapter
 
 EVENT_MODIFY_STATE = 0x0002
 JOB_OBJECT_QUERY = 0x0004
@@ -118,7 +118,7 @@ def _run_nested_root(
     pid_path: str,
     inner_job_name: str,
 ) -> int:
-    from tests.e2e._windows_process_scope_win32 import _Win32ProcessScopeAdapter
+    from scripts.qa._windows_process_scope_win32 import _Win32ProcessScopeAdapter
 
     with _launch_with_adapter(
         ProcessLaunchSpec(

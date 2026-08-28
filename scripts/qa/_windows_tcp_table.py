@@ -1,4 +1,4 @@
-"""One sanitized Windows TCP-table query and row model for E2E evidence."""
+"""One sanitized Windows TCP-table query and row model for QA evidence."""
 
 from __future__ import annotations
 

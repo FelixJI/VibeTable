@@ -1,8 +1,8 @@
 # 自我更新能力与安全边界
 
 评估日期：2026-08-01
-实现状态：Windows x64 便携包的成功更新与启动健康确认已实现；健康失败自动回退按
-[ADR 0010](adr/0010-process-out-update-health-rollback.md) 待实施
+实现状态：Windows x64 便携包的成功更新、启动健康确认与健康探测失败自动回退已实现；
+健康超时和新版进程崩溃的真实打包 smoke 仍待补充
 
 ## 结论
 
@@ -72,14 +72,17 @@ VibeTable 已具备端到端的稳定版自我更新能力。用户可在“设�
 - Release 工作流只保留最近若干已发布 Release；很旧版本仍能更新到最新版本，
   但界面只能展示 GitHub 当前保留的区间日志。
 - 文件替换事务失败会自动恢复旧包；新程序启动后的 shell readiness、只读工作区
-  `schema.list` 健康确认与延迟清理已经实现。健康失败时自动恢复旧包尚未实现，后续按
-  [ADR 0010](adr/0010-process-out-update-health-rollback.md) 的单一 journal 与进程外 worker 协议交付；
-  在该真实打包失败路径通过前，不把启动健康确认描述为完整自动回退。
+  `schema.list` 健康确认与延迟清理已经实现。真实打包 smoke 还会注册一个隔离的失效工作区，
+  强制健康探测失败并核对 `workspaceHealthProbeFailed` terminal receipt、失败新版进程退出、
+  旧包恢复及重新启动，以及未知安装根文件和外部用户数据不变。健康超时和新版进程崩溃
+  的真实打包路径仍未覆盖，不能从健康失败场景推断其已验收。
 
 ## 回归覆盖
 
 .NET 测试覆盖 SemVer 选择、draft/prerelease 过滤、ZIP 与 `.sha256` 资产必需、
 同通道代理重写、校验文件格式及与 API digest 的交叉校验、
 无更新结果、包身份、Zip Slip/ADS 拒绝、只替换包拥有入口、未知文件保留、复制失败
-回滚和成功更新后的 cleanup 身份。Web 测试覆盖代理保存、手动检查、两版本间多版
-日志、第三方披露和安装 RPC。
+回滚和成功更新后的 cleanup 身份。release build 在 atomic publish 前依次运行真实打包成功更新
+smoke 与 `workspaceHealthProbeFailed` 自动回退 smoke；后者同时验证失败新版退出、旧包恢复、
+restored shell readiness 和用户数据边界。Web 测试覆盖代理保存、手动检查、两版本间多版
+日志、第三方披露和安装 RPC；health timeout 与新版 crash 的真实打包 smoke 尚未加入。

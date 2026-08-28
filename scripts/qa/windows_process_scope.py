@@ -1,4 +1,4 @@
-"""Race-free Windows process ownership for packaged-host test launches.
+"""Race-free Windows process ownership for packaged-host QA launches.
 
 The public module owns one kernel Job Object generation. Callers never infer
 ownership from parent PIDs and never terminate a process by an unverified PID.
@@ -214,7 +214,7 @@ class WindowsProcessScope:
     ) -> WindowsProcessScope:
         if sys.platform != "win32":
             raise ProcessScopeLaunchError("Windows Job process scopes require Windows")
-        from tests.e2e._windows_process_scope_win32 import _Win32ProcessScopeAdapter
+        from ._windows_process_scope_win32 import _Win32ProcessScopeAdapter
 
         return _launch_with_adapter(spec, _Win32ProcessScopeAdapter())
 

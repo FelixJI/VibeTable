@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 from scripts.node_toolchain import ensure_node
+from scripts.qa.windows_process_scope import ProcessScopeLaunchError
 from tests.e2e import product_e2e_runner as runner
-from tests.e2e.windows_process_scope import ProcessScopeLaunchError
 from tests.e2e.windows_tcp_listener_owner import (
     OwnerLeaseCleanupReport,
     PortReleaseReport,

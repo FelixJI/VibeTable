@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from tests.e2e import _windows_tcp_table as tcp_table
+from scripts.qa import _windows_tcp_table as tcp_table
 
 
 def test_query_windows_tcp_table_propagates_budget_and_parses_five_column_rows(

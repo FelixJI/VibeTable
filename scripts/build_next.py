@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 try:
     from scripts._host_paths import host_assembly_name
@@ -35,6 +35,10 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
         collect_release_versions,
         read_project_version,
     )
+
+
+if TYPE_CHECKING:
+    from scripts.qa.windows_process_scope import WindowsProcessScope
 
 PROTOCOL_VERSION = "2.0"
 WEBVIEW2_SDK = "1.0.4129.50"
@@ -71,8 +75,11 @@ SELF_UPDATE_SMOKE_TOKEN_ENV = "VIBETABLE_SELF_UPDATE_SMOKE_TOKEN"
 SELF_UPDATE_SMOKE_COMPLETION_FILE = ".self-update-smoke-complete"
 SELF_UPDATE_SMOKE_PROCESS_FILE = ".self-update-smoke-process.json"
 SELF_UPDATE_SMOKE_READINESS_DIR = "self-update-readiness"
+SELF_UPDATE_RESTORED_READINESS_DIR = "self-update-restored-readiness"
+SELF_UPDATE_RESTORED_CONTROLS_DIR = "self-update-restored-controls"
 SHELL_READINESS_FILE = "vibetable-readiness.json"
 PENDING_UPDATE_ACTIVATION_POINTER = ".VibeTable.Next.update-pending.json"
+SELF_UPDATE_ROLLBACK_RECEIPT_GLOB = ".VibeTable.Next.update-rollback-*.json"
 _SELF_UPDATE_ACTIVATION_POINTER_V1_FIELDS = frozenset(
     {
         "schemaVersion",
@@ -1479,6 +1486,227 @@ def read_self_update_process_evidence(
     return process_id
 
 
+def _offset_datetime(value: object) -> datetime | None:
+    if type(value) is not str:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.utcoffset() is not None else None
+
+
+def _is_lower_hex(value: object, *, length: int) -> bool:
+    return (
+        type(value) is str
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_valid_health_failure_rollback_receipt(
+    receipt: object,
+    *,
+    receipt_name: str,
+    target: Path,
+    stage: Path,
+    token: str,
+    expected_updater_process_id: int,
+    updated_process_id: int,
+) -> bool:
+    if not isinstance(receipt, dict) or set(receipt) != _SELF_UPDATE_ACTIVATION_POINTER_V2_FIELDS:
+        return False
+    receipt_updater_process_id = receipt.get("updaterProcessId")
+    watchdog_process_id = receipt.get("watchdogProcessId")
+    receipt_updated_process_id = receipt.get("updatedProcessId")
+    worker_process_id = receipt.get("workerProcessId")
+    process_ids = (receipt_updater_process_id, watchdog_process_id, worker_process_id)
+    if any(type(process_id) is not int or process_id <= 0 for process_id in process_ids):
+        return False
+    if type(expected_updater_process_id) is not int or expected_updater_process_id <= 0:
+        return False
+    if receipt_updater_process_id != expected_updater_process_id:
+        return False
+    if type(updated_process_id) is not int or updated_process_id <= 0:
+        return False
+    if (
+        type(receipt_updated_process_id) is not int
+        or receipt_updated_process_id != updated_process_id
+    ):
+        return False
+
+    timestamp_fields = (
+        "updaterStartedAtUtc",
+        "createdAtUtc",
+        "watchdogStartedAtUtc",
+        "updatedStartedAtUtc",
+        "rollbackRequestedAtUtc",
+        "ownedGroupQuiescedAtUtc",
+        "workerStartedAtUtc",
+        "rolledBackAtUtc",
+    )
+    timestamps = {field: _offset_datetime(receipt.get(field)) for field in timestamp_fields}
+    if any(timestamp is None for timestamp in timestamps.values()):
+        return False
+    updater_started = cast(datetime, timestamps["updaterStartedAtUtc"])
+    created_at = cast(datetime, timestamps["createdAtUtc"])
+    watchdog_started = cast(datetime, timestamps["watchdogStartedAtUtc"])
+    updated_started = cast(datetime, timestamps["updatedStartedAtUtc"])
+    rollback_requested = cast(datetime, timestamps["rollbackRequestedAtUtc"])
+    group_quiesced = cast(datetime, timestamps["ownedGroupQuiescedAtUtc"])
+    worker_started = cast(datetime, timestamps["workerStartedAtUtc"])
+    rolled_back = cast(datetime, timestamps["rolledBackAtUtc"])
+    if not (
+        updater_started
+        <= created_at
+        <= updated_started
+        <= rollback_requested
+        <= group_quiesced
+        <= worker_started
+        <= rolled_back
+    ):
+        return False
+    if watchdog_process_id != receipt_updater_process_id or watchdog_started != updater_started:
+        return False
+    process_identities = {
+        (receipt_updater_process_id, updater_started),
+        (updated_process_id, updated_started),
+        (worker_process_id, worker_started),
+    }
+    if len(process_identities) != 3:
+        return False
+
+    rollback_attempt = receipt.get("rollbackAttempt")
+    ledger = receipt.get("ownedEntryLedger")
+    expected_ledger = {
+        ("resources", "restored"),
+        ("release.json", "restored"),
+        (HOST_EXE_NAME, "restored"),
+    }
+    if not isinstance(ledger, list) or len(ledger) != len(expected_ledger):
+        return False
+    if any(
+        not isinstance(entry, dict)
+        or set(entry) != {"name", "phase"}
+        or type(entry["name"]) is not str
+        or type(entry["phase"]) is not str
+        for entry in ledger
+    ):
+        return False
+    actual_ledger = {(entry["name"], entry["phase"]) for entry in ledger}
+    worker_replacement_count = receipt.get("workerReplacementCount")
+    return (
+        type(receipt.get("schemaVersion")) is int
+        and receipt.get("schemaVersion") == 2
+        and receipt.get("state") == "rollbackComplete"
+        and type(receipt.get("targetRoot")) is str
+        and Path(receipt["targetRoot"]).resolve() == target.resolve()
+        and type(receipt.get("stagingRoot")) is str
+        and Path(receipt["stagingRoot"]).resolve() == stage.resolve()
+        and receipt.get("currentVersion") == "1.0.0"
+        and receipt.get("targetVersion") == "1.0.1"
+        and receipt.get("token") == token
+        and receipt.get("smokeTest") is True
+        and receipt.get("confirmedAt") is None
+        and _is_lower_hex(receipt.get("ownedGroupId"), length=32)
+        and receipt.get("launchNonce") is None
+        and receipt.get("failureCode") == "workspaceHealthProbeFailed"
+        and receipt.get("workerLaunchNonce") is None
+        and type(worker_replacement_count) is int
+        and worker_replacement_count in (0, 1)
+        and actual_ledger == expected_ledger
+        and _is_lower_hex(rollback_attempt, length=32)
+        and receipt_name == f".VibeTable.Next.update-rollback-{rollback_attempt}.json"
+        and receipt.get("rollbackErrorCode") is None
+    )
+
+
+def wait_for_self_update_health_failure_rollback(
+    root: Path,
+    *,
+    process_scope: WindowsProcessScope,
+    target: Path,
+    stage: Path,
+    token: str,
+    updater_process_id: int,
+    updated_process_id: int,
+    timeout_seconds: float = 120,
+) -> int:
+    """Validate a health-failure rollback and return the restored host PID."""
+    deadline = time.monotonic() + timeout_seconds
+    readiness = root / SELF_UPDATE_SMOKE_READINESS_DIR / SHELL_READINESS_FILE
+    restored_readiness = root / SELF_UPDATE_RESTORED_READINESS_DIR / SHELL_READINESS_FILE
+    restored_state = root / SELF_UPDATE_RESTORED_CONTROLS_DIR / "host-lifecycle-state.json"
+    while time.monotonic() < deadline:
+        receipts = sorted(root.glob(SELF_UPDATE_ROLLBACK_RECEIPT_GLOB))
+        if len(receipts) > 1:
+            raise BuildError("desktop self-update smoke produced ambiguous rollback receipts")
+        if not (
+            readiness.is_file()
+            and len(receipts) == 1
+            and restored_readiness.is_file()
+            and restored_state.is_file()
+        ):
+            time.sleep(0.05)
+            continue
+        try:
+            failed = json.loads(readiness.read_text(encoding="utf-8"))
+            receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+            restored = json.loads(restored_readiness.read_text(encoding="utf-8"))
+            state = json.loads(restored_state.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BuildError("desktop self-update smoke rollback evidence is invalid") from exc
+        if (
+            failed.get("ready") is not False
+            or not isinstance(failed.get("error"), str)
+            or not failed["error"]
+        ):
+            raise BuildError("desktop self-update smoke did not observe a health failure")
+        if not _is_valid_health_failure_rollback_receipt(
+            receipt,
+            receipt_name=receipts[0].name,
+            target=target,
+            stage=stage,
+            token=token,
+            expected_updater_process_id=updater_process_id,
+            updated_process_id=updated_process_id,
+        ):
+            raise BuildError("desktop self-update smoke rollback receipt identity is invalid")
+        if (
+            restored.get("ready") is not True
+            or restored.get("mode") != "shell"
+            or not all(
+                restored.get(field) is True
+                for field in ("backendReady", "webViewReady", "rendererReady")
+            )
+        ):
+            raise BuildError("desktop self-update smoke restored shell readiness is invalid")
+        restored_process_id = state.get("hostProcessId")
+        if (
+            state.get("evidenceKind") != "packaged-host-control"
+            or state.get("hostExecutable") != HOST_EXE_NAME
+            or type(restored_process_id) is not int
+            or restored_process_id <= 0
+            or restored_process_id == updated_process_id
+        ):
+            raise BuildError("desktop self-update smoke restored process evidence is invalid")
+        members = process_scope.snapshot().members
+        member_pids = {member.pid for member in members}
+        restored_member = next(
+            (member for member in members if member.pid == restored_process_id),
+            None,
+        )
+        if (
+            updated_process_id not in member_pids
+            and restored_member is not None
+            and restored_member.identity_verified
+            and restored_member.executable_name == HOST_EXE_NAME
+        ):
+            return restored_process_id
+        time.sleep(0.05)
+    raise BuildError("desktop self-update smoke health-failure rollback did not complete")
+
+
 def wait_for_self_update_activation_pointer(
     path: Path,
     *,
@@ -1540,6 +1768,194 @@ def wait_for_self_update_activation_pointer(
             last_error = exc
             time.sleep(0.05)
     raise BuildError("desktop self-update activation pointer was not persisted") from last_error
+
+
+def self_update_smoke_local_data_root(root: Path) -> Path:
+    """Return the isolated LocalApplicationData root used by the packaged host."""
+    return root / SELF_UPDATE_SMOKE_READINESS_DIR / "local-data"
+
+
+def _seed_self_update_health_failure_registry(root: Path) -> None:
+    registry_root = self_update_smoke_local_data_root(root) / "VibeTable" / "shell"
+    registry_root.mkdir(parents=True)
+    missing_workspace = root / "missing-health-probe-workspace"
+    registry = {
+        "formatVersion": 2,
+        "workspaces": [
+            {
+                "contractVersion": "2.0",
+                "workspaceId": "11111111-1111-4111-8111-111111111111",
+                "displayName": "Updater health-failure smoke",
+                "selectedRoot": str(missing_workspace.resolve()),
+                "activityRoot": None,
+                "storageKind": "fixed",
+                "coordinationStrength": "strong",
+                "lastOpenedAt": "2026-08-28T04:00:00+00:00",
+                "lastKnownHealth": "offline",
+                "lastSnapshotAt": None,
+                "lastSyncAt": None,
+                "pendingSync": False,
+            }
+        ],
+    }
+    (registry_root / "workspace-registry-v2.json").write_text(
+        json.dumps(registry, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def request_restored_self_update_host_close(
+    controls: Path,
+    process_id: int,
+    process_scope: WindowsProcessScope,
+) -> None:
+    """Request a close only while the exact restored host is still running."""
+    if process_id not in {member.pid for member in process_scope.snapshot().members}:
+        raise BuildError("desktop self-update smoke restored process exited before close request")
+    request = controls / "host-normal-close.request"
+    request.write_text("", encoding="utf-8")
+    wait_result = process_scope.wait_empty(timeout=30)
+    if not wait_result.success:
+        raise BuildError("desktop self-update smoke restored process did not exit")
+    if request.exists():
+        raise BuildError("desktop self-update smoke restored process did not consume close request")
+
+
+def cleanup_self_update_health_failure_scope(process_scope: WindowsProcessScope) -> None:
+    """Clean the atomically Job-owned updater tree without reopening bare PIDs."""
+    if process_scope.wait_empty(timeout=0).success:
+        return
+    result = process_scope.terminate_all(timeout=30)
+    if not result.success:
+        raise BuildError("desktop self-update smoke could not clean its process scope")
+
+
+def _run_desktop_self_update_health_failure_smoke(
+    package: Path,
+    root: Path,
+) -> None:
+    try:
+        from scripts.qa.windows_process_scope import ProcessLaunchSpec, WindowsProcessScope
+    except ModuleNotFoundError:  # pragma: no cover - direct script execution
+        from qa.windows_process_scope import ProcessLaunchSpec, WindowsProcessScope
+
+    root.mkdir()
+    target = root / "VibeTable.Next"
+    stage = root / ".VibeTable.Next.update-health-failure"
+    source = stage / "package" / ARCHIVE_ROOT_NAME
+    _stage_self_update_smoke_package(
+        target,
+        package,
+        version="1.0.0",
+        resource_marker="old",
+    )
+    _stage_self_update_smoke_package(
+        source,
+        package,
+        version="1.0.1",
+        resource_marker="new",
+    )
+    install_sentinel = target / "user-data.db"
+    external_sentinel = self_update_smoke_local_data_root(root) / "user-data.db"
+    install_sentinel.write_text("preserve-install-root", encoding="utf-8")
+    external_sentinel.parent.mkdir(parents=True)
+    external_sentinel.write_text("preserve-user-data", encoding="utf-8")
+    _seed_self_update_health_failure_registry(root)
+    restored_readiness = root / SELF_UPDATE_RESTORED_READINESS_DIR
+    restored_controls = root / SELF_UPDATE_RESTORED_CONTROLS_DIR
+    restored_readiness.mkdir()
+    restored_controls.mkdir()
+
+    applied_scope: WindowsProcessScope | None = None
+    updated_process_id: int | None = None
+    restored_process_id: int | None = None
+    blocking_parent = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        cwd=root,
+    )
+    try:
+        token = secrets.token_hex(32)
+        plan = {
+            "SchemaVersion": 1,
+            "TargetRoot": str(target),
+            "SourceRoot": str(source),
+            "StagingRoot": str(stage),
+            "ParentProcessId": blocking_parent.pid,
+            "CurrentVersion": "1.0.0",
+            "TargetVersion": "1.0.1",
+            "Token": token,
+            "SmokeTest": True,
+        }
+        plan_path = stage / "update-plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        environment = os.environ.copy()
+        environment[SELF_UPDATE_SMOKE_TOKEN_ENV] = token
+        applied_scope = WindowsProcessScope.launch(
+            ProcessLaunchSpec(
+                [str(source / HOST_EXE_NAME), "--apply-update", str(plan_path)],
+                cwd=source,
+                env=environment,
+            )
+        )
+        applied = applied_scope.root
+        wait_for_self_update_activation_pointer(
+            root / PENDING_UPDATE_ACTIVATION_POINTER,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=applied.pid,
+        )
+        blocking_parent.terminate()
+        blocking_parent.wait(timeout=30)
+        applied_returncode = applied.wait(timeout=120)
+        if applied_returncode != 0:
+            raise BuildError(
+                f"desktop self-update health-failure updater exited with {applied_returncode}"
+            )
+        updated_process_id = read_self_update_process_evidence(
+            root / SELF_UPDATE_SMOKE_READINESS_DIR / SELF_UPDATE_SMOKE_PROCESS_FILE,
+            token=token,
+            target_version="1.0.1",
+        )
+        restored_process_id = wait_for_self_update_health_failure_rollback(
+            root,
+            process_scope=applied_scope,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=applied.pid,
+            updated_process_id=updated_process_id,
+        )
+        identity = json.loads((target / "release.json").read_text(encoding="utf-8"))
+        if identity.get("version") != "1.0.0":
+            raise BuildError("desktop self-update smoke did not restore the old package identity")
+        marker = (target / "resources" / "self-update-smoke.txt").read_text(encoding="utf-8")
+        if marker != "old":
+            raise BuildError("desktop self-update smoke did not restore old package resources")
+        if install_sentinel.read_text(encoding="utf-8") != "preserve-install-root":
+            raise BuildError("desktop self-update smoke overwrote an unknown install-root file")
+        if external_sentinel.read_text(encoding="utf-8") != "preserve-user-data":
+            raise BuildError("desktop self-update smoke overwrote external user data")
+        request_restored_self_update_host_close(
+            restored_controls,
+            restored_process_id,
+            applied_scope,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BuildError(
+            "desktop self-update smoke could not run the health-failure package"
+        ) from exc
+    finally:
+        try:
+            if blocking_parent.poll() is None:
+                blocking_parent.terminate()
+                blocking_parent.wait(timeout=30)
+        finally:
+            if applied_scope is not None:
+                try:
+                    cleanup_self_update_health_failure_scope(applied_scope)
+                finally:
+                    applied_scope.close()
 
 
 def run_desktop_self_update_smoke(
@@ -1673,6 +2089,7 @@ def run_desktop_self_update_smoke(
         raise BuildError("desktop self-update smoke overwrote an unknown install-root file")
     if external_sentinel.read_text(encoding="utf-8") != "preserve-user-data":
         raise BuildError("desktop self-update smoke overwrote external user data")
+    _run_desktop_self_update_health_failure_smoke(package, root / "health-failure")
 
 
 def _atomic_swap(staging: Path, publish: Path) -> None:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from tests.e2e.windows_process_scope import (
+from scripts.qa.windows_process_scope import (
     ProcessLaunchSpec,
     ProcessScopeClosedError,
     ProcessScopeMember,
@@ -310,7 +310,7 @@ def test_closed_scope_rejects_every_public_process_operation(operation) -> None:
 
 
 def test_external_seam_does_not_expose_construction_or_adapter_injection() -> None:
-    constructor = __import__("tests.e2e.windows_process_scope", fromlist=["x"]).WindowsProcessScope
+    constructor = __import__("scripts.qa.windows_process_scope", fromlist=["x"]).WindowsProcessScope
     with pytest.raises(TypeError):
         constructor(_FakePlatformScope())
 
