@@ -1,0 +1,359 @@
+{
+  "contractVersion": "2.0",
+  "methods": [
+    {
+      "method": "workspace.list",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.create",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.register",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.relink",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererInternal"
+    },
+    {
+      "method": "workspace.open",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.switch",
+      "scope": "workspace",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.close",
+      "scope": "workspace",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.remove",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.planDelete",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.applyDelete",
+      "scope": "global",
+      "capabilityId": "workspace.lifecycle",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.storage.preview",
+      "scope": "global",
+      "capabilityId": "workspace.storage",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspace.storage.apply",
+      "scope": "global",
+      "capabilityId": "workspace.storage",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.request",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.list",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.inspect",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.update",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.previewRestore",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.applyRestore",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.openAsNewWorkspace",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.previewExtract",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.applyExtract",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.export",
+      "scope": "workspace",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.inspectPackage",
+      "scope": "global",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "snapshot.import",
+      "scope": "global",
+      "capabilityId": "snapshot",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "history.query",
+      "scope": "workspace",
+      "capabilityId": "history.restore",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "history.previewRestore",
+      "scope": "workspace",
+      "capabilityId": "history.restore",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "history.applyRestore",
+      "scope": "workspace",
+      "capabilityId": "history.restore",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "repository.verify",
+      "scope": "workspace",
+      "capabilityId": "repository.protection",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "repository.previewKeyRotation",
+      "scope": "workspace",
+      "capabilityId": "repository.protection",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "repository.applyKeyRotation",
+      "scope": "workspace",
+      "capabilityId": "repository.protection",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.import",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.queryDocuments",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.listPendingChanges",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspaceSearch.query",
+      "scope": "workspace",
+      "capabilityId": "workspace-search",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspaceSearch.resolveHit",
+      "scope": "workspace",
+      "capabilityId": "workspace-search",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspaceSearch.status",
+      "scope": "workspace",
+      "capabilityId": "workspace-search",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspaceSearch.rebuild",
+      "scope": "workspace",
+      "capabilityId": "workspace-search",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "workspaceSearch.cancel",
+      "scope": "workspace",
+      "capabilityId": "workspace-search",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.applyPendingChange",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.unlink",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.relink",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.readTree",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.materializeDiffPair",
+      "scope": "workspace",
+      "capabilityId": "document.diff",
+      "audience": "hostOnly"
+    },
+    {
+      "method": "fileHistory.assertEffectiveRevision",
+      "scope": "workspace",
+      "capabilityId": "document.diff",
+      "audience": "hostOnly"
+    },
+    {
+      "method": "fileHistory.restore",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.upgrade",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "fileHistory.activateLeaf",
+      "scope": "workspace",
+      "capabilityId": "file-history",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "retention.get",
+      "scope": "workspace",
+      "capabilityId": "retention",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "retention.status",
+      "scope": "workspace",
+      "capabilityId": "retention",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "retention.update",
+      "scope": "workspace",
+      "capabilityId": "retention",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "retention.plan",
+      "scope": "workspace",
+      "capabilityId": "retention",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "retention.apply",
+      "scope": "workspace",
+      "capabilityId": "retention",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "replica.status",
+      "scope": "workspace",
+      "capabilityId": "replica",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "replica.synchronize",
+      "scope": "workspace",
+      "capabilityId": "replica",
+      "audience": "rendererInternal"
+    },
+    {
+      "method": "replica.forceTakeover",
+      "scope": "workspace",
+      "capabilityId": "replica",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "conflict.list",
+      "scope": "workspace",
+      "capabilityId": "conflict",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "conflict.inspect",
+      "scope": "workspace",
+      "capabilityId": "conflict",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "conflict.preview",
+      "scope": "workspace",
+      "capabilityId": "conflict",
+      "audience": "rendererPublic"
+    },
+    {
+      "method": "conflict.apply",
+      "scope": "workspace",
+      "capabilityId": "conflict",
+      "audience": "rendererPublic"
+    }
+  ]
+}

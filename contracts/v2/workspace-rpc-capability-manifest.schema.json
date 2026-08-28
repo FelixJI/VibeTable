@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibetable.local/contracts/v2/workspace-rpc-capability-manifest.schema.json",
+  "title": "Workspace RPC Capability Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "methods"],
+  "properties": {
+    "contractVersion": {
+      "const": "2.0"
+    },
+    "methods": {
+      "type": "array",
+      "minItems": 59,
+      "maxItems": 59,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "scope", "capabilityId", "audience"],
+        "properties": {
+          "method": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "enum": ["global", "workspace"]
+          },
+          "capabilityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "audience": {
+            "enum": ["rendererPublic", "rendererInternal", "hostOnly"]
+          }
+        }
+      }
+    }
+  }
+}
