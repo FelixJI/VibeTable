@@ -82,7 +82,8 @@ VibeTable 已具备端到端的稳定版自我更新能力。用户可在“设�
 .NET 测试覆盖 SemVer 选择、draft/prerelease 过滤、ZIP 与 `.sha256` 资产必需、
 同通道代理重写、校验文件格式及与 API digest 的交叉校验、
 无更新结果、包身份、Zip Slip/ADS 拒绝、只替换包拥有入口、未知文件保留、复制失败
-回滚和成功更新后的 cleanup 身份。release build 在 atomic publish 前依次运行真实打包成功更新
-smoke 与 `workspaceHealthProbeFailed` 自动回退 smoke；后者同时验证失败新版退出、旧包恢复、
-restored shell readiness 和用户数据边界。Web 测试覆盖代理保存、手动检查、两版本间多版
-日志、第三方披露和安装 RPC；health timeout 与新版 crash 的真实打包 smoke 尚未加入。
+回滚和成功更新后的 cleanup 身份。release build 在 atomic publish 前依次运行真实打包成功更新、
+`workspaceHealthProbeFailed` 自动回退和新版宿主受控退出自动回退 smoke；回退场景同时验证
+旧包恢复、restored shell readiness 和用户数据边界。Web 测试覆盖代理保存、手动检查、
+两版本间多版日志、第三方披露和安装 RPC；health timeout 与新版 crash 的真实打包 smoke
+尚未加入。
