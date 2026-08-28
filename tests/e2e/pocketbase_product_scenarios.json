@@ -130,5 +130,11 @@
     "title": "Timeline 单日期拖动持久化",
     "requirement": "通过真实 Tables UI 创建 date 字段并配置无结束字段的 Timeline；把权威 point 记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。",
     "capabilities": ["timeline.lifecycle", "mutation.authority"]
+  },
+  {
+    "id": "23-retention-nonzero-apply",
+    "title": "工作区保护非零 retention 清理",
+    "requirement": "通过真实 Settings UI 先验证仓库，并证明隔离场景的初始 snapshot catalog 为空；再将 snapshot count 收紧为 1 且清空 snapshot buckets，创建两个真实快照，并通过 renderer-public snapshot interface 取消手工快照的默认固定状态，形成隔离候选。preview 必须返回无阻塞且可应用的 plan（共享或零字节对象允许 reclaimableBytes 为 0）；Apply 必须执行非零逻辑删除/tombstone，固定 3 个月 grace 内 reclaimedBytes 必须为 0，最新 snapshot 必须保持可达且至少一个较旧 snapshot 不再可达；随后二次 plan/apply 必须删除 0 个对象，证明没有剩余逻辑候选。",
+    "capabilities": ["workspace.protection"]
   }
 ]

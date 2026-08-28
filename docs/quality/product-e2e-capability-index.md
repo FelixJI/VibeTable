@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：22
+- 场景：23
 - 唯一能力：40
-- 场景—能力关联：51
+- 场景—能力关联：52
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -55,7 +55,7 @@
 | `workspace-search.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `workspace-search.rebuild` | <code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `workspace.lifecycle` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>10-sse-reconnect</code>（SSE 断线重连且不重复应用）、<code>15-workspace-snapshot-package</code>（工作区切换与快照包） |
-| `workspace.protection` | <code>13-protection-policy</code>（工作区保护策略与仓库验证） |
+| `workspace.protection` | <code>13-protection-policy</code>（工作区保护策略与仓库验证）、<code>23-retention-nonzero-apply</code>（工作区保护非零 retention 清理） |
 
 ## 场景到能力
 
@@ -83,3 +83,4 @@
 | <code>20-kanban-lane-drag</code> | Kanban 单选泳道拖拽持久化 | 通过真实 Tables UI 创建并配置以单选字段分组的 Kanban；泳道显示 label 但拖拽只提交稳定 optionId，host 权威提交后移动卡片；刷新以及离开 Tables 后重开仍保持移动结果。 | `kanban.lifecycle`、`mutation.authority` |
 | <code>21-calendar-date-move</code> | Calendar 日期拖动持久化 | 通过真实 Tables UI 创建 date 字段并配置 Calendar；把权威记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。 | `calendar.lifecycle`、`mutation.authority` |
 | <code>22-timeline-date-move</code> | Timeline 单日期拖动持久化 | 通过真实 Tables UI 创建 date 字段并配置无结束字段的 Timeline；把权威 point 记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。 | `timeline.lifecycle`、`mutation.authority` |
+| <code>23-retention-nonzero-apply</code> | 工作区保护非零 retention 清理 | 通过真实 Settings UI 先验证仓库，并证明隔离场景的初始 snapshot catalog 为空；再将 snapshot count 收紧为 1 且清空 snapshot buckets，创建两个真实快照，并通过 renderer-public snapshot interface 取消手工快照的默认固定状态，形成隔离候选。preview 必须返回无阻塞且可应用的 plan（共享或零字节对象允许 reclaimableBytes 为 0）；Apply 必须执行非零逻辑删除/tombstone，固定 3 个月 grace 内 reclaimedBytes 必须为 0，最新 snapshot 必须保持可达且至少一个较旧 snapshot 不再可达；随后二次 plan/apply 必须删除 0 个对象，证明没有剩余逻辑候选。 | `workspace.protection` |

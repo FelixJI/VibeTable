@@ -6188,6 +6188,266 @@ async function scenario22(page, recorder, _network, runtime) {
   });
 }
 
+async function createNonzeroRetentionCandidate(page, settings, recorder) {
+  const retentionInputs = settings.locator(".retention-grid").locator("input");
+  const snapshotCount = retentionInputs.nth(1);
+  await snapshotCount.fill("1");
+  await snapshotCount.press("Tab");
+  const snapshotBuckets = settings.locator(".retention-grid label.bucket-field").first();
+  const snapshotBucketClose = snapshotBuckets.locator(".n-tag__close");
+  while (await snapshotBucketClose.count()) {
+    await snapshotBucketClose.first().click();
+  }
+  const save = page.getByTestId("retention-save");
+  recorder.check("retention policy becomes dirty through the real Settings control",
+    await save.isEnabled(), { saveDisabled: await save.isDisabled() });
+  await beginWorkspaceV2MethodCapture(page, "retention.update");
+  await save.click();
+  const retentionUpdate = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("retention policy keeps one snapshot and no time buckets through the packaged UI",
+    retentionUpdate.type === "workspace.v2.response"
+      && retentionUpdate.payload?.method === "retention.update"
+      && retentionUpdate.payload?.ok === true
+      && ["1", "1.0"].includes(await snapshotCount.inputValue())
+      && (await snapshotBucketClose.count()) === 0,
+  {
+    snapshotCount: await snapshotCount.inputValue(),
+    snapshotBuckets: await snapshotBucketClose.count(),
+    retentionUpdate,
+  });
+
+  await page.getByTestId("settings-nav-versions").click();
+  const snapshotsBefore = await rawWorkspaceV2Request(page, "snapshot.list", {
+    cursor: null,
+    limit: 200,
+  });
+  const snapshotIdsBefore = new Set(
+    (snapshotsBefore.result?.snapshots ?? [])
+      .map((snapshot) => snapshot?.snapshotId)
+      .filter((snapshotId) => typeof snapshotId === "string"),
+  );
+  recorder.check("retention cleanup starts from an isolated empty snapshot catalog",
+    snapshotIdsBefore.size === 0,
+  { snapshotsBefore });
+  if (snapshotIdsBefore.size !== 0) {
+    throw new Error("retention cleanup scenario requires an empty snapshot catalog");
+  }
+  const snapshotCountBefore = await page.locator(".snapshot-row").count();
+  const snapshotCreate = page.getByTestId("snapshot-create");
+  for (let expectedCount = snapshotCountBefore + 1;
+    expectedCount <= snapshotCountBefore + 2;
+    expectedCount += 1) {
+    await snapshotCreate.click();
+    await page.waitForFunction(
+      (count) => document.querySelectorAll(".snapshot-row").length >= count,
+      expectedCount,
+      { timeout: 60_000 },
+    );
+  }
+  const snapshotCountAfter = await page.locator(".snapshot-row").count();
+  const snapshotsAfter = await rawWorkspaceV2Request(page, "snapshot.list", {
+    cursor: null,
+    limit: 200,
+  });
+  const createdSnapshots = (snapshotsAfter.result?.snapshots ?? [])
+    .filter((snapshot) => typeof snapshot?.snapshotId === "string"
+      && !snapshotIdsBefore.has(snapshot.snapshotId));
+  const createdSnapshotIds = createdSnapshots.map((snapshot) => snapshot.snapshotId);
+  recorder.check("two real snapshots create an isolated retention candidate",
+    snapshotCountAfter >= snapshotCountBefore + 2 && createdSnapshotIds.length >= 2,
+  {
+    snapshotCountBefore,
+    snapshotCountAfter,
+    createdSnapshotIds,
+    snapshotsBefore,
+    snapshotsAfter,
+  });
+  if (createdSnapshotIds.length < 2) {
+    throw new Error("retention candidate did not expose both created snapshot IDs");
+  }
+  const createdSnapshotsByAge = [...createdSnapshots].sort((left, right) => {
+    const leftCreatedAt = Date.parse(left.createdAt);
+    const rightCreatedAt = Date.parse(right.createdAt);
+    if (!Number.isFinite(leftCreatedAt) || !Number.isFinite(rightCreatedAt)) {
+      throw new Error(`created snapshot has invalid createdAt: ${JSON.stringify({ left, right })}`);
+    }
+    return rightCreatedAt - leftCreatedAt || left.snapshotId.localeCompare(right.snapshotId);
+  });
+  const newestCreatedSnapshotId = createdSnapshotsByAge[0]?.snapshotId;
+  const olderCreatedSnapshotIds = createdSnapshotsByAge
+    .slice(1)
+    .map((snapshot) => snapshot.snapshotId);
+  if (typeof newestCreatedSnapshotId !== "string" || olderCreatedSnapshotIds.length < 1) {
+    throw new Error("retention candidate did not identify newest and older snapshots");
+  }
+
+  const unpinResults = [];
+  for (const snapshot of createdSnapshots) {
+    if (!Number.isInteger(snapshot.catalogRevision)) {
+      throw new Error(`created snapshot has no catalog revision: ${JSON.stringify(snapshot)}`);
+    }
+    unpinResults.push(await rawWorkspaceV2Request(page, "snapshot.update", {
+      snapshotId: snapshot.snapshotId,
+      action: "unpin",
+      expectedCatalogRevision: snapshot.catalogRevision,
+    }));
+  }
+  const snapshotsAfterUnpin = await rawWorkspaceV2Request(page, "snapshot.list", {
+    cursor: null,
+    limit: 200,
+  });
+  const createdSnapshotsAfterUnpin = (snapshotsAfterUnpin.result?.snapshots ?? [])
+    .filter((snapshot) => createdSnapshotIds.includes(snapshot?.snapshotId));
+  const createdSnapshotsAreUnpinned = createdSnapshotsAfterUnpin.length === createdSnapshotIds.length
+    && createdSnapshotsAfterUnpin.every((snapshot) => snapshot.pinned === false)
+    && createdSnapshotsAfterUnpin.every(
+      (snapshot) => Array.isArray(snapshot.retentionReasons)
+        && !snapshot.retentionReasons.includes("pinned"),
+    );
+  recorder.check("manual snapshots are unpinned through the renderer-public snapshot interface",
+    createdSnapshotsAreUnpinned,
+  { unpinResults, snapshotsAfterUnpin, createdSnapshotsAfterUnpin });
+  if (!createdSnapshotsAreUnpinned) {
+    throw new Error("retention candidate snapshots remained pinned after snapshot.update");
+  }
+
+  await page.getByTestId("settings-nav-storage").click();
+  await settings.waitFor({ state: "visible", timeout: 30_000 });
+  return { createdSnapshotIds, newestCreatedSnapshotId, olderCreatedSnapshotIds };
+}
+
+async function scenario23(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  const settings = page.getByTestId("storage-settings");
+  await settings.waitFor({ state: "visible", timeout: 30_000 });
+
+  const verify = page.getByTestId("repository-verify");
+  await verify.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="repository-verify"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  }, null, { timeout: 30_000 });
+  await verify.click();
+  const verification = settings.locator(".n-alert").last();
+  await verification.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("repository verification precedes the nonzero retention cleanup through Settings UI",
+    (await verification.innerText()).trim().length > 0,
+    { text: await verification.innerText() });
+
+  const {
+    createdSnapshotIds,
+    newestCreatedSnapshotId,
+    olderCreatedSnapshotIds,
+  } = await createNonzeroRetentionCandidate(page, settings, recorder);
+
+  const retentionPlan = page.getByTestId("retention-plan-preview");
+  await retentionPlan.waitFor({ state: "visible", timeout: 30_000 });
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
+  await retentionPlan.click();
+  const retentionPreview = await waitForCapturedBridgeMessage(page, 30_000);
+  const cleanupIsApplicable = retentionPreview.type === "workspace.v2.response"
+    && retentionPreview.payload?.method === "retention.plan"
+    && retentionPreview.payload?.ok === true
+    && typeof retentionPreview.payload?.result?.planId === "string"
+    && retentionPreview.payload.result.planId.length > 0
+    && Number.isInteger(retentionPreview.payload?.result?.reclaimableBytes)
+    && retentionPreview.payload.result.reclaimableBytes >= 0
+    && Array.isArray(retentionPreview.payload?.result?.blockedReasons)
+    && retentionPreview.payload.result.blockedReasons.length === 0;
+  const apply = page.getByTestId("retention-plan-apply");
+  await apply.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("retention cleanup preview produces an unblocked applicable plan before applying",
+    cleanupIsApplicable && await apply.isEnabled(),
+  { applyDisabled: await apply.isDisabled(), retentionPreview });
+  if (!cleanupIsApplicable) {
+    throw new Error("retention cleanup preview did not produce an applicable plan");
+  }
+
+  const sync = page.getByTestId("workspace-storage-sync");
+  recorder.check("direct workspace does not fabricate a replica synchronize path",
+    !(await sync.isVisible()), { syncVisible: await sync.isVisible() });
+
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await apply.click();
+  const retentionApply = await waitForCapturedBridgeMessage(page, 30_000);
+  const deletedObjects = retentionApply.payload?.result?.deletedObjects;
+  const reclaimedBytes = retentionApply.payload?.result?.reclaimedBytes;
+  await apply.waitFor({ state: "hidden", timeout: 30_000 });
+  const postApplySnapshots = await rawWorkspaceV2Request(page, "snapshot.list", {
+    cursor: null,
+    limit: 200,
+  });
+  const reachableSnapshotIds = new Set(
+    (postApplySnapshots.result?.snapshots ?? [])
+      .map((snapshot) => snapshot?.snapshotId)
+      .filter((snapshotId) => typeof snapshotId === "string"),
+  );
+  const removedCreatedSnapshotIds = createdSnapshotIds.filter(
+    (snapshotId) => !reachableSnapshotIds.has(snapshotId),
+  );
+  const removedOlderCreatedSnapshotIds = olderCreatedSnapshotIds.filter(
+    (snapshotId) => !reachableSnapshotIds.has(snapshotId),
+  );
+  recorder.check("retention cleanup commits a nonzero logical tombstone while grace defers reclamation",
+    retentionApply.type === "workspace.v2.response"
+      && retentionApply.payload?.method === "retention.apply"
+      && retentionApply.payload?.ok === true
+      && deletedObjects > 0
+      && reclaimedBytes === 0
+      && removedOlderCreatedSnapshotIds.length >= 1
+      && reachableSnapshotIds.has(newestCreatedSnapshotId),
+  {
+    retentionApply,
+    createdSnapshotIds,
+    newestCreatedSnapshotId,
+    olderCreatedSnapshotIds,
+    removedCreatedSnapshotIds,
+    removedOlderCreatedSnapshotIds,
+    postApplySnapshots,
+    planCleared: !(await apply.isVisible()),
+  });
+
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
+  await retentionPlan.click();
+  const postApplyPreview = await waitForCapturedBridgeMessage(page, 30_000);
+  const postApplyPlanIsApplicable = postApplyPreview.type === "workspace.v2.response"
+      && postApplyPreview.payload?.method === "retention.plan"
+      && postApplyPreview.payload?.ok === true
+      && typeof postApplyPreview.payload?.result?.planId === "string"
+      && postApplyPreview.payload.result.planId.length > 0
+      && Number.isInteger(postApplyPreview.payload?.result?.reclaimableBytes)
+      && postApplyPreview.payload.result.reclaimableBytes >= 0
+      && Array.isArray(postApplyPreview.payload?.result?.blockedReasons)
+      && postApplyPreview.payload.result.blockedReasons.length === 0;
+  await apply.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("retention cleanup produces a second unblocked plan for the empty check",
+    postApplyPlanIsApplicable && await apply.isEnabled(),
+  { applyDisabled: await apply.isDisabled(), postApplyPreview });
+  if (!postApplyPlanIsApplicable) {
+    throw new Error("retention cleanup did not produce a second applicable plan");
+  }
+
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await apply.click();
+  const postApplyResult = await waitForCapturedBridgeMessage(page, 30_000);
+  const postApplyDeletedObjects = postApplyResult.payload?.result?.deletedObjects;
+  const postApplyReclaimedBytes = postApplyResult.payload?.result?.reclaimedBytes;
+  recorder.check("retention cleanup has no remaining candidate after the packaged UI apply",
+    postApplyResult.type === "workspace.v2.response"
+      && postApplyResult.payload?.method === "retention.apply"
+      && postApplyResult.payload?.ok === true
+      && postApplyDeletedObjects === 0
+      && postApplyReclaimedBytes === 0,
+  { postApplyPreview, postApplyResult });
+  await apply.waitFor({ state: "hidden", timeout: 30_000 });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "23-retention-nonzero-apply.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -6211,6 +6471,7 @@ const scenarios = {
   "20-kanban-lane-drag": scenario20,
   "21-calendar-date-move": scenario21,
   "22-timeline-date-move": scenario22,
+  "23-retention-nonzero-apply": scenario23,
 };
 
 async function main() {

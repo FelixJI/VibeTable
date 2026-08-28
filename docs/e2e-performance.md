@@ -8,13 +8,17 @@
 - GitHub run：[main CI 33028988918](https://github.com/FelixJI/VibeTable/actions/runs/33028988918)
 - 报告契约：`contractVersion=2.0`
 - 结果：22/22 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`23-retention-nonzero-apply`）。
 - 当前 manifest surplus：无。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
 Timeline point/date 移动已在同一 `main` 打包候选上通过，并确认正常退出后的 Host、WebView2、
 BFF 与 sidecar 生命周期清理完成；对应声明范围由此闭环。
+
+当前 feature manifest 新增 retention 非零逻辑 tombstone 与 snapshot 不可达场景：固定 3 个月 grace
+内 `reclaimedBytes=0`，不表示物理 Sweep 或真实字节回收已验证。该定义尚无 `main` 打包产品
+E2E 证据，不计入上述 22/22 结论；必须等待包含场景 23 的 `main` CI 报告后才能闭合 gap。
 
 该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
 保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。

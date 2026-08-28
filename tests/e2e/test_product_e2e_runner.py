@@ -1764,6 +1764,54 @@ def test_protection_policy_scenario_applies_the_previewed_cleanup_plan_through_u
     assert "reclaimedBytes === 0" in scenario
 
 
+def test_retention_nonzero_scenario_applies_an_isolated_cleanup_plan_through_ui() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    candidate = source[
+        source.index("async function createNonzeroRetentionCandidate") : source.index(
+            "async function scenario23"
+        )
+    ]
+    scenario = source[source.index("async function scenario23") : source.index("const scenarios")]
+
+    assert 'getByTestId("settings-nav-storage")' in scenario
+    assert "await createNonzeroRetentionCandidate(page, settings, recorder)" in scenario
+    assert 'getByTestId("settings-nav-versions")' in candidate
+    assert 'getByTestId("snapshot-create")' in candidate
+    assert 'locator(".retention-grid label.bucket-field").first()' in candidate
+    assert 'locator(".n-tag__close")' in candidate
+    assert 'rawWorkspaceV2Request(page, "snapshot.list"' in candidate
+    assert "snapshotIdsBefore.size === 0" in candidate
+    assert 'rawWorkspaceV2Request(page, "snapshot.update"' in candidate
+    assert 'action: "unpin"' in candidate
+    assert "Array.isArray(snapshot.retentionReasons)" in candidate
+    assert "createdSnapshotsAfterUnpin.every((snapshot) => snapshot.pinned === false)" in candidate
+    assert "newestCreatedSnapshotId" in candidate
+    assert "olderCreatedSnapshotIds" in candidate
+    assert "rightCreatedAt - leftCreatedAt" in candidate
+    assert "left.snapshotId.localeCompare(right.snapshotId)" in candidate
+    assert "createdSnapshotIds" in candidate
+    assert (
+        "return { createdSnapshotIds, newestCreatedSnapshotId, olderCreatedSnapshotIds };"
+        in candidate
+    )
+    assert 'getByTestId("retention-plan-preview")' in scenario
+    assert 'getByTestId("retention-plan-apply")' in scenario
+    assert 'beginWorkspaceV2MethodCapture(page, "retention.plan")' in scenario
+    assert 'beginWorkspaceV2MethodCapture(page, "retention.apply")' in scenario
+    assert "cleanupIsApplicable" in scenario
+    assert "reclaimableBytes >= 0" in scenario
+    assert "reclaimableBytes > 0" not in scenario
+    assert "deletedObjects > 0" in scenario
+    assert "reclaimedBytes === 0" in scenario
+    assert 'rawWorkspaceV2Request(page, "snapshot.list"' in scenario
+    assert "removedOlderCreatedSnapshotIds.length >= 1" in scenario
+    assert "reachableSnapshotIds.has(newestCreatedSnapshotId)" in scenario
+    assert "postApplyPreview" in scenario
+    assert "postApplyResult" in scenario
+    assert "postApplyDeletedObjects === 0" in scenario
+    assert "postApplyReclaimedBytes === 0" in scenario
+
+
 def test_plugin_invalid_upgrade_is_recorded_as_an_expected_bridge_failure() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
