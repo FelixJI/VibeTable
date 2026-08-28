@@ -204,6 +204,29 @@ function fakeBridge(resultFor?: (payload: WorkspaceV2RequestPayload) => unknown)
 describe("workspace v2 production host adapter", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it.each([
+    "workspace.relink",
+    "replica.synchronize",
+  ])("rejects non-public %s before allocating wire state or calling the bridge", async (method) => {
+    const fake = fakeBridge();
+    const { port } = createWorkspaceV2HostAdapter(fake.bridge);
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities([
+      "workspace.session.v2",
+      "repository.settings.v2",
+    ]);
+    session.applySession(bootstrap().session);
+    const requestUnchecked = port.request as unknown as (
+      action: { readonly method: string; readonly params: Readonly<Record<string, never>> },
+    ) => Promise<unknown>;
+
+    await expect(requestUnchecked({ method, params: {} })).rejects.toMatchObject({
+      code: "workspace.method_not_public",
+      retryable: false,
+    });
+    expect(fake.request).not.toHaveBeenCalled();
+  });
+
   it("keeps concurrent workspace requests in their allocated sequence order", async () => {
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => {
@@ -645,7 +668,6 @@ describe("workspace v2 production host adapter", () => {
         case "workspace.list": return { workspaces: bootstrap().workspaces };
         case "workspace.create": return { workspaceId: WORKSPACE_ID, status: "created" };
         case "workspace.register": return { workspaceId: WORKSPACE_ID, status: "registered" };
-        case "workspace.relink": return { workspaceId: WORKSPACE_ID, status: "relinked" };
         case "workspace.planDelete": return { planId: "plan-delete", displayName: "季度规划", requiresTypedName: true };
         case "workspace.storage.preview": return storagePlan;
         case "workspace.remove": return { workspaceId: "workspace-old", status: "removed" };
@@ -694,7 +716,6 @@ describe("workspace v2 production host adapter", () => {
 
     await port.request({ method: "workspace.create", params: { displayName: "新工作区", encryptionMode: "convenient", locationPolicy: "managedDefault", selectedRootGrant: null, storageMode: "direct", userMarkedSync: false } });
     await port.request({ method: "workspace.register", params: { selectedRootGrant: "host-picker://workspace-root" } });
-    await port.request({ method: "workspace.relink", params: { workspaceId: WORKSPACE_ID, selectedRootGrant: "host-picker://workspace-root" } });
     await port.request({ method: "workspace.planDelete", params: { workspaceId: WORKSPACE_ID } });
     expect(session.deletePlan?.planId).toBe("plan-delete");
     await port.request({ method: "workspace.storage.preview", params: { workspaceId: WORKSPACE_ID, action: "relocate", targetMode: "direct", selectedRootGrant: "host-picker://workspace-root" } });

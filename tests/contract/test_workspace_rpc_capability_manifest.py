@@ -18,6 +18,15 @@ GENERATOR = CONTRACT_ROOT / "generate_workspace_rpc_capability_manifest.py"
 POLICY = CONTRACT_ROOT / "workspace-rpc-capability-policy.json"
 MANIFEST = CONTRACT_ROOT / "workspace-rpc-capability-manifest.json"
 SCHEMA = CONTRACT_ROOT / "workspace-rpc-capability-manifest.schema.json"
+WEB_PUBLIC_METHOD_SCOPES = (
+    ROOT
+    / "desktop"
+    / "web-grid"
+    / "src"
+    / "contracts"
+    / "generated"
+    / "workspaceV2RpcCapabilities.ts"
+)
 
 
 def _load_generator():
@@ -224,3 +233,18 @@ def test_generated_manifest_is_current_and_validates_against_closed_schema() -> 
         "replica",
         "conflict",
     }
+
+
+def test_generated_web_public_method_scopes_are_current_and_closed() -> None:
+    generator = _load_generator()
+
+    public_methods = generator.build_renderer_public_method_scopes(POLICY)
+
+    assert len(public_methods) == 55
+    assert public_methods["workspace.list"] == "global"
+    assert public_methods["snapshot.list"] == "workspace"
+    assert "workspace.relink" not in public_methods
+    assert "replica.synchronize" not in public_methods
+    assert WEB_PUBLIC_METHOD_SCOPES.read_text(encoding="utf-8") == (
+        generator.encode_renderer_public_method_scopes(POLICY)
+    )

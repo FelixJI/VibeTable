@@ -30,7 +30,6 @@ import { t } from "@/i18n";
 import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceProtectionStore, type SnapshotTimelineItem } from "@/stores/workspaceProtectionStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
-import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import type { WorkspaceV2UiAction } from "@/contracts/workspaceV2Bridge";
 import type { RetentionPolicyV2 } from "@/contracts/workspaceV2";
 import {
@@ -67,7 +66,6 @@ export type WorkspaceProtectionAction = WorkspaceV2UiAction<
   | "retention.update"
   | "retention.plan"
   | "retention.apply"
-  | "replica.synchronize"
 >;
 
 const { mode } = defineProps<{ mode: "versions" | "storage" }>();
@@ -1004,16 +1002,6 @@ function applyStoragePlan(): void {
         >
           <template #icon><NIcon><ShieldCheck /></NIcon></template>
           {{ t("workspaceV2.storage.verify") }}
-        </NButton>
-        <NButton
-          v-if="publicCapabilityPolicy.mirroredReplicaSynchronization
-            && protection.storage?.mode === 'mirrored'"
-          size="small"
-          :disabled="protection.storage?.pendingSync || session.isTransitioning"
-          data-testid="workspace-storage-sync"
-          @click="emit('action', { method: 'replica.synchronize', params: {} })"
-        >
-          {{ t("workspaceV2.storage.sync") }}
         </NButton>
       </footer>
       <NAlert

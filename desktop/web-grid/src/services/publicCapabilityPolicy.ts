@@ -4,7 +4,5 @@
  * for focused development and future evidence runs.
  */
 export const publicCapabilityPolicy = {
-  workspaceRelink: false,
-  mirroredReplicaSynchronization: false,
   pluginLifecycleMutations: false,
 } as const;

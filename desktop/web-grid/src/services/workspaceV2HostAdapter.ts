@@ -1,5 +1,6 @@
 import type { HostBridge } from "@/bridge/hostBridge";
 import {
+  WORKSPACE_V2_PUBLIC_METHOD_SCOPES,
   parseWorkspaceV2Bootstrap,
   parseWorkspaceV2Event,
   parseWorkspaceV2Reply,
@@ -19,21 +20,6 @@ import {
   nextWorkspaceWire,
   observeWorkspaceWire,
 } from "@/services/workspaceWireAllocator";
-
-const GLOBAL_METHODS = new Set<WorkspaceV2RpcMethod>([
-  "workspace.list",
-  "workspace.create",
-  "workspace.register",
-  "workspace.relink",
-  "workspace.open",
-  "workspace.remove",
-  "workspace.planDelete",
-  "workspace.applyDelete",
-  "workspace.storage.preview",
-  "workspace.storage.apply",
-  "snapshot.inspectPackage",
-  "snapshot.import",
-]);
 
 export const HOST_WORKSPACE_ROOT_GRANT = "host-picker://workspace-root";
 export const HOST_SNAPSHOT_EXPORT_GRANT = "host-picker://snapshot-export";
@@ -135,7 +121,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
 
   function nextWire(method: WorkspaceV2RpcMethod): WireScopeV2 {
     const id = operationId();
-    if (GLOBAL_METHODS.has(method)) {
+    if (WORKSPACE_V2_PUBLIC_METHOD_SCOPES[method] === "global") {
       globalSequence += 1;
       return { scope: "global", operationId: id, sequence: globalSequence };
     }
@@ -262,7 +248,6 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     } else if (
       method === "workspace.create"
       || method === "workspace.register"
-      || method === "workspace.relink"
     ) {
       void refreshWorkspaceList();
     } else if (method === "snapshot.request") {
@@ -465,7 +450,17 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     async request<M extends WorkspaceV2RpcMethod>(
       action: WorkspaceV2UiAction<M>,
     ): Promise<WorkspaceV2RpcResult<M>> {
-      const expectedSessionKey = GLOBAL_METHODS.has(action.method)
+      if (!Object.prototype.hasOwnProperty.call(
+        WORKSPACE_V2_PUBLIC_METHOD_SCOPES,
+        action.method,
+      )) {
+        throw new WorkspaceV2RequestError(
+          "workspace.method_not_public",
+          `Workspace v2 method is not renderer-public: ${String(action.method)}.`,
+          false,
+        );
+      }
+      const expectedSessionKey = WORKSPACE_V2_PUBLIC_METHOD_SCOPES[action.method] === "global"
         ? null
         : currentSessionKey();
       return enqueueRequest(async () => {

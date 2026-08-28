@@ -9,11 +9,11 @@
 | 能力 | Producer | WPF Host / allowlist | Web consumer | capability 条件 | 产品 E2E | 当前状态与阶段 0 决策 |
 |---|---|---|---|---|---|---|
 | Workspace create/open/switch | `sidecar/internal/workspacev2/runtime.go` | `MainWindow.Product.cs`、`WorkspaceRequestDispatcher.cs` | `workspaceV2HostAdapter.ts`、session store | `workspace.session.v2` 和 v2 method 闭集 | `01-offline-first-start`、`15-workspace-snapshot-package`，含旧 epoch 拒绝 | **Closed**。 |
-| Workspace relink | workspace registry/relink producer | Host v2 route 保留；renderer raw request 返回 `CAPABILITY_NOT_PUBLIC` | `WorkspaceCenter.vue` 由 `publicCapabilityPolicy.workspaceRelink=false` 隐藏 | 不向 renderer 公开 | 无 | **Hidden**；保留生产实现供后续恢复开发，重新公开前必须补打包产品证据。 |
+| Workspace relink | workspace registry/relink producer | Host v2 route 保留；Host raw route 拒绝并返回 `CAPABILITY_NOT_PUBLIC` | 生成的 public method map 令 Web preflight 返回 `workspace.method_not_public`；`WorkspaceCenter.vue` 不挂载 relink 入口 | manifest 标记 `rendererInternal`，不进入生成的 renderer-public map | 无 | **Hidden**；保留生产实现供后续恢复开发，重新公开前必须先修改权威 manifest 并补打包产品证据。 |
 | Snapshot timeline / package / open-as-new | `workspacev2/snapshot_*`、`snapshotpkg/*` | `WorkspaceV2HttpGateway.cs`、snapshot broker | Settings/Workspace Center snapshot UI | `snapshot.timeline.v2`、`snapshot.open-as-new.v2` 与 method 集 | `12-backup-consistency`、`15-workspace-snapshot-package`，含损坏包拒绝 | **Closed**；创建、恢复、export/import、open-as-new 已形成真实纵切。 |
 | FileHistory / Conflict | `workspacev2/filehistory_handlers.go`、conflict handlers | dispatcher 与 v2 gateway | File workspace、revision history UI | `fileHistory.tree.v2`、history/conflict methods | `07-attachment-history`、`08-stale-conflict`、`14-document-diff` | **Closed**；history restore、过期编辑拒绝和 revision CAS 均有产品证据。 |
 | Retention / Repository | `workspacev2/retention_*`、`repository_*` | `MainWindow.Product.cs` capability 合成/dispatcher | `WorkspaceProtectionSettings.vue` | `retention.policy.v2`、`repository.verify` | `13-protection-policy`：策略更新/旧 revision 拒绝、verify、零删除 plan/apply | **Closed**；Apply 只在 fresh workspace 的计划确认为零删除且无阻塞原因时执行。 |
-| Replica synchronize | `workspacev2/replica_*` | `ProductionWorkspaceHooks` 是保留 consumer；renderer raw request 返回 `CAPABILITY_NOT_PUBLIC` | mirrored 手动同步按钮由 public policy 隐藏 | 不向 renderer 公开 | raw route 拒绝测试；无 mirrored 产品运行 | **Internal only**；不把内部协调钩子广告成用户能力。 |
+| Replica synchronize | `workspacev2/replica_*` | `ProductionWorkspaceHooks` 是保留 consumer；Host raw route 拒绝并返回 `CAPABILITY_NOT_PUBLIC` | 生成的 public method map 令 Web preflight 返回 `workspace.method_not_public`；`WorkspaceProtectionSettings.vue` 不挂载手动同步按钮 | manifest 标记 `rendererInternal`，不进入生成的 renderer-public map | raw route 拒绝测试；无 mirrored 产品运行 | **Internal only**；不把内部协调钩子广告成用户能力。 |
 | Plugin install/enable/action | plugin producer | `JsonRpcPluginGateway.cs` | plugin bridge 与 Plugins 页面 | public plugin allowlist | `11-plugin-mutation`：安装、授权/拒绝 mutation、disable/enable、无效升级候选拒绝 | **Closed**。 |
 | Plugin upgrade/rollback/uninstall mutation | plugin lifecycle producer/service | 内部 catalog 保留；renderer raw request 返回 `CAPABILITY_NOT_PUBLIC` | 成功提交、回滚和卸载入口由 public policy 隐藏 | 不向 renderer 公开 | raw route 拒绝与组件测试；无成功产品 E2E | **Hidden**；检查候选仍可见，成功 mutation 重新公开前必须补完整产品生命周期。 |
 | Alternative views / Gallery、Kanban、Calendar、Timeline | `backend/application/insights_service.py` 的 preset producer、`ViewQuery` 与 mutation authority | `JsonRpcProductDataGateway.cs`、`ProductDataRpcRegistry.cs` 的 public preset/query/mutation RPC | `DataSourceViewBar.vue`、四个 Record view 与 `alternativeViewInteractionController.ts` | public `preset.list/save`、`query.page`、host-owned cell mutation 与 Tables 导航 | `19-gallery-lifecycle`：Gallery 创建/重开/CAS；`20-kanban-lane-drag`：稳定 optionId 拖动/保存/重开；`21-calendar-date-move`：date 字段拖动/权威保存/重开；`22-timeline-date-move`：point/date 拖动/权威保存/重开 | **Gallery、Kanban、Calendar date 字段与 Timeline point/date 已 Closed（各自场景声明范围）**。Calendar datetime、Timeline datetime 与 range 仍未验收。 |
@@ -23,7 +23,7 @@
 
 ## 实施后固定边界
 
-- 首版广告范围已按真实产品证据收口；workspace relink、手动 Replica synchronize 与 plugin 成功升级/回滚/卸载同时在 UI 和 renderer 路由隐藏，内部 producer 不算用户广告。
+- 首版广告范围已按真实产品证据收口；workspace relink 与手动 Replica synchronize 由权威 manifest 固定为 `rendererInternal`，生成器约束 Web parser/adapter，组件负向测试约束 UI 不挂载入口；plugin 成功升级/回滚/卸载继续由产品策略隐藏，内部 producer 不算用户广告。
 - Dashboard 双编辑器冲突继续明确标注未验证，不因相邻生命周期通过而扩大结论。
 - Alternative views 已关闭 Gallery、Kanban、Calendar date 字段与 Timeline point/date；Calendar datetime、Timeline datetime 与 range 继续保持未验收，不从相邻 date/point seam 推断通过。
 - Preset/version 经产品树复核确认从未挂载，保持 Hidden；若未来公开，必须作为新的完整纵切进入矩阵。

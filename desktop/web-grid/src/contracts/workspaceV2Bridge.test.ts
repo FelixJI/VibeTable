@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { parseWorkspaceV2Reply } from "./workspaceV2Bridge";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import {
+  WORKSPACE_V2_PUBLIC_METHOD_SCOPES,
+  parseWorkspaceV2Reply,
+  type WorkspaceV2RpcMethod,
+} from "./workspaceV2Bridge";
 
 const reply = {
   method: "fileHistory.queryDocuments",
@@ -30,6 +34,16 @@ const reply = {
   },
   error: null,
 } as const;
+
+it("derives the closed public method type from the renderer-public manifest", () => {
+  expect(Object.keys(WORKSPACE_V2_PUBLIC_METHOD_SCOPES)).toHaveLength(55);
+  expect(WORKSPACE_V2_PUBLIC_METHOD_SCOPES).not.toHaveProperty("workspace.relink");
+  expect(WORKSPACE_V2_PUBLIC_METHOD_SCOPES).not.toHaveProperty("replica.synchronize");
+  expectTypeOf<Extract<
+    WorkspaceV2RpcMethod,
+    "workspace.relink" | "replica.synchronize"
+  >>().toEqualTypeOf<never>();
+});
 
 describe("workspace v2 document query reply", () => {
   it("strictly parses canonical FileDocumentSummary projections", () => {
@@ -692,7 +706,6 @@ describe("workspace v2 closed result catalog", () => {
     ["workspace.close", { workspaceId: null, sessionEpoch: 4, state: "closed" }],
     ["workspace.create", { workspaceId: "w-1", status: "created" }],
     ["workspace.register", { workspaceId: "w-1", status: "registered" }],
-    ["workspace.relink", { workspaceId: "w-1", status: "relinked" }],
     ["workspace.remove", { workspaceId: "w-1", status: "removed" }],
     ["workspace.applyDelete", { workspaceId: "w-1", status: "deleted" }],
     ["workspace.planDelete", { planId: "plan-1", displayName: "Quarter", requiresTypedName: true }],
@@ -716,7 +729,6 @@ describe("workspace v2 closed result catalog", () => {
     ["conflict.apply", { operationId: "op-1", state: "applied", recoverySnapshotIds: ["s-1"] }],
     ["snapshot.applyRestore", { operationId: "op-1", state: "succeeded" }],
     ["snapshot.applyExtract", { operationId: "op-2", state: "succeeded" }],
-    ["replica.synchronize", { operationId: "op-3", state: "queued" }],
   ] as const)("strictly parses the %s success result", (method, result) => {
     const parsed = parseWorkspaceV2Reply({ ...reply, method, result });
     expect(parsed.ok).toBe(true);
@@ -780,5 +792,13 @@ describe("workspace v2 closed result catalog", () => {
       .toThrow("cannot contain an error");
     expect(() => parseWorkspaceV2Reply({ ...reply, ok: false, error: null }))
       .toThrow("cannot contain a result");
+  });
+
+  it.each([
+    ["workspace.relink", { workspaceId: "w-1", status: "relinked" }],
+    ["replica.synchronize", { operationId: "op-3", state: "queued" }],
+  ])("rejects renderer-internal %s replies at the public bridge seam", (method, result) => {
+    expect(() => parseWorkspaceV2Reply({ ...reply, method, result }))
+      .toThrow("workspace v2 method is invalid");
   });
 });

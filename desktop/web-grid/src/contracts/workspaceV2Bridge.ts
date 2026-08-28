@@ -36,6 +36,15 @@ import type {
   SearchResolveResult,
   SearchStatus,
 } from "@/contracts/generated/workbench";
+import {
+  WORKSPACE_V2_PUBLIC_METHOD_SCOPES,
+  type WorkspaceV2RpcMethod,
+} from "@/contracts/generated/workspaceV2RpcCapabilities";
+export {
+  WORKSPACE_V2_PUBLIC_METHOD_SCOPES,
+  type WorkspaceV2RpcMethod,
+  type WorkspaceV2RpcScope,
+} from "@/contracts/generated/workspaceV2RpcCapabilities";
 export type {
   FileDocumentFilter,
   FileDocumentFilterField,
@@ -44,67 +53,9 @@ export type {
   FileDocumentSummary,
 } from "@/contracts/fileDocumentQuery";
 
-export const WORKSPACE_V2_RPC_METHODS = [
-  "workspace.list",
-  "workspace.create",
-  "workspace.register",
-  "workspace.relink",
-  "workspace.open",
-  "workspace.switch",
-  "workspace.close",
-  "workspace.remove",
-  "workspace.planDelete",
-  "workspace.applyDelete",
-  "workspace.storage.preview",
-  "workspace.storage.apply",
-  "snapshot.request",
-  "snapshot.list",
-  "snapshot.inspect",
-  "snapshot.update",
-  "snapshot.previewRestore",
-  "snapshot.applyRestore",
-  "snapshot.openAsNewWorkspace",
-  "snapshot.previewExtract",
-  "snapshot.applyExtract",
-  "snapshot.export",
-  "snapshot.inspectPackage",
-  "snapshot.import",
-  "history.query",
-  "history.previewRestore",
-  "history.applyRestore",
-  "repository.verify",
-  "repository.previewKeyRotation",
-  "repository.applyKeyRotation",
-  "fileHistory.import",
-  "fileHistory.queryDocuments",
-  "fileHistory.listPendingChanges",
-  "fileHistory.applyPendingChange",
-  "fileHistory.unlink",
-  "fileHistory.relink",
-  "fileHistory.readTree",
-  "fileHistory.restore",
-  "fileHistory.upgrade",
-  "fileHistory.activateLeaf",
-  "workspaceSearch.query",
-  "workspaceSearch.resolveHit",
-  "workspaceSearch.status",
-  "workspaceSearch.rebuild",
-  "workspaceSearch.cancel",
-  "retention.get",
-  "retention.status",
-  "retention.update",
-  "retention.plan",
-  "retention.apply",
-  "replica.status",
-  "replica.synchronize",
-  "replica.forceTakeover",
-  "conflict.list",
-  "conflict.inspect",
-  "conflict.preview",
-  "conflict.apply",
-] as const;
-
-export type WorkspaceV2RpcMethod = (typeof WORKSPACE_V2_RPC_METHODS)[number];
+export const WORKSPACE_V2_RPC_METHODS = Object.freeze(
+  Object.keys(WORKSPACE_V2_PUBLIC_METHOD_SCOPES) as WorkspaceV2RpcMethod[],
+);
 
 export interface WorkspaceV2RpcParams {
   readonly "workspace.list": Readonly<Record<string, never>>;
@@ -126,10 +77,6 @@ export interface WorkspaceV2RpcParams {
     }
   );
   readonly "workspace.register": { readonly selectedRootGrant: string };
-  readonly "workspace.relink": {
-    readonly workspaceId: string;
-    readonly selectedRootGrant: string;
-  };
   readonly "workspace.open": {
     readonly workspaceId: string;
     readonly openMode: "readOnly" | "writable";
@@ -287,7 +234,6 @@ export interface WorkspaceV2RpcParams {
   readonly "retention.plan": Readonly<Record<string, never>>;
   readonly "retention.apply": { readonly planId: string };
   readonly "replica.status": Readonly<Record<string, never>>;
-  readonly "replica.synchronize": Readonly<Record<string, never>>;
   readonly "replica.forceTakeover": { readonly mode: "provisional" };
   readonly "conflict.list": { readonly cursor: string | null; readonly limit: number };
   readonly "conflict.inspect": { readonly conflictId: string };
@@ -493,7 +439,6 @@ export interface WorkspaceV2RpcResultMap {
   readonly "workspace.list": { readonly workspaces: readonly WorkspaceRegistryEntryV2[] };
   readonly "workspace.create": WorkspaceOperationResult;
   readonly "workspace.register": WorkspaceOperationResult;
-  readonly "workspace.relink": WorkspaceOperationResult;
   readonly "workspace.open": WorkspaceSessionResult;
   readonly "workspace.switch": WorkspaceSessionResult;
   readonly "workspace.close": WorkspaceSessionResult;
@@ -575,7 +520,6 @@ export interface WorkspaceV2RpcResultMap {
     readonly syncState: SnapshotTimelineItem["syncState"];
     readonly pendingSync: boolean;
   };
-  readonly "replica.synchronize": OperationResult;
   readonly "replica.forceTakeover": {
     readonly fenceEpoch: number;
     readonly claimId: string;
@@ -600,7 +544,7 @@ export interface WorkspaceV2RpcResultMap {
 
 interface WorkspaceOperationResult {
   readonly workspaceId: string;
-  readonly status: "created" | "registered" | "relinked" | "removed" | "deleted";
+  readonly status: "created" | "registered" | "removed" | "deleted";
 }
 
 interface WorkspaceSessionResult {
@@ -1242,7 +1186,6 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
   } else if ([
     "workspace.create",
     "workspace.register",
-    "workspace.relink",
     "workspace.remove",
     "workspace.applyDelete",
   ].includes(method)) {
@@ -1251,7 +1194,7 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       workspaceId: text(source.workspaceId, "workspaceId"),
       status: oneOf(
         source.status,
-        ["created", "registered", "relinked", "removed", "deleted"],
+        ["created", "registered", "removed", "deleted"],
         "workspace status",
       ),
     };
