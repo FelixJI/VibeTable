@@ -38,6 +38,197 @@ func TestSearchUsesLockedFTSNormalizesUnicodeAndSupportsCJK(t *testing.T) {
 	}
 }
 
+func TestSearchTreatsCanonicalUnicodeFormsAsEquivalentWithoutRewritingResults(
+	t *testing.T,
+) {
+	engine := testEngine(t)
+	originalTitles := map[string]string{
+		"nfc": "Café 👩🏽‍💻",
+		"nfd": "Cafe\u0301 👩🏽‍💻",
+	}
+	for canonicalID, title := range originalTitles {
+		upsert(t, engine, source(
+			"record",
+			canonicalID,
+			"rev-1",
+			title,
+			"body must not replace the matching title",
+			true,
+		))
+	}
+
+	for _, searchText := range []string{
+		"Café 👩🏽‍💻",
+		"Cafe\u0301 👩🏽‍💻",
+	} {
+		result := query(t, engine, request(searchText))
+		if len(result.Hits) != len(originalTitles) {
+			t.Fatalf("query %q hits = %#v", searchText, result.Hits)
+		}
+		hitsByID := make(map[string]contracts.SearchHit, len(result.Hits))
+		for _, hit := range result.Hits {
+			hitsByID[hit.CanonicalId] = hit
+		}
+		for canonicalID, originalTitle := range originalTitles {
+			hit, found := hitsByID[canonicalID]
+			if !found || hit.Title != originalTitle || hit.Snippet == nil ||
+				*hit.Snippet != originalTitle {
+				t.Fatalf(
+					"query %q result %q = %#v",
+					searchText,
+					canonicalID,
+					hit,
+				)
+			}
+		}
+	}
+}
+
+func TestSearchDistinguishesEmojiSequencesWithoutRewritingResults(t *testing.T) {
+	engine := testEngine(t)
+	originalTitles := map[string]string{
+		"exact":      "Engineer 👩🏽‍💻",
+		"other-tone": "Engineer 👩🏾‍💻",
+		"no-joiner":  "Engineer 👩🏽💻",
+	}
+	for canonicalID, title := range originalTitles {
+		upsert(t, engine, source(
+			"record",
+			canonicalID,
+			"rev-1",
+			title,
+			"body must not replace the matching title",
+			true,
+		))
+	}
+
+	for canonicalID, searchText := range map[string]string{
+		"exact":      "👩🏽‍💻",
+		"other-tone": "👩🏾‍💻",
+		"no-joiner":  "👩🏽💻",
+	} {
+		result := query(t, engine, request(searchText))
+		if len(result.Hits) != 1 || result.Hits[0].CanonicalId != canonicalID {
+			t.Fatalf("query %q hits = %#v", searchText, result.Hits)
+		}
+		hit := result.Hits[0]
+		if hit.Title != originalTitles[canonicalID] || hit.Snippet == nil ||
+			*hit.Snippet != originalTitles[canonicalID] {
+			t.Fatalf("query %q result = %#v", searchText, hit)
+		}
+	}
+}
+
+func TestSearchMatchesAdjacentEmojiClustersWithoutMergingThem(t *testing.T) {
+	engine := testEngine(t)
+	for canonicalID, title := range map[string]string{
+		"pair":      "Pair 😀😁",
+		"zwj":       "Engineer 👩🏽‍💻",
+		"no-joiner": "Engineer 👩🏽💻",
+	} {
+		upsert(t, engine, source("record", canonicalID, "rev-1", title, "body", true))
+	}
+
+	for searchText, canonicalID := range map[string]string{
+		"😀":    "pair",
+		"😁":    "pair",
+		"😀😁":   "pair",
+		"👩🏽‍💻": "zwj",
+		"👩🏽💻":  "no-joiner",
+	} {
+		result := query(t, engine, request(searchText))
+		if len(result.Hits) != 1 || result.Hits[0].CanonicalId != canonicalID {
+			t.Fatalf("query %q hits = %#v", searchText, result.Hits)
+		}
+	}
+}
+
+func TestSearchDistinguishesAtomicSymbolsInEmojiOnlyAndMixedText(t *testing.T) {
+	engine := testEngine(t)
+	for canonicalID, title := range map[string]string{
+		"mixed-exact":    "数据 Engineer 👩",
+		"mixed-modified": "数据 Engineer 👩🏽",
+		"emoji-only":     "👨🏻‍🚀",
+		"literal-token":  "数据 vtsymf09f91a9",
+	} {
+		upsert(t, engine, source(
+			"record", canonicalID, "rev-1", title,
+			"body must not replace the matching title", true,
+		))
+	}
+
+	for name, test := range map[string]struct {
+		query, canonicalID, title string
+	}{
+		"mixed": {
+			query: "数据 Engineer 👩", canonicalID: "mixed-exact",
+			title: "数据 Engineer 👩",
+		},
+		"emoji-only": {
+			query: "👨🏻‍🚀", canonicalID: "emoji-only", title: "👨🏻‍🚀",
+		},
+		"emoji reserved prefix": {
+			query: "👩", canonicalID: "mixed-exact", title: "数据 Engineer 👩",
+		},
+		"literal reserved prefix": {
+			query: "vtsymf09f91a9", canonicalID: "literal-token",
+			title: "数据 vtsymf09f91a9",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := query(t, engine, request(test.query))
+			if len(result.Hits) != 1 || result.Hits[0].CanonicalId != test.canonicalID {
+				t.Fatalf("query %q hits = %#v", test.query, result.Hits)
+			}
+			hit := result.Hits[0]
+			if hit.Title != test.title || hit.Snippet == nil || *hit.Snippet != test.title {
+				t.Fatalf("query %q result = %#v", test.query, hit)
+			}
+		})
+	}
+}
+
+func TestSearchPreservesEmojiCodepointsBeforeLexicalNormalization(t *testing.T) {
+	engine := testEngine(t)
+	const englandFlag = "🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"
+	for canonicalID, title := range map[string]string{
+		"information-emoji": "Info ℹ️",
+		"letter-with-vs":    "Info i️",
+		"wavy-dash":         "Mark 〰️",
+		"part-alternation":  "Mark 〽️",
+		"emoji-heart":       "Heart ♥️",
+		"text-heart":        "Heart ♥︎",
+		"keycap":            "Count 1️⃣",
+		"digit-with-vs":     "Count 1️",
+		"regional-flag":     "Flag 🇨🇳",
+		"regional-symbol":   "Flag 🇨",
+		"tagged-flag":       "Flag " + englandFlag,
+		"black-flag":        "Flag 🏴",
+	} {
+		upsert(t, engine, source("record", canonicalID, "rev-1", title, "body", true))
+	}
+
+	for canonicalID, searchText := range map[string]string{
+		"information-emoji": "ℹ️",
+		"letter-with-vs":    "i️",
+		"wavy-dash":         "〰️",
+		"part-alternation":  "〽️",
+		"emoji-heart":       "♥️",
+		"text-heart":        "♥︎",
+		"keycap":            "1️⃣",
+		"digit-with-vs":     "1️",
+		"regional-flag":     "🇨🇳",
+		"regional-symbol":   "🇨",
+		"tagged-flag":       englandFlag,
+		"black-flag":        "🏴",
+	} {
+		result := query(t, engine, request(searchText))
+		if len(result.Hits) != 1 || result.Hits[0].CanonicalId != canonicalID {
+			t.Fatalf("query %q hits = %#v", searchText, result.Hits)
+		}
+	}
+}
+
 func TestSearchFiltersHistoryPaginationAndStaleCursor(t *testing.T) {
 	engine := testEngine(t)
 	upsert(t, engine, source("file", "doc-1", "rev-1", "Report old", "alpha", true))
@@ -218,6 +409,270 @@ func TestSearchStorageFaultsMapToStablePublicCodes(t *testing.T) {
 		if err == nil || PublicErrorCode(err) != "workspace_search.disk_full" {
 			t.Fatalf("error = %v, code = %s", err, PublicErrorCode(err))
 		}
+	})
+}
+
+func TestOpenMigratesLegacySearchProjectionOnceAndPreservesCorpus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	createLegacySearchDatabase(t, path, legacySearchDatabaseOptions{includeDisplayText: true})
+
+	engine, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { engine.Close() })
+	for canonicalID, searchText := range map[string]string{
+		"legacy-zwj":       "👩🏽‍💻",
+		"legacy-no-joiner": "👩🏽💻",
+	} {
+		result := query(t, engine, request(searchText))
+		if result.Generation != 8 || len(result.Hits) != 1 ||
+			result.Hits[0].CanonicalId != canonicalID {
+			t.Fatalf("query %q result = %#v", searchText, result)
+		}
+		wantTitle := map[string]string{
+			"legacy-zwj": "Legacy 👩🏽‍💻", "legacy-no-joiner": "Legacy 👩🏽💻",
+		}[canonicalID]
+		hit := result.Hits[0]
+		if hit.Title != wantTitle || hit.Snippet == nil || *hit.Snippet != wantTitle {
+			t.Fatalf("query %q hit = %#v", searchText, hit)
+		}
+	}
+	bodyResult := query(t, engine, request("legacy body"))
+	if len(bodyResult.Hits) != 2 {
+		t.Fatalf("legacy body result = %#v", bodyResult)
+	}
+	for _, hit := range bodyResult.Hits {
+		if hit.Snippet == nil || *hit.Snippet != "legacy body" {
+			t.Fatalf("legacy body hit = %#v", hit)
+		}
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	result := query(t, reopened, request("👩🏽‍💻"))
+	if result.Generation != 8 || len(result.Hits) != 1 ||
+		result.Hits[0].CanonicalId != "legacy-zwj" {
+		t.Fatalf("idempotent reopen result = %#v", result)
+	}
+}
+
+func TestOpenMigratesLegacySearchSchemaWithoutDisplayText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-without-display.db")
+	createLegacySearchDatabase(t, path, legacySearchDatabaseOptions{})
+
+	engine, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { engine.Close() })
+	result := query(t, engine, request("👩🏽‍💻"))
+	if result.Generation != 8 || len(result.Hits) != 1 ||
+		result.Hits[0].CanonicalId != "legacy-zwj" {
+		t.Fatalf("migrated result = %#v", result)
+	}
+	hit := result.Hits[0]
+	if hit.Title != "Legacy 👩🏽‍💻" || hit.Snippet == nil ||
+		*hit.Snippet != "Legacy 👩🏽‍💻" {
+		t.Fatalf("migrated hit = %#v", hit)
+	}
+	if bodyResult := query(t, engine, request("legacy body")); len(bodyResult.Hits) != 0 {
+		t.Fatalf("missing legacy display body was recovered from derived text: %#v", bodyResult)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	result = query(t, reopened, request("👩🏽‍💻"))
+	if result.Generation != 8 || len(result.Hits) != 1 ||
+		result.Hits[0].CanonicalId != "legacy-zwj" {
+		t.Fatalf("idempotent reopen result = %#v", result)
+	}
+}
+
+func TestOpenRollsBackFailedLegacySearchProjectionMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-blocked.db")
+	createLegacySearchDatabase(t, path, legacySearchDatabaseOptions{
+		includeDisplayText: true,
+		blockMigration:     true,
+	})
+
+	if engine, err := Open(path); err == nil {
+		engine.Close()
+		t.Fatal("blocked legacy migration unexpectedly succeeded")
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projectedColumns int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('search_documents') WHERE name='projected_title'`,
+	).Scan(&projectedColumns); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	var projectionVersions int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM search_meta WHERE key='projection_schema_version'`,
+	).Scan(&projectionVersions); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	var generation string
+	if err := db.QueryRow(
+		`SELECT value FROM search_meta WHERE key='generation'`,
+	).Scan(&generation); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if projectedColumns != 0 || projectionVersions != 0 || generation != "7" {
+		db.Close()
+		t.Fatalf(
+			"partial migration: projected columns=%d versions=%d generation=%q",
+			projectedColumns, projectionVersions, generation,
+		)
+	}
+	if _, err := db.Exec(`DROP TRIGGER block_projection_migration`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	engine, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	result := query(t, engine, request("👩🏽‍💻"))
+	if result.Generation != 8 || len(result.Hits) != 1 ||
+		result.Hits[0].CanonicalId != "legacy-zwj" {
+		t.Fatalf("retried migration result = %#v", result)
+	}
+}
+
+func TestOpenRejectsIncompatibleProjectionSchemas(t *testing.T) {
+	for name, test := range map[string]struct {
+		statements []string
+		want       string
+	}{
+		"malformed version": {
+			statements: []string{
+				`CREATE TABLE search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+				`INSERT INTO search_meta(key,value) VALUES
+					('generation','0'),('projection_schema_version','invalid')`,
+			},
+			want: "workspace_search.projection_schema_corrupt",
+		},
+		"unsupported version": {
+			statements: []string{
+				`CREATE TABLE search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+				`INSERT INTO search_meta(key,value) VALUES
+					('generation','0'),('projection_schema_version','2')`,
+			},
+			want: "workspace_search.projection_schema_unsupported",
+		},
+		"current version missing projection column": {
+			statements: []string{
+				`CREATE TABLE search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+				`INSERT INTO search_meta(key,value) VALUES
+					('generation','0'),('projection_schema_version','1')`,
+				`CREATE TABLE search_documents (
+					rowid INTEGER PRIMARY KEY,
+					kind TEXT NOT NULL,
+					canonical_id TEXT NOT NULL,
+					display_text TEXT NOT NULL DEFAULT '',
+					is_current INTEGER NOT NULL
+				)`,
+			},
+			want: "workspace_search.projection_schema_corrupt",
+		},
+		"metadata missing value column": {
+			statements: []string{`CREATE TABLE search_meta (key TEXT PRIMARY KEY)`},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "incompatible.db")
+			execSearchDatabaseStatements(t, path, test.statements...)
+			engine, err := Open(path)
+			if engine != nil {
+				engine.Close()
+				t.Fatal("incompatible projection schema unexpectedly opened")
+			}
+			if err == nil {
+				t.Fatal("incompatible projection schema did not return an error")
+			}
+			if test.want != "" && !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Open() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestOpenRollsBackCorruptLegacyProjectionState(t *testing.T) {
+	t.Run("legacy FTS name belongs to a view", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "wrong-fts-kind.db")
+		createLegacySearchDatabase(t, path, legacySearchDatabaseOptions{includeDisplayText: true})
+		execSearchDatabaseStatements(t, path,
+			`DROP TABLE search_terms`,
+			`CREATE VIEW search_terms AS SELECT 'legacy' AS title, 'legacy' AS normalized_text`,
+		)
+		if engine, err := Open(path); err == nil {
+			engine.Close()
+			t.Fatal("legacy FTS view unexpectedly migrated")
+		}
+		assertLegacyProjectionState(t, path, 0, 0, "7")
+	})
+
+	t.Run("generation cannot be invalidated", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "blocked-generation.db")
+		createLegacySearchDatabase(t, path, legacySearchDatabaseOptions{includeDisplayText: true})
+		execSearchDatabaseStatements(t, path, `CREATE TRIGGER block_generation_migration
+			BEFORE UPDATE OF value ON search_meta
+			WHEN old.key='generation' BEGIN
+				SELECT RAISE(ABORT, 'blocked generation migration');
+			END`)
+		if engine, err := Open(path); err == nil {
+			engine.Close()
+			t.Fatal("migration without cursor invalidation unexpectedly succeeded")
+		}
+		assertLegacyProjectionState(t, path, 0, 0, "7")
+	})
+
+	t.Run("legacy row has null title", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "null-title.db")
+		execSearchDatabaseStatements(t, path,
+			`CREATE TABLE search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+			`INSERT INTO search_meta(key,value) VALUES ('generation','7')`,
+			`CREATE TABLE search_documents (
+				rowid INTEGER PRIMARY KEY,
+				kind TEXT NOT NULL,
+				canonical_id TEXT NOT NULL,
+				title TEXT,
+				normalized_text TEXT NOT NULL,
+				is_current INTEGER NOT NULL
+			)`,
+			`INSERT INTO search_documents(kind,canonical_id,title,normalized_text,is_current)
+				VALUES ('record','corrupt',NULL,'corrupt',1)`,
+		)
+		if engine, err := Open(path); err == nil {
+			engine.Close()
+			t.Fatal("legacy row with null title unexpectedly migrated")
+		}
+		assertLegacyProjectionState(t, path, 0, 0, "7")
 	})
 }
 
@@ -688,6 +1143,181 @@ func testEngine(t *testing.T) *Engine {
 	}
 	t.Cleanup(func() { engine.Close() })
 	return engine
+}
+
+type legacySearchDatabaseOptions struct {
+	includeDisplayText bool
+	blockMigration     bool
+}
+
+func createLegacySearchDatabase(
+	t *testing.T,
+	path string,
+	options legacySearchDatabaseOptions,
+) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	displayTextDefinition := ""
+	if options.includeDisplayText {
+		displayTextDefinition = "\n\t\t\tdisplay_text TEXT NOT NULL DEFAULT '',"
+	}
+	statements := []string{
+		`CREATE TABLE search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT INTO search_meta(key,value) VALUES
+			('generation','7'),
+			('business_outbox_rowid','0'),
+			('file_head_revision','0'),
+			('mutation_revision','0'),
+			('rebuild_required','0')`,
+		`CREATE TABLE search_documents (
+			rowid INTEGER PRIMARY KEY,
+			hit_id TEXT NOT NULL UNIQUE,
+			kind TEXT NOT NULL,
+			canonical_id TEXT NOT NULL,
+			title TEXT NOT NULL,` + displayTextDefinition + `
+			normalized_text TEXT NOT NULL,
+			source_revision TEXT NOT NULL,
+			revision_time TEXT NOT NULL,
+			table_id TEXT,
+			record_id TEXT,
+			field_id TEXT,
+			document_id TEXT,
+			mime_type TEXT,
+			extension TEXT,
+			size_bytes INTEGER,
+			status TEXT NOT NULL,
+			is_current INTEGER NOT NULL CHECK(is_current IN (0,1)),
+			metadata_json TEXT NOT NULL,
+			open_target_json TEXT NOT NULL
+		)`,
+		`CREATE VIRTUAL TABLE search_terms USING fts5(
+			title, normalized_text,
+			content='search_documents', content_rowid='rowid',
+			tokenize='unicode61 remove_diacritics 2', detail=full
+		)`,
+		`CREATE VIRTUAL TABLE search_cjk3 USING fts5(
+			title, normalized_text,
+			content='search_documents', content_rowid='rowid',
+			tokenize='trigram case_sensitive 0', detail=full
+		)`,
+		`CREATE TRIGGER search_documents_ai AFTER INSERT ON search_documents BEGIN
+			INSERT INTO search_terms(rowid,title,normalized_text)
+			VALUES (new.rowid,new.title,new.normalized_text);
+			INSERT INTO search_cjk3(rowid,title,normalized_text)
+			VALUES (new.rowid,new.title,new.normalized_text);
+		END`,
+		`CREATE TRIGGER search_documents_ad AFTER DELETE ON search_documents BEGIN
+			INSERT INTO search_terms(search_terms,rowid,title,normalized_text)
+			VALUES ('delete',old.rowid,old.title,old.normalized_text);
+			INSERT INTO search_cjk3(search_cjk3,rowid,title,normalized_text)
+			VALUES ('delete',old.rowid,old.title,old.normalized_text);
+		END`,
+		`CREATE TRIGGER search_documents_au AFTER UPDATE ON search_documents BEGIN
+			INSERT INTO search_terms(search_terms,rowid,title,normalized_text)
+			VALUES ('delete',old.rowid,old.title,old.normalized_text);
+			INSERT INTO search_terms(rowid,title,normalized_text)
+			VALUES (new.rowid,new.title,new.normalized_text);
+			INSERT INTO search_cjk3(search_cjk3,rowid,title,normalized_text)
+			VALUES ('delete',old.rowid,old.title,old.normalized_text);
+			INSERT INTO search_cjk3(rowid,title,normalized_text)
+			VALUES (new.rowid,new.title,new.normalized_text);
+		END`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for canonicalID, title := range map[string]string{
+		"legacy-zwj": "Legacy 👩🏽‍💻", "legacy-no-joiner": "Legacy 👩🏽💻",
+	} {
+		columns := []string{"hit_id", "kind", "canonical_id", "title"}
+		arguments := []any{"record:" + canonicalID + ":rev-1", "record", canonicalID, title}
+		if options.includeDisplayText {
+			columns = append(columns, "display_text")
+			arguments = append(arguments, "legacy body")
+		}
+		columns = append(columns,
+			"normalized_text", "source_revision", "revision_time", "status",
+			"is_current", "metadata_json", "open_target_json",
+		)
+		arguments = append(arguments,
+			Normalize(title+"\nlegacy body"), "rev-1", "2026-08-12T00:00:00Z",
+			"active", 1, "[]", `{"kind":"record"}`,
+		)
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(columns)), ",")
+		statement := `INSERT INTO search_documents(` + strings.Join(columns, ",") +
+			`) VALUES(` + placeholders + `)`
+		if _, err := db.Exec(statement, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if options.blockMigration {
+		if _, err := db.Exec(`CREATE TRIGGER block_projection_migration
+			BEFORE UPDATE OF normalized_text ON search_documents BEGIN
+				SELECT RAISE(ABORT, 'blocked projection migration');
+			END`); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func execSearchDatabaseStatements(t *testing.T, path string, statements ...string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertLegacyProjectionState(
+	t *testing.T,
+	path string,
+	wantProjectedColumns int,
+	wantProjectionVersions int,
+	wantGeneration string,
+) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var projectedColumns int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('search_documents') WHERE name='projected_title'`,
+	).Scan(&projectedColumns); err != nil {
+		t.Fatal(err)
+	}
+	var projectionVersions int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM search_meta WHERE key='projection_schema_version'`,
+	).Scan(&projectionVersions); err != nil {
+		t.Fatal(err)
+	}
+	var generation string
+	if err := db.QueryRow(
+		`SELECT value FROM search_meta WHERE key='generation'`,
+	).Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	if projectedColumns != wantProjectedColumns ||
+		projectionVersions != wantProjectionVersions || generation != wantGeneration {
+		t.Fatalf(
+			"projection state: columns=%d versions=%d generation=%q",
+			projectedColumns, projectionVersions, generation,
+		)
+	}
 }
 
 func source(kind, id, revision, title, body string, current bool) SourceDocument {

@@ -129,84 +129,23 @@ func Open(path string) (*Engine, error) {
 func (engine *Engine) Close() error { return engine.db.Close() }
 
 func (engine *Engine) initialize(ctx context.Context) error {
-	statements := []string{
+	for _, statement := range []string{
 		`PRAGMA journal_mode=WAL`,
 		`PRAGMA busy_timeout=250`,
-		`CREATE TABLE IF NOT EXISTS search_meta (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL
-		)`,
-		`INSERT OR IGNORE INTO search_meta(key,value) VALUES ('generation','0')`,
-		`INSERT OR IGNORE INTO search_meta(key,value) VALUES ('business_outbox_rowid','0')`,
-		`INSERT OR IGNORE INTO search_meta(key,value) VALUES ('file_head_revision','0')`,
-		`INSERT OR IGNORE INTO search_meta(key,value) VALUES ('mutation_revision','0')`,
-		`INSERT OR IGNORE INTO search_meta(key,value) VALUES ('rebuild_required','0')`,
-		`CREATE TABLE IF NOT EXISTS search_documents (
-			rowid INTEGER PRIMARY KEY,
-			hit_id TEXT NOT NULL UNIQUE,
-			kind TEXT NOT NULL,
-			canonical_id TEXT NOT NULL,
-			title TEXT NOT NULL,
-			display_text TEXT NOT NULL DEFAULT '',
-			normalized_text TEXT NOT NULL,
-			source_revision TEXT NOT NULL,
-			revision_time TEXT NOT NULL,
-			table_id TEXT,
-			record_id TEXT,
-			field_id TEXT,
-			document_id TEXT,
-			mime_type TEXT,
-			extension TEXT,
-			size_bytes INTEGER,
-			status TEXT NOT NULL,
-			is_current INTEGER NOT NULL CHECK(is_current IN (0,1)),
-			metadata_json TEXT NOT NULL,
-			open_target_json TEXT NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_search_identity
-			ON search_documents(kind, canonical_id, is_current)`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS search_terms USING fts5(
-			title, normalized_text,
-			content='search_documents', content_rowid='rowid',
-			tokenize='unicode61 remove_diacritics 2', detail=full
-		)`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS search_cjk3 USING fts5(
-			title, normalized_text,
-			content='search_documents', content_rowid='rowid',
-			tokenize='trigram case_sensitive 0', detail=full
-		)`,
-		`CREATE TRIGGER IF NOT EXISTS search_documents_ai AFTER INSERT ON search_documents BEGIN
-			INSERT INTO search_terms(rowid,title,normalized_text)
-			VALUES (new.rowid,new.title,new.normalized_text);
-			INSERT INTO search_cjk3(rowid,title,normalized_text)
-			VALUES (new.rowid,new.title,new.normalized_text);
-		END`,
-		`CREATE TRIGGER IF NOT EXISTS search_documents_ad AFTER DELETE ON search_documents BEGIN
-			INSERT INTO search_terms(search_terms,rowid,title,normalized_text)
-			VALUES ('delete',old.rowid,old.title,old.normalized_text);
-			INSERT INTO search_cjk3(search_cjk3,rowid,title,normalized_text)
-			VALUES ('delete',old.rowid,old.title,old.normalized_text);
-		END`,
-		`CREATE TRIGGER IF NOT EXISTS search_documents_au AFTER UPDATE ON search_documents BEGIN
-			INSERT INTO search_terms(search_terms,rowid,title,normalized_text)
-			VALUES ('delete',old.rowid,old.title,old.normalized_text);
-			INSERT INTO search_terms(rowid,title,normalized_text)
-			VALUES (new.rowid,new.title,new.normalized_text);
-			INSERT INTO search_cjk3(search_cjk3,rowid,title,normalized_text)
-			VALUES ('delete',old.rowid,old.title,old.normalized_text);
-			INSERT INTO search_cjk3(rowid,title,normalized_text)
-			VALUES (new.rowid,new.title,new.normalized_text);
-		END`,
-	}
-	for _, statement := range statements {
+	} {
 		if _, err := engine.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize workspace search: %w", err)
 		}
 	}
-	if err := ensureDisplayTextColumn(ctx, engine.db); err != nil {
+	tx, err := engine.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	return nil
+	defer tx.Rollback()
+	if err := initializeSearchSchema(ctx, tx); err != nil {
+		return fmt.Errorf("initialize workspace search: %w", err)
+	}
+	return tx.Commit()
 }
 
 // PublicErrorCode reduces storage-engine details to the stable, content-free
@@ -230,35 +169,6 @@ func PublicErrorCode(err error) string {
 		}
 	}
 	return "workspace_search.internal_failed"
-}
-
-func ensureDisplayTextColumn(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(search_documents)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	found := false
-	for rows.Next() {
-		var cid int
-		var name, dataType string
-		var notNull, primaryKey int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return err
-		}
-		if name == "display_text" {
-			found = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if found {
-		return nil
-	}
-	_, err = db.ExecContext(ctx, `ALTER TABLE search_documents ADD COLUMN display_text TEXT NOT NULL DEFAULT ''`)
-	return err
 }
 
 func (engine *Engine) FTS5Enabled(ctx context.Context) (bool, error) {
@@ -310,13 +220,13 @@ func insertSource(ctx context.Context, tx *sql.Tx, source SourceDocument) error 
 	}
 	hitID := sourceHitID(source)
 	_, err = tx.ExecContext(ctx, `INSERT INTO search_documents(
-		hit_id,kind,canonical_id,title,display_text,normalized_text,source_revision,revision_time,
+		hit_id,kind,canonical_id,title,display_text,projected_title,normalized_text,source_revision,revision_time,
 		table_id,record_id,field_id,document_id,mime_type,extension,size_bytes,status,
 		is_current,metadata_json,open_target_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(hit_id) DO UPDATE SET
 		title=excluded.title, display_text=excluded.display_text,
-		normalized_text=excluded.normalized_text,
+		projected_title=excluded.projected_title, normalized_text=excluded.normalized_text,
 		revision_time=excluded.revision_time, table_id=excluded.table_id,
 		record_id=excluded.record_id, field_id=excluded.field_id,
 		document_id=excluded.document_id, mime_type=excluded.mime_type,
@@ -325,7 +235,7 @@ func insertSource(ctx context.Context, tx *sql.Tx, source SourceDocument) error 
 		metadata_json=excluded.metadata_json,
 		open_target_json=excluded.open_target_json`,
 		hitID, source.Kind, source.CanonicalID, source.Title, source.Body,
-		Normalize(source.Title+"\n"+source.Body), source.SourceRevision,
+		projectSearchText(source.Title), projectSearchText(source.Title+"\n"+source.Body), source.SourceRevision,
 		source.RevisionTime, source.TableID, source.RecordID, source.FieldID,
 		source.DocumentID, source.MIMEType, source.Extension, source.SizeBytes,
 		source.Status, boolInt(source.Current), string(metadata), string(openTarget))
@@ -706,7 +616,8 @@ func (engine *Engine) Query(
 		offset = cursor.Offset
 	}
 	normalized := Normalize(strings.TrimSpace(request.Query))
-	from, scoreExpression, matchWhere, args := searchPlan(normalized)
+	projected := projectSearchText(strings.TrimSpace(request.Query))
+	from, scoreExpression, matchWhere, args := searchPlan(projected, normalized)
 	where := []string{matchWhere}
 	if request.Scope == "current" {
 		where = append(where, "d.is_current=1", "d.status<>'deleted'")
@@ -768,17 +679,17 @@ func (engine *Engine) Query(
 	return Result{Hits: hits, NextCursor: next, Generation: generation}, nil
 }
 
-func searchPlan(normalized string) (string, string, string, []any) {
+func searchPlan(projected, normalized string) (string, string, string, []any) {
 	if hasCJK(normalized) && utf8.RuneCountInString(normalized) >= 3 {
 		return "search_cjk3 f", "-bm25(search_cjk3)",
-			"search_cjk3 MATCH ?", []any{quoteFTS(normalized)}
+			"search_cjk3 MATCH ?", []any{quoteFTS(projected)}
 	}
 	if hasCJK(normalized) {
 		return "search_terms f", "0.0", "d.normalized_text LIKE ? ESCAPE '\\'",
-			[]any{"%" + escapeLike(normalized) + "%"}
+			[]any{"%" + escapeLike(projected) + "%"}
 	}
 	return "search_terms f", "-bm25(search_terms)",
-		"search_terms MATCH ?", []any{quoteFTS(normalized)}
+		"search_terms MATCH ?", []any{quoteFTS(projected)}
 }
 
 func compileFilters(request contracts.SearchRequest) (string, []any, error) {
