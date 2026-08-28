@@ -17,7 +17,7 @@ import pytest
 from qa import fault_injection, package_check, release_candidate
 from qa.package_check import check_package
 from scripts import build_next
-from scripts.qa.windows_process_scope import WindowsProcessScope
+from scripts.qa.windows_process_scope import ProcessScopeQueryError, WindowsProcessScope
 from scripts.release import (
     _ensure_clean_worktree,
     activate_upgrade,
@@ -576,33 +576,34 @@ def test_self_update_activation_pointer_accepts_exact_schema_v2_prepared_identit
             )
 
 
-def test_self_update_health_failure_requires_exact_rollback_and_restored_readiness(
-    tmp_path: Path,
-) -> None:
-    target = tmp_path / "VibeTable.Next"
-    stage = tmp_path / ".VibeTable.Next.update-health-failure"
+def _write_strict_self_update_rollback_fixture(
+    root: Path,
+    *,
+    failure_code: str,
+    health_failure_readiness: dict[str, object] | None = None,
+    consumed_request: Path | None = None,
+) -> SimpleNamespace:
+    root.mkdir(exist_ok=True)
+    target = root / "VibeTable.Next"
+    stage = root / ".VibeTable.Next.update-rollback-fixture"
     token = "c" * 64
     updater_process_id = 699
     updated_process_id = 700
     restored_process_id = 701
-    readiness_root = tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR
-    restored_readiness_root = tmp_path / "self-update-restored-readiness"
-    restored_controls_root = tmp_path / "self-update-restored-controls"
-    readiness_root.mkdir()
+    if health_failure_readiness is not None:
+        readiness_root = root / "self-update-readiness"
+        readiness_root.mkdir()
+        (readiness_root / "vibetable-readiness.json").write_text(
+            json.dumps(health_failure_readiness),
+            encoding="utf-8",
+        )
+    if consumed_request is not None:
+        consumed_request.parent.mkdir(parents=True)
+    restored_readiness_root = root / "self-update-restored-readiness"
+    restored_controls_root = root / "self-update-restored-controls"
     restored_readiness_root.mkdir()
     restored_controls_root.mkdir()
-    (readiness_root / build_next.SHELL_READINESS_FILE).write_text(
-        json.dumps(
-            {
-                "ready": False,
-                "mode": None,
-                "error": "Post-update workspace health probe failed",
-                "writtenAt": "2026-08-28T04:00:03+00:00",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (restored_readiness_root / build_next.SHELL_READINESS_FILE).write_text(
+    (restored_readiness_root / "vibetable-readiness.json").write_text(
         json.dumps(
             {
                 "ready": True,
@@ -621,7 +622,7 @@ def test_self_update_health_failure_requires_exact_rollback_and_restored_readine
             {
                 "evidenceKind": "packaged-host-control",
                 "action": "visible-startup",
-                "hostExecutable": build_next.HOST_EXE_NAME,
+                "hostExecutable": "VibeTable.Next.exe",
                 "hostProcessId": restored_process_id,
                 "windowVisible": True,
                 "trayVisible": False,
@@ -652,7 +653,7 @@ def test_self_update_health_failure_requires_exact_rollback_and_restored_readine
         "launchNonce": None,
         "updatedProcessId": updated_process_id,
         "updatedStartedAtUtc": "2026-08-28T04:00:02+00:00",
-        "failureCode": "workspaceHealthProbeFailed",
+        "failureCode": failure_code,
         "rollbackRequestedAtUtc": "2026-08-28T04:00:04+00:00",
         "ownedGroupQuiescedAtUtc": "2026-08-28T04:00:05+00:00",
         "workerLaunchNonce": None,
@@ -662,16 +663,14 @@ def test_self_update_health_failure_requires_exact_rollback_and_restored_readine
         "ownedEntryLedger": [
             {"name": "resources", "phase": "restored"},
             {"name": "release.json", "phase": "restored"},
-            {"name": build_next.HOST_EXE_NAME, "phase": "restored"},
+            {"name": "VibeTable.Next.exe", "phase": "restored"},
         ],
         "rollbackAttempt": "f" * 32,
         "rollbackErrorCode": None,
         "rolledBackAtUtc": "2026-08-28T04:00:07+00:00",
     }
-    (tmp_path / f".VibeTable.Next.update-rollback-{'f' * 32}.json").write_text(
-        json.dumps(receipt),
-        encoding="utf-8",
-    )
+    receipt_path = root / f".VibeTable.Next.update-rollback-{'f' * 32}.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     process_scope = cast(
         WindowsProcessScope,
         SimpleNamespace(
@@ -679,13 +678,100 @@ def test_self_update_health_failure_requires_exact_rollback_and_restored_readine
                 members=(
                     SimpleNamespace(
                         pid=restored_process_id,
-                        executable_name=build_next.HOST_EXE_NAME,
+                        executable_name="VibeTable.Next.exe",
                         identity_verified=True,
                     ),
                 )
             )
         ),
     )
+    return SimpleNamespace(
+        root=root,
+        target=target,
+        stage=stage,
+        token=token,
+        updater_process_id=updater_process_id,
+        updated_process_id=updated_process_id,
+        restored_process_id=restored_process_id,
+        receipt=receipt,
+        receipt_path=receipt_path,
+        process_scope=process_scope,
+        consumed_request=consumed_request,
+    )
+
+
+def test_strict_self_update_rollback_fixture_builder_supports_both_scenarios(
+    tmp_path: Path,
+) -> None:
+    health = _write_strict_self_update_rollback_fixture(
+        tmp_path / "health",
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={"ready": False, "error": "health failed"},
+    )
+    updated_request = tmp_path / "updated" / "updated-controls" / "close.request"
+    updated = _write_strict_self_update_rollback_fixture(
+        tmp_path / "updated",
+        failure_code="updatedProcessExited",
+        consumed_request=updated_request,
+    )
+
+    assert set(health.receipt) == {
+        "schemaVersion",
+        "state",
+        "targetRoot",
+        "stagingRoot",
+        "currentVersion",
+        "targetVersion",
+        "token",
+        "smokeTest",
+        "updaterProcessId",
+        "updaterStartedAtUtc",
+        "createdAtUtc",
+        "confirmedAt",
+        "watchdogProcessId",
+        "watchdogStartedAtUtc",
+        "ownedGroupId",
+        "launchNonce",
+        "updatedProcessId",
+        "updatedStartedAtUtc",
+        "failureCode",
+        "rollbackRequestedAtUtc",
+        "ownedGroupQuiescedAtUtc",
+        "workerLaunchNonce",
+        "workerProcessId",
+        "workerStartedAtUtc",
+        "workerReplacementCount",
+        "ownedEntryLedger",
+        "rollbackAttempt",
+        "rollbackErrorCode",
+        "rolledBackAtUtc",
+    }
+    assert health.receipt["failureCode"] == "workspaceHealthProbeFailed"
+    assert updated.receipt["failureCode"] == "updatedProcessExited"
+    assert updated.consumed_request == updated_request
+
+
+def test_self_update_health_failure_requires_exact_rollback_and_restored_readiness(
+    tmp_path: Path,
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={
+            "ready": False,
+            "mode": None,
+            "error": "Post-update workspace health probe failed",
+            "writtenAt": "2026-08-28T04:00:03+00:00",
+        },
+    )
+    target = fixture.target
+    stage = fixture.stage
+    token = fixture.token
+    updater_process_id = fixture.updater_process_id
+    updated_process_id = fixture.updated_process_id
+    restored_process_id = fixture.restored_process_id
+    receipt = fixture.receipt
+    process_scope = fixture.process_scope
 
     assert (
         build_next.wait_for_self_update_health_failure_rollback(
@@ -747,6 +833,7 @@ def test_self_update_health_failure_requires_exact_rollback_and_restored_readine
         {**receipt, "launchNonce": "a" * 64},
         {**receipt, "updatedProcessId": float(updated_process_id)},
         {**receipt, "updatedStartedAtUtc": "2026-08-28T04:00:00+00:00"},
+        {**receipt, "failureCode": "updatedProcessExited"},
         {**receipt, "rollbackRequestedAtUtc": 0},
         {**receipt, "ownedGroupQuiescedAtUtc": None},
         {**receipt, "workerLaunchNonce": "b" * 64},
@@ -770,7 +857,7 @@ def test_self_update_health_failure_requires_exact_rollback_and_restored_readine
         },
         {**receipt, "rolledBackAtUtc": "2026-08-28T04:00:05+00:00"},
     )
-    receipt_path = tmp_path / f".VibeTable.Next.update-rollback-{'f' * 32}.json"
+    receipt_path = fixture.receipt_path
     for invalid_receipt in invalid_receipts:
         receipt_path.write_text(json.dumps(invalid_receipt), encoding="utf-8")
         with pytest.raises(
@@ -787,6 +874,70 @@ def test_self_update_health_failure_requires_exact_rollback_and_restored_readine
                 updated_process_id=updated_process_id,
                 timeout_seconds=0.01,
             )
+
+
+def test_self_update_updated_exit_accepts_strict_rollback_without_health_failure_readiness(
+    tmp_path: Path,
+) -> None:
+    close_request = tmp_path / "self-update-updated-controls" / "host-normal-close.request"
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="updatedProcessExited",
+        consumed_request=close_request,
+    )
+    target = fixture.target
+    stage = fixture.stage
+    token = fixture.token
+    updater_process_id = fixture.updater_process_id
+    updated_process_id = fixture.updated_process_id
+    restored_process_id = fixture.restored_process_id
+    process_scope = fixture.process_scope
+    assert (
+        build_next.wait_for_self_update_updated_exit_rollback(
+            tmp_path,
+            process_scope=process_scope,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=updater_process_id,
+            updated_process_id=updated_process_id,
+            consumed_request=close_request,
+            timeout_seconds=0.1,
+        )
+        == restored_process_id
+    )
+
+    fixture.receipt_path.write_text(
+        json.dumps({**fixture.receipt, "failureCode": "workspaceHealthProbeFailed"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(build_next.BuildError, match="rollback receipt identity is invalid"):
+        build_next.wait_for_self_update_updated_exit_rollback(
+            tmp_path,
+            process_scope=process_scope,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=updater_process_id,
+            updated_process_id=updated_process_id,
+            consumed_request=close_request,
+            timeout_seconds=0.1,
+        )
+
+    fixture.receipt_path.write_text(json.dumps(fixture.receipt), encoding="utf-8")
+    close_request.write_text("", encoding="utf-8")
+    with pytest.raises(build_next.BuildError, match="did not consume updated close request"):
+        build_next.wait_for_self_update_updated_exit_rollback(
+            tmp_path,
+            process_scope=process_scope,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=updater_process_id,
+            updated_process_id=updated_process_id,
+            consumed_request=close_request,
+            timeout_seconds=0.1,
+        )
 
 
 def test_restored_self_update_host_close_rejects_process_that_already_exited(
@@ -806,6 +957,147 @@ def test_restored_self_update_host_close_rejects_process_that_already_exited(
         build_next.request_restored_self_update_host_close(controls, 701, process_scope)
 
     assert not (controls / "host-normal-close.request").exists()
+
+
+def test_restored_self_update_host_close_reports_remaining_job_members(
+    tmp_path: Path,
+) -> None:
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    initial_members = (SimpleNamespace(pid=701),)
+    remaining_members = (
+        SimpleNamespace(
+            pid=701,
+            executable_name="VibeTable.Next.exe",
+            identity_verified=True,
+        ),
+        SimpleNamespace(
+            pid=702,
+            executable_name="msedgewebview2.exe",
+            identity_verified=False,
+        ),
+    )
+    snapshots = iter(
+        (
+            SimpleNamespace(members=initial_members),
+            SimpleNamespace(members=remaining_members),
+        )
+    )
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(
+            snapshot=lambda: next(snapshots),
+            wait_empty=lambda *, timeout: SimpleNamespace(
+                success=False,
+                remaining_pids=(701, 702),
+                errors=("Job still contains processes after the wait deadline",),
+            ),
+        ),
+    )
+
+    with pytest.raises(build_next.BuildError) as captured:
+        build_next.request_restored_self_update_host_close(controls, 701, process_scope)
+
+    message = str(captured.value)
+    assert "restoredProcessId=701" in message
+    assert "restoredProcessInJob=true" in message
+    assert "pid=701, executable=VibeTable.Next.exe, identityVerified=true" in message
+    assert "pid=702, executable=msedgewebview2.exe, identityVerified=false" in message
+    assert "Job still contains processes after the wait deadline" in message
+
+
+@pytest.mark.parametrize(
+    "snapshot_error",
+    [
+        ProcessScopeQueryError("sensitive snapshot detail"),
+        OSError("sensitive snapshot detail"),
+    ],
+)
+def test_restored_self_update_host_close_preserves_wait_diagnostics_when_snapshot_fails(
+    tmp_path: Path,
+    snapshot_error: Exception,
+) -> None:
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    snapshot_calls = 0
+
+    def snapshot() -> SimpleNamespace:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 1:
+            return SimpleNamespace(members=(SimpleNamespace(pid=701),))
+        raise snapshot_error
+
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(
+            snapshot=snapshot,
+            wait_empty=lambda *, timeout: SimpleNamespace(
+                success=False,
+                remaining_pids=(701, 702),
+                errors=("Job wait timed out",),
+            ),
+        ),
+    )
+
+    with pytest.raises(build_next.BuildError) as captured:
+        build_next.request_restored_self_update_host_close(controls, 701, process_scope)
+
+    message = str(captured.value)
+    assert "restored process did not exit" in message
+    assert "waitRemainingPids=[701, 702]" in message
+    assert "waitErrors=[Job wait timed out]" in message
+    assert "restoredProcessInJob=true" in message
+    assert "snapshotUnavailable=true" in message
+    assert f"snapshotError={type(snapshot_error).__name__}" in message
+    assert "sensitive snapshot detail" not in message
+
+
+def test_restored_self_update_host_close_bounds_failure_diagnostics(tmp_path: Path) -> None:
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    remaining_members = tuple(
+        SimpleNamespace(
+            pid=1000 + index,
+            executable_name=f"member-{index}.exe",
+            identity_verified=index % 2 == 0,
+        )
+        for index in range(12)
+    )
+    snapshots = iter(
+        (
+            SimpleNamespace(members=(SimpleNamespace(pid=1000),)),
+            SimpleNamespace(members=remaining_members),
+        )
+    )
+    errors = tuple(f"error-{index}-" + ("x" * 300) + "-sentinel-tail" for index in range(6))
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(
+            snapshot=lambda: next(snapshots),
+            wait_empty=lambda *, timeout: SimpleNamespace(
+                success=False,
+                remaining_pids=tuple(range(1000, 1012)),
+                errors=errors,
+            ),
+        ),
+    )
+
+    with pytest.raises(build_next.BuildError) as captured:
+        build_next.request_restored_self_update_host_close(controls, 1000, process_scope)
+
+    message = str(captured.value)
+    assert (
+        "waitRemainingPids=[1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007; omitted=4]" in message
+    )
+    assert "pid=1007, executable=member-7.exe" in message
+    assert "pid=1008" not in message
+    assert "error-0-" in message
+    assert "error-3-" in message
+    assert "error-4-" not in message
+    assert "sentinel-tail" not in message
+    assert "waitErrorsOmitted=2" in message
+    assert len(message) < 2000
 
 
 def test_restored_self_update_host_close_requires_control_consumption(tmp_path: Path) -> None:
@@ -828,7 +1120,7 @@ def test_restored_self_update_host_close_requires_control_consumption(tmp_path: 
     assert (controls / "host-normal-close.request").is_file()
 
 
-def test_health_failure_cleanup_terminates_the_owned_scope_only(
+def test_self_update_cleanup_terminates_the_owned_scope_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, float]] = []
@@ -849,9 +1141,47 @@ def test_health_failure_cleanup_terminates_the_owned_scope_only(
         lambda process_id: pytest.fail(f"unexpected bare-PID termination: {process_id}"),
     )
 
-    build_next.cleanup_self_update_health_failure_scope(process_scope)
+    build_next.cleanup_self_update_process_scope(process_scope)
 
     assert calls == [("wait", 0), ("terminate", 30)]
+
+
+def test_self_update_rollback_scenarios_delegate_to_shared_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def run_shared(
+        _package: Path,
+        root: Path,
+        *,
+        scenario: SimpleNamespace,
+    ) -> None:
+        calls.append(
+            (
+                root.name,
+                str(scenario.slug),
+                str(scenario.failure_code),
+            )
+        )
+
+    monkeypatch.setattr(build_next, "_run_desktop_self_update_rollback_smoke", run_shared)
+
+    package = tmp_path / "package"
+    build_next._run_desktop_self_update_health_failure_smoke(
+        package,
+        tmp_path / "health-failure",
+    )
+    build_next._run_desktop_self_update_updated_exit_smoke(
+        package,
+        tmp_path / "updated-exit",
+    )
+
+    assert calls == [
+        ("health-failure", "health-failure", "workspaceHealthProbeFailed"),
+        ("updated-exit", "updated-exit", "updatedProcessExited"),
+    ]
 
 
 def test_health_failure_blocker_is_owned_before_plan_preparation(

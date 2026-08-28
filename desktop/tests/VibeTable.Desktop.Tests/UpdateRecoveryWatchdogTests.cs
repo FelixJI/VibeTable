@@ -723,6 +723,56 @@ public sealed class UpdateRecoveryWatchdogTests
     }
 
     [TestMethod]
+    public async Task SmokeUpdatedLaunchReceivesItsOwnTestControlDirectory()
+    {
+        UpdateApplyPlan plan = PreparePublishedPlan("updated-smoke-controls", smokeTest: true);
+        var watchdog = new UpdateProcessIdentity(
+            1101,
+            new DateTimeOffset(2026, 8, 27, 10, 0, 0, TimeSpan.Zero));
+        UpdateUpdatedPackageLaunch? launch = null;
+        var processes = new RecordingProcessPort(
+            watchdog,
+            afterUpdatedStart: value => launch = value);
+        var recovery = new UpdateRecoveryWatchdog(processes);
+
+        await recovery.RunUpdatedPackageAsync(plan, CancellationToken.None);
+
+        Assert.IsNotNull(launch);
+        string stageParent = Directory.GetParent(plan.StagingRoot.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar))!.FullName;
+        int controlsIndex = launch.Arguments.IndexOf("--e2e-controls-dir");
+        Assert.IsTrue(controlsIndex >= 0);
+        Assert.AreEqual(
+            1,
+            launch.Arguments.Count(argument => argument == "--e2e-controls-dir"));
+        Assert.AreEqual(
+            Path.Combine(stageParent, "self-update-updated-controls"),
+            launch.Arguments[controlsIndex + 1]);
+        Assert.IsFalse(launch.Arguments.Contains(
+            Path.Combine(stageParent, "self-update-restored-controls")));
+    }
+
+    [TestMethod]
+    public async Task NonSmokeUpdatedLaunchDoesNotReceiveTestControls()
+    {
+        UpdateApplyPlan plan = PreparePublishedPlan("updated-production-controls");
+        var watchdog = new UpdateProcessIdentity(
+            1101,
+            new DateTimeOffset(2026, 8, 27, 10, 0, 0, TimeSpan.Zero));
+        UpdateUpdatedPackageLaunch? launch = null;
+        var processes = new RecordingProcessPort(
+            watchdog,
+            afterUpdatedStart: value => launch = value);
+        var recovery = new UpdateRecoveryWatchdog(processes);
+
+        await recovery.RunUpdatedPackageAsync(plan, CancellationToken.None);
+
+        Assert.IsNotNull(launch);
+        Assert.IsFalse(launch.Arguments.Contains("--e2e-controls-dir"));
+    }
+
+    [TestMethod]
     public void ApplyFailureDoesNotRestartTargetFromUnsettledRecoveryState()
     {
         UpdateApplyPlan plan = PreparePublishedPlan("apply-failure-no-restart");
@@ -838,7 +888,7 @@ public sealed class UpdateRecoveryWatchdogTests
         return (plan, watchdog, updated);
     }
 
-    private UpdateApplyPlan PreparePublishedPlan(string suffix)
+    private UpdateApplyPlan PreparePublishedPlan(string suffix, bool smokeTest = false)
     {
         string root = Root();
         string target = Path.Combine(root, "VibeTable.Next");
@@ -848,7 +898,15 @@ public sealed class UpdateRecoveryWatchdogTests
         CreatePackageTree(source, "1.1.0", "new");
         CreatePackageTree(Path.Combine(stage, "backup"), "1.0.0", "old");
         var plan = new UpdateApplyPlan(
-            1, target, source, stage, 123, "1.0.0", "1.1.0", new string('b', 64));
+            1,
+            target,
+            source,
+            stage,
+            123,
+            "1.0.0",
+            "1.1.0",
+            new string('b', 64),
+            SmokeTest: smokeTest);
         File.WriteAllText(
             Path.Combine(stage, "update-plan.json"),
             JsonSerializer.Serialize(plan));
