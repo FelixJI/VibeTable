@@ -12,7 +12,11 @@ from typing import Any
 import pytest
 
 from scripts.node_toolchain import ensure_node
-from scripts.qa.windows_process_scope import ProcessScopeLaunchError
+from scripts.qa.windows_process_scope import (
+    ProcessScopeLaunchError,
+    ProcessWorkingSetMember,
+    ProcessWorkingSetSnapshot,
+)
 from tests.e2e import product_e2e_runner as runner
 from tests.e2e.windows_tcp_listener_owner import (
     OwnerLeaseCleanupReport,
@@ -65,6 +69,15 @@ class _FakeScope:
 
     def close(self) -> None:
         self.close_calls += 1
+
+    def working_set_snapshot(self) -> ProcessWorkingSetSnapshot:
+        return ProcessWorkingSetSnapshot(
+            (
+                ProcessWorkingSetMember(42, "VibeTable.Next.exe", True, 100),
+                ProcessWorkingSetMember(43, "vibetable-backend.exe", True, 200),
+                ProcessWorkingSetMember(44, "vibetable-pb.exe", True, 300),
+            )
+        )
 
 
 class _FakePortOwnerLease:
@@ -161,15 +174,120 @@ def _real_close_failing_owner_lease() -> tuple[
 def _stub_cdp_owner_capture(
     monkeypatch,
     *,
+    released: bool = True,
     close_error: BaseException | None = None,
 ) -> _FakePortOwnerLease:
-    lease = _FakePortOwnerLease(close_error=close_error)
+    lease = _FakePortOwnerLease(released=released, close_error=close_error)
     monkeypatch.setattr(
         runner.WindowsTcpListenerOwnerLease,
         "capture",
         lambda _port: lease,
     )
     return lease
+
+
+def _write_packaged_workspace(root: Path) -> None:
+    metadata = root / ".vibetable"
+    for name in (
+        "data",
+        "topology",
+        "objects",
+        "audit",
+        "snapshots",
+        "coordination",
+        "quarantine",
+        "temp",
+    ):
+        (metadata / name).mkdir(parents=True)
+    (metadata / "workspace.json").write_text(
+        json.dumps(
+            {
+                "contractVersion": "2.0",
+                "formatVersion": 2,
+                "workspaceId": "11111111-1111-4111-8111-111111111111",
+                "displayName": "Packaged runtime baseline",
+                "createdAt": "2026-08-29T00:00:00Z",
+                "storageMode": "direct",
+                "encryptionMode": "convenient",
+                "repositoryFormat": "kopia-v3",
+                "topologySchemaVersion": 1,
+                "businessSchemaVersion": 1,
+                "importedFromWorkspaceId": None,
+                "sourceSnapshotId": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _prepare_opened_workspace_case(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    observed: dict[str, Any] | None = None,
+    owner_released: bool = True,
+    owner_close_error: BaseException | None = None,
+    members: tuple[int, ...] = (),
+    consume_on_state: Path | None = None,
+) -> tuple[Path, Path, _FakeScope, _FakePortOwnerLease, list[str], list[dict[str, Any]]]:
+    from tests.e2e import packaged_host_lifecycle
+
+    workspace = tmp_path / "workspace"
+    _write_packaged_workspace(workspace)
+    controls = tmp_path / "controls"
+    controls.mkdir()
+    events: list[str] = []
+    launches: list[dict[str, Any]] = []
+    scope = _FakeScope(members=members)
+    scope.root = _SuccessfulRoot()
+    streams = SimpleNamespace(close=lambda: None)
+
+    def launch(*_args, **_kwargs):
+        events.append("launch")
+        launches.append(_kwargs)
+        return scope, 9222, controls, streams
+
+    def wait_for_cdp(*_args):
+        events.append("cdp-ready")
+
+    owner = _FakePortOwnerLease(released=owner_released, close_error=owner_close_error)
+
+    def capture_owner(_port: int) -> _FakePortOwnerLease:
+        events.append("owner-captured")
+        return owner
+
+    def wait_for_readiness(*_args):
+        events.append("readiness")
+        return {"ready": True}
+
+    default_observed = {
+        "action": "workspace-opened",
+        "hostExecutable": "VibeTable.Next.exe",
+        "workspaceId": packaged_host_lifecycle.WORKSPACE_ID,
+        "sessionEpoch": 7,
+        "sessionState": "openedWritable",
+    }
+
+    def wait_for_state(*_args, **_kwargs):
+        assert (controls / packaged_host_lifecycle.OPEN_WORKSPACE_CONTROL_FILE).is_file()
+        events.append(f"state:{_args[2]}")
+        if consume_on_state is not None:
+            consume_on_state.unlink()
+        return default_observed if observed is None else observed
+
+    real_normal_exit = runner._request_normal_exit
+
+    def normal_exit(*args, **kwargs):
+        events.append("normal-exit")
+        return real_normal_exit(*args, **kwargs)
+
+    monkeypatch.setattr(packaged_host_lifecycle, "_launch_host", launch)
+    monkeypatch.setattr(runner, "_wait_for_cdp", wait_for_cdp)
+    monkeypatch.setattr(runner.WindowsTcpListenerOwnerLease, "capture", capture_owner)
+    monkeypatch.setattr(runner, "_wait_for_readiness", wait_for_readiness)
+    monkeypatch.setattr(packaged_host_lifecycle, "_wait_for_state", wait_for_state)
+    monkeypatch.setattr(runner, "_request_normal_exit", normal_exit)
+    return workspace, controls, scope, owner, events, launches
 
 
 def test_manifest_accepts_capability_tagged_scenarios_without_a_fixed_count(
@@ -1217,6 +1335,275 @@ def test_packaged_host_lifecycle_uses_fixed_test_mode_tray_controls() -> None:
     assert '"--test-mode-tray-lifecycle"' in text
     assert '"--autostart"' in text
     assert "VibeTable.Next.exe" in text
+
+
+def test_opened_packaged_workspace_yields_verified_live_session_in_startup_order(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    workspace, _controls, scope, owner, events, _launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+    )
+
+    with packaged_host_lifecycle.opened_packaged_workspace(
+        tmp_path / "package",
+        workspace,
+        tmp_path / "evidence",
+    ) as session:
+        events.append("yield")
+        assert scope.root.poll() is None
+        assert session.cdp_url == "http://127.0.0.1:9222"
+        assert session.workspace_evidence["openOutcome"] == "opened-writable"
+        assert session.working_set_snapshot().members[0].pid == 42
+        with pytest.raises(RuntimeError, match="not complete"):
+            _ = session.lifecycle
+
+    assert session.lifecycle["status"] == "passed"
+    assert session.lifecycle["membersAfterExit"] == ()
+    assert session.lifecycle["portsReleased"] is True
+    assert owner.closed is True
+    assert scope.close_calls == 1
+    assert events == [
+        "launch",
+        "cdp-ready",
+        "owner-captured",
+        "readiness",
+        "state:workspace-opened",
+        "yield",
+        "normal-exit",
+    ]
+
+
+def test_legacy_workspace_helper_returns_structured_normal_exit_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    workspace, _controls, _scope, _owner, _events, _launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+        owner_released=False,
+    )
+
+    report = packaged_host_lifecycle.open_workspace_with_packaged_host(
+        tmp_path / "package",
+        workspace,
+        tmp_path / "evidence",
+    )
+
+    assert report["status"] == "failed"
+    assert report["lifecycle"]["normalExitRequested"] is True
+    assert report["lifecycle"]["portsReleased"] is False
+    assert report["lifecycle"]["status"] == "failed"
+
+
+def test_opened_packaged_workspace_raises_with_closed_normal_exit_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    workspace, _controls, scope, owner, _events, _launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+        owner_released=False,
+        members=(43,),
+    )
+
+    with (
+        pytest.raises(packaged_host_lifecycle.PackagedWorkspaceLifecycleError) as caught,
+        packaged_host_lifecycle.opened_packaged_workspace(
+            tmp_path / "package",
+            workspace,
+            tmp_path / "evidence",
+        ),
+    ):
+        pass
+
+    lifecycle = caught.value.session.lifecycle
+    assert lifecycle["normalExitRequested"] is True
+    assert lifecycle["portsReleased"] is False
+    assert lifecycle["status"] == "failed"
+    assert lifecycle["membersAfterExit"][0]["pid"] == 43
+    lifecycle["membersAfterExit"][0]["pid"] = 999
+    assert caught.value.session.lifecycle["membersAfterExit"][0]["pid"] == 43
+    assert owner.closed is True
+    assert scope.close_calls == 1
+
+
+def test_legacy_workspace_report_retains_normal_exit_and_scope_cleanup_failures(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    workspace, _controls, scope, _owner, _events, _launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+        owner_released=False,
+    )
+
+    def fail_scope_close() -> None:
+        scope.close_calls += 1
+        raise OSError("scope close denied")
+
+    monkeypatch.setattr(scope, "close", fail_scope_close)
+
+    report = packaged_host_lifecycle.open_workspace_with_packaged_host(
+        tmp_path / "package",
+        workspace,
+        tmp_path / "evidence",
+    )
+
+    assert report["status"] == "failed"
+    assert report["lifecycle"]["portsReleased"] is False
+    assert any("scope close denied" in error for error in report["lifecycle"]["errors"])
+    assert scope.close_calls == 1
+
+
+def test_opened_workspace_reports_owner_close_failure_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    workspace, _controls, _scope, _owner, _events, _launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+        owner_close_error=OSError("owner close denied"),
+    )
+
+    with (
+        pytest.raises(packaged_host_lifecycle.PackagedWorkspaceLifecycleError) as caught,
+        packaged_host_lifecycle.opened_packaged_workspace(
+            tmp_path / "package",
+            workspace,
+            tmp_path / "evidence",
+        ),
+    ):
+        pass
+
+    matching_errors = [
+        error
+        for error in caught.value.session.lifecycle["errors"]
+        if "unable to close captured CDP owner handle" in error
+    ]
+    assert len(matching_errors) == 1
+
+
+def test_legacy_workspace_fault_injection_uses_the_unified_managed_lifecycle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    fault_file = tmp_path / "startup-migration.fault"
+    fault_file.write_text("fail-once\n", encoding="utf-8")
+    observed = {
+        "action": "workspace-open-failed",
+        "hostExecutable": "VibeTable.Next.exe",
+        "workspaceId": None,
+        "sessionEpoch": None,
+        "sessionState": None,
+        "error": "injected startup migration fault",
+    }
+    workspace, _controls, scope, owner, events, launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+        observed=observed,
+        consume_on_state=fault_file,
+    )
+
+    report = packaged_host_lifecycle.open_workspace_with_packaged_host(
+        tmp_path / "package",
+        workspace,
+        tmp_path / "evidence",
+        startup_fault_file=fault_file,
+        expect_open_failure=True,
+    )
+
+    assert launches[0]["extra_environment"] == {
+        packaged_host_lifecycle.STARTUP_MIGRATION_FAULT_ENVIRONMENT: str(fault_file.resolve())
+    }
+    assert "state:workspace-open-failed" in events
+    assert report["openOutcome"] == "rejected-before-open"
+    assert report["writableSessionPublished"] is False
+    assert report["startupFaultConsumed"] is True
+    assert report["lifecycle"]["status"] == "passed"
+    assert owner.closed is True
+    assert scope.close_calls == 1
+
+
+def test_opened_packaged_workspace_probe_failure_preserves_primary_error_and_cleans_scope(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    workspace, controls, scope, owner, _events, _launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+        members=(42, 43, 44),
+    )
+
+    with (
+        pytest.raises(
+            ValueError,
+            match="probe primary",
+        ),
+        packaged_host_lifecycle.opened_packaged_workspace(
+            tmp_path / "package",
+            workspace,
+            tmp_path / "evidence",
+        ),
+    ):
+        raise ValueError("probe primary")
+
+    assert scope.terminate_calls == 1
+    assert scope.close_calls == 1
+    assert owner.closed is True
+    assert not (controls / runner.NORMAL_CLOSE_CONTROL_FILE).exists()
+
+
+def test_opened_packaged_workspace_never_yields_non_writable_session(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    observed = {
+        "action": "workspace-opened",
+        "hostExecutable": "VibeTable.Next.exe",
+        "workspaceId": packaged_host_lifecycle.WORKSPACE_ID,
+        "sessionEpoch": 7,
+        "sessionState": "opening",
+    }
+    workspace, _controls, scope, owner, _events, _launches = _prepare_opened_workspace_case(
+        monkeypatch,
+        tmp_path,
+        observed=observed,
+        members=(42, 43, 44),
+    )
+    yielded = False
+
+    with (
+        pytest.raises(AssertionError),
+        packaged_host_lifecycle.opened_packaged_workspace(
+            tmp_path / "package",
+            workspace,
+            tmp_path / "evidence",
+        ),
+    ):
+        yielded = True
+
+    assert yielded is False
+    assert scope.terminate_calls == 1
+    assert scope.close_calls == 1
+    assert owner.closed is True
 
 
 def test_host_lifecycle_artifacts_have_no_pid_tree_ownership_fallback() -> None:
