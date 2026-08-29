@@ -1,0 +1,275 @@
+{
+  "$defs": {
+    "CancellationPolicy": {
+      "enum": [
+        "none",
+        "clientPendingOnly",
+        "cooperative",
+        "processBound"
+      ],
+      "title": "CancellationPolicy",
+      "type": "string"
+    },
+    "EntryKind": {
+      "enum": [
+        "rpc",
+        "event",
+        "state"
+      ],
+      "type": "string"
+    },
+    "OwnershipClass": {
+      "enum": [
+        "GO_AUTHORITY",
+        "HOST_NATIVE",
+        "PYTHON_WORKER",
+        "TEMPORARY_BFF"
+      ],
+      "title": "OwnershipClass",
+      "type": "string"
+    },
+    "RouteOwner": {
+      "enum": [
+        "wpfHost",
+        "pythonBff",
+        "goSidecar",
+        "pythonWorker"
+      ],
+      "title": "RouteOwner",
+      "type": "string"
+    },
+    "RuntimeHop": {
+      "enum": [
+        "renderer",
+        "wpfHost",
+        "pythonBff",
+        "goSidecar",
+        "pocketBase",
+        "pythonWorker",
+        "nodeWorker"
+      ],
+      "title": "RuntimeHop",
+      "type": "string"
+    },
+    "StableOwner": {
+      "enum": [
+        "GO_AUTHORITY",
+        "HOST_NATIVE",
+        "PYTHON_WORKER"
+      ],
+      "title": "StableOwner",
+      "type": "string"
+    },
+    "StateLifetime": {
+      "enum": [
+        "request",
+        "task",
+        "process",
+        "workspace",
+        "device"
+      ],
+      "title": "StateLifetime",
+      "type": "string"
+    },
+    "TimeoutPolicy": {
+      "enum": [
+        "none",
+        "perHopBounded",
+        "operationBounded",
+        "startupBounded"
+      ],
+      "title": "TimeoutPolicy",
+      "type": "string"
+    },
+    "_Effects": {
+      "additionalProperties": false,
+      "properties": {
+        "read": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Read",
+          "type": "array"
+        },
+        "write": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Write",
+          "type": "array"
+        },
+        "notification": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notification",
+          "type": "array"
+        },
+        "state": {
+          "items": {
+            "type": "string"
+          },
+          "title": "State",
+          "type": "array"
+        }
+      },
+      "required": [
+        "read",
+        "write",
+        "notification",
+        "state"
+      ],
+      "title": "_Effects",
+      "type": "object"
+    },
+    "_SourceGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EntryKind"
+        },
+        "names": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Names",
+          "type": "array"
+        },
+        "currentPath": {
+          "items": {
+            "$ref": "#/$defs/RuntimeHop"
+          },
+          "minItems": 1,
+          "title": "Currentpath",
+          "type": "array"
+        },
+        "currentRoute": {
+          "$ref": "#/$defs/RouteOwner"
+        },
+        "classification": {
+          "$ref": "#/$defs/OwnershipClass"
+        },
+        "targetOwner": {
+          "$ref": "#/$defs/StableOwner"
+        },
+        "authority": {
+          "$ref": "#/$defs/StableOwner"
+        },
+        "effects": {
+          "$ref": "#/$defs/_Effects"
+        },
+        "stateHolders": {
+          "items": {
+            "$ref": "#/$defs/RuntimeHop"
+          },
+          "minItems": 1,
+          "title": "Stateholders",
+          "type": "array"
+        },
+        "stateLifetime": {
+          "$ref": "#/$defs/StateLifetime"
+        },
+        "cancellation": {
+          "$ref": "#/$defs/CancellationPolicy"
+        },
+        "timeout": {
+          "$ref": "#/$defs/TimeoutPolicy"
+        },
+        "productScenarios": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Productscenarios",
+          "type": "array"
+        },
+        "targetSlice": {
+          "minLength": 1,
+          "title": "Targetslice",
+          "type": "string"
+        },
+        "targetPr": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Targetpr"
+        },
+        "deleteWhen": {
+          "minLength": 1,
+          "title": "Deletewhen",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "names",
+        "currentPath",
+        "currentRoute",
+        "classification",
+        "targetOwner",
+        "authority",
+        "effects",
+        "stateHolders",
+        "stateLifetime",
+        "cancellation",
+        "timeout",
+        "productScenarios",
+        "targetSlice",
+        "targetPr",
+        "deleteWhen",
+        "evidence"
+      ],
+      "title": "_SourceGroup",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "inventoryVersion": {
+      "const": "1.0",
+      "title": "Inventoryversion",
+      "type": "string"
+    },
+    "catalogContractVersion": {
+      "minLength": 1,
+      "title": "Catalogcontractversion",
+      "type": "string"
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/_SourceGroup"
+      },
+      "minItems": 1,
+      "title": "Groups",
+      "type": "array"
+    }
+  },
+  "required": [
+    "inventoryVersion",
+    "catalogContractVersion",
+    "groups"
+  ],
+  "title": "VibeTable Product Runtime Ownership Inventory",
+  "type": "object",
+  "$id": "https://vibetable.local/contracts/v2/product-runtime-ownership-inventory.schema.json"
+}

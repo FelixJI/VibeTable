@@ -424,6 +424,16 @@ def test_contract_gate_runs_generation_and_all_runtime_consumers(
                 "uv",
                 "run",
                 "python",
+                "contracts/v2/product_runtime_inventory.py",
+                "--check",
+            ),
+            automation_project.REPO_ROOT,
+        ),
+        (
+            (
+                "uv",
+                "run",
+                "python",
                 "contracts/v2/generate_rpc_catalog.py",
                 "--check",
             ),
@@ -468,6 +478,7 @@ def test_contract_gate_runs_generation_and_all_runtime_consumers(
                 "pytest",
                 "tests/contract/test_v2_contracts.py",
                 "tests/contract/test_product_contracts.py",
+                "tests/contract/test_product_runtime_inventory.py",
                 "tests/contract/test_workspace_rpc_capability_manifest.py",
                 "tests/contract/test_schema_v2_dto_codegen.py",
                 "tests/contract/test_workbench_dto_codegen.py",
@@ -551,7 +562,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
 
     automation_project.quality()
 
-    assert [command for command, _cwd in observed[:11]] == [
+    assert [command for command, _cwd in observed[:12]] == [
         ("uv", "run", "python", "contracts/schema-v2/generate_dtos.py", "--check"),
         ("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check"),
         (
@@ -559,6 +570,13 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "run",
             "python",
             "contracts/v2/generate_product_rpc_catalog.py",
+            "--check",
+        ),
+        (
+            "uv",
+            "run",
+            "python",
+            "contracts/v2/product_runtime_inventory.py",
             "--check",
         ),
         (
@@ -597,6 +615,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
             "pytest",
             "tests/contract/test_v2_contracts.py",
             "tests/contract/test_product_contracts.py",
+            "tests/contract/test_product_runtime_inventory.py",
             "tests/contract/test_workspace_rpc_capability_manifest.py",
             "tests/contract/test_schema_v2_dto_codegen.py",
             "tests/contract/test_workbench_dto_codegen.py",
