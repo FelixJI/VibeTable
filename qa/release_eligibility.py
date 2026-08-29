@@ -37,6 +37,7 @@ REQUIRED_STAGES = (
     "web-build",
     "fault-injection",
     "product-e2e",
+    "runtime-baseline",
     "workbench-qualification",
     "smoke",
 )
@@ -62,7 +63,12 @@ LANE_STAGES = {
     ),
     "race-a": ("go-race",),
     "race-b": ("go-race",),
-    "resilience": ("fault-injection", "product-e2e", "workbench-qualification"),
+    "resilience": (
+        "fault-injection",
+        "product-e2e",
+        "runtime-baseline",
+        "workbench-qualification",
+    ),
     "release": ("package",),
 }
 PARALLEL_LANES = ("core", *RACE_LANES, "resilience")

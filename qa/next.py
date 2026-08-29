@@ -45,12 +45,14 @@ FAULT_INJECTION = REPO_ROOT / "qa" / "fault_injection.py"
 GO_FORMAT_CHECK = REPO_ROOT / "qa" / "go_format_check.py"
 E2E_SMOKE = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
 UPGRADE_SMOKE = REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
+RUNTIME_BASELINE = REPO_ROOT / "tests" / "e2e" / "packaged_runtime_baseline.py"
 
 STAGES = REQUIRED_STAGES
 DEFAULT_STAGE_TIMEOUT_SECONDS = 15 * 60
 STAGE_TIMEOUT_SECONDS = {
     "fault-injection": 30 * 60,
     "product-e2e": 30 * 60,
+    "runtime-baseline": 10 * 60,
 }
 RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
 RACE_LONG_COMMAND_TIMEOUT_SECONDS = 16 * 60
@@ -714,6 +716,28 @@ def stage_command(
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
         return command, str(REPO_ROOT)
+    if stage == "runtime-baseline":
+        if package_root is None or package_archive is None:
+            raise ValueError("runtime-baseline requires --package-root and --package-archive")
+        run_root = _qa_temp_dir() / "r"
+        return [
+            sys.executable,
+            str(RUNTIME_BASELINE),
+            "--package-root",
+            str(package_root),
+            "--package-archive",
+            str(package_archive),
+            "--workspace-root",
+            str(run_root / "workspace"),
+            "--evidence-root",
+            str(run_root / "runtime"),
+            "--build-identity",
+            str(REPO_ROOT / "build" / "automation" / "artifacts" / "build-identity.json"),
+            "--source-sha",
+            handoff_gate.git_head_sha(),
+            "--json-report",
+            str(run_root / "packaged-runtime-baseline.json"),
+        ], str(REPO_ROOT)
     if stage == "workbench-qualification":
         return [
             go,
@@ -1433,6 +1457,62 @@ def persist_product_e2e_evidence(
     return run_destination
 
 
+def persist_runtime_baseline_evidence(
+    source_report: Path,
+    destination_root: Path,
+    *,
+    expected_candidate: dict[str, object] | None,
+    require_passing_report: bool = False,
+) -> Path | None:
+    """Persist one closed runtime-baseline report before the QA temp root is removed."""
+
+    if not source_report.is_file():
+        return None
+    report = json.loads(source_report.read_text(encoding="utf-8"))
+    expected_fields = {
+        "contractVersion",
+        "evidenceKind",
+        "status",
+        "coverage",
+        "identity",
+        "releaseCandidate",
+        "sampling",
+        "workspace",
+        "firstTable",
+        "measurements",
+        "lifecycle",
+        "errors",
+    }
+    if (
+        not isinstance(report, dict)
+        or set(report) != expected_fields
+        or report.get("contractVersion") != "1.0"
+        or report.get("evidenceKind") != "packaged-runtime-baseline"
+        or report.get("status") not in {"passed", "failed"}
+        or not isinstance(report.get("errors"), list)
+    ):
+        raise ValueError(f"runtime baseline report has an invalid contract: {source_report}")
+    if report["status"] == "passed" and report["errors"]:
+        raise ValueError(f"passing runtime baseline report contains errors: {source_report}")
+    if report["status"] == "passed" and (
+        expected_candidate is None or report["releaseCandidate"] != expected_candidate
+    ):
+        raise ValueError(
+            f"runtime baseline report does not match the verified candidate: {source_report}"
+        )
+    if require_passing_report and report["status"] != "passed":
+        raise ValueError(
+            f"runtime baseline stage did not produce a passing report: {source_report}"
+        )
+    destination = destination_root / source_report.name
+    if not _copy_if_file(source_report, destination):
+        raise OSError(f"could not copy runtime baseline report: {source_report}")
+    copied = json.loads(destination.read_text(encoding="utf-8"))
+    if copied != report:
+        raise OSError(f"persisted runtime baseline report changed during copy: {destination}")
+    return destination
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
@@ -1571,6 +1651,34 @@ def _main(argv: list[str] | None = None) -> int:
                 print(f"could not persist product E2E evidence: {exc}", file=sys.stderr)
                 if required:
                     code = code or 1
+        runtime_baseline_result = next(
+            (result for result in results if result.stage == "runtime-baseline"),
+            None,
+        )
+        if runtime_baseline_result is not None:
+            source_report = _qa_temp_dir() / "r" / "packaged-runtime-baseline.json"
+            required = runtime_baseline_result.returncode == 0
+            try:
+                evidence_path = persist_runtime_baseline_evidence(
+                    source_report,
+                    REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane,
+                    expected_candidate=ending_candidate,
+                    require_passing_report=required,
+                )
+                if evidence_path is None:
+                    print(
+                        f"no runtime baseline report found at {source_report}",
+                        file=sys.stderr,
+                    )
+                    code = code or 1
+                else:
+                    print(
+                        f"runtime baseline evidence persisted at {evidence_path}",
+                        file=sys.stderr,
+                    )
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                print(f"could not persist runtime baseline evidence: {exc}", file=sys.stderr)
+                code = code or 1
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)
         args.json_report.write_text(
