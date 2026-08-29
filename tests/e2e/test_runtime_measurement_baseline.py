@@ -79,6 +79,7 @@ def _write_candidate(
 
 def _phases() -> RuntimePhaseDurations:
     timeline = RuntimePhaseTimeline(_Clock([1_000, 3_000, 4_000, 9_000, 12_000]).monotonic_ns)
+    timeline.launch_started()
     timeline.host_ready()
     timeline.workspace_open_requested()
     timeline.workspace_opened()
@@ -333,6 +334,7 @@ def test_verified_candidate_evidence_is_isolated_from_callers(tmp_path: Path) ->
 
 def test_timeline_rejects_duplicate_out_of_order_and_non_monotonic_marks() -> None:
     duplicate = RuntimePhaseTimeline(_Clock([10, 20, 30]).monotonic_ns)
+    duplicate.launch_started()
     duplicate.host_ready()
     with pytest.raises(BaselineMeasurementError) as duplicate_error:
         duplicate.host_ready()
@@ -344,6 +346,7 @@ def test_timeline_rejects_duplicate_out_of_order_and_non_monotonic_marks() -> No
     assert order_error.value.code == "PHASE_OUT_OF_ORDER"
 
     reversed_clock = RuntimePhaseTimeline(_Clock([20, 10]).monotonic_ns)
+    reversed_clock.launch_started()
     with pytest.raises(BaselineMeasurementError) as clock_error:
         reversed_clock.host_ready()
     assert clock_error.value.code == "CLOCK_NOT_MONOTONIC"

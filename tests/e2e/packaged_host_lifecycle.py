@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, Protocol, TypedDict
 
 from scripts.qa.windows_process_scope import ProcessWorkingSetSnapshot, WindowsProcessScope
 from tests.e2e import product_e2e_runner as product_runner
@@ -52,6 +52,16 @@ class WorkspaceLifecycleEvidence(TypedDict):
     ownerLeaseStableHandleClosed: bool | None
     errors: tuple[str, ...]
     status: Literal["passed", "failed"]
+
+
+class PackagedWorkspacePhaseObserver(Protocol):
+    def launch_started(self) -> None: ...
+
+    def host_ready(self) -> None: ...
+
+    def workspace_open_requested(self) -> None: ...
+
+    def workspace_opened(self) -> None: ...
 
 
 def _copy_workspace_lifecycle_evidence(
@@ -191,6 +201,7 @@ def _launch_host(
     autostart: bool,
     tray_lifecycle: bool,
     extra_environment: dict[str, str] | None = None,
+    before_process_launch: Callable[[], None] | None = None,
 ) -> tuple[WindowsProcessScope, int, Path, ExitStack]:
     host = _host_executable(package_root)
     readiness_dir = runtime_root / "host"
@@ -237,6 +248,8 @@ def _launch_host(
     try:
         stdout = streams.enter_context((runtime_root / "host-stdout.log").open("wb"))
         stderr = streams.enter_context((runtime_root / "host-stderr.log").open("wb"))
+        if before_process_launch is not None:
+            before_process_launch()
         scope = product_runner._launch_host_process(
             command,
             cwd=package_root,
@@ -508,6 +521,7 @@ def _managed_packaged_workspace(
     *,
     startup_fault_file: Path | None,
     expect_open_failure: bool,
+    observer: PackagedWorkspacePhaseObserver | None,
 ) -> Iterator[_ManagedPackagedWorkspace]:
     """Own the single packaged workspace process state machine."""
 
@@ -526,6 +540,7 @@ def _managed_packaged_workspace(
             if startup_fault_file is not None
             else None
         ),
+        before_process_launch=None if observer is None else observer.launch_started,
     )
     with _scope_lifetime(scope, streams), ExitStack() as owner_resources:
         product_runner._wait_for_cdp(port, scope)
@@ -533,6 +548,9 @@ def _managed_packaged_workspace(
         owner_resources.enter_context(_close_owner_on_primary_error(cdp_owner))
         readiness = product_runner._wait_for_readiness(readiness_dir, scope)
         assert readiness.get("ready") is True, readiness
+        if observer is not None:
+            observer.host_ready()
+            observer.workspace_open_requested()
         (controls / OPEN_WORKSPACE_CONTROL_FILE).write_text(WORKSPACE_ID + "\n", encoding="utf-8")
         expected_action = "workspace-open-failed" if expect_open_failure else "workspace-opened"
         opened = _wait_for_state(controls, scope, expected_action)
@@ -541,6 +559,8 @@ def _managed_packaged_workspace(
             opened,
             expect_open_failure=expect_open_failure,
         )
+        if observer is not None:
+            observer.workspace_opened()
         if expect_open_failure and startup_fault_file is not None:
             assert not startup_fault_file.exists(), "startup fault was not consumed once"
         workspace = _ManagedPackagedWorkspace(
@@ -569,6 +589,8 @@ def opened_packaged_workspace(
     package_root: Path,
     workspace_root: Path,
     evidence_root: Path,
+    *,
+    observer: PackagedWorkspacePhaseObserver | None = None,
 ) -> Iterator[OpenedPackagedWorkspace]:
     """Yield one verified live workspace and retain normal-exit evidence."""
 
@@ -580,6 +602,7 @@ def opened_packaged_workspace(
             evidence_root,
             startup_fault_file=None,
             expect_open_failure=False,
+            observer=observer,
         ) as workspace:
             session = OpenedPackagedWorkspace(
                 cdp_url=workspace.cdp_url,
@@ -628,6 +651,7 @@ def open_workspace_with_packaged_host(
             evidence_root,
             startup_fault_file=startup_fault_file,
             expect_open_failure=expect_open_failure,
+            observer=None,
         ) as workspace:
             pass
     except _ManagedWorkspaceLifecycleError as exc:

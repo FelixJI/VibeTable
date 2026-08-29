@@ -198,7 +198,7 @@ class RuntimePhaseTimeline:
 
     def __init__(self, monotonic_ns: Callable[[], int]) -> None:
         self._clock = monotonic_ns
-        self._marks = {"launch": monotonic_ns()}
+        self._marks: dict[str, int] = {}
 
     def _mark(self, name: str) -> None:
         if name in self._marks:
@@ -220,6 +220,14 @@ class RuntimePhaseTimeline:
 
     def host_ready(self) -> None:
         self._mark("host_ready")
+
+    def launch_started(self) -> None:
+        if self._marks:
+            raise BaselineMeasurementError(
+                "PHASE_DUPLICATED",
+                "phase 'launch' was repeated",
+            )
+        self._marks["launch"] = self._clock()
 
     def workspace_open_requested(self) -> None:
         self._mark("workspace_open_requested")
