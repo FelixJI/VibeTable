@@ -1,6 +1,6 @@
 # VibeTable Contracts v2
 
-`contracts/v2` 是 VibeTable 唯一的语言无关契约 seam。当前协议由三个深模块组成，
+`contracts/v2` 是 VibeTable 唯一的语言无关契约 seam。当前协议由四个深模块组成，
 共享 `contractVersion: "2.0"`，但各自隐藏不同领域的生成与验证实现：
 
 - `product-contracts.schema.json` 与 `fixtures/product-rpc-catalog.json`：数据表、字段、
@@ -11,6 +11,9 @@
   `workspace-rpc-capability-manifest.json`：以 `generate_rpc_catalog.py::RPC_REGISTRY`
   为方法/scope authority，集中声明 Desktop renderer/host audience 与粗粒度
   capabilityId；Desktop Router 只消费生成 manifest。
+- `product-runtime-ownership-inventory.json` 与生成的同名 schema：以 Product catalog
+  精确覆盖 RPC 和事件，记录当前调用路径、稳定职责归属、effects、状态持有者及迁移切片；
+  `product_runtime_inventory.py` 向审计、测试和后续迁移提供唯一的规范化读取 seam。
 
 规则：
 
@@ -24,14 +27,20 @@
   运行时消费者和跨语言 round-trip 测试。
 - 产品与 workspace catalog 分别由专用生成器维护，避免调用方或测试依赖另一个模块的内部
   registry。
+- Product runtime 清单不会切换生产路由。RPC 与事件必须精确覆盖 catalog；state 项只记录有
+  代码证据的持有者，不宣称静态穷尽所有临时状态。调用方通过 loader/`require()` 消费，禁止
+  自行解析并复制分组细节。`targetPr: null` 表示目标切片尚未形成迁移 PR；只有真实 PR 存在后
+  才填写，不能用占位编号伪造关联证据。
 
 更新契约后运行：
 
 ```powershell
 uv run python contracts/v2/generate_product_rpc_catalog.py
+uv run python contracts/v2/product_runtime_inventory.py
 uv run python contracts/v2/generate_rpc_catalog.py
 uv run python contracts/v2/generate_workspace_rpc_capability_manifest.py
 uv run python contracts/v2/generate_product_rpc_catalog.py --check
+uv run python contracts/v2/product_runtime_inventory.py --check
 uv run python contracts/v2/generate_rpc_catalog.py --check
 uv run python contracts/v2/generate_workspace_rpc_capability_manifest.py --check
 uv run python scripts/automation_project.py contracts
