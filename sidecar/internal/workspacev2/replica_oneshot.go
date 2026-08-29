@@ -25,6 +25,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/replica"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
+	"github.com/vibetable/vibetable/sidecar/migrations"
 	_ "modernc.org/sqlite"
 )
 
@@ -465,7 +466,7 @@ func openReplicaOneShotRuntime(
 		DefaultDataDir:  options.DataDir,
 		HideStartBanner: true,
 	})
-	if err := app.Bootstrap(); err != nil {
+	if err := bootstrapReplicaOneShotApp(app); err != nil {
 		return nil, nil, err
 	}
 	paths, _, err := validateBinding(options.DataDir, options.WorkspaceID)
@@ -503,6 +504,23 @@ func openReplicaOneShotRuntime(
 		)
 	}
 	return runtime, closeRuntime, nil
+}
+
+func bootstrapReplicaOneShotApp(app *pocketbase.PocketBase) error {
+	migrations.Register(app)
+	if err := app.Bootstrap(); err != nil {
+		return errors.Join(
+			fmt.Errorf("bootstrap replica one-shot database: %w", err),
+			app.ResetBootstrapState(),
+		)
+	}
+	if err := app.RunAllMigrations(); err != nil {
+		return errors.Join(
+			fmt.Errorf("migrate replica one-shot database: %w", err),
+			app.ResetBootstrapState(),
+		)
+	}
+	return nil
 }
 
 func selectReplicaCheckpoint(

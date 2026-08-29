@@ -330,12 +330,37 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                 : workspace.ActivityRoot);
 }
 
+internal sealed class WorkspaceCapabilitiesSnapshot
+{
+    private WorkspaceV2SidecarCapabilities? _current;
+
+    internal WorkspaceV2SidecarCapabilities? Current =>
+        Volatile.Read(ref _current);
+
+    internal void PublishVerified(WorkspaceV2SidecarCapabilities capabilities)
+    {
+        ArgumentNullException.ThrowIfNull(capabilities);
+        Volatile.Write(ref _current, capabilities);
+    }
+
+    internal async Task RefreshAsync(
+        Func<CancellationToken, Task<WorkspaceV2SidecarCapabilities>> reader,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        WorkspaceV2SidecarCapabilities capabilities =
+            await reader(cancellationToken).ConfigureAwait(false);
+        PublishVerified(capabilities);
+    }
+}
+
 public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
 {
     private readonly ProductionWorkspaceRuntimeFactory _owner;
     private readonly DesktopWorkspaceAuthority _authority;
     private readonly ProductRuntimeService _runtime;
     private readonly string _dataDirectory;
+    private readonly WorkspaceCapabilitiesSnapshot _capabilities = new();
     private int _started;
     private int _disposed;
 
@@ -362,12 +387,13 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         Sidecar = new PocketBaseSupervisor(sidecarOptions);
         var localData = new LocalDataService(Sidecar);
         Backend = new PythonBackendSupervisor(backendOptions);
+        Gateway = new WorkspaceV2HttpGateway(Sidecar);
         _runtime = new ProductRuntimeService(
             localData,
             Sidecar,
             Backend,
-            backendOptions.Environment);
-        Gateway = new WorkspaceV2HttpGateway(Sidecar);
+            backendOptions.Environment,
+            RefreshCapabilitiesAsync);
         _runtime.ClientReady += OnClientReady;
         _runtime.RecoveryFailed += OnRecoveryFailed;
     }
@@ -379,7 +405,8 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
     public PocketBaseSupervisor Sidecar { get; }
     public PythonBackendSupervisor Backend { get; }
     public WorkspaceV2HttpGateway Gateway { get; }
-    public WorkspaceV2SidecarCapabilities? Capabilities { get; private set; }
+    public WorkspaceV2SidecarCapabilities? Capabilities =>
+        _capabilities.Current;
     internal string DataDirectory => _dataDirectory;
     internal IReadOnlyDictionary<string, string> SidecarEnvironment { get; }
     internal IReadOnlyDictionary<string, string> BackendEnvironment { get; }
@@ -424,25 +451,12 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             WorkspaceActivationStage.Verification,
             async token =>
             {
-                VerifyManifestBinding();
-                capabilities = await Gateway.GetCapabilitiesAsync(token)
+                capabilities = await ReadAndValidateCapabilitiesAsync(token)
                     .ConfigureAwait(false);
             }).ConfigureAwait(false);
         if (capabilities is null)
             throw new InvalidOperationException("Workspace capabilities were not verified.");
-        if (capabilities.ContractVersion != WorkspaceV2Json.ContractVersion
-            || capabilities.WorkspaceId
-                != WorkspaceId.ToString("D").ToLowerInvariant()
-            || capabilities.SessionEpoch != SessionEpoch
-            || capabilities.FenceEpoch != _authority.FenceEpoch
-            || capabilities.ClaimId
-                != _authority.ClaimId.ToString("D").ToLowerInvariant())
-        {
-            throw new WorkspaceRegistryException(
-                "workspace.runtime_identity_mismatch",
-                "The running workspace services do not match the requested session.");
-        }
-        Capabilities = capabilities;
+        _capabilities.PublishVerified(capabilities);
         _owner.Activate(this);
     }
 
@@ -487,8 +501,14 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         _owner.Deactivate(this);
         _runtime.ClientReady -= OnClientReady;
         _runtime.RecoveryFailed -= OnRecoveryFailed;
-        Gateway.Dispose();
-        await _runtime.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await _runtime.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            Gateway.Dispose();
+        }
     }
 
     private void VerifyManifestBinding()
@@ -510,6 +530,37 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
                 "workspace.runtime_root_mismatch",
                 "Runtime data root does not match the workspace activity root.");
         }
+    }
+
+    private async Task<WorkspaceV2SidecarCapabilities>
+        ReadAndValidateCapabilitiesAsync(CancellationToken cancellationToken)
+    {
+        VerifyManifestBinding();
+        WorkspaceV2SidecarCapabilities capabilities =
+            await Gateway.GetCapabilitiesAsync(cancellationToken)
+                .ConfigureAwait(false);
+        if (capabilities.ContractVersion != WorkspaceV2Json.ContractVersion
+            || capabilities.WorkspaceId
+                != WorkspaceId.ToString("D").ToLowerInvariant()
+            || capabilities.SessionEpoch != SessionEpoch
+            || capabilities.FenceEpoch != _authority.FenceEpoch
+            || capabilities.ClaimId
+                != _authority.ClaimId.ToString("D").ToLowerInvariant())
+        {
+            throw new WorkspaceRegistryException(
+                "workspace.runtime_identity_mismatch",
+                "The running workspace services do not match the requested session.");
+        }
+        return capabilities;
+    }
+
+    private async Task RefreshCapabilitiesAsync(
+        CancellationToken cancellationToken)
+    {
+        await _capabilities.RefreshAsync(
+                ReadAndValidateCapabilitiesAsync,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private void OnClientReady()

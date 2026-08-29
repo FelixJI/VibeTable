@@ -18,8 +18,11 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     private readonly IPocketBaseSupervisor _sidecar;
     private readonly IBackendSupervisor _backend;
     private readonly IDictionary<string, string> _backendEnvironment;
+    private readonly Func<CancellationToken, Task> _refreshClientBindingAsync;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
-    private readonly SemaphoreSlim _recovery = new(1, 1);
+    private readonly object _recoveryGate = new();
+    private readonly CancellationTokenSource _shutdown = new();
+    private Task _recoveryTask = Task.CompletedTask;
     private int _started;
     private int _disposed;
 
@@ -27,13 +30,16 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         ILocalDataService localData,
         IPocketBaseSupervisor sidecar,
         IBackendSupervisor backend,
-        IDictionary<string, string> backendEnvironment)
+        IDictionary<string, string> backendEnvironment,
+        Func<CancellationToken, Task> refreshClientBindingAsync)
     {
         _localData = localData ?? throw new ArgumentNullException(nameof(localData));
         _sidecar = sidecar ?? throw new ArgumentNullException(nameof(sidecar));
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _backendEnvironment = backendEnvironment
             ?? throw new ArgumentNullException(nameof(backendEnvironment));
+        _refreshClientBindingAsync = refreshClientBindingAsync
+            ?? throw new ArgumentNullException(nameof(refreshClientBindingAsync));
         _sidecar.StatusChanged += OnSidecarStatusChanged;
     }
 
@@ -96,6 +102,7 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         Volatile.Write(ref _started, 0);
+        await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -175,51 +182,115 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         _sidecar.StatusChanged -= OnSidecarStatusChanged;
         try
         {
-            await _backend.DisposeAsync().ConfigureAwait(false);
+            await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
         }
         finally
         {
-            await _localData.DisposeAsync().ConfigureAwait(false);
-            _lifecycle.Dispose();
-            _recovery.Dispose();
+            try
+            {
+                await _backend.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                await _localData.DisposeAsync().ConfigureAwait(false);
+                _lifecycle.Dispose();
+                _shutdown.Dispose();
+            }
         }
     }
 
     private void OnSidecarStatusChanged(object? sender, PocketBaseStatus status)
     {
-        if (status.State == PocketBaseState.Ready
-            && Volatile.Read(ref _started) != 0
-            && _backend.State == BackendState.Ready)
+        if (status.State == PocketBaseState.Ready)
         {
-            _ = RecoverBackendAsync();
+            lock (_recoveryGate)
+            {
+                if (Volatile.Read(ref _disposed) != 0
+                    || Volatile.Read(ref _started) == 0)
+                    return;
+                _recoveryTask = ContinueRecoveryAsync(
+                    _recoveryTask,
+                    _shutdown.Token);
+            }
         }
     }
 
-    private async Task RecoverBackendAsync()
+    private async Task CancelAndJoinRecoveryAsync()
     {
-        if (!await _recovery.WaitAsync(0).ConfigureAwait(false))
-        {
-            return;
-        }
+        _shutdown.Cancel();
+        Task recoveryTask;
+        lock (_recoveryGate)
+            recoveryTask = _recoveryTask;
+        await recoveryTask.ConfigureAwait(false);
+    }
+
+    private async Task ContinueRecoveryAsync(
+        Task previous,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            if (Volatile.Read(ref _started) == 0
-                || _sidecar.GetStatus().State != PocketBaseState.Ready)
+            await previous.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The previous generation has already reported its recovery
+            // failure. A later Ready event must still be allowed to recover.
+        }
+        if (cancellationToken.IsCancellationRequested)
+            return;
+        await RecoverBackendAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RecoverBackendAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                return;
+                if (Volatile.Read(ref _started) == 0
+                    || _sidecar.GetStatus().State != PocketBaseState.Ready)
+                {
+                    return;
+                }
+                await _backend.StopAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
+                await _refreshClientBindingAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (Volatile.Read(ref _started) == 0)
+                    return;
+                await _backend.StartAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (Volatile.Read(ref _started) == 0)
+                    return;
+                ClientReady?.Invoke();
             }
-            await _backend.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
-            await _backend.StartAsync(CancellationToken.None).ConfigureAwait(false);
-            ClientReady?.Invoke();
+            finally
+            {
+                _lifecycle.Release();
+            }
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
         }
         catch (Exception exception)
         {
-            RecoveryFailed?.Invoke(exception);
-        }
-        finally
-        {
-            _recovery.Release();
+            try
+            {
+                RecoveryFailed?.Invoke(exception);
+            }
+            catch
+            {
+                // Recovery observers do not own the background worker or its
+                // teardown boundary.
+            }
         }
     }
 

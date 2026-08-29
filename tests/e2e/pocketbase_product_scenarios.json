@@ -86,8 +86,8 @@
   {
     "id": "15-workspace-snapshot-package",
     "title": "工作区切换与快照包",
-    "requirement": "通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。",
-    "capabilities": ["workspace.lifecycle", "snapshot.package"]
+    "requirement": "通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；创建本地目录镜像副本，通过公开状态与保护 UI 验证同步、活动缓存释放、sidecar 恢复及关闭重开；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。",
+    "capabilities": ["workspace.lifecycle", "workspace.replica", "snapshot.package", "release.smoke"]
   },
   {
     "id": "16-dashboard-lifecycle",

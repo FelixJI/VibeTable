@@ -305,6 +305,7 @@ def test_capability_selection_drives_the_release_smoke_subset() -> None:
         "01-offline-first-start",
         "02-all-field-schema",
         "08-stale-conflict",
+        "15-workspace-snapshot-package",
         "16-dashboard-lifecycle",
     ]
 
@@ -1879,6 +1880,46 @@ def test_workspace_switch_scenario_accepts_the_closed_stale_session_error() -> N
     ]
 
     assert 'stale.payload?.error?.code === "workspace.session_stale"' in scenario
+
+
+def test_workspace_scenario_covers_directory_replica_recovery_through_public_surfaces() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    helper = source[
+        source.index("async function waitForReplicatedWorkspace") : source.index(
+            "async function requestWithStaleWorkspaceScope"
+        )
+    ]
+    scenario = source[
+        source.index("async function scenario15") : source.index("async function scenario16")
+    ]
+
+    assert "const activeProductSession = await exerciseDirectoryReplicaLifecycle(" in scenario
+    assert "switchedSession," in scenario
+    assert 'getByTestId("workspace-create")' in helper
+    assert 'getByTestId("workspace-location-policy")' in helper
+    assert '.n-radio-button:has(input[value="other"])' in helper
+    assert '.n-radio-button:has(input[value="mirrored"])' in helper
+    assert 'getByTestId("workspace-user-marked-sync")' in helper
+    assert 'input[value="other"]:checked' in helper
+    assert 'input[value="mirrored"]:checked' in helper
+    assert (
+        '[data-testid="workspace-user-marked-sync"][role="checkbox"][aria-checked="true"]'
+    ) in helper
+    assert '[data-testid="workspace-user-marked-sync"] input:checked' not in helper
+    assert '.locator(".n-checkbox-box").click()' in helper
+    assert 'getByTestId("workspace-operation-error")' in helper
+    assert ".locator('input[value=\"other\"]').check()" not in helper
+    assert 'getByTestId("workspace-storage-release-cache-preview")' in helper
+    assert 'getByTestId("workspace-storage-relocate-apply")' in helper
+    assert 'rawWorkspaceV2Request(page, "replica.status"' in helper
+    assert 'requestSidecarKill(runtime, "verify directory replica recovery")' in helper
+    sidecar_kill = helper.index('requestSidecarKill(runtime, "verify directory replica recovery")')
+    recovered_replica = helper.index("const recoveredReplica = await waitForReplicatedWorkspace")
+    assert sidecar_kill < recovered_replica < helper.index('"workspace.close"')
+    release_apply = helper.index('getByTestId("workspace-storage-relocate-apply")')
+    open_home = helper.index('getByTestId("nav-home")')
+    assert release_apply < open_home < helper.index("const releasedWorkspace")
+    assert '"workspace.storage.sync"' not in helper
 
 
 def test_performance_summary_reports_scenarios_bridge_percentiles_and_failures() -> None:

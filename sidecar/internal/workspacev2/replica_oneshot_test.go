@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
@@ -365,17 +367,6 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 	activity := createWorkspace(t, testWorkspaceID)
 	setReplicaOneShotManifestMirrored(t, activity)
 	dataDir := filepath.Join(activity, ".vibetable", "data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir:  dataDir,
-		HideStartBanner: true,
-	})
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	createAuditOutbox(t, app)
-	if err := app.ResetBootstrapState(); err != nil {
-		t.Fatal(err)
-	}
 
 	selected := filepath.Join(t.TempDir(), "selected")
 	if err := os.MkdirAll(
@@ -697,6 +688,92 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 	closeErr = ledger.Close()
 	if verifyErr != nil || closeErr != nil {
 		t.Fatalf("recovered ledger verify=%v close=%v", verifyErr, closeErr)
+	}
+}
+
+func TestReplicaOneShotInitializesAfterRepositoryOnboarding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Kopia-backed repository and replica initialization")
+	}
+	ctx := context.Background()
+	activity := createWorkspace(t, testWorkspaceID)
+	setReplicaOneShotManifestMirrored(t, activity)
+	dataDir := filepath.Join(activity, ".vibetable", "data")
+	selected := filepath.Join(t.TempDir(), "selected")
+	metadata := filepath.Join(selected, ".vibetable")
+	if err := os.MkdirAll(metadata, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile(
+		filepath.Join(activity, ".vibetable", "workspace.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(metadata, "workspace.json"),
+		manifest,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InitializeRepository(
+		ctx,
+		dataDir,
+		testWorkspaceID,
+		3,
+		testClaimID,
+	); err != nil {
+		t.Fatalf("initialize repository: %v", err)
+	}
+	receipt, err := InitializeWorkspaceReplica(ctx, ReplicaOneShotOptions{
+		DataDir:      dataDir,
+		ReplicaRoot:  selected,
+		WorkspaceID:  testWorkspaceID,
+		SessionEpoch: 1,
+		FenceEpoch:   3,
+		ClaimID:      testClaimID,
+	})
+	if err != nil {
+		t.Fatalf("initialize replica after repository onboarding: %v", err)
+	}
+	if receipt.Operation != "initialize" || receipt.Healthy == nil || !*receipt.Healthy {
+		t.Fatalf("unexpected replica receipt: %#v", receipt)
+	}
+}
+
+func TestBootstrapReplicaOneShotAppResetsStateOnBootstrapFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir:  dataDir,
+		HideStartBanner: true,
+	})
+	bootstrapFailure := errors.New("injected bootstrap failure")
+	app.OnBootstrap().BindFunc(func(event *core.BootstrapEvent) error {
+		if err := event.Next(); err != nil {
+			return err
+		}
+		return bootstrapFailure
+	})
+
+	err := bootstrapReplicaOneShotApp(app)
+	if !errors.Is(err, bootstrapFailure) {
+		t.Fatalf("expected injected bootstrap failure, got %v", err)
+	}
+	if app.IsBootstrapped() {
+		t.Fatal("bootstrap failure left PocketBase resources open")
+	}
+
+	reopened := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir:  dataDir,
+		HideStartBanner: true,
+	})
+	if err := reopened.Bootstrap(); err != nil {
+		t.Fatalf("reopen data directory after bootstrap failure: %v", err)
+	}
+	if err := reopened.ResetBootstrapState(); err != nil {
+		t.Fatalf("close reopened data directory: %v", err)
 	}
 }
 

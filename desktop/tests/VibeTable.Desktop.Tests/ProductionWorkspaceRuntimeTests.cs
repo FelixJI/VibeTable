@@ -198,6 +198,37 @@ public sealed class ProductionWorkspaceRuntimeTests
         }
     }
 
+    [TestMethod]
+    public async Task CapabilityRefreshFailurePreservesLastVerifiedSnapshot()
+    {
+        var original = new WorkspaceV2SidecarCapabilities(
+            WorkspaceV2Json.ContractVersion,
+            Guid.NewGuid().ToString("D"),
+            1,
+            1,
+            Guid.NewGuid().ToString("D"),
+            ["query.page", "replica.status"]);
+        var replacement = original with
+        {
+            RpcMethods = ["query.page", "replica.status", "row.create"],
+        };
+        var snapshot = new WorkspaceCapabilitiesSnapshot();
+        snapshot.PublishVerified(original);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            snapshot.RefreshAsync(
+                _ => throw new InvalidOperationException("transient failure"),
+                CancellationToken.None));
+
+        Assert.AreSame(original, snapshot.Current);
+
+        await snapshot.RefreshAsync(
+            _ => Task.FromResult(replacement),
+            CancellationToken.None);
+
+        Assert.AreSame(replacement, snapshot.Current);
+    }
+
     private static ProductionWorkspaceRuntimeFactory Factory(
         IEnumerable<WorkspaceRegistryEntryV2>? entries = null)
         => new(

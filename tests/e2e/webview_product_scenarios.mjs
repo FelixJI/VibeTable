@@ -4360,6 +4360,206 @@ async function scenario14(page, recorder, _network, runtime) {
   await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff.png"), fullPage: true });
 }
 
+async function waitForReplicatedWorkspace(page) {
+  const deadline = Date.now() + 90_000;
+  let lastError = null;
+  let lastStatus = null;
+  while (Date.now() < deadline) {
+    try {
+      lastStatus = (await rawWorkspaceV2Request(page, "replica.status", {})).result;
+      if (
+        lastStatus?.coordinationStrength === "advisory"
+        && lastStatus.syncState === "replicated"
+        && lastStatus.pendingSync === false
+      ) {
+        return lastStatus;
+      }
+    } catch (error) {
+      lastError = String(error);
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`directory replica did not recover: ${JSON.stringify({ lastStatus, lastError })}`);
+}
+
+async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, sourceSession) {
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  const modal = page.getByTestId("workspace-flow-modal");
+  await modal.waitFor({ state: "visible", timeout: 30_000 });
+  await modal.locator("input").first().fill("E2E Directory Replica");
+  const locationPolicy = page.getByTestId("workspace-location-policy");
+  await locationPolicy.locator('.n-radio-button:has(input[value="other"])').click();
+  await locationPolicy.locator('input[value="other"]:checked')
+    .waitFor({ state: "attached", timeout: 10_000 });
+  await modal.locator('.n-radio-button:has(input[value="mirrored"])').click();
+  await modal.locator('input[value="mirrored"]:checked')
+    .waitFor({ state: "attached", timeout: 10_000 });
+  await page.getByTestId("workspace-user-marked-sync")
+    .locator(".n-checkbox-box").click();
+  await page.locator(
+    '[data-testid="workspace-user-marked-sync"][role="checkbox"][aria-checked="true"]',
+  )
+    .waitFor({ state: "attached", timeout: 10_000 });
+  await beginWorkspaceV2MethodCapture(page, "workspace.create");
+  await page.getByTestId("workspace-flow-confirm").click();
+
+  const createTerminal = await waitForCapturedBridgeMessage(page, 60_000);
+  if (createTerminal.type === "operation.failed" || createTerminal.payload?.ok !== true) {
+    const operationError = page.getByTestId("workspace-operation-error");
+    let renderedMessage = null;
+    try {
+      await operationError.waitFor({ state: "visible", timeout: 10_000 });
+      renderedMessage = await operationError.innerText();
+    } catch {
+      // The correlated host response remains the authoritative failure evidence.
+    }
+    throw new Error(`directory replica workspace creation failed: ${JSON.stringify({
+      createTerminal,
+      renderedMessage,
+    })}`);
+  }
+
+  const workspaceCenter = page.getByTestId("workspace-center");
+  const replicaWorkspace = workspaceCenter.getByRole("button", {
+    name: /E2E Directory Replica/,
+  });
+  await replicaWorkspace.waitFor({ state: "visible", timeout: 60_000 });
+  await beginWritableWorkspaceBootstrapCapture(page, sourceSession.sessionEpoch, "workspace.open");
+  await replicaWorkspace.click();
+  const createdBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  const createdSession = createdBootstrap.payload.session;
+  const createdReplica = await waitForReplicatedWorkspace(page);
+  recorder.check(
+    "Workspace Center creates a local directory-backed mirrored workspace",
+    createdSession.workspaceId !== sourceSession.workspaceId
+      && createdSession.sessionEpoch > sourceSession.sessionEpoch
+      && createdReplica.coordinationStrength === "advisory"
+      && createdReplica.syncState === "replicated"
+      && createdReplica.pendingSync === false,
+    { sourceSession, createdSession, createdReplica },
+  );
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  await page.getByTestId("storage-settings").waitFor({ state: "visible", timeout: 30_000 });
+  const releasePreview = page.getByTestId("workspace-storage-release-cache-preview");
+  await releasePreview.waitFor({ state: "visible", timeout: 30_000 });
+  await releasePreview.click();
+  await page.getByTestId("workspace-storage-confirmation").locator("input")
+    .fill("E2E Directory Replica");
+  await beginWorkspaceV2MethodCapture(page, "workspace.storage.apply");
+  await page.getByTestId("workspace-storage-relocate-apply").click();
+  const releaseTerminal = await waitForCapturedBridgeMessage(page, 90_000);
+  if (releaseTerminal.type === "operation.failed" || releaseTerminal.payload?.ok !== true) {
+    throw new Error(`activity cache release failed: ${JSON.stringify(releaseTerminal)}`);
+  }
+  recorder.check(
+    "the public protection flow verifies the replica before releasing its activity cache",
+    releaseTerminal.payload?.method === "workspace.storage.apply"
+      && releaseTerminal.payload?.result?.status === "applied"
+      && releaseTerminal.payload?.result?.storage?.mode === "mirrored"
+      && releaseTerminal.payload?.result?.storage?.pendingSync === false,
+    { releaseTerminal },
+  );
+
+  await page.getByTestId("nav-home").click();
+  await workspaceCenter.waitFor({ state: "visible", timeout: 60_000 });
+  const releasedWorkspace = workspaceCenter.getByRole("button", {
+    name: /E2E Directory Replica/,
+  });
+  await beginWritableWorkspaceBootstrapCapture(page, createdSession.sessionEpoch, "workspace.open");
+  await releasedWorkspace.click();
+  const releasedBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  const releasedSession = releasedBootstrap.payload.session;
+  const reopenedReplica = await waitForReplicatedWorkspace(page);
+  recorder.check(
+    "the released directory replica reopens with the same workspace identity",
+    releasedSession.workspaceId === createdSession.workspaceId
+      && releasedSession.sessionEpoch > createdSession.sessionEpoch
+      && reopenedReplica.syncState === "replicated"
+      && reopenedReplica.pendingSync === false,
+    { createdSession, releasedSession, reopenedReplica },
+  );
+
+  await page.getByTestId("nav-tables").click();
+  const replicaTable = await createSimpleTable(
+    page,
+    "E2E Directory Replica Recovery",
+    "Value",
+  );
+  await insertRowFromToolbar(page);
+  await waitForTableRecovery(
+    page,
+    "E2E Directory Replica Recovery",
+    replicaTable.tableId,
+    1,
+  );
+  const synchronizedReplica = await waitForReplicatedWorkspace(page);
+  const sidecarKill = await requestSidecarKill(runtime, "verify directory replica recovery");
+  recorder.check(
+    "directory replica recovery terminates only the exact sidecar child",
+    sidecarKill.processName === "vibetable-pb.exe"
+      && synchronizedReplica.syncState === "replicated"
+      && synchronizedReplica.pendingSync === false,
+    { sidecarKill, synchronizedReplica },
+  );
+  await waitForTableRecovery(
+    page,
+    "E2E Directory Replica Recovery",
+    replicaTable.tableId,
+    1,
+  );
+  const recoveredReplica = await waitForReplicatedWorkspace(page);
+  recorder.check(
+    "the public replica status returns to a verified state after sidecar recovery",
+    recoveredReplica.coordinationStrength === "advisory"
+      && recoveredReplica.syncState === "replicated"
+      && recoveredReplica.pendingSync === false,
+    { recoveredReplica },
+  );
+
+  await beginWritableWorkspaceBootstrapCapture(page, releasedSession.sessionEpoch, "workspace.open");
+  const closed = await rawLifecycleWorkspaceV2Request(
+    page,
+    "workspace.close",
+    { reason: "user" },
+    60_000,
+  );
+  recorder.check(
+    "the recovered directory replica closes through the supported lifecycle",
+    closed.result?.state === "closed" && closed.result?.workspaceId === null,
+    { closed },
+  );
+  await openWorkspaceCenterFromSwitcher(page);
+  await workspaceCenter.getByRole("button", { name: /E2E Directory Replica/ }).click();
+  const finalReplicaBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  const finalReplicaSession = finalReplicaBootstrap.payload.session;
+  const finalReplica = await waitForReplicatedWorkspace(page);
+  recorder.check(
+    "the recovered directory replica survives an explicit close and reopen",
+    finalReplicaSession.workspaceId === createdSession.workspaceId
+      && finalReplicaSession.sessionEpoch > releasedSession.sessionEpoch
+      && finalReplica.syncState === "replicated"
+      && finalReplica.pendingSync === false,
+    { releasedSession, finalReplicaSession, finalReplica },
+  );
+
+  const productBootstrap = await switchWorkspaceByName(
+    page,
+    "E2E Product Workspace",
+    finalReplicaSession.sessionEpoch,
+  );
+  const productSession = productBootstrap.payload.session;
+  recorder.check(
+    "the directory replica lifecycle returns to the original product workspace",
+    productSession.workspaceId === sourceSession.workspaceId
+      && productSession.sessionEpoch > finalReplicaSession.sessionEpoch,
+    { sourceSession, productSession },
+  );
+  return productSession;
+}
+
 async function requestWithStaleWorkspaceScope(page, method, params, staleSession) {
   return page.evaluate(
     ({ rpcMethod, rpcParams, session }) => new Promise((resolve, reject) => {
@@ -4466,6 +4666,13 @@ async function scenario15(page, recorder, _network, runtime) {
   { stale });
   await acknowledgeExpectedBridgeFailure(page, stale);
 
+  const activeProductSession = await exerciseDirectoryReplicaLifecycle(
+    page,
+    recorder,
+    runtime,
+    switchedSession,
+  );
+
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-versions").click();
   const settings = page.getByTestId("snapshot-settings");
@@ -4524,7 +4731,7 @@ async function scenario15(page, recorder, _network, runtime) {
   recorder.check("snapshot export writes a non-empty package through the host picker",
     packageBytes.length > 0, { packageSize: packageBytes.length });
 
-  const sourceEpoch = switchedSession.sessionEpoch;
+  const sourceEpoch = activeProductSession.sessionEpoch;
   await beginWritableWorkspaceBootstrapCapture(
     page,
     sourceEpoch,
@@ -4533,9 +4740,9 @@ async function scenario15(page, recorder, _network, runtime) {
   await page.getByTestId("snapshot-open-as-new").click();
   const openedBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
   recorder.check("snapshot open-as-new creates a distinct writable workspace",
-    openedBootstrap.payload.session.workspaceId !== switchedSession.workspaceId
+    openedBootstrap.payload.session.workspaceId !== activeProductSession.workspaceId
       && openedBootstrap.payload.session.sessionEpoch > sourceEpoch,
-  { sourceSession: switchedSession, openedSession: openedBootstrap.payload.session });
+  { sourceSession: activeProductSession, openedSession: openedBootstrap.payload.session });
 
   await switchWorkspaceByName(
     page,
@@ -4580,7 +4787,7 @@ async function scenario15(page, recorder, _network, runtime) {
   await page.getByTestId("snapshot-import-apply").click();
   const importedBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
   recorder.check("the restored package imports as another writable workspace through the UI",
-    importedBootstrap.payload.session.workspaceId !== switchedSession.workspaceId
+    importedBootstrap.payload.session.workspaceId !== activeProductSession.workspaceId
       && importedBootstrap.payload.session.sessionEpoch > beforeImport,
   { importedSession: importedBootstrap.payload.session });
   await page.screenshot({
