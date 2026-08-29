@@ -1375,7 +1375,7 @@ async function beginWorkspaceV2MethodCapture(page, method) {
 async function beginWritableWorkspaceBootstrapCapture(
   page,
   minimumExclusiveEpoch,
-  failureMethod = null,
+  lifecycleMethod = null,
   expectedWorkspaceId = null,
 ) {
   await page.evaluate(
@@ -1383,7 +1383,7 @@ async function beginWritableWorkspaceBootstrapCapture(
     {
       minimumEpoch: minimumExclusiveEpoch,
       expectedWorkspaceId,
-      expectedFailureMethods: failureMethod ? [failureMethod] : [],
+      expectedLifecycleMethods: lifecycleMethod ? [lifecycleMethod] : [],
     },
   );
 }
