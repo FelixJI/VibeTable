@@ -97,6 +97,53 @@ class PackagedRuntimeBaselineReport(TypedDict):
 
 
 Probe = Callable[[str, Path], dict[str, object]]
+ProbeFactory = Callable[[], Probe]
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left.is_relative_to(right) or right.is_relative_to(left)
+
+
+def _validate_run_roots(
+    *,
+    package_root: Path,
+    workspace_root: Path,
+    evidence_root: Path,
+) -> None:
+    pairs = (
+        ("package root", package_root, "workspace root", workspace_root),
+        ("package root", package_root, "evidence root", evidence_root),
+        ("workspace root", workspace_root, "evidence root", evidence_root),
+    )
+    for left_label, left, right_label, right in pairs:
+        if _paths_overlap(left, right):
+            raise BaselineMeasurementError(
+                "RUNTIME_PATH_OVERLAP",
+                f"{left_label} and {right_label} must not overlap",
+            )
+
+
+def _unsafe_report_path(
+    report_path: Path,
+    *,
+    package_root: Path,
+    package_archive: Path,
+    build_identity_path: Path,
+    workspace_root: Path,
+    evidence_root: Path,
+) -> bool:
+    checksum_path = package_archive.with_suffix(package_archive.suffix + ".sha256").resolve()
+    return any(
+        _paths_overlap(report_path, root)
+        for root in (
+            package_root,
+            package_archive,
+            checksum_path,
+            build_identity_path,
+            workspace_root,
+            evidence_root,
+        )
+    )
 
 
 def _prepare_workspace(workspace_root: Path) -> None:
@@ -209,11 +256,15 @@ def _first_table_evidence(value: dict[str, object]) -> FirstTableEvidence:
     }
 
 
-def run_first_table_probe(cdp_url: str, report_path: Path) -> dict[str, object]:
+def run_first_table_probe(
+    node_executable: Path,
+    cdp_url: str,
+    report_path: Path,
+) -> dict[str, object]:
     try:
         completed = subprocess.run(
             [
-                str(ensure_node(ROOT)),
+                str(node_executable),
                 str(NODE_PROBE),
                 "--cdp-url",
                 cdp_url,
@@ -241,6 +292,17 @@ def run_first_table_probe(cdp_url: str, report_path: Path) -> dict[str, object]:
     report = _read_probe_report(report_path)
     _first_table_evidence(report)
     return report
+
+
+def prepare_first_table_probe() -> Probe:
+    """Resolve the Node toolchain before the measured Host lifecycle starts."""
+
+    node_executable = ensure_node(ROOT)
+
+    def prepared(cdp_url: str, report_path: Path) -> dict[str, object]:
+        return run_first_table_probe(node_executable, cdp_url, report_path)
+
+    return prepared
 
 
 def _workspace_report(value: WorkspaceOpenEvidence) -> PackagedWorkspaceReport:
@@ -395,9 +457,28 @@ def run_packaged_runtime_baseline(
     json_report: Path,
     monotonic_ns: Callable[[], int] = time.monotonic_ns,
     sleep: Callable[[float], None] = time.sleep,
-    probe: Probe = run_first_table_probe,
+    probe_factory: ProbeFactory = prepare_first_table_probe,
 ) -> dict[str, object]:
     """Own measurement freshness and persist passed only after normal cleanup."""
+
+    package_root = package_root.resolve()
+    package_archive = package_archive.resolve()
+    build_identity_path = build_identity_path.resolve()
+    workspace_root = workspace_root.resolve()
+    evidence_root = evidence_root.resolve()
+    json_report = json_report.resolve()
+    if _unsafe_report_path(
+        json_report,
+        package_root=package_root,
+        package_archive=package_archive,
+        build_identity_path=build_identity_path,
+        workspace_root=workspace_root,
+        evidence_root=evidence_root,
+    ):
+        return _failed_report(
+            "RUNTIME_REPORT_PATH_UNSAFE",
+            "runtime baseline report must not overlap candidate assets or run roots",
+        )
 
     try:
         candidate = verify_runtime_candidate(
@@ -406,6 +487,12 @@ def run_packaged_runtime_baseline(
             build_identity_path=build_identity_path,
             expected_source_sha=expected_source_sha,
         )
+        _validate_run_roots(
+            package_root=candidate.package_root,
+            workspace_root=workspace_root,
+            evidence_root=evidence_root,
+        )
+        probe = probe_factory()
         _prepare_workspace(workspace_root)
         timeline = RuntimePhaseTimeline(monotonic_ns)
         with opened_packaged_workspace(

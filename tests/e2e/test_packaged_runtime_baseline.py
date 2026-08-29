@@ -166,6 +166,7 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         **_kwargs: object,
     ) -> Iterator[_Session]:
         assert observer is not None
+        events.append("launch")
         observer.launch_started()
         observer.host_ready()
         observer.workspace_open_requested()
@@ -177,6 +178,10 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
     def probe(_cdp_url: str, _report_path: Path) -> dict[str, object]:
         events.append("probe")
         return _probe_evidence()
+
+    def prepare_probe():
+        events.append("prepare")
+        return probe
 
     monkeypatch.setattr(packaged_runtime_baseline, "opened_packaged_workspace", opened)
     clock = iter((0, 10, 20, 30, 40))
@@ -192,10 +197,10 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         json_report=report_path,
         monotonic_ns=lambda: next(clock),
         sleep=lambda seconds: events.append(f"sleep:{seconds}"),
-        probe=probe,
+        probe_factory=prepare_probe,
     )
 
-    assert events == ["probe", "sleep:1.0", "snapshot", "exit"]
+    assert events == ["prepare", "launch", "probe", "sleep:1.0", "snapshot", "exit"]
     assert report["status"] == "passed"
     assert report["releaseCandidate"] == candidate_evidence
     measurements = report["measurements"]
@@ -268,7 +273,7 @@ def test_packaged_baseline_never_persists_passed_before_normal_cleanup(
         json_report=report_path,
         monotonic_ns=lambda: next(clock),
         sleep=lambda _seconds: None,
-        probe=lambda *_args: _probe_evidence(),
+        probe_factory=lambda: lambda *_args: _probe_evidence(),
     )
 
     persisted = json.loads(report_path.read_text(encoding="utf-8"))
@@ -324,7 +329,7 @@ def test_packaged_baseline_rejects_boolean_numeric_probe_fields(
         json_report=tmp_path / "report.json",
         monotonic_ns=lambda: next(clock),
         sleep=lambda _seconds: None,
-        probe=lambda *_args: invalid,
+        probe_factory=lambda: lambda *_args: invalid,
     )
 
     assert report["status"] == "failed"
@@ -340,7 +345,6 @@ def test_first_table_probe_normalizes_nonzero_exit_before_reading_report(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(packaged_runtime_baseline, "ensure_node", lambda _root: Path("node"))
     monkeypatch.setattr(
         packaged_runtime_baseline.subprocess,
         "run",
@@ -349,11 +353,135 @@ def test_first_table_probe_normalizes_nonzero_exit_before_reading_report(
 
     with pytest.raises(packaged_runtime_baseline.BaselineMeasurementError) as raised:
         packaged_runtime_baseline.run_first_table_probe(
+            Path("node"),
             "http://127.0.0.1:9222",
             tmp_path / "missing-report.json",
         )
 
     assert raised.value.code == "FIRST_TABLE_PROBE_FAILED"
+
+
+@pytest.mark.parametrize(
+    "nested_path",
+    ["workspace", "evidence", "report", "archive", "checksum", "identity"],
+)
+def test_packaged_baseline_never_writes_into_verified_candidate(
+    monkeypatch,
+    tmp_path: Path,
+    nested_path: str,
+) -> None:
+    package_root = tmp_path / "package"
+    archive, identity_path, candidate_evidence = _write_candidate(
+        package_root,
+        tmp_path / "artifacts",
+    )
+    workspace_root = tmp_path / "workspace"
+    evidence_root = tmp_path / "evidence"
+    report_path = tmp_path / "report.json"
+    if nested_path == "workspace":
+        workspace_root = package_root / "workspace"
+    elif nested_path == "evidence":
+        evidence_root = package_root / "evidence"
+    else:
+        report_path = {
+            "report": package_root / "report.json",
+            "archive": archive,
+            "checksum": archive.with_suffix(archive.suffix + ".sha256"),
+            "identity": identity_path,
+        }[nested_path]
+    nested_target = {
+        "workspace": workspace_root,
+        "evidence": evidence_root,
+        "report": report_path,
+        "archive": archive,
+        "checksum": archive.with_suffix(archive.suffix + ".sha256"),
+        "identity": identity_path,
+    }[nested_path]
+    original_bytes = nested_target.read_bytes() if nested_target.is_file() else None
+    opened = False
+
+    @contextmanager
+    def forbidden_open(*_args: object, **_kwargs: object) -> Iterator[object]:
+        nonlocal opened
+        opened = True
+        yield object()
+
+    monkeypatch.setattr(
+        packaged_runtime_baseline,
+        "opened_packaged_workspace",
+        forbidden_open,
+    )
+    report = packaged_runtime_baseline.run_packaged_runtime_baseline(
+        package_root=package_root,
+        package_archive=archive,
+        workspace_root=workspace_root,
+        evidence_root=evidence_root,
+        build_identity_path=identity_path,
+        expected_source_sha=SOURCE_SHA,
+        json_report=report_path,
+        probe_factory=lambda: pytest.fail("probe must not be prepared"),
+    )
+
+    assert opened is False
+    assert report["status"] == "failed"
+    assert report["errors"] == [
+        {
+            "code": (
+                "RUNTIME_REPORT_PATH_UNSAFE"
+                if nested_path in {"report", "archive", "checksum", "identity"}
+                else "RUNTIME_PATH_OVERLAP"
+            ),
+            "message": (
+                "runtime baseline report must not overlap candidate assets or run roots"
+                if nested_path in {"report", "archive", "checksum", "identity"}
+                else f"package root and {nested_path} root must not overlap"
+            ),
+        }
+    ]
+    if original_bytes is None:
+        assert not nested_target.exists()
+    else:
+        assert nested_target.read_bytes() == original_bytes
+    assert release_candidate.candidate_evidence(package_root, archive) == candidate_evidence
+
+
+def test_packaged_baseline_rejects_resolved_checksum_alias(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "package"
+    archive, identity_path, _candidate_evidence = _write_candidate(
+        package_root,
+        tmp_path / "artifacts",
+    )
+    checksum = archive.with_suffix(archive.suffix + ".sha256")
+    checksum_target = tmp_path / "checksum-target.txt"
+    checksum_target.write_bytes(checksum.read_bytes())
+    checksum.unlink()
+    try:
+        checksum.symlink_to(checksum_target)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+    original_bytes = checksum_target.read_bytes()
+
+    report = packaged_runtime_baseline.run_packaged_runtime_baseline(
+        package_root=package_root,
+        package_archive=archive,
+        workspace_root=tmp_path / "workspace",
+        evidence_root=tmp_path / "evidence",
+        build_identity_path=identity_path,
+        expected_source_sha=SOURCE_SHA,
+        json_report=checksum_target,
+        probe_factory=lambda: pytest.fail("probe must not be prepared"),
+    )
+
+    assert report["status"] == "failed"
+    assert report["errors"] == [
+        {
+            "code": "RUNTIME_REPORT_PATH_UNSAFE",
+            "message": "runtime baseline report must not overlap candidate assets or run roots",
+        }
+    ]
+    assert checksum_target.read_bytes() == original_bytes
 
 
 def test_packaged_baseline_rejects_candidate_before_opening_workspace(
