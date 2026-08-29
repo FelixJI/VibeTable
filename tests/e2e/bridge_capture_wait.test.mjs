@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   captureCompletedInPage,
+  readCaptureTimeoutEvidenceInPage,
   waitForCapturedBridgeMessage,
 } from "./bridge_capture_wait.mjs";
 
@@ -70,9 +71,23 @@ test("surfaces a captured workspace failure", async () => {
   );
 });
 
-test("keeps the stable timeout error without polling the page", async () => {
+test("adds one bounded renderer evidence snapshot to the stable timeout", async () => {
   const timeout = Object.assign(new Error("playwright details"), { name: "TimeoutError" });
-  const { page, calls } = makePage(null, {
+  const evidence = {
+    expectedWorkspaceId: "workspace-b",
+    minimumEpoch: 7,
+    expectedLifecycleMethods: ["workspace.switch"],
+    bootstrapSession: null,
+    lifecycleSuccess: {
+      requestId: "request-8",
+      method: "workspace.switch",
+      result: { workspaceId: "workspace-b", sessionEpoch: 8, state: "openedWritable" },
+    },
+    unexpectedBootstraps: [],
+    observedWorkspaceSession: { workspaceId: "workspace-a", sessionEpoch: 7 },
+    lifecycleRequests: [{ requestId: "request-8", requestType: "workspace.switch" }],
+  };
+  const { page, calls } = makePage(evidence, {
     async waitForFunction() {
       calls.push(["waitForFunction"]);
       throw timeout;
@@ -81,9 +96,85 @@ test("keeps the stable timeout error without polling the page", async () => {
 
   await assert.rejects(
     waitForCapturedBridgeMessage(page, 123),
-    /captured bridge response timed out/,
+    (error) => error.message === `captured bridge response timed out: ${JSON.stringify(evidence)}`,
   );
-  assert.deepEqual(calls, [["waitForFunction"]]);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], ["waitForFunction"]);
+  assert.equal(calls[1][0], "evaluate");
+  assert.equal(calls[1][1], readCaptureTimeoutEvidenceInPage);
+});
+
+test("timeout evidence exposes only bounded correlation state", () => {
+  globalThis.window = {
+    __vibetableE2EBridgeCapture: {
+      expectedWorkspaceId: "workspace-b",
+      minimumEpoch: 7,
+      expectedLifecycleMethods: ["workspace.switch"],
+      baselineRequestIds: ["old"],
+      bootstrap: {
+        payload: {
+          session: {
+            workspaceId: "workspace-b",
+            sessionEpoch: 8,
+            state: "openedWritable",
+            writable: true,
+            selectedRoot: "must-not-leak",
+          },
+        },
+      },
+      lifecycleSuccess: {
+        requestId: "new",
+        method: "workspace.switch",
+        result: {
+          workspaceId: "workspace-b",
+          sessionEpoch: 8,
+          state: "openedWritable",
+          secret: "must-not-leak",
+        },
+      },
+      unexpectedBootstraps: Array.from({ length: 8 }, (_, index) => ({
+        workspaceId: `unexpected-${index}`,
+        sessionEpoch: index,
+      })),
+    },
+    __vibetableE2EBridgeDiagnostics: {
+      workspaceSession: { workspaceId: "workspace-b", sessionEpoch: 8 },
+      requests: [
+        { requestId: "old", requestType: "workspace.switch", payloadShape: "must-not-leak" },
+        { requestId: "ignored", requestType: "workspace.open" },
+        { requestId: "new", requestType: "workspace.switch", payloadShape: "must-not-leak" },
+      ],
+    },
+  };
+  try {
+    assert.deepEqual(readCaptureTimeoutEvidenceInPage(), {
+      expectedWorkspaceId: "workspace-b",
+      minimumEpoch: 7,
+      expectedLifecycleMethods: ["workspace.switch"],
+      bootstrapSession: {
+        workspaceId: "workspace-b",
+        sessionEpoch: 8,
+        state: "openedWritable",
+        writable: true,
+      },
+      lifecycleSuccess: {
+        requestId: "new",
+        method: "workspace.switch",
+        result: { workspaceId: "workspace-b", sessionEpoch: 8, state: "openedWritable" },
+      },
+      unexpectedBootstraps: [
+        { workspaceId: "unexpected-3", sessionEpoch: 3 },
+        { workspaceId: "unexpected-4", sessionEpoch: 4 },
+        { workspaceId: "unexpected-5", sessionEpoch: 5 },
+        { workspaceId: "unexpected-6", sessionEpoch: 6 },
+        { workspaceId: "unexpected-7", sessionEpoch: 7 },
+      ],
+      observedWorkspaceSession: { workspaceId: "workspace-b", sessionEpoch: 8 },
+      lifecycleRequests: [{ requestId: "new", requestType: "workspace.switch" }],
+    });
+  } finally {
+    delete globalThis.window;
+  }
 });
 
 test("does not rewrite non-timeout Playwright failures", async () => {
