@@ -9,11 +9,13 @@ this small report-building seam.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, TypedDict, cast
 
+from qa import release_candidate
 from scripts.qa.windows_process_scope import ProcessWorkingSetSnapshot
 
 _RELEASE_FIELDS = ("product", "version", "platform", "architecture")
@@ -89,12 +91,84 @@ class RuntimeMeasurementFoundationReport(TypedDict):
     errors: list[BaselineErrorEvidence]
 
 
+class CandidateIdentity(TypedDict):
+    component: str
+    repository: str
+    sourceSha: str
+    version: str
+    archiveName: str
+    archiveSha256: str
+
+
+class PackagedRuntimeIdentity(TypedDict):
+    candidate: CandidateIdentity
+    release: ReleaseIdentity
+    publishLayoutProtocolVersion: str
+
+
+class ReleaseCandidateArchiveEvidence(TypedDict):
+    name: str
+    rootDirectory: str
+    sha256: str
+    size: int
+    treeSha256: str
+    fileCount: int
+    checksumFile: str
+
+
+class ReleaseCandidateEvidence(TypedDict):
+    schemaVersion: Literal[2]
+    packageTreeSha256: str
+    packageFileCount: int
+    archive: ReleaseCandidateArchiveEvidence
+
+
 class BaselineMeasurementError(RuntimeError):
     """A stable fail-closed reason for an unusable baseline measurement."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class VerifiedRuntimeCandidate:
+    """An immutable capability produced only by the authoritative candidate verifier."""
+
+    __slots__ = ("_identity", "_package_root", "_release_candidate")
+    _TOKEN = object()
+
+    def __init__(
+        self,
+        *,
+        token: object,
+        package_root: Path,
+        identity: PackagedRuntimeIdentity,
+        candidate: ReleaseCandidateEvidence,
+    ) -> None:
+        if token is not self._TOKEN:
+            raise TypeError("use verify_runtime_candidate()")
+        self._package_root = package_root
+        self._identity = identity
+        self._release_candidate = candidate
+
+    @property
+    def package_root(self) -> Path:
+        return self._package_root
+
+    @property
+    def identity(self) -> PackagedRuntimeIdentity:
+        return {
+            "candidate": self._identity["candidate"].copy(),
+            "release": self._identity["release"].copy(),
+            "publishLayoutProtocolVersion": self._identity["publishLayoutProtocolVersion"],
+        }
+
+    @property
+    def release_candidate(self) -> ReleaseCandidateEvidence:
+        return {
+            **self._release_candidate,
+            "archive": self._release_candidate["archive"].copy(),
+        }
 
 
 @dataclass(frozen=True)
@@ -450,3 +524,264 @@ def build_runtime_measurement_foundation_report(
         },
         "errors": [],
     }
+
+
+def _closed_object(
+    value: object,
+    *,
+    fields: tuple[str, ...],
+    code: str,
+    label: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise BaselineMeasurementError(code, f"{label} must be a JSON object")
+    decoded = cast(dict[str, object], value)
+    if set(decoded) != set(fields):
+        raise BaselineMeasurementError(code, f"{label} fields do not match its contract")
+    return decoded
+
+
+def _candidate_identity(
+    path: Path,
+    *,
+    release: ReleaseIdentity,
+    expected_source_sha: str,
+    archive_evidence: ReleaseCandidateArchiveEvidence,
+) -> CandidateIdentity:
+    identity = _read_object(path, code="CANDIDATE_IDENTITY_INVALID")
+    schema_version = identity.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        raise BaselineMeasurementError(
+            "CANDIDATE_IDENTITY_INVALID",
+            "build identity schema_version must be 1",
+        )
+    if set(identity) != {"schema_version", "project", "build"}:
+        raise BaselineMeasurementError(
+            "CANDIDATE_IDENTITY_INVALID",
+            "build identity fields do not match schema 1",
+        )
+    project = _closed_object(
+        identity.get("project"),
+        fields=("component", "repository", "version", "source_sha"),
+        code="CANDIDATE_IDENTITY_INVALID",
+        label="build identity project",
+    )
+    build = _closed_object(
+        identity.get("build"),
+        fields=(
+            "archive",
+            "archive_sha256",
+            "package_identity",
+            "package_identity_sha256",
+        ),
+        code="CANDIDATE_IDENTITY_INVALID",
+        label="build identity build",
+    )
+    source_sha = _strict_hex(
+        project["source_sha"],
+        length=40,
+        code="CANDIDATE_IDENTITY_INVALID",
+        label="build identity source SHA",
+    )
+    expected_source_sha = _strict_hex(
+        expected_source_sha,
+        length=40,
+        code="CANDIDATE_SOURCE_MISMATCH",
+        label="expected source SHA",
+    )
+    if source_sha != expected_source_sha:
+        raise BaselineMeasurementError(
+            "CANDIDATE_SOURCE_MISMATCH",
+            "build identity source SHA does not match the gate commit",
+        )
+    component = project["component"]
+    repository = project["repository"]
+    version = project["version"]
+    if component != "vibetable" or repository != "FelixJI/VibeTable":
+        raise BaselineMeasurementError(
+            "CANDIDATE_PROJECT_MISMATCH",
+            "build identity does not identify FelixJI/VibeTable",
+        )
+    package_identity = build["package_identity"]
+    if package_identity != release or version != release["version"]:
+        raise BaselineMeasurementError(
+            "CANDIDATE_PACKAGE_MISMATCH",
+            "build identity package does not match release.json",
+        )
+    if not isinstance(version, str) or not version:
+        raise BaselineMeasurementError(
+            "CANDIDATE_IDENTITY_INVALID",
+            "build identity version must be a non-empty string",
+        )
+    archive = build["archive"]
+    expected_archive = f"VibeTable-v{release['version']}-win-x64.zip"
+    if archive != expected_archive or archive != archive_evidence["name"]:
+        raise BaselineMeasurementError(
+            "CANDIDATE_ARCHIVE_MISMATCH",
+            "build identity archive name does not match the verified candidate",
+        )
+    archive_sha256 = _strict_hex(
+        build["archive_sha256"],
+        length=64,
+        code="CANDIDATE_IDENTITY_INVALID",
+        label="build identity archive SHA-256",
+    )
+    _strict_hex(
+        build["package_identity_sha256"],
+        length=64,
+        code="CANDIDATE_IDENTITY_INVALID",
+        label="build identity package identity SHA-256",
+    )
+    if archive_sha256 != archive_evidence["sha256"]:
+        raise BaselineMeasurementError(
+            "CANDIDATE_ARCHIVE_MISMATCH",
+            "build identity archive SHA-256 does not match the verified candidate",
+        )
+    assert isinstance(component, str)
+    assert isinstance(repository, str)
+    assert isinstance(archive, str)
+    return {
+        "component": component,
+        "repository": repository,
+        "sourceSha": source_sha,
+        "version": version,
+        "archiveName": archive,
+        "archiveSha256": archive_sha256,
+    }
+
+
+def _strict_hex(
+    value: object,
+    *,
+    length: int,
+    code: str,
+    label: str,
+) -> str:
+    if not isinstance(value, str) or re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is None:
+        raise BaselineMeasurementError(code, f"{label} must be {length} lowercase hex characters")
+    return value
+
+
+def _strict_non_negative_int(value: object, *, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise BaselineMeasurementError(
+            "CANDIDATE_EVIDENCE_INVALID",
+            f"{label} must be a non-negative integer",
+        )
+    return value
+
+
+def _verified_candidate_evidence(
+    package_root: Path,
+    package_archive: Path,
+) -> ReleaseCandidateEvidence:
+    try:
+        raw = release_candidate.candidate_evidence(package_root, package_archive)
+    except release_candidate.CandidateError as exc:
+        raise BaselineMeasurementError("CANDIDATE_PACKAGE_MISMATCH", str(exc)) from exc
+    candidate = _closed_object(
+        raw,
+        fields=("schemaVersion", "packageTreeSha256", "packageFileCount", "archive"),
+        code="CANDIDATE_EVIDENCE_INVALID",
+        label="release candidate evidence",
+    )
+    archive = _closed_object(
+        candidate["archive"],
+        fields=(
+            "name",
+            "rootDirectory",
+            "sha256",
+            "size",
+            "treeSha256",
+            "fileCount",
+            "checksumFile",
+        ),
+        code="CANDIDATE_EVIDENCE_INVALID",
+        label="release candidate archive evidence",
+    )
+    if candidate["schemaVersion"] != release_candidate.SCHEMA_VERSION:
+        raise BaselineMeasurementError(
+            "CANDIDATE_EVIDENCE_INVALID",
+            "release candidate evidence schema is unsupported",
+        )
+    package_tree_sha = _strict_hex(
+        candidate["packageTreeSha256"],
+        length=64,
+        code="CANDIDATE_EVIDENCE_INVALID",
+        label="package tree SHA-256",
+    )
+    archive_sha = _strict_hex(
+        archive["sha256"],
+        length=64,
+        code="CANDIDATE_EVIDENCE_INVALID",
+        label="archive SHA-256",
+    )
+    archive_tree_sha = _strict_hex(
+        archive["treeSha256"],
+        length=64,
+        code="CANDIDATE_EVIDENCE_INVALID",
+        label="archive tree SHA-256",
+    )
+    name = archive["name"]
+    root_directory = archive["rootDirectory"]
+    checksum_file = archive["checksumFile"]
+    if (
+        not isinstance(name, str)
+        or not name
+        or not isinstance(root_directory, str)
+        or root_directory != release_candidate.ARCHIVE_ROOT_NAME
+        or not isinstance(checksum_file, str)
+        or checksum_file != f"{name}.sha256"
+        or package_tree_sha != archive_tree_sha
+    ):
+        raise BaselineMeasurementError(
+            "CANDIDATE_EVIDENCE_INVALID",
+            "release candidate evidence is not internally consistent",
+        )
+    return {
+        "schemaVersion": 2,
+        "packageTreeSha256": package_tree_sha,
+        "packageFileCount": _strict_non_negative_int(
+            candidate["packageFileCount"], label="package file count"
+        ),
+        "archive": {
+            "name": name,
+            "rootDirectory": release_candidate.ARCHIVE_ROOT_NAME,
+            "sha256": archive_sha,
+            "size": _strict_non_negative_int(archive["size"], label="archive size"),
+            "treeSha256": archive_tree_sha,
+            "fileCount": _strict_non_negative_int(archive["fileCount"], label="archive file count"),
+            "checksumFile": checksum_file,
+        },
+    }
+
+
+def verify_runtime_candidate(
+    *,
+    package_root: Path,
+    package_archive: Path,
+    build_identity_path: Path,
+    expected_source_sha: str,
+) -> VerifiedRuntimeCandidate:
+    """Bind one package tree, its archive, build identity, and source SHA."""
+
+    root = package_root.resolve()
+    evidence = _verified_candidate_evidence(root, package_archive.resolve())
+    release = _release_identity(root)
+    protocol, _package_bytes, _runtime_images = _package_sizes(root)
+    candidate = _candidate_identity(
+        build_identity_path,
+        release=release,
+        expected_source_sha=expected_source_sha,
+        archive_evidence=evidence["archive"],
+    )
+    return VerifiedRuntimeCandidate(
+        token=VerifiedRuntimeCandidate._TOKEN,
+        package_root=root,
+        identity={
+            "candidate": candidate,
+            "release": release,
+            "publishLayoutProtocolVersion": protocol,
+        },
+        candidate=evidence,
+    )
