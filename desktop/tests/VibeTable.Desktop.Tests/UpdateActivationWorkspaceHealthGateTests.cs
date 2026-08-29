@@ -79,6 +79,63 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
     }
 
     [TestMethod]
+    public async Task ConfirmAsync_ExactUpdatedHealthHoldLeavesSettlementPending()
+    {
+        using var fixture = new WorkspaceRegistryTopologyTestContext(
+            "vibetable-update-health-hold-");
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-update-health-hold-{Guid.NewGuid():N}");
+        string readiness = Path.Combine(root, "self-update-readiness");
+        string controls = Path.Combine(root, "self-update-updated-controls");
+        Directory.CreateDirectory(readiness);
+        Directory.CreateDirectory(controls);
+        string request = Path.Combine(
+            controls,
+            "self-update-health-timeout-hold.request");
+        File.WriteAllText(request, string.Empty);
+        try
+        {
+            HostStartupOptions startup = HostStartupOptions.Parse([
+                "--self-update-smoke",
+                "--test-mode",
+                "--readiness-dir", readiness,
+                "--e2e-controls-dir", controls,
+            ]);
+            var reader = new RecordingSchemaReader(0);
+            var activation = new RecordingSettlement();
+            var gate = new UpdateActivationWorkspaceHealthGate(
+                fixture.Registry,
+                fixture.Session,
+                reader,
+                TimeSpan.FromSeconds(1),
+                startupOptions: startup);
+            using var cancelled = new CancellationTokenSource();
+
+            Task<UpdateWorkspaceHealthProbeReceipt> pending = gate.ConfirmAsync(
+                activation,
+                cancelled.Token);
+
+            Assert.IsFalse(pending.IsCompleted);
+            Assert.IsFalse(File.Exists(request));
+            Assert.IsNull(fixture.Session.LastOpen);
+            Assert.IsNull(reader.Session);
+            Assert.AreEqual(0, activation.HealthyCount);
+            Assert.AreEqual(0, activation.FailedCount);
+
+            cancelled.Cancel();
+            await Assert.ThrowsExactlyAsync<TaskCanceledException>(async () =>
+                await pending);
+            Assert.AreEqual(0, activation.HealthyCount);
+            Assert.AreEqual(0, activation.FailedCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ConfirmAsync_WhenSessionIsAlreadyOpenFailsWithoutTakingOwnership()
     {
         using var fixture = new WorkspaceRegistryTopologyTestContext(

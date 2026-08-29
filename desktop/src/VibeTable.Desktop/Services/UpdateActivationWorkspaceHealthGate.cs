@@ -49,6 +49,7 @@ internal sealed class UpdateActivationWorkspaceHealthGate
     private readonly TimeSpan _schemaTimeout;
     private readonly Action<UpdateWorkspaceHealthProbeReceipt>? _reportReady;
     private readonly Action<Exception>? _reportFailure;
+    private readonly HostStartupOptions _startupOptions;
 
     public UpdateActivationWorkspaceHealthGate(
         WorkspaceRegistry registry,
@@ -56,7 +57,8 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         IUpdateWorkspaceSchemaReader schema,
         TimeSpan? schemaTimeout = null,
         Action<UpdateWorkspaceHealthProbeReceipt>? reportReady = null,
-        Action<Exception>? reportFailure = null)
+        Action<Exception>? reportFailure = null,
+        HostStartupOptions? startupOptions = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -68,6 +70,7 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         }
         _reportReady = reportReady;
         _reportFailure = reportFailure;
+        _startupOptions = startupOptions ?? HostStartupOptions.Current();
     }
 
     public async Task<UpdateWorkspaceHealthProbeReceipt> ConfirmAsync(
@@ -75,6 +78,11 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(settlement);
+        if (_startupOptions.TryConsumeSelfUpdateHealthTimeoutHold())
+        {
+            await HoldHealthSettlementUntilHostTerminationAsync(
+                cancellationToken).ConfigureAwait(false);
+        }
         bool opened = false;
         Exception? failure = null;
         UpdateWorkspaceHealthProbeReceipt? receipt = null;
@@ -151,6 +159,16 @@ internal sealed class UpdateActivationWorkspaceHealthGate
             new UpdateActivationHealth.Healthy(receipt!),
             cancellationToken).ConfigureAwait(false);
         return receipt!;
+    }
+
+    private static async Task HoldHealthSettlementUntilHostTerminationAsync(
+        CancellationToken cancellationToken)
+    {
+        var pending = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration cancellation = cancellationToken.Register(
+            () => pending.TrySetCanceled(cancellationToken));
+        await pending.Task.ConfigureAwait(false);
     }
 
     private async Task ReportFailureAndSettleAsync(

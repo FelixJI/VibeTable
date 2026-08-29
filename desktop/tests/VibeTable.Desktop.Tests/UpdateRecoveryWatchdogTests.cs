@@ -741,8 +741,15 @@ public sealed class UpdateRecoveryWatchdogTests
         string stageParent = Directory.GetParent(plan.StagingRoot.TrimEnd(
             Path.DirectorySeparatorChar,
             Path.AltDirectorySeparatorChar))!.FullName;
+        CollectionAssert.Contains(launch.Arguments.ToArray(), "--self-update-smoke");
+        CollectionAssert.Contains(launch.Arguments.ToArray(), "--test-mode");
+        int readinessIndex = launch.Arguments.IndexOf("--readiness-dir");
         int controlsIndex = launch.Arguments.IndexOf("--e2e-controls-dir");
+        Assert.IsTrue(readinessIndex >= 0);
         Assert.IsTrue(controlsIndex >= 0);
+        Assert.AreEqual(
+            Path.Combine(stageParent, "self-update-readiness"),
+            launch.Arguments[readinessIndex + 1]);
         Assert.AreEqual(
             1,
             launch.Arguments.Count(argument => argument == "--e2e-controls-dir"));

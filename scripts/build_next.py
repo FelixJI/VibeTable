@@ -1627,6 +1627,12 @@ def _is_valid_self_update_rollback_receipt(
     )
 
 
+@dataclass(frozen=True)
+class _SelfUpdateConsumedRequest:
+    path: Path
+    description: str
+
+
 def _wait_for_self_update_rollback(
     root: Path,
     *,
@@ -1636,9 +1642,10 @@ def _wait_for_self_update_rollback(
     token: str,
     updater_process_id: int,
     updated_process_id: int,
+    scenario_slug: str,
     expected_failure_code: str,
     health_failure_readiness: Path | None,
-    consumed_request: Path | None,
+    consumed_request: _SelfUpdateConsumedRequest | None,
     timeout_seconds: float = 120,
 ) -> int:
     """Validate shared terminal rollback evidence and return the restored host PID."""
@@ -1686,8 +1693,10 @@ def _wait_for_self_update_rollback(
             expected_failure_code=expected_failure_code,
         ):
             raise BuildError("desktop self-update smoke rollback receipt identity is invalid")
-        if consumed_request is not None and consumed_request.exists():
-            raise BuildError("desktop self-update smoke did not consume updated close request")
+        if consumed_request is not None and consumed_request.path.exists():
+            raise BuildError(
+                f"desktop self-update smoke did not consume {consumed_request.description}"
+            )
         if (
             restored.get("ready") is not True
             or restored.get("mode") != "shell"
@@ -1720,8 +1729,7 @@ def _wait_for_self_update_rollback(
         ):
             return restored_process_id
         time.sleep(0.05)
-    scenario = "health-failure" if health_failure_readiness is not None else "updated-exit"
-    raise BuildError(f"desktop self-update smoke {scenario} rollback did not complete")
+    raise BuildError(f"desktop self-update smoke {scenario_slug} rollback did not complete")
 
 
 def wait_for_self_update_health_failure_rollback(
@@ -1744,6 +1752,7 @@ def wait_for_self_update_health_failure_rollback(
         token=token,
         updater_process_id=updater_process_id,
         updated_process_id=updated_process_id,
+        scenario_slug="health-failure",
         expected_failure_code="workspaceHealthProbeFailed",
         health_failure_readiness=(root / SELF_UPDATE_SMOKE_READINESS_DIR / SHELL_READINESS_FILE),
         consumed_request=None,
@@ -1772,9 +1781,13 @@ def wait_for_self_update_updated_exit_rollback(
         token=token,
         updater_process_id=updater_process_id,
         updated_process_id=updated_process_id,
+        scenario_slug="updated-exit",
         expected_failure_code="updatedProcessExited",
         health_failure_readiness=None,
-        consumed_request=consumed_request,
+        consumed_request=_SelfUpdateConsumedRequest(
+            consumed_request,
+            "updated close request",
+        ),
         timeout_seconds=timeout_seconds,
     )
 
@@ -1879,7 +1892,7 @@ def _seed_self_update_health_failure_registry(root: Path) -> None:
 @dataclass(frozen=True)
 class _SelfUpdateRollbackEvidence:
     health_failure_readiness: Path | None = None
-    consumed_request: Path | None = None
+    consumed_request: _SelfUpdateConsumedRequest | None = None
 
 
 @dataclass(frozen=True)
@@ -1887,6 +1900,7 @@ class _SelfUpdateRollbackScenario:
     slug: str
     failure_code: str
     arrange_failure: Callable[[Path], _SelfUpdateRollbackEvidence]
+    updater_wait_timeout_seconds: float
 
 
 def _arrange_self_update_health_failure(root: Path) -> _SelfUpdateRollbackEvidence:
@@ -1901,18 +1915,49 @@ def _arrange_self_update_updated_exit(root: Path) -> _SelfUpdateRollbackEvidence
     updated_controls.mkdir()
     close_request = updated_controls / "host-normal-close.request"
     close_request.write_text("", encoding="utf-8")
-    return _SelfUpdateRollbackEvidence(consumed_request=close_request)
+    return _SelfUpdateRollbackEvidence(
+        consumed_request=_SelfUpdateConsumedRequest(
+            close_request,
+            "updated close request",
+        )
+    )
+
+
+def _arrange_self_update_health_timeout(root: Path) -> _SelfUpdateRollbackEvidence:
+    updated_controls = root / SELF_UPDATE_UPDATED_CONTROLS_DIR
+    updated_controls.mkdir()
+    hold_request = updated_controls / "self-update-health-timeout-hold.request"
+    hold_request.write_text("", encoding="utf-8")
+    return _SelfUpdateRollbackEvidence(
+        consumed_request=_SelfUpdateConsumedRequest(
+            hold_request,
+            "health-timeout hold request",
+        )
+    )
 
 
 _HEALTH_FAILURE_ROLLBACK_SCENARIO = _SelfUpdateRollbackScenario(
     slug="health-failure",
     failure_code="workspaceHealthProbeFailed",
     arrange_failure=_arrange_self_update_health_failure,
+    updater_wait_timeout_seconds=120,
 )
 _UPDATED_EXIT_ROLLBACK_SCENARIO = _SelfUpdateRollbackScenario(
     slug="updated-exit",
     failure_code="updatedProcessExited",
     arrange_failure=_arrange_self_update_updated_exit,
+    updater_wait_timeout_seconds=120,
+)
+_HEALTH_TIMEOUT_ROLLBACK_SCENARIO = _SelfUpdateRollbackScenario(
+    slug="health-timeout",
+    failure_code="healthTimeout",
+    arrange_failure=_arrange_self_update_health_timeout,
+    updater_wait_timeout_seconds=180,
+)
+_SELF_UPDATE_ROLLBACK_SCENARIOS = (
+    _HEALTH_FAILURE_ROLLBACK_SCENARIO,
+    _UPDATED_EXIT_ROLLBACK_SCENARIO,
+    _HEALTH_TIMEOUT_ROLLBACK_SCENARIO,
 )
 
 
@@ -2088,7 +2133,7 @@ def _run_desktop_self_update_rollback_smoke(
         )
         blocking_parent.terminate()
         blocking_parent.wait(timeout=30)
-        applied_returncode = applied.wait(timeout=120)
+        applied_returncode = applied.wait(timeout=scenario.updater_wait_timeout_seconds)
         if applied_returncode != 0:
             raise BuildError(
                 f"desktop self-update {scenario.slug} updater exited with {applied_returncode}"
@@ -2106,6 +2151,7 @@ def _run_desktop_self_update_rollback_smoke(
             token=token,
             updater_process_id=applied.pid,
             updated_process_id=updated_process_id,
+            scenario_slug=scenario.slug,
             expected_failure_code=scenario.failure_code,
             health_failure_readiness=expected_evidence.health_failure_readiness,
             consumed_request=expected_evidence.consumed_request,
@@ -2142,20 +2188,13 @@ def _run_desktop_self_update_rollback_smoke(
                     applied_scope.close()
 
 
-def _run_desktop_self_update_health_failure_smoke(package: Path, root: Path) -> None:
-    _run_desktop_self_update_rollback_smoke(
-        package,
-        root,
-        scenario=_HEALTH_FAILURE_ROLLBACK_SCENARIO,
-    )
-
-
-def _run_desktop_self_update_updated_exit_smoke(package: Path, root: Path) -> None:
-    _run_desktop_self_update_rollback_smoke(
-        package,
-        root,
-        scenario=_UPDATED_EXIT_ROLLBACK_SCENARIO,
-    )
+def _run_desktop_self_update_rollback_smokes(package: Path, root: Path) -> None:
+    for scenario in _SELF_UPDATE_ROLLBACK_SCENARIOS:
+        _run_desktop_self_update_rollback_smoke(
+            package,
+            root / scenario.slug,
+            scenario=scenario,
+        )
 
 
 def run_desktop_self_update_smoke(
@@ -2289,8 +2328,7 @@ def run_desktop_self_update_smoke(
         raise BuildError("desktop self-update smoke overwrote an unknown install-root file")
     if external_sentinel.read_text(encoding="utf-8") != "preserve-user-data":
         raise BuildError("desktop self-update smoke overwrote external user data")
-    _run_desktop_self_update_health_failure_smoke(package, root / "health-failure")
-    _run_desktop_self_update_updated_exit_smoke(package, root / "updated-exit")
+    _run_desktop_self_update_rollback_smokes(package, root)
 
 
 def _atomic_swap(staging: Path, publish: Path) -> None:
