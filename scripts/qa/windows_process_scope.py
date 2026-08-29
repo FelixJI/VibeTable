@@ -23,6 +23,8 @@ __all__ = [
     "ProcessScopeMember",
     "ProcessScopeQueryError",
     "ProcessScopeSnapshot",
+    "ProcessWorkingSetMember",
+    "ProcessWorkingSetSnapshot",
     "ScopeTerminationResult",
     "ScopeWaitResult",
     "TargetTerminationResult",
@@ -87,6 +89,19 @@ class ProcessScopeSnapshot:
 
 
 @dataclass(frozen=True)
+class ProcessWorkingSetMember:
+    pid: int
+    executable_name: str = "unknown"
+    identity_verified: bool = False
+    working_set_bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class ProcessWorkingSetSnapshot:
+    members: tuple[ProcessWorkingSetMember, ...]
+
+
+@dataclass(frozen=True)
 class TargetTerminationResult:
     status: str
     terminated_pid: int | None = None
@@ -124,17 +139,23 @@ class _RootProcess(Protocol):
     def wait(self, timeout: float | None = None) -> int: ...
 
 
-class _PlatformMemberHandle(Protocol):
+class _PlatformIdentityHandle(Protocol):
     pid: int
     name: str
 
     def belongs_to_scope(self) -> bool: ...
 
+    def close(self) -> None: ...
+
+
+class _PlatformMemberHandle(_PlatformIdentityHandle, Protocol):
     def terminate(self, exit_code: int) -> None: ...
 
     def wait(self, timeout: float) -> bool: ...
 
-    def close(self) -> None: ...
+
+class _PlatformWorkingSetHandle(_PlatformIdentityHandle, Protocol):
+    def working_set_bytes(self) -> int: ...
 
 
 class _PlatformProcessScope(Protocol):
@@ -144,6 +165,8 @@ class _PlatformProcessScope(Protocol):
     def member_pids(self) -> tuple[int, ...]: ...
 
     def open_member(self, pid: int) -> _PlatformMemberHandle | None: ...
+
+    def open_member_for_working_set(self, pid: int) -> _PlatformWorkingSetHandle | None: ...
 
     def terminate_all(self, exit_code: int) -> None: ...
 
@@ -221,6 +244,48 @@ class WindowsProcessScope:
     def snapshot(self) -> ProcessScopeSnapshot:
         with self._operation():
             return self._snapshot()
+
+    def working_set_snapshot(self) -> ProcessWorkingSetSnapshot:
+        """Read identity and Working Set from each Job-owned member handle.
+
+        A missing or reused member remains explicitly unverified. A memory
+        query failure preserves the verified identity but leaves its value
+        absent so the measurement consumer can fail closed for required roles.
+        """
+
+        with self._operation():
+            try:
+                pids = self._platform_scope.member_pids()
+            except OSError as exc:
+                raise ProcessScopeQueryError(f"unable to query Job membership: {exc}") from exc
+            members: list[ProcessWorkingSetMember] = []
+            for pid in pids:
+                handle: _PlatformWorkingSetHandle | None = None
+                try:
+                    handle = self._platform_scope.open_member_for_working_set(pid)
+                    if handle is None or not handle.belongs_to_scope():
+                        members.append(ProcessWorkingSetMember(pid))
+                        continue
+                    try:
+                        working_set_bytes = handle.working_set_bytes()
+                    except OSError:
+                        working_set_bytes = None
+                    if working_set_bytes is not None and working_set_bytes < 0:
+                        working_set_bytes = None
+                    members.append(
+                        ProcessWorkingSetMember(
+                            pid,
+                            handle.name,
+                            True,
+                            working_set_bytes,
+                        )
+                    )
+                except OSError:
+                    members.append(ProcessWorkingSetMember(pid))
+                finally:
+                    if handle is not None:
+                        handle.close()
+            return ProcessWorkingSetSnapshot(tuple(members))
 
     def _snapshot(self) -> ProcessScopeSnapshot:
         try:

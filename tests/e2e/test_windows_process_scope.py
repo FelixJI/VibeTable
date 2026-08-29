@@ -9,6 +9,7 @@ from scripts.qa.windows_process_scope import (
     ProcessScopeClosedError,
     ProcessScopeMember,
     ProcessScopeQueryError,
+    ProcessWorkingSetMember,
     _launch_with_adapter,
 )
 
@@ -36,6 +37,7 @@ class _FakePlatformScope:
         wait_error: OSError | None = None,
         terminate_error: OSError | None = None,
         unavailable_pids: set[int] | None = None,
+        working_sets: dict[int, int | OSError] | None = None,
     ) -> None:
         self.root = _FakeRoot(42)
         self.members = members or {42: "host.exe", 7: "child.exe"}
@@ -46,6 +48,8 @@ class _FakePlatformScope:
         self.wait_error = wait_error
         self.terminate_error = terminate_error
         self.unavailable_pids = unavailable_pids or set()
+        self.working_sets = working_sets or {pid: pid * 1024 for pid in self.members}
+        self.working_set_queries: list[int] = []
 
     def member_pids(self) -> tuple[int, ...]:
         if self.query_error is not None:
@@ -57,6 +61,9 @@ class _FakePlatformScope:
             return None
         name = self.members.get(pid)
         return None if name is None else _FakeMemberHandle(self, pid, name)
+
+    def open_member_for_working_set(self, pid: int):
+        return self.open_member(pid)
 
     def terminate_all(self, exit_code: int) -> None:
         del exit_code
@@ -86,6 +93,13 @@ class _FakeMemberHandle:
 
     def belongs_to_scope(self) -> bool:
         return self.pid not in self.scope.outside_pids
+
+    def working_set_bytes(self) -> int:
+        self.scope.working_set_queries.append(self.pid)
+        value = self.scope.working_sets[self.pid]
+        if isinstance(value, OSError):
+            raise value
+        return value
 
     def terminate(self, exit_code: int) -> None:
         del exit_code
@@ -135,6 +149,35 @@ def test_snapshot_keeps_an_unavailable_member_with_unknown_identity() -> None:
     assert scope.snapshot().members == (
         ProcessScopeMember(42, "host.exe", True),
         ProcessScopeMember(7),
+    )
+
+
+def test_working_set_snapshot_reads_memory_only_from_verified_member_handles() -> None:
+    platform = _FakePlatformScope(
+        {42: "host.exe", 7: "child.exe", 8: "outside.exe"},
+        outside_pids={8},
+        working_sets={42: 4096, 7: 2048, 8: 8192},
+    )
+    scope = _launch_with_adapter(ProcessLaunchSpec(("host.exe",)), _FakeAdapter(platform))
+
+    assert scope.working_set_snapshot().members == (
+        ProcessWorkingSetMember(42, "host.exe", True, 4096),
+        ProcessWorkingSetMember(7, "child.exe", True, 2048),
+        ProcessWorkingSetMember(8),
+    )
+    assert platform.working_set_queries == [42, 7]
+
+
+def test_working_set_snapshot_preserves_verified_identity_when_memory_query_fails() -> None:
+    platform = _FakePlatformScope(
+        {42: "host.exe", 7: "child.exe"},
+        working_sets={42: 4096, 7: OSError("memory query denied")},
+    )
+    scope = _launch_with_adapter(ProcessLaunchSpec(("host.exe",)), _FakeAdapter(platform))
+
+    assert scope.working_set_snapshot().members == (
+        ProcessWorkingSetMember(42, "host.exe", True, 4096),
+        ProcessWorkingSetMember(7, "child.exe", True, None),
     )
 
 

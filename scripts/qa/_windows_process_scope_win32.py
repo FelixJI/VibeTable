@@ -27,6 +27,8 @@ PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
 
 PROCESS_TERMINATE = 0x0001
+PROCESS_VM_READ = 0x0010
+PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SYNCHRONIZE = 0x00100000
 DUPLICATE_SAME_ACCESS = 0x00000002
@@ -122,6 +124,21 @@ class JobObjectExtendedLimitInformation(ctypes.Structure):
     ]
 
 
+class ProcessMemoryCounters(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("PageFaultCount", wintypes.DWORD),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    ]
+
+
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
 kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -185,6 +202,12 @@ kernel32.DuplicateHandle.argtypes = [
     wintypes.BOOL,
     wintypes.DWORD,
 ]
+kernel32.K32GetProcessMemoryInfo.argtypes = [
+    wintypes.HANDLE,
+    ctypes.POINTER(ProcessMemoryCounters),
+    wintypes.DWORD,
+]
+kernel32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
 kernel32.DuplicateHandle.restype = wintypes.BOOL
 kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
 kernel32.GetStdHandle.restype = wintypes.HANDLE
@@ -327,6 +350,19 @@ class _Win32MemberHandle:
         )
         return bool(belongs.value)
 
+    def working_set_bytes(self) -> int:
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        _check(
+            kernel32.K32GetProcessMemoryInfo(
+                self._process.value,
+                ctypes.byref(counters),
+                counters.cb,
+            ),
+            f"K32GetProcessMemoryInfo({self.pid})",
+        )
+        return int(counters.WorkingSetSize)
+
     def terminate(self, exit_code: int) -> None:
         if int(kernel32.WaitForSingleObject(self._process.value, 0)) == WAIT_OBJECT_0:
             return
@@ -458,8 +494,7 @@ class _Win32PlatformScope:
     def member_pids(self) -> tuple[int, ...]:
         return _query_job_member_pids(self._job.value)
 
-    def open_member(self, pid: int) -> _Win32MemberHandle | None:
-        access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+    def _open_member(self, pid: int, *, access: int) -> _Win32MemberHandle | None:
         handle = kernel32.OpenProcess(access, False, pid)
         if not handle:
             error = ctypes.get_last_error()
@@ -484,6 +519,14 @@ class _Win32PlatformScope:
         except BaseException:
             process.close()
             raise
+
+    def open_member(self, pid: int) -> _Win32MemberHandle | None:
+        access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+        return self._open_member(pid, access=access)
+
+    def open_member_for_working_set(self, pid: int) -> _Win32MemberHandle | None:
+        access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE
+        return self._open_member(pid, access=access)
 
     def terminate_all(self, exit_code: int) -> None:
         _check(kernel32.TerminateJobObject(self._job.value, exit_code), "TerminateJobObject")
