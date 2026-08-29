@@ -326,6 +326,21 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
     }
 
     [TestMethod]
+    public void InitializedActivityWithoutTransientSettingsDoesNotRequireRecovery()
+    {
+        using var fixture = new ReplicaFixture(removeActivity: false);
+        File.Delete(Path.Combine(
+            fixture.Workspace.ActivityRoot!,
+            ".vibetable",
+            "settings.json"));
+
+        bool requiresRecovery = fixture.Service.RequiresRecovery(
+            fixture.Workspace);
+
+        Assert.IsFalse(requiresRecovery);
+    }
+
+    [TestMethod]
     public void ReceiptRejectsExtraPropertiesAndNonAuthenticatedHashShape()
     {
         Guid workspaceId = Guid.NewGuid();

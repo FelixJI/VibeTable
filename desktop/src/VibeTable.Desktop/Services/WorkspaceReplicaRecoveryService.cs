@@ -378,6 +378,9 @@ public sealed class WorkspaceReplicaRecoveryService :
     private static bool HasRecoveredLayout(string root)
     {
         WorkspacePaths paths = WorkspaceLayout.Paths(root);
+        // Workspace settings are applied into workspace-v2.db. The
+        // settings.json object is recovery input, not a durable live-layout
+        // file, so a freshly initialized healthy replica does not contain it.
         return Directory.Exists(paths.Data) &&
             Directory.Exists(paths.Topology) &&
             Directory.Exists(paths.Objects) &&
@@ -386,10 +389,6 @@ public sealed class WorkspaceReplicaRecoveryService :
             Directory.Exists(paths.Coordination) &&
             Directory.Exists(paths.Files) &&
             File.Exists(Path.Combine(paths.Data, "data.db")) &&
-            File.Exists(Path.Combine(
-                root,
-                WorkspaceLayout.MetadataDirectoryName,
-                "settings.json")) &&
             File.Exists(Path.Combine(
                 paths.Coordination,
                 "write-coordinator.db"));

@@ -654,13 +654,13 @@ func installReplicaRecovery(
 	}()
 	metadata := filepath.Join(activityRoot, ".vibetable")
 	directories := []string{
+		filepath.Join(activityRoot, "files"),
 		dataDir,
 		filepath.Join(metadata, "topology"),
 		filepath.Join(metadata, "objects"),
 		filepath.Join(metadata, "audit"),
 		filepath.Join(metadata, "snapshots"),
 		filepath.Join(metadata, "coordination"),
-		filepath.Join(metadata, "files"),
 		filepath.Join(metadata, "quarantine"),
 		filepath.Join(metadata, "temp"),
 	}
@@ -872,9 +872,10 @@ func installReplicaDatabaseAndFilesWithContext(
 		root.Files == nil {
 		return errors.New("replica.file_state_invalid")
 	}
+	filesRoot := filepath.Join(filepath.Dir(metadata), "files")
 	for relative, id := range root.Files {
 		target, err := replicaRecoveryTarget(
-			filepath.Join(metadata, "files"),
+			filesRoot,
 			relative,
 		)
 		if err != nil {

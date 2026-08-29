@@ -352,7 +352,12 @@ func TestInstallReplicaDatabaseAndFilesMaterializesOnlyBoundPaths(t *testing.T) 
 		t.Fatal(err)
 	}
 	recovered, err := os.ReadFile(
-		filepath.Join(metadata, "files", "nested", "document.txt"),
+		filepath.Join(
+			filepath.Dir(metadata),
+			"files",
+			"nested",
+			"document.txt",
+		),
 	)
 	if err != nil || string(recovered) != string(file) {
 		t.Fatalf("recovered file=%q err=%v", recovered, err)
@@ -365,6 +370,9 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 	}
 	ctx := context.Background()
 	activity := createWorkspace(t, testWorkspaceID)
+	if err := os.Mkdir(filepath.Join(activity, "files"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	setReplicaOneShotManifestMirrored(t, activity)
 	dataDir := filepath.Join(activity, ".vibetable", "data")
 
@@ -609,7 +617,6 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 		"audit",
 		"snapshots",
 		"coordination",
-		"files",
 	} {
 		info, err := os.Stat(
 			filepath.Join(recoveredRoot, ".vibetable", relative),
@@ -617,6 +624,9 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 		if err != nil || !info.IsDir() {
 			t.Fatalf("recovered %s info=%#v err=%v", relative, info, err)
 		}
+	}
+	if info, err := os.Stat(filepath.Join(recoveredRoot, "files")); err != nil || !info.IsDir() {
+		t.Fatalf("recovered files info=%#v err=%v", info, err)
 	}
 	catalog, err := snapshot.OpenDurableCatalog(
 		filepath.Join(
@@ -740,6 +750,21 @@ func TestReplicaOneShotInitializesAfterRepositoryOnboarding(t *testing.T) {
 	}
 	if receipt.Operation != "initialize" || receipt.Healthy == nil || !*receipt.Healthy {
 		t.Fatalf("unexpected replica receipt: %#v", receipt)
+	}
+	for _, required := range []string{
+		filepath.Join(activity, "files"),
+		filepath.Join(activity, ".vibetable", "data"),
+		filepath.Join(activity, ".vibetable", "topology"),
+		filepath.Join(activity, ".vibetable", "objects"),
+		filepath.Join(activity, ".vibetable", "audit"),
+		filepath.Join(activity, ".vibetable", "snapshots"),
+		filepath.Join(activity, ".vibetable", "coordination"),
+		filepath.Join(activity, ".vibetable", "data", "data.db"),
+		filepath.Join(activity, ".vibetable", "coordination", "write-coordinator.db"),
+	} {
+		if _, err := os.Stat(required); err != nil {
+			t.Fatalf("initialized replica activity layout missing %s: %v", required, err)
+		}
 	}
 }
 
