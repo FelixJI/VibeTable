@@ -119,6 +119,136 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
     }
 
     [TestMethod]
+    public async Task RecoverPublishesDetachedAuthorityIntoVerifiedStagingOnly()
+    {
+        using var fixture = new ReplicaFixture(removeActivity: true);
+        var authority = new WorkspaceRepositoryRecoveryAuthority(
+            fixture.Workspace.WorkspaceId,
+            7,
+            Guid.NewGuid());
+        string? publishedRoot = null;
+        fixture.Runner.Handler = start =>
+        {
+            string staging = start.Environment["VIBETABLE_ACTIVITY_ROOT"]!;
+            Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
+            CreateRecoveredLayout(fixture.Workspace.SelectedRoot, staging);
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                staging,
+                "restored");
+        };
+        var service = new WorkspaceReplicaRecoveryService(
+            fixture.Options,
+            _ => throw new AssertFailedException(
+                "Recovery must not persist onboarding authority into the final target."),
+            workspace =>
+            {
+                Assert.AreEqual(fixture.Workspace.ActivityRoot, workspace.ActivityRoot);
+                Assert.IsFalse(Directory.Exists(workspace.ActivityRoot));
+                return authority;
+            },
+            (workspace, staging, prepared) =>
+            {
+                Assert.AreEqual(fixture.Workspace.WorkspaceId, workspace.WorkspaceId);
+                publishedRoot = staging;
+                Assert.AreSame(authority, prepared);
+                Assert.AreNotEqual(
+                    Path.GetFullPath(fixture.Workspace.ActivityRoot!),
+                    Path.GetFullPath(publishedRoot!));
+                Assert.IsTrue(Directory.Exists(
+                    WorkspaceLayout.Paths(publishedRoot!).Data));
+                File.WriteAllText(
+                    Path.Combine(
+                        WorkspaceLayout.Paths(publishedRoot!).Coordination,
+                        "desktop-runtime-authority.json"),
+                    "published");
+            },
+            fixture.Runner);
+
+        _ = await service.RecoverAndPublishAsync(
+            fixture.Workspace,
+            CancellationToken.None);
+
+        Assert.IsNotNull(publishedRoot);
+        Assert.AreEqual(
+            authority.FenceEpoch.ToString(),
+            fixture.Runner.StartInfo!.Environment[
+                "VIBETABLE_WORKSPACE_FENCE_EPOCH"]);
+        Assert.AreEqual(
+            authority.ClaimId.ToString("D").ToLowerInvariant(),
+            fixture.Runner.StartInfo.Environment[
+                "VIBETABLE_WORKSPACE_CLAIM_ID"]);
+        Assert.IsTrue(File.Exists(Path.Combine(
+            WorkspaceLayout.Paths(fixture.Workspace.ActivityRoot!).Coordination,
+            "desktop-runtime-authority.json")));
+    }
+
+    [TestMethod]
+    public async Task RecoveryRejectsAuthorityBoundToAnotherWorkspaceBeforeSidecar()
+    {
+        using var fixture = new ReplicaFixture(removeActivity: true);
+        var service = new WorkspaceReplicaRecoveryService(
+            fixture.Options,
+            _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+            _ => new WorkspaceRepositoryRecoveryAuthority(
+                Guid.NewGuid(),
+                1,
+                Guid.NewGuid()),
+            NoopRecoveryAuthorityPublisher,
+            fixture.Runner);
+
+        WorkspaceRegistryException error =
+            await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(() =>
+                service.RecoverAndPublishAsync(
+                    fixture.Workspace,
+                    CancellationToken.None));
+
+        Assert.AreEqual("workspace.authority_invalid", error.Code);
+        Assert.IsNull(fixture.Runner.StartInfo);
+        Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
+    }
+
+    [TestMethod]
+    public async Task AuthorityPublishFailureRemovesOwnedStagingWithoutFinalTarget()
+    {
+        using var fixture = new ReplicaFixture(removeActivity: true);
+        fixture.Runner.Handler = start =>
+        {
+            string staging = start.Environment["VIBETABLE_ACTIVITY_ROOT"]!;
+            CreateRecoveredLayout(fixture.Workspace.SelectedRoot, staging);
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                staging,
+                "restored");
+        };
+        var service = new WorkspaceReplicaRecoveryService(
+            fixture.Options,
+            _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+            RecoveryAuthority,
+            (_, _, _) => throw new WorkspaceRegistryException(
+                "workspace.authority_conflict",
+                "Simulated competing authority publication."),
+            fixture.Runner);
+
+        WorkspaceRegistryException error =
+            await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(() =>
+                service.RecoverAndPublishAsync(
+                    fixture.Workspace,
+                    CancellationToken.None));
+
+        Assert.AreEqual("workspace.authority_conflict", error.Code);
+        Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
+        Assert.AreEqual(
+            0,
+            Directory.GetDirectories(
+                fixture.Root,
+                ".activity.vibetable-recovering-*",
+                SearchOption.TopDirectoryOnly).Length);
+    }
+
+    [TestMethod]
     public async Task InvalidReceiptDoesNotPublishOrModifySelectedRoot()
     {
         using var fixture = new ReplicaFixture(removeActivity: true);
@@ -248,6 +378,8 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             () => fixture.OptionsWithStartup(
                 TimeSpan.FromMilliseconds(1)),
             _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+            RecoveryAuthority,
+            NoopRecoveryAuthorityPublisher,
             fixture.Runner,
             replicaOperationTimeout: TimeSpan.FromSeconds(2));
 
@@ -287,6 +419,8 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             () => fixture.OptionsWithStartup(
                 TimeSpan.FromMilliseconds(1)),
             _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+            RecoveryAuthority,
+            NoopRecoveryAuthorityPublisher,
             fixture.Runner,
             replicaOperationTimeout: TimeSpan.FromSeconds(2));
         using var caller = new CancellationTokenSource(
@@ -519,6 +653,8 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             Service = new WorkspaceReplicaRecoveryService(
                 Options,
                 _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+                RecoveryAuthority,
+                NoopRecoveryAuthorityPublisher,
                 Runner);
         }
 
@@ -532,19 +668,19 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
 
         public PocketBaseLaunchOptions OptionsWithStartup(
             TimeSpan startupTimeout) => new()
-        {
-            ExecutablePath = Path.Combine(Root, "sidecar.exe"),
-            WorkingDirectory = Root,
-            DataDirectory = Path.Combine(Root, "unused"),
-            LogPath = Path.Combine(Root, "unused.log"),
-            StartupTimeout = startupTimeout,
-            StopTimeout = TimeSpan.FromSeconds(1),
-            HealthPollInterval = TimeSpan.FromMilliseconds(10),
-            CrashRestartLimit = 0,
-            CrashRestartInitialDelay = TimeSpan.Zero,
-            CrashRestartMaximumDelay = TimeSpan.Zero,
-            Environment = new Dictionary<string, string>(),
-        };
+            {
+                ExecutablePath = Path.Combine(Root, "sidecar.exe"),
+                WorkingDirectory = Root,
+                DataDirectory = Path.Combine(Root, "unused"),
+                LogPath = Path.Combine(Root, "unused.log"),
+                StartupTimeout = startupTimeout,
+                StopTimeout = TimeSpan.FromSeconds(1),
+                HealthPollInterval = TimeSpan.FromMilliseconds(10),
+                CrashRestartLimit = 0,
+                CrashRestartInitialDelay = TimeSpan.Zero,
+                CrashRestartMaximumDelay = TimeSpan.Zero,
+                Environment = new Dictionary<string, string>(),
+            };
 
         public void Dispose()
         {
@@ -560,6 +696,21 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         }
     }
 
+    private static WorkspaceRepositoryRecoveryAuthority RecoveryAuthority(
+        WorkspaceRegistryEntryV2 workspace)
+        => new(workspace.WorkspaceId, 1, Guid.NewGuid());
+
+    private static void NoopRecoveryAuthorityPublisher(
+        WorkspaceRegistryEntryV2 workspace,
+        string stagingRoot,
+        WorkspaceRepositoryRecoveryAuthority authority)
+    {
+        Assert.AreEqual(workspace.WorkspaceId, authority.WorkspaceId);
+        Assert.AreNotEqual(
+            Path.GetFullPath(workspace.ActivityRoot!),
+            Path.GetFullPath(stagingRoot));
+    }
+
     private sealed class FakeRunner : ITrustedSidecarProcessRunner
     {
         public Func<ProcessStartInfo, TrustedSidecarProcessResult>? Handler
@@ -570,7 +721,8 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         public Func<
             ProcessStartInfo,
             CancellationToken,
-            Task<TrustedSidecarProcessResult>>? AsyncHandler { get; set; }
+            Task<TrustedSidecarProcessResult>>? AsyncHandler
+        { get; set; }
         public ProcessStartInfo? StartInfo { get; private set; }
         public string? StandardInput { get; private set; }
 

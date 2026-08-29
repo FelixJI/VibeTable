@@ -134,6 +134,80 @@ public sealed class ProductionWorkspaceRuntimeTests
     }
 
     [TestMethod]
+    public async Task DetachedRecoveryAuthorityDoesNotPopulateFinalTargetBeforePublish()
+    {
+        string container = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-detached-authority-" + Guid.NewGuid().ToString("N"));
+        string selectedRoot = Path.Combine(container, "replica");
+        string activityRoot = Path.Combine(container, "activity");
+        WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+            selectedRoot,
+            "Detached authority",
+            WorkspaceStorageMode.Mirrored,
+            WorkspaceEncryptionMode.Convenient,
+            activityRoot);
+        var entry = new WorkspaceRegistryEntryV2
+        {
+            ContractVersion = WorkspaceV2Json.ContractVersion,
+            WorkspaceId = layout.Manifest.WorkspaceId,
+            DisplayName = layout.Manifest.DisplayName,
+            SelectedRoot = selectedRoot,
+            ActivityRoot = activityRoot,
+            StorageKind = WorkspaceStorageKind.Fixed,
+            CoordinationStrength = WorkspaceCoordinationStrength.Advisory,
+            LastOpenedAt = null,
+            LastKnownHealth = WorkspaceHealth.Offline,
+            LastSnapshotAt = null,
+            LastSyncAt = null,
+            PendingSync = false,
+        };
+        string staging = Path.Combine(container, ".activity.recovering");
+        Directory.Move(activityRoot, staging);
+        try
+        {
+            await using var factory = Factory();
+            await using var competitor = Factory();
+
+            WorkspaceRepositoryRecoveryAuthority authority =
+                factory.PrepareRepositoryRecovery(entry);
+            WorkspaceRepositoryRecoveryAuthority competingAuthority =
+                competitor.PrepareRepositoryRecovery(entry);
+
+            Assert.IsFalse(Directory.Exists(activityRoot));
+            Assert.AreNotEqual(authority.ClaimId, competingAuthority.ClaimId);
+            WorkspacePaths paths = WorkspaceLayout.Paths(staging);
+            File.WriteAllBytes(
+                Path.Combine(paths.Coordination, "write-coordinator.db"),
+                [0x56, 0x54]);
+            factory.PublishRepositoryRecoveryAuthority(
+                entry,
+                staging,
+                authority);
+            WorkspaceRegistryException conflict =
+                Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                    competitor.PublishRepositoryRecoveryAuthority(
+                        entry,
+                        staging,
+                        competingAuthority));
+            Assert.AreEqual("workspace.authority_conflict", conflict.Code);
+            Assert.IsTrue(File.Exists(Path.Combine(
+                paths.Coordination,
+                "desktop-runtime-authority.json")));
+            Directory.Move(staging, activityRoot);
+
+            WorkspaceRepositoryAuthority reopened =
+                factory.PrepareRepositoryOnboarding(entry);
+            Assert.AreEqual(authority.FenceEpoch, reopened.FenceEpoch);
+            Assert.AreEqual(authority.ClaimId, reopened.ClaimId);
+        }
+        finally
+        {
+            TryDelete(container);
+        }
+    }
+
+    [TestMethod]
     public async Task AuthoritySurvivesFactoryRestartAndEpochAdvances()
     {
         string root = CreateRoot();

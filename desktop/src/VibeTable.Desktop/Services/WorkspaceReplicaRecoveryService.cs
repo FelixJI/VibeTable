@@ -22,6 +22,11 @@ public sealed record WorkspaceReplicaReceipt(
     ulong MutationRevision = 0,
     ulong RequiredMutationRevision = 0);
 
+public sealed record WorkspaceRepositoryRecoveryAuthority(
+    Guid WorkspaceId,
+    ulong FenceEpoch,
+    Guid ClaimId);
+
 public interface IWorkspaceReplicaRecoveryService
 {
     Task<WorkspaceReplicaReceipt> InitializeAsync(
@@ -57,6 +62,11 @@ public sealed class WorkspaceReplicaRecoveryService :
     private readonly Func<PocketBaseLaunchOptions> _optionsFactory;
     private readonly Func<WorkspaceRegistryEntryV2, WorkspaceRepositoryAuthority>
         _authorityFactory;
+    private readonly Func<WorkspaceRegistryEntryV2, WorkspaceRepositoryRecoveryAuthority>
+        _recoveryAuthorityFactory;
+    private readonly Action<WorkspaceRegistryEntryV2, string,
+        WorkspaceRepositoryRecoveryAuthority>
+        _recoveryAuthorityPublisher;
     private readonly ITrustedSidecarProcessRunner _runner;
     private readonly TimeSpan _replicaOperationTimeout;
 
@@ -64,6 +74,10 @@ public sealed class WorkspaceReplicaRecoveryService :
         Func<PocketBaseLaunchOptions> optionsFactory,
         Func<WorkspaceRegistryEntryV2, WorkspaceRepositoryAuthority>
             authorityFactory,
+        Func<WorkspaceRegistryEntryV2, WorkspaceRepositoryRecoveryAuthority>
+            recoveryAuthorityFactory,
+        Action<WorkspaceRegistryEntryV2, string,
+            WorkspaceRepositoryRecoveryAuthority> recoveryAuthorityPublisher,
         ITrustedSidecarProcessRunner? runner = null,
         TimeSpan? replicaOperationTimeout = null)
     {
@@ -71,6 +85,10 @@ public sealed class WorkspaceReplicaRecoveryService :
             ?? throw new ArgumentNullException(nameof(optionsFactory));
         _authorityFactory = authorityFactory
             ?? throw new ArgumentNullException(nameof(authorityFactory));
+        _recoveryAuthorityFactory = recoveryAuthorityFactory
+            ?? throw new ArgumentNullException(nameof(recoveryAuthorityFactory));
+        _recoveryAuthorityPublisher = recoveryAuthorityPublisher
+            ?? throw new ArgumentNullException(nameof(recoveryAuthorityPublisher));
         _runner = runner ?? new TrustedSidecarProcessRunner();
         _replicaOperationTimeout =
             replicaOperationTimeout ?? DefaultReplicaOperationTimeout;
@@ -121,6 +139,18 @@ public sealed class WorkspaceReplicaRecoveryService :
             Guid.NewGuid().ToString("N"));
         if (Directory.Exists(staging) || File.Exists(staging))
             throw RecoveryTargetInvalid();
+        WorkspaceRepositoryRecoveryAuthority authority =
+            _recoveryAuthorityFactory(workspace);
+        if (authority.WorkspaceId != workspace.WorkspaceId
+            || authority.FenceEpoch == 0
+            || authority.ClaimId == Guid.Empty)
+            throw new WorkspaceRegistryException(
+                "workspace.authority_invalid",
+                "Prepared workspace recovery authority is invalid.");
+        // A recovery authority is intentionally detached from the missing
+        // final activity root. Persisting it there would make the target
+        // non-empty before the verified staging tree can be atomically moved.
+        EnsureEmptyOrMissing(finalRoot);
 
         try
         {
@@ -129,7 +159,10 @@ public sealed class WorkspaceReplicaRecoveryService :
                 "--recover-workspace-replica",
                 "recover",
                 staging,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                new WorkspaceRepositoryAuthority(
+                    authority.FenceEpoch,
+                    authority.ClaimId)).ConfigureAwait(false);
             if (!string.Equals(
                     Path.GetFullPath(receipt.ActivityRoot
                         ?? throw InvalidOutput()),
@@ -144,6 +177,10 @@ public sealed class WorkspaceReplicaRecoveryService :
                     "workspace.identity_mismatch",
                     "Recovered activity root does not match the mirrored workspace.");
             EnsureRecoveredLayout(staging);
+            _recoveryAuthorityPublisher(
+                workspace,
+                staging,
+                authority);
 
             if (Directory.Exists(finalRoot))
             {
@@ -191,11 +228,13 @@ public sealed class WorkspaceReplicaRecoveryService :
         string flag,
         string operation,
         string? activityRoot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkspaceRepositoryAuthority? preparedAuthority = null)
     {
         RequireMirrored(workspace);
         PocketBaseLaunchOptions options = _optionsFactory();
-        WorkspaceRepositoryAuthority authority = _authorityFactory(workspace);
+        WorkspaceRepositoryAuthority authority =
+            preparedAuthority ?? _authorityFactory(workspace);
         ProcessStartInfo start =
             WorkspaceRepositoryOnboardingService.CreateStartInfo(
                 options,

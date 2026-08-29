@@ -126,6 +126,37 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             authority.ClaimId);
     }
 
+    internal WorkspaceRepositoryRecoveryAuthority PrepareRepositoryRecovery(
+        WorkspaceRegistryEntryV2 workspace)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        DesktopWorkspaceAuthority authority =
+            _authority.PrepareDetached(workspace);
+        return new WorkspaceRepositoryRecoveryAuthority(
+            authority.WorkspaceId,
+            authority.FenceEpoch,
+            authority.ClaimId);
+    }
+
+    internal void PublishRepositoryRecoveryAuthority(
+        WorkspaceRegistryEntryV2 workspace,
+        string stagingRoot,
+        WorkspaceRepositoryRecoveryAuthority authority)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
+        ArgumentNullException.ThrowIfNull(authority);
+        if (authority.WorkspaceId != workspace.WorkspaceId)
+            throw new WorkspaceRegistryException(
+                "workspace.authority_invalid",
+                "Prepared workspace recovery authority does not match the workspace.");
+        _authority.PublishPrepared(
+            workspace with { ActivityRoot = Path.GetFullPath(stagingRoot) },
+            authority.WorkspaceId,
+            authority.FenceEpoch,
+            authority.ClaimId);
+    }
+
     public IWorkspaceRuntime Create(
         WorkspaceRegistryEntryV2 workspace,
         ulong sessionEpoch)
@@ -606,6 +637,89 @@ internal sealed class DesktopWorkspaceAuthorityStore
         }
     }
 
+    public DesktopWorkspaceAuthority PrepareDetached(
+        WorkspaceRegistryEntryV2 workspace)
+    {
+        lock (_gate)
+        {
+            DesktopWorkspaceAuthority? current = TryRead(workspace);
+            if (current is not null)
+                return current;
+            string coordinator = Path.Combine(
+                WorkspaceLayout.Paths(
+                    ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace))
+                    .Coordination,
+                "write-coordinator.db");
+            if (File.Exists(coordinator))
+                throw new WorkspaceRegistryException(
+                    "workspace.authority_missing",
+                    "Workspace authority metadata is missing for an existing coordinator.");
+            return new DesktopWorkspaceAuthority(
+                FormatVersion,
+                workspace.WorkspaceId,
+                1,
+                Guid.NewGuid(),
+                0);
+        }
+    }
+
+    public void PublishPrepared(
+        WorkspaceRegistryEntryV2 workspace,
+        Guid workspaceId,
+        ulong fenceEpoch,
+        Guid claimId)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        lock (_gate)
+        {
+            if (workspaceId != workspace.WorkspaceId
+                || fenceEpoch == 0
+                || claimId == Guid.Empty)
+                throw new WorkspaceRegistryException(
+                    "workspace.authority_invalid",
+                    "Prepared workspace authority metadata is invalid.");
+            string root =
+                ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace);
+            WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(root);
+            if (manifest.WorkspaceId != workspaceId
+                || manifest.StorageMode != WorkspaceStorageMode.Mirrored)
+                throw new WorkspaceRegistryException(
+                    "workspace.identity_mismatch",
+                    "Recovered activity root does not match the mirrored workspace.");
+            string authorityPath = PathFor(workspace);
+            if (File.Exists(authorityPath))
+                throw new WorkspaceRegistryException(
+                    "workspace.authority_conflict",
+                    "Workspace authority metadata already exists.");
+            string coordinator = Path.Combine(
+                WorkspaceLayout.Paths(root).Coordination,
+                "write-coordinator.db");
+            if (!File.Exists(coordinator))
+                throw new WorkspaceRegistryException(
+                    "workspace.authority_publish_unready",
+                    "Recovered workspace coordinator is unavailable.");
+            try
+            {
+                Write(
+                    workspace,
+                    new DesktopWorkspaceAuthority(
+                        FormatVersion,
+                        workspace.WorkspaceId,
+                        fenceEpoch,
+                        claimId,
+                        0),
+                    overwrite: false);
+            }
+            catch (IOException exception) when (File.Exists(authorityPath))
+            {
+                throw new WorkspaceRegistryException(
+                    "workspace.authority_conflict",
+                    "Workspace authority metadata already exists.",
+                    exception);
+            }
+        }
+    }
+
     public DesktopWorkspaceAuthority Reserve(
         WorkspaceRegistryEntryV2 workspace,
         ulong sessionEpoch)
@@ -686,7 +800,8 @@ internal sealed class DesktopWorkspaceAuthorityStore
 
     private static void Write(
         WorkspaceRegistryEntryV2 workspace,
-        DesktopWorkspaceAuthority authority)
+        DesktopWorkspaceAuthority authority,
+        bool overwrite = true)
     {
         string path = PathFor(workspace);
         string directory = Path.GetDirectoryName(path)!;
@@ -710,7 +825,7 @@ internal sealed class DesktopWorkspaceAuthorityStore
                     WorkspaceV2Json.StrictOptions);
                 stream.Flush(flushToDisk: true);
             }
-            File.Move(temporary, path, overwrite: true);
+            File.Move(temporary, path, overwrite);
         }
         finally
         {
