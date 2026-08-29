@@ -12,12 +12,13 @@ import ctypes
 import json
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
-from scripts.qa.windows_process_scope import WindowsProcessScope
+from scripts.qa.windows_process_scope import ProcessWorkingSetSnapshot, WindowsProcessScope
 from tests.e2e import product_e2e_runner as product_runner
 from tests.e2e.windows_tcp_listener_owner import WindowsTcpListenerOwnerLease
 
@@ -28,6 +29,118 @@ OPEN_WORKSPACE_CONTROL_FILE = "host-open-workspace.request"
 HOST_STATE_FILE = "host-lifecycle-state.json"
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 STARTUP_MIGRATION_FAULT_ENVIRONMENT = "VIBETABLE_E2E_STARTUP_MIGRATION_FAULT_FILE"
+
+
+class WorkspaceOpenEvidence(TypedDict):
+    workspaceId: str | None
+    sessionEpoch: int | None
+    sessionState: str | None
+    openOutcome: Literal["opened-writable", "rejected-before-open"]
+    writableSessionPublished: bool
+
+
+class WorkspaceProcessEvidence(TypedDict):
+    pid: int
+    name: str
+
+
+class WorkspaceLifecycleEvidence(TypedDict):
+    normalExitRequested: bool
+    hostExitCode: int | None
+    membersAfterExit: tuple[WorkspaceProcessEvidence, ...]
+    portsReleased: bool
+    ownerLeaseStableHandleClosed: bool | None
+    errors: tuple[str, ...]
+    status: Literal["passed", "failed"]
+
+
+def _copy_workspace_lifecycle_evidence(
+    lifecycle: WorkspaceLifecycleEvidence,
+) -> WorkspaceLifecycleEvidence:
+    return {
+        **lifecycle,
+        "membersAfterExit": tuple(member.copy() for member in lifecycle["membersAfterExit"]),
+        "errors": tuple(lifecycle["errors"]),
+    }
+
+
+class OpenedPackagedWorkspace:
+    """A verified live workspace without exposing process lifecycle controls."""
+
+    __slots__ = ("_cdp_url", "_lifecycle", "_snapshot", "_workspace_evidence")
+
+    def __init__(
+        self,
+        *,
+        cdp_url: str,
+        workspace_evidence: WorkspaceOpenEvidence,
+        snapshot: Callable[[], ProcessWorkingSetSnapshot],
+    ) -> None:
+        self._cdp_url = cdp_url
+        self._workspace_evidence = workspace_evidence.copy()
+        self._snapshot = snapshot
+        self._lifecycle: WorkspaceLifecycleEvidence | None = None
+
+    @property
+    def cdp_url(self) -> str:
+        return self._cdp_url
+
+    @property
+    def workspace_evidence(self) -> WorkspaceOpenEvidence:
+        return self._workspace_evidence.copy()
+
+    def working_set_snapshot(self) -> ProcessWorkingSetSnapshot:
+        return self._snapshot()
+
+    @property
+    def lifecycle(self) -> WorkspaceLifecycleEvidence:
+        if self._lifecycle is None:
+            raise RuntimeError("packaged workspace lifecycle is not complete")
+        return _copy_workspace_lifecycle_evidence(self._lifecycle)
+
+    def _complete_lifecycle(self, lifecycle: WorkspaceLifecycleEvidence) -> None:
+        self._lifecycle = _copy_workspace_lifecycle_evidence(lifecycle)
+
+
+class PackagedWorkspaceLifecycleError(RuntimeError):
+    """Expose failed normal-exit evidence without weakening the live-session seam."""
+
+    def __init__(self, session: OpenedPackagedWorkspace) -> None:
+        super().__init__("packaged workspace normal exit failed")
+        self.session = session
+
+
+@dataclass
+class _ManagedPackagedWorkspace:
+    cdp_url: str
+    workspace_evidence: WorkspaceOpenEvidence
+    scope: WindowsProcessScope = field(repr=False)
+    readiness: dict[str, Any] = field(repr=False)
+    opened: dict[str, Any] = field(repr=False)
+    startup_fault_consumed: bool
+    lifecycle: dict[str, Any] | None = field(default=None, repr=False)
+
+
+class _ManagedWorkspaceLifecycleError(RuntimeError):
+    def __init__(self, workspace: _ManagedPackagedWorkspace) -> None:
+        super().__init__("managed packaged workspace normal exit failed")
+        self.workspace = workspace
+
+    def add_note(self, note: str) -> None:
+        super().add_note(note)
+        lifecycle = self.workspace.lifecycle
+        if lifecycle is None:
+            return
+        errors = lifecycle.setdefault("errors", [])
+        if isinstance(errors, list) and note not in errors:
+            errors.append(note)
+        lifecycle["status"] = "failed"
+
+
+def _completed_lifecycle(workspace: _ManagedPackagedWorkspace) -> dict[str, Any]:
+    if workspace.lifecycle is None:
+        raise RuntimeError("managed packaged workspace lifecycle is not complete")
+    return workspace.lifecycle
 
 
 def _layout(package_root: Path) -> dict[str, Any]:
@@ -326,7 +439,7 @@ def workspace_open_evidence(
     observed: dict[str, Any],
     *,
     expect_open_failure: bool,
-) -> dict[str, Any]:
+) -> WorkspaceOpenEvidence:
     """Validate and normalize the packaged Host's observed session state."""
 
     workspace_id = observed.get("workspaceId")
@@ -336,6 +449,7 @@ def workspace_open_evidence(
         value is not None for value in (workspace_id, session_epoch, session_state)
     )
     writable_session_published = session_state == "openedWritable"
+    open_outcome: Literal["opened-writable", "rejected-before-open"]
     if expect_open_failure:
         assert not session_published, (
             f"faulted packaged Host published a workspace session: {observed!r}"
@@ -357,17 +471,47 @@ def workspace_open_evidence(
     }
 
 
-def open_workspace_with_packaged_host(
+def _workspace_lifecycle_evidence(lifecycle: dict[str, Any]) -> WorkspaceLifecycleEvidence:
+    members: list[WorkspaceProcessEvidence] = []
+    for member in lifecycle.get("membersAfterExit", []):
+        assert isinstance(member, dict), lifecycle
+        pid = member.get("pid")
+        assert isinstance(pid, int), lifecycle
+        members.append({"pid": pid, "name": str(member.get("name", "unknown"))})
+    owner_cleanup = lifecycle.get("ownerLeaseCleanup")
+    stable_handle_closed = (
+        owner_cleanup.get("stableHandleClosed") if isinstance(owner_cleanup, dict) else None
+    )
+    assert stable_handle_closed is None or isinstance(stable_handle_closed, bool), lifecycle
+    status = lifecycle.get("status")
+    assert status in ("passed", "failed"), lifecycle
+    return {
+        "normalExitRequested": lifecycle.get("normalExitRequested") is True,
+        "hostExitCode": (
+            lifecycle.get("hostExitCode")
+            if isinstance(lifecycle.get("hostExitCode"), int)
+            else None
+        ),
+        "membersAfterExit": tuple(members),
+        "portsReleased": lifecycle.get("portsReleased") is True,
+        "ownerLeaseStableHandleClosed": stable_handle_closed,
+        "errors": tuple(str(error) for error in lifecycle.get("errors", [])),
+        "status": status,
+    }
+
+
+@contextmanager
+def _managed_packaged_workspace(
     package_root: Path,
     workspace_root: Path,
     evidence_root: Path,
     *,
-    startup_fault_file: Path | None = None,
-    expect_open_failure: bool = False,
-) -> dict[str, Any]:
-    """Open and migrate an existing workspace through the packaged WPF host."""
+    startup_fault_file: Path | None,
+    expect_open_failure: bool,
+) -> Iterator[_ManagedPackagedWorkspace]:
+    """Own the single packaged workspace process state machine."""
 
-    assert os.name == "nt", "packaged WPF host upgrade evidence requires Windows"
+    assert os.name == "nt", "packaged WPF host workspace evidence requires Windows"
     assert not evidence_root.exists(), f"host evidence root must be fresh: {evidence_root}"
     evidence_root.mkdir(parents=True)
     readiness_dir = evidence_root / "host"
@@ -399,23 +543,96 @@ def open_workspace_with_packaged_host(
         )
         if expect_open_failure and startup_fault_file is not None:
             assert not startup_fault_file.exists(), "startup fault was not consumed once"
+        workspace = _ManagedPackagedWorkspace(
+            cdp_url=f"http://127.0.0.1:{port}",
+            workspace_evidence=open_evidence,
+            scope=scope,
+            readiness=readiness,
+            opened=opened,
+            startup_fault_consumed=(
+                startup_fault_file is not None and not startup_fault_file.exists()
+            ),
+        )
+        yield workspace
         lifecycle = product_runner._request_normal_exit(
             scope,
             controls_dir=controls,
             cdp_owner=cdp_owner,
         )
-        return {
-            "status": lifecycle["status"],
-            "evidenceKind": "packaged-host-workspace-open",
-            "hostExecutable": opened["hostExecutable"],
-            **open_evidence,
-            "error": opened.get("error"),
-            "startupFaultConsumed": (
-                startup_fault_file is not None and not startup_fault_file.exists()
-            ),
-            "readiness": readiness,
-            "lifecycle": lifecycle,
-        }
+        workspace.lifecycle = lifecycle
+        if lifecycle.get("status") != "passed":
+            raise _ManagedWorkspaceLifecycleError(workspace)
+
+
+@contextmanager
+def opened_packaged_workspace(
+    package_root: Path,
+    workspace_root: Path,
+    evidence_root: Path,
+) -> Iterator[OpenedPackagedWorkspace]:
+    """Yield one verified live workspace and retain normal-exit evidence."""
+
+    session: OpenedPackagedWorkspace | None = None
+    try:
+        with _managed_packaged_workspace(
+            package_root,
+            workspace_root,
+            evidence_root,
+            startup_fault_file=None,
+            expect_open_failure=False,
+        ) as workspace:
+            session = OpenedPackagedWorkspace(
+                cdp_url=workspace.cdp_url,
+                workspace_evidence=workspace.workspace_evidence,
+                snapshot=workspace.scope.working_set_snapshot,
+            )
+            yield session
+    except _ManagedWorkspaceLifecycleError as exc:
+        assert session is not None
+        lifecycle = _completed_lifecycle(exc.workspace)
+        session._complete_lifecycle(_workspace_lifecycle_evidence(lifecycle))
+        raise PackagedWorkspaceLifecycleError(session) from exc
+    else:
+        assert session is not None
+        session._complete_lifecycle(_workspace_lifecycle_evidence(_completed_lifecycle(workspace)))
+
+
+def _legacy_workspace_open_report(workspace: _ManagedPackagedWorkspace) -> dict[str, Any]:
+    lifecycle = _completed_lifecycle(workspace)
+    return {
+        "status": lifecycle["status"],
+        "evidenceKind": "packaged-host-workspace-open",
+        "hostExecutable": workspace.opened["hostExecutable"],
+        **workspace.workspace_evidence,
+        "error": workspace.opened.get("error"),
+        "startupFaultConsumed": workspace.startup_fault_consumed,
+        "readiness": workspace.readiness,
+        "lifecycle": lifecycle,
+    }
+
+
+def open_workspace_with_packaged_host(
+    package_root: Path,
+    workspace_root: Path,
+    evidence_root: Path,
+    *,
+    startup_fault_file: Path | None = None,
+    expect_open_failure: bool = False,
+) -> dict[str, Any]:
+    """Open and migrate an existing workspace through the packaged WPF host."""
+
+    try:
+        with _managed_packaged_workspace(
+            package_root,
+            workspace_root,
+            evidence_root,
+            startup_fault_file=startup_fault_file,
+            expect_open_failure=expect_open_failure,
+        ) as workspace:
+            pass
+    except _ManagedWorkspaceLifecycleError as exc:
+        return _legacy_workspace_open_report(exc.workspace)
+    return _legacy_workspace_open_report(workspace)
 
 
 def main(argv: list[str] | None = None) -> int:
