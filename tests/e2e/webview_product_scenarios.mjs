@@ -34,6 +34,7 @@ import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { classifyWorkspaceSearchObservation } from "./workspace_search_terminal.mjs";
+import { installWritableWorkspaceBootstrapCaptureInPage } from "./workspace_bootstrap_capture.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 
 function parseArgs(argv) {
@@ -1375,44 +1376,16 @@ async function beginWritableWorkspaceBootstrapCapture(
   page,
   minimumExclusiveEpoch,
   failureMethod = null,
+  expectedWorkspaceId = null,
 ) {
-  await page.evaluate(({ minimumEpoch, expectedFailureMethod }) => {
-    window.__vibetableE2EBridgeCapture = {
-      types: ["workspace.v2.bootstrap"],
-      message: null,
-      error: null,
-    };
-    window.chrome.webview.addEventListener("message", function handler(event) {
-      let message = event.data;
-      if (typeof message === "string") {
-        try { message = JSON.parse(message); } catch { return; }
-      }
-      if (expectedFailureMethod
-        && message?.type === "workspace.v2.response"
-        && message.payload?.method === expectedFailureMethod
-        && message.payload?.ok === false) {
-        window.__vibetableE2EBridgeCapture.error = {
-          method: expectedFailureMethod,
-          code: message.payload?.error?.code ?? "unknown",
-          message: message.payload?.error?.message ?? "workspace operation failed",
-        };
-        window.chrome.webview.removeEventListener("message", handler);
-        return;
-      }
-      const session = message?.payload?.session;
-      if (
-        message?.type !== "workspace.v2.bootstrap"
-        || session?.state !== "openedWritable"
-        || session?.writable !== true
-        || !Number.isInteger(session?.sessionEpoch)
-        || session.sessionEpoch <= minimumEpoch
-      ) {
-        return;
-      }
-      window.__vibetableE2EBridgeCapture.message = message;
-      window.chrome.webview.removeEventListener("message", handler);
-    });
-  }, { minimumEpoch: minimumExclusiveEpoch, expectedFailureMethod: failureMethod });
+  await page.evaluate(
+    installWritableWorkspaceBootstrapCaptureInPage,
+    {
+      minimumEpoch: minimumExclusiveEpoch,
+      expectedWorkspaceId,
+      expectedFailureMethods: failureMethod ? [failureMethod] : [],
+    },
+  );
 }
 
 async function beginRawBridgeRequest(
@@ -4419,13 +4392,24 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
       renderedMessage,
     })}`);
   }
+  const createdWorkspaceId = createTerminal.payload?.result?.workspaceId;
+  if (typeof createdWorkspaceId !== "string" || !createdWorkspaceId.trim()) {
+    throw new Error(`directory replica creation omitted workspace identity: ${JSON.stringify(
+      createTerminal,
+    )}`);
+  }
 
   const workspaceCenter = page.getByTestId("workspace-center");
   const replicaWorkspace = workspaceCenter.getByRole("button", {
     name: /E2E Directory Replica/,
   });
   await replicaWorkspace.waitFor({ state: "visible", timeout: 60_000 });
-  await beginWritableWorkspaceBootstrapCapture(page, sourceSession.sessionEpoch, "workspace.open");
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    sourceSession.sessionEpoch,
+    "workspace.switch",
+    createdWorkspaceId,
+  );
   await replicaWorkspace.click();
   const createdBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
   const createdSession = createdBootstrap.payload.session;
@@ -4468,7 +4452,12 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
   const releasedWorkspace = workspaceCenter.getByRole("button", {
     name: /E2E Directory Replica/,
   });
-  await beginWritableWorkspaceBootstrapCapture(page, createdSession.sessionEpoch, "workspace.open");
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    createdSession.sessionEpoch,
+    "workspace.open",
+    createdWorkspaceId,
+  );
   await releasedWorkspace.click();
   const releasedBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
   const releasedSession = releasedBootstrap.payload.session;
@@ -4519,7 +4508,12 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
     { recoveredReplica },
   );
 
-  await beginWritableWorkspaceBootstrapCapture(page, releasedSession.sessionEpoch, "workspace.open");
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    releasedSession.sessionEpoch,
+    "workspace.open",
+    createdWorkspaceId,
+  );
   const closed = await rawLifecycleWorkspaceV2Request(
     page,
     "workspace.close",
@@ -4606,8 +4600,13 @@ async function openWorkspaceCenterFromSwitcher(page) {
   await page.getByTestId("workspace-center").waitFor({ state: "visible", timeout: 30_000 });
 }
 
-async function switchWorkspaceByName(page, name, minimumEpoch) {
-  await beginWritableWorkspaceBootstrapCapture(page, minimumEpoch, "workspace.switch");
+async function switchWorkspaceByName(page, name, minimumEpoch, expectedWorkspaceId) {
+  await beginWritableWorkspaceBootstrapCapture(
+    page,
+    minimumEpoch,
+    "workspace.switch",
+    expectedWorkspaceId,
+  );
   const switcher = page.getByTestId("workspace-switcher");
   await switcher.locator(".switcher-trigger").click();
   await page.locator(".n-dropdown-option").filter({ hasText: name }).click();
@@ -4623,7 +4622,18 @@ async function scenario15(page, recorder, _network, runtime) {
   await page.getByTestId("workspace-create").click();
   const modal = page.getByTestId("workspace-flow-modal");
   await modal.locator("input").first().fill("E2E Switch Target");
+  await beginWorkspaceV2MethodCapture(page, "workspace.create");
   await page.getByTestId("workspace-flow-confirm").click();
+  const targetCreateTerminal = await waitForCapturedBridgeMessage(page, 60_000);
+  const targetWorkspaceId = targetCreateTerminal.payload?.result?.workspaceId;
+  if (
+    targetCreateTerminal.type === "operation.failed"
+    || targetCreateTerminal.payload?.ok !== true
+    || typeof targetWorkspaceId !== "string"
+    || !targetWorkspaceId.trim()
+  ) {
+    throw new Error(`target workspace creation failed: ${JSON.stringify(targetCreateTerminal)}`);
+  }
   const target = page.getByTestId("workspace-center").getByRole("button", {
     name: /E2E Switch Target/,
   });
@@ -4631,7 +4641,8 @@ async function scenario15(page, recorder, _network, runtime) {
   await beginWritableWorkspaceBootstrapCapture(
     page,
     originalSession.sessionEpoch,
-    "workspace.open",
+    "workspace.switch",
+    targetWorkspaceId,
   );
   await target.click();
   const targetBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
@@ -4645,6 +4656,7 @@ async function scenario15(page, recorder, _network, runtime) {
     page,
     "E2E Product Workspace",
     targetSession.sessionEpoch,
+    originalSession.workspaceId,
   );
   const switchedSession = switchedBootstrap.payload.session;
   recorder.check("workspace switcher rotates the writable session epoch",

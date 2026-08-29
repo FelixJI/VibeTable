@@ -1911,6 +1911,10 @@ def test_workspace_scenario_covers_directory_replica_recovery_through_public_sur
     assert ".locator('input[value=\"other\"]').check()" not in helper
     assert 'getByTestId("workspace-storage-release-cache-preview")' in helper
     assert 'getByTestId("workspace-storage-relocate-apply")' in helper
+    assert "const createdWorkspaceId = createTerminal.payload?.result?.workspaceId" in helper
+    assert 'sourceSession.sessionEpoch,\n    "workspace.switch",\n    createdWorkspaceId,' in helper
+    assert 'createdSession.sessionEpoch,\n    "workspace.open",\n    createdWorkspaceId,' in helper
+    assert 'releasedSession.sessionEpoch,\n    "workspace.open",\n    createdWorkspaceId,' in helper
     assert 'rawWorkspaceV2Request(page, "replica.status"' in helper
     assert 'requestSidecarKill(runtime, "verify directory replica recovery")' in helper
     sidecar_kill = helper.index('requestSidecarKill(runtime, "verify directory replica recovery")')
@@ -2581,6 +2585,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_bootstrap_capture.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
     ]
