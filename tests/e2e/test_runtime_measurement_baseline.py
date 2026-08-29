@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from qa import release_candidate
 from scripts.qa.windows_process_scope import (
     ProcessWorkingSetMember,
     ProcessWorkingSetSnapshot,
@@ -15,6 +16,7 @@ from tests.e2e.runtime_measurement_baseline import (
     RuntimePhaseDurations,
     RuntimePhaseTimeline,
     build_runtime_measurement_foundation_report,
+    verify_runtime_candidate,
 )
 
 
@@ -96,6 +98,62 @@ def _working_sets(*members: ProcessWorkingSetMember) -> ProcessWorkingSetSnapsho
     )
 
 
+def _write_build_identity(
+    path: Path,
+    *,
+    archive_sha256: str,
+    source_sha: str = "a" * 40,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project": {
+                    "component": "vibetable",
+                    "repository": "FelixJI/VibeTable",
+                    "version": "0.5.1",
+                    "source_sha": source_sha,
+                },
+                "build": {
+                    "archive": "VibeTable-v0.5.1-win-x64.zip",
+                    "archive_sha256": archive_sha256,
+                    "package_identity": {
+                        "product": "VibeTable",
+                        "version": "0.5.1",
+                        "platform": "windows",
+                        "architecture": "x64",
+                    },
+                    "package_identity_sha256": "c" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_bound_candidate(
+    root: Path,
+    *,
+    source_sha: str = "a" * 40,
+) -> tuple[Path, Path, Path]:
+    package_root = root / "VibeTable.Next"
+    archive_path = root / "VibeTable-v0.5.1-win-x64.zip"
+    identity_path = root / "artifacts" / "build-identity.json"
+    _write_candidate(package_root)
+    candidate = release_candidate.create_archive(package_root, archive_path)
+    archive = candidate["archive"]
+    assert isinstance(archive, dict)
+    archive_sha256 = archive["sha256"]
+    assert isinstance(archive_sha256, str)
+    _write_build_identity(
+        identity_path,
+        archive_sha256=archive_sha256,
+        source_sha=source_sha,
+    )
+    return package_root, archive_path, identity_path
+
+
 def test_report_has_closed_identity_timing_working_set_and_package_groups(tmp_path: Path) -> None:
     package_root = tmp_path / "VibeTable.Next"
     _write_candidate(package_root)
@@ -161,9 +219,116 @@ def test_report_has_closed_identity_timing_working_set_and_package_groups(tmp_pa
         path.stat().st_size for path in package_root.rglob("*") if path.is_file()
     )
     assert (
-        sum(package_sizes[name] for name in package_sizes if name != "total")
+        sum(package_sizes[name] for name in ("host", "backend", "sidecar", "webGrid", "unassigned"))
         == package_sizes["total"]
     )
+
+
+def test_runtime_candidate_binds_package_archive_identity_and_source(tmp_path: Path) -> None:
+    package_root, archive_path, identity_path = _write_bound_candidate(tmp_path)
+
+    verified = verify_runtime_candidate(
+        package_root=package_root,
+        package_archive=archive_path,
+        build_identity_path=identity_path,
+        expected_source_sha="a" * 40,
+    )
+
+    assert verified.package_root == package_root.resolve()
+    assert verified.identity["candidate"] == {
+        "component": "vibetable",
+        "repository": "FelixJI/VibeTable",
+        "sourceSha": "a" * 40,
+        "version": "0.5.1",
+        "archiveName": archive_path.name,
+        "archiveSha256": release_candidate.sha256_file(archive_path),
+    }
+    assert verified.release_candidate == release_candidate.candidate_evidence(
+        package_root,
+        archive_path,
+    )
+
+
+def test_runtime_candidate_rejects_same_version_from_a_different_package_tree(
+    tmp_path: Path,
+) -> None:
+    _package_root, archive_path, identity_path = _write_bound_candidate(tmp_path / "first")
+    other_package = tmp_path / "second" / "VibeTable.Next"
+    _write_candidate(other_package)
+    (other_package / "resources" / "contracts" / "v2" / "catalog.json").write_bytes(
+        b"different candidate"
+    )
+
+    with pytest.raises(BaselineMeasurementError) as error:
+        verify_runtime_candidate(
+            package_root=other_package,
+            package_archive=archive_path,
+            build_identity_path=identity_path,
+            expected_source_sha="a" * 40,
+        )
+
+    assert error.value.code == "CANDIDATE_PACKAGE_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    [
+        ("source", "CANDIDATE_SOURCE_MISMATCH"),
+        ("package", "CANDIDATE_PACKAGE_MISMATCH"),
+        ("archive-name", "CANDIDATE_ARCHIVE_MISMATCH"),
+        ("archive-sha", "CANDIDATE_ARCHIVE_MISMATCH"),
+        ("non-hex", "CANDIDATE_IDENTITY_INVALID"),
+        ("schema-bool", "CANDIDATE_IDENTITY_INVALID"),
+    ],
+)
+def test_runtime_candidate_rejects_unbound_or_invalid_build_identity(
+    tmp_path: Path,
+    mutation: str,
+    code: str,
+) -> None:
+    package_root, archive_path, identity_path = _write_bound_candidate(tmp_path)
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    if mutation == "source":
+        identity["project"]["source_sha"] = "d" * 40
+    elif mutation == "package":
+        identity["build"]["package_identity"]["version"] = "9.9.9"
+    elif mutation == "archive-name":
+        identity["build"]["archive"] = "VibeTable-v9.9.9-win-x64.zip"
+    elif mutation == "archive-sha":
+        identity["build"]["archive_sha256"] = "d" * 64
+    elif mutation == "non-hex":
+        identity["build"]["archive_sha256"] = "z" * 64
+    else:
+        identity["schema_version"] = True
+    identity_path.write_text(json.dumps(identity), encoding="utf-8")
+
+    with pytest.raises(BaselineMeasurementError) as error:
+        verify_runtime_candidate(
+            package_root=package_root,
+            package_archive=archive_path,
+            build_identity_path=identity_path,
+            expected_source_sha="a" * 40,
+        )
+
+    assert error.value.code == code
+
+
+def test_verified_candidate_evidence_is_isolated_from_callers(tmp_path: Path) -> None:
+    package_root, archive_path, identity_path = _write_bound_candidate(tmp_path)
+    verified = verify_runtime_candidate(
+        package_root=package_root,
+        package_archive=archive_path,
+        build_identity_path=identity_path,
+        expected_source_sha="a" * 40,
+    )
+
+    identity = verified.identity
+    identity["candidate"]["archiveSha256"] = "0" * 64
+    evidence = verified.release_candidate
+    evidence["archive"]["sha256"] = "0" * 64
+
+    assert verified.identity["candidate"]["archiveSha256"] != "0" * 64
+    assert verified.release_candidate["archive"]["sha256"] != "0" * 64
 
 
 def test_timeline_rejects_duplicate_out_of_order_and_non_monotonic_marks() -> None:
