@@ -245,9 +245,9 @@ def _prepare_opened_workspace_case(
     def launch(*_args, **_kwargs):
         events.append("launch")
         launches.append(_kwargs)
-        before_process_launch = _kwargs.get("before_process_launch")
-        if before_process_launch is not None:
-            before_process_launch()
+        before_process_create = _kwargs.get("before_process_create")
+        if before_process_create is not None:
+            before_process_create()
         return scope, 9222, controls, streams
 
     def wait_for_cdp(*_args):
@@ -1856,6 +1856,7 @@ def test_packaged_launch_marks_the_phase_immediately_before_process_creation(
     monkeypatch.setattr(runner, "_reserve_port", lambda: 9222)
 
     def launch_process(*_args, **_kwargs):
+        _kwargs["before_process_create"]()
         events.append("process-created")
         return scope
 
@@ -1866,7 +1867,7 @@ def test_packaged_launch_marks_the_phase_immediately_before_process_creation(
         tmp_path / "runtime",
         autostart=False,
         tray_lifecycle=False,
-        before_process_launch=lambda: events.append("launch-started"),
+        before_process_create=lambda: events.append("launch-started"),
     )
     streams.close()
 

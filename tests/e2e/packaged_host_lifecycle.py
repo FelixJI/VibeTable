@@ -201,7 +201,7 @@ def _launch_host(
     autostart: bool,
     tray_lifecycle: bool,
     extra_environment: dict[str, str] | None = None,
-    before_process_launch: Callable[[], None] | None = None,
+    before_process_create: Callable[[], None] | None = None,
 ) -> tuple[WindowsProcessScope, int, Path, ExitStack]:
     host = _host_executable(package_root)
     readiness_dir = runtime_root / "host"
@@ -248,14 +248,13 @@ def _launch_host(
     try:
         stdout = streams.enter_context((runtime_root / "host-stdout.log").open("wb"))
         stderr = streams.enter_context((runtime_root / "host-stderr.log").open("wb"))
-        if before_process_launch is not None:
-            before_process_launch()
         scope = product_runner._launch_host_process(
             command,
             cwd=package_root,
             env=environment,
             stdout=stdout,
             stderr=stderr,
+            before_process_create=before_process_create,
         )
     except BaseException as exc:
         try:
@@ -540,7 +539,7 @@ def _managed_packaged_workspace(
             if startup_fault_file is not None
             else None
         ),
-        before_process_launch=None if observer is None else observer.launch_started,
+        before_process_create=None if observer is None else observer.launch_started,
     )
     with _scope_lifetime(scope, streams), ExitStack() as owner_resources:
         product_runner._wait_for_cdp(port, scope)
