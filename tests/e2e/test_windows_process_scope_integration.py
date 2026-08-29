@@ -150,6 +150,13 @@ def test_atomic_job_keeps_child_owned_after_root_exit_and_terminates_it(
             member.executable_name.casefold().startswith("python")
             for member in initial_snapshot.members
         )
+        working_sets = scope.working_set_snapshot()
+        assert {member.pid for member in working_sets.members} == initial
+        assert all(member.identity_verified for member in working_sets.members)
+        assert all(
+            member.working_set_bytes is not None and member.working_set_bytes > 0
+            for member in working_sets.members
+        )
 
         root_release.set()
         assert scope.root.wait(timeout=15) == 0
