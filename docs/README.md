@@ -21,6 +21,8 @@ VibeTable 是一个通用的建表与文件管理桌面工具。本目录存放�
 
 ## 计划与历史材料
 
-- [当前稳定化实施方案](plans/2026-08-08-technical-debt-stabilization.md)是冻结期主计划；其他
-  [`plans/`](plans/) 文件保留各能力的历史范围、状态和未完成证据。
+- [成熟度审计与渐进实施指南](plans/2026-08-17-vibetable-maturity-audit.md)是当前实施入口，统一成熟度补证、
+  Product RPC/Realtime 职责收敛、Python 按需 Worker 化及并行/串行依赖。
+- [2026-08-08 技术债治理与架构稳定化方案](plans/2026-08-08-technical-debt-stabilization.md)保留为已经完成主要目标的
+  冻结期方案；其他 [`plans/`](plans/) 文件保留各能力的历史范围、状态和未完成证据。
 - [`research/`](research/) 保存研究结论；`research/archive/` 仅是历史材料，不代表现行实现。
