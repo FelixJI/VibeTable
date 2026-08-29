@@ -21,7 +21,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -287,6 +287,7 @@ def _launch_host_process(
     env: Mapping[str, str],
     stdout: IO[bytes],
     stderr: IO[bytes],
+    before_process_create: Callable[[], None] | None = None,
 ) -> WindowsProcessScope:
     return WindowsProcessScope.launch(
         ProcessLaunchSpec(
@@ -295,6 +296,7 @@ def _launch_host_process(
             env=env,
             stdout=stdout,
             stderr=stderr,
+            before_process_create=before_process_create,
         )
     )
 

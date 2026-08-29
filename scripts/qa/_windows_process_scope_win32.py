@@ -788,6 +788,8 @@ class _Win32ProcessScopeAdapter:
             )
             cwd = None if spec.cwd is None else os.fspath(spec.cwd)
             process_info = ProcessInformation()
+            if spec.before_process_create is not None:
+                spec.before_process_create()
             _check(
                 kernel32.CreateProcessW(
                     spec.command[0],

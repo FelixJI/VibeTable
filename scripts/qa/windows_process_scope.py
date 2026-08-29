@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 from _thread import LockType
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from os import PathLike
@@ -54,6 +54,7 @@ class ProcessLaunchSpec:
     stdin: IO[bytes] | int | None = None
     stdout: IO[bytes] | int | None = None
     stderr: IO[bytes] | int | None = None
+    before_process_create: Callable[[], None] | None = None
 
     def __init__(
         self,
@@ -64,6 +65,7 @@ class ProcessLaunchSpec:
         stdin: IO[bytes] | int | None = None,
         stdout: IO[bytes] | int | None = None,
         stderr: IO[bytes] | int | None = None,
+        before_process_create: Callable[[], None] | None = None,
     ) -> None:
         normalized = tuple(command)
         if not normalized or any(not item or "\0" in item for item in normalized):
@@ -74,6 +76,7 @@ class ProcessLaunchSpec:
         object.__setattr__(self, "stdin", stdin)
         object.__setattr__(self, "stdout", stdout)
         object.__setattr__(self, "stderr", stderr)
+        object.__setattr__(self, "before_process_create", before_process_create)
 
 
 @dataclass(frozen=True)

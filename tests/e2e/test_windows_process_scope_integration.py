@@ -283,6 +283,29 @@ def test_launch_failure_does_not_run_an_application(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_before_process_create_failure_does_not_launch_or_leak_handles(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "must-not-exist"
+    code = f"from pathlib import Path; Path({str(marker)!r}).write_text('started')"
+
+    def reject_launch() -> None:
+        raise RuntimeError("measurement callback failed")
+
+    baseline = _current_process_handle_count()
+    for _attempt in range(8):
+        with pytest.raises(RuntimeError, match="measurement callback failed"):
+            WindowsProcessScope.launch(
+                ProcessLaunchSpec(
+                    [sys.executable, "-c", code],
+                    before_process_create=reject_launch,
+                )
+            )
+
+    assert not marker.exists()
+    assert _current_process_handle_count() == baseline
+
+
 def test_close_kills_members_without_leaking_the_job_handle(tmp_path: Path) -> None:
     pid_path = tmp_path / "root.pid"
     job_name = _job_name()

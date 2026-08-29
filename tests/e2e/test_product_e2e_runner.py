@@ -245,6 +245,9 @@ def _prepare_opened_workspace_case(
     def launch(*_args, **_kwargs):
         events.append("launch")
         launches.append(_kwargs)
+        before_process_create = _kwargs.get("before_process_create")
+        if before_process_create is not None:
+            before_process_create()
         return scope, 9222, controls, streams
 
     def wait_for_cdp(*_args):
@@ -1348,10 +1351,24 @@ def test_opened_packaged_workspace_yields_verified_live_session_in_startup_order
         tmp_path,
     )
 
+    class Observer:
+        def launch_started(self) -> None:
+            events.append("phase:launch-started")
+
+        def host_ready(self) -> None:
+            events.append("phase:host-ready")
+
+        def workspace_open_requested(self) -> None:
+            events.append("phase:workspace-open-requested")
+
+        def workspace_opened(self) -> None:
+            events.append("phase:workspace-opened")
+
     with packaged_host_lifecycle.opened_packaged_workspace(
         tmp_path / "package",
         workspace,
         tmp_path / "evidence",
+        observer=Observer(),
     ) as session:
         events.append("yield")
         assert scope.root.poll() is None
@@ -1368,10 +1385,14 @@ def test_opened_packaged_workspace_yields_verified_live_session_in_startup_order
     assert scope.close_calls == 1
     assert events == [
         "launch",
+        "phase:launch-started",
         "cdp-ready",
         "owner-captured",
         "readiness",
+        "phase:host-ready",
+        "phase:workspace-open-requested",
         "state:workspace-opened",
+        "phase:workspace-opened",
         "yield",
         "normal-exit",
     ]
@@ -1815,6 +1836,42 @@ def test_packaged_launch_closes_stdout_when_opening_stderr_fails(
         )
 
     (runtime / "host-stdout.log").rename(runtime / "stdout-closed.log")
+
+
+def test_packaged_launch_marks_the_phase_immediately_before_process_creation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tests.e2e import packaged_host_lifecycle
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "VibeTable.Next.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "VibeTable.Next.exe"}}),
+        encoding="utf-8",
+    )
+    events: list[str] = []
+    scope = _FakeScope()
+    monkeypatch.setattr(runner, "_reserve_port", lambda: 9222)
+
+    def launch_process(*_args, **_kwargs):
+        _kwargs["before_process_create"]()
+        events.append("process-created")
+        return scope
+
+    monkeypatch.setattr(runner, "_launch_host_process", launch_process)
+
+    _scope, _port, _controls, streams = packaged_host_lifecycle._launch_host(
+        package,
+        tmp_path / "runtime",
+        autostart=False,
+        tray_lifecycle=False,
+        before_process_create=lambda: events.append("launch-started"),
+    )
+    streams.close()
+
+    assert events == ["launch-started", "process-created"]
 
 
 @pytest.mark.parametrize("failure_stage", ["stderr-open", "scope-launch"])
