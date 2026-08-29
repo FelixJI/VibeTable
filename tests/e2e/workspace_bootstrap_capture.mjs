@@ -1,7 +1,8 @@
-export function installWritableWorkspaceBootstrapCaptureInPage({
+export function installWorkspaceBootstrapCaptureInPage({
   minimumEpoch,
   expectedWorkspaceId,
   expectedLifecycleMethods,
+  expectedSessionState = "openedWritable",
 }) {
   if (
     expectedWorkspaceId !== null
@@ -11,6 +12,9 @@ export function installWritableWorkspaceBootstrapCaptureInPage({
   }
   if (!Array.isArray(expectedLifecycleMethods)) {
     throw new Error("expectedLifecycleMethods must be an array.");
+  }
+  if (!["openedWritable", "openedProvisional"].includes(expectedSessionState)) {
+    throw new Error("expectedSessionState must be openedWritable or openedProvisional.");
   }
   const diagnostics = window.__vibetableE2EBridgeDiagnostics;
   const baselineRequestIds = new Set([
@@ -25,6 +29,7 @@ export function installWritableWorkspaceBootstrapCaptureInPage({
     expectedWorkspaceId,
     minimumEpoch,
     expectedLifecycleMethods: [...expectedLifecycleMethods],
+    expectedSessionState,
     baselineRequestIds: [...baselineRequestIds],
     bootstrap: null,
     lifecycleSuccess: null,
@@ -54,7 +59,7 @@ export function installWritableWorkspaceBootstrapCaptureInPage({
       return !requiresSessionResult;
     }
     const session = bootstrap?.payload?.session;
-    return result.state === "openedWritable"
+    return result.state === expectedSessionState
       && result.workspaceId === session?.workspaceId
       && result.sessionEpoch === session?.sessionEpoch;
   };
@@ -109,10 +114,17 @@ export function installWritableWorkspaceBootstrapCaptureInPage({
       return;
     }
     const session = message?.payload?.session;
+    const expectedSessionMode = expectedSessionState === "openedWritable"
+      ? session?.openMode === "writable"
+        && session?.writable === true
+        && session?.provisional === false
+      : session?.openMode === "provisional"
+        && session?.writable === false
+        && session?.provisional === true;
     if (
       message?.type !== "workspace.v2.bootstrap"
-      || session?.state !== "openedWritable"
-      || session?.writable !== true
+      || session?.state !== expectedSessionState
+      || !expectedSessionMode
       || !Number.isInteger(session?.sessionEpoch)
       || session.sessionEpoch <= minimumEpoch
     ) {

@@ -34,7 +34,7 @@ import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { classifyWorkspaceSearchObservation } from "./workspace_search_terminal.mjs";
-import { installWritableWorkspaceBootstrapCaptureInPage } from "./workspace_bootstrap_capture.mjs";
+import { installWorkspaceBootstrapCaptureInPage } from "./workspace_bootstrap_capture.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 
 function parseArgs(argv) {
@@ -1379,11 +1379,28 @@ async function beginWritableWorkspaceBootstrapCapture(
   expectedWorkspaceId = null,
 ) {
   await page.evaluate(
-    installWritableWorkspaceBootstrapCaptureInPage,
+    installWorkspaceBootstrapCaptureInPage,
     {
       minimumEpoch: minimumExclusiveEpoch,
       expectedWorkspaceId,
       expectedLifecycleMethods: lifecycleMethod ? [lifecycleMethod] : [],
+    },
+  );
+}
+
+async function beginProvisionalWorkspaceBootstrapCapture(
+  page,
+  minimumExclusiveEpoch,
+  lifecycleMethod,
+  expectedWorkspaceId,
+) {
+  await page.evaluate(
+    installWorkspaceBootstrapCaptureInPage,
+    {
+      minimumEpoch: minimumExclusiveEpoch,
+      expectedWorkspaceId,
+      expectedLifecycleMethods: [lifecycleMethod],
+      expectedSessionState: "openedProvisional",
     },
   );
 }
@@ -4404,7 +4421,7 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
     name: /E2E Directory Replica/,
   });
   await replicaWorkspace.waitFor({ state: "visible", timeout: 60_000 });
-  await beginWritableWorkspaceBootstrapCapture(
+  await beginProvisionalWorkspaceBootstrapCapture(
     page,
     sourceSession.sessionEpoch,
     "workspace.switch",
@@ -4418,6 +4435,10 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
     "Workspace Center creates a local directory-backed mirrored workspace",
     createdSession.workspaceId !== sourceSession.workspaceId
       && createdSession.sessionEpoch > sourceSession.sessionEpoch
+      && createdSession.state === "openedProvisional"
+      && createdSession.openMode === "provisional"
+      && createdSession.writable === false
+      && createdSession.provisional === true
       && createdReplica.coordinationStrength === "advisory"
       && createdReplica.syncState === "replicated"
       && createdReplica.pendingSync === false,
@@ -4452,7 +4473,7 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
   const releasedWorkspace = workspaceCenter.getByRole("button", {
     name: /E2E Directory Replica/,
   });
-  await beginWritableWorkspaceBootstrapCapture(
+  await beginProvisionalWorkspaceBootstrapCapture(
     page,
     createdSession.sessionEpoch,
     "workspace.open",
@@ -4466,6 +4487,10 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
     "the released directory replica reopens with the same workspace identity",
     releasedSession.workspaceId === createdSession.workspaceId
       && releasedSession.sessionEpoch > createdSession.sessionEpoch
+      && releasedSession.state === "openedProvisional"
+      && releasedSession.openMode === "provisional"
+      && releasedSession.writable === false
+      && releasedSession.provisional === true
       && reopenedReplica.syncState === "replicated"
       && reopenedReplica.pendingSync === false,
     { createdSession, releasedSession, reopenedReplica },
@@ -4508,7 +4533,7 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
     { recoveredReplica },
   );
 
-  await beginWritableWorkspaceBootstrapCapture(
+  await beginProvisionalWorkspaceBootstrapCapture(
     page,
     releasedSession.sessionEpoch,
     "workspace.open",
@@ -4534,6 +4559,10 @@ async function exerciseDirectoryReplicaLifecycle(page, recorder, runtime, source
     "the recovered directory replica survives an explicit close and reopen",
     finalReplicaSession.workspaceId === createdSession.workspaceId
       && finalReplicaSession.sessionEpoch > releasedSession.sessionEpoch
+      && finalReplicaSession.state === "openedProvisional"
+      && finalReplicaSession.openMode === "provisional"
+      && finalReplicaSession.writable === false
+      && finalReplicaSession.provisional === true
       && finalReplica.syncState === "replicated"
       && finalReplica.pendingSync === false,
     { releasedSession, finalReplicaSession, finalReplica },

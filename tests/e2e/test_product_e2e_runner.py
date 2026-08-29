@@ -1915,6 +1915,11 @@ def test_workspace_scenario_covers_directory_replica_recovery_through_public_sur
     assert 'sourceSession.sessionEpoch,\n    "workspace.switch",\n    createdWorkspaceId,' in helper
     assert 'createdSession.sessionEpoch,\n    "workspace.open",\n    createdWorkspaceId,' in helper
     assert 'releasedSession.sessionEpoch,\n    "workspace.open",\n    createdWorkspaceId,' in helper
+    assert helper.count("beginProvisionalWorkspaceBootstrapCapture(") == 3
+    assert helper.count('state === "openedProvisional"') == 3
+    assert helper.count('openMode === "provisional"') == 3
+    assert helper.count("writable === false") == 3
+    assert helper.count("provisional === true") == 3
     assert 'rawWorkspaceV2Request(page, "replica.status"' in helper
     assert 'requestSidecarKill(runtime, "verify directory replica recovery")' in helper
     sidecar_kill = helper.index('requestSidecarKill(runtime, "verify directory replica recovery")')

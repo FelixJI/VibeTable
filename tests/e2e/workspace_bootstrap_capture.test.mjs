@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installWritableWorkspaceBootstrapCaptureInPage } from "./workspace_bootstrap_capture.mjs";
+import { installWorkspaceBootstrapCaptureInPage } from "./workspace_bootstrap_capture.mjs";
 
 function install(options, baselineRequests = []) {
   let handler = null;
@@ -24,7 +24,7 @@ function install(options, baselineRequests = []) {
       },
     },
   };
-  installWritableWorkspaceBootstrapCaptureInPage(options);
+  installWorkspaceBootstrapCaptureInPage(options);
   return {
     request(requestId, requestType) {
       diagnostics.requests.push({ requestId, requestType });
@@ -42,15 +42,17 @@ function install(options, baselineRequests = []) {
   };
 }
 
-function bootstrap(workspaceId, sessionEpoch) {
+function bootstrap(workspaceId, sessionEpoch, state = "openedWritable") {
   return {
     type: "workspace.v2.bootstrap",
     payload: {
       session: {
         workspaceId,
         sessionEpoch,
-        state: "openedWritable",
-        writable: true,
+        state,
+        openMode: state === "openedWritable" ? "writable" : "provisional",
+        writable: state === "openedWritable",
+        provisional: state === "openedProvisional",
       },
     },
   };
@@ -85,6 +87,52 @@ test("captures only the expected workspace bootstrap", () => {
     "replica-workspace",
   );
   assert.equal(window.__vibetableE2EBridgeCapture.error, null);
+});
+
+test("captures a provisional bootstrap only when explicitly expected", () => {
+  const capture = install({
+    minimumEpoch: 3,
+    expectedWorkspaceId: "replica-workspace",
+    expectedLifecycleMethods: ["workspace.switch"],
+    expectedSessionState: "openedProvisional",
+  });
+  capture.request("switch-provisional", "workspace.switch");
+
+  capture.emit(bootstrap("replica-workspace", 4));
+  assert.equal(window.__vibetableE2EBridgeCapture.message, null);
+
+  const expectedBootstrap = bootstrap("replica-workspace", 4, "openedProvisional");
+  capture.emit(expectedBootstrap);
+  capture.emit({
+    type: "workspace.v2.response",
+    requestId: "switch-provisional",
+    payload: {
+      method: "workspace.switch",
+      ok: true,
+      result: {
+        workspaceId: "replica-workspace",
+        sessionEpoch: 4,
+        state: "openedProvisional",
+      },
+    },
+  });
+
+  assert.deepEqual(window.__vibetableE2EBridgeCapture.message, expectedBootstrap);
+});
+
+test("rejects a provisional bootstrap with contradictory mode flags", () => {
+  const capture = install({
+    minimumEpoch: 3,
+    expectedWorkspaceId: "replica-workspace",
+    expectedLifecycleMethods: [],
+    expectedSessionState: "openedProvisional",
+  });
+  const malformed = bootstrap("replica-workspace", 4, "openedProvisional");
+  malformed.payload.session.writable = true;
+
+  capture.emit(malformed);
+
+  assert.equal(window.__vibetableE2EBridgeCapture.message, null);
 });
 
 test("requires lifecycle success after the matching bootstrap", () => {
