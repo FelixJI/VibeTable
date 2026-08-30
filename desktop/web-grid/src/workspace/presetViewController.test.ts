@@ -152,6 +152,59 @@ describe("presetViewController", () => {
     scope.stop();
   });
 
+  it("切换视图时等待当前视图保存完成后再激活目标视图", async () => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const save = deferred<PresetEntry>();
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [current, target] })),
+      savePreset: vi.fn(() => save.promise),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+
+    const switching = controller.dispatch({ type: "view.switch", view: target });
+    expect(deps.presets.activePresetId).toBe("current");
+
+    save.resolve({ ...current, revision: "revision-current-saved" });
+    await switching;
+
+    expect(service.savePreset).toHaveBeenCalledWith(
+      "orders",
+      "current",
+      expect.any(Object),
+      { id: "current", revision: "revision-current" },
+    );
+    expect(deps.presets.activePresetId).toBe("target");
+    scope.stop();
+  });
+
+  it("当前视图保存失败时保持原视图激活", async () => {
+    const current = preset("current", "orders", true);
+    const target = preset("target", "orders");
+    const service: PresetServicePort = {
+      listPresets: vi.fn(async () => ({ collection: "orders", presets: [current, target] })),
+      savePreset: vi.fn(async () => { throw new Error("save failed"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const scope = effectScope();
+    const controller = scope.run(() => createPresetViewController(deps))!;
+
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    await controller.dispatch({ type: "view.switch", view: target });
+
+    expect(deps.presets.activePresetId).toBe("current");
+    expect(deps.presets.error).toBe("save failed");
+    scope.stop();
+  });
+
   it("冲突后保留本地 dirty 状态，直到用户显式重载权威 revision", async () => {
     const initial = preset("calendar", "orders", true);
     const winner = { ...initial, revision: "revision-calendar-winner", name: "服务器视图" };
