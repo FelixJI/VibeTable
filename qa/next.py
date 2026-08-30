@@ -45,7 +45,6 @@ FAULT_INJECTION = REPO_ROOT / "qa" / "fault_injection.py"
 GO_FORMAT_CHECK = REPO_ROOT / "qa" / "go_format_check.py"
 E2E_SMOKE = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
 UPGRADE_SMOKE = REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
-RUNTIME_BASELINE = REPO_ROOT / "tests" / "e2e" / "packaged_runtime_baseline.py"
 
 STAGES = REQUIRED_STAGES
 DEFAULT_STAGE_TIMEOUT_SECONDS = 15 * 60
@@ -722,7 +721,8 @@ def stage_command(
         run_root = _qa_temp_dir() / "r"
         return [
             sys.executable,
-            str(RUNTIME_BASELINE),
+            "-m",
+            "tests.e2e.packaged_runtime_baseline",
             "--package-root",
             str(package_root),
             "--package-archive",

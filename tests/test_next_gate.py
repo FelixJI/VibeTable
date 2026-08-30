@@ -315,9 +315,10 @@ def test_runtime_baseline_stage_uses_candidate_package_and_bounded_evidence_root
         package_archive,
     )
 
-    assert command[:2] == [
+    assert command[:3] == [
         sys.executable,
-        str(next_gate.REPO_ROOT / "tests" / "e2e" / "packaged_runtime_baseline.py"),
+        "-m",
+        "tests.e2e.packaged_runtime_baseline",
     ]
     assert Path(command[command.index("--package-root") + 1]) == package_root
     assert Path(command[command.index("--package-archive") + 1]) == package_archive
@@ -331,6 +332,15 @@ def test_runtime_baseline_stage_uses_candidate_package_and_bounded_evidence_root
         qa_temp / "r" / "packaged-runtime-baseline.json"
     )
     assert Path(cwd) == next_gate.REPO_ROOT
+    help_result = subprocess.run(
+        [*command, "--help"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "Measure one real packaged workspace lifecycle" in help_result.stdout
 
     with pytest.raises(ValueError, match="--package-root and --package-archive"):
         next_gate.stage_command("runtime-baseline", package_root)
