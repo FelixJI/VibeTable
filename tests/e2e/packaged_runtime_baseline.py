@@ -34,6 +34,18 @@ from tests.e2e.runtime_measurement_baseline import (
 ROOT = Path(__file__).resolve().parents[2]
 NODE_PROBE = Path(__file__).with_name("packaged_runtime_probe.mjs")
 QUIET_WINDOW_SECONDS = 1.0
+FIRST_TABLE_PROBE_FIELDS = {
+    "contractVersion",
+    "evidenceKind",
+    "status",
+    "tableId",
+    "sameTableIdentity",
+    "tableSummaryVisible",
+    "errorOverlayVisible",
+    "rowCount",
+    "stableWindowMs",
+    "errors",
+}
 
 
 class FirstTableEvidence(TypedDict):
@@ -210,22 +222,10 @@ def _strict_positive_int(value: object, *, label: str) -> int:
 
 
 def _first_table_evidence(value: dict[str, object]) -> FirstTableEvidence:
-    expected_fields = {
-        "contractVersion",
-        "evidenceKind",
-        "status",
-        "tableId",
-        "sameTableIdentity",
-        "tableSummaryVisible",
-        "errorOverlayVisible",
-        "rowCount",
-        "stableWindowMs",
-        "errors",
-    }
     table_id = value.get("tableId")
     errors = value.get("errors")
     if (
-        set(value) != expected_fields
+        set(value) != FIRST_TABLE_PROBE_FIELDS
         or value.get("contractVersion") != "1.0"
         or value.get("evidenceKind") != "packaged-runtime-ui-probe"
         or value.get("status") != "passed"
@@ -254,6 +254,39 @@ def _first_table_evidence(value: dict[str, object]) -> FirstTableEvidence:
             value.get("stableWindowMs"), label="first table stable window"
         ),
     }
+
+
+def _first_table_failure_message(report_path: Path) -> str:
+    fallback = "first table probe did not prove a stable empty table"
+    try:
+        value = _read_probe_report(report_path)
+    except BaselineMeasurementError:
+        return fallback
+    errors = value.get("errors")
+    stable_window_ms = value.get("stableWindowMs")
+    if (
+        set(value) != FIRST_TABLE_PROBE_FIELDS
+        or value.get("contractVersion") != "1.0"
+        or value.get("evidenceKind") != "packaged-runtime-ui-probe"
+        or value.get("status") != "failed"
+        or value.get("tableId") is not None
+        or value.get("sameTableIdentity") is not False
+        or value.get("tableSummaryVisible") is not False
+        or value.get("errorOverlayVisible") is not None
+        or value.get("rowCount") is not None
+        or type(stable_window_ms) is not int
+        or stable_window_ms != 1_000
+        or not isinstance(errors, list)
+        or len(errors) != 1
+        or not isinstance(errors[0], dict)
+        or set(errors[0]) != {"code", "message"}
+        or errors[0].get("code") != "FIRST_TABLE_PROBE_FAILED"
+    ):
+        return fallback
+    detail = errors[0].get("message")
+    if not isinstance(detail, str) or not detail.strip():
+        return fallback
+    return f"first table probe failed: {detail.strip()[:500]}"
 
 
 def run_first_table_probe(
@@ -287,7 +320,7 @@ def run_first_table_probe(
     if completed.returncode != 0:
         raise BaselineMeasurementError(
             "FIRST_TABLE_PROBE_FAILED",
-            "first table probe did not prove a stable empty table",
+            _first_table_failure_message(report_path),
         )
     report = _read_probe_report(report_path)
     _first_table_evidence(report)
