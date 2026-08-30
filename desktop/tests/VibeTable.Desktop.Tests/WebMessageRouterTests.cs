@@ -842,4 +842,66 @@ public sealed class WebMessageRouterTests
 
         Assert.HasCount(0, dispatched);
     }
+
+    [TestMethod]
+    public void RouterUsesInjectedProductPolicyWithoutExpandingTypedProductRoutes()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability("schema.getTable", "workspace", "rendererPublic", "test", "pythonBff", "read"),
+            new ProductRpcCapability("query.page", "workspace", "rendererInternal", "test", "pythonBff", "read"),
+            new ProductRpcCapability("file.list", "workspace", "hostOnly", "test", "pythonBff", "read"),
+            new ProductRpcCapability("schema.unknown", "workspace", "rendererPublic", "test", "pythonBff", "read"));
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            policy)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? accepted = router.Route(
+            """{"type":"schema.getTable","requestId":"public","payload":{"tableId":"orders"}}""");
+        HostReplyMessage? internalReply = router.Route(
+            """{"type":"query.page","requestId":"internal","payload":{}}""");
+        HostReplyMessage? hostOnlyReply = router.Route(
+            """{"type":"file.list","requestId":"host-only","payload":{}}""");
+        HostReplyMessage? unknownReply = router.Route(
+            """{"type":"schema.unknown","requestId":"unknown","payload":{}}""");
+        HostReplyMessage? missingReply = router.Route(
+            """{"type":"schema.describe","requestId":"missing","payload":{}}""");
+
+        Assert.IsNull(accepted);
+        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", internalReply?.Payload?.Code);
+        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", hostOnlyReply?.Payload?.Code);
+        Assert.AreEqual("UNKNOWN_TYPE", unknownReply?.Payload?.Code);
+        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", missingReply?.Payload?.Code);
+        Assert.HasCount(1, dispatched);
+    }
+
+    [TestMethod]
+    public void GeneratedProductPolicyDoesNotHideExistingPublicTypedRoutes()
+    {
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.Default;
+
+        foreach (string route in ProductDataRpcRegistry.RequestTypes)
+        {
+            Assert.IsTrue(ProductDataRpcRegistry.TryGet(route, out ProductDataRpcEndpoint endpoint));
+            if (endpoint.CapabilityCatalog == ProductRpcCapabilityCatalog.Workspace)
+            {
+                Assert.IsFalse(policy.TryGet(route, out _), route);
+                continue;
+            }
+            Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
+            Assert.AreEqual("rendererPublic", capability.Audience, route);
+            Assert.AreEqual("pythonBff", capability.Owner, route);
+        }
+
+        foreach (string route in RelationLookupRpcRegistry.RequestTypes)
+        {
+            Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
+            Assert.AreEqual("rendererPublic", capability.Audience, route);
+            Assert.AreEqual("pythonBff", capability.Owner, route);
+        }
+    }
 }

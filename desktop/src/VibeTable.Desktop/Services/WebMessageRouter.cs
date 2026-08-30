@@ -262,23 +262,37 @@ public sealed class WebMessageRouter
 
     private readonly Action<RoutedWebRequest> _dispatch;
     private readonly WorkspaceRpcCapabilityManifest _workspaceRpcCapabilities;
+    private readonly ProductRpcCapabilityManifest _productRpcCapabilities;
 
     /// <summary>
     /// Constructs the router. <paramref name="dispatch"/> is invoked for every
     /// accepted inbound web request; the router itself performs no I/O.
     /// </summary>
     public WebMessageRouter(Action<RoutedWebRequest> dispatch)
-        : this(dispatch, WorkspaceRpcCapabilityManifest.Default)
+        : this(
+            dispatch,
+            WorkspaceRpcCapabilityManifest.Default,
+            ProductRpcCapabilityManifest.Default)
     {
     }
 
     internal WebMessageRouter(
         Action<RoutedWebRequest> dispatch,
         WorkspaceRpcCapabilityManifest workspaceRpcCapabilities)
+        : this(dispatch, workspaceRpcCapabilities, ProductRpcCapabilityManifest.Default)
+    {
+    }
+
+    internal WebMessageRouter(
+        Action<RoutedWebRequest> dispatch,
+        WorkspaceRpcCapabilityManifest workspaceRpcCapabilities,
+        ProductRpcCapabilityManifest productRpcCapabilities)
     {
         _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
         _workspaceRpcCapabilities = workspaceRpcCapabilities
             ?? throw new ArgumentNullException(nameof(workspaceRpcCapabilities));
+        _productRpcCapabilities = productRpcCapabilities
+            ?? throw new ArgumentNullException(nameof(productRpcCapabilities));
     }
 
     /// <summary>
@@ -361,6 +375,17 @@ public sealed class WebMessageRouter
                 return BuildOperationFailed(
                     requestId,
                     $"Web request type '{type}' is not a public renderer capability.",
+                    "CAPABILITY_NOT_PUBLIC");
+            }
+
+            if (IsProductCatalogTypedRequest(type)
+                && (!_productRpcCapabilities.TryGet(type, out ProductRpcCapability productCapability)
+                    || productCapability.Audience != "rendererPublic"
+                    || productCapability.Owner != "pythonBff"))
+            {
+                return BuildOperationFailed(
+                    requestId,
+                    $"Product RPC '{type}' is not a public renderer capability.",
                     "CAPABILITY_NOT_PUBLIC");
             }
 
@@ -452,6 +477,13 @@ public sealed class WebMessageRouter
                 type, requestId, payload, raw, scope, wire, v2Method));
             return null;
         }
+    }
+
+    private static bool IsProductCatalogTypedRequest(string type)
+    {
+        if (ProductDataRpcRegistry.TryGet(type, out ProductDataRpcEndpoint endpoint))
+            return endpoint.CapabilityCatalog == ProductRpcCapabilityCatalog.Product;
+        return RelationLookupRpcRegistry.TryGet(type, out _);
     }
 
     /// <summary>

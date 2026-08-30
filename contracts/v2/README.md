@@ -14,6 +14,9 @@
 - `product-runtime-ownership-inventory.json` 与生成的同名 schema：以 Product catalog
   精确覆盖 RPC 和事件，记录当前调用路径、稳定职责归属、effects、状态持有者及迁移切片；
   `product_runtime_inventory.py` 向审计、测试和后续迁移提供唯一的规范化读取 seam。
+- `product-rpc-capability-policy.json` 与生成的 manifest/adapters：author 只声明
+  method/topic、scope、audience 和 capabilityId；生成器与 Product catalog、runtime inventory
+  join 后派生当前 owner/effect，供四端查询，L1 不改变生产 route。
 
 规则：
 
@@ -37,10 +40,12 @@
 ```powershell
 uv run python contracts/v2/generate_product_rpc_catalog.py
 uv run python contracts/v2/product_runtime_inventory.py
+uv run python contracts/v2/product_rpc_capability_policy.py
 uv run python contracts/v2/generate_rpc_catalog.py
 uv run python contracts/v2/generate_workspace_rpc_capability_manifest.py
 uv run python contracts/v2/generate_product_rpc_catalog.py --check
 uv run python contracts/v2/product_runtime_inventory.py --check
+uv run python contracts/v2/product_rpc_capability_policy.py --check
 uv run python contracts/v2/generate_rpc_catalog.py --check
 uv run python contracts/v2/generate_workspace_rpc_capability_manifest.py --check
 uv run python scripts/automation_project.py contracts

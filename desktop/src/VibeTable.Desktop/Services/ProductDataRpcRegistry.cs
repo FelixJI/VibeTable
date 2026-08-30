@@ -7,12 +7,19 @@ using System.Threading.Tasks;
 
 namespace VibeTable.Desktop.Services;
 
+internal enum ProductRpcCapabilityCatalog
+{
+    Product,
+    Workspace,
+}
+
 internal sealed record ProductDataRpcEndpoint(
     string Type,
     Func<JsonElement, bool> IsValidPayload,
     Func<IProductDataRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync,
     bool MutatesWorkspace = false,
-    ProtectionSnapshotPolicy? ProtectionPolicy = null);
+    ProtectionSnapshotPolicy? ProtectionPolicy = null,
+    ProductRpcCapabilityCatalog CapabilityCatalog = ProductRpcCapabilityCatalog.Product);
 
 /// <summary>
 /// Closed renderer-to-product dispatch table. The renderer chooses a complete
@@ -28,30 +35,36 @@ internal static class ProductDataRpcRegistry
             && HasOnlyProperties(p, "tableId", "fieldId")
             && HasString(p, "tableId")
             && HasOptionalString(p, "fieldId"),
-            (g, p, t) => g.DescribeFieldSettingsAsync(p, t)),
+            (g, p, t) => g.DescribeFieldSettingsAsync(p, t),
+            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
         new("field.change.plan", p => Safe(p)
             && FieldChangePayloadContract.IsValidPlanRequest(p),
             (g, p, t) => g.PlanFieldChangeAsync(p, t),
             MutatesWorkspace: true,
-            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangePlan),
+            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangePlan,
+            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
         new("field.change.apply", p => Safe(p)
             && FieldChangePayloadContract.IsValidApplyRequest(p),
             (g, p, t) => g.ApplyFieldChangeAsync(p, t),
             MutatesWorkspace: true,
-            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangeApply),
+            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangeApply,
+            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
         new("field.change.status", p => Safe(p)
             && HasExactProperties(p, "jobId")
             && HasString(p, "jobId"),
-            (g, p, t) => g.GetFieldChangeStatusAsync(p, t)),
+            (g, p, t) => g.GetFieldChangeStatusAsync(p, t),
+            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
         new("field.change.cancel", p => Safe(p)
             && HasExactProperties(p, "jobId")
             && HasString(p, "jobId"),
             (g, p, t) => g.CancelFieldChangeAsync(p, t),
-            MutatesWorkspace: true),
+            MutatesWorkspace: true,
+            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
         new("field.recycleBin.list", p => Safe(p)
             && HasExactProperties(p, "tableId")
             && HasString(p, "tableId"),
-            (g, p, t) => g.ListRecycledFieldsAsync(p, t)),
+            (g, p, t) => g.ListRecycledFieldsAsync(p, t),
+            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
         new("schema.getTable", p => Safe(p) && HasExactProperties(p, "tableId") && HasString(p, "tableId"),
             (g, p, t) => g.GetTableSchemaAsync(p, t)),
         new("contentProfile.load", p => Safe(p)

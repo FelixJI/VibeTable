@@ -132,6 +132,7 @@ def contracts() -> None:
     _run("uv", "run", "python", "contracts/workbench/generate_dtos.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_product_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/product_runtime_inventory.py", "--check")
+    _run("uv", "run", "python", "contracts/v2/product_rpc_capability_policy.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_rpc_catalog.py", "--check")
     _run("uv", "run", "python", "contracts/v2/generate_compatibility_package.py", "--check")
     _run(
@@ -157,6 +158,7 @@ def contracts() -> None:
         "tests/contract/test_v2_contracts.py",
         "tests/contract/test_product_contracts.py",
         "tests/contract/test_product_runtime_inventory.py",
+        "tests/contract/test_product_rpc_capability_policy.py",
         "tests/contract/test_workspace_rpc_capability_manifest.py",
         "tests/contract/test_schema_v2_dto_codegen.py",
         "tests/contract/test_workbench_dto_codegen.py",
@@ -175,6 +177,7 @@ def contracts() -> None:
         "src/contracts/workspaceV2.test.ts",
         "src/contracts/workspaceV2Bridge.test.ts",
         "src/contracts/productContractV2.test.ts",
+        "src/contracts/generated/productRpcCapabilities.test.ts",
         cwd=REPO_ROOT / "desktop" / "web-grid",
         env=_node_environment(),
     )
@@ -194,7 +197,7 @@ def contracts() -> None:
         "Release",
         "--no-restore",
         "--filter",
-        "FullyQualifiedName~VibeTable.Desktop.Tests.WorkspaceRpcCapabilityManifestTests",
+        "FullyQualifiedName~VibeTable.Desktop.Tests.WorkspaceRpcCapabilityManifestTests|FullyQualifiedName~VibeTable.Desktop.Tests.ProductRpcCapabilityManifestTests",
     )
     _run(
         "go",
@@ -203,6 +206,7 @@ def contracts() -> None:
         "./internal/contracts",
         "./internal/contracts/schemav2wire",
         "./internal/contracts/workbench",
+        "./internal/contracts/productcapabilities",
         "./internal/protocolv2",
         cwd=REPO_ROOT / "sidecar",
     )
