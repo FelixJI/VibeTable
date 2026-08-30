@@ -102,7 +102,21 @@ export async function locateProductPage({
 }
 
 
-async function createFirstTable(page) {
+export async function activateCreatedTable(page, row, tableId) {
+  await row.locator("button.table-select").click();
+  const activeTableId = (
+    await page.locator(".table-row.table-item--active small").innerText()
+  ).trim();
+  if (activeTableId !== tableId) {
+    throw new Error(
+      `created table activation changed identity: expected ${tableId}, observed ${activeTableId}`,
+    );
+  }
+  await page.getByTestId("table-summary").waitFor({ state: "visible", timeout: 30_000 });
+}
+
+
+export async function createFirstTable(page) {
   const displayName = "Runtime baseline";
   await page.getByTestId("nav-tables").click();
   await page.getByTestId("sidebar-new-table").click();
@@ -128,7 +142,7 @@ async function createFirstTable(page) {
   await page.getByTestId("field-close-button").click();
   await confirmation;
   await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
-  await page.getByTestId("table-summary").waitFor({ state: "visible", timeout: 30_000 });
+  await activateCreatedTable(page, row, tableId);
   return tableId;
 }
 
