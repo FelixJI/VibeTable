@@ -437,9 +437,14 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                         }
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException exception)
+                    when (!callerToken.IsCancellationRequested
+                        && !startupToken.IsCancellationRequested)
                 {
-                    throw;
+                    // HttpClient uses OperationCanceledException for its own
+                    // per-request timeout. Keep polling while the supervisor's
+                    // overall startup budget and caller are still active.
+                    lastFailure = exception;
                 }
                 catch (HttpRequestException exception)
                 {
