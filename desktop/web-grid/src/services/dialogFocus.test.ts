@@ -242,6 +242,45 @@ describe("structured dialog focus", () => {
     dialogFocus.dispose();
   });
 
+  it("reprojects when the logical target changes while the captured cell stays connected", async () => {
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator tabulator-mount";
+    const originalCell = document.createElement("button");
+    originalCell.className = "tabulator-cell";
+    const replacementCell = document.createElement("button");
+    replacementCell.className = "tabulator-cell";
+    gridRoot.append(originalCell, replacementCell);
+    document.body.append(gridRoot);
+    let currentCell = originalCell;
+    const { grid } = createGridHarness(() => currentCell);
+    const dialogFocus = createStructuredDialogFocus({
+      getGrid: () => grid,
+      getScope: () => ({ workspaceId: "workspace-1", sessionEpoch: 7, tableId: "items" }),
+      subscribeScope: () => () => undefined,
+    });
+
+    dialogFocus.capture({
+      element: originalCell,
+      rowKey: "row-7",
+      field: "payload",
+    }).restore();
+    expect(document.activeElement).toBe(originalCell);
+
+    const mutationDelivered = new Promise<void>((resolve) => {
+      const observer = new MutationObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(gridRoot, { childList: true });
+    });
+    currentCell = replacementCell;
+    gridRoot.append(document.createElement("span"));
+    await mutationDelivered;
+
+    expect(document.activeElement).toBe(replacementCell);
+    dialogFocus.dispose();
+  });
+
   it("reprojects after the tableholder takes focus before the replacement cell mounts", async () => {
     const gridRoot = document.createElement("div");
     gridRoot.className = "tabulator";

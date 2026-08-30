@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   captureDialogFocusLeaseInPage,
+  hasDialogFocusLeaseRestoredFocusInPage,
   hasDialogFocusLeaseTerminalInPage,
   readDialogFocusLeaseEvidenceInPage,
 } from "./dialog_focus_terminal.mjs";
@@ -144,6 +145,59 @@ test("accepts a released pending chain and waits for its single restored termina
       terminal: dialogFocus.events.at(-1),
     });
   });
+});
+
+test("requires restored lease evidence and the current logical cell to own DOM focus atomically", () => {
+  const capture = { cursor: 1, leaseId: 7, target: "json" };
+  const oldTarget = { isConnected: true, getAttribute: () => "payload" };
+  const currentTarget = { isConnected: true, getAttribute: () => "payload" };
+  const oldRoot = { isConnected: true, querySelectorAll: () => [oldTarget] };
+  const currentRoot = { isConnected: true, querySelectorAll: () => [currentTarget] };
+  let roots = [oldRoot, currentRoot];
+  globalThis.document = {
+    activeElement: oldTarget,
+    hasFocus: () => true,
+    querySelectorAll: (selector) => selector === ".grid-host > .tabulator-mount.tabulator"
+      ? roots
+      : roots.flatMap((root) => root.querySelectorAll()),
+  };
+  try {
+    withDialogFocus([
+      { cursor: 1, leaseId: 7, state: "claimed", target: "json" },
+      { cursor: 2, leaseId: 7, state: "released", target: "json" },
+      { cursor: 3, leaseId: 7, state: "restored", via: "reprojected", target: "json" },
+    ], () => {
+      assert.equal(hasDialogFocusLeaseRestoredFocusInPage({
+        operation: "has-restored-focus",
+        capture,
+        field: "payload",
+        occurrence: 0,
+      }), false);
+      roots = [currentRoot];
+      assert.equal(hasDialogFocusLeaseRestoredFocusInPage({
+        operation: "has-restored-focus",
+        capture,
+        field: "payload",
+        occurrence: 0,
+      }), false);
+      document.activeElement = currentTarget;
+      assert.equal(hasDialogFocusLeaseRestoredFocusInPage({
+        operation: "has-restored-focus",
+        capture,
+        field: "payload",
+        occurrence: 0,
+      }), true);
+      document.hasFocus = () => false;
+      assert.equal(hasDialogFocusLeaseRestoredFocusInPage({
+        operation: "has-restored-focus",
+        capture,
+        field: "payload",
+        occurrence: 0,
+      }), false);
+    });
+  } finally {
+    delete globalThis.document;
+  }
 });
 
 test("throws a structured failure as soon as the captured lease is cancelled", () => {
