@@ -23,6 +23,26 @@ from tests.e2e.packaged_host_lifecycle import (
 SOURCE_SHA = "a" * 40
 
 
+def _failed_first_table_report() -> dict[str, object]:
+    return {
+        "contractVersion": "1.0",
+        "evidenceKind": "packaged-runtime-ui-probe",
+        "status": "failed",
+        "tableId": None,
+        "sameTableIdentity": False,
+        "tableSummaryVisible": False,
+        "errorOverlayVisible": None,
+        "rowCount": None,
+        "stableWindowMs": 1_000,
+        "errors": [
+            {
+                "code": "FIRST_TABLE_PROBE_FAILED",
+                "message": "first table summary is not visible",
+            }
+        ],
+    }
+
+
 def _write_candidate(
     package_root: Path,
     artifacts_root: Path,
@@ -359,6 +379,70 @@ def test_first_table_probe_normalizes_nonzero_exit_before_reading_report(
         )
 
     assert raised.value.code == "FIRST_TABLE_PROBE_FAILED"
+
+
+def test_first_table_probe_preserves_closed_failure_detail(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "ui-probe.json"
+    report_path.write_text(
+        json.dumps(_failed_first_table_report()),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        packaged_runtime_baseline.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
+    )
+
+    with pytest.raises(packaged_runtime_baseline.BaselineMeasurementError) as raised:
+        packaged_runtime_baseline.run_first_table_probe(
+            Path("node"),
+            "http://127.0.0.1:9222",
+            report_path,
+        )
+
+    assert raised.value.code == "FIRST_TABLE_PROBE_FAILED"
+    assert str(raised.value) == "first table probe failed: first table summary is not visible"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tableId", "unexpected"),
+        ("sameTableIdentity", True),
+        ("tableSummaryVisible", True),
+        ("errorOverlayVisible", False),
+        ("rowCount", 0),
+        ("stableWindowMs", 999),
+    ],
+)
+def test_first_table_probe_rejects_malformed_failure_detail(
+    monkeypatch,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    report_path = tmp_path / "ui-probe.json"
+    report = _failed_first_table_report()
+    report[field] = value
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.setattr(
+        packaged_runtime_baseline.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
+    )
+
+    with pytest.raises(packaged_runtime_baseline.BaselineMeasurementError) as raised:
+        packaged_runtime_baseline.run_first_table_probe(
+            Path("node"),
+            "http://127.0.0.1:9222",
+            report_path,
+        )
+
+    assert raised.value.code == "FIRST_TABLE_PROBE_FAILED"
+    assert str(raised.value) == "first table probe did not prove a stable empty table"
 
 
 @pytest.mark.parametrize(

@@ -93,6 +93,19 @@ def test_lane_allocation_covers_every_required_stage_with_two_race_shards() -> N
     assert all(count == 1 for stage, count in counts.items() if stage != "go-race")
 
 
+def test_runtime_baseline_is_allocated_once_to_resilience_lane() -> None:
+    allocated = [
+        lane
+        for lane, stages in release_eligibility.LANE_STAGES.items()
+        if "runtime-baseline" in stages
+    ]
+
+    assert allocated == ["resilience"]
+    assert release_eligibility.LANE_STAGES["resilience"].index(
+        "product-e2e"
+    ) < release_eligibility.LANE_STAGES["resilience"].index("runtime-baseline")
+
+
 def test_aggregate_reports_preserves_required_stage_order(
     tmp_path: Path,
     aggregate_identity,

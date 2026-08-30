@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  activateCreatedTable,
+  createFirstTable,
   locateProductPage,
   requireStableFirstTable,
   runCli,
@@ -21,6 +23,117 @@ function healthySample(overrides = {}) {
     ...overrides,
   };
 }
+
+
+test("first table setup activates the created table before waiting for its dataset", async () => {
+  const events = [];
+  const tableId = "tbl_runtime_baseline";
+  let activated = false;
+  const filteredName = {};
+  const nameInput = {
+    locator: (selector) => {
+      assert.equal(selector, "input");
+      return { fill: async (value) => { events.push(`name:${value}`); } };
+    },
+    waitFor: async (options) => {
+      assert.deepEqual(options, { state: "hidden", timeout: 30_000 });
+      events.push("create-hidden");
+    },
+  };
+  const row = {
+    waitFor: async (options) => {
+      assert.deepEqual(options, { state: "visible", timeout: 30_000 });
+      events.push("row-visible");
+    },
+    locator: (selector) => {
+      if (selector === "small") return { innerText: async () => tableId };
+      assert.equal(selector, "button.table-select");
+      return {
+        click: async () => {
+          activated = true;
+          events.push("select");
+        },
+      };
+    },
+  };
+  const page = {
+    locator: (selector) => {
+      if (selector === ".table-row") {
+        return {
+          filter: ({ has }) => {
+            assert.equal(has, filteredName);
+            return { last: () => row };
+          },
+        };
+      }
+      assert.equal(selector, ".table-row.table-item--active small");
+      return {
+        innerText: async () => {
+          assert.equal(activated, true);
+          events.push("identity");
+          return tableId;
+        },
+      };
+    },
+    getByTestId: (testId) => {
+      if (testId === "nav-tables" || testId === "sidebar-new-table"
+        || testId === "create-table-submit" || testId === "field-close-button") {
+        return { click: async () => { events.push(testId); } };
+      }
+      if (testId === "create-table-name-input") return nameInput;
+      if (testId === "sidebar-table-name") {
+        return {
+          filter: ({ hasText }) => {
+            assert.equal(hasText, "Runtime baseline");
+            return filteredName;
+          },
+        };
+      }
+      if (testId === "field-display-name") {
+        return {
+          waitFor: async (options = {}) => {
+            events.push(options.state === "hidden" ? "drawer-hidden" : "drawer-visible");
+          },
+        };
+      }
+      assert.equal(testId, "table-summary");
+      return { waitFor: async (options) => {
+        assert.equal(activated, true);
+        assert.deepEqual(options, { state: "visible", timeout: 30_000 });
+        events.push("summary");
+      } };
+    },
+    waitForEvent: async (event, options) => {
+      assert.equal(event, "dialog");
+      assert.deepEqual(options, { timeout: 2_000 });
+      return { accept: async () => {}, message: () => "discard" };
+    },
+  };
+
+  assert.equal(await createFirstTable(page), tableId);
+
+  const activation = events.slice(events.indexOf("drawer-hidden"));
+  assert.deepEqual(activation, ["drawer-hidden", "select", "identity", "summary"]);
+});
+
+
+test("created table activation rejects a different active identity", async () => {
+  let waitedForSummary = false;
+  const row = { locator: () => ({ click: async () => {} }) };
+  const page = {
+    locator: () => ({ innerText: async () => "tbl_other" }),
+    getByTestId: () => ({
+      waitFor: async () => { waitedForSummary = true; },
+    }),
+  };
+
+  await assert.rejects(
+    activateCreatedTable(page, row, "tbl_runtime_baseline"),
+    /expected tbl_runtime_baseline, observed tbl_other/,
+  );
+
+  assert.equal(waitedForSummary, false);
+});
 
 
 test("first table oracle requires a continuous stable grid window", async () => {

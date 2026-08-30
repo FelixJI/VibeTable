@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import sys
 import threading
 import xml.etree.ElementTree as ET
 from contextlib import suppress
@@ -296,6 +297,53 @@ def test_workbench_qualification_stage_freezes_representative_scale_and_report()
     )
     assert Path(cwd) == next_gate.SIDECAR_DIR
     assert "workbench-qualification" in next_gate.LANE_STAGES["resilience"]
+
+
+def test_runtime_baseline_stage_uses_candidate_package_and_bounded_evidence_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    qa_temp = tmp_path / "q"
+    package_root = tmp_path / "VibeTable.Next"
+    package_archive = tmp_path / "VibeTable-v0.5.1-win-x64.zip"
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+
+    command, cwd = next_gate.stage_command(
+        "runtime-baseline",
+        package_root,
+        package_archive,
+    )
+
+    assert command[:3] == [
+        sys.executable,
+        "-m",
+        "tests.e2e.packaged_runtime_baseline",
+    ]
+    assert Path(command[command.index("--package-root") + 1]) == package_root
+    assert Path(command[command.index("--package-archive") + 1]) == package_archive
+    assert Path(command[command.index("--workspace-root") + 1]) == qa_temp / "r" / "workspace"
+    assert Path(command[command.index("--evidence-root") + 1]) == qa_temp / "r" / "runtime"
+    assert Path(command[command.index("--build-identity") + 1]) == (
+        next_gate.REPO_ROOT / "build" / "automation" / "artifacts" / "build-identity.json"
+    )
+    assert command[command.index("--source-sha") + 1] == "c" * 40
+    assert Path(command[command.index("--json-report") + 1]) == (
+        qa_temp / "r" / "packaged-runtime-baseline.json"
+    )
+    assert Path(cwd) == next_gate.REPO_ROOT
+    help_result = subprocess.run(
+        [*command, "--help"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "Measure one real packaged workspace lifecycle" in help_result.stdout
+
+    with pytest.raises(ValueError, match="--package-root and --package-archive"):
+        next_gate.stage_command("runtime-baseline", package_root)
 
 
 def test_packaged_recovery_tools_are_injected_into_go_interoperability_stages(
@@ -1620,6 +1668,274 @@ def test_successful_product_lane_fails_closed_when_report_cannot_be_persisted(
     )
     assert qa_temp.is_dir()
     assert qa_temp == next_gate.QA_RUN_TEMP_DIR
+    assert json.loads(report.read_text(encoding="utf-8"))["ok"] is False
+
+
+def _runtime_candidate_evidence() -> dict[str, object]:
+    return {
+        "schemaVersion": 2,
+        "packageTreeSha256": "a" * 64,
+        "packageFileCount": 6,
+        "archive": {
+            "name": "VibeTable-v1.2.3-win-x64.zip",
+            "rootDirectory": "VibeTable",
+            "sha256": "b" * 64,
+            "size": 1024,
+            "treeSha256": "a" * 64,
+            "fileCount": 6,
+            "checksumFile": "VibeTable-v1.2.3-win-x64.zip.sha256",
+        },
+    }
+
+
+def _prepare_runtime_baseline_lane(
+    monkeypatch,
+    tmp_path: Path,
+) -> tuple[Path, Path]:
+    qa_temp = tmp_path / "qa-runtime-baseline"
+    source_report = qa_temp / "r" / "packaged-runtime-baseline.json"
+    source_report.parent.mkdir(parents=True)
+    source_report.write_text(
+        json.dumps(
+            {
+                "contractVersion": "1.0",
+                "evidenceKind": "packaged-runtime-baseline",
+                "status": "passed",
+                "coverage": {},
+                "identity": {},
+                "releaseCandidate": _runtime_candidate_evidence(),
+                "sampling": {},
+                "workspace": {},
+                "firstTable": {},
+                "measurements": {},
+                "lifecycle": {},
+                "errors": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "artifact_hashes",
+        lambda _deps: {"sidecar": "d" * 64},
+    )
+    monkeypatch.setattr(
+        next_gate.handoff_gate,
+        "release_source_hash",
+        lambda _deps: "s" * 64,
+    )
+    monkeypatch.setattr(
+        next_gate,
+        "run_lane",
+        lambda lane, package_root, package_archive: (
+            0,
+            [
+                next_gate.StageResult(
+                    stage="runtime-baseline",
+                    command=["test"],
+                    returncode=0,
+                    elapsed=0.01,
+                    stdout="",
+                    stderr="",
+                    cwd=str(next_gate.REPO_ROOT),
+                )
+            ],
+        ),
+    )
+    return qa_temp, source_report
+
+
+def test_runtime_baseline_evidence_copies_one_exact_closed_report(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "packaged-runtime-baseline.json"
+    source.parent.mkdir()
+    candidate = _runtime_candidate_evidence()
+    payload = {
+        "contractVersion": "1.0",
+        "evidenceKind": "packaged-runtime-baseline",
+        "status": "passed",
+        "coverage": {},
+        "identity": {},
+        "releaseCandidate": candidate,
+        "sampling": {},
+        "workspace": {},
+        "firstTable": {},
+        "measurements": {},
+        "lifecycle": {},
+        "errors": [],
+    }
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    destination = next_gate.persist_runtime_baseline_evidence(
+        source,
+        tmp_path / "destination",
+        expected_candidate=candidate,
+        require_passing_report=True,
+    )
+
+    assert destination == tmp_path / "destination" / source.name
+    assert json.loads(destination.read_text(encoding="utf-8")) == payload
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.update(evidenceKind="wrong"),
+        lambda payload: payload.update(status="unknown"),
+        lambda payload: payload.update(status="failed", errors=[]),
+        lambda payload: payload.pop("releaseCandidate"),
+        lambda payload: payload.update(releaseCandidate={"schemaVersion": 2}),
+        lambda payload: payload.update(extra="field"),
+    ],
+    ids=(
+        "wrong-kind",
+        "unknown-status",
+        "failed-when-passing-required",
+        "missing-candidate",
+        "different-candidate",
+        "extra-field",
+    ),
+)
+def test_runtime_baseline_evidence_rejects_invalid_or_nonpassing_report(
+    tmp_path: Path,
+    mutation,
+) -> None:
+    source = tmp_path / "packaged-runtime-baseline.json"
+    candidate = _runtime_candidate_evidence()
+    payload = {
+        "contractVersion": "1.0",
+        "evidenceKind": "packaged-runtime-baseline",
+        "status": "passed",
+        "coverage": {},
+        "identity": {},
+        "releaseCandidate": candidate,
+        "sampling": {},
+        "workspace": {},
+        "firstTable": {},
+        "measurements": {},
+        "lifecycle": {},
+        "errors": [],
+    }
+    mutation(payload)
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runtime baseline"):
+        next_gate.persist_runtime_baseline_evidence(
+            source,
+            tmp_path / "destination",
+            expected_candidate=candidate,
+            require_passing_report=True,
+        )
+
+
+def test_runtime_baseline_lane_persists_closed_report_before_qa_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    qa_temp, source_report = _prepare_runtime_baseline_lane(monkeypatch, tmp_path)
+    observed: list[tuple[Path, Path]] = []
+
+    def persist(
+        source: Path,
+        destination: Path,
+        *,
+        expected_candidate: dict[str, object] | None,
+        require_passing_report: bool,
+    ) -> Path:
+        assert source == source_report
+        assert source.is_file()
+        assert require_passing_report
+        assert expected_candidate is not None
+        assert expected_candidate["schemaVersion"] == 2
+        observed.append((source, destination))
+        return destination / source.name
+
+    monkeypatch.setattr(next_gate, "persist_runtime_baseline_evidence", persist)
+    report = tmp_path / "lane-reports" / "resilience.json"
+
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "resilience",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == 0
+    )
+    assert observed == [
+        (
+            source_report,
+            next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / "resilience",
+        )
+    ]
+    assert not qa_temp.exists()
+    assert json.loads(report.read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_runtime_baseline_lane_rejects_report_for_another_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    qa_temp, _source_report = _prepare_runtime_baseline_lane(monkeypatch, tmp_path)
+    report = tmp_path / "lane-reports" / "resilience.json"
+
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "resilience",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == 1
+    )
+    assert qa_temp.is_dir()
+    assert json.loads(report.read_text(encoding="utf-8"))["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "persistence_failure",
+    [None, OSError("copy failed")],
+    ids=("report-missing", "copy-error"),
+)
+def test_runtime_baseline_lane_fails_closed_when_report_cannot_be_persisted(
+    monkeypatch,
+    tmp_path: Path,
+    persistence_failure: OSError | None,
+) -> None:
+    qa_temp, _source_report = _prepare_runtime_baseline_lane(monkeypatch, tmp_path)
+
+    def persist(*_args, **kwargs):
+        assert kwargs["require_passing_report"] is True
+        assert kwargs["expected_candidate"] is not None
+        assert set(kwargs) == {"expected_candidate", "require_passing_report"}
+        if persistence_failure is not None:
+            raise persistence_failure
+        return None
+
+    monkeypatch.setattr(next_gate, "persist_runtime_baseline_evidence", persist)
+    report = tmp_path / "lane-reports" / "resilience.json"
+
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "resilience",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == 1
+    )
+    assert qa_temp.is_dir()
     assert json.loads(report.read_text(encoding="utf-8"))["ok"] is False
 
 
