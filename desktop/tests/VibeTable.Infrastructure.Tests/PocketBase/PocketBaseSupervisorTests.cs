@@ -336,6 +336,31 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
+    public async Task StartAsync_RetriesAnIndividualHealthProbeTimeoutWithinStartupBudget()
+    {
+        int attempts = 0;
+        var process = FakePocketBaseProcess.Ready(ReadyRecord());
+        var health = new FakePocketBaseHealthProbe(
+            isHealthy: true,
+            onHealth: () =>
+            {
+                attempts++;
+                if (attempts == 1)
+                    throw new TaskCanceledException("individual health probe timed out");
+            });
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(startupTimeout: TimeSpan.FromSeconds(1)),
+            new FakePocketBaseProcessFactory(process),
+            health);
+
+        await supervisor.StartAsync(CancellationToken.None);
+
+        Assert.AreEqual(2, health.Requests.Count);
+        Assert.AreEqual(PocketBaseState.Ready, supervisor.GetStatus().State);
+        Assert.AreEqual(0, process.KillProcessTreeCalls);
+    }
+
+    [TestMethod]
     public async Task Diagnostics_RedactsASecretEmittedWhileProcessIsBeingDisposed()
     {
         var factory = new FakePocketBaseProcessFactory(request =>
