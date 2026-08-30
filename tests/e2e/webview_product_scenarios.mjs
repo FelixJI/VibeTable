@@ -18,7 +18,7 @@ import {
 } from "./bridge_diagnostics_instrumentation.mjs";
 import {
   captureDialogFocusLeaseInPage,
-  hasDialogFocusLeaseTerminalInPage,
+  hasDialogFocusLeaseRestoredFocusInPage,
   readDialogFocusLeaseEvidenceInPage,
 } from "./dialog_focus_terminal.mjs";
 import {
@@ -1959,11 +1959,26 @@ async function scenario04(page, recorder, _network, runtime) {
   });
   await page.keyboard.press("Escape");
   await page.getByTestId("json-editor-modal").waitFor({ state: "hidden" });
-  await page.waitForFunction(
-    hasDialogFocusLeaseTerminalInPage,
-    { operation: "has-terminal", capture: focusLease },
-    { timeout: 10_000 },
-  );
+  let focusRestorationObserved = false;
+  let focusRestorationWaitError = null;
+  try {
+    const restoredFocus = await page.waitForFunction(
+      hasDialogFocusLeaseRestoredFocusInPage,
+      {
+        operation: "has-restored-focus",
+        capture: focusLease,
+        field: jsonField,
+        occurrence: 0,
+      },
+      { timeout: 10_000 },
+    );
+    await restoredFocus.dispose();
+    focusRestorationObserved = true;
+  } catch (error) {
+    focusRestorationWaitError = error instanceof Error
+      ? { name: error.name, message: error.message }
+      : { name: "UnknownError", message: String(error) };
+  }
   const focusLeaseEvidence = await page.evaluate(
     readDialogFocusLeaseEvidenceInPage,
     { operation: "read-evidence", capture: focusLease },
@@ -1974,13 +1989,26 @@ async function scenario04(page, recorder, _network, runtime) {
     documentHasFocus: document.hasFocus(),
     restored: document.activeElement === element,
     activeTag: document.activeElement?.tagName ?? null,
+    activeClass: document.activeElement instanceof HTMLElement
+      ? document.activeElement.className
+      : null,
+    activeField: document.activeElement instanceof HTMLElement
+      ? document.activeElement.getAttribute("tabulator-field")
+      : null,
+    activeRole: document.activeElement instanceof HTMLElement
+      ? document.activeElement.getAttribute("role")
+      : null,
+    activeTestId: document.activeElement instanceof HTMLElement
+      ? document.activeElement.getAttribute("data-testid")
+      : null,
   }));
   recorder.check(
     "Escape closes the structured modal and restores focus when the renderer owns OS focus",
-    focusRestoration.documentHasFocus
+    focusRestorationObserved
+      && focusRestoration.documentHasFocus
       && focusLeaseEvidence.terminal?.state === "restored"
       && focusRestoration.restored,
-    { focusLeaseEvidence, focusRestoration },
+    { focusLeaseEvidence, focusRestoration, focusRestorationWaitError },
   );
   await jsonCell.press("Shift+F10");
   const keyboardContextMenu = page.locator(".n-dropdown-menu:visible").last();

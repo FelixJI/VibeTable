@@ -202,7 +202,13 @@ export function createStructuredDialogFocus(
     const onRenderComplete = () => reattemptRestore();
 
     const onFocusTargetMutation = () => {
-      if (target.element?.isConnected === true) return;
+      const grid = dependencies.getGrid();
+      const resolved = resolveStructuredDialogFocusTarget(grid, target);
+      if (
+        target.element?.isConnected === true
+        && resolved.status === "resolved"
+        && resolved.element === target.element
+      ) return;
       if (
         document.activeElement !== document.body
         && document.activeElement !== document.documentElement

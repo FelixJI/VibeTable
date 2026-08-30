@@ -2544,13 +2544,21 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert 'jsonCell.press("Shift+F10")' in scenario
     assert 'operation: "capture"' in scenario
     assert 'target: "json"' in scenario
-    assert "hasDialogFocusLeaseTerminalInPage" in scenario
+    assert "hasDialogFocusLeaseRestoredFocusInPage" in scenario
     assert "readDialogFocusLeaseEvidenceInPage" in scenario
+    assert 'operation: "has-restored-focus"' in scenario
+    assert "field: jsonField" in scenario
+    assert "occurrence: 0" in scenario
     assert 'focusLeaseEvidence.terminal?.state === "restored"' in scenario
     assert scenario.index('operation: "capture"') < scenario.index('page.keyboard.press("Escape")')
+    assert scenario.index('page.keyboard.press("Escape")') < scenario.index(
+        'operation: "has-restored-focus"'
+    )
+    assert "focusRestorationObserved\n      &&" in scenario
     assert "focusRestoration.documentHasFocus\n      &&" in scenario
     assert "!focusRestoration.documentHasFocus" not in scenario
     assert "document.activeElement === element" in scenario
+    assert 'document.activeElement.getAttribute("tabulator-field")' in scenario
     assert "`${jsonField}\\n" in scenario
     assert 'setProductLocale(page, "en-US")' in scenario
     assert 'setProductLocale(page, "zh-CN")' in scenario

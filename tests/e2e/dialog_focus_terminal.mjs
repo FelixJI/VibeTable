@@ -1,6 +1,6 @@
 /**
- * One self-contained evaluator is deliberately exported under all three
- * operation names. Playwright serializes the function body into the product
+ * One self-contained evaluator is deliberately exported under every
+ * operation name. Playwright serializes the function body into the product
  * page, so this keeps capture, wait, and evidence reads on one validator.
  */
 export function captureDialogFocusLeaseInPage(request) {
@@ -164,7 +164,11 @@ export function captureDialogFocusLeaseInPage(request) {
     return capture;
   }
 
-  if (request?.operation === "has-terminal" || request?.operation === "read-evidence") {
+  if (
+    request?.operation === "has-terminal"
+    || request?.operation === "has-restored-focus"
+    || request?.operation === "read-evidence"
+  ) {
     const validated = validateLease(request.capture);
     const capture = validated.capture;
     if (validated.terminal?.state === "cancelled") {
@@ -176,6 +180,30 @@ export function captureDialogFocusLeaseInPage(request) {
       });
     }
     if (request.operation === "has-terminal") return validated.terminal !== null;
+    if (request.operation === "has-restored-focus") {
+      if (
+        typeof request.field !== "string"
+        || request.field.length === 0
+        || request.field.length > 200
+        || !Number.isSafeInteger(request.occurrence)
+        || request.occurrence < 0
+        || request.occurrence > 10_000
+      ) {
+        fail("DIALOG_FOCUS_TARGET_INVALID");
+      }
+      if (validated.terminal?.state !== "restored") return false;
+      const gridRoots = Array.from(
+        document.querySelectorAll(".grid-host > .tabulator-mount.tabulator"),
+      ).filter((candidate) => candidate.isConnected === true);
+      if (gridRoots.length !== 1) return false;
+      const matchingCells = Array.from(
+        gridRoots[0].querySelectorAll(".tabulator-cell[tabulator-field]"),
+      ).filter((candidate) => candidate.getAttribute("tabulator-field") === request.field);
+      const element = matchingCells[request.occurrence] ?? null;
+      return document.hasFocus()
+        && element?.isConnected === true
+        && document.activeElement === element;
+    }
     return { capture, events: validated.events, terminal: validated.terminal };
   }
 
@@ -183,4 +211,5 @@ export function captureDialogFocusLeaseInPage(request) {
 }
 
 export const hasDialogFocusLeaseTerminalInPage = captureDialogFocusLeaseInPage;
+export const hasDialogFocusLeaseRestoredFocusInPage = captureDialogFocusLeaseInPage;
 export const readDialogFocusLeaseEvidenceInPage = captureDialogFocusLeaseInPage;
