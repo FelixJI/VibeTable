@@ -987,10 +987,22 @@ describe("WorkspaceView", () => {
     await flushPromises();
 
     const bar = wrapper.findComponent(DataSourceViewBar);
+    const presets = usePresetVersionStore(testPinia);
     expect(bar.exists()).toBe(true);
-    const answerSave = async (saved: PresetEntry) => {
-      await flushPromises();
-      const request = [...posted].reverse().find((item) => item.type === "preset.save")!;
+    const answeredSaveRequestIds = new Set<string>();
+    const answerSave = async (saved: PresetEntry, expectedPresetId: string | null) => {
+      let request: Outbound | undefined;
+      await vi.waitFor(() => {
+        request = posted.find(item => (
+          item.type === "preset.save"
+          && typeof item.requestId === "string"
+          && !answeredSaveRequestIds.has(item.requestId)
+        ));
+        expect(request).toBeDefined();
+      });
+      if (!request?.requestId) throw new Error("Expected a new preset.save request");
+      expect(request.payload).toMatchObject({ presetId: expectedPresetId });
+      answeredSaveRequestIds.add(request.requestId);
       emit({ type: "preset.save", requestId: request.requestId, payload: saved });
       await flushPromises();
     };
@@ -1000,34 +1012,36 @@ describe("WorkspaceView", () => {
       titleField: "title", groupField: null, coverField: null,
     });
     const created = { ...entry("view-3", "日历"), view: { ...entry("view-3", "日历").view, kind: "calendar" as const, layout: "calendar" as const, dateField: "start", titleField: "title" } };
-    await answerSave(created);
-    expect(usePresetVersionStore().activePresetId).toBe("view-3");
+    await answerSave(created, null);
+    await vi.waitFor(() => expect(presets.activePresetId).toBe("view-3"));
 
     bar.vm.$emit("duplicate", created, "日历副本");
     const duplicated = { ...created, id: "view-4", name: "日历副本", revision: "revision-view-4", view: { ...created.view, isDefault: false } };
-    await answerSave(duplicated);
+    await answerSave(duplicated, null);
     bar.vm.$emit("rename", duplicated, "迭代日历");
     const renamed = { ...duplicated, name: "迭代日历", revision: "revision-renamed" };
-    await answerSave(renamed);
+    await answerSave(renamed, "view-4");
 
     bar.vm.$emit("setDefault", renamed);
     const promoted = { ...renamed, view: { ...renamed.view, isDefault: true } };
-    await answerSave(promoted);
-    await answerSave({ ...first, view: { ...first.view, isDefault: false } });
-    expect(usePresetVersionStore().activePresetId).toBe("view-4");
+    await answerSave(promoted, "view-4");
+    await answerSave({ ...first, view: { ...first.view, isDefault: false } }, "view-1");
+    await vi.waitFor(() => expect(presets.activePresetId).toBe("view-4"));
 
     bar.vm.$emit("switch", second);
-    await answerSave(promoted);
-    expect(usePresetVersionStore().activePresetId).toBe("view-2");
+    await answerSave(promoted, "view-4");
+    await vi.waitFor(() => expect(presets.activePresetId).toBe("view-2"));
     bar.vm.$emit("save", second);
-    await answerSave({ ...second, revision: "revision-saved" });
+    await answerSave({ ...second, revision: "revision-saved" }, "view-2");
 
     bar.vm.$emit("delete", second);
     await flushPromises();
     const deleteRequest = [...posted].reverse().find((item) => item.type === "preset.delete")!;
     emit({ type: "preset.delete", requestId: deleteRequest.requestId, payload: { deleted: second.id } });
     await flushPromises();
-    expect(usePresetVersionStore().presets.some((item) => item.id === second.id)).toBe(false);
+    await vi.waitFor(() => {
+      expect(presets.presets.some((item) => item.id === second.id)).toBe(false);
+    });
   });
 
   it("opens Interfaces and guards its unsaved draft before leaving", async () => {
