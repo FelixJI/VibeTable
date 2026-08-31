@@ -18,18 +18,35 @@ public sealed class ProductDataRequestController
         TimeSpan.FromMilliseconds(25);
 
     private readonly IWebReplySink _reply;
+    private readonly ProductRpcRouteSelector _routeSelector;
     private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly TimeSpan _readRecoveryTimeout;
     private readonly object _gatewayGate = new();
     private readonly FieldChangeProtectionPlanLedger _fieldChangePlans = new();
     private IProductDataRpcGateway? _gateway;
+    private IProductSidecarRpcForwarder? _sidecarForwarder;
 
     public ProductDataRequestController(
         IWebReplySink reply,
         TimeSpan? readRecoveryTimeout = null,
         WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
+        : this(
+            reply,
+            ProductRpcRouteSelector.Default,
+            readRecoveryTimeout,
+            sessionEnvelopeFilter)
+    {
+    }
+
+    internal ProductDataRequestController(
+        IWebReplySink reply,
+        ProductRpcRouteSelector routeSelector,
+        TimeSpan? readRecoveryTimeout = null,
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
+        _routeSelector = routeSelector
+            ?? throw new ArgumentNullException(nameof(routeSelector));
         _readRecoveryTimeout = readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
         _sessionEnvelopeFilter = sessionEnvelopeFilter;
     }
@@ -70,6 +87,27 @@ public sealed class ProductDataRequestController
         }
     }
 
+    internal void SetProductSidecarForwarder(
+        IProductSidecarRpcForwarder forwarder)
+    {
+        ArgumentNullException.ThrowIfNull(forwarder);
+        lock (_gatewayGate)
+            _sidecarForwarder = forwarder;
+    }
+
+    internal bool ClearProductSidecarForwarder(
+        IProductSidecarRpcForwarder expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        lock (_gatewayGate)
+        {
+            if (!ReferenceEquals(_sidecarForwarder, expected))
+                return false;
+            _sidecarForwarder = null;
+            return true;
+        }
+    }
+
     public Task DispatchAsync(RoutedWebRequest request)
         => ProductDataRpcRegistry.Contains(request.Type)
             ? DispatchProductAsync(request)
@@ -80,6 +118,14 @@ public sealed class ProductDataRequestController
     private async Task DispatchRelationLookupAsync(RoutedWebRequest request)
     {
         if (!RelationLookupRpcRegistry.TryGet(request.Type, out var endpoint))
+        {
+            RejectUnknown(request);
+            return;
+        }
+        if (!_routeSelector.TrySelectRelation(
+                request.Type,
+                out ProductRpcRoute relationRoute)
+            || relationRoute != ProductRpcRoute.PythonBff)
         {
             RejectUnknown(request);
             return;
@@ -173,7 +219,17 @@ public sealed class ProductDataRequestController
             epochLease?.Dispose();
             return;
         }
+        if (!_routeSelector.TrySelectProduct(
+                request.Type,
+                endpoint.CapabilityCatalog,
+                out ProductRpcRoute route))
+        {
+            RejectUnknown(request);
+            epochLease?.Dispose();
+            return;
+        }
         (IProductDataRpcGateway? gateway,
+            IProductSidecarRpcForwarder? sidecarForwarder,
             FieldChangeProtectionLedgerContext protectionContext) =
             CaptureProductContext(request.Scope);
         try
@@ -185,23 +241,58 @@ public sealed class ProductDataRequestController
                 protectionContext).ConfigureAwait(false);
             if (!IsRequestCurrent(epochLease))
                 return;
-            JsonElement result = string.Equals(
-                request.Type,
-                "query.page",
-                StringComparison.Ordinal)
-                    ? await InvokeRecoverableReadAsync(
-                        endpoint,
-                        request.Payload,
-                        gateway,
-                        epochLease).ConfigureAwait(false)
-                    : gateway is null
-                        ? throw new BackendUnavailableException(
-                            "The local data service is not ready.")
-                        : await endpoint.InvokeAsync(
+            JsonElement result;
+            if (route == ProductRpcRoute.GoSidecar)
+            {
+                if (string.IsNullOrWhiteSpace(request.RequestId)
+                    || request.Wire.ValueKind != JsonValueKind.Object)
+                {
+                    RejectPayload(request);
+                    return;
+                }
+                if (sidecarForwarder is null)
+                    throw new BackendUnavailableException(
+                        "The Product Sidecar route is not bound.");
+                ProductSidecarForwardResult forwarded =
+                    await sidecarForwarder.ForwardAsync(
+                        request.RequestId,
+                        request.Type,
+                        request.Wire,
+                        forwardedPayload,
+                        epochLease?.CancellationToken
+                            ?? CancellationToken.None).ConfigureAwait(false);
+                if (!IsRequestCurrent(epochLease))
+                    return;
+                if (forwarded is ProductSidecarFailure failure)
+                {
+                    PostSidecarFailure(request, failure.Error);
+                    return;
+                }
+                if (forwarded is not ProductSidecarSuccess success)
+                    throw new BackendUnavailableException(
+                        "The Product Sidecar returned an unknown outcome.");
+                result = success.Result;
+            }
+            else
+            {
+                result = string.Equals(
+                    request.Type,
+                    "query.page",
+                    StringComparison.Ordinal)
+                        ? await InvokeRecoverableReadAsync(
+                            endpoint,
+                            request.Payload,
                             gateway,
-                            forwardedPayload,
-                            epochLease?.CancellationToken
-                                ?? CancellationToken.None).ConfigureAwait(false);
+                            epochLease).ConfigureAwait(false)
+                        : gateway is null
+                            ? throw new BackendUnavailableException(
+                                "The local data service is not ready.")
+                            : await endpoint.InvokeAsync(
+                                gateway,
+                                forwardedPayload,
+                                epochLease?.CancellationToken
+                                    ?? CancellationToken.None).ConfigureAwait(false);
+            }
             if (!IsRequestCurrent(epochLease))
                 return;
             endpoint.ProtectionPolicy?.ObserveSuccessfulResponse(
@@ -294,6 +385,7 @@ public sealed class ProductDataRequestController
 
     private (
         IProductDataRpcGateway? Gateway,
+        IProductSidecarRpcForwarder? SidecarForwarder,
         FieldChangeProtectionLedgerContext ProtectionContext)
         CaptureProductContext(WorkspaceWireScope? scope)
     {
@@ -301,8 +393,32 @@ public sealed class ProductDataRequestController
         {
             return (
                 _gateway,
+                _sidecarForwarder,
                 _fieldChangePlans.BeginRequest(scope));
         }
+    }
+
+    private void PostSidecarFailure(
+        RoutedWebRequest request,
+        ProductSidecarRpcError error)
+    {
+        if (error.Code == -32602)
+        {
+            RejectPayload(request);
+            return;
+        }
+        if (error.Code == -32150
+            && error.Data is JsonElement data
+            && ProductRpcErrorMapper.TryMap(data, out JsonElement mapped))
+        {
+            _reply.PostResponse(request.Type, request.RequestId, mapped);
+            return;
+        }
+        TraceFailure(request.Type, "PRODUCT_RPC_FAILED");
+        _reply.PostOperationFailed(
+            request.RequestId,
+            "Product data operation failed.",
+            "PRODUCT_DATA_FAILED");
     }
 
     private async Task<JsonElement> InvokeRecoverableReadAsync(

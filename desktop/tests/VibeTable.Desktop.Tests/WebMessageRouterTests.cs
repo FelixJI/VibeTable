@@ -880,6 +880,86 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void GoProductRouteRequiresWorkspaceScopeAndPreservesRawWireObject()
+    {
+        Guid workspaceId = Guid.NewGuid();
+        Guid operationId = Guid.NewGuid();
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability(
+                "query.page",
+                "workspace",
+                "rendererPublic",
+                "product.query.page",
+                "goSidecar",
+                "read"));
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            policy)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? missingScope = router.Route(
+            """{"type":"query.page","requestId":"missing","payload":{"tableId":"orders","query":{}}}""");
+        HostReplyMessage? invalidScope = router.Route(
+            """{"type":"query.page","requestId":"invalid","scope":{"scope":"workspace"},"payload":{"tableId":"orders","query":{}}}""");
+        string acceptedJson = JsonSerializer.Serialize(new
+        {
+            type = "query.page",
+            requestId = "go-query",
+            scope = new
+            {
+                sequence = 0,
+                operationId,
+                scope = "workspace",
+                sessionEpoch = 9,
+                workspaceId,
+            },
+            payload = new { tableId = "orders", query = new { } },
+        });
+        HostReplyMessage? accepted = router.Route(acceptedJson);
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", missingScope?.Payload?.Code);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", invalidScope?.Payload?.Code);
+        Assert.IsNull(accepted);
+        RoutedWebRequest routed = dispatched.Single();
+        Assert.AreEqual(workspaceId, routed.Scope?.WorkspaceId);
+        using JsonDocument expectedDocument = JsonDocument.Parse(acceptedJson);
+        JsonElement expectedWire = expectedDocument.RootElement.GetProperty("scope");
+        Assert.IsTrue(JsonElement.DeepEquals(expectedWire, routed.Wire));
+        Assert.AreEqual(expectedWire.GetRawText(), routed.Wire.GetRawText());
+    }
+
+    [TestMethod]
+    public void RelationRouteFailsClosedWhenTestPolicyAssignsGoSidecar()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability(
+                "relation.searchTargets",
+                "workspace",
+                "rendererPublic",
+                "product.relation.search_targets",
+                "goSidecar",
+                "read"));
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            policy)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? reply = router.Route(
+            """{"type":"relation.searchTargets","requestId":"relation-go","payload":{"relationId":"customer"}}""");
+
+        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+    }
+
+    [TestMethod]
     public void GeneratedProductPolicyDoesNotHideExistingPublicTypedRoutes()
     {
         ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.Default;
