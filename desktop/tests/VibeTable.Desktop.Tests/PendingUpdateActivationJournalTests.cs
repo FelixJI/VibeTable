@@ -20,6 +20,119 @@ public sealed class PendingUpdateActivationJournalTests
     }
 
     [TestMethod]
+    public async Task RecoveryReadWaitsForJournalWriterBeforeReadingState()
+    {
+        UpdateApplyPlan plan = CreatePendingPlan("recovery-read-lock", '0');
+        var watchdog = new UpdateProcessIdentity(
+            123,
+            new DateTimeOffset(2026, 8, 31, 1, 0, 0, TimeSpan.Zero));
+        PendingUpdateActivationJournal.Publish(plan, watchdog);
+        PendingUpdateActivationJournal.RecordUpdatedLaunch(
+            plan,
+            watchdog,
+            "owned-group",
+            new string('1', 64));
+        var readStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<UpdateRecoveryState> read;
+
+        using (FileStream writer = ClaimJournalLock(plan))
+        {
+            read = Task.Run(() =>
+            {
+                readStarted.SetResult();
+                return PendingUpdateActivationJournal.ReadRecoveryState(plan, watchdog);
+            });
+            await readStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.IsFalse(
+                read.Wait(TimeSpan.FromMilliseconds(250)),
+                "Recovery read bypassed an active journal writer lock.");
+        }
+
+        Assert.AreEqual(
+            UpdateRecoveryState.LaunchingUpdatedApp,
+            await read.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [TestMethod]
+    public async Task JournalWriterWaitsForActiveReaderBeforeReplacingState()
+    {
+        UpdateApplyPlan plan = CreatePendingPlan("journal-writer-lock", '2');
+        var watchdog = new UpdateProcessIdentity(
+            123,
+            new DateTimeOffset(2026, 8, 31, 1, 1, 0, TimeSpan.Zero));
+        PendingUpdateActivationJournal.Publish(plan, watchdog);
+        var writeStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task write;
+
+        using (FileStream reader = ClaimJournalLock(plan))
+        {
+            write = Task.Run(() =>
+            {
+                writeStarted.SetResult();
+                PendingUpdateActivationJournal.RecordUpdatedLaunch(
+                    plan,
+                    watchdog,
+                    "owned-group",
+                    new string('3', 64));
+            });
+            await writeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+
+            Assert.IsFalse(
+                write.IsCompleted,
+                "Journal writer failed or bypassed an active reader lock.");
+        }
+
+        await write.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(
+            UpdateRecoveryState.LaunchingUpdatedApp,
+            PendingUpdateActivationJournal.ReadRecoveryState(plan, watchdog));
+    }
+
+    [TestMethod]
+    public async Task RecoveryReadFailsClosedWhenJournalLockOutlivesBudget()
+    {
+        UpdateApplyPlan plan = CreatePendingPlan("recovery-read-lock-timeout", '4');
+        var watchdog = new UpdateProcessIdentity(
+            123,
+            new DateTimeOffset(2026, 8, 31, 1, 2, 0, TimeSpan.Zero));
+        PendingUpdateActivationJournal.Publish(plan, watchdog);
+        PendingUpdateActivationJournal.RecordUpdatedLaunch(
+            plan,
+            watchdog,
+            "owned-group",
+            new string('5', 64));
+        var readStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<UpdateRecoveryState> read;
+
+        using (FileStream writer = ClaimJournalLock(plan))
+        {
+            read = Task.Run(() =>
+            {
+                readStarted.SetResult();
+                return PendingUpdateActivationJournal.ReadRecoveryState(plan, watchdog);
+            });
+            await readStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromMilliseconds(5_500));
+
+            Assert.IsTrue(
+                read.IsCompleted,
+                "Recovery read remained eligible to acquire the lock after its budget expired.");
+            IOException contention = await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            {
+                _ = await read;
+            });
+            Assert.IsTrue(
+                (contention.HResult & 0xffff) is 32 or 33,
+                $"Unexpected lock contention HRESULT: 0x{contention.HResult:x8}.");
+        }
+    }
+
+    [TestMethod]
     public void UnconfirmedActivationResumesWithoutCleanupArgumentsAfterProcessExit()
     {
         UpdateApplyPlan plan = CreatePendingPlan("resume", 'a');
@@ -569,6 +682,19 @@ public sealed class PendingUpdateActivationJournalTests
             Path.Combine(stage, "update-plan.json"),
             JsonSerializer.Serialize(plan));
         return plan;
+    }
+
+    private static FileStream ClaimJournalLock(UpdateApplyPlan plan)
+    {
+        string pointerPath = PendingUpdateActivationJournal.GetPointerPath(plan.TargetRoot);
+        string lockPath = Path.Combine(
+            Path.GetDirectoryName(pointerPath)!,
+            ".VibeTable.Next.update-pending.lock");
+        return new FileStream(
+            lockPath,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
     }
 
     private static string[] CleanupArguments(
