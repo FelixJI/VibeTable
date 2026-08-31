@@ -61,6 +61,85 @@ public sealed class StreamJsonLineTransportTests
     }
 
     [TestMethod]
+    public async Task WriteAsync_CancellationAfterFrameStarts_CompletesTheFrame()
+    {
+        await using var stream = new PausedPartialWriteStream();
+        await using var transport = new StreamJsonLineTransport(new MemoryStream(), stream);
+        using var cancellation = new CancellationTokenSource();
+
+        Task write = transport.WriteAsync("{\"id\":\"1\"}", cancellation.Token);
+        try
+        {
+            await stream.WaitUntilPausedAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            cancellation.Cancel();
+        }
+        finally
+        {
+            stream.Resume();
+        }
+
+        await write.WaitAsync(TimeSpan.FromSeconds(2));
+        await transport.WriteAsync("{\"id\":\"2\"}", CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(
+            "{\"id\":\"1\"}\n{\"id\":\"2\"}\n",
+            Encoding.UTF8.GetString(stream.ToArray()));
+    }
+
+    [TestMethod]
+    public async Task WriteAsync_CancellationWhileWaitingForGate_DoesNotStartFrame()
+    {
+        await using var stream = new PausedPartialWriteStream();
+        await using var transport = new StreamJsonLineTransport(new MemoryStream(), stream);
+        using var cancellation = new CancellationTokenSource();
+        Task firstWrite = transport.WriteAsync("{\"id\":\"1\"}", CancellationToken.None);
+        try
+        {
+            await stream.WaitUntilPausedAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            Task cancelledWrite = transport.WriteAsync("{\"id\":\"2\"}", cancellation.Token);
+            cancellation.Cancel();
+            await AssertThrowsAsync<OperationCanceledException>(
+                () => cancelledWrite.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+        finally
+        {
+            stream.Resume();
+        }
+        await firstWrite.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(
+            "{\"id\":\"1\"}\n",
+            Encoding.UTF8.GetString(stream.ToArray()));
+    }
+
+    [TestMethod]
+    public async Task WriteAsync_AcceptsFrameAtExactWireLimit()
+    {
+        using var stream = new MemoryStream();
+        await using var transport = new StreamJsonLineTransport(new MemoryStream(), stream);
+        string line = new('a', StreamJsonLineTransport.MaxFrameBytes - 1);
+
+        await transport.WriteAsync(line, CancellationToken.None);
+
+        Assert.AreEqual(StreamJsonLineTransport.MaxFrameBytes, stream.Length);
+        Assert.AreEqual((byte)'\n', stream.GetBuffer()[stream.Length - 1]);
+    }
+
+    [TestMethod]
+    public async Task WriteAsync_RejectsFrameWhoseNewlineExceedsLimit()
+    {
+        using var stream = new MemoryStream();
+        await using var transport = new StreamJsonLineTransport(new MemoryStream(), stream);
+        string line = new('a', StreamJsonLineTransport.MaxFrameBytes);
+
+        await AssertThrowsAsync<RpcException>(
+            () => transport.WriteAsync(line, CancellationToken.None));
+
+        Assert.AreEqual(0, stream.Length);
+    }
+
+    [TestMethod]
     public async Task ReadAsync_ReturnsParsedJsonElement()
     {
         var payload = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":42}\n";
@@ -186,5 +265,39 @@ public sealed class StreamJsonLineTransportTests
         }
 
         return Prefix + new string('a', fillerBytes) + Suffix + "\n";
+    }
+
+    private sealed class PausedPartialWriteStream : MemoryStream
+    {
+        private readonly TaskCompletionSource _paused = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _resume = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _pauseFirstWrite = 1;
+
+        public Task WaitUntilPausedAsync() => _paused.Task;
+
+        public void Resume() => _resume.TrySetResult();
+
+        public override async ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _pauseFirstWrite, 0) != 0)
+            {
+                int prefixLength = Math.Max(1, buffer.Length / 2);
+                await base.WriteAsync(
+                    buffer[..prefixLength],
+                    CancellationToken.None);
+                _paused.TrySetResult();
+                await _resume.Task;
+                cancellationToken.ThrowIfCancellationRequested();
+                await base.WriteAsync(
+                    buffer[prefixLength..],
+                    CancellationToken.None);
+                return;
+            }
+            await base.WriteAsync(buffer, cancellationToken);
+        }
     }
 }
