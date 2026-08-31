@@ -202,6 +202,104 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
+    public async Task GoRouteHonorsEpochCancellationWithoutRendererReply()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sidecar = new ControlledProductSidecarForwarder(async (call, token) =>
+        {
+            using CancellationTokenRegistration registration = token.Register(
+                () => cancelled.TrySetResult());
+            started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new ProductSidecarSuccess(
+                call.Wire.Clone(),
+                JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() }));
+        });
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(
+            sink,
+            GoQuerySelector(),
+            sessionEnvelopeFilter: filter);
+        controller.SetProductSidecarForwarder(sidecar);
+        Task dispatch = controller.DispatchAsync(
+            GoQueryRequest("go-cancel", ScopeFor(opened, 1)));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
+            second.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        await switching.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.IsFalse(sink.Replies.Any(
+            reply => reply.RequestId == "go-cancel"));
+    }
+
+    [TestMethod]
+    public async Task GoRouteDropsLateResultWhenForwarderIgnoresEpochCancellation()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ProductSidecarForwardResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sidecar = new ControlledProductSidecarForwarder(async (_, token) =>
+        {
+            using CancellationTokenRegistration registration = token.Register(
+                () => cancelled.TrySetResult());
+            started.TrySetResult();
+            return await response.Task;
+        });
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(
+            sink,
+            GoQuerySelector(),
+            sessionEnvelopeFilter: filter);
+        controller.SetProductSidecarForwarder(sidecar);
+        RoutedWebRequest request = GoQueryRequest(
+            "go-late",
+            ScopeFor(opened, 1));
+        Task dispatch = controller.DispatchAsync(request);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
+            second.WorkspaceId,
+            WorkspaceOpenMode.Writable);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        response.SetResult(new ProductSidecarSuccess(
+            request.Wire.Clone(),
+            JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() })));
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        await switching.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.IsFalse(sink.Replies.Any(
+            reply => reply.RequestId == "go-late"));
+    }
+
+    [TestMethod]
     public async Task FailedSwitchCancelsOldLeaseAndAcceptsRolledBackEpoch()
     {
         using var fixture = new SessionFixture();
@@ -707,6 +805,32 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             string.Empty,
             scope);
     }
+
+    private static RoutedWebRequest GoQueryRequest(
+        string requestId,
+        WorkspaceWireScope scope)
+    {
+        RoutedWebRequest request = QueryRequest(requestId, scope);
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = scope.Scope,
+            workspaceId = scope.WorkspaceId,
+            sessionEpoch = scope.SessionEpoch,
+            operationId = scope.OperationId,
+            sequence = scope.Sequence,
+        });
+        return request with { Wire = wire };
+    }
+
+    private static ProductRpcRouteSelector GoQuerySelector()
+        => new(ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability(
+                "query.page",
+                "workspace",
+                "rendererPublic",
+                "product.query.page",
+                "goSidecar",
+                "read")));
 
     private static WorkspaceWireScope ScopeFor(
         WorkspaceSessionV2 session,

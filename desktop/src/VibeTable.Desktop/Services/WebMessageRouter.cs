@@ -263,6 +263,7 @@ public sealed class WebMessageRouter
     private readonly Action<RoutedWebRequest> _dispatch;
     private readonly WorkspaceRpcCapabilityManifest _workspaceRpcCapabilities;
     private readonly ProductRpcCapabilityManifest _productRpcCapabilities;
+    private readonly ProductRpcRouteSelector _productRouteSelector;
 
     /// <summary>
     /// Constructs the router. <paramref name="dispatch"/> is invoked for every
@@ -293,6 +294,7 @@ public sealed class WebMessageRouter
             ?? throw new ArgumentNullException(nameof(workspaceRpcCapabilities));
         _productRpcCapabilities = productRpcCapabilities
             ?? throw new ArgumentNullException(nameof(productRpcCapabilities));
+        _productRouteSelector = new ProductRpcRouteSelector(_productRpcCapabilities);
     }
 
     /// <summary>
@@ -378,15 +380,23 @@ public sealed class WebMessageRouter
                     "CAPABILITY_NOT_PUBLIC");
             }
 
-            if (IsProductCatalogTypedRequest(type)
-                && (!_productRpcCapabilities.TryGet(type, out ProductRpcCapability productCapability)
+            ProductRpcRoute? productRoute = null;
+            ProductRpcCapability? productCapability = null;
+            bool productCatalogRequest = IsProductCatalogTypedRequest(type);
+            ProductRpcRoute selectedRoute = default;
+            if (productCatalogRequest
+                && (!_productRpcCapabilities.TryGet(type, out productCapability)
                     || productCapability.Audience != "rendererPublic"
-                    || productCapability.Owner != "pythonBff"))
+                    || !TrySelectTypedProductRoute(type, out selectedRoute)))
             {
                 return BuildOperationFailed(
                     requestId,
                     $"Product RPC '{type}' is not a public renderer capability.",
                     "CAPABILITY_NOT_PUBLIC");
+            }
+            else if (productCatalogRequest)
+            {
+                productRoute = selectedRoute;
             }
 
             // Clone the payload element so the dispatched handler can read it
@@ -419,6 +429,20 @@ public sealed class WebMessageRouter
                         "Workspace scope is invalid.",
                         "BAD_WORKSPACE_SCOPE");
                 }
+            }
+            if (productRoute == ProductRpcRoute.GoSidecar)
+            {
+                if (productCapability?.Scope != "workspace")
+                    return BuildOperationFailed(
+                        requestId,
+                        $"Product RPC '{type}' has an unsupported Go route scope.",
+                        "CAPABILITY_NOT_PUBLIC");
+                if (scope is null)
+                    return BuildOperationFailed(
+                        requestId,
+                        "A valid workspace scope is required for the Product Go route.",
+                        "BAD_WORKSPACE_SCOPE");
+                wire = scopeElement.Clone();
             }
             if (string.Equals(type, "workspace.v2.request", StringComparison.Ordinal))
             {
@@ -484,6 +508,21 @@ public sealed class WebMessageRouter
         if (ProductDataRpcRegistry.TryGet(type, out ProductDataRpcEndpoint endpoint))
             return endpoint.CapabilityCatalog == ProductRpcCapabilityCatalog.Product;
         return RelationLookupRpcRegistry.TryGet(type, out _);
+    }
+
+    private bool TrySelectTypedProductRoute(
+        string type,
+        out ProductRpcRoute route)
+    {
+        route = default;
+        if (ProductDataRpcRegistry.TryGet(type, out ProductDataRpcEndpoint endpoint)
+            && endpoint.CapabilityCatalog == ProductRpcCapabilityCatalog.Product)
+            return _productRouteSelector.TrySelectProduct(
+                type,
+                endpoint.CapabilityCatalog,
+                out route);
+        return RelationLookupRpcRegistry.TryGet(type, out _)
+            && _productRouteSelector.TrySelectRelation(type, out route);
     }
 
     /// <summary>

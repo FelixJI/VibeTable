@@ -174,6 +174,14 @@ public sealed class WorkspaceRequestDispatcher : IDisposable
     public bool ClearProductDataGateway(IProductDataRpcGateway expected)
         => _productController.ClearGateway(expected);
 
+    internal void SetProductSidecarForwarder(
+        IProductSidecarRpcForwarder forwarder)
+        => _productController.SetProductSidecarForwarder(forwarder);
+
+    internal bool ClearProductSidecarForwarder(
+        IProductSidecarRpcForwarder expected)
+        => _productController.ClearProductSidecarForwarder(expected);
+
     public void SetPluginProjectContext(
         PluginProjectContext? context,
         CancellationToken sessionToken = default)
