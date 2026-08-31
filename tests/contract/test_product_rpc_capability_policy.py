@@ -10,6 +10,7 @@ from typing import cast
 import pytest
 
 from contracts.v2.product_rpc_capability_policy import (
+    GO_OUTPUT,
     MANIFEST,
     MANIFEST_SCHEMA,
     POLICY,
@@ -106,7 +107,7 @@ def test_policy_fails_closed_for_authored_policy_mismatches(
         build_manifest(policy)
 
 
-def test_generated_types_and_python_current_owner_adapter_are_exact() -> None:
+def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     from backend.contracts.generated_product_rpc_capabilities import (
         CurrentOwner,
         current_owner_methods,
@@ -122,6 +123,15 @@ def test_generated_types_and_python_current_owner_adapter_are_exact() -> None:
     assert current_owner_methods("goSidecar") == ()
     with pytest.raises(ValueError, match="unknown current owner"):
         current_owner_methods(cast(CurrentOwner, "retiredOwner"))
+
+    go_adapter = GO_OUTPUT.read_text(encoding="utf-8")
+    assert "type RPCDescriptor struct {" in go_adapter
+    assert "func RPCDescriptors() []RPCDescriptor" in go_adapter
+    assert "func CurrentOwnerRPCDescriptors(owner CurrentOwner) []RPCDescriptor" in go_adapter
+    assert (
+        '{Method: "schema.getTable", Scope: WorkspaceScope, Audience: RendererPublic, '
+        'CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect}' in go_adapter
+    )
 
 
 def test_generated_manifest_validates_against_its_closed_schema() -> None:
