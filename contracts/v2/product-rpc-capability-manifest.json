@@ -1,0 +1,871 @@
+{
+  "contractVersion": "2.0",
+  "rpcMethods": [
+    {
+      "method": "command.list",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "command.run",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "contentProfile.commit",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "contentProfile.delete",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "contentProfile.load",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "data.applyImport",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.transfer",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "data.export",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.transfer",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "data.generateTemplate",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.transfer",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "data.previewImport",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.transfer",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "events.reconcile",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "realtime",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "file.applyHostChange",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "file.host",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "file.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "file.attachment",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "file.saveHostFile",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "file.host",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "file.token",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "file.attachment",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "formula.draft.validate",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.formula",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "formula.preview",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.formula",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "formula.validate",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.formula",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "gridState.get",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "grid.state",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "gridState.save",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "grid.state",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "history.applyRestore",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "history.restore",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "history.previewRestore",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "history.restore",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "history.read",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "history.restore",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "insights.dashboardQueryLimits",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "insights.deleteDashboardWorkspace",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "insights.executeDashboardQuery",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "insights.listDashboards",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "insights.panelManifest",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "insights.readDashboardWorkspace",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "insights.saveDashboardDraft",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "interface.commit",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "interface.delete",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "interface.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "interface.load",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "lookup.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "lookup.query",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "lookup.valuePage",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "mutation.apply",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.mutation",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "mutation.preview",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.mutation",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "path.registerExportTarget",
+      "scope": "global",
+      "audience": "hostOnly",
+      "capabilityId": "host.path",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "path.registerImportSource",
+      "scope": "global",
+      "audience": "hostOnly",
+      "capabilityId": "host.path",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "path.requestExportTarget",
+      "scope": "global",
+      "audience": "hostOnly",
+      "capabilityId": "host.path",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "path.requestImportSource",
+      "scope": "global",
+      "audience": "hostOnly",
+      "capabilityId": "host.path",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "path.resolveGrant",
+      "scope": "global",
+      "audience": "hostOnly",
+      "capabilityId": "host.path",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.cancelInstall",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.cancelTask",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.commitInstall",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.describeAction",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.getTask",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.inspectInstall",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.listAudit",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.listCatalog",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.listPendingCleanup",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "plugin.resolveFile",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.host",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.resolveInteraction",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.host",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.rollback",
+      "scope": "workspace",
+      "audience": "rendererInternal",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.setEnabled",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.startAction",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.uninstall",
+      "scope": "workspace",
+      "audience": "rendererInternal",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "plugin.upgrade",
+      "scope": "workspace",
+      "audience": "rendererInternal",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "preset.delete",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "preset.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "preset.save",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "query.cursorFetch",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "query.cursorOpen",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "query.page",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "query.readRows",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "query.selectionOpen",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "query.validateSnapshot",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "query.view",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "recordDocumentLink.commit",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "recordDocumentLink.delete",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "recordDocumentLink.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "recordDocumentLink.repair",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "content.model",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "relation.applyDelta",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "relation.createTarget",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "relation.previewDelta",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "relation.searchTargets",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "relation.updateSingle",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "schema.delete",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.definition",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "schema.describe",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "schema.getTable",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "schema.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "schema.table.create",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.definition",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "settings.readDevice",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "settings.readShared",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "settings.saveDevice",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "shortcut.delete",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "shortcut.launch",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "shortcut.list",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "shortcut.save",
+      "scope": "global",
+      "audience": "rendererPublic",
+      "capabilityId": "host.preferences",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "system.handshake",
+      "scope": "global",
+      "audience": "hostOnly",
+      "capabilityId": "system.handshake",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "table.applyPaste",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.paste",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "table.previewPaste",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.paste",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "task.cancel",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "task.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "task.create",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "task.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "task.status",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "task.lifecycle",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "version.compare",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "version.create",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "version.delete",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "version.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "read"
+    },
+    {
+      "method": "version.promote",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "version.save",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "insights",
+      "owner": "pythonBff",
+      "effect": "write"
+    }
+  ],
+  "eventTopics": [
+    {
+      "topic": "data.changed",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "realtime",
+      "owner": "pythonBff",
+      "effect": "notification"
+    },
+    {
+      "topic": "plugin.catalog.changed",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "notification"
+    },
+    {
+      "topic": "plugin.file.requested",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.host",
+      "owner": "pythonBff",
+      "effect": "notification"
+    },
+    {
+      "topic": "plugin.interaction.requested",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.host",
+      "owner": "pythonBff",
+      "effect": "notification"
+    },
+    {
+      "topic": "plugin.task.changed",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonBff",
+      "effect": "notification"
+    },
+    {
+      "topic": "task.changed",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "task.lifecycle",
+      "owner": "pythonBff",
+      "effect": "notification"
+    }
+  ]
+}

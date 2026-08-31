@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vibetable.local/contracts/v2/product-rpc-capability-manifest.schema.json",
+  "title": "VibeTable Product RPC Capability Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contractVersion",
+    "rpcMethods",
+    "eventTopics"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": "2.0"
+    },
+    "rpcMethods": {
+      "type": "array",
+      "minItems": 102,
+      "maxItems": 102,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "method",
+          "scope",
+          "audience",
+          "capabilityId",
+          "owner",
+          "effect"
+        ],
+        "properties": {
+          "method": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "enum": [
+              "global",
+              "workspace"
+            ]
+          },
+          "audience": {
+            "enum": [
+              "hostOnly",
+              "rendererInternal",
+              "rendererPublic"
+            ]
+          },
+          "capabilityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "enum": [
+              "pythonBff",
+              "goSidecar",
+              "wpfHost",
+              "pythonWorker"
+            ]
+          },
+          "effect": {
+            "enum": [
+              "read",
+              "write"
+            ]
+          }
+        }
+      }
+    },
+    "eventTopics": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "topic",
+          "scope",
+          "audience",
+          "capabilityId",
+          "owner",
+          "effect"
+        ],
+        "properties": {
+          "topic": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "enum": [
+              "global",
+              "workspace"
+            ]
+          },
+          "audience": {
+            "enum": [
+              "hostOnly",
+              "rendererInternal",
+              "rendererPublic"
+            ]
+          },
+          "capabilityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "enum": [
+              "pythonBff",
+              "goSidecar",
+              "wpfHost",
+              "pythonWorker"
+            ]
+          },
+          "effect": {
+            "enum": [
+              "notification"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
