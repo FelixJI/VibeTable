@@ -3,12 +3,148 @@ package productcapabilities
 
 type CurrentOwner string
 
+type Scope string
+
+const (
+	GlobalScope    Scope = "global"
+	WorkspaceScope Scope = "workspace"
+)
+
+type Audience string
+
+const (
+	RendererPublic   Audience = "rendererPublic"
+	RendererInternal Audience = "rendererInternal"
+	HostOnly         Audience = "hostOnly"
+)
+
+type Effect string
+
+const (
+	ReadEffect  Effect = "read"
+	WriteEffect Effect = "write"
+)
+
 const (
 	PythonBff    CurrentOwner = "pythonBff"
 	GoSidecar    CurrentOwner = "goSidecar"
 	WpfHost      CurrentOwner = "wpfHost"
 	PythonWorker CurrentOwner = "pythonWorker"
 )
+
+type RPCDescriptor struct {
+	Method       string       `json:"method"`
+	Scope        Scope        `json:"scope"`
+	Audience     Audience     `json:"audience"`
+	CapabilityID string       `json:"capabilityId"`
+	Owner        CurrentOwner `json:"owner"`
+	Effect       Effect       `json:"effect"`
+}
+
+var rpcDescriptors = []RPCDescriptor{
+	{Method: "command.list", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "command.run", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "contentProfile.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "contentProfile.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "contentProfile.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "data.applyImport", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.transfer", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "data.export", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.transfer", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "data.generateTemplate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.transfer", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "data.previewImport", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.transfer", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "events.reconcile", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "realtime", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "file.applyHostChange", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "file.host", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "file.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "file.attachment", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "file.saveHostFile", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "file.host", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "file.token", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "file.attachment", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "formula.draft.validate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "formula.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "formula.validate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "gridState.get", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "grid.state", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "gridState.save", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "grid.state", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "history.applyRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "history.previewRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "insights.dashboardQueryLimits", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "insights.deleteDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "insights.executeDashboardQuery", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "insights.listDashboards", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "insights.panelManifest", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "insights.readDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "insights.saveDashboardDraft", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "interface.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "interface.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "interface.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "interface.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "lookup.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "path.registerExportTarget", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "path.registerImportSource", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "path.requestExportTarget", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "path.requestImportSource", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "path.resolveGrant", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "plugin.cancelInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.cancelTask", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.commitInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.describeAction", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "plugin.getTask", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "plugin.inspectInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "plugin.listAudit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "plugin.listCatalog", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "plugin.listPendingCleanup", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "plugin.resolveFile", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "plugin.host", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.resolveInteraction", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "plugin.host", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.rollback", Scope: WorkspaceScope, Audience: RendererInternal, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.setEnabled", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.startAction", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.uninstall", Scope: WorkspaceScope, Audience: RendererInternal, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.upgrade", Scope: WorkspaceScope, Audience: RendererInternal, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "preset.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "preset.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "preset.save", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "query.cursorFetch", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "query.cursorOpen", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "query.page", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "query.readRows", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "query.selectionOpen", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "query.view", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "recordDocumentLink.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "recordDocumentLink.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "recordDocumentLink.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "recordDocumentLink.repair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "relation.applyDelta", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "relation.createTarget", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "relation.previewDelta", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "relation.updateSingle", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "schema.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.definition", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "schema.describe", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "schema.getTable", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "schema.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "schema.table.create", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.definition", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "settings.readDevice", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "settings.readShared", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "settings.saveDevice", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "shortcut.delete", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "shortcut.launch", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "shortcut.list", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "shortcut.save", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "system.handshake", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "system.handshake", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "table.applyPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "table.previewPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "task.cancel", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "task.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "task.create", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "task.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "task.status", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "task.lifecycle", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "version.compare", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "version.create", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "version.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "version.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "version.promote", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "version.save", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: PythonBff, Effect: WriteEffect},
+}
 
 var rpcMethods = map[CurrentOwner]map[string]struct{}{
 	PythonBff:    set("command.list", "command.run", "contentProfile.commit", "contentProfile.delete", "contentProfile.load", "data.applyImport", "data.export", "data.generateTemplate", "data.previewImport", "events.reconcile", "file.applyHostChange", "file.list", "file.saveHostFile", "file.token", "formula.draft.validate", "formula.preview", "formula.validate", "gridState.get", "gridState.save", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "plugin.cancelInstall", "plugin.cancelTask", "plugin.commitInstall", "plugin.describeAction", "plugin.getTask", "plugin.inspectInstall", "plugin.listAudit", "plugin.listCatalog", "plugin.listPendingCleanup", "plugin.resolveFile", "plugin.resolveInteraction", "plugin.rollback", "plugin.setEnabled", "plugin.startAction", "plugin.uninstall", "plugin.upgrade", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.applyDelta", "relation.createTarget", "relation.previewDelta", "relation.searchTargets", "relation.updateSingle", "schema.delete", "schema.describe", "schema.getTable", "schema.list", "schema.table.create", "settings.readDevice", "settings.readShared", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "system.handshake", "table.applyPaste", "table.previewPaste", "task.cancel", "task.create", "task.status", "version.compare", "version.create", "version.delete", "version.list", "version.promote", "version.save"),
@@ -22,6 +158,20 @@ var eventTopics = map[CurrentOwner]map[string]struct{}{
 	GoSidecar:    set(),
 	WpfHost:      set(),
 	PythonWorker: set(),
+}
+
+func RPCDescriptors() []RPCDescriptor {
+	return append([]RPCDescriptor(nil), rpcDescriptors...)
+}
+
+func CurrentOwnerRPCDescriptors(owner CurrentOwner) []RPCDescriptor {
+	result := make([]RPCDescriptor, 0)
+	for _, descriptor := range rpcDescriptors {
+		if descriptor.Owner == owner {
+			result = append(result, descriptor)
+		}
+	}
+	return result
 }
 
 func HasCurrentOwnerRPCMethod(owner CurrentOwner, method string) bool {
