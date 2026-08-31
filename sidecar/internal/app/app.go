@@ -32,6 +32,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/lookup"
 	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
@@ -424,6 +425,18 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				_ = rawListener.Close()
 				return err
 			}
+			capabilities := workspaceRuntime.Capabilities()
+			productDispatcher, err := productrpc.New(productrpc.Identity{
+				WorkspaceID:  capabilities.WorkspaceID,
+				SessionEpoch: capabilities.SessionEpoch,
+				FenceEpoch:   capabilities.FenceEpoch,
+				ClaimID:      capabilities.ClaimID,
+			})
+			if err != nil {
+				_ = rawListener.Close()
+				return fmt.Errorf("compose Product RPC dispatcher: %w", err)
+			}
+			registerProductRoutes(event.Router, productDispatcher)
 			registerWorkspaceV2Routes(event.Router, workspaceRuntime)
 		}
 		if err := fieldMigration.ResumePending(jobService.Context()); err != nil {
