@@ -157,7 +157,7 @@ public sealed class StreamJsonLineTransport : IJsonLineTransport
 
         // Validate length up front: UTF-8 byte count is what the wire sees.
         int byteCount = Utf8NoBom.GetByteCount(line);
-        if (byteCount > MaxFrameBytes)
+        if (byteCount >= MaxFrameBytes)
         {
             throw new RpcException(
                 $"RPC frame exceeds the {MaxFrameBytes}-byte limit.");
@@ -166,9 +166,17 @@ public sealed class StreamJsonLineTransport : IJsonLineTransport
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await _writer.WriteAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
-            await _writer.WriteAsync(NewLineCharMemory, cancellationToken).ConfigureAwait(false);
-            await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Cancellation is an admission decision only. Once the first byte
+            // of a newline-delimited frame may be written, finish that frame:
+            // interrupting a StreamWriter flush can leave a JSON prefix in the
+            // pipe, which corrupts the next otherwise-valid request.
+            await _writer.WriteAsync(line.AsMemory(), CancellationToken.None)
+                .ConfigureAwait(false);
+            await _writer.WriteAsync(NewLineCharMemory, CancellationToken.None)
+                .ConfigureAwait(false);
+            await _writer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
