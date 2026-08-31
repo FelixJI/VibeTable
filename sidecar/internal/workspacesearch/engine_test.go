@@ -710,6 +710,96 @@ func TestProjectionCheckpointPromotesAtomicallyWithCorpus(t *testing.T) {
 	}
 }
 
+func TestFullRebuildOptimizesFTSIndexesBeforePublishingReady(t *testing.T) {
+	engine := testEngine(t)
+	ctx := context.Background()
+	tables := []string{"search_terms", "search_cjk3"}
+	disableFullTextAutomerge(t, engine)
+	seedFullTextSegments(t, engine, 8)
+	for _, table := range tables {
+		if segments := fullTextSegmentCount(t, engine, table); segments <= 1 {
+			t.Fatalf("%s test setup has %d segments, want more than 1", table, segments)
+		}
+	}
+
+	checkpoint := ProjectionCheckpoint{MutationRevision: 9}
+	if err := engine.RebuildProjection(
+		ctx,
+		[]SourceDocument{source(
+			"record", "current", "rev-current", "Current", "current-token", true,
+		)},
+		checkpoint,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range tables {
+		segments := fullTextSegmentCount(t, engine, table)
+		if segments != 1 {
+			t.Fatalf("%s segments after full rebuild = %d, want 1", table, segments)
+		}
+	}
+	if actual, err := engine.ProjectionCheckpoint(ctx); err != nil || actual != checkpoint {
+		t.Fatalf("checkpoint after optimized rebuild = %#v, %v", actual, err)
+	}
+	result := query(t, engine, request("current-token"))
+	if len(result.Hits) != 1 || result.Hits[0].CanonicalId != "current" {
+		t.Fatalf("optimized rebuild result = %#v", result.Hits)
+	}
+}
+
+func TestIncrementalMutationsDoNotOptimizeFullTextIndexes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *Engine)
+	}{
+		{
+			name: "upsert",
+			mutate: func(t *testing.T, engine *Engine) {
+				t.Helper()
+				upsert(t, engine, source("record", "upsert", "rev-upsert", "Upsert", "upsert-token", true))
+			},
+		},
+		{
+			name: "projection changes",
+			mutate: func(t *testing.T, engine *Engine) {
+				t.Helper()
+				if err := engine.ApplyProjectionChanges(
+					context.Background(),
+					ProjectionChanges{Sources: []SourceDocument{
+						source("record", "projection", "rev-projection", "Projection", "projection-token", true),
+					}},
+					ProjectionCheckpoint{MutationRevision: 1},
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			engine := testEngine(t)
+			disableFullTextAutomerge(t, engine)
+			seedFullTextSegments(t, engine, 8)
+			for _, table := range []string{"search_terms", "search_cjk3"} {
+				if segments := fullTextSegmentCount(t, engine, table); segments <= 1 {
+					t.Fatalf("%s test setup has %d segments, want more than 1", table, segments)
+				}
+			}
+
+			test.mutate(t, engine)
+
+			for _, table := range []string{"search_terms", "search_cjk3"} {
+				if segments := fullTextSegmentCount(t, engine, table); segments <= 1 {
+					t.Fatalf("incremental mutation optimized %s to %d segment", table, segments)
+				}
+			}
+		})
+	}
+}
+
 func TestInvalidateClearsProjectionCheckpoint(t *testing.T) {
 	engine := testEngine(t)
 	ctx := context.Background()
@@ -1098,22 +1188,42 @@ func TestSearchAcceptsAllFilterOperatorsWithOrLogic(t *testing.T) {
 
 func TestRebuildCancellationRollsBackThePreviousGeneration(t *testing.T) {
 	engine := testEngine(t)
-	upsert(t, engine, source("record", "previous", "rev-1", "Previous", "stable corpus", true))
-	sources := make([]SourceDocument, 101)
-	for index := range sources {
-		sources[index] = source("record", fmt.Sprintf("next-%d", index), "rev-1", "Next", "next corpus", true)
+	previous := ProjectionCheckpoint{MutationRevision: 1}
+	if err := engine.RebuildProjection(
+		context.Background(),
+		[]SourceDocument{source("record", "previous", "rev-1", "Previous", "stable corpus", true)},
+		previous,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	previousGeneration, err := engine.generation(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	err := engine.RebuildWithProgress(ctx, sources, func(processed, _ int) {
-		if processed == 100 {
-			cancel()
-		}
-	})
+	defer cancel()
+	err = engine.RebuildProjection(
+		ctx,
+		[]SourceDocument{source("record", "next", "rev-2", "Next", "next corpus", true)},
+		ProjectionCheckpoint{MutationRevision: 2},
+		func(processed, total int) {
+			if processed == total {
+				cancel()
+			}
+		},
+	)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("rebuild error = %v", err)
 	}
 	if hits := query(t, engine, request("stable corpus")).Hits; len(hits) != 1 {
 		t.Fatalf("rolled back hits = %#v", hits)
+	}
+	if actual, checkpointErr := engine.ProjectionCheckpoint(context.Background()); checkpointErr != nil || actual != previous {
+		t.Fatalf("rolled back checkpoint = %#v, %v", actual, checkpointErr)
+	}
+	if actual, generationErr := engine.generation(context.Background()); generationErr != nil || actual != previousGeneration {
+		t.Fatalf("rolled back generation = %d, %v", actual, generationErr)
 	}
 }
 
@@ -1133,6 +1243,60 @@ func TestSourceValidationRejectsUnknownKindAndIncompleteIdentity(t *testing.T) {
 			t.Fatalf("source %#v error = %v", value, err)
 		}
 	}
+}
+
+func disableFullTextAutomerge(t *testing.T, engine *Engine) {
+	t.Helper()
+	for _, table := range []string{"search_terms", "search_cjk3"} {
+		if _, err := engine.db.ExecContext(
+			context.Background(),
+			fmt.Sprintf("INSERT INTO %s(%s, rank) VALUES('automerge', 0)", table, table),
+		); err != nil {
+			t.Fatalf("disable %s automerge: %v", table, err)
+		}
+	}
+}
+
+func seedFullTextSegments(t *testing.T, engine *Engine, count int) {
+	t.Helper()
+	ctx := context.Background()
+	for index := range count {
+		tx, err := engine.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := source(
+			"record",
+			fmt.Sprintf("stale-%d", index),
+			fmt.Sprintf("rev-%d", index),
+			fmt.Sprintf("Stale %d", index),
+			fmt.Sprintf("stale-token-%d", index),
+			true,
+		)
+		if err := insertSource(ctx, tx, value); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := bumpGeneration(ctx, tx); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func fullTextSegmentCount(t *testing.T, engine *Engine, table string) int {
+	t.Helper()
+	var segments int
+	if err := engine.db.QueryRowContext(
+		context.Background(),
+		fmt.Sprintf("SELECT COUNT(DISTINCT segid) FROM %s_idx", table),
+	).Scan(&segments); err != nil {
+		t.Fatalf("count %s segments: %v", table, err)
+	}
+	return segments
 }
 
 func testEngine(t *testing.T) *Engine {
