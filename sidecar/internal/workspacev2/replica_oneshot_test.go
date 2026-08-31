@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,7 +20,9 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/replica"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/startup"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
+	"github.com/vibetable/vibetable/sidecar/migrations"
 	_ "modernc.org/sqlite"
 )
 
@@ -341,19 +344,191 @@ func TestInstallReplicaDatabaseAndFilesMaterializesOnlyBoundPaths(t *testing.T) 
 		record.ObjectMap["file-state-root"]:    fileRoot,
 		fileID:                                 file,
 	}
-	metadata := filepath.Join(root, "activity", ".vibetable")
+	activity := filepath.Join(root, "activity")
 	if err := installReplicaDatabaseAndFiles(
 		record,
 		objects,
-		metadata,
+		activity,
 	); err != nil {
 		t.Fatal(err)
 	}
 	recovered, err := os.ReadFile(
-		filepath.Join(metadata, "files", "nested", "document.txt"),
+		filepath.Join(activity, "files", "nested", "document.txt"),
 	)
 	if err != nil || string(recovered) != string(file) {
 		t.Fatalf("recovered file=%q err=%v", recovered, err)
+	}
+}
+
+func TestOpenReplicaOneShotRuntimeAppliesAuthoritativeMigrations(t *testing.T) {
+	ctx := context.Background()
+	activity := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(activity, ".vibetable", "data")
+	if _, err := InitializeRepository(
+		ctx,
+		dataDir,
+		testWorkspaceID,
+		3,
+		testClaimID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	options := ReplicaOneShotOptions{
+		DataDir:      dataDir,
+		WorkspaceID:  testWorkspaceID,
+		SessionEpoch: 7,
+		FenceEpoch:   3,
+		ClaimID:      testClaimID,
+	}
+	runtime, closeRuntime, err := openReplicaOneShotRuntime(ctx, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := closeRuntime(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	for _, collection := range []string{
+		"vibetable_audit_events",
+		"vibetable_outbox",
+		"vibetable_audit_outbox",
+	} {
+		if _, err := runtime.app.FindCollectionByNameOrId(collection); err != nil {
+			t.Fatalf("authoritative collection %s missing: %v", collection, err)
+		}
+	}
+}
+
+func TestOpenReplicaOneShotRuntimeRejectsCorruptMigrationManifestBeforeWrite(
+	t *testing.T,
+) {
+	activity := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(activity, ".vibetable", "data")
+	options := ReplicaOneShotOptions{
+		DataDir:      dataDir,
+		WorkspaceID:  testWorkspaceID,
+		SessionEpoch: 7,
+		FenceEpoch:   3,
+		ClaimID:      testClaimID,
+	}
+	_, closeRuntime, err := openReplicaOneShotRuntimeWithMigrationLoader(
+		context.Background(),
+		options,
+		func() error {
+			return errors.New("migration embedded source checksum mismatch")
+		},
+	)
+	if closeRuntime != nil {
+		defer func() { _ = closeRuntime() }()
+	}
+	if err == nil || closeRuntime != nil {
+		t.Fatalf(
+			"corrupt migration manifest accepted: close=%t err=%v",
+			closeRuntime != nil,
+			err,
+		)
+	}
+	var preflightError *startup.Error
+	if !errors.As(err, &preflightError) ||
+		preflightError.Code != startup.CodeMigrationCorrupt {
+		t.Fatalf("corrupt migration error=%v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "data.db")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("corrupt migration manifest wrote data.db: %v", statErr)
+	}
+}
+
+func TestOpenReplicaOneShotRuntimeRejectsIdentityMismatchBeforeWrite(t *testing.T) {
+	activity := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(activity, ".vibetable", "data")
+	options := ReplicaOneShotOptions{
+		DataDir:      dataDir,
+		WorkspaceID:  "44444444-4444-4444-8444-444444444444",
+		SessionEpoch: 7,
+		FenceEpoch:   3,
+		ClaimID:      testClaimID,
+	}
+	_, closeRuntime, err := openReplicaOneShotRuntime(
+		context.Background(),
+		options,
+	)
+	if err == nil || closeRuntime != nil {
+		t.Fatalf(
+			"workspace identity mismatch accepted: close=%t err=%v",
+			closeRuntime != nil,
+			err,
+		)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "data.db")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("identity mismatch wrote data.db: %v", statErr)
+	}
+}
+
+func TestInitializeWorkspaceReplicaRejectsCorruptMigrationManifestBeforeAnyWrite(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	activity := createWorkspace(t, testWorkspaceID)
+	setReplicaOneShotManifestMirrored(t, activity)
+	selected := filepath.Join(t.TempDir(), "selected")
+	if err := os.MkdirAll(filepath.Join(selected, ".vibetable"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile(
+		filepath.Join(activity, ".vibetable", "workspace.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(selected, ".vibetable", "workspace.json"),
+		manifest,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(activity, ".vibetable", "data")
+	options := ReplicaOneShotOptions{
+		DataDir:      dataDir,
+		ReplicaRoot:  selected,
+		WorkspaceID:  testWorkspaceID,
+		SessionEpoch: 7,
+		FenceEpoch:   3,
+		ClaimID:      testClaimID,
+	}
+	_, err = initializeWorkspaceReplicaWithMigrationLoader(
+		ctx,
+		options,
+		func() error {
+			return errors.New("migration embedded source checksum mismatch")
+		},
+	)
+	exists := func(path string) bool {
+		_, statErr := os.Stat(path)
+		return statErr == nil
+	}
+	dataCreated := exists(filepath.Join(dataDir, "data.db"))
+	repositoryCreated := exists(filepath.Join(
+		activity,
+		".vibetable",
+		"coordination",
+		"kopia.repository.config",
+	)) || exists(filepath.Join(activity, ".vibetable", "objects", "kopia"))
+	remoteCreated := exists(filepath.Join(selected, ".vibetable", "replica-v2"))
+	if err == nil || dataCreated || repositoryCreated || remoteCreated {
+		t.Fatalf(
+			"corrupt manifest initialize err=%v data=%t repository=%t remote=%t",
+			err,
+			dataCreated,
+			repositoryCreated,
+			remoteCreated,
+		)
+	}
+	var preflightError *startup.Error
+	if !errors.As(err, &preflightError) ||
+		preflightError.Code != startup.CodeMigrationCorrupt {
+		t.Fatalf("corrupt migration error=%v", err)
 	}
 }
 
@@ -369,13 +544,25 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 		DefaultDataDir:  dataDir,
 		HideStartBanner: true,
 	})
+	migrations.Register(app)
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
-	createAuditOutbox(t, app)
+	bootstrapOpen := true
+	t.Cleanup(func() {
+		if bootstrapOpen {
+			if err := app.ResetBootstrapState(); err != nil {
+				t.Errorf("reset failed replica fixture bootstrap: %v", err)
+			}
+		}
+	})
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.ResetBootstrapState(); err != nil {
 		t.Fatal(err)
 	}
+	bootstrapOpen = false
 
 	selected := filepath.Join(t.TempDir(), "selected")
 	if err := os.MkdirAll(
@@ -618,7 +805,6 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 		"audit",
 		"snapshots",
 		"coordination",
-		"files",
 	} {
 		info, err := os.Stat(
 			filepath.Join(recoveredRoot, ".vibetable", relative),
@@ -626,6 +812,23 @@ func TestReplicaOneShotInitializeVerifyRecoverRoundTrip(t *testing.T) {
 		if err != nil || !info.IsDir() {
 			t.Fatalf("recovered %s info=%#v err=%v", relative, info, err)
 		}
+	}
+	recoveredFile, err := os.ReadFile(filepath.Join(
+		recoveredRoot,
+		"files",
+		"crash-reopen",
+		"file-history.txt",
+	))
+	if err != nil || string(recoveredFile) !=
+		"file-history-authoritative-commit" {
+		t.Fatalf("recovered business file=%q err=%v", recoveredFile, err)
+	}
+	if _, err := os.Stat(filepath.Join(
+		recoveredRoot,
+		".vibetable",
+		"files",
+	)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy metadata files layout exists: %v", err)
 	}
 	catalog, err := snapshot.OpenDurableCatalog(
 		filepath.Join(

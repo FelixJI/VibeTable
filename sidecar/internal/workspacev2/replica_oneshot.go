@@ -24,7 +24,9 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/replica"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
+	"github.com/vibetable/vibetable/sidecar/internal/startup"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
+	"github.com/vibetable/vibetable/sidecar/migrations"
 	_ "modernc.org/sqlite"
 )
 
@@ -72,10 +74,30 @@ type replicaOneShotVersion struct {
 	publication replica.Publication
 }
 
+func loadReplicaOneShotMigrationManifest() error {
+	_, err := migrations.LoadManifest()
+	return err
+}
+
 func InitializeWorkspaceReplica(
 	ctx context.Context,
 	options ReplicaOneShotOptions,
 ) (ReplicaOneShotReceipt, error) {
+	return initializeWorkspaceReplicaWithMigrationLoader(
+		ctx,
+		options,
+		loadReplicaOneShotMigrationManifest,
+	)
+}
+
+func initializeWorkspaceReplicaWithMigrationLoader(
+	ctx context.Context,
+	options ReplicaOneShotOptions,
+	loadMigrationManifest func() error,
+) (ReplicaOneShotReceipt, error) {
+	if err := startup.ValidateMigrationManifest(loadMigrationManifest); err != nil {
+		return ReplicaOneShotReceipt{}, err
+	}
 	paths, manifest, err := validateReplicaOneShotLocal(options)
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
@@ -209,6 +231,21 @@ func VerifyWorkspaceReplica(
 	ctx context.Context,
 	options ReplicaOneShotOptions,
 ) (ReplicaOneShotReceipt, error) {
+	return verifyWorkspaceReplicaWithMigrationLoader(
+		ctx,
+		options,
+		loadReplicaOneShotMigrationManifest,
+	)
+}
+
+func verifyWorkspaceReplicaWithMigrationLoader(
+	ctx context.Context,
+	options ReplicaOneShotOptions,
+	loadMigrationManifest func() error,
+) (ReplicaOneShotReceipt, error) {
+	if err := startup.ValidateMigrationManifest(loadMigrationManifest); err != nil {
+		return ReplicaOneShotReceipt{}, err
+	}
 	requiredMutationRevision, err :=
 		replicaOneShotRequiredMutationRevision(ctx, options)
 	if err != nil {
@@ -242,6 +279,21 @@ func RecoverWorkspaceReplica(
 	ctx context.Context,
 	options ReplicaOneShotOptions,
 ) (ReplicaOneShotReceipt, error) {
+	return recoverWorkspaceReplicaWithMigrationLoader(
+		ctx,
+		options,
+		loadReplicaOneShotMigrationManifest,
+	)
+}
+
+func recoverWorkspaceReplicaWithMigrationLoader(
+	ctx context.Context,
+	options ReplicaOneShotOptions,
+	loadMigrationManifest func() error,
+) (ReplicaOneShotReceipt, error) {
+	if err := startup.ValidateMigrationManifest(loadMigrationManifest); err != nil {
+		return ReplicaOneShotReceipt{}, err
+	}
 	activityRoot, dataDir, err := validateRecoveryTarget(options)
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
@@ -461,17 +513,35 @@ func openReplicaOneShotRuntime(
 	ctx context.Context,
 	options ReplicaOneShotOptions,
 ) (*Runtime, func() error, error) {
+	return openReplicaOneShotRuntimeWithMigrationLoader(
+		ctx,
+		options,
+		loadReplicaOneShotMigrationManifest,
+	)
+}
+
+func openReplicaOneShotRuntimeWithMigrationLoader(
+	ctx context.Context,
+	options ReplicaOneShotOptions,
+	loadMigrationManifest func() error,
+) (*Runtime, func() error, error) {
+	paths, _, err := validateBinding(options.DataDir, options.WorkspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := startup.ValidateMigrationManifest(loadMigrationManifest); err != nil {
+		return nil, nil, err
+	}
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir:  options.DataDir,
 		HideStartBanner: true,
 	})
+	migrations.Register(app)
 	if err := app.Bootstrap(); err != nil {
 		return nil, nil, err
 	}
-	paths, _, err := validateBinding(options.DataDir, options.WorkspaceID)
-	if err != nil {
-		_ = app.ResetBootstrapState()
-		return nil, nil, err
+	if err := app.RunAllMigrations(); err != nil {
+		return nil, nil, errors.Join(err, app.ResetBootstrapState())
 	}
 	ledger, err := auditledger.Open(paths.audit)
 	if err != nil {
@@ -636,13 +706,13 @@ func installReplicaRecovery(
 	}()
 	metadata := filepath.Join(activityRoot, ".vibetable")
 	directories := []string{
+		filepath.Join(activityRoot, "files"),
 		dataDir,
 		filepath.Join(metadata, "topology"),
 		filepath.Join(metadata, "objects"),
 		filepath.Join(metadata, "audit"),
 		filepath.Join(metadata, "snapshots"),
 		filepath.Join(metadata, "coordination"),
-		filepath.Join(metadata, "files"),
 		filepath.Join(metadata, "quarantine"),
 		filepath.Join(metadata, "temp"),
 	}
@@ -666,7 +736,7 @@ func installReplicaRecovery(
 		ctx,
 		record,
 		selection.bundle.Objects,
-		metadata,
+		activityRoot,
 	); err != nil {
 		return err
 	}
@@ -786,13 +856,13 @@ func installReplicaRecovery(
 func installReplicaDatabaseAndFiles(
 	record snapshot.Record,
 	objects map[objectrepo.ObjectID][]byte,
-	metadata string,
+	workspaceRoot string,
 ) error {
 	return installReplicaDatabaseAndFilesWithContext(
 		context.Background(),
 		record,
 		objects,
-		metadata,
+		workspaceRoot,
 	)
 }
 
@@ -800,8 +870,9 @@ func installReplicaDatabaseAndFilesWithContext(
 	ctx context.Context,
 	record snapshot.Record,
 	objects map[objectrepo.ObjectID][]byte,
-	metadata string,
+	workspaceRoot string,
 ) error {
+	metadata := filepath.Join(workspaceRoot, ".vibetable")
 	database, err := replicaObject(record, objects, "database")
 	if err != nil {
 		return err
@@ -856,7 +927,7 @@ func installReplicaDatabaseAndFilesWithContext(
 	}
 	for relative, id := range root.Files {
 		target, err := replicaRecoveryTarget(
-			filepath.Join(metadata, "files"),
+			filepath.Join(workspaceRoot, "files"),
 			relative,
 		)
 		if err != nil {
