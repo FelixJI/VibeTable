@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace VibeTable.Desktop.Services;
@@ -32,6 +34,10 @@ internal static class PendingUpdateActivationJournal
     private const string ConfirmedState = "confirmed";
     private const string PointerFileName = ".VibeTable.Next.update-pending.json";
     private const string LockFileName = ".VibeTable.Next.update-pending.lock";
+    private const int ErrorSharingViolation = 32;
+    private const int ErrorLockViolation = 33;
+    private static readonly TimeSpan LockAcquisitionBudget = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan LockRetryInterval = TimeSpan.FromMilliseconds(25);
     private static readonly Encoding Utf8NoBom =
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private static readonly JsonSerializerOptions WebJson =
@@ -485,8 +491,8 @@ internal static class PendingUpdateActivationJournal
         UpdateApplyPlan plan,
         UpdateProcessIdentity watchdog)
     {
-        PendingUpdateActivation current = Read(GetPointerPath(plan.TargetRoot));
         UpdateApplyPlan normalized = NormalizePlanPaths(plan);
+        PendingUpdateActivation current = ReadRecoveryPointer(normalized.TargetRoot);
         if (current.SchemaVersion != SchemaVersion
             || !MatchesPlan(current, normalized)
             || !MatchesUpdater(current, watchdog)
@@ -995,6 +1001,21 @@ internal static class PendingUpdateActivationJournal
         }
     }
 
+    private static PendingUpdateActivation ReadRecoveryPointer(string targetRoot)
+    {
+        string pointerPath = GetPointerPath(targetRoot);
+        string lockPath = GetLockPath(targetRoot);
+        FileStream claim = AcquireLock(lockPath);
+        try
+        {
+            return Read(pointerPath);
+        }
+        finally
+        {
+            ReleaseLock(claim, lockPath);
+        }
+    }
+
     private static void ValidateRecoveryRoot(string path, string stagingRoot)
     {
         string normalized = ReleasePackageStager.NormalizeDirectory(path);
@@ -1453,21 +1474,59 @@ internal static class PendingUpdateActivationJournal
 
     private static FileStream AcquireLock(string lockPath)
     {
-        UpdateProcessCommand.RejectReparsePointChainsToVolumeRoot(
-            Path.GetDirectoryName(lockPath)
-                ?? throw InvalidPointer("无法确定更新锁目录。"));
-        if (File.Exists(lockPath) || Directory.Exists(lockPath))
+        Stopwatch wait = Stopwatch.StartNew();
+        IOException? contention = null;
+        while (true)
         {
-            UpdateProcessCommand.RejectReparsePoint(lockPath);
+            if (contention is not null && wait.Elapsed >= LockAcquisitionBudget)
+            {
+                ExceptionDispatchInfo.Capture(contention).Throw();
+            }
+            FileStream claim;
+            try
+            {
+                UpdateProcessCommand.RejectReparsePointChainsToVolumeRoot(
+                    Path.GetDirectoryName(lockPath)
+                        ?? throw InvalidPointer("无法确定更新锁目录。"));
+                if (File.Exists(lockPath) || Directory.Exists(lockPath))
+                {
+                    UpdateProcessCommand.RejectReparsePoint(lockPath);
+                }
+                claim = new FileStream(
+                    lockPath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 4096,
+                    FileOptions.WriteThrough);
+            }
+            catch (IOException exception) when (IsLockContention(exception))
+            {
+                contention = exception;
+                TimeSpan remaining = LockAcquisitionBudget - wait.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    throw;
+                }
+                Thread.Sleep(remaining < LockRetryInterval ? remaining : LockRetryInterval);
+                if (wait.Elapsed >= LockAcquisitionBudget)
+                {
+                    throw;
+                }
+                continue;
+            }
+            if (contention is not null && wait.Elapsed >= LockAcquisitionBudget)
+            {
+                ReleaseLock(claim, lockPath);
+                ExceptionDispatchInfo.Capture(contention).Throw();
+            }
+            return claim;
         }
-        return new FileStream(
-            lockPath,
-            FileMode.OpenOrCreate,
-            FileAccess.ReadWrite,
-            FileShare.None,
-            bufferSize: 4096,
-            FileOptions.WriteThrough);
     }
+
+    private static bool IsLockContention(IOException exception) =>
+        OperatingSystem.IsWindows()
+        && (exception.HResult & 0xffff) is ErrorSharingViolation or ErrorLockViolation;
 
     private static void ReleaseLock(FileStream claim, string lockPath)
     {
