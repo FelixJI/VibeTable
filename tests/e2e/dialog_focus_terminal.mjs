@@ -200,9 +200,27 @@ export function captureDialogFocusLeaseInPage(request) {
         gridRoots[0].querySelectorAll(".tabulator-cell[tabulator-field]"),
       ).filter((candidate) => candidate.getAttribute("tabulator-field") === request.field);
       const element = matchingCells[request.occurrence] ?? null;
-      return document.hasFocus()
-        && element?.isConnected === true
-        && document.activeElement === element;
+      if (!document.hasFocus()
+        || element?.isConnected !== true
+        || document.activeElement !== element) {
+        return false;
+      }
+      const activeElement = document.activeElement;
+      return {
+        restored: true,
+        documentHasFocus: true,
+        activeTag: typeof activeElement?.tagName === "string" ? activeElement.tagName : null,
+        activeClass: typeof activeElement?.className === "string" ? activeElement.className : null,
+        activeField: typeof activeElement?.getAttribute === "function"
+          ? activeElement.getAttribute("tabulator-field")
+          : null,
+        activeRole: typeof activeElement?.getAttribute === "function"
+          ? activeElement.getAttribute("role")
+          : null,
+        activeTestId: typeof activeElement?.getAttribute === "function"
+          ? activeElement.getAttribute("data-testid")
+          : null,
+      };
     }
     return { capture, events: validated.events, terminal: validated.terminal };
   }

@@ -149,8 +149,18 @@ test("accepts a released pending chain and waits for its single restored termina
 
 test("requires restored lease evidence and the current logical cell to own DOM focus atomically", () => {
   const capture = { cursor: 1, leaseId: 7, target: "json" };
-  const oldTarget = { isConnected: true, getAttribute: () => "payload" };
-  const currentTarget = { isConnected: true, getAttribute: () => "payload" };
+  const cell = () => ({
+    isConnected: true,
+    tagName: "DIV",
+    className: "tabulator-cell vt-json-cell vt-structured-cell",
+    getAttribute: (name) => ({
+      "tabulator-field": "payload",
+      role: "gridcell",
+      "data-testid": null,
+    })[name] ?? null,
+  });
+  const oldTarget = cell();
+  const currentTarget = cell();
   const oldRoot = { isConnected: true, querySelectorAll: () => [oldTarget] };
   const currentRoot = { isConnected: true, querySelectorAll: () => [currentTarget] };
   let roots = [oldRoot, currentRoot];
@@ -181,12 +191,20 @@ test("requires restored lease evidence and the current logical cell to own DOM f
         occurrence: 0,
       }), false);
       document.activeElement = currentTarget;
-      assert.equal(hasDialogFocusLeaseRestoredFocusInPage({
+      assert.deepEqual(hasDialogFocusLeaseRestoredFocusInPage({
         operation: "has-restored-focus",
         capture,
         field: "payload",
         occurrence: 0,
-      }), true);
+      }), {
+        restored: true,
+        documentHasFocus: true,
+        activeTag: "DIV",
+        activeClass: "tabulator-cell vt-json-cell vt-structured-cell",
+        activeField: "payload",
+        activeRole: "gridcell",
+        activeTestId: null,
+      });
       document.hasFocus = () => false;
       assert.equal(hasDialogFocusLeaseRestoredFocusInPage({
         operation: "has-restored-focus",

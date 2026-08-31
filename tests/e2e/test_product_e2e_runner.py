@@ -2535,6 +2535,9 @@ def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
 
 def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    focus_terminal = runner.NODE_RUNNER.with_name("dialog_focus_terminal.mjs").read_text(
+        encoding="utf-8"
+    )
     scenario = source[
         source.index("async function scenario04") : source.index("async function scenario05")
     ]
@@ -2557,7 +2560,9 @@ def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -
     assert "focusRestorationObserved\n      &&" in scenario
     assert "focusRestoration.documentHasFocus\n      &&" in scenario
     assert "!focusRestoration.documentHasFocus" not in scenario
-    assert "document.activeElement === element" in scenario
+    assert "focusRestoration = await restoredFocus.jsonValue()" in scenario
+    assert "document.activeElement === element" not in scenario
+    assert "document.activeElement !== element" in focus_terminal
     assert 'document.activeElement.getAttribute("tabulator-field")' in scenario
     assert "`${jsonField}\\n" in scenario
     assert 'setProductLocale(page, "en-US")' in scenario

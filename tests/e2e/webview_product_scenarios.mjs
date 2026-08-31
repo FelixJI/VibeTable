@@ -1960,6 +1960,7 @@ async function scenario04(page, recorder, _network, runtime) {
   await page.keyboard.press("Escape");
   await page.getByTestId("json-editor-modal").waitFor({ state: "hidden" });
   let focusRestorationObserved = false;
+  let focusRestoration = null;
   let focusRestorationWaitError = null;
   try {
     const restoredFocus = await page.waitForFunction(
@@ -1972,8 +1973,12 @@ async function scenario04(page, recorder, _network, runtime) {
       },
       { timeout: 10_000 },
     );
-    await restoredFocus.dispose();
-    focusRestorationObserved = true;
+    try {
+      focusRestoration = await restoredFocus.jsonValue();
+    } finally {
+      await restoredFocus.dispose();
+    }
+    focusRestorationObserved = focusRestoration?.restored === true;
   } catch (error) {
     focusRestorationWaitError = error instanceof Error
       ? { name: error.name, message: error.message }
@@ -1983,25 +1988,29 @@ async function scenario04(page, recorder, _network, runtime) {
     readDialogFocusLeaseEvidenceInPage,
     { operation: "read-evidence", capture: focusLease },
   );
-  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
+  if (focusRestoration === null) {
+    focusRestoration = await page.evaluate(() => ({
+      documentHasFocus: document.hasFocus(),
+      restored: false,
+      activeTag: document.activeElement?.tagName ?? null,
+      activeClass: document.activeElement instanceof HTMLElement
+        ? document.activeElement.className
+        : null,
+      activeField: document.activeElement instanceof HTMLElement
+        ? document.activeElement.getAttribute("tabulator-field")
+        : null,
+      activeRole: document.activeElement instanceof HTMLElement
+        ? document.activeElement.getAttribute("role")
+        : null,
+      activeTestId: document.activeElement instanceof HTMLElement
+        ? document.activeElement.getAttribute("data-testid")
+        : null,
+    }));
+  }
+  jsonCell = page.locator(".grid-host > .tabulator-mount.tabulator")
+    .locator(`.tabulator-cell[tabulator-field="${jsonField}"]`)
+    .nth(0);
   await jsonCell.waitFor({ timeout: 10_000 });
-  const focusRestoration = await jsonCell.evaluate((element) => ({
-    documentHasFocus: document.hasFocus(),
-    restored: document.activeElement === element,
-    activeTag: document.activeElement?.tagName ?? null,
-    activeClass: document.activeElement instanceof HTMLElement
-      ? document.activeElement.className
-      : null,
-    activeField: document.activeElement instanceof HTMLElement
-      ? document.activeElement.getAttribute("tabulator-field")
-      : null,
-    activeRole: document.activeElement instanceof HTMLElement
-      ? document.activeElement.getAttribute("role")
-      : null,
-    activeTestId: document.activeElement instanceof HTMLElement
-      ? document.activeElement.getAttribute("data-testid")
-      : null,
-  }));
   recorder.check(
     "Escape closes the structured modal and restores focus when the renderer owns OS focus",
     focusRestorationObserved
