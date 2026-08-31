@@ -387,9 +387,8 @@ public sealed class WorkspaceReplicaRecoveryService :
             Directory.Exists(paths.Files) &&
             File.Exists(Path.Combine(paths.Data, "data.db")) &&
             File.Exists(Path.Combine(
-                root,
-                WorkspaceLayout.MetadataDirectoryName,
-                "settings.json")) &&
+                paths.Coordination,
+                "workspace-v2.db")) &&
             File.Exists(Path.Combine(
                 paths.Coordination,
                 "write-coordinator.db"));

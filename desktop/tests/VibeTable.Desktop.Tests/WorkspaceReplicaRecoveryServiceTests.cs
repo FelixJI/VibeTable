@@ -106,6 +106,12 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             receipt.ActivityRoot);
         Assert.IsTrue(Directory.Exists(
             WorkspaceLayout.Paths(receipt.ActivityRoot!).Data));
+        Assert.IsTrue(File.Exists(Path.Combine(
+            WorkspaceLayout.Paths(receipt.ActivityRoot!).Coordination,
+            "workspace-v2.db")));
+        Assert.IsFalse(File.Exists(Path.Combine(
+            WorkspaceLayout.Paths(receipt.ActivityRoot!).Metadata,
+            "settings.json")));
         ProcessStartInfo start = fixture.Runner.StartInfo!;
         CollectionAssert.AreEqual(
             new[] { "--recover-workspace-replica" },
@@ -452,9 +458,9 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         File.WriteAllBytes(
             Path.Combine(metadata, "data", "data.db"),
             [0x56, 0x54]);
-        File.WriteAllText(
-            Path.Combine(metadata, "settings.json"),
-            "{}");
+        File.WriteAllBytes(
+            Path.Combine(metadata, "coordination", "workspace-v2.db"),
+            [0x56, 0x54]);
         File.WriteAllBytes(
             Path.Combine(
                 metadata,
