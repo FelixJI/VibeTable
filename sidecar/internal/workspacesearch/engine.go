@@ -303,6 +303,14 @@ func (engine *Engine) rebuildWithProgress(
 		}
 	}
 	for _, table := range []string{"search_terms", "search_cjk3"} {
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO `+table+`(`+table+`) VALUES('optimize')`,
+		); err != nil {
+			return fmt.Errorf("optimize %s: %w", table, err)
+		}
+	}
+	for _, table := range []string{"search_terms", "search_cjk3"} {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table+`(`+table+`) VALUES('integrity-check')`); err != nil {
 			return fmt.Errorf("verify %s: %w", table, err)
 		}

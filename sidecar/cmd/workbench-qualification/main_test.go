@@ -72,8 +72,14 @@ func TestQualificationProfilesAndBudgetsAreFailClosed(t *testing.T) {
 	if maximumRebuildDuration != 4*time.Minute {
 		t.Fatalf("qualification rebuild budget changed: %v", maximumRebuildDuration)
 	}
-	if maximumWarmP95.Milliseconds() != 150 || maximumIncrementalP95.Seconds() != 2 {
-		t.Fatalf("qualification SLO changed: warm=%v incremental=%v", maximumWarmP95, maximumIncrementalP95)
+	if maximumFirstScreen != 300*time.Millisecond || maximumWarmP95.Milliseconds() != 150 ||
+		maximumIncrementalP95.Seconds() != 2 {
+		t.Fatalf(
+			"qualification SLO changed: first=%v warm=%v incremental=%v",
+			maximumFirstScreen,
+			maximumWarmP95,
+			maximumIncrementalP95,
+		)
 	}
 	workRoot, err := qualificationWorkRoot()
 	if err != nil {
