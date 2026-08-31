@@ -13,6 +13,8 @@ func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
 		allowed bool
 	}{
 		{"v2 rpc", http.MethodPost, workspaceV2RPCPath, true},
+		{"product rpc", http.MethodPost, productRPCPath, true},
+		{"product rpc extra segment", http.MethodPost, productRPCPath + "/extra", false},
 		{"host drain", http.MethodPost, workspaceV2DrainPath, true},
 		{"shutdown", http.MethodPost, shutdownPath, true},
 		{"query", http.MethodPost, "/api/vibetable/v1/query", true},

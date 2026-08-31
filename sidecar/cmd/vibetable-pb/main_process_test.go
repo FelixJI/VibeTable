@@ -127,6 +127,20 @@ func TestSidecarProcessReadyHealthAuthAndGracefulShutdown(t *testing.T) {
 		)
 	}
 	drainAndClose(t, response.Body)
+	response = request(
+		t,
+		client,
+		http.MethodGet,
+		baseURL+"/api/vibetable/v2/product/capabilities",
+		secret,
+	)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf(
+			"legacy launch Product capabilities status = %d, want 404",
+			response.StatusCode,
+		)
+	}
+	drainAndClose(t, response.Body)
 
 	for _, protectedPath := range []string{"/_/", "/api/collections"} {
 		response = request(t, client, http.MethodGet, baseURL+protectedPath, "")
@@ -429,6 +443,101 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		len(capabilities.RPCMethods) < 9 ||
 		len(capabilities.Registrations) != len(capabilities.RPCMethods) {
 		t.Fatalf("capabilities = %#v", capabilities)
+	}
+
+	response = request(
+		t, client, http.MethodGet,
+		baseURL+"/api/vibetable/v2/product/capabilities", "",
+	)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated Product capabilities status=%d", response.StatusCode)
+	}
+	drainAndClose(t, response.Body)
+	response = request(
+		t, client, http.MethodGet,
+		baseURL+"/api/vibetable/v2/product/capabilities", secret,
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("Product capabilities status=%d body=%s", response.StatusCode, body)
+	}
+	var productCapabilities struct {
+		ContractVersion string   `json:"contractVersion"`
+		WorkspaceID     string   `json:"workspaceId"`
+		SessionEpoch    uint64   `json:"sessionEpoch"`
+		FenceEpoch      uint64   `json:"fenceEpoch"`
+		ClaimID         string   `json:"claimId"`
+		RPCMethods      []string `json:"rpcMethods"`
+		Registrations   []struct {
+			Method string `json:"method"`
+			Scope  string `json:"scope"`
+		} `json:"registrations"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&productCapabilities); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if productCapabilities.ContractVersion != "2.0" ||
+		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
+		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
+		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
+		len(productCapabilities.RPCMethods) != 0 ||
+		len(productCapabilities.Registrations) != 0 {
+		t.Fatalf("Product capabilities = %#v", productCapabilities)
+	}
+
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/product/rpc", secret,
+		workspaceV2Request(0, 7, "not.migrated", `{}`),
+	)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("Product method-not-found status=%d body=%s", response.StatusCode, body)
+	}
+	var productMethodMissing struct {
+		ID    string          `json:"id"`
+		Wire  json.RawMessage `json:"wire"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&productMethodMissing); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if productMethodMissing.ID != "request-0" || len(productMethodMissing.Wire) == 0 ||
+		productMethodMissing.Error.Code != -32601 ||
+		productMethodMissing.Error.Message != "Method not found" {
+		t.Fatalf("Product method-not-found envelope = %#v", productMethodMissing)
+	}
+
+	response = requestJSON(
+		t, client, http.MethodPost,
+		baseURL+"/api/vibetable/v2/product/rpc", secret,
+		workspaceV2Request(0, 7, "not.migrated", `[]`),
+	)
+	if response.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("Product non-object params status=%d body=%s", response.StatusCode, body)
+	}
+	var productInvalidRequest struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&productInvalidRequest); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if productInvalidRequest.Error.Code != -32600 ||
+		productInvalidRequest.Error.Message != "Invalid Request" {
+		t.Fatalf("Product invalid request envelope = %#v", productInvalidRequest)
 	}
 
 	tableCreateBody := `{

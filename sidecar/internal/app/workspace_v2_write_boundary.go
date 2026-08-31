@@ -67,6 +67,7 @@ func workspaceV2RequestAllowed(method string, path string) bool {
 		return path != "/api/vibetable/v1/admin/bootstrap"
 	case http.MethodPost:
 		if path == workspaceV2RPCPath ||
+			path == productRPCPath ||
 			path == workspaceV2DrainPath ||
 			path == shutdownPath ||
 			isWorkspaceV2FieldCancelPath(path) {
