@@ -299,10 +299,15 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
             fixture.Session,
             reader,
             TimeSpan.FromSeconds(1));
-        using var cancelled = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
+        using var cancelled = new CancellationTokenSource();
 
-        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() =>
-            gate.ConfirmAsync(activation, cancelled.Token));
+        Task<UpdateWorkspaceHealthProbeReceipt> confirmation = gate.ConfirmAsync(
+            activation,
+            cancelled.Token);
+        await reader.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+        cancelled.Cancel();
+
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => confirmation);
 
         Assert.AreEqual(1, fixture.Session.CloseCount);
         Assert.IsFalse(fixture.Session.LastCloseTokenCanBeCanceled);
@@ -362,18 +367,22 @@ public sealed class UpdateActivationWorkspaceHealthGateTests
         private readonly int _tableCount;
         private readonly Exception? _exception;
         private readonly bool _hang;
+        private readonly TaskCompletionSource _entered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         public RecordingSchemaReader(int tableCount) => _tableCount = tableCount;
         public RecordingSchemaReader(Exception exception) => _exception = exception;
         public RecordingSchemaReader() => _hang = true;
 
         public WorkspaceSessionV2? Session { get; private set; }
+        public Task Entered => _entered.Task;
 
         public Task<int> ReadTableCountAsync(
             WorkspaceSessionV2 expectedSession,
             CancellationToken cancellationToken)
         {
             Session = expectedSession;
+            _entered.TrySetResult();
             if (_exception is not null)
             {
                 return Task.FromException<int>(_exception);
