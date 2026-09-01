@@ -32,6 +32,8 @@ internal sealed class ProductRpcCapabilityManifest
         new(LoadEmbedded);
     private readonly IReadOnlyDictionary<string, ProductRpcCapability> _methods;
     private readonly IReadOnlyDictionary<string, ProductEventCapability> _events;
+    private readonly IReadOnlyList<ProductSidecarRegistration>
+        _productSidecarRegistrations;
 
     private ProductRpcCapabilityManifest(
         IEnumerable<ProductRpcCapability> methods,
@@ -41,6 +43,14 @@ internal sealed class ProductRpcCapabilityManifest
         ArgumentNullException.ThrowIfNull(events);
         _methods = BuildMethodDictionary(methods);
         _events = BuildEventDictionary(events);
+        _productSidecarRegistrations = Array.AsReadOnly(
+            _methods.Values
+                .Where(capability => capability.Owner == "goSidecar")
+                .OrderBy(capability => capability.Method, StringComparer.Ordinal)
+                .Select(capability => new ProductSidecarRegistration(
+                    capability.Method,
+                    capability.Scope))
+                .ToArray());
     }
 
     internal static ProductRpcCapabilityManifest Default => DefaultManifest.Value;
@@ -59,6 +69,9 @@ internal sealed class ProductRpcCapabilityManifest
 
     internal bool TryGetEvent(string topic, out ProductEventCapability capability)
         => _events.TryGetValue(topic, out capability!);
+
+    internal IReadOnlyList<ProductSidecarRegistration>
+        GetProductSidecarRegistrations() => _productSidecarRegistrations;
 
     internal static ProductRpcCapabilityManifest Parse(string json)
     {

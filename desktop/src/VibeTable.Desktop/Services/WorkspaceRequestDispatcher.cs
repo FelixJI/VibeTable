@@ -8,7 +8,9 @@ namespace VibeTable.Desktop.Services;
 /// Selects one closed renderer request module and schedules its transport
 /// lifecycle. Business payload interpretation belongs to the selected module.
 /// </summary>
-public sealed class WorkspaceRequestDispatcher : IDisposable
+public sealed class WorkspaceRequestDispatcher :
+    IDisposable,
+    IProductSidecarForwarderBinding
 {
     private readonly IWebReplySink _reply;
     private readonly DatabaseOpenTerminalPublisher _terminals;
@@ -23,7 +25,9 @@ public sealed class WorkspaceRequestDispatcher : IDisposable
     private readonly ProductAuthorityEpoch _authority;
     private readonly bool _ownsAuthority;
     private readonly bool _ownsPluginBindings;
+    private readonly object _productSidecarBindingGate = new();
     private CancellationToken _workspaceSessionToken;
+    private IProductSidecarRpcForwarder? _productSidecarForwarder;
 
     public WorkspaceRequestDispatcher(
         TableWorkspaceService workspace,
@@ -176,11 +180,48 @@ public sealed class WorkspaceRequestDispatcher : IDisposable
 
     internal void SetProductSidecarForwarder(
         IProductSidecarRpcForwarder forwarder)
-        => _productController.SetProductSidecarForwarder(forwarder);
+    {
+        ArgumentNullException.ThrowIfNull(forwarder);
+        lock (_productSidecarBindingGate)
+        {
+            _productController.SetProductSidecarForwarder(forwarder);
+            _productSidecarForwarder = forwarder;
+        }
+    }
 
     internal bool ClearProductSidecarForwarder(
         IProductSidecarRpcForwarder expected)
-        => _productController.ClearProductSidecarForwarder(expected);
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        lock (_productSidecarBindingGate)
+        {
+            if (!ReferenceEquals(_productSidecarForwarder, expected))
+                return false;
+            if (!_productController.ClearProductSidecarForwarder(expected))
+                return false;
+            _productSidecarForwarder = null;
+            return true;
+        }
+    }
+
+    bool IProductSidecarForwarderBinding.TryReplace(
+        IProductSidecarRpcForwarder? expected,
+        IProductSidecarRpcForwarder replacement)
+    {
+        ArgumentNullException.ThrowIfNull(replacement);
+        lock (_productSidecarBindingGate)
+        {
+            if (!ReferenceEquals(_productSidecarForwarder, expected))
+                return false;
+            _productController.SetProductSidecarForwarder(replacement);
+            _productSidecarForwarder = replacement;
+            return true;
+        }
+    }
+
+    bool IProductSidecarForwarderBinding.Clear(
+        IProductSidecarRpcForwarder expected)
+        => ClearProductSidecarForwarder(expected);
 
     public void SetPluginProjectContext(
         PluginProjectContext? context,

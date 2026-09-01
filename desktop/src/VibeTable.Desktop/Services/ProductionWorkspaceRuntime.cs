@@ -16,12 +16,15 @@ namespace VibeTable.Desktop.Services;
 public sealed class ProductionWorkspaceRuntimeFactory :
     IWorkspaceRuntimeFactory,
     IBackendLifecycle,
+    IProductSidecarGenerationAuthority,
     IAsyncDisposable
 {
     private readonly object _gate = new();
     private readonly Func<PocketBaseLaunchOptions> _sidecarTemplateFactory;
     private readonly Func<BackendLaunchOptions> _backendTemplateFactory;
     private readonly DesktopWorkspaceAuthorityStore _authority;
+    private readonly ProductSidecarGenerationSnapshotCache
+        _productSidecarGenerations = new();
     private ProductionWorkspaceRuntime? _current;
     private bool _disposed;
 
@@ -115,6 +118,52 @@ public sealed class ProductionWorkspaceRuntimeFactory :
     public event Action? ClientReady;
     public event Action<Exception>? RecoveryFailed;
     public event Action? BindingChanged;
+    private event Action? ProductSidecarCurrentChanged;
+
+    event Action? IProductSidecarGenerationAuthority.CurrentChanged
+    {
+        add => ProductSidecarCurrentChanged += value;
+        remove => ProductSidecarCurrentChanged -= value;
+    }
+
+    internal ProductSidecarGenerationSnapshot? CaptureProductSidecarGeneration()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _current is null)
+                return null;
+            PocketBaseAdminContext? context = _current.Sidecar.GetAdminContext();
+            WorkspaceV2SidecarCapabilities? capabilities = _current.Capabilities;
+            if (context is null || capabilities is null)
+                return null;
+            return CreateProductSidecarGeneration(
+                _current,
+                context,
+                capabilities);
+        }
+    }
+
+    bool IProductSidecarGenerationAuthority.TryUseCurrent(
+        ProductSidecarGenerationSnapshot snapshot,
+        Func<bool> action)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(action);
+        lock (_gate)
+        {
+            if (_disposed
+                || _current is null
+                || !ReferenceEquals(snapshot.RuntimeAuthority, _current))
+                return false;
+            PocketBaseAdminContext? context = _current.Sidecar.GetAdminContext();
+            WorkspaceV2SidecarCapabilities? capabilities = _current.Capabilities;
+            if (context is null || capabilities is null)
+                return false;
+            ProductSidecarGenerationSnapshot current =
+                CreateProductSidecarGeneration(_current, context, capabilities);
+            return ReferenceEquals(snapshot, current) && action();
+        }
+    }
 
     internal WorkspaceRepositoryAuthority PrepareRepositoryOnboarding(
         WorkspaceRegistryEntryV2 workspace)
@@ -184,7 +233,10 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             _disposed = true;
             current = _current;
             _current = null;
+            _productSidecarGenerations.Clear();
         }
+        if (current is not null)
+            ProductSidecarCurrentChanged?.Invoke();
         if (current is not null)
             await current.DisposeAsync().ConfigureAwait(false);
     }
@@ -199,6 +251,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                     "Another workspace runtime is already active.");
             _current = runtime;
         }
+        ProductSidecarCurrentChanged?.Invoke();
         BindingChanged?.Invoke();
         ClientReady?.Invoke();
     }
@@ -211,11 +264,15 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             if (ReferenceEquals(_current, runtime))
             {
                 _current = null;
+                _productSidecarGenerations.Clear();
                 changed = true;
             }
         }
         if (changed)
+        {
+            ProductSidecarCurrentChanged?.Invoke();
             BindingChanged?.Invoke();
+        }
     }
 
     internal void NotifyClientReady(ProductionWorkspaceRuntime runtime)
@@ -225,6 +282,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             if (!ReferenceEquals(_current, runtime))
                 return;
         }
+        ProductSidecarCurrentChanged?.Invoke();
         ClientReady?.Invoke();
     }
 
@@ -328,6 +386,21 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             string.IsNullOrWhiteSpace(workspace.ActivityRoot)
                 ? workspace.SelectedRoot
                 : workspace.ActivityRoot);
+
+    private ProductSidecarGenerationSnapshot CreateProductSidecarGeneration(
+        ProductionWorkspaceRuntime runtime,
+        PocketBaseAdminContext context,
+        WorkspaceV2SidecarCapabilities capabilities)
+        => _productSidecarGenerations.GetOrCreate(
+            runtime,
+            context,
+            new ProductSidecarIdentity(
+                capabilities.WorkspaceId,
+                capabilities.SessionEpoch,
+                capabilities.FenceEpoch,
+                capabilities.ClaimId),
+            ProductRpcCapabilityManifest.Default
+                .GetProductSidecarRegistrations());
 }
 
 public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
