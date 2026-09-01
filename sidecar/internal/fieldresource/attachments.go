@@ -10,6 +10,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/filesystem/blob"
 	"github.com/pocketbase/pocketbase/tools/types"
 )
 
@@ -233,7 +234,7 @@ func deleteObjectIfPresent(
 	if !exists {
 		return nil
 	}
-	if err := fsys.Delete(key); err != nil {
+	if err := fsys.Delete(key); err != nil && !errors.Is(err, blob.ErrNotFound) {
 		return fmt.Errorf("delete attachment object %q: %w", key, err)
 	}
 	return nil
