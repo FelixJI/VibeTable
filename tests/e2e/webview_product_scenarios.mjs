@@ -4286,7 +4286,7 @@ async function scenario13(page, recorder, _network, runtime) {
 }
 
 async function scenario14(page, recorder, _network, runtime) {
-  await waitForShell(page, recorder);
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-files").click();
   const workspace = page.getByTestId("file-workspace");
   await workspace.waitFor({ state: "visible", timeout: 30_000 });

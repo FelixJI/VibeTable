@@ -2149,7 +2149,7 @@ def test_document_diff_scenario_uses_closed_ui_operation_and_rejects_raw_materia
         source.index("async function scenario14") : source.index("async function scenario15")
     ]
 
-    assert "await waitForShell(page, recorder);" in scenario
+    assert "await waitForShell(page, recorder, { requireDatabaseOpened: true });" in scenario
     assert 'getByTestId("document-import")' in scenario
     assert 'rawWorkspaceV2Request(page, "fileHistory.restore"' in scenario
     assert 'getByTestId("compare-revision")' in scenario
