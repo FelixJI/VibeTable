@@ -175,6 +175,15 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             authority.ClaimId);
     }
 
+    internal DesktopWorkspaceAuthorityStore.DetachedReservation
+        PrepareDetachedRepositoryRecovery(
+            WorkspaceRegistryEntryV2 workspace,
+            string stagingRoot)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        return _authority.Detach(workspace, stagingRoot);
+    }
+
     public IWorkspaceRuntime Create(
         WorkspaceRegistryEntryV2 workspace,
         ulong sessionEpoch)
@@ -598,18 +607,24 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
 internal sealed class DesktopWorkspaceAuthorityStore
 {
     private const int FormatVersion = 1;
-    private readonly object _gate = new();
+    private static readonly object ProcessGate = new();
+    private static readonly Dictionary<Guid, DetachedReservation>
+        DetachedByWorkspace = [];
+    private static readonly Dictionary<string, DetachedReservation>
+        DetachedByPath = new(StringComparer.OrdinalIgnoreCase);
 
     public DesktopWorkspaceAuthority Prepare(
         WorkspaceRegistryEntryV2 workspace)
     {
-        lock (_gate)
+        lock (ProcessGate)
         {
-            DesktopWorkspaceAuthority? current = TryRead(workspace);
+            string root = RuntimeRoot(workspace);
+            EnsureAvailable(workspace.WorkspaceId, root);
+            DesktopWorkspaceAuthority? current = TryReadCore(
+                workspace.WorkspaceId,
+                root);
             if (current is not null)
                 return current;
-            string root =
-                ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace);
             WorkspacePaths paths = WorkspaceLayout.Paths(root);
             if (File.Exists(Path.Combine(
                     paths.Coordination,
@@ -636,9 +651,13 @@ internal sealed class DesktopWorkspaceAuthorityStore
             throw new WorkspaceRegistryException(
                 "workspace.session_epoch_invalid",
                 "Workspace session epoch is invalid.");
-        lock (_gate)
+        lock (ProcessGate)
         {
-            DesktopWorkspaceAuthority? current = TryRead(workspace);
+            string root = RuntimeRoot(workspace);
+            EnsureAvailable(workspace.WorkspaceId, root);
+            DesktopWorkspaceAuthority? current = TryReadCore(
+                workspace.WorkspaceId,
+                root);
             if (current is not null
                 && sessionEpoch <= current.LastSessionEpoch)
             {
@@ -646,8 +665,6 @@ internal sealed class DesktopWorkspaceAuthorityStore
                     "workspace.session_epoch_stale",
                     "Workspace session epoch did not advance.");
             }
-            string root =
-                ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace);
             WorkspacePaths paths = WorkspaceLayout.Paths(root);
             string coordinator = Path.Combine(
                 paths.Coordination,
@@ -674,25 +691,83 @@ internal sealed class DesktopWorkspaceAuthorityStore
     public DesktopWorkspaceAuthority? TryRead(
         WorkspaceRegistryEntryV2 workspace)
     {
-        string path = PathFor(workspace);
+        ArgumentNullException.ThrowIfNull(workspace);
+        lock (ProcessGate)
+        {
+            string root = RuntimeRoot(workspace);
+            EnsureAvailable(workspace.WorkspaceId, root);
+            return TryReadCore(workspace.WorkspaceId, root);
+        }
+    }
+
+    public DetachedReservation Detach(
+        WorkspaceRegistryEntryV2 workspace,
+        string stagingRoot)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
+        string finalRoot = RuntimeRoot(workspace);
+        string staging = CanonicalPath(stagingRoot);
+        if (!string.Equals(
+                Path.GetDirectoryName(finalRoot),
+                Path.GetDirectoryName(staging),
+                StringComparison.OrdinalIgnoreCase)
+            || string.Equals(
+                finalRoot,
+                staging,
+                StringComparison.OrdinalIgnoreCase))
+            throw RecoveryTargetInvalid();
+        lock (ProcessGate)
+        {
+            EnsureAvailable(workspace.WorkspaceId, finalRoot, staging);
+            try
+            {
+                if (File.Exists(staging) || Directory.Exists(staging)
+                    || File.Exists(finalRoot))
+                    throw RecoveryTargetInvalid();
+                if (Directory.Exists(finalRoot))
+                {
+                    if (Directory.EnumerateFileSystemEntries(finalRoot).Any())
+                        throw RecoveryTargetInvalid();
+                    Directory.Delete(finalRoot, recursive: false);
+                }
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                throw new WorkspaceRegistryException(
+                    "replica.recovery_install_failed",
+                    "The local activity recovery target could not be reserved.",
+                    exception);
+            }
+            var reservation = new DetachedReservation(
+                this,
+                workspace.WorkspaceId,
+                finalRoot,
+                staging,
+                new DesktopWorkspaceAuthority(
+                    FormatVersion,
+                    workspace.WorkspaceId,
+                    1,
+                    Guid.NewGuid(),
+                    0));
+            DetachedByWorkspace.Add(workspace.WorkspaceId, reservation);
+            DetachedByPath.Add(finalRoot, reservation);
+            DetachedByPath.Add(staging, reservation);
+            return reservation;
+        }
+    }
+
+    private static DesktopWorkspaceAuthority? TryReadCore(
+        Guid workspaceId,
+        string root)
+    {
+        string path = PathForRoot(root);
         if (!File.Exists(path))
             return null;
         try
         {
-            DesktopWorkspaceAuthority authority =
-                JsonSerializer.Deserialize<DesktopWorkspaceAuthority>(
-                    File.ReadAllText(path, Encoding.UTF8),
-                    WorkspaceV2Json.StrictOptions)
-                ?? throw new JsonException("Authority file is empty.");
-            if (authority.FormatVersion != FormatVersion
-                || authority.WorkspaceId != workspace.WorkspaceId
-                || authority.FenceEpoch == 0
-                || authority.ClaimId == Guid.Empty
-                )
-            {
-                throw new JsonException("Authority file is invalid.");
-            }
-            return authority;
+            return Read(path, workspaceId);
         }
         catch (Exception exception) when (
             exception is IOException
@@ -709,8 +784,18 @@ internal sealed class DesktopWorkspaceAuthorityStore
     private static void Write(
         WorkspaceRegistryEntryV2 workspace,
         DesktopWorkspaceAuthority authority)
+        => Write(PathForRoot(RuntimeRoot(workspace)), authority, overwrite: true);
+
+    private static void WriteNew(
+        string root,
+        DesktopWorkspaceAuthority authority)
+        => Write(PathForRoot(root), authority, overwrite: false);
+
+    private static void Write(
+        string path,
+        DesktopWorkspaceAuthority authority,
+        bool overwrite)
     {
-        string path = PathFor(workspace);
         string directory = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(directory);
         string temporary = Path.Combine(
@@ -732,7 +817,7 @@ internal sealed class DesktopWorkspaceAuthorityStore
                     WorkspaceV2Json.StrictOptions);
                 stream.Flush(flushToDisk: true);
             }
-            File.Move(temporary, path, overwrite: true);
+            File.Move(temporary, path, overwrite);
         }
         finally
         {
@@ -741,12 +826,260 @@ internal sealed class DesktopWorkspaceAuthorityStore
         }
     }
 
-    private static string PathFor(WorkspaceRegistryEntryV2 workspace)
+    private void Publish(DetachedReservation reservation)
+    {
+        lock (ProcessGate)
+        {
+            EnsureOwned(reservation, DetachedReservationState.Active);
+            reservation._state = DetachedReservationState.Publishing;
+            try
+            {
+                WorkspaceManifestV2 manifest =
+                    WorkspaceLayout.ReadManifest(reservation._stagingRoot);
+                if (manifest.WorkspaceId != reservation._workspaceId
+                    || manifest.StorageMode != WorkspaceStorageMode.Mirrored)
+                    throw new WorkspaceRegistryException(
+                        "workspace.identity_mismatch",
+                        "Recovered activity root does not match the mirrored workspace.");
+                try
+                {
+                    WriteNew(reservation._stagingRoot, reservation._authority);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException)
+                {
+                    throw new WorkspaceRegistryException(
+                        "replica.recovery_install_failed",
+                        "Detached recovery authority could not be installed.",
+                        exception);
+                }
+                reservation._state =
+                    DetachedReservationState.AuthorityPublished;
+                if (Directory.Exists(reservation._finalRoot)
+                    || File.Exists(reservation._finalRoot))
+                    throw RecoveryTargetInvalid();
+                try
+                {
+                    Directory.Move(
+                        reservation._stagingRoot,
+                        reservation._finalRoot);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException)
+                {
+                    throw new WorkspaceRegistryException(
+                        "replica.recovery_install_failed",
+                        "Recovered activity root could not be published.",
+                        exception);
+                }
+                Release(reservation, DetachedReservationState.Completed);
+            }
+            catch
+            {
+                if (Owns(reservation))
+                    reservation._state = DetachedReservationState.PublishFailed;
+                throw;
+            }
+        }
+    }
+
+    private void Cancel(DetachedReservation reservation)
+    {
+        lock (reservation)
+        {
+            lock (ProcessGate)
+            {
+                if (reservation._state is DetachedReservationState.Completed
+                    or DetachedReservationState.Canceled)
+                    return;
+                if (!Owns(reservation))
+                    return;
+                reservation._state = DetachedReservationState.Canceling;
+            }
+            try
+            {
+                TryQuarantineAndDeleteOwnedStaging(reservation);
+            }
+            finally
+            {
+                lock (ProcessGate)
+                {
+                    if (Owns(reservation))
+                        Release(reservation, DetachedReservationState.Canceled);
+                }
+            }
+        }
+    }
+
+    private static void TryQuarantineAndDeleteOwnedStaging(
+        DetachedReservation reservation)
+    {
+        if (!Directory.Exists(reservation._stagingRoot))
+            return;
+        string parent = Path.GetDirectoryName(reservation._stagingRoot)!;
+        string quarantine = Path.Combine(
+            parent,
+            $".{Path.GetFileName(reservation._stagingRoot)}" +
+            $".vibetable-cleanup-{Guid.NewGuid():N}");
+        lock (ProcessGate)
+        {
+            if (!Owns(reservation)
+                || DetachedByPath.ContainsKey(quarantine))
+                return;
+            reservation._cleanupRoot = quarantine;
+            DetachedByPath.Add(quarantine, reservation);
+        }
+        try
+        {
+            Directory.Move(reservation._stagingRoot, quarantine);
+            if (!IsOwnedRecoveryRoot(quarantine, reservation))
+                return;
+            WorkspaceLayout.DeleteWorkspaceRoot(
+                quarantine,
+                reservation._workspaceId);
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or WorkspaceRegistryException
+                or JsonException)
+        {
+            // Preserve unproven or unremovable data. Dispose must not replace
+            // the recovery failure that caused cleanup.
+        }
+        reservation.CleanupQuarantinedForTests?.Invoke(quarantine);
+    }
+
+    private static bool IsOwnedRecoveryRoot(
+        string root,
+        DetachedReservation reservation)
+    {
+        string authorityPath = PathForRoot(root);
+        if (File.Exists(authorityPath))
+            return Read(authorityPath, reservation._workspaceId)
+                == reservation._authority;
+        WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(root);
+        return manifest.WorkspaceId == reservation._workspaceId
+            && manifest.StorageMode == WorkspaceStorageMode.Mirrored;
+    }
+
+    private static DesktopWorkspaceAuthority Read(
+        string path,
+        Guid workspaceId)
+    {
+        DesktopWorkspaceAuthority authority =
+            JsonSerializer.Deserialize<DesktopWorkspaceAuthority>(
+                File.ReadAllText(path, Encoding.UTF8),
+                WorkspaceV2Json.StrictOptions)
+            ?? throw new JsonException("Authority file is empty.");
+        if (authority.FormatVersion != FormatVersion
+            || authority.WorkspaceId != workspaceId
+            || authority.FenceEpoch == 0
+            || authority.ClaimId == Guid.Empty)
+            throw new JsonException("Authority file is invalid.");
+        return authority;
+    }
+
+    private static void EnsureAvailable(
+        Guid workspaceId,
+        params string[] paths)
+    {
+        if (DetachedByWorkspace.ContainsKey(workspaceId)
+            || paths.Any(path => DetachedByPath.ContainsKey(path)))
+            throw new WorkspaceRegistryException(
+                "workspace.authority_detached_active",
+                "Workspace authority is reserved by detached recovery.");
+    }
+
+    private static void EnsureOwned(
+        DetachedReservation reservation,
+        DetachedReservationState expected)
+    {
+        if (!Owns(reservation) || reservation._state != expected)
+            throw new InvalidOperationException(
+                "Detached authority reservation is no longer active.");
+    }
+
+    private static bool Owns(DetachedReservation reservation)
+        => DetachedByWorkspace.TryGetValue(
+            reservation._workspaceId,
+            out DetachedReservation? active)
+            && ReferenceEquals(active, reservation);
+
+    private static void Release(
+        DetachedReservation reservation,
+        DetachedReservationState state)
+    {
+        reservation._state = state;
+        DetachedByWorkspace.Remove(reservation._workspaceId);
+        DetachedByPath.Remove(reservation._finalRoot);
+        DetachedByPath.Remove(reservation._stagingRoot);
+        if (reservation._cleanupRoot is not null)
+            DetachedByPath.Remove(reservation._cleanupRoot);
+    }
+
+    private static string RuntimeRoot(WorkspaceRegistryEntryV2 workspace)
+        => CanonicalPath(
+            ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace));
+
+    private static string CanonicalPath(string path)
+        => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+    private static string PathForRoot(string root)
         => Path.Combine(
-            WorkspaceLayout.Paths(
-                ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace))
-                .Coordination,
+            WorkspaceLayout.Paths(root).Coordination,
             "desktop-runtime-authority.json");
+
+    private static WorkspaceRegistryException RecoveryTargetInvalid()
+        => new(
+            "replica.recovery_target_invalid",
+            "The local activity recovery target must be new or empty.");
+
+    internal sealed class DetachedReservation : IDisposable
+    {
+        private readonly DesktopWorkspaceAuthorityStore _owner;
+        internal readonly Guid _workspaceId;
+        internal readonly string _finalRoot;
+        internal readonly string _stagingRoot;
+        internal readonly DesktopWorkspaceAuthority _authority;
+        internal string? _cleanupRoot;
+        internal DetachedReservationState _state = DetachedReservationState.Active;
+
+        internal DetachedReservation(
+            DesktopWorkspaceAuthorityStore owner,
+            Guid workspaceId,
+            string finalRoot,
+            string stagingRoot,
+            DesktopWorkspaceAuthority authority)
+        {
+            _owner = owner;
+            _workspaceId = workspaceId;
+            _finalRoot = finalRoot;
+            _stagingRoot = stagingRoot;
+            _authority = authority;
+            Authority = new WorkspaceRepositoryAuthority(
+                authority.FenceEpoch,
+                authority.ClaimId);
+        }
+
+        internal WorkspaceRepositoryAuthority Authority { get; }
+        internal Action<string>? CleanupQuarantinedForTests { get; set; }
+
+        internal void Publish() => _owner.Publish(this);
+
+        public void Dispose() => _owner.Cancel(this);
+    }
+
+    internal enum DetachedReservationState
+    {
+        Active,
+        Publishing,
+        AuthorityPublished,
+        PublishFailed,
+        Canceling,
+        Completed,
+        Canceled,
+    }
 }
 
 internal sealed record DesktopWorkspaceAuthority(
