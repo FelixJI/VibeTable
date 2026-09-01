@@ -55,22 +55,20 @@ public sealed class WorkspaceReplicaRecoveryService :
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     private readonly Func<PocketBaseLaunchOptions> _optionsFactory;
-    private readonly Func<WorkspaceRegistryEntryV2, WorkspaceRepositoryAuthority>
-        _authorityFactory;
+    private readonly ProductionWorkspaceRuntimeFactory _runtimeCoordinator;
     private readonly ITrustedSidecarProcessRunner _runner;
     private readonly TimeSpan _replicaOperationTimeout;
 
     public WorkspaceReplicaRecoveryService(
         Func<PocketBaseLaunchOptions> optionsFactory,
-        Func<WorkspaceRegistryEntryV2, WorkspaceRepositoryAuthority>
-            authorityFactory,
+        ProductionWorkspaceRuntimeFactory runtimeCoordinator,
         ITrustedSidecarProcessRunner? runner = null,
         TimeSpan? replicaOperationTimeout = null)
     {
         _optionsFactory = optionsFactory
             ?? throw new ArgumentNullException(nameof(optionsFactory));
-        _authorityFactory = authorityFactory
-            ?? throw new ArgumentNullException(nameof(authorityFactory));
+        _runtimeCoordinator = runtimeCoordinator
+            ?? throw new ArgumentNullException(nameof(runtimeCoordinator));
         _runner = runner ?? new TrustedSidecarProcessRunner();
         _replicaOperationTimeout =
             replicaOperationTimeout ?? DefaultReplicaOperationTimeout;
@@ -110,57 +108,51 @@ public sealed class WorkspaceReplicaRecoveryService :
             ?? throw new WorkspaceRegistryException(
                 "workspace.activity_root_required",
                 "Mirrored workspaces require a local activity root."));
-        EnsureEmptyOrMissing(finalRoot);
         string? parent = Path.GetDirectoryName(finalRoot);
         if (string.IsNullOrWhiteSpace(parent))
             throw RecoveryTargetInvalid();
-        Directory.CreateDirectory(parent);
+        try
+        {
+            Directory.CreateDirectory(parent);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            throw new WorkspaceRegistryException(
+                "replica.recovery_install_failed",
+                "The local activity recovery target could not be prepared.",
+                exception);
+        }
         string staging = Path.Combine(
             parent,
             $".{Path.GetFileName(finalRoot)}.vibetable-recovering-" +
             Guid.NewGuid().ToString("N"));
-        if (Directory.Exists(staging) || File.Exists(staging))
-            throw RecoveryTargetInvalid();
-
-        try
-        {
-            WorkspaceReplicaReceipt receipt = await RunAsync(
+        using DesktopWorkspaceAuthorityStore.DetachedReservation authority =
+            _runtimeCoordinator.PrepareDetachedRepositoryRecovery(
                 workspace,
-                "--recover-workspace-replica",
-                "recover",
+                staging);
+        WorkspaceReplicaReceipt receipt = await RunAsync(
+            workspace,
+            "--recover-workspace-replica",
+            "recover",
+            staging,
+            cancellationToken,
+            authority.Authority).ConfigureAwait(false);
+        if (!string.Equals(
+                Path.GetFullPath(receipt.ActivityRoot
+                    ?? throw InvalidOutput()),
                 staging,
-                cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(
-                    Path.GetFullPath(receipt.ActivityRoot
-                        ?? throw InvalidOutput()),
-                    staging,
-                    StringComparison.OrdinalIgnoreCase))
-                throw InvalidOutput();
-            WorkspaceManifestV2 manifest =
-                WorkspaceLayout.ReadManifest(staging);
-            if (manifest.WorkspaceId != workspace.WorkspaceId ||
-                manifest.StorageMode != WorkspaceStorageMode.Mirrored)
-                throw new WorkspaceRegistryException(
-                    "workspace.identity_mismatch",
-                    "Recovered activity root does not match the mirrored workspace.");
-            EnsureRecoveredLayout(staging);
-
-            if (Directory.Exists(finalRoot))
-            {
-                if (Directory.EnumerateFileSystemEntries(finalRoot).Any())
-                    throw RecoveryTargetInvalid();
-                Directory.Delete(finalRoot);
-            }
-            Directory.Move(staging, finalRoot);
-            return receipt with { ActivityRoot = finalRoot };
-        }
-        catch
-        {
-            TryDeleteOwnedRecoveryStaging(
-                staging,
-                workspace.WorkspaceId);
-            throw;
-        }
+                StringComparison.OrdinalIgnoreCase))
+            throw InvalidOutput();
+        WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(staging);
+        if (manifest.WorkspaceId != workspace.WorkspaceId ||
+            manifest.StorageMode != WorkspaceStorageMode.Mirrored)
+            throw new WorkspaceRegistryException(
+                "workspace.identity_mismatch",
+                "Recovered activity root does not match the mirrored workspace.");
+        EnsureRecoveredLayout(staging);
+        authority.Publish();
+        return receipt with { ActivityRoot = finalRoot };
     }
 
     public bool RequiresRecovery(WorkspaceRegistryEntryV2 workspace)
@@ -191,11 +183,13 @@ public sealed class WorkspaceReplicaRecoveryService :
         string flag,
         string operation,
         string? activityRoot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        WorkspaceRepositoryAuthority? detachedAuthority = null)
     {
         RequireMirrored(workspace);
         PocketBaseLaunchOptions options = _optionsFactory();
-        WorkspaceRepositoryAuthority authority = _authorityFactory(workspace);
+        WorkspaceRepositoryAuthority authority = detachedAuthority
+            ?? _runtimeCoordinator.PrepareRepositoryOnboarding(workspace);
         ProcessStartInfo start =
             WorkspaceRepositoryOnboardingService.CreateStartInfo(
                 options,
@@ -400,41 +394,6 @@ public sealed class WorkspaceReplicaRecoveryService :
             throw new WorkspaceRegistryException(
                 "replica.recovery_install_failed",
                 "Recovered activity root is incomplete.");
-    }
-
-    private static void EnsureEmptyOrMissing(string root)
-    {
-        if (Directory.Exists(root) &&
-            Directory.EnumerateFileSystemEntries(root).Any())
-            throw RecoveryTargetInvalid();
-        if (File.Exists(root))
-            throw RecoveryTargetInvalid();
-    }
-
-    private static void TryDeleteOwnedRecoveryStaging(
-        string staging,
-        Guid workspaceId)
-    {
-        if (!Directory.Exists(staging))
-            return;
-        try
-        {
-            WorkspaceManifestV2 manifest =
-                WorkspaceLayout.ReadManifest(staging);
-            if (manifest.WorkspaceId != workspaceId ||
-                manifest.StorageMode != WorkspaceStorageMode.Mirrored)
-                return;
-            WorkspaceLayout.DeleteWorkspaceRoot(staging, workspaceId);
-        }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or WorkspaceRegistryException)
-        {
-            // A staging directory without a valid, same-workspace mirrored
-            // manifest is not proven to be ours. Preserve it for diagnosis
-            // instead of risking an over-broad recursive delete.
-        }
     }
 
     private static string RequiredString(JsonElement root, string name)
