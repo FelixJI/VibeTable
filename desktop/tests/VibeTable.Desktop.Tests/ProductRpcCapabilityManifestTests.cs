@@ -7,6 +7,30 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRpcCapabilityManifestTests
 {
     [TestMethod]
+    public void ProductSidecarRegistrationsAreGoOwnedSortedAndDefensive()
+    {
+        ProductRpcCapabilityManifest manifest =
+            ProductRpcCapabilityManifest.CreateForTests(
+                new ProductRpcCapability(
+                    "query.z", "workspace", "rendererPublic",
+                    "schema.query", "goSidecar", "read"),
+                new ProductRpcCapability(
+                    "query.python", "workspace", "rendererPublic",
+                    "schema.query", "pythonBff", "read"),
+                new ProductRpcCapability(
+                    "query.a", "global", "rendererPublic",
+                    "schema.query", "goSidecar", "read"));
+
+        IReadOnlyList<ProductSidecarRegistration> registrations =
+            manifest.GetProductSidecarRegistrations();
+
+        CollectionAssert.AreEqual(
+            new[] { "query.a:global", "query.z:workspace" },
+            registrations.Select(item => $"{item.Method}:{item.Scope}").ToArray());
+        Assert.IsFalse(registrations is ProductSidecarRegistration[]);
+    }
+
+    [TestMethod]
     public void GeneratedManifestProvidesClosedRouteLookupWithoutChangingCurrentOwner()
     {
         ProductRpcCapabilityManifest manifest = ProductRpcCapabilityManifest.Default;
@@ -21,6 +45,7 @@ public sealed class ProductRpcCapabilityManifestTests
         Assert.AreEqual("notification", dataChanged.Effect);
         Assert.AreEqual("pythonBff", dataChanged.Owner);
         Assert.IsFalse(manifest.TryGetEvent("data.unknown", out _));
+        Assert.AreEqual(0, manifest.GetProductSidecarRegistrations().Count);
     }
 
     [TestMethod]

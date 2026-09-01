@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private readonly GridStateCoordinator _coordinator;
     private readonly ProductWorkspaceController _productWorkspace;
     private readonly WorkspaceRequestDispatcher _dispatcher;
+    private readonly IProductSidecarGatewayLifecycle _productSidecarGatewayLifecycle;
     private readonly PluginProjectContextBindingRegistry _databaseOpens;
     private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
@@ -368,6 +369,8 @@ public partial class MainWindow : Window
             pluginContext: () => PluginProjectContext.FromSession(_workspaceSessions.Current),
             authority: productAuthority,
             databaseOpens: _databaseOpens);
+        _productSidecarGatewayLifecycle =
+            new ProductSidecarGatewayLifecycle(_runtime, _dispatcher);
         _authorityTransition = new ProductAuthorityTransitionCoordinator(
             productAuthority,
             _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
@@ -513,7 +516,39 @@ public partial class MainWindow : Window
     private void OnRuntimeClientReady()
     {
         if (Volatile.Read(ref _closing) != 0) return;
+        ProductSidecarGenerationSnapshot? productSidecarGeneration =
+            _runtime.CaptureProductSidecarGeneration();
+        if (productSidecarGeneration is not null)
+        {
+            _ = TryReplaceProductSidecarGatewayAsync(
+                productSidecarGeneration);
+        }
         _ = ConfigureRpcGatewaysWithRecoveryAsync();
+    }
+
+    private async Task TryReplaceProductSidecarGatewayAsync(
+        ProductSidecarGenerationSnapshot snapshot)
+    {
+        try
+        {
+            _ = await _productSidecarGatewayLifecycle.TryReplaceAsync(
+                    snapshot,
+                    _session.Token)
+                .ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (
+            _session.IsCancellationRequested
+            || Volatile.Read(ref _closing) != 0)
+        {
+        }
+        catch (Exception exception)
+        {
+            const string code = "product_sidecar.gateway_binding_failed";
+            _readiness?.Trace(
+                $"{code}:{exception.GetType().Name}");
+            _readiness?.WriteError(
+                $"{code} ({exception.GetType().Name})");
+        }
     }
 
     /// <summary>
@@ -982,6 +1017,7 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs args)
     {
         if (Interlocked.Exchange(ref _closing, 1) != 0) return;
+        _productSidecarGatewayLifecycle.Dispose();
         _testModeHost?.Dispose();
         Application.Current.SessionEnding -= OnSessionEnding;
         _trayIcon?.Dispose();
