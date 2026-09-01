@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using VibeTable.Contracts;
@@ -309,50 +310,263 @@ public sealed class WorkspaceRepositoryOnboardingService
             "The bundled Sidecar returned an invalid onboarding response.");
 }
 
+internal interface ITrustedSidecarProcess : IDisposable
+{
+    bool HasExited { get; }
+
+    int ExitCode { get; }
+
+    bool Start();
+
+    Task WriteStandardInputAsync(string input);
+
+    void CloseStandardInput();
+
+    Task<string> ReadStandardOutputToEndAsync(CancellationToken cancellationToken);
+
+    Task<string> ReadStandardErrorToEndAsync(CancellationToken cancellationToken);
+
+    Task WaitForExitAsync(CancellationToken cancellationToken);
+
+    void KillEntireProcessTree();
+}
+
+internal sealed class SystemTrustedSidecarProcess(ProcessStartInfo startInfo) :
+    ITrustedSidecarProcess
+{
+    private readonly Process _process = new() { StartInfo = startInfo };
+
+    public bool HasExited => _process.HasExited;
+
+    public int ExitCode => _process.ExitCode;
+
+    public bool Start() => _process.Start();
+
+    public Task WriteStandardInputAsync(string input) =>
+        _process.StandardInput.WriteAsync(input);
+
+    public void CloseStandardInput() => _process.StandardInput.Close();
+
+    public Task<string> ReadStandardOutputToEndAsync(
+        CancellationToken cancellationToken) =>
+        _process.StandardOutput.ReadToEndAsync(cancellationToken);
+
+    public Task<string> ReadStandardErrorToEndAsync(
+        CancellationToken cancellationToken) =>
+        _process.StandardError.ReadToEndAsync(cancellationToken);
+
+    public Task WaitForExitAsync(CancellationToken cancellationToken) =>
+        _process.WaitForExitAsync(cancellationToken);
+
+    public void KillEntireProcessTree() =>
+        _process.Kill(entireProcessTree: true);
+
+    public void Dispose() => _process.Dispose();
+}
+
 public sealed class TrustedSidecarProcessRunner :
     ITrustedSidecarProcessRunner
 {
+    private static readonly Task NeverCompletes =
+        new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously).Task;
+    private readonly Func<ProcessStartInfo, ITrustedSidecarProcess> _processFactory;
+
+    public TrustedSidecarProcessRunner() :
+        this(startInfo => new SystemTrustedSidecarProcess(startInfo))
+    {
+    }
+
+    internal TrustedSidecarProcessRunner(
+        Func<ProcessStartInfo, ITrustedSidecarProcess> processFactory)
+    {
+        _processFactory = processFactory
+            ?? throw new ArgumentNullException(nameof(processFactory));
+    }
+
     public async Task<TrustedSidecarProcessResult> RunAsync(
         ProcessStartInfo startInfo,
         string? standardInput,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
-        using var process = new Process { StartInfo = startInfo };
+        ITrustedSidecarProcess process = _processFactory(startInfo);
+        try
+        {
+            return await RunProcessAsync(
+                process,
+                standardInput,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            TryDispose(process);
+        }
+    }
+
+    private async Task<TrustedSidecarProcessResult> RunProcessAsync(
+        ITrustedSidecarProcess process,
+        string? standardInput,
+        CancellationToken cancellationToken)
+    {
         if (!process.Start())
             throw new WorkspaceRegistryException(
                 "repository.onboarding_start_failed",
                 "The bundled Sidecar onboarding helper could not start.");
+        Task exitTask = ObserveExitAsync(process);
+        Task? stdin = null;
+        Task<string>? stdout = null;
+        Task<string>? stderr = null;
         try
         {
             if (standardInput is not null)
-                await process.StandardInput.WriteAsync(standardInput)
+            {
+                stdin = process.WriteStandardInputAsync(standardInput);
+                await stdin.WaitAsync(cancellationToken)
                     .ConfigureAwait(false);
-            process.StandardInput.Close();
-            Task<string> stdout = process.StandardOutput.ReadToEndAsync(
-                cancellationToken);
-            Task<string> stderr = process.StandardError.ReadToEndAsync(
-                cancellationToken);
-            await process.WaitForExitAsync(cancellationToken)
+            }
+            process.CloseStandardInput();
+            stdout = process.ReadStandardOutputToEndAsync(
+                CancellationToken.None);
+            stderr = process.ReadStandardErrorToEndAsync(
+                CancellationToken.None);
+            var outputFailure = new TaskCompletionSource<Exception>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            Task outputObservation = Task.WhenAll(
+                ObserveFailureAsync(stdout, outputFailure),
+                ObserveFailureAsync(stderr, outputFailure));
+            Task first = await Task.WhenAny(exitTask, outputFailure.Task)
+                .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
+            if (ReferenceEquals(first, outputFailure.Task))
+            {
+                Exception outputError = await outputFailure.Task
+                    .ConfigureAwait(false);
+                ExceptionDispatchInfo.Capture(outputError).Throw();
+                throw new InvalidOperationException("Unreachable output path.");
+            }
+            await exitTask.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await outputObservation.ConfigureAwait(false);
             string output = await stdout.ConfigureAwait(false);
             _ = await stderr.ConfigureAwait(false);
             return new TrustedSidecarProcessResult(
                 process.ExitCode,
                 output);
         }
+        catch (Exception original)
+        {
+            ObserveInBackground(stdin);
+            ObserveInBackground(stdout);
+            ObserveInBackground(stderr);
+            await TerminateAsync(process, exitTask).ConfigureAwait(false);
+            await DrainAsync(stdin, stdout, stderr).ConfigureAwait(false);
+            ExceptionDispatchInfo.Capture(original).Throw();
+            throw new InvalidOperationException("Unreachable exception path.");
+        }
+    }
+
+    internal static async Task TerminateAsync(
+        ITrustedSidecarProcess process,
+        Task exitTask)
+    {
+        bool exited = false;
+        try
+        {
+            exited = process.HasExited;
+        }
+        catch
+        {
+            // An unreadable state is not proof that ownership ended.
+        }
+        if (!exited)
+        {
+            try
+            {
+                process.KillEntireProcessTree();
+            }
+            catch
+            {
+                // The sole exit observation remains the ownership boundary.
+            }
+        }
+        try
+        {
+            await exitTask.ConfigureAwait(false);
+            return;
+        }
         catch
         {
             try
             {
-                if (!process.HasExited)
-                    process.Kill(entireProcessTree: true);
+                if (process.HasExited)
+                    return;
             }
             catch
             {
-                // Best-effort cleanup of the trusted helper.
+                // Without an exit signal, cleanup ownership cannot transfer.
             }
-            throw;
+        }
+        await NeverCompletes.ConfigureAwait(false);
+    }
+
+    private static async Task ObserveExitAsync(ITrustedSidecarProcess process) =>
+        await process.WaitForExitAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+
+    private static async Task DrainAsync(
+        Task? stdin,
+        Task<string>? stdout,
+        Task<string>? stderr)
+    {
+        await ObserveAsync(stdin).ConfigureAwait(false);
+        await ObserveAsync(stdout).ConfigureAwait(false);
+        await ObserveAsync(stderr).ConfigureAwait(false);
+    }
+
+    private static async Task ObserveAsync(Task? operation)
+    {
+        if (operation is null)
+            return;
+        try
+        {
+            await operation.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Observation is read-only; preserve the initiating failure.
+        }
+    }
+
+    private static void ObserveInBackground(Task? operation)
+    {
+        if (operation is not null)
+            _ = ObserveAsync(operation);
+    }
+
+    private static async Task ObserveFailureAsync(
+        Task operation,
+        TaskCompletionSource<Exception> failure)
+    {
+        try
+        {
+            await operation.ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            failure.TrySetResult(error);
+        }
+    }
+
+    private static void TryDispose(ITrustedSidecarProcess process)
+    {
+        try
+        {
+            process.Dispose();
+        }
+        catch
+        {
+            // Disposal must not replace the process or ownership failure.
         }
     }
 }
