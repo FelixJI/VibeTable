@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -51,10 +52,10 @@ namespace VibeTable.Infrastructure.Backend;
 /// first RPC.
 /// </para>
 /// <para>
-/// This type is not thread-safe for concurrent <see cref="StartAsync"/>/
-/// <see cref="StopAsync"/> calls; callers serialize lifecycle transitions.
-/// Re-entrant <see cref="StopAsync"/> from inside a faulted
-/// <see cref="StartAsync"/> is supported (the inner call no-ops).
+/// Lifecycle entry points are serialized. A caller that arrives during a
+/// stop waits for the owning process generation to finish teardown instead
+/// of observing an intermediate state or returning while readers still own
+/// the retired process streams.
 /// </para>
 /// </remarks>
 public sealed class PythonBackendSupervisor : IBackendSupervisor
@@ -72,22 +73,16 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
     private const string ProtocolVersion = "1.0";
 
     private readonly BackendLaunchOptions _options;
+    private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly object _stateGate = new();
-    private readonly StringBuilder _stderrBuffer = new();
-    private readonly TaskCompletionSource<bool> _exitedTcs =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object _disposeGate = new();
 
     private BackendState _state = BackendState.Stopped;
-    private Process? _process;
-    private JobObject? _job;
-    private StreamJsonLineTransport? _transport;
-    private JsonRpcClient? _client;
-    private Task? _stderrTask;
-    private bool _stopInProgress;
-    private int _exitCode;
-    private bool _exitCodeSet;
-    private bool _forceKilled;
-    private bool _hasExited;
+    private ProcessGeneration? _generation;
+    private string _lastStdError = string.Empty;
+    private bool _lastHasExited;
+    private int? _lastExitCode;
+    private Task? _disposeTask;
     private int _disposed;
 
     public PythonBackendSupervisor(BackendLaunchOptions options)
@@ -126,7 +121,7 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
         {
             lock (_stateGate)
             {
-                return _client;
+                return _generation?.Client;
             }
         }
     }
@@ -148,15 +143,32 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
     /// <summary>
     /// True once the child process has exited (cleanly or otherwise).
     /// </summary>
-    public bool HasExited => Volatile.Read(ref _hasExited);
+    public bool HasExited
+    {
+        get
+        {
+            lock (_stateGate)
+            {
+                return _generation?.HasExited ?? _lastHasExited;
+            }
+        }
+    }
 
     /// <summary>
     /// The child's observed exit code, when available.
     /// <see cref="ForcedKillExitCode"/> indicates the supervisor force-killed
     /// the process at the stop deadline.
     /// </summary>
-    public int? ExitCode =>
-        _exitCodeSet ? _exitCode : (int?)null;
+    public int? ExitCode
+    {
+        get
+        {
+            lock (_stateGate)
+            {
+                return _generation?.ExitCode ?? _lastExitCode;
+            }
+        }
+    }
 
     /// <summary>
     /// Spawns the backend, binds it to a kill-on-close Job Object, performs
@@ -167,106 +179,140 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
     /// </summary>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        lock (_stateGate)
-        {
-            if (_state is BackendState.Ready or BackendState.Starting)
-            {
-                throw new InvalidOperationException(
-                    $"Cannot StartAsync in state {_state}.");
-            }
-            if (_disposed != 0)
-            {
-                throw new ObjectDisposedException(nameof(PythonBackendSupervisor));
-            }
-            TransitionLocked(BackendState.Starting);
-        }
-
-        bool succeeded = false;
+        ThrowIfDisposed();
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            (_process, _job) = SpawnProcessAndBindJob();
-            StartStderrCapture(_process);
+            ThrowIfDisposed();
+            BackendState state = State;
+            if (state is BackendState.Ready or BackendState.Starting
+                or BackendState.Stopping)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot StartAsync in state {state}.");
+            }
 
-            // Construct the transport over the redirected streams and a client
-            // to drive the handshake. The client starts its reader loop
-            // immediately (see JsonRpcClient ctor).
-            var transport = new StreamJsonLineTransport(
-                _process.StandardOutput.BaseStream,
-                _process.StandardInput.BaseStream);
-            _transport = transport;
-            var client = new JsonRpcClient(transport);
-            _client = client;
+            ProcessGeneration? previous = Volatile.Read(ref _generation);
+            if (previous is not null)
+            {
+                await TeardownGenerationAsync(previous, requestGraceful: false)
+                    .ConfigureAwait(false);
+            }
 
-            // Wire the process Exited event AFTER the client is constructed so
-            // the handshake cancellation below can race with an exit. The
-            // exited handler never pre-empts an already-completed handshake.
-            _process.EnableRaisingEvents = true;
-            _process.Exited += OnProcessExited;
+            TimeSpan stopTimeout = ValidateStopTimeout(_options.StopTimeout);
 
-            using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken);
-            handshakeCts.CancelAfter(_options.StartupTimeout);
+            lock (_stateGate)
+            {
+                _lastStdError = string.Empty;
+                _lastHasExited = false;
+                _lastExitCode = null;
+                TransitionLocked(BackendState.Starting);
+            }
 
+            ProcessGeneration? generation = null;
             try
             {
-                var result = await client.InvokeAsync<
-                        HandshakeParams,
-                        HandshakeResult>(
-                    "system.handshake",
-                    new HandshakeParams(ClientVersion, ProtocolVersion),
-                    handshakeCts.Token)
-                    .ConfigureAwait(false);
-
-                // Protocol-mismatch guard: the backend returned a result with
-                // a different protocol version. Transition to Faulted.
-                if (!string.Equals(
-                        result.ProtocolVersion,
-                        ProtocolVersion,
-                        StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        $"Backend protocol mismatch: requested '{ProtocolVersion}'" +
-                        $" but backend reported '{result.ProtocolVersion}'.");
-                }
-
+                (Process process, JobObject job) = SpawnProcessAndBindJob();
+                generation = new ProcessGeneration(process, job, stopTimeout);
                 lock (_stateGate)
                 {
-                    if (_state == BackendState.Faulted)
+                    _generation = generation;
+                }
+
+                generation.ExitHandler = (_, _) => OnProcessExited(generation);
+                process.Exited += generation.ExitHandler;
+                generation.StderrTask = StartStderrCapture(generation);
+
+                var transport = new StreamJsonLineTransport(
+                    process.StandardOutput.BaseStream,
+                    process.StandardInput.BaseStream);
+                generation.Transport = transport;
+                var client = new JsonRpcClient(transport);
+                generation.Client = client;
+
+                using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken);
+                handshakeCts.CancelAfter(_options.StartupTimeout);
+
+                try
+                {
+                    var result = await client.InvokeAsync<
+                            HandshakeParams,
+                            HandshakeResult>(
+                        "system.handshake",
+                        new HandshakeParams(ClientVersion, ProtocolVersion),
+                        handshakeCts.Token)
+                        .ConfigureAwait(false);
+
+                    if (!string.Equals(
+                            result.ProtocolVersion,
+                            ProtocolVersion,
+                            StringComparison.Ordinal))
                     {
-                        // The process exited between handshake success and now.
+                        throw new InvalidOperationException(
+                            $"Backend protocol mismatch: requested '{ProtocolVersion}'" +
+                            $" but backend reported '{result.ProtocolVersion}'.");
+                    }
+
+                    if (!generation.TryMarkReady())
+                    {
                         throw new InvalidOperationException(
                             "Backend exited before Ready transition.");
                     }
-                    TransitionLocked(BackendState.Ready);
+                    lock (_stateGate)
+                    {
+                        if (!ReferenceEquals(_generation, generation)
+                            || _state == BackendState.Faulted
+                            || generation.HasExited)
+                        {
+                            throw new InvalidOperationException(
+                                "Backend exited before Ready transition.");
+                        }
+                        TransitionLocked(BackendState.Ready);
+                    }
                 }
-                succeeded = true;
+                catch (OperationCanceledException) when (
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"Backend did not complete system.handshake within " +
+                        $"{_options.StartupTimeout.TotalSeconds:F1}s.");
+                }
+                catch (RpcException ex) when (
+                    ex is BackendUnavailableException
+                    || ex.Message.Contains(
+                        "handshake",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        $"system.handshake failed: {ex.Message}", ex);
+                }
             }
-            catch (OperationCanceledException) when (
-                !cancellationToken.IsCancellationRequested)
+            catch
             {
-                throw new TimeoutException(
-                    $"Backend did not complete system.handshake within " +
-                    $"{_options.StartupTimeout.TotalSeconds:F1}s.");
-            }
-            catch (RpcException ex) when (
-                ex is BackendUnavailableException
-                || (ex.Message.Contains("handshake", StringComparison.OrdinalIgnoreCase)))
-            {
-                // Backend gone mid-handshake OR rejected by the dispatcher.
-                // Surface as a fatal start failure.
-                throw new InvalidOperationException(
-                    $"system.handshake failed: {ex.Message}", ex);
+                lock (_stateGate)
+                {
+                    if (_state != BackendState.Faulted)
+                    {
+                        TransitionLocked(BackendState.Faulted);
+                    }
+                    if (generation is null)
+                    {
+                        _lastHasExited = true;
+                    }
+                }
+                if (generation is not null)
+                {
+                    await TeardownGenerationAsync(
+                        generation,
+                        requestGraceful: false).ConfigureAwait(false);
+                }
+                throw;
             }
         }
         finally
         {
-            if (!succeeded)
-            {
-                // Transition to Faulted and tear down everything. StopAsync
-                // from inside this finally would re-enter; do the teardown
-                // directly to avoid recursion guards.
-                FaultAndTeardownAsync().GetAwaiter().GetResult();
-            }
+            _lifecycle.Release();
         }
     }
 
@@ -279,176 +325,111 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_disposed != 0)
+        if (Volatile.Read(ref _disposed) != 0)
         {
+            Task? disposeTask;
+            lock (_disposeGate)
+            {
+                disposeTask = _disposeTask;
+            }
+            if (disposeTask is not null)
+            {
+                await disposeTask.ConfigureAwait(false);
+            }
             return;
         }
 
-        lock (_stateGate)
-        {
-            if (_state == BackendState.Faulted)
-            {
-                // The process is already gone. Do NOT transition to Stopped;
-                // Faulted is a terminal state and tests assert it stays.
-                // Release any leftover process/job handles.
-                TeardownProcess_locked(graceful: false);
-                return;
-            }
-            if (_state == BackendState.Stopped)
-            {
-                return;
-            }
-            if (_stopInProgress)
-            {
-                return;
-            }
-            _stopInProgress = true;
-            TransitionLocked(BackendState.Stopping);
-        }
+        await StopCoreAsync(cancellationToken).ConfigureAwait(false);
+    }
 
+    private async Task StopCoreAsync(CancellationToken cancellationToken)
+    {
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Graceful: close stdin so the backend sees EOF and exits.
+            ProcessGeneration? generation = Volatile.Read(ref _generation);
+            BackendState state = State;
+            if (state == BackendState.Stopped && generation is null)
+            {
+                return;
+            }
+
+            if (state == BackendState.Faulted)
+            {
+                if (generation is not null)
+                {
+                    await TeardownGenerationAsync(
+                        generation,
+                        requestGraceful: false).ConfigureAwait(false);
+                }
+                return;
+            }
+
+            if (generation is null)
+            {
+                lock (_stateGate)
+                {
+                    TransitionLocked(BackendState.Stopped);
+                }
+                return;
+            }
+
+            lock (_stateGate)
+            {
+                TransitionLocked(BackendState.Stopping);
+            }
             try
             {
-                if (_process is not null && !_process.HasExited)
-                {
-                    await SafeCloseStandardInputAsync(_process).ConfigureAwait(false);
-                }
+                await TeardownGenerationAsync(generation, requestGraceful: true)
+                    .ConfigureAwait(false);
             }
-            catch
+            finally
             {
-                // Closing stdin must never block stop. If it throws, fall
-                // through to the force-kill path.
-            }
-
-            // Wait for the process to exit on its own within the deadline.
-            using var forceCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken);
-            forceCts.CancelAfter(_options.StopTimeout);
-            bool exited = false;
-            try
-            {
-                await _process!.WaitForExitAsync(forceCts.Token).ConfigureAwait(false);
-                exited = true;
-            }
-            catch (OperationCanceledException) when (
-                !cancellationToken.IsCancellationRequested)
-            {
-                // StopTimeout elapsed; fall through to force-kill.
-            }
-
-            if (!exited && _process is not null && !_process.HasExited)
-            {
-                try
+                lock (_stateGate)
                 {
-                    _process.Kill(entireProcessTree: true);
-                    _forceKilled = true;
-                }
-                catch
-                {
-                    // Best-effort; the Job Object will kill on Dispose regardless.
-                }
-                try
-                {
-                    await _process.WaitForExitAsync(cancellationToken)
-                        .WaitAsync(TimeSpan.FromSeconds(5), cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    // The Job Object close in Dispose is the final hammer.
+                    TransitionLocked(BackendState.Stopped);
                 }
             }
-
-            CaptureExitCode();
-            TeardownProcess_locked(graceful: !_forceKilled);
-            TransitionLocked(BackendState.Stopped);
         }
         finally
         {
-            lock (_stateGate)
-            {
-                _stopInProgress = false;
-            }
+            _lifecycle.Release();
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     /// <summary>
-    /// Returns the captured stderr text written by the backend so far.
-    /// Available even when the supervisor faulted before the first RPC.
+    /// Returns the captured stderr text for the active generation, or the
+    /// most recently retired generation when no backend is running.
     /// </summary>
     public string GetStdErrorLog()
     {
-        lock (_stderrBuffer)
+        lock (_stateGate)
         {
-            return _stderrBuffer.ToString();
+            return _generation?.GetStdErrorLog() ?? _lastStdError;
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        lock (_disposeGate)
         {
-            return;
+            _disposeTask ??= DisposeCoreAsync();
+            return new ValueTask(_disposeTask);
         }
+    }
 
+    private async Task DisposeCoreAsync()
+    {
+        Interlocked.Exchange(ref _disposed, 1);
         try
         {
-            if (_state is not (BackendState.Stopped or BackendState.Faulted))
-            {
-                // Best-effort graceful stop from Dispose.
-                try
-                {
-                    await StopAsync(CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Dispose must not throw.
-                }
-            }
-            else if (_state == BackendState.Faulted)
-            {
-                // Already faulted; just make sure resources are released.
-                // Preserve the Faulted terminal state.
-                lock (_stateGate)
-                {
-                    TeardownProcess_locked(graceful: false);
-                }
-            }
+            await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch
         {
             // Dispose must not throw.
-        }
-
-        // Dispose the client last so any in-flight RPC reads drain the
-        // transport before we close it.
-        if (_client is not null)
-        {
-            try
-            {
-                await _client.DisposeAsync().ConfigureAwait(false);
-            }
-            catch
-            {
-                // Dispose must not throw.
-            }
-        }
-
-        try
-        {
-            if (_stderrTask is not null)
-            {
-                // Give the stderr capture a chance to finish; it exits on EOF
-                // when the process is torn down.
-                await _stderrTask.WaitAsync(TimeSpan.FromSeconds(1),
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-        }
-        catch
-        {
-            // Best-effort drain.
         }
     }
 
@@ -542,9 +523,8 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
         return (process, job);
     }
 
-    private void StartStderrCapture(Process process)
-    {
-        _stderrTask = Task.Run(async () =>
+    private Task StartStderrCapture(ProcessGeneration generation)
+        => Task.Run(async () =>
         {
             RotatingLogSink? logWriter = null;
             try
@@ -554,7 +534,7 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
                     logWriter = new RotatingLogSink(_options.LogPath!);
                 }
 
-                var sr = process.StandardError;
+                var sr = generation.Process.StandardError;
                 // ReadLineAsync returns null at EOF.
                 while (true)
                 {
@@ -572,11 +552,8 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
                     {
                         break;
                     }
-                    lock (_stderrBuffer)
-                    {
-                        _stderrBuffer.AppendLine(line);
-                    }
-                    PublishLogLine(line);
+                    generation.AppendStdError(line);
+                    PublishLogLine(generation, line);
                     if (logWriter is not null && DiagnosticLogLine.IsSafe(line))
                     {
                         try
@@ -603,11 +580,18 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
                 }
             }
         });
-    }
 
-    private void PublishLogLine(string line)
+    private void PublishLogLine(ProcessGeneration generation, string line)
     {
-        var handler = LogReceived;
+        Action<object?, string>? handler;
+        lock (_stateGate)
+        {
+            if (!ReferenceEquals(_generation, generation))
+            {
+                return;
+            }
+            handler = LogReceived;
+        }
         if (handler is null)
         {
             return;
@@ -622,177 +606,182 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
         }
     }
 
-    private void OnProcessExited(object? sender, EventArgs e)
+    private void OnProcessExited(ProcessGeneration generation)
     {
-        // Mark the exit-tcs so any waiter wakes. If this exit was
-        // unexpected (i.e. we are in Starting/Ready), transition to Faulted.
-        _exitedTcs.TrySetResult(true);
-        Volatile.Write(ref _hasExited, true);
-        CaptureExitCode();
+        int previous = generation.ObserveExit();
 
         lock (_stateGate)
         {
-            if (_state is BackendState.Starting or BackendState.Ready)
+            if (ReferenceEquals(_generation, generation)
+                && previous is ProcessGeneration.Starting or ProcessGeneration.Ready
+                && _state is BackendState.Starting or BackendState.Ready)
             {
                 TransitionLocked(BackendState.Faulted);
             }
         }
     }
 
-    private void CaptureExitCode()
+    private async Task TeardownGenerationAsync(
+        ProcessGeneration generation,
+        bool requestGraceful)
     {
-        try
+        generation.MarkStopping();
+        Exception? teardownFailure = null;
+        if (generation.ExitHandler is not null)
         {
-            if (_process is not null && _process.HasExited && !_exitCodeSet)
+            try
             {
-                if (_forceKilled)
-                {
-                    _exitCode = ForcedKillExitCode;
-                }
-                else
-                {
-                    _exitCode = _process.ExitCode;
-                }
-                _exitCodeSet = true;
-                Volatile.Write(ref _hasExited, true);
+                generation.Process.Exited -= generation.ExitHandler;
             }
-        }
-        catch
-        {
-            // Race: process not fully cleaned up. Leave the exit code unset.
-        }
-    }
-
-    private async Task FaultAndTeardownAsync()
-    {
-        lock (_stateGate)
-        {
-            if (_state != BackendState.Faulted)
+            catch (Exception ex)
             {
-                TransitionLocked(BackendState.Faulted);
-            }
-            // If the process was never spawned (e.g. executable not found),
-            // there is no child to observe — mark it as "exited" so callers
-            // querying HasExited after a faulted start see a vacuous "gone".
-            if (_process is null)
-            {
-                Volatile.Write(ref _hasExited, true);
+                teardownFailure ??= ex;
             }
         }
 
-        // Kill the process if it is still running. We don't close stdin
-        // (graceful) here because we are on the fault path: kill hard so the
-        // caller's StopAsync finalizes cleanly.
-        try
+        if (requestGraceful && !generation.HasExited)
         {
-            if (_process is not null && !_process.HasExited)
+            try
             {
+                await SafeCloseStandardInputAsync(generation.Process)
+                    .ConfigureAwait(false);
+
+                using var stopCts = new CancellationTokenSource(generation.StopTimeout);
                 try
                 {
-                    _process.Kill(entireProcessTree: true);
-                    _forceKilled = true;
+                    await generation.Process.WaitForExitAsync(stopCts.Token)
+                        .ConfigureAwait(false);
                 }
-                catch
+                catch (OperationCanceledException)
                 {
-                    // The Job Object Dispose below is the backstop.
+                    // Forceful cleanup below owns the remaining lifetime.
                 }
             }
+            catch (Exception ex)
+            {
+                teardownFailure ??= ex;
+            }
+        }
+
+        if (!generation.HasExited)
+        {
+            bool killIssued = false;
+            try
+            {
+                generation.Process.Kill(entireProcessTree: true);
+                killIssued = true;
+            }
+            catch
+            {
+                // Closing the generation Job Object is the final hammer.
+            }
+            if (killIssued)
+            {
+                generation.MarkForceKilled();
+            }
+        }
+
+        // The job is generation-owned. Closing it before the final join
+        // guarantees descendants cannot retain stdout/stderr handles.
+        try
+        {
+            generation.Job.Dispose();
+        }
+        catch (Exception ex)
+        {
+            teardownFailure ??= ex;
+        }
+
+        try
+        {
+            if (!generation.HasExited)
+            {
+                await generation.Process.WaitForExitAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            teardownFailure ??= ex;
+        }
+        generation.CaptureExitCode();
+
+        if (generation.Client is not null)
+        {
+            try
+            {
+                await generation.Client.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Awaiting a faulted dispose still joins the client reader.
+                teardownFailure ??= ex;
+            }
+        }
+        else if (generation.Transport is not null)
+        {
+            try
+            {
+                await generation.Transport.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                teardownFailure ??= ex;
+            }
+        }
+
+        if (generation.StderrTask is not null)
+        {
+            try
+            {
+                await generation.StderrTask.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Awaiting a faulted task still joins the stderr pump.
+                teardownFailure ??= ex;
+            }
+        }
+
+        try
+        {
+            generation.Job.Dispose();
+        }
+        catch (Exception ex)
+        {
+            teardownFailure ??= ex;
+        }
+        try
+        {
+            generation.Process.EnableRaisingEvents = false;
         }
         catch
         {
             // Best-effort.
         }
-
-        CaptureExitCode();
-
-        // Give the process a moment to exit so HasExited is true on return.
-        if (_process is not null && !_process.HasExited)
+        generation.CaptureExitCode();
+        try
         {
-            try
+            generation.Process.Dispose();
+        }
+        catch (Exception ex)
+        {
+            teardownFailure ??= ex;
+        }
+        lock (_stateGate)
+        {
+            if (ReferenceEquals(_generation, generation))
             {
-                await _process.WaitForExitAsync()
-                    .WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            catch
-            {
-                // Best-effort.
+                _lastStdError = generation.GetStdErrorLog();
+                _lastHasExited = generation.HasExited;
+                _lastExitCode = generation.ExitCode;
+                _generation = null;
             }
         }
 
-        // Tear down transport + client, but DO NOT transition state to Stopped
-        // — the caller's StopAsync will run from the finally above and the
-        // Faulted state is preserved until then.
-        if (_client is not null)
+        if (teardownFailure is not null)
         {
-            try
-            {
-                await _client.DisposeAsync().ConfigureAwait(false);
-                _client = null;
-            }
-            catch
-            {
-                // Best-effort.
-            }
-        }
-    }
-
-    private void TeardownProcess_locked(bool graceful)
-    {
-        // Releases process/job handles. Must be called under _stateGate.
-        if (_process is not null)
-        {
-            try
-            {
-                _process.EnableRaisingEvents = false;
-            }
-            catch
-            {
-                // Best-effort.
-            }
-            try
-            {
-                if (!_process.HasExited)
-                {
-                    try
-                    {
-                        _process.Kill(entireProcessTree: true);
-                        _forceKilled = true;
-                    }
-                    catch
-                    {
-                        // The Job Object close below is the backstop.
-                    }
-                    // Wait briefly for the kill to take effect so HasExited
-                    // is observable after return.
-                    try
-                    {
-                        _process.WaitForExit(2000);
-                    }
-                    catch
-                    {
-                        // Best-effort.
-                    }
-                }
-            }
-            catch
-            {
-                // Best-effort.
-            }
-
-            CaptureExitCode();
-            Volatile.Write(ref _hasExited, true);
-            _process.Dispose();
-            _process = null!;
-        }
-
-        if (_job is not null)
-        {
-            // Closing the job handle triggers kill-on-close for any process
-            // that was still alive (e.g. grandchild that escaped the
-            // Process.Kill tree).
-            _job.Dispose();
-            _job = null;
+            ExceptionDispatchInfo.Capture(teardownFailure).Throw();
         }
     }
 
@@ -812,6 +801,151 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
                 // Already closed or process gone.
             }
         }).ConfigureAwait(false);
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(PythonBackendSupervisor));
+        }
+    }
+
+    private static TimeSpan ValidateStopTimeout(TimeSpan stopTimeout)
+    {
+        const double MaximumTimerMilliseconds = uint.MaxValue - 1d;
+        if (stopTimeout <= TimeSpan.Zero
+            || stopTimeout.TotalMilliseconds > MaximumTimerMilliseconds)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(BackendLaunchOptions.StopTimeout),
+                stopTimeout,
+                "Stop timeout must be positive and supported by the system timer.");
+        }
+        return stopTimeout;
+    }
+
+    private sealed class ProcessGeneration
+    {
+        internal const int Starting = 0;
+        internal const int Ready = 1;
+        internal const int Exited = 2;
+        internal const int Stopping = 3;
+
+        private readonly object _exitGate = new();
+        private readonly StringBuilder _stderr = new();
+        private int _phase = Starting;
+        private int _hasExited;
+        private bool _forceKilled;
+        private bool _exitCodeSet;
+        private int _exitCode;
+
+        internal ProcessGeneration(
+            Process process,
+            JobObject job,
+            TimeSpan stopTimeout)
+        {
+            Process = process;
+            Job = job;
+            StopTimeout = stopTimeout;
+        }
+
+        internal Process Process { get; }
+        internal JobObject Job { get; }
+        internal TimeSpan StopTimeout { get; }
+        internal StreamJsonLineTransport? Transport { get; set; }
+        internal JsonRpcClient? Client { get; set; }
+        internal Task? StderrTask { get; set; }
+        internal EventHandler? ExitHandler { get; set; }
+
+        internal bool HasExited
+        {
+            get
+            {
+                if (Volatile.Read(ref _hasExited) != 0)
+                {
+                    return true;
+                }
+                CaptureExitCode();
+                return Volatile.Read(ref _hasExited) != 0;
+            }
+        }
+
+        internal int? ExitCode
+        {
+            get
+            {
+                CaptureExitCode();
+                lock (_exitGate)
+                {
+                    return _exitCodeSet ? _exitCode : null;
+                }
+            }
+        }
+
+        internal bool TryMarkReady()
+            => Interlocked.CompareExchange(ref _phase, Ready, Starting) == Starting;
+
+        internal void MarkStopping()
+            => Interlocked.Exchange(ref _phase, Stopping);
+
+        internal int ObserveExit()
+        {
+            CaptureExitCode();
+            Volatile.Write(ref _hasExited, 1);
+            return Interlocked.Exchange(ref _phase, Exited);
+        }
+
+        internal void MarkForceKilled()
+        {
+            lock (_exitGate)
+            {
+                _forceKilled = true;
+            }
+        }
+
+        internal void CaptureExitCode()
+        {
+            lock (_exitGate)
+            {
+                if (_exitCodeSet)
+                {
+                    return;
+                }
+                try
+                {
+                    if (!Process.HasExited)
+                    {
+                        return;
+                    }
+                    _exitCode = _forceKilled
+                        ? ForcedKillExitCode
+                        : Process.ExitCode;
+                    _exitCodeSet = true;
+                    Volatile.Write(ref _hasExited, 1);
+                }
+                catch
+                {
+                    // The final teardown join will retry before disposal.
+                }
+            }
+        }
+
+        internal void AppendStdError(string line)
+        {
+            lock (_stderr)
+            {
+                _stderr.AppendLine(line);
+            }
+        }
+
+        internal string GetStdErrorLog()
+        {
+            lock (_stderr)
+            {
+                return _stderr.ToString();
+            }
+        }
     }
 
     private void TransitionLocked(BackendState next)
