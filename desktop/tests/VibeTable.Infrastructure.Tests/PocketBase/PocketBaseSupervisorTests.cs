@@ -259,29 +259,41 @@ public sealed class PocketBaseSupervisorTests
         var first = FakePocketBaseProcess.Ready(ReadyRecord());
         var second = FakePocketBaseProcess.Ready(ReadyRecord());
         var factory = new FakePocketBaseProcessFactory(first, second);
-        var published = new List<PocketBaseStatus>();
+        var published = new System.Collections.Concurrent.ConcurrentQueue<
+            PocketBaseStatus>();
+        var recoveredPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int readyEvents = 0;
         await using var supervisor = new PocketBaseSupervisor(
             Options(crashRestartLimit: 1),
             factory,
             new FakePocketBaseHealthProbe(isHealthy: true));
-        supervisor.StatusChanged += (_, status) => published.Add(status);
+        supervisor.StatusChanged += (_, status) =>
+        {
+            published.Enqueue(status);
+            if (status.State == PocketBaseState.Ready
+                && Interlocked.Increment(ref readyEvents) == 2)
+                recoveredPublished.TrySetResult();
+        };
         await supervisor.StartAsync(CancellationToken.None);
 
         first.Crash(exitCode: 137);
         await WaitUntilAsync(
             () => factory.Requests.Count == 2
                 && supervisor.GetStatus().State == PocketBaseState.Ready);
+        await recoveredPublished.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        int degraded = published.FindIndex(status =>
+        List<PocketBaseStatus> ordered = published.ToList();
+        int degraded = ordered.FindIndex(status =>
             status.State == PocketBaseState.Faulted
             && status.ExitCode == 137
             && status.Error?.Contains(
                 "exited unexpectedly",
                 StringComparison.Ordinal) == true);
-        int restarting = published.FindIndex(
+        int restarting = ordered.FindIndex(
             Math.Max(0, degraded + 1),
             status => status.State == PocketBaseState.Starting);
-        int recovered = published.FindIndex(
+        int recovered = ordered.FindIndex(
             Math.Max(0, restarting + 1),
             status => status.State == PocketBaseState.Ready);
         Assert.IsTrue(
@@ -291,6 +303,176 @@ public sealed class PocketBaseSupervisorTests
             factory.Requests[0].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"],
             factory.Requests[1].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"],
             "Recovered generation must rotate the private session secret.");
+    }
+
+    [TestMethod]
+    public async Task BlockedReplacementFaultObserverDoesNotBlockLifecycle()
+    {
+        var faultEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFault = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int faults = 0;
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var failed = FakePocketBaseProcess.Ready(
+            ReadyRecord(migrationHash: "wrong-hash"));
+        var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
+        var explicitRestart = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(
+            first,
+            failed,
+            recovered,
+            explicitRestart);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 2),
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        supervisor.StatusChanged += (_, status) =>
+        {
+            if (status.State != PocketBaseState.Faulted
+                || Interlocked.Increment(ref faults) != 2)
+                return;
+            faultEntered.TrySetResult();
+            releaseFault.Task.GetAwaiter().GetResult();
+        };
+        await supervisor.StartAsync(CancellationToken.None);
+
+        Task? starting = null;
+        try
+        {
+            first.Crash(17);
+            await faultEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() =>
+                factory.Requests.Count == 3
+                    && supervisor.GetStatus().State == PocketBaseState.Ready);
+            await supervisor.StopAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsTrue(failed.Disposed);
+            starting = supervisor.StartAsync(CancellationToken.None);
+            await WaitUntilAsync(() =>
+                factory.Requests.Count == 4
+                    && supervisor.GetStatus().State == PocketBaseState.Ready);
+            Assert.IsFalse(starting.IsCompleted,
+                "Manual Start must await its queued Ready notification.");
+            releaseFault.TrySetResult();
+            await starting.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseFault.TrySetResult();
+            if (starting is not null)
+                await starting.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [TestMethod]
+    public async Task FaultObserverCanSynchronouslyStartReplacement()
+    {
+        var restarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var replacement = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, replacement);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 0),
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        supervisor.StatusChanged += (_, status) =>
+        {
+            if (status.State != PocketBaseState.Faulted)
+                return;
+            try
+            {
+                supervisor.StartAsync(CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                restarted.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                restarted.TrySetException(exception);
+            }
+        };
+
+        Task crashing = Task.Run(() => first.Crash(17));
+        await Task.WhenAll(crashing, restarted.Task)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(2, factory.Requests.Count);
+        Assert.AreEqual(PocketBaseState.Ready, supervisor.GetStatus().State);
+    }
+
+    [TestMethod]
+    public async Task QueuedStatusUsesCommittedObserversAndIsolatesFailures()
+    {
+        var faultEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFault = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var retainedReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var retained = new System.Collections.Concurrent.ConcurrentQueue<
+            PocketBaseState>();
+        var late = new System.Collections.Concurrent.ConcurrentQueue<
+            PocketBaseState>();
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, recovered);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 1),
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+
+        void BlockFault(object? _, PocketBaseStatus status)
+        {
+            if (status.State != PocketBaseState.Faulted)
+                return;
+            faultEntered.TrySetResult();
+            releaseFault.Task.GetAwaiter().GetResult();
+        }
+        void ThrowingObserver(object? _, PocketBaseStatus status)
+            => throw new InvalidOperationException(status.State.ToString());
+        void RetainedObserver(object? _, PocketBaseStatus status)
+        {
+            retained.Enqueue(status.State);
+            if (status.State == PocketBaseState.Ready)
+                retainedReady.TrySetResult();
+        }
+        void LateObserver(object? _, PocketBaseStatus status)
+            => late.Enqueue(status.State);
+
+        supervisor.StatusChanged += BlockFault;
+        supervisor.StatusChanged += ThrowingObserver;
+        supervisor.StatusChanged += RetainedObserver;
+        Task crashing = Task.Run(() => first.Crash(17));
+        try
+        {
+            await faultEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() =>
+                factory.Requests.Count == 2
+                    && supervisor.GetStatus().State == PocketBaseState.Ready);
+            supervisor.StatusChanged -= RetainedObserver;
+            supervisor.StatusChanged += LateObserver;
+            releaseFault.TrySetResult();
+
+            await crashing.WaitAsync(TimeSpan.FromSeconds(5));
+            await retainedReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    PocketBaseState.Faulted,
+                    PocketBaseState.Starting,
+                    PocketBaseState.Ready,
+                },
+                retained.ToArray());
+            Assert.AreEqual(0, late.Count);
+        }
+        finally
+        {
+            releaseFault.TrySetResult();
+            await crashing.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [TestMethod]
