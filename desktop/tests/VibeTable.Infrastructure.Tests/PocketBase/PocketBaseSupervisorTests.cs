@@ -110,6 +110,10 @@ public sealed class PocketBaseSupervisorTests
         Assert.IsTrue(first.GenerationId > 0);
         Assert.AreSame(first, second);
         Assert.AreSame(first.AdminContext, supervisor.GetAdminContext());
+        Assert.ThrowsExactly<InvalidOperationException>(
+            () => first.TryUseCurrent(
+                () => throw new InvalidOperationException("binding failed")));
+        Assert.IsTrue(first.TryUseCurrent(() => true));
         Assert.IsFalse(
             first.ToString().Contains(
                 first.AdminContext.SessionSecret,
@@ -127,6 +131,12 @@ public sealed class PocketBaseSupervisorTests
             new FakePocketBaseHealthProbe(isHealthy: true));
         await supervisor.StartAsync(CancellationToken.None);
         PocketBaseGenerationContext first = supervisor.CaptureCurrentGeneration()!;
+        int firstActions = 0;
+        Assert.IsTrue(first.TryUseCurrent(() =>
+        {
+            firstActions++;
+            return true;
+        }));
 
         await supervisor.StopAsync(CancellationToken.None);
         Assert.IsNull(supervisor.CaptureCurrentGeneration(first.GenerationId));
@@ -140,6 +150,61 @@ public sealed class PocketBaseSupervisorTests
         Assert.AreSame(
             second,
             supervisor.CaptureCurrentGeneration(second.GenerationId));
+        Assert.IsFalse(first.TryUseCurrent(() =>
+        {
+            firstActions++;
+            return true;
+        }));
+        Assert.AreEqual(1, firstActions);
+        Assert.IsTrue(second.TryUseCurrent(() => true));
+    }
+
+    [TestMethod]
+    public async Task StopWaitsForAdmittedGenerationActionBeforeRetiringContext()
+    {
+        var process = FakePocketBaseProcess.Ready(ReadyRecord());
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(process),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        PocketBaseGenerationContext generation =
+            supervisor.CaptureCurrentGeneration()!;
+        var actionEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAction = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool> admitted = Task.Run(() => generation.TryUseCurrent(() =>
+        {
+            actionEntered.TrySetResult();
+            releaseAction.Task.GetAwaiter().GetResult();
+            return true;
+        }));
+
+        Task stopping = Task.CompletedTask;
+        try
+        {
+            await actionEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            stopping = Task.Run(
+                () => supervisor.StopAsync(CancellationToken.None));
+            await generation.RetirementRequestedForTests
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(stopping.IsCompleted);
+        }
+        finally
+        {
+            releaseAction.TrySetResult();
+        }
+
+        Assert.IsTrue(await admitted.WaitAsync(TimeSpan.FromSeconds(2)));
+        await stopping.WaitAsync(TimeSpan.FromSeconds(2));
+        bool lateActionCalled = false;
+        Assert.IsFalse(generation.TryUseCurrent(() =>
+        {
+            lateActionCalled = true;
+            return true;
+        }));
+        Assert.IsFalse(lateActionCalled);
     }
 
     [TestMethod]
@@ -760,6 +825,8 @@ public sealed class PocketBaseSupervisorTests
                 exhausted.TrySetResult();
         };
         await supervisor.StartAsync(CancellationToken.None);
+        PocketBaseGenerationContext firstGeneration =
+            supervisor.CaptureCurrentGeneration()!;
         string firstSecret = factory.Requests[0]
             .Environment["VIBETABLE_SIDECAR_SESSION_SECRET"];
 
@@ -773,6 +840,15 @@ public sealed class PocketBaseSupervisorTests
             factory.Requests[2].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"]);
         Assert.IsTrue(first.Disposed);
         Assert.IsTrue(failed.Disposed);
+        int staleActions = 0;
+        Assert.IsFalse(firstGeneration.TryUseCurrent(() =>
+        {
+            staleActions++;
+            return true;
+        }));
+        Assert.AreEqual(0, staleActions);
+        Assert.IsTrue(
+            supervisor.CaptureCurrentGeneration()!.TryUseCurrent(() => true));
 
         recovered.Crash(exitCode: 23);
         await exhausted.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -817,23 +893,48 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
-    public async Task RepeatedStartWhileReady_DoesNotDisableCrashRecovery()
+    public async Task RepeatedStartWhileReady_PreservesGenerationAdmission()
     {
         var first = FakePocketBaseProcess.Ready(ReadyRecord());
         var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
         var factory = new FakePocketBaseProcessFactory(first, recovered);
+        var cleanupEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCleanup = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         await using var supervisor = new PocketBaseSupervisor(
             Options(crashRestartLimit: 1),
             factory,
             new FakePocketBaseHealthProbe(isHealthy: true));
+        supervisor.RecoveryCleanupBarrierForTests = async () =>
+        {
+            cleanupEntered.TrySetResult();
+            await releaseCleanup.Task;
+        };
         await supervisor.StartAsync(CancellationToken.None);
-
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => supervisor.StartAsync(CancellationToken.None));
-        first.Crash(exitCode: 17);
-        await WaitUntilAsync(
-            () => factory.Requests.Count == 2
-                && supervisor.GetStatus().State == PocketBaseState.Ready);
+        Assert.IsTrue(
+            supervisor.CaptureCurrentGeneration()!.TryUseCurrent(() => true));
+
+        try
+        {
+            first.Crash(exitCode: 17);
+            await cleanupEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            PocketBaseGenerationContext current =
+                supervisor.CaptureCurrentGeneration()!;
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => supervisor.StartAsync(CancellationToken.None));
+
+            Assert.IsTrue(current.TryUseCurrent(() => true));
+        }
+        finally
+        {
+            releaseCleanup.TrySetResult();
+        }
+        await supervisor.WaitForRecoveryQuiescenceAsync()
+            .WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(2, factory.Requests.Count);
         Assert.IsTrue(first.Disposed);
