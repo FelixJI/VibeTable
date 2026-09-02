@@ -14,9 +14,11 @@ namespace VibeTable.Desktop.Tests;
 public sealed class HostProductRpcCompositionTests
 {
     [TestMethod]
-    public async Task HealthReaderUsesExpectedEpochLeaseAndSelectedProductOwner()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task HealthReaderUsesExpectedEpochLeaseAndSelectedProductOwner(bool useTestPolicy)
     {
-        await using var fixture = await Fixture.OpenAsync();
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy);
         var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
         Assert.AreEqual(1, await reader.ReadTableCountAsync(fixture.Session, CancellationToken.None));
         Assert.AreEqual(fixture.Session.WorkspaceId, fixture.Http.LastWire.GetProperty("workspaceId").GetGuid());
@@ -88,9 +90,11 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
-    public async Task HealthReaderPreservesRemoteErrorAndCloseCancelsInflightProbe()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task HealthReaderPreservesRemoteErrorAndCloseCancelsInflightProbe(bool useTestPolicy)
     {
-        await using var fixture = await Fixture.OpenAsync();
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy);
         var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
         fixture.Http.Error = true;
         RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(
@@ -337,16 +341,18 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
-    public async Task DefaultPolicyStillSelectsPythonAndDoesNotHandshakeProductHttp()
+    public async Task DefaultPolicySelectsGoForSchemaListAndKeepsOtherReadsOnPython()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
         using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
             .CreateGateway(fixture.Leases, fixture.Http);
+        JsonElement result = await gateway.ListTablesAsync(Json("{}"), CancellationToken.None);
+        Assert.AreEqual("orders", result.GetProperty("tables")[0].GetString());
         RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
-            gateway.ListTablesAsync(Json("{}"), CancellationToken.None));
+            gateway.GetTableSchemaAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
         Assert.AreEqual(-32601, error.Code); // Existing fake_backend has no business methods.
-        Assert.AreEqual(0, fixture.Http.ProductCalls);
-        Assert.AreEqual(0, fixture.Http.ProductHandshakes);
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
     }
 
     private static JsonElement Json(string value)

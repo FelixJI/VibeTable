@@ -7,6 +7,10 @@ from typing import ClassVar
 
 from pydantic import JsonValue, RootModel, model_validator
 
+from backend.contracts.generated_product_rpc_capabilities import (
+    PRODUCT_RPC_METHODS_BY_CURRENT_OWNER,
+    current_owner_methods,
+)
 from backend.contracts.schema_v2 import ApplyRequestV2
 
 _MAX_PARAMS_BYTES = 1 << 20
@@ -579,6 +583,38 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
 }
 
 
+# These existing methods belong to the independent Workspace catalog, not Product.
+WORKSPACE_CATALOG_METHODS = frozenset(
+    {
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
+        "field.settings.describe",
+    }
+)
+
+
+def _current_python_registry(
+    models: dict[str, type[ProductParams]],
+) -> dict[str, type[ProductParams]]:
+    catalog = frozenset(
+        method for methods in PRODUCT_RPC_METHODS_BY_CURRENT_OWNER.values() for method in methods
+    )
+    if models.keys() - catalog != WORKSPACE_CATALOG_METHODS:
+        raise RuntimeError("product parameter registry has undeclared non-Product methods")
+    return {
+        method: model
+        for method, model in models.items()
+        if method in WORKSPACE_CATALOG_METHODS or method in current_owner_methods("pythonBff")
+    }
+
+
+# Keep full parameter models for golden generation; only current routes are registered.
+PYTHON_PRODUCT_RPC_REGISTRY = _current_python_registry(PRODUCT_RPC_REGISTRY)
+
+
 def _validate_value(value: object, depth: int) -> None:
     if depth > _MAX_DEPTH:
         raise ValueError("product params are too deeply nested")
@@ -596,6 +632,8 @@ def _validate_value(value: object, depth: int) -> None:
 
 __all__ = [
     "PRODUCT_RPC_REGISTRY",
+    "PYTHON_PRODUCT_RPC_REGISTRY",
+    "WORKSPACE_CATALOG_METHODS",
     "FieldChangeApplyParams",
     "FieldChangePlanParams",
     "JsonObject",

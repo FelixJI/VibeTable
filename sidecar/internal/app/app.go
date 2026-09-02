@@ -431,7 +431,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				SessionEpoch: capabilities.SessionEpoch,
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
-			})
+			}, schemaListRegistration(schemaapi.New(pb)))
 			if err != nil {
 				_ = rawListener.Close()
 				return fmt.Errorf("compose Product RPC dispatcher: %w", err)

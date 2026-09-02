@@ -12,7 +12,7 @@ from backend.adapters.pocketbase.product_rpc_support import (
     ProductRpcModule,
 )
 from backend.application.product_rpc import ProductRpc
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, ProductParams
+from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY, JsonObject, ProductParams
 
 
 class PocketBaseProductRpc(ProductRpc):
@@ -42,7 +42,7 @@ class PocketBaseProductRpc(ProductRpc):
                 if method in module_by_method:
                     raise RuntimeError(f"duplicate PocketBase product RPC route: {method}")
                 module_by_method[method] = module
-        if module_by_method.keys() != PRODUCT_RPC_REGISTRY.keys():
+        if module_by_method.keys() != PYTHON_PRODUCT_RPC_REGISTRY.keys():
             raise RuntimeError("PocketBase product RPC routes do not match the contract registry")
         self._module_by_method = module_by_method
 

@@ -482,9 +482,27 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 0 ||
-		len(productCapabilities.Registrations) != 0 {
+		len(productCapabilities.RPCMethods) != 1 || productCapabilities.RPCMethods[0] != "schema.list" ||
+		len(productCapabilities.Registrations) != 1 ||
+		productCapabilities.Registrations[0].Method != "schema.list" ||
+		productCapabilities.Registrations[0].Scope != "workspace" {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
+	}
+
+	response = requestJSON(
+		t, client, http.MethodPost, baseURL+"/api/vibetable/v2/product/rpc", secret,
+		workspaceV2Request(0, 7, "schema.list", `{}`),
+	)
+	var catalogResponse struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&catalogResponse); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(catalogResponse.Result) != `{"tables":[]}` || len(catalogResponse.Error) != 0 {
+		t.Fatalf("schema.list production response = %d %+v", response.StatusCode, catalogResponse)
 	}
 
 	response = requestJSON(

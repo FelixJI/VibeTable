@@ -12,7 +12,7 @@
 | Web Document Diff → WPF → sidecar | `document.diffRequested` / `document.diffCancelRequested` → `WorkspaceDocumentOsAdapter` / coordinator → Host-only `fileHistory.materializeDiffPair` 与 `assertEffectiveRevision` | sidecar 固定 target/effective revision；Host 持有两文件 path grant 和 epoch/sequence lease；Web 只持 entry handle/revision id。 | operationId + entryHandle 精确取消；materialize 前后 CAS stale 映射为稳定 `stale`；epoch 轮换取消在途请求，raw Web materialize 被拒绝。 | Workspace/OpenXml engine tests、Desktop adapter/cancel tests、Web service/store/view tests、产品场景 `14-document-diff`。 |
 | WPF test-mode controls → 产品 E2E | runner 写入受控 controls dir → WPF test-mode picker/normal-close watcher | 仅 `--test-mode + --e2e-controls-dir` 可用；production 始终使用 native picker，不向 renderer 暴露 raw path route。 | 缺失/无效 fixture fail closed；normal close 后报告 Host exit、后代进程和端口释放。 | `ProductE2eControlTests`、`WorkspacePathGrantStoreTests`、runner 契约，以及[当前场景声明](../quality/product-e2e-capability-index.md)与对应 `required` 报告。 |
 
-## 宿主 Product 调用前置（尚未切换生产 owner）
+## 宿主 Product 调用与首个 Go owner
 
 `JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method、严格 Schema v2 解析
 及原 Python client 的通知。invoker 只读现有生成 policy/Workspace catalog 分类，拥有固定代际
@@ -26,18 +26,21 @@ HTTP 实例与一次共享握手；握手独立持有 epoch lease 至实际 HTTP
 同一 factory 核对 runtime、精确 Python client 和 canonical Sidecar snapshot，再委托现有 Sidecar
 authority。callback 只同步启动调用，不持锁等待异步完成，也不保证子进程不会退出。
 binding 只提供配对 client、完整代际比较与 typed gateway 构造；一次 capture 不延长 runtime 寿命。
-内部 construction seam 复用真实 supervisors 与现有 process/health/HTTP adapter，生产默认 policy
-不变；测试 policy 的 selector 与 canonical registrations 同源。
+内部 construction seam 复用真实 supervisors 与现有 process/health/HTTP adapter；默认生成 policy
+与测试注入 policy 的 selector 和 canonical registrations 均保持同源。
 
 三个 Host-origin 生产入口已消费该 binding：MainWindow 一次捕获并将配对 client 交给其余 Python
 gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
 至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
-schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle，也不改变
-现行 Product owner（仍全部 Python）；Go 路由只在注入测试 policy 中验证。
+schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
+现行 Product owner 中仅 `schema.list` 迁到 Go，其余方法仍为 Python。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
-非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认 owner 仍为 Python。
+非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认 `schema.list`
+选中 Go 且其他读方法仍为 Python。Go 的私有 Product HTTP 与原 schema REST 共用真实 Catalog
+投影；Python 保留全量参数模型，但不再注册或转发 `schema.list`。独立 Workspace catalog 的六个
+既有方法名单由参数 contract 与 golden generator 共享，不作为未知方法的默认 Python fallback。
 同一真实 composition fixture 还覆盖 Lazy 同 Client 新 snapshot 轮换而不提前结束旧在途请求，
 以及 health reader 的期望 epoch lease、严格 schema.list、远端错误和 close 取消。
 
