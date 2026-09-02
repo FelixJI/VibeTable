@@ -12,6 +12,21 @@
 | Web Document Diff → WPF → sidecar | `document.diffRequested` / `document.diffCancelRequested` → `WorkspaceDocumentOsAdapter` / coordinator → Host-only `fileHistory.materializeDiffPair` 与 `assertEffectiveRevision` | sidecar 固定 target/effective revision；Host 持有两文件 path grant 和 epoch/sequence lease；Web 只持 entry handle/revision id。 | operationId + entryHandle 精确取消；materialize 前后 CAS stale 映射为稳定 `stale`；epoch 轮换取消在途请求，raw Web materialize 被拒绝。 | Workspace/OpenXml engine tests、Desktop adapter/cancel tests、Web service/store/view tests、产品场景 `14-document-diff`。 |
 | WPF test-mode controls → 产品 E2E | runner 写入受控 controls dir → WPF test-mode picker/normal-close watcher | 仅 `--test-mode + --e2e-controls-dir` 可用；production 始终使用 native picker，不向 renderer 暴露 raw path route。 | 缺失/无效 fixture fail closed；normal close 后报告 Host exit、后代进程和端口释放。 | `ProductE2eControlTests`、`WorkspacePathGrantStoreTests`、runner 契约，以及[当前场景声明](../quality/product-e2e-capability-index.md)与对应 `required` 报告。 |
 
+## 宿主 Product 调用前置（尚未切换生产 owner）
+
+`JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method、严格 Schema v2 解析
+及原 Python client 的通知。invoker 只读现有生成 policy/Workspace catalog 分类，拥有固定代际
+HTTP 实例与一次共享握手；握手独立持有 epoch lease 至实际 HTTP 完成，单个 caller 的取消不终止
+其他 caller 的握手，epoch drain／Dispose 取消全部自有调用。
+每次调用取得现有 workspace epoch lease，在发送及返回（包括错误）时核对绑定；不重试到新代际，
+不 fallback、shadow 或双发。Product wire 只有原 scope 字段，fence/claim 仍由 capabilities 验证。
+
+绑定回调由后续 runtime composition 原子核对 runtime、Python client 和 canonical Sidecar snapshot；
+三个生产入口（MainWindow、LazyProductTableGateway、update health reader）尚需独立接入，再进行
+L3A owner cutover。本前置不改变 renderer gateway lifecycle，也不宣称产品已走 Go。
+`HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
+验证此契约；进程和网络由测试 peer 提供。
+
 ## 维护规则
 
 - 新跨进程 operation 同时更新本页、capability 矩阵、producer/Host/Web 的闭集测试和至少一条产品证据。

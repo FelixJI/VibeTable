@@ -11,6 +11,7 @@ namespace VibeTable.Desktop.Services;
 /// <summary>JSON-RPC adapter for the closed provider-neutral product surface.</summary>
 public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
 {
+    private static readonly JsonSerializerOptions RequestOptions = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
         {
@@ -20,12 +21,19 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         };
     private readonly JsonRpcClient _client;
+    private readonly HostProductRpcInvoker? _hostInvoker;
     private bool _disposed;
 
     public JsonRpcProductDataGateway(JsonRpcClient client)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _client.NotificationReceived += OnNotification;
+    }
+
+    internal JsonRpcProductDataGateway(HostProductRpcInvoker hostInvoker)
+        : this((hostInvoker ?? throw new ArgumentNullException(nameof(hostInvoker))).Client)
+    {
+        _hostInvoker = hostInvoker;
     }
 
     public event Action<DataChangedEvent>? DataChanged;
@@ -114,24 +122,15 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
         if (_disposed) return;
         _disposed = true;
         _client.NotificationReceived -= OnNotification;
+        _hostInvoker?.Dispose();
     }
 
     private Task<JsonElement> Invoke(string method, JsonElement parameters, CancellationToken token)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         token.ThrowIfCancellationRequested();
-        return _client.InvokeAsync<JsonElement, JsonElement>(method, parameters, token);
-    }
-
-    private Task<TResult> Invoke<TParams, TResult>(
-        string method,
-        TParams parameters,
-        CancellationToken token)
-        where TParams : notnull
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        token.ThrowIfCancellationRequested();
-        return _client.InvokeAsync<TParams, TResult>(method, parameters, token);
+        return _hostInvoker?.InvokeAsync(method, parameters, token)
+            ?? _client.InvokeAsync<JsonElement, JsonElement>(method, parameters, token);
     }
 
     private async Task<TResult> InvokeStrict<TParams, TResult>(
@@ -143,8 +142,8 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         token.ThrowIfCancellationRequested();
-        JsonElement response = await _client
-            .InvokeAsync<TParams, JsonElement>(method, parameters, token)
+        JsonElement response = await Invoke(
+                method, JsonSerializer.SerializeToElement(parameters, RequestOptions), token)
             .ConfigureAwait(false);
         try
         {
@@ -174,7 +173,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         token.ThrowIfCancellationRequested();
-        JsonElement response = await _client.InvokeAsync<JsonElement, JsonElement>(
+        JsonElement response = await Invoke(
             method,
             parameters,
             token).ConfigureAwait(false);
