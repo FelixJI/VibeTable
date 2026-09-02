@@ -127,6 +127,25 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
     }
 
     /// <summary>
+    /// Admits a short synchronous action against the exact Ready client while
+    /// holding the state gate. The action must not call lifecycle entry points
+    /// or wait for asynchronous work; an RPC start may capture its pending task
+    /// for awaiting outside the action.
+    /// This does not lease the client beyond the action or prevent process exit.
+    /// </summary>
+    internal bool TryUseReadyClient(Func<JsonRpcClient, bool> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        lock (_stateGate)
+        {
+            return Volatile.Read(ref _disposed) == 0
+                && _state == BackendState.Ready
+                && _generation?.Client is { } client
+                && action(client);
+        }
+    }
+
+    /// <summary>
     /// Raised on every state transition. Handlers run on the thread that
     /// published the change.
     /// </summary>

@@ -79,6 +79,97 @@ public sealed class PythonBackendSupervisorTests
     }
 
     [TestMethod]
+    public async Task TryUseReadyClient_StartingClientDoesNotAdmitCalls()
+    {
+        await using var supervisor = new PythonBackendSupervisor(FakeOptions(
+            env: new Dictionary<string, string>
+            {
+                ["__VIBETABLE_HANDSHAKE_DELAY_SECONDS"] = "30",
+            }));
+        using var cancellation = new CancellationTokenSource();
+        Task starting = supervisor.StartAsync(cancellation.Token);
+        try
+        {
+            Assert.AreEqual(BackendState.Starting, supervisor.State);
+            Assert.IsNotNull(supervisor.Client);
+            Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
+                throw new AssertFailedException("Starting client admitted a call.")));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(() =>
+                starting.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        await AssertChildGoneAsync(supervisor);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task TryUseReadyClient_AdmissionPrecedesConcurrentShutdown(bool dispose)
+    {
+        await using var supervisor = new PythonBackendSupervisor(FakeOptions());
+        await supervisor.StartAsync(CancellationToken.None);
+        JsonRpcClient expected = supervisor.Client!;
+        using var release = new ManualResetEventSlim();
+        var admitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool> admission = Task.Run(() => supervisor.TryUseReadyClient(client =>
+        {
+            admitted.TrySetResult();
+            Assert.IsTrue(release.Wait(TimeSpan.FromSeconds(5)), "Admission was not released.");
+            return ReferenceEquals(expected, client);
+        }));
+        Task<Task>? shutdown = null;
+        try
+        {
+            await admitted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var attempting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            shutdown = Task.Factory.StartNew(() =>
+            {
+                attempting.TrySetResult();
+                return dispose ? supervisor.DisposeAsync().AsTask()
+                    : supervisor.StopAsync(CancellationToken.None);
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            await attempting.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // Shutdown cannot pass its synchronous state transition while admission owns the gate.
+            await Assert.ThrowsExactlyAsync<TimeoutException>(async () =>
+            {
+                await shutdown.WaitAsync(TimeSpan.FromMilliseconds(200));
+            });
+        }
+        finally
+        {
+            release.Set();
+            Assert.IsTrue(await admission.WaitAsync(TimeSpan.FromSeconds(5)));
+            if (shutdown is not null)
+                await shutdown.Unwrap().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
+            throw new AssertFailedException("Retired client admitted a call.")));
+        await AssertChildGoneAsync(supervisor);
+    }
+
+    [TestMethod]
+    public async Task TryUseReadyClient_PreservesCallerDecisionAndReleasesAfterException()
+    {
+        await using var supervisor = new PythonBackendSupervisor(FakeOptions());
+        Assert.ThrowsExactly<ArgumentNullException>(() => supervisor.TryUseReadyClient(null!));
+        Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
+            throw new AssertFailedException("Stopped client admitted a call.")));
+        await supervisor.StartAsync(CancellationToken.None);
+        JsonRpcClient expected = supervisor.Client!;
+        Assert.IsFalse(supervisor.TryUseReadyClient(_ => false));
+        var failure = new InvalidOperationException("caller failure");
+        Assert.AreSame(failure, Assert.ThrowsExactly<InvalidOperationException>(() =>
+            supervisor.TryUseReadyClient(_ => throw failure)));
+        Assert.IsTrue(supervisor.TryUseReadyClient(client => ReferenceEquals(expected, client)));
+        await Task.Run(() => supervisor.StopAsync(CancellationToken.None))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        await AssertChildGoneAsync(supervisor);
+    }
+
+    [TestMethod]
     public async Task StartAsync_HandshakeSucceeds_TransitionsToReady()
     {
         await using var supervisor = new PythonBackendSupervisor(FakeOptions());
@@ -202,6 +293,9 @@ public sealed class PythonBackendSupervisorTests
 
             // Wait briefly for the supervisor's exit handler to run.
             await WaitForStateAsync(supervisor, BackendState.Faulted, TimeSpan.FromSeconds(2));
+            Assert.IsNotNull(supervisor.Client);
+            Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
+                throw new AssertFailedException("Faulted client admitted a call.")));
         }
         finally
         {
@@ -384,6 +478,9 @@ public sealed class PythonBackendSupervisorTests
         Assert.IsFalse(supervisor.HasExited, "G1 exit state must not leak into G2.");
         Assert.IsNull(supervisor.ExitCode, "G1 exit code must not leak into G2.");
         Assert.AreNotSame(firstClient, supervisor.Client);
+        Assert.IsFalse(supervisor.TryUseReadyClient(client => ReferenceEquals(firstClient, client)));
+        JsonRpcClient secondClient = supervisor.Client!;
+        Assert.IsTrue(supervisor.TryUseReadyClient(client => ReferenceEquals(secondClient, client)));
         string secondGenerationLog = supervisor.GetStdErrorLog();
         StringAssert.Contains(secondGenerationLog, "generation-two");
         Assert.IsFalse(
@@ -417,6 +514,9 @@ public sealed class PythonBackendSupervisorTests
         {
             await tailEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.AreEqual(BackendState.Stopping, supervisor.State);
+            Assert.IsNotNull(supervisor.Client);
+            Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
+                throw new AssertFailedException("Stopping client admitted a call.")));
             Task secondStop = supervisor.StopAsync(CancellationToken.None);
             bool returnedBeforeJoin = secondStop.IsCompleted;
             releaseTail.Set();
@@ -458,6 +558,9 @@ public sealed class PythonBackendSupervisorTests
         {
             await tailEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
             Task secondDispose = supervisor.DisposeAsync().AsTask();
+            Assert.IsNotNull(supervisor.Client);
+            Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
+                throw new AssertFailedException("Disposed client admitted a call.")));
             Task concurrentStop = supervisor.StopAsync(CancellationToken.None);
             bool disposeReturnedBeforeJoin = secondDispose.IsCompleted;
             bool stopReturnedBeforeJoin = concurrentStop.IsCompleted;
