@@ -5,23 +5,30 @@ import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activatio
 
 function makeDependencies(overrides = {}) {
   const calls = [];
+  const {
+    waitForReadiness = async (timeoutMs) => {
+      calls.push(["readiness", timeoutMs]);
+      return {
+        type: "database.opened",
+        payload: { projectKey: "local:workspace-7", projectRevision: "7" },
+      };
+    },
+    releaseCapture = async () => calls.push(["release"]),
+    ...dependencyOverrides
+  } = overrides;
   return {
     calls,
     dependencies: {
-      beginCapture: async (types) => calls.push(["capture", types]),
+      beginCapture: async (expectation) => {
+        calls.push(["capture", expectation]);
+        return { wait: waitForReadiness, release: releaseCapture };
+      },
       activate: async () => calls.push(["activate"]),
       waitForActivation: async (timeoutMs) => {
         calls.push(["activation", timeoutMs]);
         return { kind: "opened" };
       },
-      waitForDatabaseOpened: async (timeoutMs) => {
-        calls.push(["database.opened", timeoutMs]);
-        return {
-          type: "database.opened",
-          payload: { projectKey: "local:workspace-7", projectRevision: "7" },
-        };
-      },
-      ...overrides,
+      ...dependencyOverrides,
     },
   };
 }
@@ -34,28 +41,34 @@ test("captures database.opened before activation and returns only after readines
   assert.equal(opened.payload.projectRevision, "7");
   assert.equal(opened.payload.projectKey, "local:workspace-7");
   assert.deepEqual(calls, [
-    ["capture", ["database.opened"]],
+    ["capture", { method: "workspace.open" }],
     ["activate"],
     ["activation", 60_000],
-    ["database.opened", 60_000],
+    ["readiness", 60_000],
+    ["release"],
   ]);
 });
 
-test("does not wait for database readiness after activation failure", async () => {
-  const { dependencies } = makeDependencies({
+test("rejects UI activation failure even when exact bridge readiness succeeds", async () => {
+  const { calls, dependencies } = makeDependencies({
     waitForActivation: async () => ({ kind: "failed", message: "workspace rejected" }),
-    waitForDatabaseOpened: async () => assert.fail("unexpected database wait"),
   });
 
   await assert.rejects(
     activateWorkspaceAndWaitForDatabaseOpened(dependencies),
     /workspace activation failed: workspace rejected/,
   );
+  assert.deepEqual(calls, [
+    ["capture", { method: "workspace.open" }],
+    ["activate"],
+    ["readiness", 60_000],
+    ["release"],
+  ]);
 });
 
 test("rejects a database.opened message without a usable project revision", async () => {
   const { dependencies } = makeDependencies({
-    waitForDatabaseOpened: async () => ({
+    waitForReadiness: async () => ({
       type: "database.opened",
       payload: { projectKey: "local:workspace-7", projectRevision: " " },
     }),
@@ -69,7 +82,7 @@ test("rejects a database.opened message without a usable project revision", asyn
 
 test("rejects a database.opened message without an authoritative project key", async () => {
   const { dependencies } = makeDependencies({
-    waitForDatabaseOpened: async () => ({
+    waitForReadiness: async () => ({
       type: "database.opened",
       payload: { projectKey: " ", projectRevision: "7" },
     }),
@@ -83,7 +96,7 @@ test("rejects a database.opened message without an authoritative project key", a
 
 test("propagates the database readiness timeout", async () => {
   const { dependencies } = makeDependencies({
-    waitForDatabaseOpened: async () => {
+    waitForReadiness: async () => {
       throw new Error("database.opened timed out");
     },
   });
@@ -92,4 +105,43 @@ test("propagates the database readiness timeout", async () => {
     activateWorkspaceAndWaitForDatabaseOpened(dependencies),
     /database\.opened timed out/,
   );
+});
+
+test("releases exact bridge ownership when activation throws before UI readiness", async () => {
+  const { calls, dependencies } = makeDependencies({
+    activate: async () => {
+      throw new Error("click failed");
+    },
+  });
+
+  await assert.rejects(
+    activateWorkspaceAndWaitForDatabaseOpened(dependencies),
+    /click failed/,
+  );
+  assert.deepEqual(calls, [
+    ["capture", { method: "workspace.open" }],
+    ["release"],
+  ]);
+});
+
+test("starts bridge readiness before unresolved UI readiness can hide an exact failure", async () => {
+  let resolveActivation;
+  let bridgeWaitStarted = false;
+  const { dependencies } = makeDependencies({
+    waitForActivation: () => new Promise((resolve) => { resolveActivation = resolve; }),
+    waitForReadiness: async () => {
+      bridgeWaitStarted = true;
+      throw new Error("exact bridge readiness failed");
+    },
+  });
+
+  const activation = activateWorkspaceAndWaitForDatabaseOpened(dependencies);
+  const outcome = activation.then(
+    () => ({ error: null }),
+    error => ({ error }),
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(bridgeWaitStarted, true);
+  resolveActivation({ kind: "opened" });
+  assert.match((await outcome).error.message, /exact bridge readiness failed/);
 });

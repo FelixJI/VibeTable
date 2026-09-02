@@ -2232,6 +2232,12 @@ def test_plugin_lifecycle_waits_for_the_install_enable_request_to_settle() -> No
     )
     assert "const projectKey = databaseOpened.payload.projectKey.trim()" in scenario
     assert 'projectKey: "local:default"' not in scenario
+    assert "beginWorkspaceActivationCapture" in source
+    assert (
+        "beginCapture: (expectation) => "
+        "beginWorkspaceActivationCapture(page, expectation)" in source
+    )
+    assert "beginCapture: (types) => beginBridgeMessageCapture(page, types)" not in source
     first_toggle = scenario.index("await toggle.click();")
     stable_enabled = scenario.index('lifecycleToggle.classList.contains("enabled")')
     assert stable_enabled < first_toggle
