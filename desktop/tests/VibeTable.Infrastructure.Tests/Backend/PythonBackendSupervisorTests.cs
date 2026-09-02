@@ -263,6 +263,47 @@ public sealed class PythonBackendSupervisorTests
     }
 
     [TestMethod]
+    public async Task StartAsync_InvalidStopTimeout_IsRejectedBeforeProcessSpawn()
+    {
+        var options = FakeOptions(configure: o =>
+        {
+            o.StopTimeout = TimeSpan.FromMilliseconds(-2);
+        });
+        await using var supervisor = new PythonBackendSupervisor(options);
+
+        ArgumentOutOfRangeException error = await Assert.ThrowsExactlyAsync<
+            ArgumentOutOfRangeException>(
+            () => supervisor.StartAsync(CancellationToken.None));
+
+        Assert.AreEqual("StopTimeout", error.ParamName);
+        Assert.AreEqual(BackendState.Stopped, supervisor.State);
+        Assert.IsFalse(supervisor.HasExited);
+        Assert.IsNull(supervisor.Client);
+    }
+
+    [TestMethod]
+    public async Task DisposeAsync_UsesValidatedGenerationStopTimeout()
+    {
+        var options = FakeOptions(
+            configure: o => o.StopTimeout = TimeSpan.FromMilliseconds(100),
+            env: new Dictionary<string, string>
+            {
+                ["__VIBETABLE_IGNORE_EOF"] = "1",
+            });
+        var supervisor = new PythonBackendSupervisor(options);
+        await supervisor.StartAsync(CancellationToken.None);
+
+        options.StopTimeout = TimeSpan.FromMilliseconds(-2);
+        await supervisor.DisposeAsync();
+
+        Assert.AreEqual(BackendState.Stopped, supervisor.State);
+        Assert.IsTrue(supervisor.HasExited);
+        Assert.AreEqual(PythonBackendSupervisor.ForcedKillExitCode, supervisor.ExitCode);
+        Assert.IsNull(supervisor.Client);
+        await AssertChildGoneAsync(supervisor);
+    }
+
+    [TestMethod]
     public async Task StopAsync_FakeIgnoresEof_IsForceKilledAfterTimeout()
     {
         await using var supervisor = new PythonBackendSupervisor(FakeOptions(
@@ -291,6 +332,7 @@ public sealed class PythonBackendSupervisorTests
             // missing force-kill (which would hang on Windows WaitForExit) is
             // caught here rather than timing out the whole suite.
             Assert.AreEqual(BackendState.Stopped, supervisor.State);
+            Assert.AreEqual(PythonBackendSupervisor.ForcedKillExitCode, supervisor.ExitCode);
             Assert.IsTrue(
                 sw.Elapsed < TimeSpan.FromSeconds(5),
                 $"StopAsync took {sw.Elapsed.TotalMilliseconds:F0}ms — force-kill path likely missing.");
@@ -301,6 +343,143 @@ public sealed class PythonBackendSupervisorTests
         }
 
         await AssertChildGoneAsync(supervisor);
+    }
+
+    [TestMethod]
+    public async Task StartAfterStop_ResetsProcessGenerationStateAndDiagnostics()
+    {
+        var options = FakeOptions(env: new Dictionary<string, string>
+        {
+            ["__VIBETABLE_GENERATION_LABEL"] = "generation-one",
+            ["__VIBETABLE_EXIT_CODE"] = "17",
+        });
+        await using var supervisor = new PythonBackendSupervisor(options);
+
+        await supervisor.StartAsync(CancellationToken.None);
+        JsonRpcClient firstClient = supervisor.Client
+            ?? throw new AssertFailedException("First generation client was not published.");
+        await supervisor.StopAsync(CancellationToken.None);
+
+        Assert.IsTrue(supervisor.HasExited);
+        Assert.AreEqual(17, supervisor.ExitCode);
+        Assert.IsNull(supervisor.Client);
+        StringAssert.Contains(supervisor.GetStdErrorLog(), "generation-one");
+
+        options.Environment["__VIBETABLE_GENERATION_LABEL"] = "generation-two";
+        options.Environment["__VIBETABLE_EXIT_CODE"] = "23";
+        var secondLog = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        supervisor.LogReceived += (_, line) =>
+        {
+            if (line.Contains("generation-two", StringComparison.Ordinal))
+            {
+                secondLog.TrySetResult();
+            }
+        };
+
+        await supervisor.StartAsync(CancellationToken.None);
+        await secondLog.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(BackendState.Ready, supervisor.State);
+        Assert.IsFalse(supervisor.HasExited, "G1 exit state must not leak into G2.");
+        Assert.IsNull(supervisor.ExitCode, "G1 exit code must not leak into G2.");
+        Assert.AreNotSame(firstClient, supervisor.Client);
+        string secondGenerationLog = supervisor.GetStdErrorLog();
+        StringAssert.Contains(secondGenerationLog, "generation-two");
+        Assert.IsFalse(
+            secondGenerationLog.Contains("generation-one", StringComparison.Ordinal),
+            "G1 diagnostics must not leak into G2.");
+
+        await supervisor.StopAsync(CancellationToken.None);
+        Assert.AreEqual(23, supervisor.ExitCode);
+        await AssertChildGoneAsync(supervisor);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentStopAsync_DoesNotReturnBeforeGenerationTeardown()
+    {
+        await using var supervisor = new PythonBackendSupervisor(FakeOptions());
+        var tailEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseTail = new ManualResetEventSlim();
+        supervisor.LogReceived += (_, line) =>
+        {
+            if (line.Contains("shutdown", StringComparison.Ordinal))
+            {
+                tailEntered.TrySetResult();
+                releaseTail.Wait(TimeSpan.FromSeconds(5));
+            }
+        };
+        await supervisor.StartAsync(CancellationToken.None);
+
+        Task firstStop = supervisor.StopAsync(CancellationToken.None);
+        try
+        {
+            await tailEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.AreEqual(BackendState.Stopping, supervisor.State);
+            Task secondStop = supervisor.StopAsync(CancellationToken.None);
+            bool returnedBeforeJoin = secondStop.IsCompleted;
+            releaseTail.Set();
+            await Task.WhenAll(firstStop, secondStop).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsFalse(
+                returnedBeforeJoin,
+                "A concurrent StopAsync returned before the owning teardown completed.");
+        }
+        finally
+        {
+            releaseTail.Set();
+            await firstStop.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        Assert.AreEqual(BackendState.Stopped, supervisor.State);
+        Assert.IsTrue(supervisor.HasExited);
+        Assert.IsNull(supervisor.Client);
+    }
+
+    [TestMethod]
+    public async Task DisposeAsync_StopsAndJoinsActiveGeneration()
+    {
+        var supervisor = new PythonBackendSupervisor(FakeOptions());
+        var tailEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseTail = new ManualResetEventSlim();
+        supervisor.LogReceived += (_, line) =>
+        {
+            if (line.Contains("shutdown", StringComparison.Ordinal))
+            {
+                tailEntered.TrySetResult();
+                releaseTail.Wait(TimeSpan.FromSeconds(5));
+            }
+        };
+        await supervisor.StartAsync(CancellationToken.None);
+
+        Task firstDispose = supervisor.DisposeAsync().AsTask();
+        try
+        {
+            await tailEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Task secondDispose = supervisor.DisposeAsync().AsTask();
+            Task concurrentStop = supervisor.StopAsync(CancellationToken.None);
+            bool disposeReturnedBeforeJoin = secondDispose.IsCompleted;
+            bool stopReturnedBeforeJoin = concurrentStop.IsCompleted;
+            releaseTail.Set();
+            await Task.WhenAll(firstDispose, secondDispose, concurrentStop)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsFalse(
+                disposeReturnedBeforeJoin,
+                "A concurrent DisposeAsync returned before generation teardown completed.");
+            Assert.IsFalse(
+                stopReturnedBeforeJoin,
+                "StopAsync returned before the concurrent DisposeAsync teardown completed.");
+        }
+        finally
+        {
+            releaseTail.Set();
+            await firstDispose.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        Assert.AreEqual(BackendState.Stopped, supervisor.State);
+        Assert.IsTrue(supervisor.HasExited);
+        Assert.IsNull(supervisor.Client);
     }
 
     [TestMethod]

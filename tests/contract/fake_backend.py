@@ -34,10 +34,11 @@ Supported methods
 
 Shutdown
 --------
-On EOF (stdin closed) the fake exits cleanly with code 0 — unless it has been
-told to ignore EOF (via the ``__VIBETABLE_IGNORE_EOF=1`` environment variable) for
-the forced-kill-after-timeout test, in which case it loops forever and waits
-to be killed by the Job Object.
+On EOF (stdin closed) the fake exits with code 0, or the integer supplied by
+``__VIBETABLE_EXIT_CODE`` — unless it has been told to ignore EOF (via the
+``__VIBETABLE_IGNORE_EOF=1`` environment variable) for the
+forced-kill-after-timeout test, in which case it loops forever and waits to be
+killed by the Job Object.
 """
 
 from __future__ import annotations
@@ -50,6 +51,9 @@ from typing import Any
 
 #: Known diagnostic written to stderr at startup. The supervisor's
 #: stderr-capture test asserts this substring is present in the captured log.
+#: Tests may append a non-sensitive generation label via
+#: ``__VIBETABLE_GENERATION_LABEL`` so restart diagnostics can be attributed
+#: without depending on process ids or secrets.
 STDERR_SENTINEL = "vibetable-fake-backend: ready"
 
 #: Protocol version advertised by the real backend.
@@ -184,7 +188,9 @@ def _handle_line(line: str) -> bool:
 def main() -> int:
     # Emit the known stderr sentinel FIRST, before any stdout output, so the
     # supervisor's stderr-capture test can rely on it.
-    sys.stderr.write(STDERR_SENTINEL + "\n")
+    generation_label = os.environ.get("__VIBETABLE_GENERATION_LABEL")
+    sentinel = STDERR_SENTINEL if not generation_label else f"{STDERR_SENTINEL}:{generation_label}"
+    sys.stderr.write(sentinel + "\n")
     sys.stderr.flush()
 
     ignore_eof = os.environ.get("__VIBETABLE_IGNORE_EOF") == "1"
@@ -197,7 +203,13 @@ def main() -> int:
                 # Park forever; the supervisor must kill us via the Job Object.
                 while True:
                     time.sleep(1.0)
-            return 0
+            generation = generation_label or "unlabeled"
+            sys.stderr.write(f"vibetable-fake-backend: shutdown:{generation}\n")
+            sys.stderr.flush()
+            try:
+                return int(os.environ.get("__VIBETABLE_EXIT_CODE", "0"))
+            except ValueError:
+                return 0
         try:
             keep_going = _handle_line(line.decode("utf-8", errors="replace"))
         except SystemExit:
