@@ -20,6 +20,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 {
     [ThreadStatic]
     private static PocketBaseSupervisor? s_statusDispatcher;
+    private static readonly IEqualityComparer<Exception> s_exceptionIdentity =
+        ReferenceEqualityComparer.Instance;
 
     private const string ReadyEvent = "sidecar.ready";
     private const string SessionSecretEnvironment =
@@ -34,10 +36,12 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private readonly IPocketBaseProcessFactory _processFactory;
     private readonly IPocketBaseHealthProbe _healthProbe;
     private readonly AsyncFifoGate _lifecycle = new();
+    private readonly object _retirementGate = new();
     private readonly object _statusGate = new();
     private readonly object _recoveryGate = new();
     private readonly StringBuilder _log = new();
     private readonly Queue<StatusNotification> _statusNotifications = [];
+    private readonly HashSet<Task> _activeStopTasks = [];
 
     private ProcessGeneration? _generation;
     private PocketBaseStatus _status =
@@ -46,6 +50,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private Task? _recoveryTask;
     private int _restartAttempts;
     private int _restartSuppressed = 1;
+    private Task? _disposeTask;
     private int _disposed;
     private bool _dispatchingStatus;
     private int _statusDispatchReservations;
@@ -183,9 +188,14 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             }
 
             _restartAttempts = 0;
-            lock (_statusGate)
+            lock (_retirementGate)
             {
-                Volatile.Write(ref _restartSuppressed, 0);
+                ThrowIfDisposed();
+                lock (_statusGate)
+                {
+                    ThrowIfDisposed();
+                    Volatile.Write(ref _restartSuppressed, 0);
+                }
             }
             StartGenerationResult started = await StartGenerationAsync(
                 cancellationToken).ConfigureAwait(false);
@@ -202,73 +212,258 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        SuppressAndCancelRecovery();
-        AsyncFifoGate.Lease lifecycle =
-            await _lifecycle.EnterAsync(cancellationToken).ConfigureAwait(false);
-        try
+        cancellationToken.ThrowIfCancellationRequested();
+        TaskCompletionSource? owner = null;
+        Task operation;
+        lock (_retirementGate)
         {
-            ProcessGeneration? generation = Volatile.Read(ref _generation);
-            if (GetStatus().State == PocketBaseState.Stopped && generation is null)
+            if (_disposeTask is not null)
             {
-                return;
+                operation = _disposeTask;
             }
-
-            _ = CommitStatus(new PocketBaseStatus(
-                PocketBaseState.Stopping,
-                GetStatus().BaseAddress,
-                false,
-                generation?.Process.ExitCode,
-                null));
-
-            // Once stop has changed externally visible state, cleanup is bounded
-            // by our own timeout and must finish even if the caller cancels.
-            try
+            else
             {
-                if (generation is not null)
-                {
-                    await TeardownGenerationAsync(generation, requestGraceful: true)
-                        .ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                _ = CommitStatus(new PocketBaseStatus(
-                    PocketBaseState.Stopped, null, false, null, null));
+                owner = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                operation = owner.Task;
+                _activeStopTasks.Add(operation);
             }
         }
-        finally
+        if (owner is not null)
         {
-            lifecycle.Dispose();
-            DrainStatusNotifications();
+            _ = CompleteStopAsync(owner);
         }
 
+        await operation.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task StopUnderLifecycleAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        ProcessGeneration? generation = Volatile.Read(ref _generation);
+        if (GetStatus().State == PocketBaseState.Stopped && generation is null)
         {
             return;
         }
 
+        _ = CommitStatus(new PocketBaseStatus(
+            PocketBaseState.Stopping,
+            GetStatus().BaseAddress,
+            false,
+            generation?.Process.ExitCode,
+            null));
+
+        // Once stop has changed externally visible state, cleanup is bounded
+        // by our own timeout and must finish even if the caller cancels.
         try
         {
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            if (generation is not null)
+            {
+                await TeardownGenerationAsync(generation, requestGraceful: true)
+                    .ConfigureAwait(false);
+            }
         }
         finally
         {
-            lock (_recoveryGate)
+            _ = CommitStatus(new PocketBaseStatus(
+                PocketBaseState.Stopped, null, false, null, null));
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        TaskCompletionSource owner;
+        Task disposeTask;
+        Task activeStops;
+        lock (_retirementGate)
+        {
+            if (_disposeTask is not null)
             {
-                _recoveryCts?.Dispose();
-                _recoveryCts = null;
-                _recoveryTask = null;
+                return new ValueTask(_disposeTask);
             }
+
+            owner = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            disposeTask = owner.Task;
+            _disposeTask = disposeTask;
+            activeStops = _activeStopTasks.Count == 0
+                ? Task.CompletedTask
+                : Task.WhenAll(_activeStopTasks);
+            Volatile.Write(ref _disposed, 1);
+        }
+
+        _ = CompleteDisposeAsync(owner, activeStops);
+        return new ValueTask(disposeTask);
+    }
+
+    private async Task CompleteStopAsync(TaskCompletionSource owner)
+    {
+        Exception? failure = await RunStopOperationAsync().ConfigureAwait(false);
+        lock (_retirementGate)
+        {
+            CompleteOwner(owner, failure);
+            _activeStopTasks.Remove(owner.Task);
+        }
+        DrainStatusNotifications();
+    }
+
+    private async Task CompleteDisposeAsync(
+        TaskCompletionSource owner,
+        Task activeStops)
+    {
+        Exception? failure = null;
+        try
+        {
+            await activeStops.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure = GetTaskFailure(activeStops, exception);
+        }
+        Exception? finalStopFailure =
+            await RunStopOperationAsync().ConfigureAwait(false);
+        failure = CombineFailures(failure, finalStopFailure);
+
+        lock (_recoveryGate)
+        {
+            _recoveryCts?.Dispose();
+            _recoveryCts = null;
+            _recoveryTask = null;
+        }
+        try
+        {
             if (_healthProbe is IDisposable disposable)
             {
                 disposable.Dispose();
             }
         }
+        catch (Exception exception)
+        {
+            failure = CombineFailures(failure, exception);
+        }
+
+        CompleteOwner(owner, failure);
+        DrainStatusNotifications();
+    }
+
+    private async Task<Exception?> RunStopOperationAsync()
+    {
+        (Task recoveryTask, Exception? failure) = CancelAndCaptureRecovery();
+        AsyncFifoGate.Lease lifecycle =
+            await _lifecycle.EnterAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            (Task currentRecoveryTask, Exception? currentCancellationFailure) =
+                CancelAndCaptureRecovery();
+            failure = CombineFailures(failure, currentCancellationFailure);
+            failure = await ObserveTaskFailureAsync(recoveryTask, failure)
+                .ConfigureAwait(false);
+            if (!ReferenceEquals(currentRecoveryTask, recoveryTask))
+            {
+                failure = await ObserveTaskFailureAsync(
+                    currentRecoveryTask,
+                    failure).ConfigureAwait(false);
+            }
+            try
+            {
+                await StopUnderLifecycleAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failure = CombineFailures(failure, exception);
+            }
+        }
+        finally
+        {
+            lifecycle.Dispose();
+        }
+        return failure;
+    }
+
+    private static async Task<Exception?> ObserveTaskFailureAsync(
+        Task task,
+        Exception? failure)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure = CombineFailures(failure, GetTaskFailure(task, exception));
+        }
+        return failure;
+    }
+
+    private static Exception? CombineFailures(Exception? current, Exception? next)
+    {
+        if (next is null)
+            return current;
+        return current is null
+            ? next
+            : CollapseFailures(new AggregateException(current, next));
+    }
+
+    private static Exception GetTaskFailure(Task task, Exception observed)
+    {
+        AggregateException? aggregate = task.Exception;
+        if (aggregate is null)
+            return observed;
+        return CollapseFailures(aggregate);
+    }
+
+    private static Exception CollapseFailures(AggregateException aggregate)
+    {
+        Exception[] failures = aggregate.Flatten().InnerExceptions
+            .Distinct(s_exceptionIdentity)
+            .ToArray();
+        return failures.Length == 1
+            ? failures[0]
+            : new AggregateException(failures);
+    }
+
+    private static void CompleteOwner(
+        TaskCompletionSource owner,
+        Exception? failure)
+    {
+        if (failure is null)
+        {
+            owner.SetResult();
+        }
+        else
+        {
+            owner.SetException(failure);
+        }
+    }
+
+    private (Task RecoveryTask, Exception? Failure) CancelAndCaptureRecovery()
+    {
+        CancellationTokenSource? recoveryCancellation;
+        Task recoveryTask;
+        lock (_statusGate)
+        {
+            Volatile.Write(ref _restartSuppressed, 1);
+        }
+        lock (_recoveryGate)
+        {
+            recoveryCancellation = _recoveryCts;
+            recoveryTask = _recoveryTask ?? Task.CompletedTask;
+        }
+
+        Exception? failure = null;
+        try
+        {
+            recoveryCancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // A completed recovery can release its owner after capture.
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        return (recoveryTask, failure);
     }
 
     private async Task<StartGenerationResult> StartGenerationAsync(
