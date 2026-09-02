@@ -51,6 +51,35 @@ public sealed class WorkspaceV2HttpGatewayTests
     }
 
     [TestMethod]
+    public async Task CapabilitiesUseTheExplicitGenerationContextAfterProviderAdvances()
+    {
+        var captured = new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:43125/api/vibetable/v1/admin/bootstrap"),
+            new Uri("http://127.0.0.1:43125/"),
+            "X-VibeTable-Session",
+            "captured-secret");
+        var current = new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:43126/api/vibetable/v1/admin/bootstrap"),
+            new Uri("http://127.0.0.1:43126/"),
+            "X-VibeTable-Session",
+            "current-secret");
+        var handler = new RecordingHandler(request =>
+        {
+            Assert.AreEqual(43125, request.RequestUri!.Port);
+            Assert.AreEqual(
+                "captured-secret",
+                request.Headers.GetValues("X-VibeTable-Session").Single());
+            return CapabilitiesJson();
+        });
+        using var gateway = new WorkspaceV2HttpGateway(() => current, handler);
+
+        WorkspaceV2SidecarCapabilities capabilities =
+            await gateway.GetCapabilitiesAsync(captured, CancellationToken.None);
+
+        Assert.AreEqual(WorkspaceId, capabilities.WorkspaceId);
+    }
+
+    [TestMethod]
     public async Task ForwardPreservesWireAndCarriesBoundPathGrantPrivately()
     {
         Guid operationId = Guid.NewGuid();
@@ -193,6 +222,19 @@ public sealed class WorkspaceV2HttpGatewayTests
                 Encoding.UTF8,
                 "application/json"),
         };
+
+    private static HttpResponseMessage CapabilitiesJson() => Json(
+        $$"""
+        {
+          "contractVersion":"2.0",
+          "workspaceId":"{{WorkspaceId}}",
+          "sessionEpoch":7,
+          "fenceEpoch":3,
+          "claimId":"{{ClaimId}}",
+          "rpcMethods":[],
+          "registrations":[]
+        }
+        """);
 
     private static string DecodeBase64Url(string value)
     {

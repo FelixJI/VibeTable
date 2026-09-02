@@ -247,6 +247,9 @@ class TestFLegacyRemoval:
             "LazySupervisorGateway",
             "JsonRpcTableGateway",
             "WpfDatabasePicker",
+            "ConfigureRpcGatewaysWithRecoveryAsync",
+            "GatewayConfigureRetryLimit",
+            "GatewayConfigureRetryDelay",
         )
         assert not [name for name in forbidden if name in source]
         assert not (

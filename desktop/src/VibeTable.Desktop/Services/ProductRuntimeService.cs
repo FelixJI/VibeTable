@@ -1,10 +1,48 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Infrastructure.Backend;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.Infrastructure.PocketBase;
 
 namespace VibeTable.Desktop.Services;
+
+internal sealed record ProductRuntimeSidecarGeneration(
+    long GenerationId,
+    PocketBaseAdminContext Context);
+
+internal interface IProductRuntimeRecoveryCandidate
+{
+    ProductRuntimeSidecarGeneration Generation { get; }
+    bool TryCommit(Func<bool> action);
+    void Clear();
+}
+
+internal sealed class ProductRuntimeRecoveryCandidate(
+    ProductRuntimeSidecarGeneration generation,
+    Func<Func<bool>, bool> tryCommit,
+    Action clear) : IProductRuntimeRecoveryCandidate
+{
+    public ProductRuntimeSidecarGeneration Generation { get; } = generation;
+
+    public bool TryCommit(Func<bool> action) => tryCommit(action);
+
+    public void Clear() => clear();
+}
+
+internal delegate Task<IProductRuntimeRecoveryCandidate?>
+    ProductRuntimeRecoveryPreparation(CancellationToken cancellationToken);
+
+internal interface IProductRuntimeRecoveryCoordinator
+{
+    ProductRuntimeSidecarGeneration? CaptureCurrentGeneration();
+    bool IsCurrent(ProductRuntimeSidecarGeneration generation);
+
+    Task<ProductRuntimeRecoveryPreparation?> GetCapabilitiesAsync(
+        ProductRuntimeSidecarGeneration generation,
+        CancellationToken cancellationToken);
+}
 
 /// <summary>
 /// Owns the product runtime topology: the private local data process starts
@@ -14,12 +52,21 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 public sealed class ProductRuntimeService : IAsyncDisposable
 {
+    private const string SidecarUrlEnvironment = "VIBETABLE_SIDECAR_URL";
+    private const string SidecarSecretEnvironment =
+        "VIBETABLE_SIDECAR_SESSION_SECRET";
     private readonly ILocalDataService _localData;
     private readonly IPocketBaseSupervisor _sidecar;
     private readonly IBackendSupervisor _backend;
     private readonly IDictionary<string, string> _backendEnvironment;
+    private readonly IProductRuntimeRecoveryCoordinator? _recoveryCoordinator;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
-    private readonly SemaphoreSlim _recovery = new(1, 1);
+    private readonly object _recoveryGate = new();
+    private readonly Lazy<Task> _dispose;
+    private RecoveryRequest? _pendingRecovery;
+    private ActiveRecovery? _activeRecovery;
+    private Task? _recoveryWorker;
+    private long _latestGenerationId;
     private int _started;
     private int _disposed;
 
@@ -28,12 +75,24 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         IPocketBaseSupervisor sidecar,
         IBackendSupervisor backend,
         IDictionary<string, string> backendEnvironment)
+        : this(localData, sidecar, backend, backendEnvironment, null)
+    {
+    }
+
+    internal ProductRuntimeService(
+        ILocalDataService localData,
+        IPocketBaseSupervisor sidecar,
+        IBackendSupervisor backend,
+        IDictionary<string, string> backendEnvironment,
+        IProductRuntimeRecoveryCoordinator? recoveryCoordinator)
     {
         _localData = localData ?? throw new ArgumentNullException(nameof(localData));
         _sidecar = sidecar ?? throw new ArgumentNullException(nameof(sidecar));
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _backendEnvironment = backendEnvironment
             ?? throw new ArgumentNullException(nameof(backendEnvironment));
+        _recoveryCoordinator = recoveryCoordinator;
+        _dispose = new(DisposeCoreAsync);
         _sidecar.StatusChanged += OnSidecarStatusChanged;
     }
 
@@ -80,7 +139,6 @@ public sealed class ProductRuntimeService : IAsyncDisposable
                         await _backend.StartAsync(token).ConfigureAwait(false);
                 }).ConfigureAwait(false);
             Volatile.Write(ref _started, 1);
-            ClientReady?.Invoke();
         }
         catch
         {
@@ -91,29 +149,39 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         {
             _lifecycle.Release();
         }
+        Notify(nameof(ClientReady), ClientReady, observer => observer());
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        Task? disposal = null;
         Volatile.Write(ref _started, 0);
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            try
+            if (Volatile.Read(ref _disposed) != 0)
+                disposal = _dispose.Value;
+            else
             {
-                await _backend.StopAsync(CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                await _localData.StopAsync(CancellationToken.None)
-                    .ConfigureAwait(false);
+                try
+                {
+                    await _backend.StopAsync(CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    await _localData.StopAsync(CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
             }
         }
         finally
         {
             _lifecycle.Release();
         }
+        if (disposal is not null)
+            await disposal.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
     }
 
@@ -123,11 +191,15 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     /// </summary>
     public async Task StopIngressAsync(CancellationToken cancellationToken)
     {
+        Task? disposal = null;
         Volatile.Write(ref _started, 0);
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            if (_backend.State != BackendState.Stopped)
+            if (Volatile.Read(ref _disposed) != 0)
+                disposal = _dispose.Value;
+            else if (_backend.State != BackendState.Stopped)
                 await _backend.StopAsync(CancellationToken.None)
                     .ConfigureAwait(false);
         }
@@ -135,6 +207,8 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         {
             _lifecycle.Release();
         }
+        if (disposal is not null)
+            await disposal.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
     }
 
@@ -157,31 +231,37 @@ public sealed class ProductRuntimeService : IAsyncDisposable
                 await _backend.StartAsync(cancellationToken)
                     .ConfigureAwait(false);
             Volatile.Write(ref _started, 1);
-            ClientReady?.Invoke();
         }
         finally
         {
             _lifecycle.Release();
         }
+        Notify(nameof(ClientReady), ClientReady, observer => observer());
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => new(_dispose.Value);
+
+    private async Task DisposeCoreAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-        {
-            return;
-        }
+        Volatile.Write(ref _disposed, 1);
         Volatile.Write(ref _started, 0);
         _sidecar.StatusChanged -= OnSidecarStatusChanged;
+        await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
             await _backend.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
-            await _localData.DisposeAsync().ConfigureAwait(false);
-            _lifecycle.Dispose();
-            _recovery.Dispose();
+            try
+            {
+                await _localData.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _lifecycle.Release();
+            }
         }
     }
 
@@ -189,42 +269,229 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     {
         if (status.State == PocketBaseState.Ready
             && Volatile.Read(ref _started) != 0
-            && _backend.State == BackendState.Ready)
+            && _recoveryCoordinator?.CaptureCurrentGeneration() is { } generation)
         {
-            _ = RecoverBackendAsync();
+            EnqueueRecovery(generation);
         }
     }
 
-    private async Task RecoverBackendAsync()
+    private void EnqueueRecovery(ProductRuntimeSidecarGeneration generation)
     {
-        if (!await _recovery.WaitAsync(0).ConfigureAwait(false))
-        {
-            return;
-        }
-        try
+        CancellationTokenSource? superseded = null;
+        lock (_recoveryGate)
         {
             if (Volatile.Read(ref _started) == 0
-                || _sidecar.GetStatus().State != PocketBaseState.Ready)
-            {
+                || Volatile.Read(ref _disposed) != 0
+                || generation.GenerationId <= _latestGenerationId)
                 return;
-            }
-            await _backend.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
-            await _backend.StartAsync(CancellationToken.None).ConfigureAwait(false);
-            ClientReady?.Invoke();
+            _latestGenerationId = generation.GenerationId;
+            _pendingRecovery = new RecoveryRequest(generation);
+            superseded = _activeRecovery?.Cancellation;
+            _recoveryWorker ??= Task.Run(RunRecoveryWorkerAsync);
         }
-        catch (Exception exception)
+        Cancel(superseded);
+    }
+
+    private async Task RunRecoveryWorkerAsync()
+    {
+        while (true)
         {
-            RecoveryFailed?.Invoke(exception);
+            ActiveRecovery active;
+            lock (_recoveryGate)
+            {
+                if (Volatile.Read(ref _started) == 0
+                    || Volatile.Read(ref _disposed) != 0)
+                {
+                    _pendingRecovery = null;
+                }
+                if (_pendingRecovery is null)
+                {
+                    _recoveryWorker = null;
+                    return;
+                }
+                active = new ActiveRecovery(
+                    _pendingRecovery,
+                    new CancellationTokenSource());
+                _pendingRecovery = null;
+                _activeRecovery = active;
+            }
+            try
+            {
+                await RecoverGenerationAsync(active).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                if (IsLatest(active)
+                    && _recoveryCoordinator!.IsCurrent(active.Request.Generation))
+                    Notify(nameof(RecoveryFailed), RecoveryFailed, observer => observer(exception));
+            }
+            finally
+            {
+                lock (_recoveryGate)
+                {
+                    if (ReferenceEquals(_activeRecovery, active))
+                        _activeRecovery = null;
+                }
+                active.Cancellation.Dispose();
+            }
+        }
+    }
+
+    private async Task RecoverGenerationAsync(ActiveRecovery active)
+    {
+        IProductRuntimeRecoveryCandidate? candidate = null;
+        bool published = false;
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await _backend.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            active.Cancellation.Token.ThrowIfCancellationRequested();
+            ProductRuntimeRecoveryPreparation? preparation =
+                await _recoveryCoordinator!.GetCapabilitiesAsync(
+                    active.Request.Generation,
+                    active.Cancellation.Token)
+                .ConfigureAwait(false);
+            if (preparation is null)
+                return;
+            candidate = await preparation(active.Cancellation.Token)
+                .ConfigureAwait(false);
+            if (candidate is null)
+                return;
+            active.Cancellation.Token.ThrowIfCancellationRequested();
+            ConfigureBackendEnvironment(candidate.Generation.Context);
+            await _backend.StartAsync(active.Cancellation.Token).ConfigureAwait(false);
+            if (!candidate.TryCommit(() => TryCommit(active)))
+                return;
+            published = TryPublish(active);
         }
         finally
         {
-            _recovery.Release();
+            if (!published)
+            {
+                try
+                {
+                    candidate?.Clear();
+                }
+                finally
+                {
+                    await _backend.StopAsync(CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+            }
+            _lifecycle.Release();
         }
+        if (published && IsLatest(active))
+            Notify(nameof(ClientReady), ClientReady, observer => observer());
+    }
+
+    private bool TryCommit(ActiveRecovery active)
+    {
+        lock (_recoveryGate)
+        {
+            if (!ReferenceEquals(_activeRecovery, active)
+                || _pendingRecovery is not null
+                || active.Cancellation.IsCancellationRequested
+                || Volatile.Read(ref _started) == 0
+                || Volatile.Read(ref _disposed) != 0)
+                return false;
+            active.Committed = true;
+            return true;
+        }
+    }
+
+    private bool TryPublish(ActiveRecovery active)
+    {
+        lock (_recoveryGate)
+        {
+            if (!active.Committed
+                || active.Published
+                || !ReferenceEquals(_activeRecovery, active)
+                || _pendingRecovery is not null
+                || active.Cancellation.IsCancellationRequested
+                || Volatile.Read(ref _started) == 0
+                || Volatile.Read(ref _disposed) != 0)
+                return false;
+            active.Published = true;
+            return true;
+        }
+    }
+
+    private bool IsLatest(ActiveRecovery active)
+    {
+        lock (_recoveryGate)
+        {
+            return ReferenceEquals(_activeRecovery, active)
+                && _pendingRecovery is null
+                && !active.Cancellation.IsCancellationRequested
+                && Volatile.Read(ref _started) != 0
+                && Volatile.Read(ref _disposed) == 0;
+        }
+    }
+
+    private async Task CancelAndJoinRecoveryAsync()
+    {
+        CancellationTokenSource? active;
+        Task? worker;
+        lock (_recoveryGate)
+        {
+            _pendingRecovery = null;
+            active = _activeRecovery?.Cancellation;
+            worker = _recoveryWorker;
+        }
+        Cancel(active);
+        if (worker is not null)
+            await worker.ConfigureAwait(false);
+    }
+
+    private static void Cancel(CancellationTokenSource? cancellation)
+    {
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private static void Notify<T>(string eventName, T? observers, Action<T> invoke)
+        where T : Delegate
+    {
+        if (observers is null)
+            return;
+        foreach (T observer in observers.GetInvocationList())
+        {
+            try { invoke(observer); }
+            catch (Exception exception)
+            {
+                try { Trace.TraceError(DiagnosticEvent.Failure("product", eventName, exception.GetType().Name)); }
+                catch (Exception) { }
+            }
+        }
+    }
+
+    private void ConfigureBackendEnvironment(PocketBaseAdminContext context)
+    {
+        _backendEnvironment[SidecarUrlEnvironment] =
+            context.Origin.GetLeftPart(UriPartial.Authority);
+        _backendEnvironment[SidecarSecretEnvironment] = context.SessionSecret;
     }
 
     private void ThrowIfDisposed()
         => ObjectDisposedException.ThrowIf(
             Volatile.Read(ref _disposed) != 0,
             this);
+
+    private sealed record RecoveryRequest(
+        ProductRuntimeSidecarGeneration Generation);
+
+    private sealed class ActiveRecovery(
+        RecoveryRequest request,
+        CancellationTokenSource cancellation)
+    {
+        internal RecoveryRequest Request { get; } = request;
+        internal CancellationTokenSource Cancellation { get; } = cancellation;
+        internal bool Committed { get; set; }
+        internal bool Published { get; set; }
+    }
 }
