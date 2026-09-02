@@ -371,6 +371,8 @@ public partial class MainWindow : Window
             databaseOpens: _databaseOpens);
         _productSidecarGatewayLifecycle =
             new ProductSidecarGatewayLifecycle(_runtime, _dispatcher);
+        _runtime.RegisterProductSidecarGatewayLifecycle(
+            _productSidecarGatewayLifecycle);
         _authorityTransition = new ProductAuthorityTransitionCoordinator(
             productAuthority,
             _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
@@ -523,7 +525,7 @@ public partial class MainWindow : Window
             _ = TryReplaceProductSidecarGatewayAsync(
                 productSidecarGeneration);
         }
-        _ = ConfigureRpcGatewaysWithRecoveryAsync();
+        _ = ConfigureRpcGatewaysAsync();
     }
 
     private async Task TryReplaceProductSidecarGatewayAsync(
@@ -551,34 +553,23 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// A sidecar crash recycles the session generation: ClientReady can fire
-    /// while the replacement backend is still starting, and a single throwing
-    /// configure attempt would leave the renderer without its backend
-    /// notification channel (data.changed / table.datasetReady) even though
-    /// request routing recovers. Retry the transient window instead.
-    /// </summary>
-    private async Task ConfigureRpcGatewaysWithRecoveryAsync()
+    private async Task ConfigureRpcGatewaysAsync()
     {
-        for (int attempt = 1; attempt <= GatewayConfigureRetryLimit; attempt += 1)
+        if (Volatile.Read(ref _closing) != 0) return;
+        try
         {
-            if (Volatile.Read(ref _closing) != 0) return;
-            bool configured = false;
-            try
-            {
-                configured = await Dispatcher.InvokeAsync(TryConfigureRpcGateways)
-                    .Task
-                    .ConfigureAwait(true);
-            }
-            catch (Exception)
-            {
-                // Runtime binding is transient during sidecar recycle; retry within the bounded budget.
-            }
-            if (configured)
-            {
-                return;
-            }
-            await Task.Delay(GatewayConfigureRetryDelay).ConfigureAwait(true);
+            bool configured = await Dispatcher.InvokeAsync(TryConfigureRpcGateways)
+                .Task
+                .ConfigureAwait(true);
+            if (!configured)
+                throw new InvalidOperationException(
+                    "ClientReady was published without a backend client.");
+        }
+        catch (Exception exception)
+        {
+            const string code = "backend.gateway_binding_failed";
+            _readiness?.Trace($"{code}:{exception.GetType().Name}");
+            _readiness?.WriteError($"{code} ({exception.GetType().Name})");
         }
     }
 
@@ -726,10 +717,6 @@ public partial class MainWindow : Window
         }
         _workspaceProduct.OnSessionChanged(args);
     }
-
-    private const int GatewayConfigureRetryLimit = 30;
-    private static readonly TimeSpan GatewayConfigureRetryDelay =
-        TimeSpan.FromSeconds(1);
 
     private void OnRuntimeBindingChanged()
     {

@@ -25,6 +25,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
     private readonly DesktopWorkspaceAuthorityStore _authority;
     private readonly ProductSidecarGenerationSnapshotCache
         _productSidecarGenerations = new();
+    private IProductSidecarGatewayLifecycle? _productSidecarGatewayLifecycle;
     private ProductionWorkspaceRuntime? _current;
     private bool _disposed;
 
@@ -126,19 +127,37 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         remove => ProductSidecarCurrentChanged -= value;
     }
 
+    internal void RegisterProductSidecarGatewayLifecycle(
+        IProductSidecarGatewayLifecycle lifecycle)
+    {
+        ArgumentNullException.ThrowIfNull(lifecycle);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_productSidecarGatewayLifecycle is not null
+                && !ReferenceEquals(_productSidecarGatewayLifecycle, lifecycle))
+            {
+                throw new InvalidOperationException(
+                    "The product Sidecar lifecycle already has an owner.");
+            }
+            _productSidecarGatewayLifecycle = lifecycle;
+        }
+    }
+
     internal ProductSidecarGenerationSnapshot? CaptureProductSidecarGeneration()
     {
         lock (_gate)
         {
             if (_disposed || _current is null)
                 return null;
-            PocketBaseAdminContext? context = _current.Sidecar.GetAdminContext();
+            PocketBaseGenerationContext? generation =
+                _current.Sidecar.CaptureCurrentGeneration();
             WorkspaceV2SidecarCapabilities? capabilities = _current.Capabilities;
-            if (context is null || capabilities is null)
+            if (generation is null || capabilities is null)
                 return null;
             return CreateProductSidecarGeneration(
                 _current,
-                context,
+                generation,
                 capabilities);
         }
     }
@@ -155,13 +174,83 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                 || _current is null
                 || !ReferenceEquals(snapshot.RuntimeAuthority, _current))
                 return false;
-            PocketBaseAdminContext? context = _current.Sidecar.GetAdminContext();
+            PocketBaseGenerationContext? generation =
+                _current.Sidecar.CaptureCurrentGeneration(
+                    snapshot.SidecarGenerationId);
             WorkspaceV2SidecarCapabilities? capabilities = _current.Capabilities;
-            if (context is null || capabilities is null)
+            if (generation is null || capabilities is null)
                 return false;
             ProductSidecarGenerationSnapshot current =
-                CreateProductSidecarGeneration(_current, context, capabilities);
-            return ReferenceEquals(snapshot, current) && action();
+                CreateProductSidecarGeneration(
+                    _current,
+                    generation,
+                    capabilities);
+            return ReferenceEquals(snapshot, current) && snapshot.TryUseCurrent(action);
+        }
+    }
+
+    internal async Task<IProductRuntimeRecoveryCandidate?> PrepareRecoveryAsync(
+        ProductionWorkspaceRuntime runtime,
+        ProductRuntimeSidecarGeneration captured,
+        WorkspaceV2SidecarCapabilities capabilities,
+        CancellationToken cancellationToken)
+    {
+        ProductSidecarGenerationSnapshot snapshot;
+        IProductSidecarGatewayLifecycle lifecycle;
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_current, runtime))
+                return null;
+            PocketBaseGenerationContext? generation =
+                runtime.Sidecar.CaptureCurrentGeneration(captured.GenerationId);
+            if (generation is null || generation.AdminContext != captured.Context)
+                return null;
+            snapshot = CreateProductSidecarGeneration(
+                runtime,
+                generation,
+                capabilities);
+            lifecycle = _productSidecarGatewayLifecycle
+                ?? throw new InvalidOperationException(
+                    "The product Sidecar lifecycle is not registered.");
+        }
+        if (!await lifecycle.TryReplaceAsync(snapshot, cancellationToken)
+                .ConfigureAwait(false))
+            return null;
+        return new ProductRuntimeRecoveryCandidate(
+            captured,
+            action => TryCommitRecovery(
+                runtime,
+                snapshot,
+                capabilities,
+                action),
+            () => lifecycle.Clear(snapshot));
+    }
+
+    private bool TryCommitRecovery(
+        ProductionWorkspaceRuntime runtime,
+        ProductSidecarGenerationSnapshot snapshot,
+        WorkspaceV2SidecarCapabilities capabilities,
+        Func<bool> action)
+    {
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_current, runtime))
+                return false;
+            PocketBaseGenerationContext? generation =
+                runtime.Sidecar.CaptureCurrentGeneration(
+                    snapshot.SidecarGenerationId);
+            if (generation is null)
+                return false;
+            ProductSidecarGenerationSnapshot current =
+                CreateProductSidecarGeneration(runtime, generation, capabilities);
+            return ReferenceEquals(snapshot, current)
+                && snapshot.TryUseCurrent(() =>
+                {
+                    if (!action())
+                        return false;
+                    runtime.CommitCapabilities(capabilities);
+                    return true;
+                });
         }
     }
 
@@ -398,18 +487,20 @@ public sealed class ProductionWorkspaceRuntimeFactory :
 
     private ProductSidecarGenerationSnapshot CreateProductSidecarGeneration(
         ProductionWorkspaceRuntime runtime,
-        PocketBaseAdminContext context,
+        PocketBaseGenerationContext generation,
         WorkspaceV2SidecarCapabilities capabilities)
         => _productSidecarGenerations.GetOrCreate(
             runtime,
-            context,
+            generation.GenerationId,
+            generation.AdminContext,
             new ProductSidecarIdentity(
                 capabilities.WorkspaceId,
                 capabilities.SessionEpoch,
                 capabilities.FenceEpoch,
                 capabilities.ClaimId),
             ProductRpcCapabilityManifest.Default
-                .GetProductSidecarRegistrations());
+                .GetProductSidecarRegistrations(),
+            generation.TryUseCurrent);
 }
 
 public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
@@ -444,12 +535,13 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         Sidecar = new PocketBaseSupervisor(sidecarOptions);
         var localData = new LocalDataService(Sidecar);
         Backend = new PythonBackendSupervisor(backendOptions);
+        Gateway = new WorkspaceV2HttpGateway(Sidecar);
         _runtime = new ProductRuntimeService(
             localData,
             Sidecar,
             Backend,
-            backendOptions.Environment);
-        Gateway = new WorkspaceV2HttpGateway(Sidecar);
+            backendOptions.Environment,
+            new RecoveryCoordinator(this));
         _runtime.ClientReady += OnClientReady;
         _runtime.RecoveryFailed += OnRecoveryFailed;
     }
@@ -512,6 +604,13 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             }).ConfigureAwait(false);
         if (capabilities is null)
             throw new InvalidOperationException("Workspace capabilities were not verified.");
+        VerifyCapabilities(capabilities);
+        Capabilities = capabilities;
+        _owner.Activate(this);
+    }
+
+    private void VerifyCapabilities(WorkspaceV2SidecarCapabilities capabilities)
+    {
         if (capabilities.ContractVersion != WorkspaceV2Json.ContractVersion
             || capabilities.WorkspaceId
                 != WorkspaceId.ToString("D").ToLowerInvariant()
@@ -524,9 +623,10 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
                 "workspace.runtime_identity_mismatch",
                 "The running workspace services do not match the requested session.");
         }
-        Capabilities = capabilities;
-        _owner.Activate(this);
     }
+
+    internal void CommitCapabilities(WorkspaceV2SidecarCapabilities capabilities)
+        => Capabilities = capabilities;
 
     public async Task DrainAsync(CancellationToken cancellationToken)
     {
@@ -602,6 +702,44 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
 
     private void OnRecoveryFailed(Exception exception)
         => _owner.NotifyRecoveryFailed(this, exception);
+
+    private sealed class RecoveryCoordinator(ProductionWorkspaceRuntime owner) :
+        IProductRuntimeRecoveryCoordinator
+    {
+        public ProductRuntimeSidecarGeneration? CaptureCurrentGeneration()
+        {
+            PocketBaseGenerationContext? generation =
+                owner.Sidecar.CaptureCurrentGeneration();
+            return generation is null
+                ? null
+                : new ProductRuntimeSidecarGeneration(
+                    generation.GenerationId,
+                    generation.AdminContext);
+        }
+
+        public bool IsCurrent(ProductRuntimeSidecarGeneration generation)
+            => owner.Sidecar.CaptureCurrentGeneration(generation.GenerationId)
+                is { } current
+            && current.AdminContext == generation.Context
+            && current.TryUseCurrent(() => true);
+
+        public async Task<ProductRuntimeRecoveryPreparation?> GetCapabilitiesAsync(
+            ProductRuntimeSidecarGeneration generation,
+            CancellationToken cancellationToken)
+        {
+            WorkspaceV2SidecarCapabilities capabilities =
+                await owner.Gateway.GetCapabilitiesAsync(
+                        generation.Context,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            owner.VerifyCapabilities(capabilities);
+            return token => owner._owner.PrepareRecoveryAsync(
+                owner,
+                generation,
+                capabilities,
+                token);
+        }
+    }
 }
 
 internal sealed class DesktopWorkspaceAuthorityStore

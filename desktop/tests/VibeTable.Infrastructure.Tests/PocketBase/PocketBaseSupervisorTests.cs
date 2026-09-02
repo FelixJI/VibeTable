@@ -82,6 +82,162 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
+    public async Task CaptureCurrentGeneration_ReusesFixedReadyContextWithoutExposingSecret()
+    {
+        var process = FakePocketBaseProcess.Ready(ReadyRecord());
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(process),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+
+        await supervisor.StartAsync(CancellationToken.None);
+
+        int readsBeforeCapture = process.HasExitedReadCount;
+        process.ThrowOnHasExitedRead = true;
+        PocketBaseGenerationContext first;
+        PocketBaseGenerationContext second;
+        try
+        {
+            first = supervisor.CaptureCurrentGeneration()!;
+            second = supervisor.CaptureCurrentGeneration(first.GenerationId)!;
+        }
+        finally
+        {
+            process.ThrowOnHasExitedRead = false;
+        }
+
+        Assert.AreEqual(readsBeforeCapture, process.HasExitedReadCount);
+        Assert.IsTrue(first.GenerationId > 0);
+        Assert.AreSame(first, second);
+        Assert.AreSame(first.AdminContext, supervisor.GetAdminContext());
+        Assert.ThrowsExactly<InvalidOperationException>(
+            () => first.TryUseCurrent(
+                () => throw new InvalidOperationException("binding failed")));
+        Assert.IsTrue(first.TryUseCurrent(() => true));
+        Assert.IsFalse(
+            first.ToString().Contains(
+                first.AdminContext.SessionSecret,
+                StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task CaptureCurrentGeneration_RejectsRetiredGenerationAfterRestart()
+    {
+        var firstProcess = FakePocketBaseProcess.Ready(ReadyRecord());
+        var secondProcess = FakePocketBaseProcess.Ready(ReadyRecord());
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(firstProcess, secondProcess),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        PocketBaseGenerationContext first = supervisor.CaptureCurrentGeneration()!;
+        int firstActions = 0;
+        Assert.IsTrue(first.TryUseCurrent(() =>
+        {
+            firstActions++;
+            return true;
+        }));
+
+        await supervisor.StopAsync(CancellationToken.None);
+        Assert.IsNull(supervisor.CaptureCurrentGeneration(first.GenerationId));
+        await supervisor.StartAsync(CancellationToken.None);
+
+        PocketBaseGenerationContext second = supervisor.CaptureCurrentGeneration()!;
+        Assert.IsTrue(second.GenerationId > first.GenerationId);
+        Assert.AreNotSame(first, second);
+        Assert.AreNotSame(first.AdminContext, second.AdminContext);
+        Assert.IsNull(supervisor.CaptureCurrentGeneration(first.GenerationId));
+        Assert.AreSame(
+            second,
+            supervisor.CaptureCurrentGeneration(second.GenerationId));
+        Assert.IsFalse(first.TryUseCurrent(() =>
+        {
+            firstActions++;
+            return true;
+        }));
+        Assert.AreEqual(1, firstActions);
+        Assert.IsTrue(second.TryUseCurrent(() => true));
+    }
+
+    [TestMethod]
+    public async Task StopWaitsForAdmittedGenerationActionBeforeRetiringContext()
+    {
+        var process = FakePocketBaseProcess.Ready(ReadyRecord());
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(process),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        PocketBaseGenerationContext generation =
+            supervisor.CaptureCurrentGeneration()!;
+        var actionEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAction = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool> admitted = Task.Run(() => generation.TryUseCurrent(() =>
+        {
+            actionEntered.TrySetResult();
+            releaseAction.Task.GetAwaiter().GetResult();
+            return true;
+        }));
+
+        Task stopping = Task.CompletedTask;
+        try
+        {
+            await actionEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            stopping = Task.Run(
+                () => supervisor.StopAsync(CancellationToken.None));
+            await generation.RetirementRequestedForTests
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(stopping.IsCompleted);
+        }
+        finally
+        {
+            releaseAction.TrySetResult();
+        }
+
+        Assert.IsTrue(await admitted.WaitAsync(TimeSpan.FromSeconds(2)));
+        await stopping.WaitAsync(TimeSpan.FromSeconds(2));
+        bool lateActionCalled = false;
+        Assert.IsFalse(generation.TryUseCurrent(() =>
+        {
+            lateActionCalled = true;
+            return true;
+        }));
+        Assert.IsFalse(lateActionCalled);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task CaptureCurrentGeneration_ConsumesIdForFailedProcessAttempt()
+    {
+        var firstProcess = FakePocketBaseProcess.Ready(ReadyRecord());
+        var thirdProcess = FakePocketBaseProcess.Ready(ReadyRecord());
+        int attempt = 0;
+        var factory = new FakePocketBaseProcessFactory(_ =>
+            Interlocked.Increment(ref attempt) switch
+            {
+                1 => firstProcess,
+                2 => throw new IOException("spawn failed"),
+                3 => thirdProcess,
+                _ => throw new InvalidOperationException("Unexpected attempt."),
+            });
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(), factory, new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        PocketBaseGenerationContext first = supervisor.CaptureCurrentGeneration()!;
+        await supervisor.StopAsync(CancellationToken.None);
+
+        await Assert.ThrowsAsync<IOException>(
+            () => supervisor.StartAsync(CancellationToken.None));
+        await supervisor.StartAsync(CancellationToken.None);
+
+        PocketBaseGenerationContext third = supervisor.CaptureCurrentGeneration()!;
+        Assert.AreEqual(first.GenerationId + 2, third.GenerationId);
+        Assert.AreEqual(3, factory.Requests.Count);
+    }
+
+    [TestMethod]
     public async Task ConfigureBackendEnvironment_CopiesPrivateSessionWithoutChangingStatus()
     {
         var process = FakePocketBaseProcess.Ready(ReadyRecord());
@@ -669,6 +825,8 @@ public sealed class PocketBaseSupervisorTests
                 exhausted.TrySetResult();
         };
         await supervisor.StartAsync(CancellationToken.None);
+        PocketBaseGenerationContext firstGeneration =
+            supervisor.CaptureCurrentGeneration()!;
         string firstSecret = factory.Requests[0]
             .Environment["VIBETABLE_SIDECAR_SESSION_SECRET"];
 
@@ -682,6 +840,15 @@ public sealed class PocketBaseSupervisorTests
             factory.Requests[2].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"]);
         Assert.IsTrue(first.Disposed);
         Assert.IsTrue(failed.Disposed);
+        int staleActions = 0;
+        Assert.IsFalse(firstGeneration.TryUseCurrent(() =>
+        {
+            staleActions++;
+            return true;
+        }));
+        Assert.AreEqual(0, staleActions);
+        Assert.IsTrue(
+            supervisor.CaptureCurrentGeneration()!.TryUseCurrent(() => true));
 
         recovered.Crash(exitCode: 23);
         await exhausted.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -726,23 +893,48 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
-    public async Task RepeatedStartWhileReady_DoesNotDisableCrashRecovery()
+    public async Task RepeatedStartWhileReady_PreservesGenerationAdmission()
     {
         var first = FakePocketBaseProcess.Ready(ReadyRecord());
         var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
         var factory = new FakePocketBaseProcessFactory(first, recovered);
+        var cleanupEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCleanup = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         await using var supervisor = new PocketBaseSupervisor(
             Options(crashRestartLimit: 1),
             factory,
             new FakePocketBaseHealthProbe(isHealthy: true));
+        supervisor.RecoveryCleanupBarrierForTests = async () =>
+        {
+            cleanupEntered.TrySetResult();
+            await releaseCleanup.Task;
+        };
         await supervisor.StartAsync(CancellationToken.None);
-
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => supervisor.StartAsync(CancellationToken.None));
-        first.Crash(exitCode: 17);
-        await WaitUntilAsync(
-            () => factory.Requests.Count == 2
-                && supervisor.GetStatus().State == PocketBaseState.Ready);
+        Assert.IsTrue(
+            supervisor.CaptureCurrentGeneration()!.TryUseCurrent(() => true));
+
+        try
+        {
+            first.Crash(exitCode: 17);
+            await cleanupEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            PocketBaseGenerationContext current =
+                supervisor.CaptureCurrentGeneration()!;
+
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => supervisor.StartAsync(CancellationToken.None));
+
+            Assert.IsTrue(current.TryUseCurrent(() => true));
+        }
+        finally
+        {
+            releaseCleanup.TrySetResult();
+        }
+        await supervisor.WaitForRecoveryQuiescenceAsync()
+            .WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(2, factory.Requests.Count);
         Assert.IsTrue(first.Disposed);
@@ -1391,7 +1583,19 @@ public sealed class PocketBaseSupervisorTests
         public int Id => 42;
         public TextReader StandardOutput => _stdout;
         public TextReader StandardError => _stderr;
-        public bool HasExited { get; private set; }
+        public bool HasExited
+        {
+            get
+            {
+                HasExitedReadCount++;
+                if (ThrowOnHasExitedRead)
+                    throw new InvalidOperationException("Unexpected HasExited read.");
+                return field;
+            }
+            private set;
+        }
+        public bool ThrowOnHasExitedRead { get; set; }
+        public int HasExitedReadCount { get; private set; }
         public int? ExitCode => HasExited ? _exitCode : null;
         public int KillProcessTreeCalls { get; private set; }
         public bool Disposed { get; private set; }

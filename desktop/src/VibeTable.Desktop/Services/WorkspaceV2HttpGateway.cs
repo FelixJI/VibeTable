@@ -52,8 +52,18 @@ public sealed class WorkspaceV2HttpGateway : IDisposable
 
     public async Task<WorkspaceV2SidecarCapabilities> GetCapabilitiesAsync(
         CancellationToken cancellationToken)
+        => await GetCapabilitiesAsync(
+                RequireCurrentContext(),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    internal async Task<WorkspaceV2SidecarCapabilities> GetCapabilitiesAsync(
+        PocketBaseAdminContext context,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(context);
         using HttpRequestMessage request = CreateRequest(
+            context,
             HttpMethod.Get,
             "api/vibetable/v2/capabilities");
         using HttpResponseMessage response = await _client.SendAsync(
@@ -315,11 +325,22 @@ public sealed class WorkspaceV2HttpGateway : IDisposable
     }
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string relative)
+        => CreateRequest(RequireCurrentContext(), method, relative);
+
+    private PocketBaseAdminContext RequireCurrentContext()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        PocketBaseAdminContext context = _contextProvider()
+        return _contextProvider()
             ?? throw new InvalidOperationException(
                 "The workspace Sidecar is not ready.");
+    }
+
+    private HttpRequestMessage CreateRequest(
+        PocketBaseAdminContext context,
+        HttpMethod method,
+        string relative)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var request = new HttpRequestMessage(
             method,
             new Uri(context.Origin, relative));

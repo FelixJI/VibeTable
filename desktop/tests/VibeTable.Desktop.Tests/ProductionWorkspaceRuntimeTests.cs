@@ -23,6 +23,20 @@ public sealed class ProductionWorkspaceRuntimeTests
     }
 
     [TestMethod]
+    public async Task ProductSidecarLifecycleHasOneCompositionOwner()
+    {
+        await using var factory = Factory();
+        using var first = new FakeProductSidecarLifecycle();
+        using var second = new FakeProductSidecarLifecycle();
+
+        factory.RegisterProductSidecarGatewayLifecycle(first);
+        factory.RegisterProductSidecarGatewayLifecycle(first);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() =>
+            factory.RegisterProductSidecarGatewayLifecycle(second));
+    }
+
+    [TestMethod]
     public async Task MissingSidecarIsResolvedOnlyWhenAWorkspaceOpens()
     {
         int resolutions = 0;
@@ -498,5 +512,16 @@ public sealed class ProductionWorkspaceRuntimeTests
         {
             // Best effort after process-free unit tests.
         }
+    }
+
+    private sealed class FakeProductSidecarLifecycle : IProductSidecarGatewayLifecycle
+    {
+        public Task<bool> TryReplaceAsync(
+            ProductSidecarGenerationSnapshot snapshot,
+            CancellationToken cancellationToken)
+            => Task.FromResult(true);
+
+        public bool Clear(ProductSidecarGenerationSnapshot expectedSnapshot) => true;
+        public void Dispose() { }
     }
 }
