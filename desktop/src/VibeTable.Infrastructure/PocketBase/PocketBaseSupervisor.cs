@@ -33,7 +33,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private readonly PocketBaseLaunchOptions _options;
     private readonly IPocketBaseProcessFactory _processFactory;
     private readonly IPocketBaseHealthProbe _healthProbe;
-    private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private readonly AsyncFifoGate _lifecycle = new();
     private readonly object _statusGate = new();
     private readonly object _recoveryGate = new();
     private readonly StringBuilder _log = new();
@@ -160,7 +160,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     {
         bool awaitReadyDelivery = !ReferenceEquals(s_statusDispatcher, this);
         ThrowIfDisposed();
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        AsyncFifoGate.Lease lifecycle =
+            await _lifecycle.EnterAsync(cancellationToken).ConfigureAwait(false);
         Task? readyDelivered = null;
         try
         {
@@ -192,7 +193,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
         finally
         {
-            _lifecycle.Release();
+            lifecycle.Dispose();
             DrainStatusNotifications();
             if (readyDelivered is not null && awaitReadyDelivery)
                 await readyDelivered.ConfigureAwait(false);
@@ -202,7 +203,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         SuppressAndCancelRecovery();
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        AsyncFifoGate.Lease lifecycle =
+            await _lifecycle.EnterAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ProcessGeneration? generation = Volatile.Read(ref _generation);
@@ -236,7 +238,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
         finally
         {
-            _lifecycle.Release();
+            lifecycle.Dispose();
             DrainStatusNotifications();
         }
 
@@ -256,7 +258,6 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
         finally
         {
-            _lifecycle.Dispose();
             lock (_recoveryGate)
             {
                 _recoveryCts?.Dispose();
@@ -831,7 +832,9 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 int attempt = Interlocked.Increment(ref _restartAttempts);
                 TimeSpan delay = GetRecoveryDelay(attempt);
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+                AsyncFifoGate.Lease lifecycle =
+                    await _lifecycle.EnterAsync(cancellationToken)
+                        .ConfigureAwait(false);
                 StatusDispatchReservation? reservation = null;
                 try
                 {
@@ -871,7 +874,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 }
                 finally
                 {
-                    _lifecycle.Release();
+                    lifecycle.Dispose();
                     reservation?.Dispose();
                 }
             }

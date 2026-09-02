@@ -200,6 +200,62 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
+    public async Task StopDuringRecovery_StartAndSecondStop_PreserveAdmissionOrder()
+    {
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var recovering = FakePocketBaseProcess.Ready(ReadyRecord());
+        var replacement = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, recovering, replacement);
+        var healthEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHealth = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int healthCalls = 0;
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 1),
+            factory,
+            new FakePocketBaseHealthProbe(
+                getHealth: async _ =>
+                {
+                    int call = Interlocked.Increment(ref healthCalls);
+                    if (call != 2)
+                        return HealthyStatus();
+                    healthEntered.SetResult();
+                    await releaseHealth.Task;
+                    return null;
+                }));
+        var observed =
+            new System.Collections.Concurrent.ConcurrentQueue<PocketBaseState>();
+        supervisor.StatusChanged += (_, status) => observed.Enqueue(status.State);
+        await supervisor.StartAsync(CancellationToken.None);
+        first.Crash(exitCode: 17);
+        await healthEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        observed.Clear();
+
+        Task firstStop = supervisor.StopAsync(CancellationToken.None);
+        try
+        {
+            Task starting = supervisor.StartAsync(CancellationToken.None);
+            Task secondStop = supervisor.StopAsync(CancellationToken.None);
+            releaseHealth.SetResult();
+            await Task.WhenAll(firstStop, starting, secondStop)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            releaseHealth.TrySetResult();
+        }
+
+        Assert.AreEqual(
+            PocketBaseState.Stopping,
+            observed.First(state => state is PocketBaseState.Stopping
+                or PocketBaseState.Ready));
+        Assert.AreEqual(3, factory.Requests.Count);
+        Assert.IsTrue(replacement.Disposed);
+        Assert.AreEqual(PocketBaseState.Stopped, supervisor.GetStatus().State);
+    }
+
+    [TestMethod]
     public async Task UnexpectedExit_AutoRecoversWithFreshSecretAndHonorsRestartCap()
     {
         var first = FakePocketBaseProcess.Ready(ReadyRecord());
@@ -743,6 +799,8 @@ public sealed class PocketBaseSupervisorTests
         private readonly bool _shutdownAccepted;
         private readonly Action? _onShutdown;
         private readonly Action? _onHealth;
+        private readonly Func<CancellationToken, Task<PocketBaseHealthStatus?>>?
+            _getHealth;
 
         public FakePocketBaseHealthProbe(
             bool isHealthy = false,
@@ -750,7 +808,8 @@ public sealed class PocketBaseSupervisorTests
             Exception? exception = null,
             bool shutdownAccepted = false,
             Action? onShutdown = null,
-            Action? onHealth = null)
+            Action? onHealth = null,
+            Func<CancellationToken, Task<PocketBaseHealthStatus?>>? getHealth = null)
         {
             _status = status ?? (isHealthy
                 ? HealthyStatus()
@@ -764,6 +823,7 @@ public sealed class PocketBaseSupervisorTests
             _shutdownAccepted = shutdownAccepted;
             _onShutdown = onShutdown;
             _onHealth = onHealth;
+            _getHealth = getHealth;
         }
 
         public List<(Uri Endpoint, string SessionSecret)> Requests { get; } = [];
@@ -776,6 +836,8 @@ public sealed class PocketBaseSupervisorTests
         {
             Requests.Add((endpoint, sessionSecret));
             _onHealth?.Invoke();
+            if (_getHealth is not null)
+                return _getHealth(cancellationToken);
             return _exception is null
                 ? Task.FromResult(_status)
                 : Task.FromException<PocketBaseHealthStatus?>(_exception);
