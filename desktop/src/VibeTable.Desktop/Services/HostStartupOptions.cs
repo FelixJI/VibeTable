@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 
 namespace VibeTable.Desktop.Services;
 
@@ -15,6 +17,7 @@ public sealed class HostStartupOptions
         "self-update-updated-controls";
     private const string SelfUpdateHealthTimeoutHoldRequestName =
         "self-update-health-timeout-hold.request";
+    private const string SelfUpdateCrashRequestName = "self-update-crash.request";
 
     public bool TestMode { get; set; }
 
@@ -97,6 +100,42 @@ public sealed class HostStartupOptions
 
     internal bool TryConsumeSelfUpdateHealthTimeoutHold(
         Action<string, string, string>? pathGuard = null,
+        Action<string>? cleanupClaim = null) => TryConsumeSelfUpdateRequest(
+            SelfUpdateHealthTimeoutHoldRequestName,
+            pathGuard,
+            cleanupClaim);
+
+    internal void CrashSelfUpdateIfRequested(Action? crashAction = null)
+    {
+        if (!TryConsumeSelfUpdateRequest(SelfUpdateCrashRequestName))
+        {
+            return;
+        }
+        string evidence = Path.Combine(E2eControlsDir!, "self-update-crash.json");
+        UpdateProcessCommand.RejectReparsePointChainsToVolumeRoot(evidence);
+        using (Process process = Process.GetCurrentProcess())
+        using (var stream = new FileStream(evidence, FileMode.CreateNew, FileAccess.Write))
+        {
+            JsonSerializer.Serialize(stream, new
+            {
+                action = "Environment.FailFast",
+                processId = process.Id,
+                startedAtUtc = process.StartTime.ToUniversalTime(),
+            });
+        }
+        // This runs outside health failure handling: no settlement or graceful
+        // host cleanup may disguise the missing health result from the watchdog.
+        if (crashAction is null)
+        {
+            Environment.FailFast("VibeTable self-update crash smoke");
+        }
+        crashAction();
+        throw new InvalidOperationException("Self-update crash action unexpectedly returned.");
+    }
+
+    private bool TryConsumeSelfUpdateRequest(
+        string requestName,
+        Action<string, string, string>? pathGuard = null,
         Action<string>? cleanupClaim = null)
     {
         if (!TestMode
@@ -131,8 +170,8 @@ public sealed class HostStartupOptions
             }
             string request = Path.Combine(
                 controls.FullName,
-                SelfUpdateHealthTimeoutHoldRequestName);
-            (pathGuard ?? RejectSelfUpdateHealthTimeoutReparsePoints)(
+                requestName);
+            (pathGuard ?? RejectSelfUpdateRequestReparsePoints)(
                 readiness.FullName,
                 controls.FullName,
                 request);
@@ -151,7 +190,7 @@ public sealed class HostStartupOptions
             {
                 // Moving the one-shot request is the durable armed boundary.
                 // A unique claim cannot block a later request, and cleanup is
-                // best-effort after the health settlement has become pending.
+                // best-effort once the smoke action has been armed.
             }
             return true;
         }
@@ -167,7 +206,7 @@ public sealed class HostStartupOptions
         }
     }
 
-    private static void RejectSelfUpdateHealthTimeoutReparsePoints(
+    private static void RejectSelfUpdateRequestReparsePoints(
         string readiness,
         string controls,
         string request)
