@@ -1051,14 +1051,50 @@ public sealed class PocketBaseSupervisorTests
             .Environment["VIBETABLE_SIDECAR_SESSION_SECRET"];
 
         await supervisor.StopAsync(CancellationToken.None);
-        await WaitUntilAsync(
-            () => supervisor.GetSanitizedLog().Contains(
-                "[REDACTED]",
-                StringComparison.Ordinal));
 
+        Assert.Contains("[REDACTED]", supervisor.GetSanitizedLog());
         Assert.IsFalse(supervisor.GetSanitizedLog().Contains(
             secret,
             StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "Stop joins pumps")]
+    [DataRow(true, DisplayName = "Dispose joins pumps")]
+    public async Task Retirement_CancelsAndJoinsPumpsWithoutPromotingDiagnosticsFailures(
+        bool dispose)
+    {
+        var stdout = new ControlledPumpTextReader(
+            ReadyRecord(),
+            failWithIOException: true);
+        var stderr = new ControlledPumpTextReader();
+        var process = FakePocketBaseProcess.WithReaders(stdout, stderr);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(process),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        Task retirement = dispose
+            ? supervisor.DisposeAsync().AsTask()
+            : supervisor.StopAsync(CancellationToken.None);
+
+        try
+        {
+            await Task.WhenAll(
+                    stdout.CancellationObserved,
+                    stderr.CancellationObserved)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(retirement.IsCompleted);
+        }
+        finally
+        {
+            stdout.Release();
+            stderr.Release();
+        }
+
+        await retirement.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsTrue(retirement.IsCompletedSuccessfully);
+        Assert.IsTrue(process.Disposed);
     }
 
     [TestMethod]
@@ -1334,6 +1370,11 @@ public sealed class PocketBaseSupervisorTests
                 new StringReader(record + Environment.NewLine),
                 new LateLineTextReader(lateStderr));
 
+        public static FakePocketBaseProcess WithReaders(
+            TextReader stdout,
+            TextReader stderr)
+            => new(stdout, stderr);
+
         public static FakePocketBaseProcess ReadyWithBlockedDispose(
             string record,
             Exception? disposeFailure = null)
@@ -1406,10 +1447,11 @@ public sealed class PocketBaseSupervisorTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _readCount;
 
-        public override Task<string?> ReadLineAsync()
+        public override ValueTask<string?> ReadLineAsync(
+            CancellationToken cancellationToken)
             => Interlocked.Increment(ref _readCount) == 1
-                ? _line.Task
-                : Task.FromResult<string?>(null);
+                ? new ValueTask<string?>(_line.Task)
+                : ValueTask.FromResult<string?>(null);
 
         protected override void Dispose(bool disposing)
         {
@@ -1418,6 +1460,48 @@ public sealed class PocketBaseSupervisorTests
                 _line.TrySetResult(lateLine);
             }
             base.Dispose(disposing);
+        }
+    }
+
+    private sealed class ControlledPumpTextReader(
+        string? firstLine = null,
+        bool failWithIOException = false) : TextReader
+    {
+        private readonly TaskCompletionSource _cancellationObserved = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _readCount;
+
+        internal Task CancellationObserved => _cancellationObserved.Task;
+
+        internal void Release() => _release.TrySetResult();
+
+        public override ValueTask<string?> ReadLineAsync(
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _readCount) == 1 && firstLine is not null)
+                return ValueTask.FromResult<string?>(firstLine);
+            return new ValueTask<string?>(WaitForRetirementAsync(cancellationToken));
+        }
+
+        private async Task<string?> WaitForRetirementAsync(
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return null;
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                _cancellationObserved.TrySetResult();
+                await _release.Task;
+                if (failWithIOException)
+                    throw new IOException("controlled pump failure");
+                throw;
+            }
         }
     }
 }
