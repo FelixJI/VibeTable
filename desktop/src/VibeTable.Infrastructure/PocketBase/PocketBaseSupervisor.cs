@@ -22,6 +22,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private static PocketBaseSupervisor? s_statusDispatcher;
     private static readonly IEqualityComparer<Exception> s_exceptionIdentity =
         ReferenceEqualityComparer.Instance;
+    private static long s_lastGenerationId;
 
     private const string ReadyEvent = "sidecar.ready";
     private const string SessionSecretEnvironment =
@@ -103,28 +104,36 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     }
 
     public PocketBaseAdminContext? GetAdminContext()
+        => CaptureCurrentGeneration()?.AdminContext;
+
+    internal PocketBaseGenerationContext? CaptureCurrentGeneration()
     {
         lock (_generationGate)
-        {
-            ProcessGeneration? generation = _generation;
-            if (generation is null
-                || generation.Epoch != _retirementEpoch
-                || generation.Phase != ProcessGeneration.Ready
-                || generation.Process.HasExited
-                || generation.BaseAddress is null
-                || string.IsNullOrEmpty(generation.SessionSecret))
-            {
-                return null;
-            }
+            return CaptureCurrentGenerationUnsafe(expectedGenerationId: null);
+    }
 
-            return new PocketBaseAdminContext(
-                new Uri(
-                    generation.BaseAddress,
-                    AdminBootstrapPath.TrimStart('/')),
-                generation.BaseAddress,
-                SessionHeaderName,
-                generation.SessionSecret);
+    internal PocketBaseGenerationContext? CaptureCurrentGeneration(
+        long expectedGenerationId)
+    {
+        lock (_generationGate)
+            return CaptureCurrentGenerationUnsafe(expectedGenerationId);
+    }
+
+    private PocketBaseGenerationContext? CaptureCurrentGenerationUnsafe(
+        long? expectedGenerationId)
+    {
+        ProcessGeneration? generation = _generation;
+        if (generation is null
+            || generation.Epoch != _retirementEpoch
+            || generation.Phase != ProcessGeneration.Ready
+            || generation.Context is null
+            || (expectedGenerationId.HasValue
+                && generation.GenerationId != expectedGenerationId.Value))
+        {
+            return null;
         }
+
+        return generation.Context;
     }
 
     /// <summary>
@@ -598,6 +607,12 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         ProcessGeneration? generation = null;
         try
         {
+            long generationId = Interlocked.Increment(ref s_lastGenerationId);
+            if (generationId <= 0)
+            {
+                throw new InvalidOperationException(
+                    "Local data sidecar generation identifiers are exhausted.");
+            }
             string sessionSecret = GenerateSessionSecret();
             var environment = new Dictionary<string, string>(
                 _options.Environment,
@@ -615,7 +630,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             generation = new ProcessGeneration(
                 process,
                 sessionSecret,
-                expectedRetirementEpoch);
+                expectedRetirementEpoch,
+                generationId);
             generation.ExitHandler = (_, _) => OnProcessExited(generation);
             process.Exited += generation.ExitHandler;
             lock (_generationGate)
@@ -692,6 +708,15 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                     throw new InvalidOperationException(
                         "Local data sidecar exited before becoming ready.");
                 }
+                generation.Context = new PocketBaseGenerationContext(
+                    generation.GenerationId,
+                    new PocketBaseAdminContext(
+                        new Uri(
+                            generation.BaseAddress,
+                            AdminBootstrapPath.TrimStart('/')),
+                        generation.BaseAddress,
+                        SessionHeaderName,
+                        generation.SessionSecret));
                 generation.Phase = ProcessGeneration.Ready;
                 Task readyDelivered = CommitStatus(new PocketBaseStatus(
                     PocketBaseState.Ready,
@@ -1013,17 +1038,17 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         ProcessGeneration generation,
         bool requestGraceful)
     {
-        lock (_generationGate)
-        {
-            generation.Phase = ProcessGeneration.Stopping;
-            if (generation.ExitHandler is not null)
-            {
-                generation.Process.Exited -= generation.ExitHandler;
-            }
-        }
-
         try
         {
+            lock (_generationGate)
+            {
+                generation.Phase = ProcessGeneration.Stopping;
+                if (generation.ExitHandler is not null)
+                {
+                    generation.Process.Exited -= generation.ExitHandler;
+                }
+            }
+
             bool gracefulRequested = false;
             using var stopCts = new CancellationTokenSource(_options.StopTimeout);
             if (requestGraceful
@@ -1104,12 +1129,12 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         ProcessGeneration generation)
     {
         CancellationTokenSource? cancellation = generation.TakePumpCancellation();
-        if (cancellation is null)
-            return;
-        Task stdout = generation.StdoutPump ?? Task.CompletedTask;
-        Task stderr = generation.StderrPump ?? Task.CompletedTask;
         try
         {
+            if (cancellation is null)
+                return;
+            Task stdout = generation.StdoutPump ?? Task.CompletedTask;
+            Task stderr = generation.StderrPump ?? Task.CompletedTask;
             try
             {
                 cancellation.Cancel();
@@ -1126,8 +1151,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
         finally
         {
-            generation.ReleaseSecret();
-            cancellation.Dispose();
+            generation.ReleaseCredentialState();
+            cancellation?.Dispose();
         }
     }
 
@@ -1526,11 +1551,13 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         internal ProcessGeneration(
             IPocketBaseProcess process,
             string sessionSecret,
-            long epoch)
+            long epoch,
+            long generationId)
         {
             Process = process;
             _sessionSecret = sessionSecret;
             Epoch = epoch;
+            GenerationId = generationId;
         }
 
         internal IPocketBaseProcess Process { get; }
@@ -1541,12 +1568,18 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         internal Task? StderrPump { get; set; }
         internal Uri? BaseAddress { get; set; }
         internal long Epoch { get; set; }
+        internal long GenerationId { get; }
+        internal PocketBaseGenerationContext? Context { get; set; }
         internal int Phase = Starting;
 
         internal CancellationTokenSource? TakePumpCancellation()
             => Interlocked.Exchange(ref _pumpCancellation, null);
 
-        internal void ReleaseSecret() => _sessionSecret = string.Empty;
+        internal void ReleaseCredentialState()
+        {
+            _sessionSecret = string.Empty;
+            Context = null;
+        }
     }
 
     private sealed record ReadyRecord(
