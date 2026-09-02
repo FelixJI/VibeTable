@@ -30,7 +30,10 @@ import {
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
-import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
+import {
+  beginWorkspaceActivationCapture,
+  waitForCapturedBridgeMessage,
+} from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { classifyWorkspaceSearchObservation } from "./workspace_search_terminal.mjs";
@@ -271,10 +274,9 @@ async function waitForShell(page, recorder, { requireDatabaseOpened = false } = 
   let databaseOpened = null;
   if (requireDatabaseOpened) {
     databaseOpened = await activateWorkspaceAndWaitForDatabaseOpened({
-      beginCapture: (types) => beginBridgeMessageCapture(page, types),
+      beginCapture: (expectation) => beginWorkspaceActivationCapture(page, expectation),
       activate: () => openCreatedWorkspace.click(),
       waitForActivation,
-      waitForDatabaseOpened: (timeoutMs) => waitForCapturedBridgeMessage(page, timeoutMs),
     });
   } else {
     await openCreatedWorkspace.click();
