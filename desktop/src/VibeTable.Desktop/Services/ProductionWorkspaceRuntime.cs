@@ -132,13 +132,14 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         {
             if (_disposed || _current is null)
                 return null;
-            PocketBaseAdminContext? context = _current.Sidecar.GetAdminContext();
+            PocketBaseGenerationContext? generation =
+                _current.Sidecar.CaptureCurrentGeneration();
             WorkspaceV2SidecarCapabilities? capabilities = _current.Capabilities;
-            if (context is null || capabilities is null)
+            if (generation is null || capabilities is null)
                 return null;
             return CreateProductSidecarGeneration(
                 _current,
-                context,
+                generation,
                 capabilities);
         }
     }
@@ -155,13 +156,18 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                 || _current is null
                 || !ReferenceEquals(snapshot.RuntimeAuthority, _current))
                 return false;
-            PocketBaseAdminContext? context = _current.Sidecar.GetAdminContext();
+            PocketBaseGenerationContext? generation =
+                _current.Sidecar.CaptureCurrentGeneration(
+                    snapshot.SidecarGenerationId);
             WorkspaceV2SidecarCapabilities? capabilities = _current.Capabilities;
-            if (context is null || capabilities is null)
+            if (generation is null || capabilities is null)
                 return false;
             ProductSidecarGenerationSnapshot current =
-                CreateProductSidecarGeneration(_current, context, capabilities);
-            return ReferenceEquals(snapshot, current) && action();
+                CreateProductSidecarGeneration(
+                    _current,
+                    generation,
+                    capabilities);
+            return ReferenceEquals(snapshot, current) && snapshot.TryUseCurrent(action);
         }
     }
 
@@ -398,18 +404,20 @@ public sealed class ProductionWorkspaceRuntimeFactory :
 
     private ProductSidecarGenerationSnapshot CreateProductSidecarGeneration(
         ProductionWorkspaceRuntime runtime,
-        PocketBaseAdminContext context,
+        PocketBaseGenerationContext generation,
         WorkspaceV2SidecarCapabilities capabilities)
         => _productSidecarGenerations.GetOrCreate(
             runtime,
-            context,
+            generation.GenerationId,
+            generation.AdminContext,
             new ProductSidecarIdentity(
                 capabilities.WorkspaceId,
                 capabilities.SessionEpoch,
                 capabilities.FenceEpoch,
                 capabilities.ClaimId),
             ProductRpcCapabilityManifest.Default
-                .GetProductSidecarRegistrations());
+                .GetProductSidecarRegistrations(),
+            generation.TryUseCurrent);
 }
 
 public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime

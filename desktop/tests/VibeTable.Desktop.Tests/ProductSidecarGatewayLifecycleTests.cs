@@ -225,7 +225,11 @@ public sealed class ProductSidecarGatewayLifecycleTests
         await firstCandidate.HandshakeStarted.Task.WaitAsync(TestTimeout);
 
         var equivalent = new ProductSidecarGenerationSnapshot(
-            first.RuntimeAuthority, first.Context, first.Identity, first.Registrations);
+            first.RuntimeAuthority,
+            first.SidecarGenerationId,
+            first.Context,
+            first.Identity,
+            first.Registrations);
         Assert.IsFalse(lifecycle.Clear(equivalent));
         Assert.IsTrue(lifecycle.Clear(first));
 
@@ -254,17 +258,22 @@ public sealed class ProductSidecarGatewayLifecycleTests
         };
         PocketBaseAdminContext context = Context("generation-secret");
         ProductSidecarIdentity identity = Identity();
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => cache.GetOrCreate(runtime, 0, context, identity, []));
 
         ProductSidecarGenerationSnapshot first = cache.GetOrCreate(
             runtime,
+            41,
             context,
             identity,
             registrations);
+        Assert.AreEqual(41, first.SidecarGenerationId);
         registrations[0] = new ProductSidecarRegistration(
             "query.changed",
             "global");
         ProductSidecarGenerationSnapshot same = cache.GetOrCreate(
             runtime,
+            41,
             Context("generation-secret"),
             Identity(),
             [new ProductSidecarRegistration("query.page", "workspace")]);
@@ -279,6 +288,15 @@ public sealed class ProductSidecarGatewayLifecycleTests
             first,
             cache.GetOrCreate(
                 runtime,
+                42,
+                Context("generation-secret"),
+                identity,
+                [new ProductSidecarRegistration("query.page", "workspace")]));
+        Assert.AreNotSame(
+            first,
+            cache.GetOrCreate(
+                runtime,
+                41,
                 Context("next-secret"),
                 identity,
                 []));
@@ -286,6 +304,7 @@ public sealed class ProductSidecarGatewayLifecycleTests
             first,
             new ProductSidecarGenerationSnapshotCache().GetOrCreate(
                 new object(),
+                41,
                 context,
                 identity,
                 []));
@@ -293,9 +312,79 @@ public sealed class ProductSidecarGatewayLifecycleTests
             first,
             new ProductSidecarGenerationSnapshotCache().GetOrCreate(
                 runtime,
+                41,
                 context,
                 Identity(sessionEpoch: 8),
                 []));
+    }
+
+    [TestMethod]
+    public async Task LateCandidateCannotPublishWhenGenerationRetiresAfterCurrentCheck()
+    {
+        var cache = new ProductSidecarGenerationSnapshotCache();
+        var runtime = new object();
+        PocketBaseAdminContext context = Context("fixed-secret");
+        ProductSidecarIdentity identity = Identity();
+        ProductSidecarRegistration[] registrations =
+            [new("query.page", "workspace")];
+        var currentCheckPassed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseAdmission = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var admissionGate = new object();
+        int admissionAttempt = 0;
+        bool retired = false;
+        ProductSidecarGenerationSnapshot first = cache.GetOrCreate(
+            runtime,
+            71,
+            context,
+            identity,
+            registrations,
+            action =>
+            {
+                if (Interlocked.Increment(ref admissionAttempt) == 2)
+                {
+                    currentCheckPassed.TrySetResult();
+                    releaseAdmission.Task.GetAwaiter().GetResult();
+                }
+                lock (admissionGate)
+                    return !retired && action();
+            });
+        var authority = new ControlledGenerationAuthority();
+        var binding = new ControlledSidecarBinding();
+        var candidate = new ControlledGatewayCandidate(ignoreCancellation: true);
+        bool candidateConstructedInsideAdmission = false;
+        authority.SetCurrent(first);
+        using var lifecycle = new ProductSidecarGatewayLifecycle(
+            authority,
+            binding,
+            _ =>
+            {
+                candidateConstructedInsideAdmission = Monitor.IsEntered(admissionGate);
+                return candidate;
+            });
+
+        Task<bool> replacement = lifecycle.TryReplaceAsync(first, default);
+        await candidate.HandshakeStarted.Task.WaitAsync(TestTimeout);
+        ProductSidecarGenerationSnapshot second = cache.GetOrCreate(
+            runtime,
+            72,
+            Context("fixed-secret"),
+            Identity(),
+            [new ProductSidecarRegistration("query.page", "workspace")]);
+        candidate.CompleteHandshake();
+
+        await currentCheckPassed.Task.WaitAsync(TestTimeout);
+        lock (admissionGate)
+            retired = true;
+        authority.SetCurrent(second, notify: false);
+        releaseAdmission.TrySetResult();
+
+        Assert.IsFalse(await replacement.WaitAsync(TestTimeout));
+        Assert.IsNull(binding.Current);
+        Assert.AreEqual(0, binding.ClearCallCount);
+        Assert.AreEqual(1, candidate.DisposeCount);
+        Assert.IsTrue(candidateConstructedInsideAdmission);
     }
 
     [TestMethod]
@@ -404,6 +493,7 @@ public sealed class ProductSidecarGatewayLifecycleTests
     private static ProductSidecarGenerationSnapshot Snapshot()
         => new(
             new object(),
+            1,
             Context("private-secret"),
             Identity(),
             []);
@@ -441,7 +531,8 @@ internal sealed class ControlledGenerationAuthority : IProductSidecarGenerationA
     public bool TryUseCurrent(
         ProductSidecarGenerationSnapshot snapshot,
         Func<bool> action)
-        => ReferenceEquals(_current, snapshot) && action();
+        => ReferenceEquals(_current, snapshot)
+            && snapshot.TryUseCurrent(action);
 }
 
 internal sealed class ControlledSidecarBinding : IProductSidecarForwarderBinding

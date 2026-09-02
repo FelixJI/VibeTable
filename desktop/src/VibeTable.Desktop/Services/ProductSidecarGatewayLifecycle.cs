@@ -42,15 +42,21 @@ internal sealed class ProductSidecarGenerationSnapshot
 {
     private readonly ProductSidecarRegistration[] _registrations;
     private readonly IReadOnlyList<ProductSidecarRegistration> _readOnlyRegistrations;
+    private readonly Func<Func<bool>, bool> _tryUseCurrent;
 
     internal ProductSidecarGenerationSnapshot(
         object runtimeAuthority,
+        long sidecarGenerationId,
         PocketBaseAdminContext context,
         ProductSidecarIdentity identity,
-        IReadOnlyCollection<ProductSidecarRegistration> registrations)
+        IReadOnlyCollection<ProductSidecarRegistration> registrations,
+        Func<Func<bool>, bool>? tryUseCurrent = null)
     {
         RuntimeAuthority = runtimeAuthority
             ?? throw new ArgumentNullException(nameof(runtimeAuthority));
+        if (sidecarGenerationId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sidecarGenerationId));
+        SidecarGenerationId = sidecarGenerationId;
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(registrations);
@@ -66,18 +72,23 @@ internal sealed class ProductSidecarGenerationSnapshot
             identity.ClaimId);
         _registrations = registrations.ToArray();
         _readOnlyRegistrations = Array.AsReadOnly(_registrations);
+        _tryUseCurrent = tryUseCurrent ?? (action => action());
     }
 
     internal object RuntimeAuthority { get; }
+    internal long SidecarGenerationId { get; }
     internal PocketBaseAdminContext Context { get; }
     internal ProductSidecarIdentity Identity { get; }
     internal IReadOnlyList<ProductSidecarRegistration> Registrations =>
         _readOnlyRegistrations;
 
+    internal bool TryUseCurrent(Func<bool> action) => _tryUseCurrent(action);
+
     internal bool Matches(ProductSidecarGenerationSnapshot other)
     {
         ArgumentNullException.ThrowIfNull(other);
         return ReferenceEquals(RuntimeAuthority, other.RuntimeAuthority)
+            && SidecarGenerationId == other.SidecarGenerationId
             && Context == other.Context
             && Identity == other.Identity;
     }
@@ -89,15 +100,19 @@ internal sealed class ProductSidecarGenerationSnapshotCache
 
     internal ProductSidecarGenerationSnapshot GetOrCreate(
         object runtimeAuthority,
+        long sidecarGenerationId,
         PocketBaseAdminContext context,
         ProductSidecarIdentity identity,
-        IReadOnlyCollection<ProductSidecarRegistration> registrations)
+        IReadOnlyCollection<ProductSidecarRegistration> registrations,
+        Func<Func<bool>, bool>? tryUseCurrent = null)
     {
         var candidate = new ProductSidecarGenerationSnapshot(
             runtimeAuthority,
+            sidecarGenerationId,
             context,
             identity,
-            registrations);
+            registrations,
+            tryUseCurrent);
         if (_current?.Matches(candidate) == true)
             return _current;
         _current = candidate;
@@ -158,12 +173,20 @@ internal sealed class ProductSidecarGatewayLifecycle :
         PendingAttempt? previous;
         CancellationToken lifetimeToken;
         long attempt;
+        IProductSidecarGatewayCandidate? candidate = null;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (!_authority.TryUseCurrent(snapshot, () => true))
+            if (!_authority.TryUseCurrent(
+                    snapshot,
+                    () =>
+                    {
+                        if (!ReferenceEquals(_bound?.Snapshot, snapshot))
+                            candidate = _candidateFactory(snapshot);
+                        return true;
+                    }))
                 return false;
-            if (ReferenceEquals(_bound?.Snapshot, snapshot))
+            if (candidate is null)
                 return true;
             pending = new PendingAttempt(
                 snapshot,
@@ -173,20 +196,18 @@ internal sealed class ProductSidecarGatewayLifecycle :
             _pending = pending;
             lifetimeToken = _lifetime.Token;
         }
-        previous?.Cancel();
-        using CancellationTokenSource call =
-            CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                lifetimeToken,
-                pending.Token);
-        using CancellationTokenRegistration callerCancellation =
-            cancellationToken.Register(
-                () => OnCallerCancellation(pending));
-
-        IProductSidecarGatewayCandidate? candidate = null;
+        Debug.Assert(candidate is not null);
         try
         {
-            candidate = _candidateFactory(snapshot);
+            previous?.Cancel();
+            using CancellationTokenSource call =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    lifetimeToken,
+                    pending.Token);
+            using CancellationTokenRegistration callerCancellation =
+                cancellationToken.Register(
+                    () => OnCallerCancellation(pending));
             _ = await candidate.GetCapabilitiesAsync(call.Token)
                 .ConfigureAwait(false);
             IProductSidecarGatewayCandidate? retired = null;
