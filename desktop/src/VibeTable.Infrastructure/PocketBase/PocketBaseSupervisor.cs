@@ -631,7 +631,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
             generation.StderrPump = PumpDiagnosticsAsync(
                 process.StandardError,
-                sessionSecret);
+                sessionSecret,
+                generation.PumpCancellation);
 
             using var startupCts =
                 CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -656,7 +657,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             readyAt = Stopwatch.GetTimestamp();
             generation.StdoutPump = DrainStdoutAsync(
                 process.StandardOutput,
-                sessionSecret);
+                sessionSecret,
+                generation.PumpCancellation);
             generation.BaseAddress =
                 new Uri($"http://{ready.Address}/", UriKind.Absolute);
 
@@ -939,7 +941,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     private async Task PumpDiagnosticsAsync(
         TextReader reader,
-        string sessionSecret)
+        string sessionSecret,
+        CancellationToken cancellationToken)
     {
         RotatingLogSink? writer = null;
         try
@@ -949,7 +952,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 writer = new RotatingLogSink(_options.LogPath);
             }
 
-            while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)
+                is { } line)
             {
                 string safe = Sanitize(line, sessionSecret);
                 lock (_log)
@@ -985,11 +989,13 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     private static async Task DrainStdoutAsync(
         TextReader reader,
-        string sessionSecret)
+        string sessionSecret,
+        CancellationToken cancellationToken)
     {
         try
         {
-            while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)
+                is { } line)
             {
                 // stdout is reserved for the one-way machine protocol. Still
                 // sanitize while draining so this pump owns a generation secret
@@ -1089,36 +1095,30 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                         _generation = null;
                     }
                 }
-                await ObserveAndReleasePumpsAsync(generation).ConfigureAwait(false);
+                await CancelJoinAndReleasePumpsAsync(generation).ConfigureAwait(false);
             }
         }
     }
 
-    private static async Task ObserveAndReleasePumpsAsync(
+    private static async Task CancelJoinAndReleasePumpsAsync(
         ProcessGeneration generation)
     {
+        CancellationTokenSource? cancellation = generation.TakePumpCancellation();
+        if (cancellation is null)
+            return;
         Task stdout = generation.StdoutPump ?? Task.CompletedTask;
         Task stderr = generation.StderrPump ?? Task.CompletedTask;
-        Task both = Task.WhenAll(stdout, stderr);
         try
         {
-            await both.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            generation.ReleaseSecret();
-        }
-        catch
-        {
-            // Keep the generation's secret until both delayed pumps finish.
-            _ = ReleaseSecretAfterPumpsAsync(generation, both);
-        }
-    }
-
-    private static async Task ReleaseSecretAfterPumpsAsync(
-        ProcessGeneration generation,
-        Task pumps)
-    {
-        try
-        {
-            await pumps.ConfigureAwait(false);
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch
+            {
+                // Pump cancellation callbacks are diagnostics-only.
+            }
+            await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
         }
         catch
         {
@@ -1127,6 +1127,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         finally
         {
             generation.ReleaseSecret();
+            cancellation.Dispose();
         }
     }
 
@@ -1520,6 +1521,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         internal const int Stopping = 3;
 
         private string _sessionSecret;
+        private CancellationTokenSource? _pumpCancellation = new();
 
         internal ProcessGeneration(
             IPocketBaseProcess process,
@@ -1533,12 +1535,16 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
         internal IPocketBaseProcess Process { get; }
         internal string SessionSecret => _sessionSecret;
+        internal CancellationToken PumpCancellation => _pumpCancellation!.Token;
         internal EventHandler? ExitHandler { get; set; }
         internal Task? StdoutPump { get; set; }
         internal Task? StderrPump { get; set; }
         internal Uri? BaseAddress { get; set; }
         internal long Epoch { get; set; }
         internal int Phase = Starting;
+
+        internal CancellationTokenSource? TakePumpCancellation()
+            => Interlocked.Exchange(ref _pumpCancellation, null);
 
         internal void ReleaseSecret() => _sessionSecret = string.Empty;
     }
