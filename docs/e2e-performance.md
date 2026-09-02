@@ -8,13 +8,16 @@
 - GitHub run：[main CI 33028988918](https://github.com/FelixJI/VibeTable/actions/runs/33028988918)
 - 报告契约：`contractVersion=2.0`
 - 结果：22/22 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`23-directory-replica-recovery`）。
 - 当前 manifest surplus：无。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
 Timeline point/date 移动已在同一 `main` 打包候选上通过，并确认正常退出后的 Host、WebView2、
 BFF 与 sidecar 生命周期清理完成；对应声明范围由此闭环。
+
+该功能场景已进入 manifest，但尚无对应 `required` 打包报告；当前权威
+基线仍是上述 22/22，不得提前宣称 canonical 23/23。
 
 该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
 保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。

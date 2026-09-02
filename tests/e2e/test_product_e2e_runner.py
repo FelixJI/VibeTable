@@ -398,6 +398,9 @@ def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     assert "无结束字段" in by_id["22-timeline-date-move"]
     assert "mutation authority" in by_id["22-timeline-date-move"]
     assert "重开" in by_id["22-timeline-date-move"]
+    assert "同一 workspace UUID" in by_id["23-directory-replica-recovery"]
+    assert "database.opened" in by_id["23-directory-replica-recovery"]
+    assert "replica.status" in by_id["23-directory-replica-recovery"]
 
 
 def test_node_runner_inventory_matches_the_product_scenario_manifest() -> None:
@@ -460,7 +463,9 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
             "async function scenario22"
         )
     ]
-    timeline = source[source.index("async function scenario22") : source.index("const scenarios")]
+    timeline = source[
+        source.index("async function scenario22") : source.index("function hasExactWorkspaceWire")
+    ]
 
     assert 'getByTestId("workspace-create")' in workspace
     assert 'getByTestId("snapshot-create")' in workspace
@@ -538,6 +543,30 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert '"query.page"' in timeline
     assert '"table.updateCellRequested"' not in timeline
     assert "createV2Field(page, tableId" not in timeline
+
+
+def test_directory_replica_recovery_uses_one_public_observation_per_checkpoint() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    recovery = source[
+        source.index("function hasExactWorkspaceWire") : source.index("const scenarios")
+    ]
+
+    # Behavioral receipt and revision assertions run in the real scenario;
+    # this guard only rejects extra observations and authority bypasses.
+    assert recovery.count("await readDirectoryReplicaCheckpoint(") == 2
+    assert recovery.count('rawBridgeRequest(page, "query.page"') == 1
+    assert recovery.count('rawWorkspaceV2Request(page, "replica.status"') == 1
+    assert recovery.count("requestSidecarKill(") == 1
+    for forbidden in (
+        "replica.synchronize",
+        "replica.forceTakeover",
+        "workspace_bootstrap_capture",
+        "__vibetableE2EBridgeDiagnostics",
+        ".sqlite",
+        "page.waitForTimeout",
+        '"mutation.apply"',
+    ):
+        assert forbidden not in recovery
 
 
 def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries() -> None:
@@ -3028,6 +3057,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("packaged_runtime_probe.test.mjs"),
         runner.NODE_RUNNER.with_name("preview_artifact_publication.test.mjs"),
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
+        runner.NODE_RUNNER.with_name("table_mutation_receipt_capture.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
