@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,70 @@ from scripts.automation_core import Automation, CommandRunner, SemVer
 from scripts.windows_doctor import DoctorCheck, DoctorProfile, DoctorReport, SystemAdapter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_core_python_stage_runs_static_checks_and_full_coverage_suite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def record_process(command: tuple[str, ...], **kwargs: object) -> None:
+        assert kwargs["check"] is True
+        assert kwargs["cwd"] == REPO_ROOT
+        calls.append((Path(command[0]).stem, *command[1:]))
+
+    monkeypatch.setattr(subprocess, "run", record_process)
+    monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
+    command, cwd = next_gate.stage_command("python")
+
+    assert "python" in next_gate.LANE_STAGES["core"]
+    assert command == [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "automation_project.py"),
+        "python-quality",
+    ]
+    assert Path(cwd) == REPO_ROOT
+    assert automation_project.main(command[2:]) == 0
+    assert calls == [
+        ("uv", "run", "ruff", "format", "--check", "."),
+        ("uv", "run", "ruff", "check", "."),
+        ("uv", "run", "python", "-m", "pyright", "backend"),
+        ("uv", "run", "python", "-m", "mypy", "backend"),
+        (
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "pytest",
+            "--ignore=tests/e2e/test_next_readonly_smoke.py",
+            "--junitxml=build/automation/python-junit.xml",
+            "--cov-report=xml:build/automation/python-coverage.xml",
+            "--cov-report=html:build/automation/python-coverage-html",
+        ),
+    ]
+
+
+@pytest.mark.parametrize("failing_tool", ["ruff", "pytest"])
+def test_python_quality_stops_and_reports_subprocess_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failing_tool: str,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fail_selected_process(command: tuple[str, ...], **kwargs: object) -> None:
+        assert kwargs["check"] is True
+        calls.append(command)
+        if failing_tool in command:
+            raise subprocess.CalledProcessError(3, command)
+
+    monkeypatch.setattr(subprocess, "run", fail_selected_process)
+    monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
+
+    assert automation_project.main(["python-quality"]) == 1
+    assert failing_tool in calls[-1]
+    assert len(calls) == (1 if failing_tool == "ruff" else 5)
+    assert "[FAIL] VibeTable automation:" in capsys.readouterr().err
 
 
 def test_doctor_dispatches_explicit_profile_and_returns_report_status(

@@ -643,14 +643,8 @@ def stage_command(
     if stage == "python":
         return [
             sys.executable,
-            "-m",
-            "pytest",
-            "tests/backend",
-            "-q",
-            "-o",
-            "addopts=",
-            "-p",
-            "no:cacheprovider",
+            str(REPO_ROOT / "scripts" / "automation_project.py"),
+            "python-quality",
         ], str(REPO_ROOT)
     if stage == "contracts":
         return [
