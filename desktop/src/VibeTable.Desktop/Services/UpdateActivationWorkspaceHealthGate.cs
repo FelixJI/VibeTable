@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Net.Http;
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Rpc;
@@ -249,26 +250,37 @@ internal sealed class UpdateActivationWorkspaceHealthGate
 /// gateway, whose binding is asynchronous.
 /// </summary>
 internal sealed class CurrentRuntimeUpdateWorkspaceSchemaReader(
-    ProductionWorkspaceRuntimeFactory runtime) : IUpdateWorkspaceSchemaReader
+    ProductionWorkspaceRuntimeFactory runtime,
+    IWorkspaceHostEpochLeaseSource leases,
+    HttpMessageHandler? handler = null) : IUpdateWorkspaceSchemaReader
 {
     private static readonly JsonElement EmptyParameters =
         JsonSerializer.SerializeToElement(new { });
 
     private readonly ProductionWorkspaceRuntimeFactory _runtime = runtime
         ?? throw new ArgumentNullException(nameof(runtime));
+    private readonly IWorkspaceHostEpochLeaseSource _leases = leases
+        ?? throw new ArgumentNullException(nameof(leases));
+    private readonly HttpMessageHandler? _handler = handler;
 
     public async Task<int> ReadTableCountAsync(
         WorkspaceSessionV2 expectedSession,
         CancellationToken cancellationToken)
     {
-        ValidateBinding(expectedSession);
-        JsonRpcClient client = _runtime.CurrentBackend?.Client
+        HostProductRpcBinding binding = _runtime.CaptureHostProductRpcBinding(expectedSession)
             ?? throw BindingMismatch();
-        using var gateway = new JsonRpcProductDataGateway(client);
-        JsonElement response = await gateway.ListTablesAsync(
-            EmptyParameters,
-            cancellationToken).ConfigureAwait(false);
-        ValidateBinding(expectedSession);
+        using var gateway = binding.CreateGateway(_leases, _handler);
+        JsonElement response;
+        try
+        {
+            response = await gateway.ListTablesAsync(
+                EmptyParameters,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (BackendUnavailableException exception)
+        {
+            throw BindingMismatch(exception);
+        }
         if (response.ValueKind != JsonValueKind.Object
             || !response.TryGetProperty("tables", out JsonElement tables)
             || tables.ValueKind != JsonValueKind.Array)
@@ -280,26 +292,8 @@ internal sealed class CurrentRuntimeUpdateWorkspaceSchemaReader(
         return tables.GetArrayLength();
     }
 
-    private void ValidateBinding(WorkspaceSessionV2 expectedSession)
-    {
-        WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;
-        WorkspaceV2SidecarCapabilities? capabilities = _runtime.CurrentCapabilities;
-        string expectedId = expectedSession.WorkspaceId?.ToString("D").ToLowerInvariant()
-            ?? string.Empty;
-        if (workspace?.WorkspaceId != expectedSession.WorkspaceId
-            || capabilities is null
-            || capabilities.ContractVersion != WorkspaceV2Json.ContractVersion
-            || !string.Equals(
-                capabilities.WorkspaceId,
-                expectedId,
-                StringComparison.Ordinal)
-            || capabilities.SessionEpoch != expectedSession.SessionEpoch)
-        {
-            throw BindingMismatch();
-        }
-    }
-
-    private static UpdateWorkspaceHealthException BindingMismatch() => new(
+    private static UpdateWorkspaceHealthException BindingMismatch(Exception? innerException = null) => new(
         "update.workspace_probe_binding_mismatch",
-        "更新后的工作区运行时身份与只读会话不一致。");
+        "更新后的工作区运行时身份与只读会话不一致。",
+        innerException);
 }
