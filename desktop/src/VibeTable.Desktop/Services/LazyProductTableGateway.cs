@@ -1,60 +1,59 @@
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
-using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Binds the stable workspace orchestration service to the current supervised
-/// Python RPC generation. Retired generations stay alive until host shutdown
+/// Host Product binding. Retired generations stay alive until host shutdown
 /// so a restart cannot dispose an in-flight request.
 /// </summary>
 public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
 {
-    private PythonBackendSupervisor? _supervisor;
+    private HostProductRpcBinding? _binding;
+    private readonly IWorkspaceHostEpochLeaseSource _leases;
+    private readonly HttpMessageHandler? _handler;
     private readonly object _gate = new();
     private readonly List<PocketBaseTableGateway> _retired = [];
-    private JsonRpcClient? _resolvedClient;
     private PocketBaseTableGateway? _resolved;
     private bool _disposed;
 
-    public LazyProductTableGateway()
+    internal LazyProductTableGateway(
+        IWorkspaceHostEpochLeaseSource leases, HttpMessageHandler? handler = null)
     {
+        _leases = leases ?? throw new ArgumentNullException(nameof(leases));
+        _handler = handler;
     }
 
-    public LazyProductTableGateway(PythonBackendSupervisor supervisor)
-        => Bind(supervisor);
-
-    public void Bind(PythonBackendSupervisor supervisor)
+    internal void Bind(HostProductRpcBinding binding)
     {
-        ArgumentNullException.ThrowIfNull(supervisor);
+        ArgumentNullException.ThrowIfNull(binding);
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (ReferenceEquals(_supervisor, supervisor))
+            if (_binding?.Matches(binding) == true)
                 return;
             RetireResolved();
-            _supervisor = supervisor;
+            _binding = binding;
         }
     }
 
-    public void Unbind(PythonBackendSupervisor? supervisor = null)
+    public void Unbind()
     {
         lock (_gate)
         {
-            if (_disposed
-                || (supervisor is not null
-                    && !ReferenceEquals(_supervisor, supervisor)))
+            if (_disposed)
             {
                 return;
             }
             RetireResolved();
-            _supervisor = null;
+            _binding = null;
         }
     }
 
@@ -62,29 +61,15 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
     {
         get
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
             lock (_gate)
             {
-                PythonBackendSupervisor supervisor = _supervisor
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                HostProductRpcBinding binding = _binding
                     ?? throw new BackendUnavailableException(
                         "No workspace runtime is bound.");
-                JsonRpcClient client = supervisor.Client
-                    ?? throw new BackendUnavailableException(
-                        "Product data service is not ready.");
-                if (_resolved is not null
-                    && ReferenceEquals(_resolvedClient, client))
-                {
-                    return _resolved;
-                }
-                if (_resolved is not null)
-                {
-                    _retired.Add(_resolved);
-                }
-                _resolvedClient = client;
-                _resolved = new PocketBaseTableGateway(
-                    new JsonRpcProductDataGateway(client),
-                    new JsonRpcWorkspaceSupportGateway(client));
-                return _resolved;
+                return _resolved ??= new PocketBaseTableGateway(
+                    binding.CreateGateway(_leases, _handler),
+                    new JsonRpcWorkspaceSupportGateway(binding.Client));
             }
         }
     }
@@ -174,8 +159,7 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
             }
             _retired.Clear();
             _resolved = null;
-            _resolvedClient = null;
-            _supervisor = null;
+            _binding = null;
         }
     }
 
@@ -184,6 +168,5 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
         if (_resolved is not null)
             _retired.Add(_resolved);
         _resolved = null;
-        _resolvedClient = null;
     }
 }

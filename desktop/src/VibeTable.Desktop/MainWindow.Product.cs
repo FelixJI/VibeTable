@@ -275,7 +275,7 @@ public partial class MainWindow : Window
             : new UpdateActivationWorkspaceHealthGate(
                 _workspaceRegistry,
                 workspaceSession,
-                new CurrentRuntimeUpdateWorkspaceSchemaReader(_runtime),
+                new CurrentRuntimeUpdateWorkspaceSchemaReader(_runtime, _workspaceSessionFilter),
                 reportReady: receipt => _readiness?.WriteUpdateReady(receipt),
                 reportFailure: exception => _readiness?.WriteError(
                     "Post-update workspace health probe failed: "
@@ -337,7 +337,7 @@ public partial class MainWindow : Window
             () => PluginProjectContext.FromSession(_workspaceSessions.Current),
             productAuthority);
         var dailyQuotes = new DailyQuoteHostClient();
-        _tableGateway = new LazyProductTableGateway();
+        _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
         _workspace = new TableWorkspaceService(_tableGateway);
         ProductWorkspaceController? productWorkspace = null;
         _coordinator = new GridStateCoordinator(
@@ -575,21 +575,21 @@ public partial class MainWindow : Window
 
     private bool TryConfigureRpcGateways()
     {
-        PythonBackendSupervisor? backend = _runtime.CurrentBackend;
-        if (backend?.Client is not { } client)
+        HostProductRpcBinding? binding = _runtime.CaptureHostProductRpcBinding();
+        if (binding is null)
         {
+            _tableGateway.Unbind();
             return false;
         }
-        ConfigureRpcGateways(backend, client);
+        ConfigureRpcGateways(binding);
         return true;
     }
 
-    private void ConfigureRpcGateways(
-        PythonBackendSupervisor backend,
-        JsonRpcClient client)
+    private void ConfigureRpcGateways(HostProductRpcBinding binding)
     {
+        JsonRpcClient client = binding.Client;
         _authorityTransition.Transition(null);
-        _tableGateway.Bind(backend);
+        _tableGateway.Bind(binding);
 
         if (_productGateway is not null)
         {
@@ -598,7 +598,7 @@ public partial class MainWindow : Window
             _productGateway.TaskChanged -= OnProductTaskChanged;
             _productGateway.Dispose();
         }
-        _productGateway = new JsonRpcProductDataGateway(client);
+        _productGateway = binding.CreateGateway(_workspaceSessionFilter);
         _productGateway.DataChanged += OnProductDataChanged;
         _productGateway.TaskChanged += OnProductTaskChanged;
         _dispatcher.SetProductDataGateway(_productGateway);
@@ -724,11 +724,11 @@ public partial class MainWindow : Window
             return;
         Dispatcher.BeginInvoke(() =>
         {
-            PythonBackendSupervisor? backend = _runtime.CurrentBackend;
-            if (backend is not null)
+            HostProductRpcBinding? binding = _runtime.CaptureHostProductRpcBinding();
+            if (binding is not null)
             {
                 _authorityTransition.Transition(null);
-                _tableGateway.Bind(backend);
+                _tableGateway.Bind(binding);
                 return;
             }
             _tableGateway.Unbind();

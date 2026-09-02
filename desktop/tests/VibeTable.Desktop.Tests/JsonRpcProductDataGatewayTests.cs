@@ -2,7 +2,10 @@ using System.Text.Json;
 using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Backend;
+using VibeTable.Infrastructure.PocketBase;
 using VibeTable.Infrastructure.Rpc;
+using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -319,14 +322,13 @@ public sealed class JsonRpcProductDataGatewayTests
     [TestMethod]
     public async Task DataChangedNotificationUsesFrozenProductEnvelope()
     {
-        var transport = new AutoRespondTransport();
-        await using var client = new JsonRpcClient(transport);
-        using var gateway = new JsonRpcProductDataGateway(client);
+        await using var fixture = new NotificationBindingFixture();
+        JsonRpcProductDataGateway gateway = fixture.Gateway;
         var received = new TaskCompletionSource<DataChangedEvent>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         gateway.DataChanged += value => received.TrySetResult(value);
 
-        transport.EnqueueNotification(
+        fixture.Transport.EnqueueNotification(
             "data.changed",
             """
             {"contractVersion":"2.0","topic":"data.changed","eventId":"evt_1","sequence":12,
@@ -343,14 +345,13 @@ public sealed class JsonRpcProductDataGatewayTests
     [TestMethod]
     public async Task TaskChangedNotificationCrossesTheProductBoundary()
     {
-        var transport = new AutoRespondTransport();
-        await using var client = new JsonRpcClient(transport);
-        using var gateway = new JsonRpcProductDataGateway(client);
+        await using var fixture = new NotificationBindingFixture();
+        JsonRpcProductDataGateway gateway = fixture.Gateway;
         var received = new TaskCompletionSource<JsonElement>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         gateway.TaskChanged += value => received.TrySetResult(value);
 
-        transport.EnqueueNotification(
+        fixture.Transport.EnqueueNotification(
             "task.changed",
             """
             {"contractVersion":"2.0","topic":"task.changed","eventId":"evt_2","sequence":13,
@@ -362,6 +363,42 @@ public sealed class JsonRpcProductDataGatewayTests
         JsonElement change = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.AreEqual("job_1", change.GetProperty("taskId").GetString());
         Assert.AreEqual(0.5, change.GetProperty("progress").GetDouble());
+    }
+
+    private sealed class NotificationBindingFixture : IAsyncDisposable
+    {
+        private readonly string _root = Path.Combine(Path.GetTempPath(), "vibetable-notifications-" + Guid.NewGuid().ToString("N"));
+        private readonly ProductionWorkspaceRuntimeFactory _runtime = new(
+            new PocketBaseLaunchOptions { ExecutablePath = "unused", DataDirectory = "unused" }, new BackendLaunchOptions());
+        private readonly WorkspaceSessionManager _sessions;
+        private readonly WorkspaceSessionEnvelopeFilter _leases;
+        private readonly JsonRpcClient _client;
+        internal AutoRespondTransport Transport { get; } = new();
+        internal JsonRpcProductDataGateway Gateway { get; }
+
+        internal NotificationBindingFixture()
+        {
+            _sessions = new(new WorkspaceRegistry(_root), _runtime);
+            _leases = new(_sessions);
+            _client = new(Transport);
+            var snapshot = new ProductSidecarGenerationSnapshot(_runtime, 1,
+                new PocketBaseAdminContext(new Uri("http://127.0.0.1:12345/bootstrap"),
+                    new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
+                new ProductSidecarIdentity(Guid.NewGuid().ToString("D"), 1, 1, Guid.NewGuid().ToString("D")), []);
+            // No RPC admission: this fixture tests only the paired client's notification path.
+            var binding = new HostProductRpcBinding(_runtime, _client, snapshot, ProductRpcRouteSelector.Default, _ => false);
+            Gateway = binding.CreateGateway(_leases);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Gateway.Dispose();
+            await _client.DisposeAsync();
+            _leases.Dispose();
+            await _sessions.DisposeAsync();
+            await _runtime.DisposeAsync();
+            if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        }
     }
 
     private sealed class AutoRespondTransport : IJsonLineTransport
