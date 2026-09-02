@@ -6,6 +6,7 @@ import {
   captureCompletedInPage,
   waitForCapturedBridgeMessage,
 } from "./bridge_capture_wait.mjs";
+import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const OPERATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -186,18 +187,34 @@ test("surfaces a captured workspace failure", async () => {
 
 test("keeps the stable timeout error without polling the page", async () => {
   const timeout = Object.assign(new Error("playwright details"), { name: "TimeoutError" });
+  let releases = 0;
   const { page, calls } = makePage(null, {
     async waitForFunction() {
       calls.push(["waitForFunction"]);
       throw timeout;
     },
+    async evaluate(callback, argument) {
+      calls.push(["evaluate", argument]);
+      return callback(argument);
+    },
   });
 
-  await assert.rejects(
-    waitForCapturedBridgeMessage(page, 123),
-    /captured bridge response timed out/,
-  );
-  assert.deepEqual(calls, [["waitForFunction"]]);
+  globalThis.window = {
+    __vibetableE2EBridgeCapture: {
+      id: undefined,
+      release() { releases += 1; },
+    },
+  };
+  try {
+    await assert.rejects(
+      waitForCapturedBridgeMessage(page, 123),
+      /captured bridge response timed out/,
+    );
+    assert.deepEqual(calls, [["waitForFunction"], ["evaluate", undefined]]);
+    assert.equal(releases, 1);
+  } finally {
+    delete globalThis.window;
+  }
 });
 
 test("does not rewrite non-timeout Playwright failures", async () => {
@@ -209,6 +226,36 @@ test("does not rewrite non-timeout Playwright failures", async () => {
   });
 
   await assert.rejects(waitForCapturedBridgeMessage(page), (error) => error === closed);
+});
+
+test("activation refuses to replace an active method capture without an id", async () => {
+  const bridge = makeWebView();
+  const originalPostMessage = bridge.webview.postMessage;
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  try {
+    installWorkspaceV2MethodTerminalCaptureInPage("snapshot.export");
+    const methodCapture = window.__vibetableE2EBridgeCapture;
+
+    await assert.rejects(
+      beginWorkspaceActivationCapture(
+        makeInPageBrowser(bridge.webview),
+        { method: "workspace.open" },
+      ),
+      /replaced an unaddressable active owner/u,
+    );
+
+    assert.equal(window.__vibetableE2EBridgeCapture, methodCapture);
+    assert.deepEqual(methodCapture.error, {
+      method: "snapshot.export",
+      code: "CAPTURE_REPLACED",
+      message: "workspace activation capture ownership changed",
+    });
+    assert.equal(methodCapture.released, true);
+    assert.equal(bridge.listenerCount(), 0);
+    assert.equal(bridge.webview.postMessage, originalPostMessage);
+  } finally {
+    delete globalThis.window;
+  }
 });
 
 test("captures one activation owner and correlates readiness in any inbound order", async () => {

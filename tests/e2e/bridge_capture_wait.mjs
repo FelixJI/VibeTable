@@ -64,7 +64,8 @@ function installWorkspaceActivationCaptureInPage(configuration) {
   window.__vibetableE2EBridgeCaptureSequence = nextCaptureId;
   const previousCapture = window.__vibetableE2EBridgeCapture;
   if (previousCapture && typeof previousCapture.release === "function") {
-    if (!previousCapture.message && !previousCapture.error) {
+    const previousWasActive = !previousCapture.message && !previousCapture.error;
+    if (previousWasActive) {
       previousCapture.error = {
         method: previousCapture.method,
         code: "CAPTURE_REPLACED",
@@ -72,6 +73,9 @@ function installWorkspaceActivationCaptureInPage(configuration) {
       };
     }
     previousCapture.release();
+    if (previousWasActive && previousCapture.id === undefined) {
+      throw new Error("workspace activation capture replaced an unaddressable active owner");
+    }
   }
 
   const previousPostMessage = webview.postMessage;
@@ -391,6 +395,7 @@ export async function waitForCapturedBridgeMessage(
     });
   } catch (error) {
     if (error?.name === "TimeoutError") {
+      await page.evaluate(releaseCaptureInPage, expectedCaptureId);
       throw new Error("captured bridge response timed out", { cause: error });
     }
     throw error;
