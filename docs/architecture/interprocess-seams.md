@@ -21,11 +21,20 @@ HTTP 实例与一次共享握手；握手独立持有 epoch lease 至实际 HTTP
 每次调用取得现有 workspace epoch lease，在发送及返回（包括错误）时核对绑定；不重试到新代际，
 不 fallback、shadow 或双发。Product wire 只有原 scope 字段，fence/claim 仍由 capabilities 验证。
 
-绑定回调由后续 runtime composition 原子核对 runtime、Python client 和 canonical Sidecar snapshot；
+`ProductionWorkspaceRuntimeFactory.CaptureHostProductRpcBinding` 在 factory → backend Ready admission
+→ Sidecar context 的锁序中捕获不透明三元组，可附期望 workspace UUID/epoch；每次发送及返回由
+同一 factory 核对 runtime、精确 Python client 和 canonical Sidecar snapshot，再委托现有 Sidecar
+authority。callback 只同步启动调用，不持锁等待异步完成，也不保证子进程不会退出。
+binding 只提供配对 client、完整代际比较与 typed gateway 构造；一次 capture 不延长 runtime 寿命。
+内部 construction seam 复用真实 supervisors 与现有 process/health/HTTP adapter，生产默认 policy
+不变；测试 policy 的 selector 与 canonical registrations 同源。
+
 三个生产入口（MainWindow、LazyProductTableGateway、update health reader）尚需独立接入，再进行
 L3A owner cutover。本前置不改变 renderer gateway lifecycle，也不宣称产品已走 Go。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
+`HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
+非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认 owner 仍为 Python。
 
 ## 维护规则
 
