@@ -148,14 +148,13 @@ func (repository *KopiaRepository) AcceptAuthority(
 	if err := repository.publishState(ctx, nextState, "accept authority"); err != nil {
 		return err
 	}
-	repository.state = nextState
 	return nil
 }
 
 func (repository *KopiaRepository) Commit(
 	ctx context.Context,
 	request CommitRequest,
-) (DurableCommitReceipt, error) {
+) (receipt DurableCommitReceipt, err error) {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	release, err := acquireProcessLock(ctx, repository.lockPath)
@@ -170,7 +169,7 @@ func (repository *KopiaRepository) Commit(
 		return DurableCommitReceipt{}, err
 	}
 	next := cloneKopiaState(repository.state)
-	receipt := DurableCommitReceipt{
+	receipt = DurableCommitReceipt{
 		WorkspaceID: request.Authority.WorkspaceID,
 		FenceEpoch:  request.Authority.FenceEpoch,
 		ClaimID:     request.Authority.ClaimID,
@@ -186,6 +185,9 @@ func (repository *KopiaRepository) Commit(
 	if err != nil {
 		return DurableCommitReceipt{}, err
 	}
+	defer func() {
+		err = errors.Join(err, writer.Close(context.WithoutCancel(sessionCtx)))
+	}()
 	for _, input := range request.Objects {
 		if input.Name == "" {
 			return DurableCommitReceipt{}, errors.New("repository.object_name_invalid")
@@ -474,7 +476,6 @@ func (repository *KopiaRepository) Pin(
 	if err := repository.publishState(ctx, next, "pin roots"); err != nil {
 		return RootPin{}, err
 	}
-	repository.state = next
 	return pin, nil
 }
 
@@ -507,7 +508,6 @@ func (repository *KopiaRepository) ReleasePin(
 	if err := repository.publishState(ctx, next, "release pin"); err != nil {
 		return err
 	}
-	repository.state = next
 	return nil
 }
 
@@ -531,17 +531,24 @@ func (repository *KopiaRepository) publishState(
 	ctx context.Context,
 	state kopiaState,
 	purpose string,
-) error {
+) (err error) {
 	sessionCtx, writer, err := repository.repository.NewWriter(ctx, kopiarepo.WriteSessionOptions{
 		Purpose: "VibeTable " + purpose,
 	})
 	if err != nil {
 		return err
 	}
+	defer func() {
+		err = errors.Join(err, writer.Close(context.WithoutCancel(sessionCtx)))
+	}()
 	if err := putKopiaState(sessionCtx, writer, state); err != nil {
 		return err
 	}
-	return writer.Flush(sessionCtx)
+	if err := writer.Flush(sessionCtx); err != nil {
+		return err
+	}
+	repository.state = state
+	return nil
 }
 
 func putKopiaState(
