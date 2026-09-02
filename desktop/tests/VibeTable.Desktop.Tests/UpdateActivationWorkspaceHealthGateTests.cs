@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 
@@ -6,6 +8,176 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class UpdateActivationWorkspaceHealthGateTests
 {
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ConfirmAsync_CrashRequestTerminatesBeforeHealthSettlement(bool cancelled)
+    {
+        using var fixture = new WorkspaceRegistryTopologyTestContext("vibetable-update-crash-");
+        string readiness = Path.Combine(fixture.Root, "self-update-readiness");
+        string controls = Path.Combine(fixture.Root, "self-update-updated-controls");
+        Directory.CreateDirectory(readiness);
+        Directory.CreateDirectory(controls);
+        string request = Path.Combine(controls, "self-update-crash.request");
+        File.WriteAllText(request, "ignored: no commands, paths or exit codes are accepted");
+        var reader = new RecordingSchemaReader(0);
+        var activation = new RecordingSettlement();
+        var crash = new InvalidOperationException("simulated non-returning crash action");
+        bool reported = false;
+        var gate = new UpdateActivationWorkspaceHealthGate(
+            fixture.Registry,
+            fixture.Session,
+            reader,
+            reportReady: _ => reported = true,
+            reportFailure: _ => reported = true,
+            startupOptions: HostStartupOptions.Parse([
+                "--test-mode", "--self-update-smoke",
+                "--readiness-dir", readiness,
+                "--e2e-controls-dir", controls,
+            ]),
+            crashAction: () => throw crash);
+
+        InvalidOperationException result = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => gate.ConfirmAsync(activation, new CancellationToken(cancelled)));
+
+        Assert.AreSame(crash, result);
+        Assert.IsFalse(File.Exists(request));
+        Assert.IsFalse(reported);
+        Assert.IsNull(fixture.Session.LastOpen);
+        Assert.IsNull(reader.Session);
+        Assert.AreEqual(0, activation.HealthyCount);
+        Assert.AreEqual(0, activation.FailedCount);
+        using JsonDocument evidence = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(controls, "self-update-crash.json")));
+        using Process current = Process.GetCurrentProcess();
+        Assert.AreEqual("Environment.FailFast", evidence.RootElement.GetProperty("action").GetString());
+        Assert.AreEqual(current.Id, evidence.RootElement.GetProperty("processId").GetInt32());
+        Assert.AreEqual(current.StartTime.ToUniversalTime(),
+            evidence.RootElement.GetProperty("startedAtUtc").GetDateTime());
+
+        // The real adapter never returns; the injected adapter allows proving
+        // this request cannot arm another crash after it has been consumed.
+        await gate.ConfirmAsync(activation, CancellationToken.None);
+        Assert.AreEqual(1, activation.HealthyCount);
+    }
+
+    [TestMethod]
+    [DataRow("production")]
+    [DataRow("ordinary-test")]
+    [DataRow("wrong-readiness")]
+    [DataRow("wrong-controls")]
+    [DataRow("different-parents")]
+    [DataRow("missing-request")]
+    [DataRow("request-is-directory")]
+    public async Task ConfirmAsync_InvalidCrashEnvelopeLeavesRequestDormant(string scenario)
+    {
+        using var fixture = new WorkspaceRegistryTopologyTestContext("vibetable-crash-dormant-");
+        string readiness = Path.Combine(fixture.Root,
+            scenario == "wrong-readiness" ? "other" : "self-update-readiness");
+        string controls = Path.Combine(
+            scenario == "different-parents" ? Path.Combine(fixture.Root, "other") : fixture.Root,
+            scenario == "wrong-controls" ? "other-controls" : "self-update-updated-controls");
+        Directory.CreateDirectory(readiness);
+        Directory.CreateDirectory(controls);
+        string request = Path.Combine(controls, "self-update-crash.request");
+        if (scenario == "request-is-directory") Directory.CreateDirectory(request);
+        else if (scenario != "missing-request") File.WriteAllText(request, string.Empty);
+        var args = new List<string>
+        {
+            "--readiness-dir", readiness,
+            "--e2e-controls-dir", controls,
+        };
+        if (scenario != "production") args.Add("--test-mode");
+        if (scenario != "ordinary-test") args.Add("--self-update-smoke");
+        var activation = new RecordingSettlement();
+        var gate = new UpdateActivationWorkspaceHealthGate(
+            fixture.Registry,
+            fixture.Session,
+            new RecordingSchemaReader(0),
+            startupOptions: HostStartupOptions.Parse(args),
+            crashAction: () => Assert.Fail("Invalid envelope invoked the crash action."));
+
+        await gate.ConfirmAsync(activation, CancellationToken.None);
+
+        Assert.AreEqual(1, activation.HealthyCount);
+        Assert.AreEqual(0, activation.FailedCount);
+        Assert.IsFalse(File.Exists(Path.Combine(controls, "self-update-crash.json")));
+        Assert.AreEqual(scenario != "missing-request",
+            File.Exists(request) || Directory.Exists(request));
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_CrashEvidenceFailureDoesNotMasqueradeAsHealthFailure()
+    {
+        using var fixture = new WorkspaceRegistryTopologyTestContext("vibetable-crash-evidence-");
+        string readiness = Path.Combine(fixture.Root, "self-update-readiness");
+        string controls = Path.Combine(fixture.Root, "self-update-updated-controls");
+        Directory.CreateDirectory(readiness);
+        Directory.CreateDirectory(controls);
+        File.WriteAllText(Path.Combine(controls, "self-update-crash.request"), string.Empty);
+        string evidence = Path.Combine(controls, "self-update-crash.json");
+        File.WriteAllText(evidence, "preserved prior evidence");
+        var activation = new RecordingSettlement();
+        var gate = new UpdateActivationWorkspaceHealthGate(
+            fixture.Registry,
+            fixture.Session,
+            new RecordingSchemaReader(0),
+            startupOptions: HostStartupOptions.Parse([
+                "--test-mode", "--self-update-smoke",
+                "--readiness-dir", readiness,
+                "--e2e-controls-dir", controls,
+            ]),
+            crashAction: () => Assert.Fail("Unrecorded crash must not execute."));
+
+        await Assert.ThrowsExactlyAsync<IOException>(() =>
+            gate.ConfirmAsync(activation, CancellationToken.None));
+
+        Assert.AreEqual("preserved prior evidence", File.ReadAllText(evidence));
+        Assert.AreEqual(0, activation.HealthyCount);
+        Assert.AreEqual(0, activation.FailedCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_HeldHealthAcceptsCrashOnlyAfterObserverIsReady()
+    {
+        using var fixture = new WorkspaceRegistryTopologyTestContext("vibetable-crash-held-");
+        string readiness = Path.Combine(fixture.Root, "self-update-readiness");
+        string controls = Path.Combine(fixture.Root, "self-update-updated-controls");
+        Directory.CreateDirectory(readiness);
+        Directory.CreateDirectory(controls);
+        string hold = Path.Combine(controls, "self-update-health-timeout-hold.request");
+        File.WriteAllText(hold, string.Empty);
+        var activation = new RecordingSettlement();
+        var crash = new InvalidOperationException("simulated observed crash");
+        var gate = new UpdateActivationWorkspaceHealthGate(
+            fixture.Registry, fixture.Session, new RecordingSchemaReader(0),
+            startupOptions: HostStartupOptions.Parse([
+                "--test-mode", "--self-update-smoke",
+                "--readiness-dir", readiness, "--e2e-controls-dir", controls,
+            ]),
+            crashAction: () => throw crash);
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            Task<UpdateWorkspaceHealthProbeReceipt> pending = gate.ConfirmAsync(
+                activation, cancellation.Token);
+            Assert.IsFalse(File.Exists(hold));
+            Assert.IsFalse(pending.IsCompleted);
+            File.WriteAllText(Path.Combine(controls, "self-update-crash.request"), string.Empty);
+
+            InvalidOperationException result = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.AreSame(crash, result);
+            Assert.AreEqual(0, activation.HealthyCount);
+            Assert.AreEqual(0, activation.FailedCount);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+        }
+    }
+
     [TestMethod]
     public async Task ConfirmAsync_ProbesMostRecentWorkspaceReadOnlyBeforeConfirming()
     {
