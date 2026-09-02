@@ -674,6 +674,7 @@ def stage_command(
             "tests/test_dev.py",
             "tests/test_handoff_artifacts.py",
             "tests/test_next_gate.py",
+            "tests/test_automation_adapter.py",
             "-q",
             "-o",
             "addopts=",

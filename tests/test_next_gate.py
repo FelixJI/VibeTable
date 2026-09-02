@@ -94,6 +94,14 @@ def test_github_workflows_keep_release_build_on_windows() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
 
+def test_core_tooling_gate_includes_the_project_adapter_contracts() -> None:
+    assert "tooling" in next_gate.LANE_STAGES["core"]
+    command, cwd = next_gate.stage_command("tooling")
+    assert command[:3] == [sys.executable, "-m", "pytest"]
+    assert "tests/test_automation_adapter.py" in command
+    assert Path(cwd) == next_gate.REPO_ROOT
+
+
 def test_go_commands_target_sidecar_module() -> None:
     command, cwd = next_gate.stage_command("go-fmt")
     assert command == [next_gate.sys.executable, str(next_gate.GO_FORMAT_CHECK)]
