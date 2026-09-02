@@ -90,6 +90,8 @@ function installWorkspaceActivationCaptureInPage(configuration) {
     terminal: null,
     session: null,
     databaseOpened: null,
+    hydrationOwner: null,
+    hydrationCompleted: false,
     released: false,
     release: null,
   };
@@ -152,6 +154,14 @@ function installWorkspaceActivationCaptureInPage(configuration) {
         "database readiness does not belong to the activated workspace session",
       );
       return;
+    }
+    if (configuration.waitForHydration) {
+      const wire = capture.hydrationOwner?.wire;
+      if (!wire || !capture.hydrationCompleted) return;
+      if (wire.workspaceId !== session.workspaceId || wire.sessionEpoch !== session.sessionEpoch) {
+        fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration belongs to a different session");
+        return;
+      }
     }
     capture.message = capture.databaseOpened;
     release();
@@ -251,6 +261,12 @@ function installWorkspaceActivationCaptureInPage(configuration) {
       return;
     }
     capture.session = observed;
+    if (configuration.waitForHydration
+      && (!Array.isArray(message.payload?.capabilities)
+        || !message.payload.capabilities.includes("conflict.center.v2"))) {
+      fail("CAPTURE_HYDRATION_UNAVAILABLE", "activation requires conflict hydration capability");
+      return;
+    }
     tryComplete();
   };
 
@@ -286,6 +302,35 @@ function installWorkspaceActivationCaptureInPage(configuration) {
   function onMessage(event) {
     if (capture.message || capture.error) return;
     const message = parseMessage(event.data);
+    if (configuration.waitForHydration
+      && capture.hydrationOwner
+      && message?.requestId === capture.hydrationOwner.requestId) {
+      if (message.type === "operation.failed") {
+        const payload = message.payload;
+        if ((payload?.operation != null && payload.operation !== "conflict.list")
+          || (payload?.operationId != null
+            && payload.operationId !== capture.hydrationOwner.wire.operationId)
+          || [message.wire, payload?.wire].some((wire) =>
+            wire !== undefined && !sameWire(wire, capture.hydrationOwner.wire))) {
+          fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration failure identity differs");
+        } else {
+          fail("CAPTURE_HYDRATION_FAILED", "hydration tail did not succeed");
+        }
+        return;
+      }
+      if (message.type !== "workspace.v2.response") return;
+      if (message.payload?.method !== "conflict.list"
+        || !sameWire(message.wire, capture.hydrationOwner.wire)
+        || !sameWire(message.wire, message.payload?.wire)) {
+        fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration terminal identity differs");
+      } else if (message.payload.ok !== true) {
+        fail("CAPTURE_HYDRATION_FAILED", "hydration tail did not succeed");
+      } else {
+        capture.hydrationCompleted = true;
+        tryComplete();
+      }
+      return;
+    }
     if (message?.type === "workspace.v2.response") recordTerminal(message);
     else if (message?.type === "workspace.v2.bootstrap") recordBootstrap(message);
     else if (message?.type === "database.opened") recordDatabaseOpened(message);
@@ -294,6 +339,29 @@ function installWorkspaceActivationCaptureInPage(configuration) {
   function wrappedPostMessage(...args) {
     const message = parseMessage(args[0]);
     const isWorkspaceRequest = message?.type === "workspace.v2.request";
+    if (capture.hydrationOwner && message?.requestId === capture.hydrationOwner.requestId
+      && (!isWorkspaceRequest || message.payload?.method !== "conflict.list"
+        || !sameWire(message.wire, capture.hydrationOwner.wire)
+        || !sameWire(message.wire, message.payload?.wire))) {
+      fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration request identity changed");
+    }
+    if (configuration.waitForHydration && capture.owner && !capture.hydrationOwner
+      && isWorkspaceRequest && message.payload?.method === "conflict.list") {
+      const wire = message.wire;
+      if (typeof message.requestId !== "string" || !message.requestId.trim()
+        || message.requestId === capture.owner.requestId
+        || !sameWire(wire, message.payload?.wire)
+        || Object.keys(wire ?? {}).sort().join(",")
+          !== "operationId,scope,sequence,sessionEpoch,workspaceId"
+        || wire.scope !== "workspace" || normalizeWorkspaceId(wire.workspaceId) === null
+        || !validOperationId(wire.operationId)
+        || !Number.isSafeInteger(wire.sessionEpoch) || wire.sessionEpoch < 1
+        || !Number.isSafeInteger(wire.sequence) || wire.sequence < 0) {
+        fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration request identity is invalid");
+      } else {
+        capture.hydrationOwner = { requestId: message.requestId, wire: { ...wire } };
+      }
+    }
     if (
       isWorkspaceRequest
       && capture.owner
@@ -344,6 +412,9 @@ function installWorkspaceActivationCaptureInPage(configuration) {
       return previousPostMessage.apply(webview, args);
     } catch (error) {
       if (isTarget) fail("CAPTURE_POST_FAILED", "workspace activation request could not be posted");
+      if (capture.hydrationOwner?.requestId === message?.requestId) {
+        fail("CAPTURE_POST_FAILED", "hydration request could not be posted");
+      }
       throw error;
     }
   }
@@ -361,11 +432,15 @@ function installWorkspaceActivationCaptureInPage(configuration) {
   }
 }
 
-export async function beginWorkspaceActivationCapture(page, { method }) {
+export async function beginWorkspaceActivationCapture(page, { method, waitForHydration = false }) {
+  // Opt-in for callers that keep the new session idle: the adapter's capability-
+  // gated hydration ends with conflict.list, as pinned by its public-port tests.
   if (typeof method !== "string" || !method) {
     throw new Error("workspace activation capture requires a method");
   }
-  const captureId = await page.evaluate(installWorkspaceActivationCaptureInPage, { method });
+  const captureId = await page.evaluate(
+    installWorkspaceActivationCaptureInPage, { method, waitForHydration },
+  );
   let releasePromise = null;
   const release = () => {
     releasePromise ??= page.evaluate(releaseCaptureInPage, captureId);

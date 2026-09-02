@@ -276,7 +276,7 @@ describe("workspace v2 production host adapter", () => {
     expect(sequences[1]).toBeGreaterThan(sequences[0]);
   });
 
-  it("does not request replica status for a direct repository", async () => {
+  it.each(["direct", "mirrored"] as const)("hydrates %s repositories through conflict.list last", async (mode) => {
     const fake = fakeBridge();
     createWorkspaceV2HostAdapter(fake.bridge);
     fake.handlers.get("workspace.v2.bootstrap")!({
@@ -284,7 +284,7 @@ describe("workspace v2 production host adapter", () => {
       storage: {
         location: "D:\\Workspaces\\Quarter",
         activityRoot: "D:\\Workspaces\\Quarter",
-        mode: "direct",
+        mode,
         provider: "fixed",
         health: "healthy",
         logicalSize: 0,
@@ -297,13 +297,15 @@ describe("workspace v2 production host adapter", () => {
       },
     });
 
-    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    const requestCount = mode === "direct" ? 6 : 7;
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(requestCount));
     expect(fake.request.mock.calls.map((call) => call[1].method)).toEqual([
       "snapshot.list",
       "fileHistory.queryDocuments",
       "fileHistory.listPendingChanges",
       "retention.get",
       "retention.status",
+      ...(mode === "mirrored" ? ["replica.status"] : []),
       "conflict.list",
     ]);
     fake.handlers.get("workspace.v2.bootstrap")!({
@@ -311,7 +313,7 @@ describe("workspace v2 production host adapter", () => {
       storage: useWorkspaceProtectionStore().storage,
     });
     await Promise.resolve();
-    expect(fake.request).toHaveBeenCalledTimes(6);
+    expect(fake.request).toHaveBeenCalledTimes(requestCount);
   });
 
   it("binds the closed host topics and strictly projects bootstrap state", () => {
