@@ -121,6 +121,190 @@ async function runExactCapture(observations, outbound = ownerRequest()) {
   }
 }
 
+function hydrationRequest() {
+  const wire = {
+    scope: "workspace", workspaceId: WORKSPACE_ID, sessionEpoch: 7,
+    operationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", sequence: 2,
+  };
+  return {
+    type: "workspace.v2.request", requestId: "hydration-tail", wire,
+    payload: { method: "conflict.list", params: { cursor: null, limit: 50 }, wire },
+  };
+}
+
+function hydrationTerminal(request = hydrationRequest()) {
+  return {
+    ...request, type: "workspace.v2.response",
+    payload: {
+      method: request.payload.method, wire: request.wire, ok: true,
+      result: { conflicts: [], nextCursor: null }, error: null,
+    },
+  };
+}
+
+async function withHydrationCapture(check, capabilities = ["conflict.center.v2"]) {
+  const bridge = makeWebView();
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  const originalPost = bridge.webview.postMessage;
+  const capture = await beginWorkspaceActivationCapture(
+    makeInPageBrowser(bridge.webview),
+    { method: "workspace.open", waitForHydration: true },
+  );
+  try {
+    bridge.webview.postMessage(ownerRequest());
+    const bootstrap = writableBootstrap();
+    bootstrap.payload.capabilities = capabilities;
+    bridge.dispatch(bootstrap);
+    bridge.dispatch(ownerTerminal());
+    await check({ bridge, capture, originalPost });
+  } finally {
+    await capture.release();
+    delete globalThis.window;
+  }
+}
+
+test("hydration failure terminates promptly without leaking host error text", async () => {
+  await withHydrationCapture(async ({ bridge, capture, originalPost }) => {
+    bridge.webview.postMessage(hydrationRequest());
+    bridge.dispatch({
+      type: "operation.failed", requestId: "hydration-tail",
+      payload: { operation: "conflict.list", code: "BACKEND_UNAVAILABLE", message: "private-path" },
+    });
+    assert.equal(captureCompletedInPage(), true);
+    await assert.rejects(capture.wait(), /CAPTURE_HYDRATION_FAILED: hydration tail did not succeed$/);
+    assert.equal(bridge.listenerCount(), 0);
+    assert.equal(bridge.webview.postMessage, originalPost);
+  });
+});
+
+test("hydration seals outbound ownership against a reused requestId", async () => {
+  await withHydrationCapture(async ({ bridge, capture }) => {
+    const request = hydrationRequest();
+    bridge.webview.postMessage(request);
+    bridge.webview.postMessage({
+      ...request, payload: { ...request.payload, method: "replica.status" },
+    });
+    assert.equal(captureCompletedInPage(), true);
+    await assert.rejects(capture.wait(), /CAPTURE_HYDRATION_IDENTITY_MISMATCH/);
+  });
+});
+
+test("hydration requires an actual capability list", async () => {
+  await withHydrationCapture(async ({ capture }) => {
+    await assert.rejects(capture.wait(), /CAPTURE_HYDRATION_UNAVAILABLE/);
+  }, "conflict.center.v2");
+});
+
+test("hydration rejects contradictory scope, session and terminal identities", async (t) => {
+  for (const kind of ["request-copy", "global", "session", "method", "terminal-copy", "failure"]) {
+    await t.test(kind, () => withHydrationCapture(async ({ bridge, capture }) => {
+      const request = hydrationRequest();
+      if (kind === "request-copy") request.payload.wire = { ...request.wire, sequence: 99 };
+      if (kind === "global") request.wire.scope = "global";
+      if (kind === "session") request.wire.sessionEpoch = 6;
+      bridge.webview.postMessage(request);
+      const terminal = hydrationTerminal(request);
+      if (kind === "method") terminal.payload.method = "replica.status";
+      if (kind === "terminal-copy") terminal.payload.wire = { ...request.wire, sequence: 99 };
+      if (kind === "failure") {
+        terminal.type = "operation.failed";
+        terminal.payload.operation = "replica.status";
+      }
+      bridge.dispatch(terminal);
+      bridge.dispatch(databaseOpened());
+      await assert.rejects(capture.wait(), /CAPTURE_HYDRATION_IDENTITY_MISMATCH/);
+      assert.equal(bridge.listenerCount(), 0);
+    }));
+  }
+});
+
+test("hydration timeout and replacement cannot release a successor owner", async () => {
+  await withHydrationCapture(async ({ bridge, capture, originalPost }) => {
+    bridge.dispatch(databaseOpened());
+    await assert.rejects(capture.wait(), /captured bridge response timed out/);
+    assert.equal(bridge.listenerCount(), 0);
+    assert.equal(bridge.webview.postMessage, originalPost);
+  });
+  await withHydrationCapture(async ({ bridge, capture }) => {
+    bridge.webview.postMessage(hydrationRequest());
+    const successor = await beginWorkspaceActivationCapture(
+      makeInPageBrowser(bridge.webview), { method: "workspace.open", waitForHydration: true },
+    );
+    const successorPost = bridge.webview.postMessage;
+    await assert.rejects(capture.wait(), /CAPTURE_REPLACED/);
+    assert.equal(bridge.listenerCount(), 1);
+    assert.equal(bridge.webview.postMessage, successorPost);
+    await successor.release();
+    assert.equal(bridge.listenerCount(), 0);
+  });
+});
+
+test("hydration may precede database readiness but cannot be stolen by another request", async () => {
+  await withHydrationCapture(async ({ bridge, capture }) => {
+    const request = hydrationRequest();
+    bridge.webview.postMessage(request);
+    const competitor = { ...request, requestId: "competing-conflict-list" };
+    bridge.webview.postMessage(competitor);
+    bridge.dispatch(hydrationTerminal(competitor));
+    assert.equal(captureCompletedInPage(), false);
+    bridge.dispatch(hydrationTerminal(request));
+    assert.equal(captureCompletedInPage(), false);
+    bridge.dispatch(databaseOpened());
+    assert.deepEqual(await capture.wait(), databaseOpened());
+  });
+});
+
+test("hydration releases its owner when posting the tail throws", async () => {
+  const bridge = makeWebView();
+  bridge.webview.postMessage = (message) => {
+    if (message.requestId === "hydration-tail") throw new Error("transport failed");
+  };
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  const originalPost = bridge.webview.postMessage;
+  const capture = await beginWorkspaceActivationCapture(
+    makeInPageBrowser(bridge.webview), { method: "workspace.open", waitForHydration: true },
+  );
+  try {
+    bridge.webview.postMessage(ownerRequest());
+    assert.throws(() => bridge.webview.postMessage(hydrationRequest()), /transport failed/);
+    assert.equal(captureCompletedInPage(), true);
+    await assert.rejects(capture.wait(), /CAPTURE_POST_FAILED/);
+    assert.equal(bridge.listenerCount(), 0);
+    assert.equal(bridge.webview.postMessage, originalPost);
+  } finally {
+    await capture.release();
+    delete globalThis.window;
+  }
+});
+
+test("opt-in activation waits for its hydration tail after database readiness", async () => {
+  const bridge = makeWebView();
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  const originalPost = bridge.webview.postMessage;
+  try {
+    const capture = await beginWorkspaceActivationCapture(
+      makeInPageBrowser(bridge.webview),
+      { method: "workspace.open", waitForHydration: true },
+    );
+    bridge.webview.postMessage(ownerRequest());
+    const bootstrap = writableBootstrap();
+    bootstrap.payload.capabilities = ["conflict.center.v2"];
+    bridge.dispatch(bootstrap);
+    bridge.dispatch(ownerTerminal());
+    bridge.dispatch(databaseOpened());
+    assert.equal(captureCompletedInPage(), false, "readiness does not finish hydration");
+    bridge.webview.postMessage(hydrationRequest());
+    bridge.dispatch({ ...hydrationTerminal(), requestId: "other-status-request" });
+    assert.equal(captureCompletedInPage(), false, "unrelated reply is not a barrier");
+    bridge.dispatch(hydrationTerminal());
+    assert.deepEqual(await capture.wait(), databaseOpened());
+    assert.equal(bridge.listenerCount(), 0);
+    assert.equal(bridge.webview.postMessage, originalPost);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 function makePage(captured, overrides = {}) {
   const calls = [];
   return {
