@@ -82,6 +82,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     public event Action<object?, PocketBaseStatus>? StatusChanged;
     public event Action<object?, string>? LogReceived;
     internal Func<Task>? StartAdmissionBarrierForTests { get; set; }
+    internal Func<Task>? RecoveryCleanupBarrierForTests { get; set; }
     public PocketBaseStartupTimings? LastStartupTimings =>
         Volatile.Read(ref _lastStartupTimings);
 
@@ -135,6 +136,10 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
         return generation.Context;
     }
+
+    private static void RetireGenerationContextUnsafe(
+        ProcessGeneration? generation)
+        => generation?.Context?.Retire();
 
     /// <summary>
     /// Copies the current private loopback origin and ephemeral credential
@@ -529,6 +534,11 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                 if (onlyIfActive && _recoveryTask is null)
                 {
                     return (Task.CompletedTask, null, _retirementEpoch);
+                }
+                if (!onlyIfActive
+                    || _generation?.Phase != ProcessGeneration.Ready)
+                {
+                    RetireGenerationContextUnsafe(_generation);
                 }
                 _restartSuppressed = 1;
                 admissionEpoch = ++_retirementEpoch;
@@ -1042,6 +1052,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         {
             lock (_generationGate)
             {
+                RetireGenerationContextUnsafe(generation);
                 generation.Phase = ProcessGeneration.Stopping;
                 if (generation.ExitHandler is not null)
                 {
@@ -1166,6 +1177,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             {
                 return;
             }
+            RetireGenerationContextUnsafe(generation);
             generation.Phase = ProcessGeneration.Exited;
             if (generation.Epoch != _retirementEpoch
                 || _restartSuppressed != 0
@@ -1310,19 +1322,27 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
         finally
         {
-            lock (_generationGate)
+            try
             {
-                lock (_recoveryGate)
+                if (RecoveryCleanupBarrierForTests is { } barrier)
+                    await barrier().ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_generationGate)
                 {
-                    if (ReferenceEquals(_recoveryCts, owner))
+                    lock (_recoveryGate)
                     {
-                        _recoveryCts.Dispose();
-                        _recoveryCts = null;
-                        _recoveryTask = null;
+                        if (ReferenceEquals(_recoveryCts, owner))
+                        {
+                            _recoveryCts.Dispose();
+                            _recoveryCts = null;
+                            _recoveryTask = null;
+                        }
                     }
+                    if (_generation is { } current)
+                        BeginRecoveryUnsafe(current);
                 }
-                if (_generation is { } current)
-                    BeginRecoveryUnsafe(current);
             }
         }
     }
@@ -1578,6 +1598,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         internal void ReleaseCredentialState()
         {
             _sessionSecret = string.Empty;
+            Context?.Retire();
             Context = null;
         }
     }
