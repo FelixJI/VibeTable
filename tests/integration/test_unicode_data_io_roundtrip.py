@@ -5,10 +5,11 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
@@ -73,6 +74,96 @@ def _physical_name(definition: Mapping[str, object]) -> str:
     physical_name = identity.get("physicalName")
     assert isinstance(physical_name, str)
     return physical_name
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
+    tmp_path: Path, source_sidecar_binary: Path
+) -> None:
+    sidecar = Sidecar(
+        source_sidecar_binary,
+        _create_v2_workspace(tmp_path / "workspace"),
+        workspace_identity={
+            "VIBETABLE_WORKSPACE_ID": WORKSPACE_ID,
+            "VIBETABLE_WORKSPACE_SESSION_EPOCH": str(SESSION_EPOCH),
+            "VIBETABLE_WORKSPACE_FENCE_EPOCH": str(FENCE_EPOCH),
+            "VIBETABLE_WORKSPACE_CLAIM_ID": CLAIM_ID,
+        },
+    )
+    try:
+        sidecar.start()
+        table = _create_table(sidecar, "native_dates", "create-native-dates")
+        fields: list[str] = []
+        for logical_type in ("date", "dateTime"):
+            definition = _create_field(
+                sidecar,
+                table,
+                _recommended_field_draft(sidecar, table["tableId"], logical_type, logical_type),
+                f"create-native-{logical_type}",
+            )["definition"]
+            assert isinstance(definition, dict)
+            fields.append(_physical_name(definition))
+        date_field, datetime_field = fields
+        source = tmp_path / "native-dates.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        assert sheet is not None
+        sheet.append(fields)
+        sheet.append([date(2026, 8, 29), datetime(2026, 8, 29, 14, 5, 6, 123000)])
+        sheet.append(["1900-02-28", "2026-08-29T00:00:00+08:00"])
+        workbook.save(source)
+        workbook.close()
+
+        config = PocketBaseConfig(
+            base_url=f"http://{sidecar.address}", session_secret=sidecar.secret
+        )
+        client = PocketBaseClient(
+            transport=StdlibPocketBaseTransport(config), session_secret=sidecar.secret
+        )
+        tasks = build_task_service()
+        runtime = ProductDataIoRuntime(client=client, task_service=tasks)
+        grant = await tasks.register_host_import_source(
+            HostImportSourceParams(
+                path=str(source.resolve()),
+                size_bytes=source.stat().st_size,
+                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        )
+        plan = await runtime.preview_import(
+            PreviewImportParams(
+                grant_id=grant.grant_id,
+                collection=table["tableId"],
+                schema_revision=table["schemaRevision"],
+            )
+        )
+        assert plan.summary.total_rows == plan.summary.valid_rows == 2
+        assert plan.summary.error_count == 0
+        expected = {
+            "2026-08-29": "2026-08-29T14:05:06.123Z",
+            "1900-02-28": "2026-08-28T16:00:00Z",
+        }
+        assert {row.values[date_field]: row.values[datetime_field] for row in plan.rows} == expected
+        query = {"filters": [], "sorts": [], "offset": 0, "limit": 100}
+        assert (await client.query_page(table_id=table["tableId"], query=query)).rows == []
+        applied = await runtime.apply_import(
+            ApplyImportParams(
+                grant_id=grant.grant_id,
+                collection=table["tableId"],
+                token=plan.token.token,
+                idempotency_prefix="native-xlsx-dates",
+            )
+        )
+        assert applied.created_count == 2
+        assert applied.failed_rows == []
+        page = await client.query_page(table_id=table["tableId"], query=query)
+        # The query port exposes PocketBase's UTC date wire format, not preview DTOs.
+        assert {row[date_field]: row[datetime_field] for row in page.rows} == {
+            "2026-08-29 00:00:00.000Z": "2026-08-29 14:05:06.123Z",
+            "1900-02-28 00:00:00.000Z": "2026-08-28 16:00:00.000Z",
+        }
+    finally:
+        sidecar.stop()
 
 
 def _assert_unicode_values(values: Mapping[str, str]) -> None:

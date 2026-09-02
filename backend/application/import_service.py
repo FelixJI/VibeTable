@@ -28,6 +28,8 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from datetime import time as datetime_time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -181,6 +183,8 @@ class SourceFile:
 
     def _read_xlsx(self, *, max_rows: int, sheet: str | None) -> tuple[list[str], list[list[Any]]]:
         from openpyxl import load_workbook
+        from openpyxl.styles.numbers import is_datetime
+        from openpyxl.utils.datetime import CALENDAR_WINDOWS_1900
 
         wb = load_workbook(self._path, read_only=True, data_only=True)
         try:
@@ -190,9 +194,9 @@ class SourceFile:
                     "workbook has no readable worksheet",
                     code="import_empty_workbook",
                 )
-            rows_iter = ws.iter_rows(values_only=True)
+            rows_iter = ws.iter_rows()
             try:
-                header = [str(c) if c is not None else "" for c in next(rows_iter)]
+                header = [str(c.value) if c.value is not None else "" for c in next(rows_iter)]
             except StopIteration:
                 return [], []
             try:
@@ -200,7 +204,40 @@ class SourceFile:
                 for row in rows_iter:
                     if len(data) >= max_rows:
                         raise _import_row_limit(max_rows)
-                    data.append(list(row))
+                    values: list[Any] = []
+                    for cell in row:
+                        value = cell.value
+                        if isinstance(value, (datetime_time, timedelta)):
+                            raise ImportFlowError(
+                                "native Excel time/duration is unsupported; use ISO text",
+                                code="import_unsupported_excel_time",
+                                data={"sheet": ws.title, "row": cell.row, "column": cell.column},
+                            )
+                        if (
+                            isinstance(value, date)
+                            and wb.epoch == CALENDAR_WINDOWS_1900
+                            and (value.date() if isinstance(value, datetime) else value)
+                            == date(1900, 2, 28)
+                        ):
+                            # OpenPyXL maps both serial 59 and 60 to this date.
+                            raise ImportFlowError(
+                                "ambiguous native date in Excel's 1900 system; use ISO text",
+                                code="import_ambiguous_excel_date",
+                                data={"sheet": ws.title, "row": cell.row, "column": cell.column},
+                            )
+                        if isinstance(value, datetime):
+                            if (
+                                value.tzinfo is None
+                                and value.time() == datetime_time()
+                                and is_datetime(cell.number_format.lower()) == "date"
+                            ):
+                                value = value.date().isoformat()
+                            else:
+                                value = value.isoformat(sep=" " if value.tzinfo is None else "T")
+                        elif isinstance(value, date):
+                            value = value.isoformat()
+                        values.append(value)
+                    data.append(values)
                 return header, data
             finally:
                 rows_iter.close()
