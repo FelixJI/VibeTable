@@ -161,6 +161,10 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
   }
 
   function scheduleWorkspaceHydration(): void {
+    if (session.isTransitioning
+      || !["openedWritable", "openedProvisional", "openedReadOnly"].includes(session.sessionState)) {
+      return;
+    }
     const sessionKey = currentSessionKey();
     if (!sessionKey || sessionKey === hydratedSessionKey) return;
     hydratedSessionKey = sessionKey;
@@ -227,7 +231,6 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
       } else {
         session.applySession(sessionFromResult(result));
         configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
-        scheduleWorkspaceHydration();
       }
     } else if (method === "workspace.planDelete" && action?.method === method) {
       session.setDeletePlan({
@@ -369,6 +372,8 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     if (session.fileHistoryEnabled) {
       for (const tree of bootstrap.fileTrees) protection.setFileTree(tree);
     }
+    // Activation replies carry only identity/state. Wait for the ready
+    // bootstrap's runtime capabilities and storage before sealing hydration.
     scheduleWorkspaceHydration();
   }
 
