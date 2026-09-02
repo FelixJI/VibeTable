@@ -292,6 +292,9 @@ def _python(manifest: ProductCapabilityManifest) -> str:
         if not values:
             lines.append(f'    "{owner}": (),')
             continue
+        if len(values) == 1:
+            lines.append(f'    "{owner}": ("{values[0]}",),')
+            continue
         lines.append(f'    "{owner}": (')
         lines.extend(f'        "{value}",' for value in values)
         lines.append("    ),")

@@ -46,7 +46,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "schema.list": self._list_tables,
             "schema.getTable": self._get_table_schema,
             "schema.describe": self._describe_schema,
             "query.page": self._query_page,
@@ -123,18 +122,6 @@ class ProductQuerySchemaRpc:
             await self._context.transport.request(
                 "GET",
                 f"/api/vibetable/v2/field-recycle-bin/{table_id}",
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
-        )
-
-    async def _list_tables(self, params: ProductParams) -> JsonObject:
-        if params.root:
-            raise ValueError("schema.list does not accept parameters")
-        return _result_object(
-            await self._context.transport.request(
-                "GET",
-                "/api/vibetable/v2/schema/tables",
                 headers=dict(self._context.headers),
                 expected_status=(200,),
             )

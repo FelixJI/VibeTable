@@ -8,8 +8,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from backend.adapters.pocketbase import product_rpc
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.product_query_schema_rpc import (
+    ProductQuerySchemaRpc,
     _product_query_filter_operators,
 )
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
@@ -146,15 +148,26 @@ def test_root_adapter_exposes_only_the_closed_invoke_interface() -> None:
     assert public_async_methods == {"invoke"}
 
 
+def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    class MissingRouteModule(ProductQuerySchemaRpc):
+        def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
+            super().__init__(context)
+            self.methods = self.methods - {"schema.getTable"}
+
+    monkeypatch.setattr(product_rpc, "ProductQuerySchemaRpc", MissingRouteModule)
+    with pytest.raises(RuntimeError, match="routes do not match the contract registry"):
+        _service([])
+
+
 @pytest.mark.asyncio
-async def test_invoke_dispatches_registered_method_through_closed_adapter_seam() -> None:
+async def test_schema_list_is_retired_from_python_adapter_without_transport() -> None:
     service, transport = _service([{"tables": []}])
     params = PRODUCT_RPC_REGISTRY["schema.list"].model_validate({})
 
-    result = await service.invoke("schema.list", params)
+    with pytest.raises(ValueError, match=r"unknown product RPC method: schema\.list"):
+        await service.invoke("schema.list", params)
 
-    assert result == {"tables": []}
-    assert transport.requests[0]["path"] == "/api/vibetable/v2/schema/tables"
+    assert transport.requests == []
 
 
 def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed() -> None:
@@ -906,10 +919,9 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
 
 
 @pytest.mark.asyncio
-async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
+async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
     service, transport = _service(
         [
-            {"tables": []},
             {"rows": [{"id": "row-1"}]},
             {
                 "valid": True,
@@ -919,7 +931,6 @@ async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
         ]
     )
 
-    assert await service.invoke("schema.list", ProductParams.model_validate({})) == {"tables": []}
     assert await service.invoke(
         "query.readRows",
         ProductParams.model_validate({"tableId": "orders", "rowIds": ["row-1"]}),
@@ -948,7 +959,6 @@ async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
     )
 
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v2/schema/tables",
         "/api/vibetable/v1/query",
         "/api/vibetable/v1/query/validate-snapshot",
     ]

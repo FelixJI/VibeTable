@@ -29,19 +29,11 @@ func registerSchemaRoutes(
 	gates ...businessWriteGate,
 ) {
 	r.GET("/api/vibetable/v2/schema/tables", func(request *core.RequestEvent) error {
-		definitions, err := catalog.List(request.Request.Context())
+		result, err := listSchemaTables(request.Request.Context(), catalog)
 		if err != nil {
 			return writeSchemaError(request, err)
 		}
-		tables := make([]map[string]any, 0, len(definitions))
-		for _, definition := range definitions {
-			tables = append(tables, map[string]any{
-				"tableId":     definition.Snapshot.TableID,
-				"displayName": definition.Snapshot.DisplayName,
-				"kind":        definition.Snapshot.Kind,
-			})
-		}
-		return request.JSON(http.StatusOK, map[string]any{"tables": tables})
+		return request.JSON(http.StatusOK, result)
 	})
 
 	r.GET("/api/vibetable/v1/schema/autodate-diagnostics", func(request *core.RequestEvent) error {

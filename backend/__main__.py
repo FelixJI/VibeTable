@@ -98,7 +98,7 @@ from backend.contracts.presets_versions_dashboards import (
     SaveVersionParams,
     VersionIdParams,
 )
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
+from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY, ProductParams
 from backend.contracts.settings_commands import (
     DeleteShortcutParams,
     LaunchActionParams,
@@ -201,7 +201,7 @@ def _register_pocketbase_product_methods(
     service: ProductRpc,
 ) -> None:
     register_product_rpc_errors()
-    for method, params_model in PRODUCT_RPC_REGISTRY.items():
+    for method, params_model in PYTHON_PRODUCT_RPC_REGISTRY.items():
         dispatcher.register(method, partial(service.invoke, method), params_model)
 
 

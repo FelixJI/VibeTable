@@ -41,8 +41,11 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 0 {
-		t.Fatalf("goSidecar descriptors = %#v, want empty during L2a", got)
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 1 || got[0] != (RPCDescriptor{
+		Method: "schema.list", Scope: WorkspaceScope, Audience: RendererPublic,
+		CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect,
+	}) {
+		t.Fatalf("goSidecar descriptors = %#v, want only schema.list", got)
 	}
 
 	descriptors[0].Method = "mutated"

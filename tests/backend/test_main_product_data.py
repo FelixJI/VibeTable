@@ -5,8 +5,15 @@ import pytest
 from backend.__main__ import _register_pocketbase_product_methods
 from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
-from backend.rpc.dispatcher import CODE_INVALID_PARAMS, RpcDispatcher
+from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
+from backend.contracts.product_rpc import (
+    PRODUCT_RPC_REGISTRY,
+    PYTHON_PRODUCT_RPC_REGISTRY,
+    WORKSPACE_CATALOG_METHODS,
+    ProductParams,
+    _current_python_registry,
+)
+from backend.rpc.dispatcher import CODE_INVALID_PARAMS, CODE_METHOD_NOT_FOUND, RpcDispatcher
 from backend.rpc.error_registry import CODE_PRODUCT_DATA
 
 RETIRED_PROVIDER = "".join(["di", "rectus"])
@@ -19,6 +26,24 @@ class FakeProductService:
     async def invoke(self, method: str, params: ProductParams) -> dict[str, object]:
         self.calls.append((method, params))
         return {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params", [{}, {"extra": True}])
+async def test_schema_list_has_no_python_registration_or_fallback(
+    params: dict[str, object],
+) -> None:
+    dispatcher = RpcDispatcher()
+    service = FakeProductService()
+    _register_pocketbase_product_methods(dispatcher, service)
+
+    response = await dispatcher.dispatch(
+        {"jsonrpc": "2.0", "id": 1, "method": "schema.list", "params": params}
+    )
+
+    assert response is not None
+    assert response["error"]["code"] == CODE_METHOD_NOT_FOUND
+    assert service.calls == []
 
 
 def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
@@ -68,7 +93,12 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "history.read",
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
-    assert set(dispatcher.registered_methods) == expected_methods
+    assert set(dispatcher.registered_methods) == expected_methods - {"schema.list"}
+    assert set(PYTHON_PRODUCT_RPC_REGISTRY) == set(dispatcher.registered_methods)
+    assert set(dispatcher.registered_methods) >= WORKSPACE_CATALOG_METHODS
+    assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
+        WORKSPACE_CATALOG_METHODS | {"schema.list"}
+    )
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods
     )
@@ -81,13 +111,13 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
     _register_pocketbase_product_methods(dispatcher, service)
 
     response = await dispatcher.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": "schema.list", "params": {}}
+        {"jsonrpc": "2.0", "id": 1, "method": "schema.getTable", "params": {"tableId": "orders"}}
     )
 
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "schema.list"
+    assert method == "schema.getTable"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -95,7 +125,7 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("schema.list", {"extra": True}),
+        ("schema.getTable", {"tableId": "orders", "extra": True}),
         ("schema.getTable", {}),
         ("schema.getTable", {"tableId": 7}),
         (
@@ -169,8 +199,8 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "schema.list",
-            "params": {},
+            "method": "schema.getTable",
+            "params": {"tableId": "orders"},
         }
     )
 
@@ -178,3 +208,14 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
     assert response["error"]["code"] == CODE_PRODUCT_DATA
     assert response["error"]["data"]["code"] == expected_code
     assert response["error"]["data"]["message"] == str(failure)
+
+
+def test_current_python_registry_rejects_unknown_or_missing_workspace_contracts() -> None:
+    models = dict(PRODUCT_RPC_REGISTRY)
+    models["undeclared.read"] = ProductParams
+    with pytest.raises(RuntimeError, match="undeclared non-Product methods"):
+        _current_python_registry(models)
+    models.pop("undeclared.read")
+    models.pop(next(iter(WORKSPACE_CATALOG_METHODS)))
+    with pytest.raises(RuntimeError, match="undeclared non-Product methods"):
+        _current_python_registry(models)
