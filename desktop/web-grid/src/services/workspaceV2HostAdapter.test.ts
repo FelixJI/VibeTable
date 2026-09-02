@@ -316,6 +316,53 @@ describe("workspace v2 production host adapter", () => {
     expect(fake.request).toHaveBeenCalledTimes(requestCount);
   });
 
+  it.each([false, true])("hydrates after a starting bootstrap (activation reply first: %s)", async (replyFirst) => {
+    const fake = fakeBridge();
+    const { port } = createWorkspaceV2HostAdapter(fake.bridge);
+    const publish = fake.handlers.get("workspace.v2.bootstrap")!;
+    const ready = {
+      ...bootstrap(),
+      session: {
+        ...bootstrap().session,
+        state: "openedProvisional",
+        openMode: "provisional",
+        writable: false,
+        provisional: true,
+      },
+    };
+    publish({
+      ...ready,
+      capabilities: ["workspace.session.v2", "snapshot.package.v2"],
+      session: { ...ready.session, state: "opening", phase: "starting" },
+    });
+    await Promise.resolve();
+    expect(fake.request).not.toHaveBeenCalled();
+
+    if (replyFirst) {
+      // Echo the actual outbound operation identity through the public bridge.
+      fake.request.mockImplementationOnce(async (_type, payload) => ({
+        method: payload.method, wire: payload.wire, ok: true,
+        result: { workspaceId: WORKSPACE_ID, sessionEpoch: 7, state: "openedProvisional" },
+        error: null,
+      }));
+      await port.request({
+        method: "workspace.switch",
+        params: { targetWorkspaceId: WORKSPACE_ID, openMode: "writable" },
+      });
+      fake.request.mockClear();
+    }
+    publish(ready);
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(6));
+    expect(fake.request.mock.calls.at(-1)?.[1].method).toBe("conflict.list");
+    expect(fake.request.mock.calls.every(([, payload]) =>
+      payload.wire.scope === "workspace"
+      && payload.wire.workspaceId === WORKSPACE_ID
+      && payload.wire.sessionEpoch === ready.session.sessionEpoch)).toBe(true);
+    publish(ready);
+    await Promise.resolve();
+    expect(fake.request).toHaveBeenCalledTimes(6);
+  });
+
   it("binds the closed host topics and strictly projects bootstrap state", () => {
     const fake = fakeBridge();
     const adapter = createWorkspaceV2HostAdapter(fake.bridge);
@@ -550,6 +597,15 @@ describe("workspace v2 production host adapter", () => {
       scope: "workspace",
       workspaceId: WORKSPACE_ID,
       sessionEpoch: 7,
+    });
+    expect(fake.request).toHaveBeenCalledTimes(1);
+    fake.handlers.get("workspace.v2.bootstrap")!({
+      ...bootstrap(),
+      session: {
+        ...bootstrap().session,
+        workspaceId: "99999999-9999-4999-8999-999999999999",
+        sessionEpoch: 8,
+      },
     });
     await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(7));
     fake.request.mockClear();
