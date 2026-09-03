@@ -17,6 +17,87 @@ from scripts.windows_doctor import DoctorCheck, DoctorProfile, DoctorReport, Sys
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture
+def node_quality_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    shutil.copyfile(REPO_ROOT / ".node-version", tmp_path / ".node-version")
+    version = (tmp_path / ".node-version").read_text(encoding="utf-8").strip()
+    node = tmp_path / ".tools" / "node" / f"node-v{version}-win-x64" / "node.exe"
+    node.parent.mkdir(parents=True)
+    node.touch()
+    for project in automation_project.NPM_PROJECTS:
+        (tmp_path / project).mkdir(parents=True)
+        shutil.copyfile(REPO_ROOT / project / "package.json", tmp_path / project / "package.json")
+    monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
+    return tmp_path
+
+
+def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
+    node_quality_checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], str]] = []
+
+    def record_process(command: tuple[str, ...], **kwargs: object) -> None:
+        assert kwargs["check"] is True
+        assert isinstance(kwargs["cwd"], Path)
+        assert isinstance(kwargs["env"], dict)
+        assert kwargs["env"]["PATH"].startswith(str(node_quality_checkout / ".tools" / "node"))
+        calls.append(
+            (
+                (Path(command[0]).stem, *command[1:]),
+                kwargs["cwd"].relative_to(node_quality_checkout).as_posix(),
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "run", record_process)
+    monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
+    command, cwd = next_gate.stage_command("web-test")
+
+    assert "web-test" in next_gate.LANE_STAGES["core"]
+    assert command == [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "automation_project.py"),
+        "node-tests",
+    ]
+    assert Path(cwd) == REPO_ROOT
+    assert automation_project.main(command[2:]) == 0
+    assert calls == [
+        (("npm", "run", "typecheck"), "sdk/plugin"),
+        (("npm", "run", "typecheck"), "examples/plugins/data-overview"),
+        (("npm", "run", "test"), "examples/plugins/data-overview"),
+        (("npm", "run", "typecheck"), "examples/plugins/normalize-text"),
+        (("npm", "run", "test"), "examples/plugins/normalize-text"),
+        (("npm", "run", "test:coverage"), "desktop/web-grid"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("project", "script", "expected_calls"),
+    [("examples/plugins/data-overview", "test", 3), ("desktop/web-grid", "test:coverage", 6)],
+)
+def test_node_stage_stops_on_plugin_or_web_failure(
+    node_quality_checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    project: str,
+    script: str,
+    expected_calls: int,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fail_selected_process(command: tuple[str, ...], **kwargs: object) -> None:
+        assert kwargs["check"] is True
+        calls.append(command)
+        if kwargs["cwd"] == node_quality_checkout / project and command[-1] == script:
+            raise subprocess.CalledProcessError(3, command)
+
+    monkeypatch.setattr(subprocess, "run", fail_selected_process)
+
+    assert automation_project.main(["node-tests"]) == 1
+    assert len(calls) == expected_calls
+    assert "[FAIL] VibeTable automation:" in capsys.readouterr().err
+
+
 def test_core_python_stage_runs_static_checks_and_full_coverage_suite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -961,7 +1042,7 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
 @pytest.mark.parametrize(
     ("lane", "expected"),
     [
-        ("core", ["bootstrap"]),
+        ("core", ["bootstrap", "npm-ci", "npm-ci", "npm-ci"]),
         ("race-a", ["w64devkit"]),
         ("race-b", ["w64devkit"]),
         ("resilience", ["uv-sync", "npm-ci"]),
@@ -974,6 +1055,7 @@ def test_smoke_lane_prepares_only_its_required_toolchain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[str] = []
+    monkeypatch.setenv(automation_project.CI_PREPARE_MODE_ENV, "candidate")
     monkeypatch.setattr(automation_project, "bootstrap", lambda: observed.append("bootstrap"))
     monkeypatch.setattr(
         automation_project,
