@@ -204,6 +204,13 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	}
 	expiredCursor := initial.Backlog[0].Cursor
 	initial.Close()
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Cold queued task", "cold_realtime")
+	service := jobs.New(app, mutation.New(app, mutation.MetadataSchemaSource{}), jobs.WithTaskPublisher(hub))
+	defer service.Shutdown()
+	queued, err := service.StartFormulaBackfill(ctx, fixture.definition.Snapshot.TableID, fixture.definition.Snapshot.SchemaRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for index := 1; index <= 10_005; index++ {
 		saveRealtimeOutboxEvent(t, app, realtimeDataEvent(index))
 	}
@@ -239,6 +246,19 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 		if !errors.As(err, &realtimeErr) || realtimeErr.Code != code {
 			t.Fatalf("cursor %q error = %#v", cursor, err)
 		}
+	}
+	recovered, err := hub.SubscribeRecoverable(ctx, expiredCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	projection := recoveredProjection(t, recovered)
+	if len(projection.ActiveFormulaTasks) != 1 || projection.ActiveFormulaTasks[0].TaskID != queued.JobID ||
+		len(projection.TerminalNotifications) != 0 {
+		t.Fatalf("cold activity was not recovered from authority: %+v", projection)
+	}
+	if recovered.Backlog[0].Cursor != backlog.Backlog[len(backlog.Backlog)-1].Cursor {
+		t.Fatal("recovery cursor does not describe the retained snapshot")
 	}
 }
 

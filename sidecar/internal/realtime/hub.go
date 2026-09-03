@@ -242,7 +242,7 @@ func (hub *Hub) publishLocked(event Event, rowID int64) {
 func (hub *Hub) drainDurable() error {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	rows, err := hub.readRows(
+	rows, err := readRows(hub.app,
 		"WHERE rowid > {:highWater} ORDER BY rowid ASC",
 		dbx.Params{"highWater": hub.highWater},
 	)
@@ -263,6 +263,15 @@ func (hub *Hub) drainDurable() error {
 func (hub *Hub) Subscribe(
 	ctx context.Context,
 	afterEventID string,
+) (*Subscription, error) {
+	return hub.subscribe(ctx, func() ([]Event, int64, error) {
+		return hub.catchup(afterEventID)
+	})
+}
+
+func (hub *Hub) subscribe(
+	ctx context.Context,
+	readBacklog func() ([]Event, int64, error),
 ) (*Subscription, error) {
 	hub.mu.Lock()
 	if len(hub.subscribers) >= maxSubscribers {
@@ -288,7 +297,7 @@ func (hub *Hub) Subscribe(
 			hub.mu.Unlock()
 		})
 	}
-	backlog, retainedHighWater, err := hub.catchup(afterEventID)
+	backlog, retainedHighWater, err := readBacklog()
 	if err != nil {
 		delete(hub.subscribers, id)
 		close(entry.events)
@@ -314,7 +323,7 @@ func (hub *Hub) catchup(afterEventID string) ([]Event, int64, error) {
 			Retryable: true,
 		}
 	}
-	rows, err := hub.readRows(
+	rows, err := readRows(hub.app,
 		`WHERE rowid IN (
 			SELECT rowid FROM vibetable_outbox
 			ORDER BY rowid DESC LIMIT {:limit}
@@ -395,11 +404,11 @@ type outboxRow struct {
 	PayloadJSON string `db:"payload_json"`
 }
 
-func (hub *Hub) readRows(where string, params dbx.Params) ([]outboxRow, error) {
+func readRows(app core.App, where string, params dbx.Params) ([]outboxRow, error) {
 	var rows []outboxRow
 	query := `SELECT rowid AS row_id, event_id, topic, payload_json
 		FROM vibetable_outbox ` + where
-	if err := hub.app.DB().NewQuery(query).Bind(params).All(&rows); err != nil {
+	if err := app.DB().NewQuery(query).Bind(params).All(&rows); err != nil {
 		return nil, &Error{
 			Code: "realtime.storage_failed", Message: "realtime outbox could not be read",
 			Retryable: true,
