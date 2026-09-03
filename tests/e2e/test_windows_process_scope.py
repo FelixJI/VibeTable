@@ -168,6 +168,20 @@ def test_working_set_snapshot_reads_memory_only_from_verified_member_handles() -
     assert platform.working_set_queries == [42, 7]
 
 
+def test_disappeared_member_is_unverified_and_is_not_a_termination_target() -> None:
+    platform = _FakePlatformScope(
+        {42: "host.exe", 7: "child.exe"},
+        unavailable_pids={7},
+    )
+    with _launch_with_adapter(ProcessLaunchSpec(("host.exe",)), _FakeAdapter(platform)) as scope:
+        assert scope.snapshot().members[-1] == ProcessScopeMember(7)
+        assert scope.working_set_snapshot().members[-1] == ProcessWorkingSetMember(7)
+        result = scope.terminate_unique("child.exe")
+        assert result.status == "not_found"
+        assert result.terminated_pid is None
+        assert platform.members == {42: "host.exe", 7: "child.exe"}
+
+
 def test_working_set_snapshot_preserves_verified_identity_when_memory_query_fails() -> None:
     platform = _FakePlatformScope(
         {42: "host.exe", 7: "child.exe"},

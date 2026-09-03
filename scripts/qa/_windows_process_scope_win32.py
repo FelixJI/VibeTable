@@ -505,15 +505,15 @@ class _Win32PlatformScope:
         try:
             capacity = wintypes.DWORD(32768)
             path = ctypes.create_unicode_buffer(capacity.value)
-            _check(
-                kernel32.QueryFullProcessImageNameW(
-                    process.value,
-                    0,
-                    path,
-                    ctypes.byref(capacity),
-                ),
-                f"QueryFullProcessImageNameW({pid})",
-            )
+            if not kernel32.QueryFullProcessImageNameW(
+                process.value, 0, path, ctypes.byref(capacity)
+            ):
+                error = ctypes.get_last_error()
+                # An enumerated member can exit after OpenProcess succeeds.
+                if int(kernel32.WaitForSingleObject(process.value, 0)) == WAIT_OBJECT_0:
+                    process.close()
+                    return None
+                raise ctypes.WinError(error, f"QueryFullProcessImageNameW({pid})")
             name = PureWindowsPath(path.value).name
             return _Win32MemberHandle(process, self._job, pid, name)
         except BaseException:
