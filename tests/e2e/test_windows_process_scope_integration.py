@@ -457,6 +457,7 @@ def test_attribute_list_sizing_reports_the_unexpected_win32_error() -> None:
     assert failure.value.winerror == 5
 
 
+@pytest.mark.integration
 def test_wait_empty_accepts_member_exiting_after_open_before_image_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -540,6 +541,7 @@ def test_wait_empty_accepts_member_exiting_after_open_before_image_query(
 
 
 @pytest.mark.parametrize("wait_fails", [False, True], ids=["alive", "wait-failed"])
+@pytest.mark.integration
 def test_wait_empty_preserves_image_error_when_exit_is_not_proven(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
