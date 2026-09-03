@@ -87,7 +87,7 @@ export function useDashboardService() {
           collection === "vibetable_dashboard_configs" || dependsOnCollection(collection)) {
         store.markAllStale();
         if (realtimeTimer !== null) window.clearTimeout(realtimeTimer);
-        realtimeTimer = window.setTimeout(() => void refresh(), 350);
+        realtimeTimer = window.setTimeout(() => void refreshLivePanels(), 350);
       }
     }));
     window.addEventListener("online", onOnline);
@@ -142,6 +142,7 @@ export function useDashboardService() {
   }
 
   async function select(dashboardId: string): Promise<void> {
+    if (recoveryDirty) retireRecoveryForSelection();
     generation += 1;
     cancelActiveQueries();
     queue.clear();
@@ -170,6 +171,10 @@ export function useDashboardService() {
       }
       return;
     }
+    await refreshLivePanels();
+  }
+
+  async function refreshLivePanels(): Promise<void> {
     if (!store.current || (store.phase !== "ready" && store.phase !== "failed") ||
         store.offline || document.hidden) return;
     generation += 1;
@@ -304,6 +309,13 @@ export function useDashboardService() {
     generation += 1;
     cancelActiveQueries();
     queue.clear();
+  }
+
+  function retireRecoveryForSelection(): void {
+    const ticket = recoveryGeneration;
+    settleRetiredRecoveryPhase(ticket);
+    recoveryGeneration += 1;
+    recoveryMetadataGeneration = 0;
   }
 
   function recoveryPanelsCaughtUp(): boolean {

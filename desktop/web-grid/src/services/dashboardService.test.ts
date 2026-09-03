@@ -313,6 +313,66 @@ describe("dashboardService", () => {
     service.dispose();
   });
 
+  it("does not let recovery metadata that finishes after selection replace the selected dashboard", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Old", note: "", panels: [] },
+      config: {}, revision: "r1", queryLimits: {},
+    });
+    const service = useDashboardService();
+    const recovering = service.recoverAuthoritative();
+    await flushPromises();
+    const selecting = service.select("d2");
+    await flushPromises();
+    const selectedRead = h.posted.filter((item) => item.type === "dashboard.readRequested").at(-1)!;
+
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", {
+      dashboards: [{ id: "d1", name: "Old", note: "", panels: [] }],
+    });
+    await flushPromises();
+
+    h.emit("dashboard.loaded", {
+      dashboard: { id: "d2", name: "Selected", note: "", panels: [] },
+      config: {}, revision: "r2", queryLimits: {},
+    }, String(selectedRead.requestId));
+    await selecting;
+    expect(store.current).toMatchObject({ id: "d2", name: "Selected" });
+    expect(store.phase).toBe("ready");
+    await expect(recovering).resolves.toBe("retired");
+    service.dispose();
+  });
+
+  it("refreshes live panels after data.changed without waiting for pending recovery metadata", async () => {
+    vi.useFakeTimers();
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Ops", note: "", panels: [panel] },
+      config: {}, revision: "r1", queryLimits: {},
+    });
+    store.setPanelState("p1", { state: "ready", rows: [{ status: "old", value: 1 }] });
+    const service = useDashboardService(); service.init();
+    void service.recoverAuthoritative();
+    await flushPromises();
+
+    h.emit("data.changed", { tableId: "orders" });
+    await vi.advanceTimersByTimeAsync(350);
+    await flushPromises();
+    replySchema(h);
+    await flushPromises();
+    const liveQuery = h.posted.filter((item) => item.type === "dashboard.queryRequested").at(-1)!;
+    h.emit("dashboard.queryLoaded", {
+      rows: [{ status: "live", value: 2 }], truncated: false, maxPoints: 100,
+    }, String(liveQuery.requestId));
+    await flushPromises();
+
+    expect(store.panelData.p1?.rows).toEqual([{ status: "live", value: 2 }]);
+    expect(h.posted.filter((item) => item.type === "dashboard.listRequested")).toHaveLength(1);
+    service.dispose();
+  });
+
   it("loads, queries, and applies session filters without persisting their values", async () => {
     const h = harness(); setHostBridgeForTesting(h.bridge);
     const service = useDashboardService(); service.init();
