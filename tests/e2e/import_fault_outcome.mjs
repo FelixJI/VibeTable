@@ -1,5 +1,41 @@
 let ownerSequence = 0;
 
+export async function waitForFailedImportUi(page, deadlineAt) {
+  const panel = page.getByTestId("import-preview-panel");
+  const error = page.getByTestId("import-apply-error");
+  let errorLength = 0;
+  while (Date.now() < deadlineAt) {
+    if (await error.isVisible().catch(() => false)) {
+      errorLength = (await error.innerText()).trim().length;
+      const confirmEnabled = !await page.getByTestId("import-confirm").isDisabled();
+      const cancelEnabled = !await page.getByTestId("import-cancel").isDisabled();
+      if (errorLength > 0 && confirmEnabled && cancelEnabled) {
+        await page.getByTestId("import-cancel").click();
+        await panel.waitFor({ state: "hidden", timeout: Math.max(1, deadlineAt - Date.now()) });
+        await page.getByTestId("toolbar-more").click();
+        const importOption = page.locator(".n-dropdown-option-body")
+          .filter({ hasText: /导入数据|Import data/i }).last();
+        await importOption.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
+        const optionClass = await importOption.getAttribute("class");
+        const cancelOption = page.locator(".n-dropdown-option-body")
+          .filter({ hasText: /取消数据任务|Cancel data task/i }).last();
+        await cancelOption.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
+        const cancelClass = await cancelOption.getAttribute("class");
+        await page.keyboard.press("Escape");
+        return {
+          errorLength,
+          confirmEnabled,
+          cancelEnabled,
+          newImportAvailable: !optionClass?.includes("--disabled"),
+          cancelTaskAvailable: !cancelClass?.includes("--disabled"),
+        };
+      }
+    }
+    await page.waitForTimeout(50);
+  }
+  throw new Error("faulted import did not reach an explicit non-busy UI failure state");
+}
+
 export class ImportFaultOutcomeContractError extends Error {
   constructor(message) {
     super(message);

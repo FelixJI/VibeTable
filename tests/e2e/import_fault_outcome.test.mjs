@@ -5,9 +5,43 @@ import vm from "node:vm";
 import {
   ImportFaultOutcomeContractError,
   beginImportFaultOutcomeCapture,
+  waitForFailedImportUi,
 } from "./import_fault_outcome.mjs";
 
 const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
+
+test("failed import UI reads each menu body's disabled state", async (t) => {
+  for (const [importDisabled, cancelDisabled] of [[false, true], [true, true], [false, false]]) {
+    await t.test(`import disabled=${importDisabled}, cancel disabled=${cancelDisabled}`, async () => {
+      const element = {
+        isVisible: async () => true,
+        innerText: async () => "Import failed",
+        isDisabled: async () => false,
+        click: async () => {},
+        waitFor: async () => {},
+      };
+      const page = {
+        getByTestId: () => element,
+        keyboard: { press: async () => {} },
+        locator: selector => {
+          assert.equal(selector, ".n-dropdown-option-body");
+          return { filter: ({ hasText }) => ({ last: () => {
+            const disabled = hasText.test("导入数据") ? importDisabled : cancelDisabled;
+            return {
+              waitFor: async () => {},
+              getAttribute: async () => `n-dropdown-option-body${disabled ? " n-dropdown-option-body--disabled" : ""}`,
+              // Naive UI's parent does not carry the disabled modifier.
+              locator: () => ({ getAttribute: async () => "n-dropdown-option" }),
+            };
+          } }) };
+        },
+      };
+      const state = await waitForFailedImportUi(page, Date.now() + 1000);
+      assert.equal(state.newImportAvailable, !importDisabled);
+      assert.equal(state.cancelTaskAvailable, !cancelDisabled);
+    });
+  }
+});
 
 function scope(overrides = {}) {
   return {
