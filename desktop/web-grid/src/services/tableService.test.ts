@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
-import type { HostBridge } from "@/bridge/hostBridge";
+import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import type {
+  BridgeMessage,
   DataChangedEvent,
   DatasetReadyPayload,
+  TablePage,
   TaskChangedEvent,
 } from "@/contracts";
 import { setHostBridgeForTesting } from "./bridgeContext";
@@ -15,12 +17,234 @@ import {
 } from "./tableService";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { useTableStore } from "@/stores/tableStore";
+import { useViewQueryStore } from "@/stores/viewQueryStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useHistoryStore } from "@/stores/historyStore";
 
 describe("tableService realtime product wiring", () => {
   beforeEach(() => setActivePinia(createPinia()));
+
+  it("returns applied only after the correlated page becomes the complete dataset window", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+    try {
+      const reloaded = service.reloadCurrentQuery();
+      const request = harness.lastRequest();
+      expect(request).toMatchObject({
+        type: "table.queryRequested",
+        payload: { table: "orders" },
+      });
+
+      harness.reply(request, {
+        ...dataset(12),
+        rows: [{ rowKey: "order-12", status: "paid" }],
+        groupRows: [{ key: ["paid"], count: 1, summaries: [1] }],
+        groupOffset: 0,
+        hasMoreGroups: true,
+        nextCursor: "cursor-13",
+        hasMore: true,
+      });
+
+      await expect(reloaded).resolves.toBe("applied");
+      expect(table.datasetReady).toBe(true);
+      expect(table.allRows).toEqual([{ rowKey: "order-12", status: "paid" }]);
+      expect(table.revision?.dataRevision).toBe(12);
+      expect(table.viewGroups).toEqual([{ key: ["paid"], count: 1, summaries: [1] }]);
+      expect(table.nextCursor).toBe("cursor-13");
+      expect(table.hasMoreWindows).toBe(true);
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("retires a same-tick query ABA before its old correlated page can replace the current window", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const workspace = useWorkspaceStore();
+    const query = useViewQueryStore();
+    const table = useTableStore();
+    workspace.selectTable("orders");
+    table.setDatasetReady({ ...dataset(12), rows: [{ rowKey: "current" }] });
+    const service = useTableService();
+    service.init();
+    try {
+      const reloaded = service.reloadCurrentQuery();
+      const request = harness.lastRequest();
+
+      // `flush: "sync"` must retire the request even though the query returns
+      // to its original semantic shape before Vue can schedule a normal tick.
+      query.search = "paid";
+      query.search = "";
+      harness.reply(request, { ...dataset(13), rows: [{ rowKey: "stale" }] });
+
+      await expect(reloaded).resolves.toBe("retired");
+      expect(table.allRows).toEqual([{ rowKey: "current" }]);
+      expect(table.error).toBeNull();
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("retires a table-switch ABA and leaves the rebuilt current table untouched", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+    try {
+      service.selectTable("orders");
+      const reloaded = service.reloadCurrentQuery();
+      const request = harness.lastRequest();
+
+      service.selectTable("customers");
+      service.selectTable("orders");
+      table.setDatasetReady({ ...dataset(22), rows: [{ rowKey: "rebuilt" }] });
+      harness.reply(request, { ...dataset(13), rows: [{ rowKey: "stale" }] });
+
+      await expect(reloaded).resolves.toBe("retired");
+      expect(table.allRows).toEqual([{ rowKey: "rebuilt" }]);
+      expect(table.revision?.dataRevision).toBe(22);
+      expect(table.error).toBeNull();
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("retires late correlated pages across an epoch reset, refresh, and disposal", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady({ ...dataset(12), rows: [{ rowKey: "current" }] });
+    const service = useTableService();
+    service.init();
+    try {
+      const beforeEpoch = service.reloadCurrentQuery();
+      const epochRequest = harness.lastRequest();
+      openWorkspaceEpoch(2);
+      table.setDatasetReady({ ...dataset(22), rows: [{ rowKey: "epoch-current" }] });
+      harness.reply(epochRequest, { ...dataset(13), rows: [{ rowKey: "epoch-stale" }] });
+      await expect(beforeEpoch).resolves.toBe("retired");
+      expect(table.allRows).toEqual([{ rowKey: "epoch-current" }]);
+
+      const beforeRefresh = service.reloadCurrentQuery();
+      const refreshRequest = harness.lastRequest();
+      service.refresh({ preserveHistory: true });
+      table.setDatasetReady({ ...dataset(23), rows: [{ rowKey: "refresh-current" }] });
+      harness.reply(refreshRequest, { ...dataset(14), rows: [{ rowKey: "refresh-stale" }] });
+      await expect(beforeRefresh).resolves.toBe("retired");
+      expect(table.allRows).toEqual([{ rowKey: "refresh-current" }]);
+
+      const beforeOtherLoad = service.reloadCurrentQuery();
+      const otherLoadRequest = harness.lastRequest();
+      table.beginLoad();
+      table.setDatasetReady({ ...dataset(24), rows: [{ rowKey: "other-load-current" }] });
+      harness.reply(otherLoadRequest, { ...dataset(15), rows: [{ rowKey: "other-load-stale" }] });
+      await expect(beforeOtherLoad).resolves.toBe("retired");
+      expect(table.allRows).toEqual([{ rowKey: "other-load-current" }]);
+
+      const beforeDispose = service.reloadCurrentQuery();
+      const disposeRequest = harness.lastRequest();
+      service.dispose();
+      await expect(service.reloadCurrentQuery()).resolves.toBe("retired");
+      expect(harness.lastRequest()).toBe(disposeRequest);
+      table.setDatasetReady({ ...dataset(25), rows: [{ rowKey: "disposed-current" }] });
+      harness.reply(disposeRequest, { ...dataset(16), rows: [{ rowKey: "disposed-stale" }] });
+      await expect(beforeDispose).resolves.toBe("retired");
+      expect(table.allRows).toEqual([{ rowKey: "disposed-current" }]);
+      expect(table.error).toBeNull();
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("returns failed for a rejected or below-floor correlated page without changing the current window", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady({ ...dataset(12), rows: [{ rowKey: "current" }] });
+    const service = useTableService();
+    service.init();
+    try {
+      const belowFloor = service.reloadCurrentQuery();
+      harness.reply(harness.lastRequest(), { ...dataset(11), rows: [{ rowKey: "stale" }] });
+      await expect(belowFloor).resolves.toBe("failed");
+      expect(table.allRows).toEqual([{ rowKey: "current" }]);
+      expect(table.revision?.dataRevision).toBe(12);
+
+      const rejected = service.reloadCurrentQuery();
+      harness.fail(harness.lastRequest(), "query transport failed");
+      await expect(rejected).resolves.toBe("failed");
+      expect(table.allRows).toEqual([{ rowKey: "current" }]);
+      expect(table.error).toBeNull();
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("drains a queued data change after accepting the correlated replacement window", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    service.init();
+    try {
+      service.selectTable("orders");
+      harness.emit("data.changed", dataEvent(13));
+      const reloaded = service.reloadCurrentQuery();
+      harness.reply(harness.lastRequest(), dataset(12));
+
+      await expect(reloaded).resolves.toBe("applied");
+      const reconcile = harness.lastRequest();
+      expect(reconcile).toMatchObject({
+        type: "events.reconcile",
+        payload: { tableId: "orders", dataRevision: "data_0012" },
+      });
+      harness.replyAs(reconcile, "events.reconcile", { action: "none" });
+      await flushPromises();
+      expect(useTableStore().datasetReady).toBe(true);
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("does not report applied when completing the correlated load starts a deferred refresh", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    service.init();
+    try {
+      service.selectTable("orders");
+      harness.emit("task.changed", taskEvent(13, "succeeded", 1));
+      const reloaded = service.reloadCurrentQuery();
+      harness.reply(harness.lastRequest(), dataset(12));
+
+      await expect(reloaded).resolves.toBe("retired");
+      expect(useTableStore().loading).toBe(true);
+      expect(harness.notifications("table.selected")).toHaveLength(2);
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
 
   it.each(["finishes", "fails"] as const)("keeps the new workspace dataset when an old epoch reconcile %s", async (outcome) => {
     const harness = bridgeHarness({ action: "refresh-data" });
@@ -741,6 +965,67 @@ function bridgeHarness(reconcileResult: { action: "none" | "refresh-data" | "rel
     notify,
     emit(type: string, payload: unknown) {
       for (const handler of handlers.get(type) ?? []) handler(payload);
+    },
+  };
+}
+
+function correlatedBridgeHarness() {
+  const posted: BridgeMessage[] = [];
+  const listeners = new Set<(event: { readonly data: unknown }) => void>();
+  const bridge = createHostBridge({
+    webview: {
+      postMessage(message: unknown) {
+        posted.push(message as BridgeMessage);
+      },
+      addEventListener(_type, listener) {
+        listeners.add(listener);
+      },
+      removeEventListener(_type, listener) {
+        listeners.delete(listener);
+      },
+    },
+    generateRequestId: (() => {
+      let sequence = 0;
+      return () => `query-${++sequence}`;
+    })(),
+  });
+  bridge.start();
+
+  function emit(message: BridgeMessage): void {
+    for (const listener of listeners) listener({ data: message });
+  }
+
+  function lastRequest(): BridgeMessage {
+    const request = posted.at(-1);
+    if (!request?.requestId) throw new Error("Expected a correlated bridge request.");
+    return request;
+  }
+
+  return {
+    bridge,
+    lastRequest,
+    emit(type: string, payload: unknown): void {
+      emit({ type, payload });
+    },
+    reply(request: BridgeMessage, payload: TablePage): void {
+      emit({ type: "table.pageLoaded", requestId: request.requestId, payload });
+    },
+    replyAs(request: BridgeMessage, type: string, payload: unknown): void {
+      emit({ type, requestId: request.requestId, payload });
+    },
+    fail(request: BridgeMessage, message: string): void {
+      emit({
+        type: "operation.failed",
+        requestId: request.requestId,
+        payload: { message, operation: "table.queryRequested" },
+      });
+    },
+    stop(): void {
+      bridge.stop();
+      setHostBridgeForTesting(null);
+    },
+    notifications(type: string): BridgeMessage[] {
+      return posted.filter((message) => message.type === type && !message.requestId);
     },
   };
 }
