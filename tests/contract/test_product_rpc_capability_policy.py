@@ -38,7 +38,7 @@ def _invalidate_first_rpc_scope(source: dict[str, object]) -> None:
     first["scope"] = "session"
 
 
-def test_policy_joins_catalog_and_inventory_with_only_schema_list_migrated() -> None:
+def test_policy_joins_catalog_and_inventory_with_reconcile_and_schema_list_migrated() -> None:
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
@@ -54,7 +54,8 @@ def test_policy_joins_catalog_and_inventory_with_only_schema_list_migrated() -> 
         "effect": "read",
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
-        "schema.list"
+        "events.reconcile",
+        "schema.list",
     }
     schema_list = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.list")
     assert schema_list == {
@@ -129,9 +130,9 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 101
+    assert len(methods) == 100
     assert methods[0] == "command.list"
-    assert current_owner_methods("goSidecar") == ("schema.list",)
+    assert current_owner_methods("goSidecar") == ("events.reconcile", "schema.list")
     with pytest.raises(ValueError, match="unknown current owner"):
         current_owner_methods(cast(CurrentOwner, "retiredOwner"))
 

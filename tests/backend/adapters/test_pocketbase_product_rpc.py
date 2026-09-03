@@ -750,33 +750,23 @@ async def test_relation_delta_translates_legacy_target_names() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconcile_validates_sidecar_action() -> None:
-    service, transport = _service(
-        [
-            {
-                "tableId": "orders",
-                "clientSchemaRevision": "schema_0001",
-                "clientDataRevision": "data_0001",
-                "currentSchemaRevision": "schema_0001",
-                "currentDataRevision": "data_0002",
-                "action": "refresh-data",
-            }
-        ]
+async def test_reconcile_is_retired_from_python_adapter_without_transport() -> None:
+    service, transport = _service([])
+    params = PRODUCT_RPC_REGISTRY["events.reconcile"].model_validate(
+        {
+            "tableId": "orders",
+            "schemaRevision": "schema_0001",
+            "dataRevision": "data_0001",
+        }
     )
 
-    result = await service.invoke(
-        "events.reconcile",
-        ProductParams.model_validate(
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_0001",
-                "dataRevision": "data_0001",
-            }
-        ),
-    )
+    with pytest.raises(ValueError, match=r"unknown product RPC method: events\.reconcile"):
+        await service.invoke(
+            "events.reconcile",
+            params,
+        )
 
-    assert result["action"] == "refresh-data"
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/events/reconcile"
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

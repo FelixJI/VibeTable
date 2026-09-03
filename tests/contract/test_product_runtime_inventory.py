@@ -38,19 +38,20 @@ def _assert_error(
     return caught.value
 
 
-def test_inventory_covers_the_fresh_product_catalog_with_only_schema_list_on_go() -> None:
+def test_inventory_covers_the_fresh_product_catalog_with_reconcile_and_schema_list_on_go() -> None:
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
 
     inventory = load_product_runtime_inventory()
 
     assert tuple(record.name for record in inventory.rpc_methods) == tuple(catalog["rpcMethods"])
     assert tuple(record.name for record in inventory.events) == tuple(catalog["eventTopics"])
-    schema_list = inventory.require("rpc", "schema.list")
-    assert schema_list.current_route == "goSidecar"
-    assert schema_list.target_owner == "GO_AUTHORITY"
+    for method in ("events.reconcile", "schema.list"):
+        record = inventory.require("rpc", method)
+        assert record.current_route == "goSidecar"
+        assert record.target_owner == "GO_AUTHORITY"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "goSidecar"
-    } == {"schema.list"}
+    } == {"events.reconcile", "schema.list"}
 
 
 def test_inventory_rejects_duplicate_json_properties(tmp_path: Path) -> None:

@@ -16,7 +16,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "data.export",
         "data.generateTemplate",
         "data.previewImport",
-        "events.reconcile",
         "file.applyHostChange",
         "file.list",
         "file.saveHostFile",
@@ -109,7 +108,10 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "version.promote",
         "version.save",
     ),
-    "goSidecar": ("schema.list",),
+    "goSidecar": (
+        "events.reconcile",
+        "schema.list",
+    ),
     "wpfHost": (),
     "pythonWorker": (),
 }

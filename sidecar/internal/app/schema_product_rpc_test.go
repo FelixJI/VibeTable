@@ -197,7 +197,7 @@ func schemaProductMux(t *testing.T, catalog schemaapi.SchemaCatalog) http.Handle
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-	}, schemaListRegistration(catalog))
+	}, schemaListRegistration(catalog), reconcileRegistration(catalog))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +205,7 @@ func schemaProductMux(t *testing.T, catalog schemaapi.SchemaCatalog) http.Handle
 		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
 	})
 	registerSchemaRoutes(r, catalog, nil)
+	registerRealtimeRoutes(r, nil, catalog)
 	registerProductRoutes(r, dispatcher)
 	mux, err := r.BuildMux()
 	if err != nil {

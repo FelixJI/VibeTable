@@ -29,8 +29,22 @@ class FakeProductService:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("params", [{}, {"extra": True}])
-async def test_schema_list_has_no_python_registration_or_fallback(
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("schema.list", {}),
+        (
+            "events.reconcile",
+            {
+                "tableId": "orders",
+                "schemaRevision": "schema_0001",
+                "dataRevision": "data_0001",
+            },
+        ),
+    ],
+)
+async def test_go_owned_product_methods_have_no_python_registration_or_fallback(
+    method: str,
     params: dict[str, object],
 ) -> None:
     dispatcher = RpcDispatcher()
@@ -38,7 +52,7 @@ async def test_schema_list_has_no_python_registration_or_fallback(
     _register_pocketbase_product_methods(dispatcher, service)
 
     response = await dispatcher.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": "schema.list", "params": params}
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     )
 
     assert response is not None
@@ -93,11 +107,14 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "history.read",
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
-    assert set(dispatcher.registered_methods) == expected_methods - {"schema.list"}
+    assert set(dispatcher.registered_methods) == expected_methods - {
+        "schema.list",
+        "events.reconcile",
+    }
     assert set(PYTHON_PRODUCT_RPC_REGISTRY) == set(dispatcher.registered_methods)
     assert set(dispatcher.registered_methods) >= WORKSPACE_CATALOG_METHODS
     assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
-        WORKSPACE_CATALOG_METHODS | {"schema.list"}
+        WORKSPACE_CATALOG_METHODS | {"events.reconcile", "schema.list"}
     )
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods

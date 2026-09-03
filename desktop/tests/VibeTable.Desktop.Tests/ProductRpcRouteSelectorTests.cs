@@ -6,7 +6,7 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRpcRouteSelectorTests
 {
     [TestMethod]
-    public void GeneratedPolicyMovesOnlySchemaListToGo()
+    public void GeneratedPolicyMovesSchemaListAndReconcileToGo()
     {
         var selector = new ProductRpcRouteSelector(
             ProductRpcCapabilityManifest.Default);
@@ -20,7 +20,10 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method == "schema.list" ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
+            Assert.AreEqual(
+                method is "schema.list" or "events.reconcile"
+                    ? ProductRpcRoute.GoSidecar
+                    : ProductRpcRoute.PythonBff,
                 route, method);
         }
         foreach (string method in RelationLookupRpcRegistry.RequestTypes)
