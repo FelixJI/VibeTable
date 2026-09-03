@@ -409,6 +409,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
   datasetReady: () => tableStore.datasetReady,
   schemaRevision: () => tableStore.revision?.schemaRevision ?? null,
   dataRevision: () => tableStore.revision?.dataRevision ?? null,
+  contextGeneration: () => relationLookup.generation,
   relationSchema: () => relationLookup.schema,
   capabilities: () => relationLookup.capabilities,
   lookups: () => relationLookup.lookups,
@@ -417,8 +418,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
   queryLookups: request => relationLookupService.queryLookups(request),
   acceptResult: (result, currentDataRevision) => {
     if (!relationLookup.acceptLookup(result, currentDataRevision)) return false;
-    tableStore.applyLookupQueryResult(result);
-    return true;
+    return tableStore.applyLookupQueryResult(result);
   },
   clearEditRejection: () => { editRejection.value = null; },
   reportError: content => message.error(content),
