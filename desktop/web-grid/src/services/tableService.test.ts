@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import type {
   BridgeMessage,
@@ -240,6 +241,91 @@ describe("tableService realtime product wiring", () => {
       await expect(reloaded).resolves.toBe("retired");
       expect(useTableStore().loading).toBe(true);
       expect(harness.notifications("table.selected")).toHaveLength(2);
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("uses its single task tracker to project recovery activity and serially deliver only non-resumed terminals", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    const realtime = useRealtimeStore();
+    const recovered = vi.fn();
+    service.init(recovered);
+    try {
+      harness.emit("realtime.recovered", {
+        contractVersion: "2.0",
+        topic: "realtime.recovered",
+        activeFormulaTasks: [{
+          taskId: "formula-resumed",
+          state: "running",
+          progress: 0.6,
+          cursor: "0.6",
+          error: null,
+        }],
+        terminalNotifications: [
+          {
+            ...taskEvent(31, "succeeded", 1),
+            taskId: "formula-resumed",
+            eventId: "terminal-resumed",
+          },
+          {
+            ...taskEvent(32, "failed", 1),
+            taskId: "formula-finished",
+            eventId: "terminal-finished",
+          },
+        ],
+      });
+      await nextTick();
+      await flushPromises();
+
+      expect(recovered).toHaveBeenCalledTimes(1);
+      expect(realtime.activeFormulaBackfill).toMatchObject({ taskId: "formula-resumed" });
+      expect(realtime.latestTask).toMatchObject({ taskId: "formula-finished", state: "failed" });
+      // Recovery terminal notifications are historical UI receipts: they do
+      // not trigger the regular task-completion table refresh path.
+      expect(harness.notifications("table.selected")).toHaveLength(0);
+
+      harness.emit("task.changed", {
+        ...taskEvent(32, "failed", 1),
+        taskId: "formula-finished",
+        eventId: "terminal-finished",
+      });
+      expect(realtime.latestTask).toMatchObject({ taskId: "formula-finished", eventId: "terminal-finished" });
+      expect(harness.notifications("table.selected")).toHaveLength(0);
+    } finally {
+      service.dispose();
+      harness.stop();
+    }
+  });
+
+  it("keeps an accepted same-epoch terminal queue when a second recovery replaces active work", async () => {
+    const harness = correlatedBridgeHarness();
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    service.init();
+    try {
+      harness.emit("realtime.recovered", {
+        contractVersion: "2.0", topic: "realtime.recovered", activeFormulaTasks: [],
+        terminalNotifications: [{ ...taskEvent(41, "succeeded", 1), eventId: "queued-terminal" }],
+      });
+      // The earlier terminal is already accepted by the one shared Tracker,
+      // but its UI delivery has yielded. A second frame must not erase it.
+      harness.emit("realtime.recovered", {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [{
+          taskId: "formula-resumed-later", state: "running", progress: 0.4, cursor: "0.4", error: null,
+        }],
+        terminalNotifications: [],
+      });
+      await flushPromises();
+
+      expect(useRealtimeStore().latestTask?.eventId).toBe("queued-terminal");
+      expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("formula-resumed-later");
     } finally {
       service.dispose();
       harness.stop();

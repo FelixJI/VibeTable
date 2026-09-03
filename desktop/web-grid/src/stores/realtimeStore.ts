@@ -56,6 +56,16 @@ export const useRealtimeStore = defineStore("realtime", () => {
     };
   }
 
+  /**
+   * Recovery terminal notifications are historical UI receipts. They must not
+   * erase a same-id formula task restored as current activity by a later frame.
+   */
+  function applyRecoveredTerminal(task: TaskChangedEvent): boolean {
+    if (formulaTaskProjectionById.value[task.taskId]) return false;
+    applyTask(task);
+    return latestTask.value?.eventId === task.eventId;
+  }
+
   /** Replaces only current Go formula work after recovery-frame validation. */
   function replaceFormulaTaskProjection(tasks: readonly FormulaTaskState[]): void {
     tasksById.value = Object.fromEntries(
@@ -125,6 +135,7 @@ export const useRealtimeStore = defineStore("realtime", () => {
     reconcileError,
     lastInvalidation,
     applyTask,
+    applyRecoveredTerminal,
     replaceFormulaTaskProjection,
     markInvalidated,
     failReconcile,

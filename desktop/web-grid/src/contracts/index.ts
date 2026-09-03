@@ -1494,6 +1494,7 @@ export type HostMessageType =
   | "table.rowsDeleted"
   | "data.changed"
   | "task.changed"
+  | "realtime.recovered"
   | "data.importSourceRequested"
   | "data.exportTargetRequested"
   | "data.previewImport"
@@ -1811,6 +1812,7 @@ export interface HostPayloadMap {
   "table.rowsDeleted": DeleteRowsResult;
   "data.changed": DataChangedEvent;
   "task.changed": TaskChangedEvent;
+  "realtime.recovered": RealtimeRecoverySnapshot;
   "data.importSourceRequested": SessionPathGrant;
   "data.exportTargetRequested": SessionPathGrant;
   "data.previewImport": ImportPlan;

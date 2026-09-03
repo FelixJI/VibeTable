@@ -1,5 +1,5 @@
 import { useHostBridge } from "./bridgeContext";
-import { watch } from "vue";
+import { nextTick, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import {
   registerWorkspaceEpochReset,
@@ -43,7 +43,7 @@ import {
  * Call `init()` once at app boot to subscribe to inbound events.
  */
 export function useTableService(): {
-  init: () => void;
+  init: (onRealtimeRecovered?: TableRealtimeRecoveredHandler) => void;
   dispose: () => void;
   selectTable: (name: string) => void;
   refresh: (options?: TableRefreshOptions) => void;
@@ -66,6 +66,7 @@ export function useTableService(): {
   let realtimeGeneration = 0;
   let pendingDataChange: DataChangedEvent | null = null;
   let refreshAfterLoad: TableRefreshOptions | null = null;
+  let terminalDelivery: Promise<void> = Promise.resolve();
   let staleSnapshotRetries = 0;
   const maxStaleSnapshotRetries = 3;
   // `table.selected` is a fire-and-forget notify whose failure path posts
@@ -161,7 +162,7 @@ export function useTableService(): {
     refresh({ preserveHistory: true });
   }
 
-  function init(): void {
+  function init(onRealtimeRecovered?: TableRealtimeRecoveredHandler): void {
     if (initialized) return;
     disposed = false;
     initialized = true;
@@ -251,6 +252,23 @@ export function useTableService(): {
       reconcileDataChange(payload);
     }));
     unsubscribe.push(bridge.on("task.changed", applyTaskChange));
+    unsubscribe.push(bridge.on("realtime.recovered", (payload) => {
+      let delivery;
+      try {
+        delivery = taskTracker.acceptRecovery(payload);
+      } catch {
+        // The transport frame is not a task event; reject malformed snapshots
+        // without disturbing ordinary realtime delivery.
+        return;
+      }
+      realtimeStore.replaceFormulaTaskProjection(delivery.activeFormulaTasks);
+      const activeTaskIds = new Set(delivery.activeFormulaTasks.map((task) => task.taskId));
+      queueRecoveredTerminals(
+        delivery.terminalNotifications.filter((task) => !activeTaskIds.has(task.taskId)),
+        realtimeGeneration,
+      );
+      onRealtimeRecovered?.();
+    }));
   }
 
   function dispose(): void {
@@ -272,6 +290,21 @@ export function useTableService(): {
     refreshAfterLoad = null;
     staleSnapshotRetries = 0;
     disarmLoadWatchdog();
+  }
+
+  function queueRecoveredTerminals(
+    terminals: readonly TaskChangedEvent[],
+    deliveryGeneration: number,
+  ): void {
+    terminalDelivery = terminalDelivery.catch(() => undefined).then(async () => {
+      for (const terminal of terminals) {
+        if (deliveryGeneration !== realtimeGeneration || disposed) return;
+        // Do not use applyTaskChange: recovery terminals are retained UI
+        // receipts, never a second signal to reload the table.
+        realtimeStore.applyRecoveredTerminal(terminal);
+        await nextTick();
+      }
+    });
   }
 
   function selectTable(name: string): void {
@@ -416,6 +449,9 @@ export function useTableService(): {
 
 /** Outcome of a correlated reload of the currently active table query. */
 export type TableQueryReloadResult = "applied" | "retired" | "failed";
+
+/** Called after tableService has validated and atomically projected recovery tasks. */
+export type TableRealtimeRecoveredHandler = () => void;
 
 export interface TableRefreshOptions {
   readonly preserveHistory?: boolean;

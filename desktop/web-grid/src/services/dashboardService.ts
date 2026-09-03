@@ -59,6 +59,10 @@ export function useDashboardService() {
   let realtimeTimer: number | null = null;
   let disposed = false;
   let visiblePanelIds: Set<string> | null = null;
+  let recoveryGeneration = 0;
+  let recoveryMetadataGeneration = 0;
+  let recoveryDirty = false;
+  let recoverySurfaceVisible = true;
   const unsubscribe: Array<() => void> = [];
   const activeQueryRequestIds = new Set<string>();
   const activePanelControllers = new Map<string, AbortController>();
@@ -72,6 +76,9 @@ export function useDashboardService() {
       void list();
     }));
     unsubscribe.push(bridge.on("data.changed", (payload) => {
+      // A live event remains independently handled below. It only retires an
+      // in-flight recovery acknowledgement; it never waits behind recovery.
+      if (recoveryDirty) recoveryGeneration += 1;
       if (!store.current || document.hidden) return;
       const collection = payload.tableId;
       schemaCatalog.invalidate(collection);
@@ -89,9 +96,7 @@ export function useDashboardService() {
 
   function dispose(): void {
     disposed = true;
-    generation += 1;
-    cancelActiveQueries();
-    queue.clear();
+    retireRecovery();
     stopRefreshTimer();
     if (realtimeTimer !== null) window.clearTimeout(realtimeTimer);
     window.removeEventListener("online", onOnline);
@@ -101,21 +106,37 @@ export function useDashboardService() {
   }
 
   async function list(): Promise<void> {
+    await listWithReceipt();
+  }
+
+  async function listWithReceipt(isCurrent: () => boolean = () => true): Promise<boolean> {
     store.beginList();
     try {
       const result = await bridge.request("dashboard.listRequested", {});
-      if (!disposed) store.receiveList(result);
+      if (disposed || !isCurrent()) return false;
+      store.receiveList(result);
+      return true;
     } catch (error) {
+      if (disposed || !isCurrent()) return false;
       store.fail(errorMessage(error));
+      return false;
     }
   }
 
   async function loadManifest(): Promise<void> {
+    await loadManifestWithReceipt();
+  }
+
+  async function loadManifestWithReceipt(isCurrent: () => boolean = () => true): Promise<boolean> {
     try {
       const result = await bridge.request("dashboard.manifestRequested", {});
-      if (!disposed) store.receiveManifest(result);
+      if (disposed || !isCurrent()) return false;
+      store.receiveManifest(result);
+      return true;
     } catch (error) {
+      if (disposed || !isCurrent()) return false;
       store.fail(errorMessage(error));
+      return false;
     }
   }
 
@@ -160,6 +181,97 @@ export function useDashboardService() {
 
   function discardEdit(): void {
     draft.stop();
+    if (recoveryDirty && recoverySurfaceVisible) void recoverAuthoritative();
+  }
+
+  /**
+   * Refresh the Dashboard authority after realtime cursor recovery. This is a
+   * local receipt only: hidden surfaces and drafts deliberately remain dirty
+   * until the user makes a committed panel visible or discards the draft.
+   */
+  async function recoverAuthoritative(): Promise<DashboardRecoveryResult> {
+    const ticket = ++recoveryGeneration;
+    recoveryDirty = true;
+    const [listed, manifested] = await Promise.all([
+      listWithReceipt(() => ticket === recoveryGeneration),
+      loadManifestWithReceipt(() => ticket === recoveryGeneration),
+    ]);
+    if (disposed || ticket !== recoveryGeneration) return "retired";
+    if (!listed || !manifested) return "failed";
+    recoveryMetadataGeneration = ticket;
+    if (!recoverySurfaceVisible || draft.editing) return "dirty";
+    const dashboardId = store.current?.id;
+    if (!dashboardId) {
+      recoveryDirty = false;
+      return "applied";
+    }
+    const loaded = await loadCommittedRecovery(dashboardId, ticket);
+    if (disposed || ticket !== recoveryGeneration) return "retired";
+    if (!loaded) return "failed";
+    if (!recoveryPanelsCaughtUp()) return "dirty";
+    recoveryDirty = false;
+    return "applied";
+  }
+
+  async function loadCommittedRecovery(dashboardId: string, ticket: number): Promise<boolean> {
+    generation += 1;
+    cancelActiveQueries();
+    queue.clear();
+    const selectedGeneration = generation;
+    store.beginLoad();
+    try {
+      const result = await bridge.request("dashboard.readRequested", { dashboardId });
+      if (
+        disposed
+        || ticket !== recoveryGeneration
+        || selectedGeneration !== generation
+        || draft.editing
+      ) return false;
+      store.receiveWorkspace(result);
+      configureRefreshTimer();
+      await queryAllPanels(selectedGeneration);
+      return ticket === recoveryGeneration && selectedGeneration === generation && !draft.editing;
+    } catch (error) {
+      if (ticket === recoveryGeneration && selectedGeneration === generation) {
+        store.fail(errorMessage(error));
+      }
+      return false;
+    }
+  }
+
+  function setRecoverySurfaceVisible(visible: boolean): void {
+    recoverySurfaceVisible = visible;
+    if (visible && recoveryDirty && !draft.editing) void recoverAuthoritative();
+  }
+
+  /** Retire renderer-local recovery reads when WorkspaceView rotates epoch. */
+  function retireRecovery(): void {
+    recoveryGeneration += 1;
+    recoveryMetadataGeneration = 0;
+    recoveryDirty = false;
+    generation += 1;
+    cancelActiveQueries();
+    queue.clear();
+  }
+
+  function recoveryPanelsCaughtUp(): boolean {
+    if (recoveryMetadataGeneration !== recoveryGeneration || !store.current) return false;
+    const panels = store.current.panels;
+    const visible = visiblePanelIds ?? new Set(panels.map((panel) => panel.id));
+    if (panels.some((panel) => !visible.has(panel.id))) return false;
+    return panels.every((panel) => {
+      if (!panel.editable || Object.keys(panel.query).length === 0) return true;
+      return store.panelData[panel.id]?.state === "ready";
+    });
+  }
+
+  function settleVisibleRecovery(): void {
+    if (
+      recoveryDirty
+      && recoverySurfaceVisible
+      && !draft.editing
+      && recoveryPanelsCaughtUp()
+    ) recoveryDirty = false;
   }
 
   function createFromTemplate(templateId: DashboardTemplateId, name: string): void {
@@ -523,12 +635,16 @@ export function useDashboardService() {
       if (previous?.has(panelId)) continue;
       const panel = (draft.editing ? draft.draft : store.current)?.panels.find((item) => item.id === panelId);
       const data = store.panelData[panelId];
-      if (panel && (!data || data.state === "idle" || data.state === "stale")) void previewPanel(panel);
+      if (panel && (!data || data.state === "idle" || data.state === "stale")) {
+        void previewPanel(panel).finally(settleVisibleRecovery);
+      }
     }
+    settleVisibleRecovery();
   }
 
   return {
     init, dispose, list, select, refresh, beginEdit, discardEdit,
+    recoverAuthoritative, setRecoverySurfaceVisible, retireRecovery,
     createFromTemplate, copyCurrent, save, deleteCurrent, queryAllPanels,
     previewPanel, refreshDraft, selectPanelValue, drilldown,
     describeCollection,
@@ -536,7 +652,13 @@ export function useDashboardService() {
   };
 }
 
-export type DashboardService = ReturnType<typeof useDashboardService>;
+export type DashboardRecoveryResult = "applied" | "dirty" | "failed" | "retired";
+
+// Recovery belongs to the root WorkspaceView lifecycle. Keep injected panel
+// consumers source-compatible: they neither initiate nor acknowledge it.
+export type DashboardService = Omit<ReturnType<typeof useDashboardService>,
+  "recoverAuthoritative" | "setRecoverySurfaceVisible" | "retireRecovery"
+>;
 
 const DASHBOARD_SERVICE_KEY: InjectionKey<DashboardService> = Symbol("vibetable-dashboard-service");
 

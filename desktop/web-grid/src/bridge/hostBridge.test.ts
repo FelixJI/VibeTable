@@ -6,6 +6,7 @@ import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type {
   BridgeMessage,
   DatabaseOpenedPayload,
+  RealtimeRecoverySnapshot,
   TablePage,
 } from "@/contracts";
 import type { WorkspaceV2RequestPayload } from "@/contracts/workspaceV2Bridge";
@@ -922,6 +923,24 @@ describe("HostBridge", () => {
     webview.emit({ type: "task.changed", payload: task });
     expect(taskHandler).toHaveBeenCalledWith(task);
 
+    bridge.stop();
+  });
+
+  it("delivers the authoritative realtime recovery frame through the inbound whitelist", () => {
+    const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+    const recovered = vi.fn();
+    bridge.on("realtime.recovered", recovered);
+    bridge.start();
+
+    const frame: RealtimeRecoverySnapshot = {
+      contractVersion: "2.0",
+      topic: "realtime.recovered",
+      activeFormulaTasks: [],
+      terminalNotifications: [],
+    };
+    webview.emit({ type: "realtime.recovered", payload: frame });
+
+    expect(recovered).toHaveBeenCalledExactlyOnceWith(frame);
     bridge.stop();
   });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
-import { defineComponent, h } from "vue";
+import { defineComponent, h, watch } from "vue";
 import { NDropdown, NMessageProvider } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
@@ -25,6 +25,8 @@ import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import { useSurfaceStore } from "@/stores/surfaceStore";
 import { useDashboardDraftStore } from "@/stores/dashboardStore";
+import { useRealtimeStore } from "@/stores/realtimeStore";
+import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { setLocale } from "@/i18n";
 import {
@@ -1276,6 +1278,160 @@ describe("WorkspaceView", () => {
     const status = wrapper.get('[data-testid="realtime-task-progress"]');
     expect(status.text()).toContain("64%");
     expect(status.get('[role="progressbar"]').attributes("aria-valuenow")).toBe("64");
+  });
+
+  it("wires recovered realtime through the root consumer before app.ready and starts a correlated table reload", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+
+    expect(posted.some((message) => message.type === "app.ready")).toBe(true);
+    emit({
+      type: "realtime.recovered",
+      payload: {
+        contractVersion: "2.0",
+        topic: "realtime.recovered",
+        activeFormulaTasks: [{
+          taskId: "formula-recovered",
+          state: "running",
+          progress: 0.5,
+          cursor: "0.5",
+          error: null,
+        }],
+        terminalNotifications: [],
+      },
+    });
+    await flushPromises();
+
+    expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("formula-recovered");
+    expect(posted).toContainEqual(expect.objectContaining({
+      type: "table.queryRequested",
+      payload: expect.objectContaining({ table: "orders" }),
+    }));
+  });
+
+  it("retires recovery before its post-page Relation read when the current table changes", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened(
+      [{ collection: "orders" }, { collection: "customers" }],
+      { orders: "Orders", customers: "Customers" },
+    );
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+    // Isolate the root recovery call from the pre-existing datasetReady
+    // watcher: its context already matches the page that will be delivered.
+    const relations = useRelationLookupStore();
+    relations.collection = "orders";
+    relations.schema = {
+      collection: "orders", primaryKey: "id", schemaRevision: "schema_7",
+      permissionRevision: "permission_7", capabilityHash: "cap_7", lookupRevision: "lookup_7",
+      normalizedRelations: [], columns: [],
+    };
+    relations.capabilities = {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    };
+    const beforeOrdersContexts = posted.filter((message) =>
+      message.type === "schema.describe"
+      && (message.payload as { collection?: string }).collection === "orders",
+    ).length;
+
+    emit({
+      type: "realtime.recovered",
+      payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [], terminalNotifications: [],
+      },
+    });
+    await flushPromises();
+    const reload = [...posted].reverse().find((message) => message.type === "table.queryRequested")!;
+    const stopSwitch = watch(
+      () => useTableStore().datasetReady,
+      (ready) => { if (ready) workspace.selectTable("customers"); },
+      { flush: "post", once: true },
+    );
+    emit({
+      type: "table.pageLoaded",
+      requestId: reload.requestId,
+      payload: {
+        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+      },
+    });
+    // This post-flush change runs after reloadCurrentQuery has resolved
+    // applied, but before the root coordinator resumes its next await.
+    await flushPromises();
+    stopSwitch();
+
+    expect(posted.filter((message) =>
+      message.type === "schema.describe"
+      && (message.payload as { collection?: string }).collection === "orders",
+    )).toHaveLength(beforeOrdersContexts);
+  });
+
+  it("leaves a failed recovery dirty without scheduling an implicit retry", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+
+    emit({
+      type: "realtime.recovered",
+      payload: { contractVersion: "2.0", topic: "realtime.recovered", activeFormulaTasks: [], terminalNotifications: [] },
+    });
+    await flushPromises();
+    const reload = [...posted].reverse().find((message) => message.type === "table.queryRequested")!;
+    emit({
+      type: "operation.failed",
+      requestId: reload.requestId,
+      payload: { message: "offline", operation: "table.queryRequested" },
+    });
+    await flushPromises();
+
+    expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(1);
+  });
+
+  it("uses a relation draft close as an explicit finite retry trigger for retained recovery dirtiness", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+    const relations = useRelationLookupStore();
+    relations.openDraft("orders.customer", "order-1", []);
+
+    emit({
+      type: "realtime.recovered",
+      payload: { contractVersion: "2.0", topic: "realtime.recovered", activeFormulaTasks: [], terminalNotifications: [] },
+    });
+    await flushPromises();
+    const first = [...posted].reverse().find((message) => message.type === "table.queryRequested")!;
+    emit({
+      type: "table.pageLoaded",
+      requestId: first.requestId,
+      payload: {
+        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+      },
+    });
+    await flushPromises();
+    expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(1);
+
+    relations.closeDraft();
+    await flushPromises();
+    expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(2);
   });
 
   it("does not label unrelated background tasks as formula backfills", async () => {
