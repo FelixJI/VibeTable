@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strconv"
+	"strings"
 
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/productcapabilities"
@@ -79,38 +81,82 @@ func historyReadProductParamsSize(value any) (int, error) {
 	if err := encoder.Encode(value); err != nil {
 		return 0, err
 	}
-	// Encoder always escapes U+2028 and U+2029, while Python's ensure_ascii=False
-	// writes their three UTF-8 bytes. Count only parsed runes, so literal
-	// backslash-u text retains its actual serialized budget.
-	return encoded.Len() - 1 - 3*historyReadUnicodeSeparatorCount(value), nil
+	delta, err := historyReadProductEncodingDelta(value)
+	if err != nil {
+		return 0, err
+	}
+	return encoded.Len() - 1 + delta, nil
 }
 
-func historyReadUnicodeSeparatorCount(value any) int {
+func historyReadProductEncodingDelta(value any) (int, error) {
 	switch value := value.(type) {
 	case string:
-		count := 0
+		delta := 0
 		for _, character := range value {
 			if character == '\u2028' || character == '\u2029' {
-				count++
+				// Go emits six-byte escapes; Python writes three UTF-8 bytes.
+				delta -= 3
 			}
 		}
-		return count
+		return delta, nil
+	case json.Number:
+		return historyReadNumberEncodingDelta(value)
 	case map[string]any:
-		count := 0
+		delta := 0
 		for key, item := range value {
-			count += historyReadUnicodeSeparatorCount(key)
-			count += historyReadUnicodeSeparatorCount(item)
+			for _, child := range []any{key, item} {
+				childDelta, err := historyReadProductEncodingDelta(child)
+				if err != nil {
+					return 0, err
+				}
+				delta += childDelta
+			}
 		}
-		return count
+		return delta, nil
 	case []any:
-		count := 0
+		delta := 0
 		for _, item := range value {
-			count += historyReadUnicodeSeparatorCount(item)
+			itemDelta, err := historyReadProductEncodingDelta(item)
+			if err != nil {
+				return 0, err
+			}
+			delta += itemDelta
 		}
-		return count
+		return delta, nil
 	default:
-		return 0
+		return 0, nil
 	}
+}
+
+func historyReadNumberEncodingDelta(number json.Number) (int, error) {
+	raw := number.String()
+	if !strings.ContainsAny(raw, ".eE") {
+		if raw == "-0" {
+			return -1, nil
+		}
+		return 0, nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return 0, err
+	}
+	if math.IsInf(value, 0) || math.IsNaN(value) {
+		return 0, errors.New("history.read parameters contain a non-finite number")
+	}
+	return len(historyReadPythonFloatText(value)) - len(raw), nil
+}
+
+func historyReadPythonFloatText(value float64) string {
+	format := byte('f')
+	abs := math.Abs(value)
+	if abs != 0 && (abs < 1e-4 || abs >= 1e16) {
+		format = 'e'
+	}
+	text := strconv.FormatFloat(value, format, -1, 64)
+	if !strings.ContainsAny(text, ".e") {
+		return text + ".0"
+	}
+	return text
 }
 
 func validateHistoryReadProductValue(value any, depth int) error {
