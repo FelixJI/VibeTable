@@ -38,6 +38,10 @@ import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mj
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { classifyWorkspaceSearchObservation } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
+import {
+  collectBrowserSurfaceEvidence,
+  sampleConnectedThemeSurfaces,
+} from "./theme_surface_probe.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -97,88 +101,6 @@ function makeRecorder() {
         throw new Error(`assertion failed: ${name}${suffix}`);
       }
     },
-  };
-}
-
-/**
- * Collect browser-computed surface evidence with transparency resolved through
- * the ancestor stack. Kept self-contained because Playwright serializes this
- * function into the WebView2 renderer.
- */
-function collectBrowserSurfaceEvidence(element) {
-  const parseColor = (value) => {
-    const match = value.match(
-      /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i,
-    );
-    if (!match) return null;
-    return [
-      Number(match[1]),
-      Number(match[2]),
-      Number(match[3]),
-      match[4] === undefined ? 1 : Number(match[4]),
-    ];
-  };
-  const compositeBehind = (front, back) => {
-    const alpha = front[3] + back[3] * (1 - front[3]);
-    if (alpha <= 0) return [0, 0, 0, 0];
-    return [
-      (front[0] * front[3] + back[0] * back[3] * (1 - front[3])) / alpha,
-      (front[1] * front[3] + back[1] * back[3] * (1 - front[3])) / alpha,
-      (front[2] * front[3] + back[2] * back[3] * (1 - front[3])) / alpha,
-      alpha,
-    ];
-  };
-  const luminance = (color) => {
-    const channels = color.slice(0, 3).map((value) => {
-      const normalized = value / 255;
-      return normalized <= 0.04045
-        ? normalized / 12.92
-        : ((normalized + 0.055) / 1.055) ** 2.4;
-    });
-    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
-  };
-
-  const style = getComputedStyle(element);
-  let effective = [0, 0, 0, 0];
-  let current = element;
-  while (current) {
-    const background = parseColor(getComputedStyle(current).backgroundColor);
-    if (background) effective = compositeBehind(effective, background);
-    if (effective[3] >= 0.999) break;
-    current = current.parentElement;
-  }
-  if (effective[3] < 0.999) {
-    effective = compositeBehind(effective, [255, 255, 255, 1]);
-  }
-  const foreground = parseColor(style.color);
-  const backgroundLuminance = luminance(effective);
-  const parsedOpacity = Number.parseFloat(style.opacity);
-  const opacity = Number.isFinite(parsedOpacity)
-    ? Math.max(0, Math.min(1, parsedOpacity))
-    : 1;
-  const effectiveForeground = foreground
-    ? compositeBehind(
-      [foreground[0], foreground[1], foreground[2], foreground[3] * opacity],
-      effective,
-    )
-    : null;
-  const foregroundLuminance = effectiveForeground
-    ? luminance(effectiveForeground)
-    : null;
-  const contrast = foregroundLuminance === null
-    ? null
-    : (Math.max(backgroundLuminance, foregroundLuminance) + 0.05)
-      / (Math.min(backgroundLuminance, foregroundLuminance) + 0.05);
-  const rect = element.getBoundingClientRect();
-  return {
-    rawBackground: style.backgroundColor,
-    effectiveBackground: effective,
-    backgroundLuminance,
-    foreground: style.color,
-    effectiveForeground,
-    opacity,
-    contrast,
-    visible: rect.width > 0 && rect.height > 0,
   };
 }
 
@@ -4097,21 +4019,7 @@ async function scenario12(page, recorder, _network, runtime) {
   await page.locator("html.dark").waitFor({ timeout: 10_000 });
   await page.getByTestId("nav-tables").click();
   await selectTable(page, "E2E Backup Consistency");
-  const darkCell = page.locator(".tabulator-row .tabulator-cell").first();
-  await darkCell.waitFor({ state: "visible", timeout: 10_000 });
-  const [darkRootEvidence, darkTableSurface, darkCellSurface] = await Promise.all([
-    page.locator("html").evaluate((element) => ({
-      rootDark: element.classList.contains("dark"),
-      colorScheme: getComputedStyle(element).colorScheme,
-    })),
-    page.locator(".tabulator-tableholder").evaluate(collectBrowserSurfaceEvidence),
-    darkCell.evaluate(collectBrowserSurfaceEvidence),
-  ]);
-  const darkThemeEvidence = {
-    root: darkRootEvidence,
-    table: darkTableSurface,
-    cell: darkCellSurface,
-  };
+  const darkThemeEvidence = await sampleConnectedThemeSurfaces(page);
   recorder.check("dark table uses the packaged semantic theme rather than light fallbacks",
     darkThemeEvidence.root.rootDark
       && darkThemeEvidence.root.colorScheme.includes("dark")
