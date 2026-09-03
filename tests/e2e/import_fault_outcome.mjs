@@ -108,7 +108,8 @@ function installImportFaultOutcomeCaptureInPage({ ownerToken }) {
     }
     if (message.type === "operation.failed") {
       const payload = message.payload;
-      status.terminal = (payload?.operation === undefined || payload.operation === "task.status")
+      const operation = payload?.operation;
+      status.terminal = (operation === undefined || operation === null || operation === "task.status")
         && payload?.code === "BACKEND_UNAVAILABLE"
         ? { kind: "expected", requestId: status.requestId, at: capture.event }
         : { kind: "unexpected", at: capture.event };

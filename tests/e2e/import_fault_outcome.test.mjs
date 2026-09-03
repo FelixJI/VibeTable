@@ -90,6 +90,7 @@ function exactFault(requestId = "import-status", overrides = {}) {
     type: "operation.failed",
     requestId,
     payload: {
+      operation: null,
       code: "BACKEND_UNAVAILABLE",
       message: "private failure at C:\\secret",
     },
@@ -199,6 +200,25 @@ test("correlates one exact fault after the barrier and leaves acknowledgement to
     assert.equal(JSON.stringify(await capture.readEvidence()).includes("private"), false);
   } finally {
     await capture.release();
+  }
+});
+
+test("accepts omitted or explicit task.status on an already correlated failure", async () => {
+  for (const operation of [undefined, "task.status"]) {
+    const page = new FakePage();
+    const { capture } = await readyCapture(page);
+    try {
+      await capture.openFaultWindow({ deadlineAt: Date.now() + 1_000 });
+      page.post(statusRequest());
+      const terminal = exactFault();
+      if (operation === undefined) delete terminal.payload.operation;
+      else terminal.payload.operation = operation;
+      page.emit(terminal);
+      const result = await capture.settle({ deadlineAt: Date.now() + 1_000, ...verifiedFault() });
+      assert.equal(result.kind, "expected-bridge-failure");
+    } finally {
+      await capture.release();
+    }
   }
 });
 
