@@ -152,7 +152,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
     class MissingRouteModule(ProductQuerySchemaRpc):
         def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
             super().__init__(context)
-            self.methods = self.methods - {"schema.getTable"}
+            self.methods = self.methods - {"schema.describe"}
 
     monkeypatch.setattr(product_rpc, "ProductQuerySchemaRpc", MissingRouteModule)
     with pytest.raises(RuntimeError, match="routes do not match the contract registry"):
@@ -160,12 +160,17 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_schema_list_is_retired_from_python_adapter_without_transport() -> None:
+@pytest.mark.parametrize("method", ["schema.getTable", "schema.list"])
+async def test_go_owned_schema_methods_are_retired_from_python_adapter_without_transport(
+    method: str,
+) -> None:
     service, transport = _service([{"tables": []}])
-    params = PRODUCT_RPC_REGISTRY["schema.list"].model_validate({})
+    params = PRODUCT_RPC_REGISTRY[method].model_validate(
+        {"tableId": "orders"} if method == "schema.getTable" else {}
+    )
 
-    with pytest.raises(ValueError, match=r"unknown product RPC method: schema\.list"):
-        await service.invoke("schema.list", params)
+    with pytest.raises(ValueError, match=rf"unknown product RPC method: {method}"):
+        await service.invoke(method, params)
 
     assert transport.requests == []
 

@@ -712,7 +712,6 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
 async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths() -> None:
     service, transport = service_with(
         [
-            snapshot_v2("orders", [field_v2("name")], revision="schema_3"),
             {"valid": True},
             {
                 "tableId": "orders",
@@ -722,17 +721,11 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
             },
         ]
     )
-    assert (
-        await service.invoke(
-            "schema.getTable",
-            ProductParams.model_validate({"tableId": "orders"}),
-        )
-    )["tableId"] == "orders"
     await service.invoke(
         "query.validateSnapshot",
         ProductParams.model_validate({"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}}),
     )
-    assert transport.requests[1]["json_body"]["currentQuery"] == {"limit": 10}
+    assert transport.requests[0]["json_body"]["currentQuery"] == {"limit": 10}
 
     with pytest.raises(ValueError, match="variant"):
         await service.invoke(

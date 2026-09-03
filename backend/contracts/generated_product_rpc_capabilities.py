@@ -87,7 +87,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "relation.updateSingle",
         "schema.delete",
         "schema.describe",
-        "schema.getTable",
         "schema.table.create",
         "settings.readDevice",
         "settings.readShared",
@@ -109,7 +108,10 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "version.promote",
         "version.save",
     ),
-    "goSidecar": ("schema.list",),
+    "goSidecar": (
+        "schema.getTable",
+        "schema.list",
+    ),
     "wpfHost": (),
     "pythonWorker": (),
 }

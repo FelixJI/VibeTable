@@ -15,6 +15,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -26,7 +27,7 @@ const schemaListWire = `{"scope":"workspace","workspaceId":"11111111-1111-4111-8
 
 func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
 	pb := schemaProductStore(t)
-	mux := schemaProductMux(t, schemaapi.New(pb))
+	mux := schemaProductMux(t, pb)
 	assertSchemaListParity(t, mux, `{"tables":[]}`)
 	lifecycle, err := schemacore.NewTableLifecycle(pb)
 	if err != nil {
@@ -63,9 +64,124 @@ func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
 	assertSchemaListParity(t, mux, string(expected))
 }
 
+func TestSchemaGetTableProductHTTPMatchesPythonSnapshotProjection(t *testing.T) {
+	pb := schemaProductStore(t)
+	mux := schemaProductMux(t, pb)
+	lifecycle, err := schemacore.NewTableLifecycle(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+		DisplayName: "订单 📦", OperationID: "schema-get-table",
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := createSchemaProductField(t, pb, receipt.TableID, v2.LogicalFile, "客户 é", "schema-file")
+
+	rest := httptest.NewRecorder()
+	mux.ServeHTTP(rest, httptest.NewRequest(
+		http.MethodGet, "/api/vibetable/v2/schema/tables/"+receipt.TableID, nil,
+	))
+	if rest.Code != http.StatusOK {
+		t.Fatalf("REST schema snapshot = %d %s", rest.Code, rest.Body)
+	}
+	product := schemaProductRequestForMethod(
+		t, mux, context.Background(), "schema.getTable",
+		`{"tableId":"`+receipt.TableID+`"}`, schemaListWire,
+	)
+	if product.Error != nil {
+		t.Fatalf("Product schema.getTable = %+v", product.Error)
+	}
+	var snapshot, restSnapshot map[string]any
+	if err := json.Unmarshal(product.Result, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rest.Body.Bytes(), &restSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot["displayName"] != "订单 📦" || snapshot["tableId"] != receipt.TableID {
+		t.Fatalf("Product schema identity = %#v", snapshot)
+	}
+	fields, ok := snapshot["fields"].([]any)
+	if !ok || len(fields) != 1 {
+		t.Fatalf("Product fields = %#v", snapshot["fields"])
+	}
+	field, ok := fields[0].(map[string]any)
+	if !ok || field["logicalType"] != string(v2.LogicalFile) || field["file"] == nil {
+		t.Fatalf("Product file field = %#v", fields)
+	}
+	if snapshot["schemaRevision"] != restSnapshot["schemaRevision"] ||
+		snapshot["dataRevision"] != restSnapshot["dataRevision"] {
+		t.Fatalf("Product snapshot disagrees with authoritative REST: Product=%#v REST=%#v", snapshot, restSnapshot)
+	}
+	assertSchemaSnapshotModelDumpDefaults(t, field)
+	identity := field["identity"].(map[string]any)
+	if identity["fieldId"] != file.FieldID {
+		t.Fatalf("Product field identity = %#v", identity)
+	}
+}
+
+func TestSchemaGetTableProductHTTPPreservesClosedParamsAndSchemaErrors(t *testing.T) {
+	for _, params := range []struct {
+		value string
+		code  int
+	}{
+		{`null`, productrpc.CodeInvalidRequest},
+		{`[]`, productrpc.CodeInvalidRequest},
+		{`{"tableId":""}`, productrpc.CodeInvalidParams},
+		{`{"tableId":7}`, productrpc.CodeInvalidParams},
+		{`{"tableId":"orders","extra":true}`, productrpc.CodeInvalidParams},
+	} {
+		t.Run(params.value, func(t *testing.T) {
+			pb := schemaProductStore(t)
+			response := schemaProductRequestForMethod(
+				t, schemaProductMux(t, pb), context.Background(), "schema.getTable", params.value, schemaListWire,
+			)
+			if response.Error == nil || response.Error.Code != params.code {
+				t.Fatalf("closed params response = %+v", response)
+			}
+		})
+	}
+
+	pb := schemaProductStore(t)
+	mux := schemaProductMux(t, pb)
+	invalidPath := schemaProductRequestForMethod(
+		t, mux, context.Background(), "schema.getTable", `{"tableId":" "}`, schemaListWire,
+	)
+	if invalidPath.Error == nil || invalidPath.Error.Code != productrpc.CodeInternalError {
+		t.Fatalf("non-empty invalid path response = %+v", invalidPath)
+	}
+	missing := schemaProductRequestForMethod(
+		t, mux, context.Background(), "schema.getTable", `{"tableId":"tbl_missing"}`, schemaListWire,
+	)
+	if missing.Error == nil || missing.Error.Code != productrpc.CodeProductData ||
+		missing.Error.Data["code"] != "schema.table.not_found" ||
+		missing.Error.Data["path"] != "tableId" {
+		t.Fatalf("missing table response = %+v", missing)
+	}
+	if _, err := pb.DB().NewQuery("DROP TABLE vibetable_tables").Execute(); err != nil {
+		t.Fatal(err)
+	}
+	storage := schemaProductRequestForMethod(
+		t, mux, context.Background(), "schema.getTable", `{"tableId":"tbl_storage"}`, schemaListWire,
+	)
+	wantStorage := &productrpc.ErrorObject{
+		Code: productrpc.CodeProductData, Message: "Product data error",
+		Data: map[string]any{
+			"kind": "product_data_error", "code": "schema.storage.failed", "path": "",
+			"message": "schema storage operation failed", "details": map[string]any{}, "retryable": false,
+		},
+	}
+	if !reflect.DeepEqual(storage.Error, wantStorage) {
+		t.Fatalf("storage error exposed or changed: %+v", storage.Error)
+	}
+}
+
 func TestSchemaListProductHTTPRejectsInvalidParamsAndStaleScopeBeforeStorage(t *testing.T) {
 	pb := schemaProductStore(t)
-	mux := schemaProductMux(t, schemaapi.New(pb))
+	mux := schemaProductMux(t, pb)
 	if _, err := pb.DB().NewQuery("DROP TABLE vibetable_tables").Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +211,7 @@ func TestSchemaListProductHTTPRejectsInvalidParamsAndStaleScopeBeforeStorage(t *
 
 func TestSchemaListProductHTTPPreservesPublicStorageErrorAndCancellation(t *testing.T) {
 	pb := schemaProductStore(t)
-	mux := schemaProductMux(t, schemaapi.New(pb))
+	mux := schemaProductMux(t, pb)
 	if _, err := pb.DB().NewQuery("DROP TABLE vibetable_tables").Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +264,50 @@ func schemaProductStore(t *testing.T) *pocketbase.PocketBase {
 	return pb
 }
 
+func createSchemaProductField(
+	t *testing.T,
+	pb *pocketbase.PocketBase,
+	tableID string,
+	logicalType v2.LogicalType,
+	displayName string,
+	operationID string,
+) v2.ApplyReceipt {
+	t.Helper()
+	recommended, err := v2.RecommendedDefaults(logicalType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := fieldchange.NewCatalog(pb)
+	store := fieldchange.NewPocketBasePlanStore(pb)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(pb, store)
+	revisions, err := catalog.Revisions(context.Background(), tableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: tableID, ExpectedSchemaRev: revisions.Schema,
+		Draft: &v2.FieldDraft{
+			DisplayName: displayName, LogicalType: logicalType,
+			Value: recommended.Value, Constraints: recommended.Constraints,
+			Storage: recommended.Storage, Display: recommended.Display,
+			File: recommended.File, JSON: recommended.JSON,
+		},
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := executor.Apply(context.Background(), v2.ApplyRequest{
+		PlanID: plan.PlanID, PlanHash: plan.PlanHash, OperationID: operationID,
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt
+}
+
 func assertSchemaListParity(t *testing.T, mux http.Handler, expected string) {
 	t.Helper()
 	rest := httptest.NewRecorder()
@@ -173,9 +333,21 @@ func assertSchemaListParity(t *testing.T, mux http.Handler, expected string) {
 
 func schemaProductRequest(t *testing.T, mux http.Handler, ctx context.Context, params, wire string) productrpc.ResponseEnvelope {
 	t.Helper()
+	return schemaProductRequestForMethod(t, mux, ctx, "schema.list", params, wire)
+}
+
+func schemaProductRequestForMethod(
+	t *testing.T,
+	mux http.Handler,
+	ctx context.Context,
+	method string,
+	params string,
+	wire string,
+) productrpc.ResponseEnvelope {
+	t.Helper()
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, productRPCPath, bytes.NewBufferString(
-		`{"jsonrpc":"2.0","id":"schema-list","method":"schema.list","wire":`+wire+`,"params":`+params+`}`)).WithContext(ctx)
+		`{"jsonrpc":"2.0","id":"schema-request","method":"`+method+`","wire":`+wire+`,"params":`+params+`}`)).WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 	mux.ServeHTTP(response, request)
 	var envelope productrpc.ResponseEnvelope
@@ -186,24 +358,53 @@ func schemaProductRequest(t *testing.T, mux http.Handler, ctx context.Context, p
 	if envelope.Error != nil && envelope.Error.Code == productrpc.CodeInvalidRequest {
 		expectedStatus = http.StatusBadRequest
 	}
-	if response.Code != expectedStatus || string(envelope.ID) != `"schema-list"` || string(envelope.Wire) != wire {
+	if response.Code != expectedStatus || string(envelope.ID) != `"schema-request"` || string(envelope.Wire) != wire {
 		t.Fatalf("Product envelope changed: %d %s", response.Code, response.Body)
 	}
 	return envelope
 }
 
-func schemaProductMux(t *testing.T, catalog schemaapi.SchemaCatalog) http.Handler {
+func assertSchemaSnapshotModelDumpDefaults(t *testing.T, field map[string]any) {
 	t.Helper()
+	for _, name := range []string{"select", "relation", "file", "json", "autoDate", "formula", "lookup"} {
+		if _, found := field[name]; !found {
+			t.Fatalf("Python model_dump omitted field default %q from %#v", name, field)
+		}
+	}
+	value := field["value"].(map[string]any)
+	presence := value["presence"].(map[string]any)
+	for _, name := range []string{"providerFieldId", "physicalName"} {
+		if _, found := presence[name]; !found {
+			t.Fatalf("Python model_dump omitted presence default %q from %#v", name, presence)
+		}
+	}
+	display := field["display"].(map[string]any)
+	if _, found := display["indent"]; !found {
+		t.Fatalf("Python model_dump omitted display indent default from %#v", display)
+	}
+	if relation, ok := field["relation"].(map[string]any); ok {
+		for _, name := range []string{"pairId", "reciprocalFieldId"} {
+			if _, found := relation[name]; !found {
+				t.Fatalf("Python model_dump omitted relation default %q from %#v", name, relation)
+			}
+		}
+	}
+}
+
+func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
+	t.Helper()
+	catalog := schemaapi.New(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-	}, schemaListRegistration(catalog))
+	}, schemaGetTableRegistration(catalog), schemaListRegistration(catalog))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
 		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
 	})
+	registerFieldRoutes(r, pb, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
 	registerProductRoutes(r, dispatcher)
 	mux, err := r.BuildMux()

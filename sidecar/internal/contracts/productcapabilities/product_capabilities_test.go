@@ -2,12 +2,12 @@ package productcapabilities
 
 import "testing"
 
-func TestGeneratedCurrentOwnerCatalogKeepsL1OnPython(t *testing.T) {
-	if !HasCurrentOwnerRPCMethod(PythonBff, "schema.getTable") {
-		t.Fatal("schema.getTable must remain on pythonBff during L1")
+func TestGeneratedCurrentOwnerCatalogMovesSchemaGetTableToGo(t *testing.T) {
+	if HasCurrentOwnerRPCMethod(PythonBff, "schema.getTable") {
+		t.Fatal("schema.getTable must not remain on pythonBff after L3A")
 	}
-	if HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
-		t.Fatal("L1 must not switch schema.getTable to Go")
+	if !HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
+		t.Fatal("L3A must route schema.getTable through goSidecar")
 	}
 	if !HasCurrentOwnerEventTopic(PythonBff, "data.changed") {
 		t.Fatal("data.changed must remain on pythonBff during L1")
@@ -36,16 +36,14 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		Scope:        WorkspaceScope,
 		Audience:     RendererPublic,
 		CapabilityID: "schema.query",
-		Owner:        PythonBff,
+		Owner:        GoSidecar,
 		Effect:       ReadEffect,
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 1 || got[0] != (RPCDescriptor{
-		Method: "schema.list", Scope: WorkspaceScope, Audience: RendererPublic,
-		CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect,
-	}) {
-		t.Fatalf("goSidecar descriptors = %#v, want only schema.list", got)
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 2 ||
+		got[0].Method != "schema.getTable" || got[1].Method != "schema.list" {
+		t.Fatalf("goSidecar descriptors = %#v, want schema.getTable and schema.list", got)
 	}
 
 	descriptors[0].Method = "mutated"

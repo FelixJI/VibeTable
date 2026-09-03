@@ -29,8 +29,16 @@ class FakeProductService:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("params", [{}, {"extra": True}])
-async def test_schema_list_has_no_python_registration_or_fallback(
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("schema.list", {}),
+        ("schema.list", {"extra": True}),
+        ("schema.getTable", {"tableId": "orders"}),
+    ],
+)
+async def test_go_owned_schema_methods_have_no_python_registration_or_fallback(
+    method: str,
     params: dict[str, object],
 ) -> None:
     dispatcher = RpcDispatcher()
@@ -38,7 +46,7 @@ async def test_schema_list_has_no_python_registration_or_fallback(
     _register_pocketbase_product_methods(dispatcher, service)
 
     response = await dispatcher.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": "schema.list", "params": params}
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     )
 
     assert response is not None
@@ -93,11 +101,14 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "history.read",
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
-    assert set(dispatcher.registered_methods) == expected_methods - {"schema.list"}
+    assert set(dispatcher.registered_methods) == expected_methods - {
+        "schema.getTable",
+        "schema.list",
+    }
     assert set(PYTHON_PRODUCT_RPC_REGISTRY) == set(dispatcher.registered_methods)
     assert set(dispatcher.registered_methods) >= WORKSPACE_CATALOG_METHODS
     assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
-        WORKSPACE_CATALOG_METHODS | {"schema.list"}
+        WORKSPACE_CATALOG_METHODS | {"schema.getTable", "schema.list"}
     )
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods
@@ -111,13 +122,25 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
     _register_pocketbase_product_methods(dispatcher, service)
 
     response = await dispatcher.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": "schema.getTable", "params": {"tableId": "orders"}}
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "schema.describe",
+            "params": {
+                "collection": "orders",
+                "requestGeneration": 1,
+                "accepts": [
+                    "vibetable.relation-capabilities.v1",
+                    "vibetable.lookup-query.v1",
+                ],
+            },
+        }
     )
 
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "schema.getTable"
+    assert method == "schema.describe"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -125,9 +148,12 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("schema.getTable", {"tableId": "orders", "extra": True}),
-        ("schema.getTable", {}),
-        ("schema.getTable", {"tableId": 7}),
+        (
+            "schema.describe",
+            {"collection": "orders", "requestGeneration": 1, "accepts": [], "extra": True},
+        ),
+        ("schema.describe", {}),
+        ("schema.describe", {"collection": 7, "requestGeneration": 1, "accepts": []}),
         (
             "schema.describe",
             {
@@ -199,8 +225,15 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "schema.getTable",
-            "params": {"tableId": "orders"},
+            "method": "schema.describe",
+            "params": {
+                "collection": "orders",
+                "requestGeneration": 1,
+                "accepts": [
+                    "vibetable.relation-capabilities.v1",
+                    "vibetable.lookup-query.v1",
+                ],
+            },
         }
     )
 

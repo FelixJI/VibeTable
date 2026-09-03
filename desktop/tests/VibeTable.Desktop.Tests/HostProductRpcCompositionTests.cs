@@ -341,17 +341,18 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
-    public async Task DefaultPolicySelectsGoForSchemaListAndKeepsOtherReadsOnPython()
+    public async Task DefaultPolicySelectsGoForSchemaReadsAndKeepsOtherReadsOnPython()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
         using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
             .CreateGateway(fixture.Leases, fixture.Http);
         JsonElement result = await gateway.ListTablesAsync(Json("{}"), CancellationToken.None);
         Assert.AreEqual("orders", result.GetProperty("tables")[0].GetString());
+        fixture.Http.Error = true;
         RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
             gateway.GetTableSchemaAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
-        Assert.AreEqual(-32601, error.Code); // Existing fake_backend has no business methods.
-        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(-32602, error.Code);
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
         Assert.AreEqual(1, fixture.Http.ProductHandshakes);
     }
 
@@ -377,6 +378,7 @@ public sealed class HostProductRpcCompositionTests
 
         private Fixture(bool useTestPolicy)
         {
+            Http.UseTestPolicy = useTestPolicy;
             DirectoryInfo directory = new(AppContext.BaseDirectory);
             while (!File.Exists(Path.Combine(directory.FullName, "pyproject.toml")))
                 directory = directory.Parent ?? throw new InvalidOperationException("Repository not found.");
@@ -465,6 +467,7 @@ public sealed class HostProductRpcCompositionTests
         internal TaskCompletionSource RpcEntered { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? ReplyGate { get; set; }
         internal bool Error { get; set; }
+        internal bool UseTestPolicy { get; set; }
         internal JsonElement Result { get; set; } = Json("""{"tables":["orders"]}""");
         internal JsonElement LastWire { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -479,8 +482,16 @@ public sealed class HostProductRpcCompositionTests
                     sessionEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_SESSION_EPOCH"]),
                     fenceEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_FENCE_EPOCH"]),
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
-                    rpcMethods = new[] { "schema.list" },
-                    registrations = new[] { new { method = "schema.list", scope = "workspace" } },
+                    rpcMethods = UseTestPolicy
+                        ? new[] { "schema.list" }
+                        : new[] { "schema.getTable", "schema.list" },
+                    registrations = UseTestPolicy
+                        ? new[] { new { method = "schema.list", scope = "workspace" } }
+                        : new[]
+                        {
+                            new { method = "schema.getTable", scope = "workspace" },
+                            new { method = "schema.list", scope = "workspace" },
+                        },
                 }));
             }
             if (request.RequestUri!.AbsolutePath.EndsWith("/drain", StringComparison.Ordinal))
