@@ -4,12 +4,71 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestQualificationEmitsTheCompleteReportForLaneEvidence(t *testing.T) {
+	root := t.TempDir()
+	outputPath := filepath.Join(root, "stdout.json")
+	output, err := os.Create(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdout
+	os.Stdout = output
+	t.Cleanup(func() {
+		os.Stdout = previous
+		_ = output.Close()
+	})
+	workRoot, err := qualificationWorkRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := qualificationConfig{
+		Profile: "pr", Records: 64, Files: 2, LogicalCorpusBytes: 8192,
+		ReportPath: filepath.Join(root, "report.json"), WorkRoot: workRoot,
+	}
+	if err := validateConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	runErr := run(context.Background(), config)
+	os.Stdout = previous
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readReport := func(path string) qualificationReport {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var report qualificationReport
+		if err := json.Unmarshal(raw, &report); err != nil {
+			t.Fatalf("qualification report missing from %s: %v", filepath.Base(path), err)
+		}
+		return report
+	}
+	emitted := readReport(outputPath)
+	if emitted.SchemaVersion != 3 || emitted.Profile != "pr" || emitted.Records != 64 ||
+		emitted.FileDocuments != 2 || emitted.MaterializedBytes != 8192 {
+		t.Fatalf("unexpected qualification report: %#v", emitted)
+	}
+	// This tiny corpus intentionally exceeds the fixed index-size multiplier.
+	// Keep a real failing command so success-only output cannot satisfy the test.
+	if runErr == nil || !slices.Contains(emitted.Failures, "index_multiplier_budget") {
+		t.Fatalf("expected index budget failure, got failures=%v error=%v", emitted.Failures, runErr)
+	}
+	if !reflect.DeepEqual(emitted, readReport(config.ReportPath)) {
+		t.Fatal("lane stdout did not retain the complete generated qualification report")
+	}
+}
 
 func TestMaterializedCorpusIsFullyWrittenAndFullyReadByProductExtractor(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qualification.txt")
