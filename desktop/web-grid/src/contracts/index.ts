@@ -1622,7 +1622,40 @@ export interface TaskChangedEvent {
   readonly state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
   readonly progress: number;
   readonly cursor: string | null;
-  readonly error: MutationErrorPayload | null;
+  readonly error: ProductContractError | null;
+}
+
+/** Exact `ProductError` shape carried by product realtime task payloads. */
+export interface ProductContractError {
+  readonly contractVersion: "2.0";
+  readonly code: string;
+  readonly path: string | null;
+  readonly message: string;
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly retryable: boolean;
+}
+
+/** Current Go-owned formula state, intentionally not a synthetic task event. */
+export interface FormulaTaskState {
+  readonly taskId: string;
+  readonly state: "pending" | "running";
+  readonly progress: number;
+  readonly cursor: string | null;
+  readonly error: ProductContractError | null;
+}
+
+/** Original retained Go terminal notification, separate from current activity. */
+export interface FormulaTaskTerminalEvent extends TaskChangedEvent {
+  readonly taskType: "formulaBackfill";
+  readonly state: "succeeded" | "failed" | "cancelled";
+}
+
+/** Complete Go recovery payload for an unknown or expired realtime cursor. */
+export interface RealtimeRecoverySnapshot {
+  readonly contractVersion: "2.0";
+  readonly topic: "realtime.recovered";
+  readonly activeFormulaTasks: readonly FormulaTaskState[];
+  readonly terminalNotifications: readonly FormulaTaskTerminalEvent[];
 }
 
 export interface SessionPathGrant {

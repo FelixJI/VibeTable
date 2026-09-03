@@ -28,6 +28,7 @@ FIXTURE_DEFINITIONS = {
     "managed-attachment-ref.json": "ManagedAttachmentRef",
     "data-changed-event.json": "DataChangedEvent",
     "task-changed-event.json": "TaskChangedEvent",
+    "realtime-recovery-event.json": "RecoverySnapshot",
     "product-rpc-catalog.json": "RpcContractCatalog",
 }
 
@@ -217,6 +218,8 @@ def _validate(instance: Any, schema: Any, root: dict[str, Any], path: str = "$")
     if isinstance(instance, list):
         if len(instance) < schema.get("minItems", 0):
             raise SchemaMismatchError(f"{path}: array is shorter than minItems")
+        if "maxItems" in schema and len(instance) > schema["maxItems"]:
+            raise SchemaMismatchError(f"{path}: array is longer than maxItems")
         if schema.get("uniqueItems"):
             canonical = [json.dumps(item, sort_keys=True) for item in instance]
             if len(canonical) != len(set(canonical)):
@@ -371,6 +374,27 @@ def test_mutation_and_event_required_wire_fields_are_frozen() -> None:
     } <= mutation_receipt
     assert schema["$defs"]["DataChangedEvent"]["properties"]["topic"]["const"] == ("data.changed")
     assert schema["$defs"]["TaskChangedEvent"]["properties"]["topic"]["const"] == ("task.changed")
+    recovery = schema["$defs"]["RecoverySnapshot"]
+    assert recovery["properties"]["topic"]["const"] == "realtime.recovered"
+    assert recovery["properties"]["activeFormulaTasks"]["maxItems"] == 10000
+
+
+def test_recovery_schema_keeps_go_activity_separate_from_retained_terminals() -> None:
+    schema = _load(SCHEMA_PATH)
+    for invalid in ("python_task", "nonterminal", "too_many_active"):
+        frame = _load(FIXTURES / "realtime-recovery-event.json")
+        if invalid == "python_task":
+            frame["terminalNotifications"][0]["taskType"] = "import"
+        elif invalid == "nonterminal":
+            frame["terminalNotifications"][0]["state"] = "running"
+        else:
+            frame["activeFormulaTasks"] *= 10001
+        try:
+            _validate(frame, schema["$defs"]["RecoverySnapshot"], schema)
+        except SchemaMismatchError:
+            pass
+        else:
+            raise AssertionError(f"invalid recovery frame was accepted: {invalid}")
 
 
 def test_wire_schema_does_not_leak_storage_provider_names() -> None:
