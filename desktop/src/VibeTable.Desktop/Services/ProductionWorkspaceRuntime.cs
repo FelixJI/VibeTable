@@ -4,6 +4,7 @@ using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
+using VibeTable.Infrastructure.Rpc;
 using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop.Services;
@@ -22,6 +23,9 @@ public sealed class ProductionWorkspaceRuntimeFactory :
     private readonly object _gate = new();
     private readonly Func<PocketBaseLaunchOptions> _sidecarTemplateFactory;
     private readonly Func<BackendLaunchOptions> _backendTemplateFactory;
+    private readonly Func<PocketBaseLaunchOptions, BackendLaunchOptions,
+        ProductionWorkspaceRuntimeDependencies> _createDependencies;
+    private readonly ProductRpcCapabilityManifest _productPolicy;
     private readonly DesktopWorkspaceAuthorityStore _authority;
     private readonly ProductSidecarGenerationSnapshotCache
         _productSidecarGenerations = new();
@@ -44,11 +48,26 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         Func<PocketBaseLaunchOptions> sidecarTemplateFactory,
         Func<BackendLaunchOptions> backendTemplateFactory,
         IEnumerable<WorkspaceRegistryEntryV2>? knownWorkspaces = null)
+        : this(sidecarTemplateFactory, backendTemplateFactory,
+            ProductionWorkspaceRuntimeDependencies.Create, null, knownWorkspaces)
+    {
+    }
+
+    internal ProductionWorkspaceRuntimeFactory(
+        Func<PocketBaseLaunchOptions> sidecarTemplateFactory,
+        Func<BackendLaunchOptions> backendTemplateFactory,
+        Func<PocketBaseLaunchOptions, BackendLaunchOptions,
+            ProductionWorkspaceRuntimeDependencies> createDependencies,
+        ProductRpcCapabilityManifest? productPolicy = null,
+        IEnumerable<WorkspaceRegistryEntryV2>? knownWorkspaces = null)
     {
         _sidecarTemplateFactory = sidecarTemplateFactory
             ?? throw new ArgumentNullException(nameof(sidecarTemplateFactory));
         _backendTemplateFactory = backendTemplateFactory
             ?? throw new ArgumentNullException(nameof(backendTemplateFactory));
+        _createDependencies = createDependencies
+            ?? throw new ArgumentNullException(nameof(createDependencies));
+        _productPolicy = productPolicy ?? ProductRpcCapabilityManifest.Default;
         _authority = new DesktopWorkspaceAuthorityStore();
         InitialSessionEpoch = knownWorkspaces is null
             ? 0
@@ -159,6 +178,47 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                 _current,
                 generation,
                 capabilities);
+        }
+    }
+
+    internal HostProductRpcBinding? CaptureHostProductRpcBinding(
+        WorkspaceSessionV2? expectedSession = null)
+    {
+        lock (_gate)
+        {
+            if (_disposed || _current is not { } runtime
+                || (expectedSession is not null
+                    && (runtime.WorkspaceId != expectedSession.WorkspaceId
+                        || runtime.SessionEpoch != expectedSession.SessionEpoch)))
+                return null;
+            HostProductRpcBinding? binding = null;
+            runtime.Backend.TryUseReadyClient(client =>
+            {
+                if (CaptureProductSidecarGeneration() is not { } snapshot)
+                    return false;
+                return snapshot.TryUseCurrent(() =>
+                {
+                    binding = new(runtime, client, snapshot, new ProductRpcRouteSelector(_productPolicy),
+                        action => TryUseHostProductBinding(runtime, client, snapshot, action));
+                    return true;
+                });
+            });
+            return binding;
+        }
+    }
+
+    private bool TryUseHostProductBinding(
+        ProductionWorkspaceRuntime runtime, JsonRpcClient client,
+        ProductSidecarGenerationSnapshot snapshot, Func<bool> action)
+    {
+        // Lock order: factory -> Ready backend -> existing Sidecar authority.
+        // The action only starts work; no lock spans its asynchronous completion.
+        lock (_gate)
+        {
+            return !_disposed && ReferenceEquals(_current, runtime)
+                && runtime.Backend.TryUseReadyClient(currentClient =>
+                    ReferenceEquals(currentClient, client)
+                    && ((IProductSidecarGenerationAuthority)this).TryUseCurrent(snapshot, action));
         }
     }
 
@@ -297,7 +357,8 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             workspace,
             authority,
             BuildSidecarOptions(workspace, authority, sidecarTemplate),
-            BuildBackendOptions(workspace, authority, backendTemplate));
+            BuildBackendOptions(workspace, authority, backendTemplate),
+            _createDependencies);
     }
 
     /// <summary>
@@ -498,9 +559,24 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                 capabilities.SessionEpoch,
                 capabilities.FenceEpoch,
                 capabilities.ClaimId),
-            ProductRpcCapabilityManifest.Default
-                .GetProductSidecarRegistrations(),
+            _productPolicy.GetProductSidecarRegistrations(),
             generation.TryUseCurrent);
+}
+
+// The runtime owns the returned supervisors and HTTP gateway. Injected HTTP
+// handlers retain the ownership rules of WorkspaceV2HttpGateway.
+internal sealed record ProductionWorkspaceRuntimeDependencies(
+    PocketBaseSupervisor Sidecar,
+    PythonBackendSupervisor Backend,
+    WorkspaceV2HttpGateway Gateway)
+{
+    internal static ProductionWorkspaceRuntimeDependencies Create(
+        PocketBaseLaunchOptions sidecarOptions, BackendLaunchOptions backendOptions)
+    {
+        var sidecar = new PocketBaseSupervisor(sidecarOptions);
+        return new(sidecar, new PythonBackendSupervisor(backendOptions),
+            new WorkspaceV2HttpGateway(sidecar));
+    }
 }
 
 public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
@@ -517,7 +593,9 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         WorkspaceRegistryEntryV2 workspace,
         DesktopWorkspaceAuthority authority,
         PocketBaseLaunchOptions sidecarOptions,
-        BackendLaunchOptions backendOptions)
+        BackendLaunchOptions backendOptions,
+        Func<PocketBaseLaunchOptions, BackendLaunchOptions,
+            ProductionWorkspaceRuntimeDependencies> createDependencies)
     {
         _owner = owner;
         Workspace = workspace;
@@ -532,10 +610,12 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         ActivationPolicy = WorkspaceActivationPolicy.FromStageTimeouts(
             sidecarOptions.StartupTimeout,
             backendOptions.StartupTimeout);
-        Sidecar = new PocketBaseSupervisor(sidecarOptions);
+        ProductionWorkspaceRuntimeDependencies dependencies =
+            createDependencies(sidecarOptions, backendOptions);
+        Sidecar = dependencies.Sidecar;
         var localData = new LocalDataService(Sidecar);
-        Backend = new PythonBackendSupervisor(backendOptions);
-        Gateway = new WorkspaceV2HttpGateway(Sidecar);
+        Backend = dependencies.Backend;
+        Gateway = dependencies.Gateway;
         _runtime = new ProductRuntimeService(
             localData,
             Sidecar,
