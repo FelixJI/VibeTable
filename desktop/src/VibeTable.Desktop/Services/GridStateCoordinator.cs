@@ -143,20 +143,42 @@ public sealed class GridStateCoordinator
         {
             return;
         }
+        ScheduleQuery(table, query, null, CancellationToken.None);
+    }
+
+    /// <summary>Completes one correlated query without broadcasting its result.</summary>
+    public Task<TablePage> RequestQueryAsync(
+        string table, JsonElement query, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(table);
+        if (query.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("Expected a canonical query object.", nameof(query));
+        var completion = new TaskCompletionSource<TablePage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken token = ScheduleQuery(table, query, completion, cancellationToken);
+        // A superseded debounce may never run; its caller must still complete.
+        return completion.Task.WaitAsync(token);
+    }
+
+    private CancellationToken ScheduleQuery(
+        string table, JsonElement query, TaskCompletionSource<TablePage>? completion,
+        CancellationToken cancellationToken)
+    {
         _currentTable = table;
         int generation = Interlocked.Increment(ref _generation);
         CancelQuery();
-        _queryCts = new CancellationTokenSource();
+        _queryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var token = _queryCts.Token;
         _queryDebounce?.Dispose();
         JsonElement stableQuery = query.Clone();
-        var state = (table, stableQuery, generation, token);
+        var state = (table, stableQuery, generation, token, completion);
         _queryDebounce = _timeProvider.CreateTimer(
             _ => _ = ExecuteRawQueryAsync(
-                state.table, state.stableQuery, state.generation, state.token),
+                state.table, state.stableQuery, state.generation, state.token, state.completion),
             null,
             TimeSpan.FromMilliseconds(QueryDebounceMs),
             Timeout.InfiniteTimeSpan);
+        return token;
     }
 
     public void RequestNextWindow(string cursor)
@@ -273,10 +295,12 @@ public sealed class GridStateCoordinator
     // -------------------------------------------------------------------
 
     private async Task ExecuteRawQueryAsync(
-        string table, JsonElement query, int generation, CancellationToken token)
+        string table, JsonElement query, int generation, CancellationToken token,
+        TaskCompletionSource<TablePage>? completion)
     {
         try
         {
+            token.ThrowIfCancellationRequested();
             Task<TablePage> windowTask = _gateway.OpenTableCursorRawAsync(table, query, token);
             TablePage page;
             if (HasViewAggregates(query))
@@ -304,30 +328,46 @@ public sealed class GridStateCoordinator
             }
             if (IsStale(generation) || token.IsCancellationRequested)
             {
+                completion?.TrySetCanceled(token);
                 return;
             }
-            _notify(new TableNotification
+            if (completion is not null)
             {
-                Type = "table.datasetReady",
-                Page = page,
-            });
+                completion.TrySetResult(page);
+            }
+            else
+            {
+                _notify(new TableNotification
+                {
+                    Type = "table.datasetReady",
+                    Page = page,
+                });
+            }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // Superseded renderer query.
+            completion?.TrySetCanceled(token);
         }
         catch (Exception ex)
         {
-            if (IsStale(generation))
+            if (IsStale(generation) || token.IsCancellationRequested)
             {
+                completion?.TrySetCanceled(token);
                 return;
             }
-            _notify(new TableNotification
+            if (completion is not null)
             {
-                Type = "operation.failed",
-                MutationResult = new MutationOutcome(
-                    "query", false, MutationErrorMapper.Map(ex), null),
-            });
+                completion.TrySetException(ex);
+            }
+            else
+            {
+                _notify(new TableNotification
+                {
+                    Type = "operation.failed",
+                    MutationResult = new MutationOutcome(
+                        "query", false, MutationErrorMapper.Map(ex), null),
+                });
+            }
         }
     }
 

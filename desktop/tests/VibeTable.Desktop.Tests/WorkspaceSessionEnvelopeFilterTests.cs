@@ -12,6 +12,45 @@ namespace VibeTable.Desktop.Tests;
 public sealed class WorkspaceSessionEnvelopeFilterTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task GridQueryDispatcherDrainsEpochBeforeIgnoringLateRead(bool fails)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 entry = fixture.AddWorkspace("查询", "Query");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(entry.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var pending = new TaskCompletionSource<TablePage>();
+        var gateway = new FakeTableRpcGateway { CursorOpenOverride = (_, _, _) => pending.Task };
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(gateway), new FakeDatabasePicker(null), sink,
+            new GridStateCoordinator(gateway, notifications.Add, time), sessionEnvelopeFilter: filter);
+        using var payload = JsonDocument.Parse("""{"table":"records","query":{}}""");
+        Task request = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "table.queryRequested", "old-query", payload.RootElement, string.Empty,
+            ScopeFor(opened, sequence: 3)));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
+
+        Task drain = filter.DrainAsync(entry.WorkspaceId, opened.SessionEpoch, CancellationToken.None);
+        await request.WaitAsync(TimeSpan.FromSeconds(2));
+        await drain.WaitAsync(TimeSpan.FromSeconds(2));
+        if (fails) pending.SetException(new InvalidOperationException("retired query failed"));
+        else pending.SetResult(new TablePage("records", [], [], 0, 100, 0, "remote"));
+
+        Assert.AreEqual(0, sink.Replies.Count);
+        Assert.AreEqual(0, notifications.Count);
+        await dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "table.queryRequested", "retired-query", payload.RootElement, string.Empty,
+            ScopeFor(opened, sequence: 4)));
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
+        StringAssert.Contains(JsonSerializer.Serialize(sink.Replies.Single().Payload), "BAD_WORKSPACE_SCOPE");
+    }
+
+    [TestMethod]
     public async Task HostAdmissionAtomicallyReservesSequenceAndEpochLease()
     {
         using var fixture = new SessionFixture();
