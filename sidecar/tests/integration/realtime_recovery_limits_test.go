@@ -72,10 +72,15 @@ func TestRealtimeRecoveryRejectsCorruptAuthorityWithoutLeakingSubscriptions(t *t
 	defer cancel()
 	if _, err := app.DB().NewQuery(`INSERT INTO vibetable_jobs
 		(id,job_type,state,cursor_json,progress_json,error_json,schema_revision)
-		VALUES ('corrupttask0001','formula_backfill','running','{"tableId":"table"}','{}',null,1)`).Execute(); err != nil {
+		VALUES ('corrupttask0001','formula_backfill','running','{"tableId":"table"}','{}',' null ',1)`).Execute(); err != nil {
 		t.Fatal(err)
 	}
 	hub := realtime.New(app)
+	valid, err := hub.SubscribeRecoverable(ctx, "")
+	if err != nil {
+		t.Fatalf("valid JSON null with whitespace was rejected: %v", err)
+	}
+	valid.Close()
 	for _, input := range []struct{ name, cursor, progress, taskError string }{
 		{"cursor", `{}`, `{}`, `null`},
 		{"progress", `{"tableId":"table"}`, `{"completed":2,"total":1}`, `null`},

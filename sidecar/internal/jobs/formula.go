@@ -917,6 +917,14 @@ func (service *Service) load(
 func snapshotFromRecord(record *core.Record) (Snapshot, error) {
 	cursorRaw, _ := json.Marshal(record.GetRaw("cursor_json"))
 	progressRaw, _ := json.Marshal(record.GetRaw("progress_json"))
+	errorRaw, _ := json.Marshal(record.GetRaw("error_json"))
+	return snapshotFromJSON(Snapshot{
+		JobID: record.Id, Type: record.GetString("job_type"), State: record.GetString("state"),
+		SchemaRevision: v2.FormatSchemaRevision(int64(record.GetFloat("schema_revision"))),
+	}, cursorRaw, progressRaw, errorRaw)
+}
+
+func snapshotFromJSON(snapshot Snapshot, cursorRaw, progressRaw, errorRaw []byte) (Snapshot, error) {
 	var cursorEnvelope struct {
 		TableID      string `json:"tableId"`
 		LastRecordID string `json:"lastRecordId"`
@@ -930,24 +938,17 @@ func snapshotFromRecord(record *core.Record) (Snapshot, error) {
 		)
 	}
 	var storedError *JobError
-	if record.GetRaw("error_json") != nil {
-		errorRaw, _ := json.Marshal(record.GetRaw("error_json"))
+	if string(errorRaw) != "null" {
 		var decoded JobError
 		if json.Unmarshal(errorRaw, &decoded) == nil && decoded.Code != "" {
 			storedError = &decoded
 		}
 	}
-	revision := int64(record.GetFloat("schema_revision"))
-	return Snapshot{
-		JobID:          record.Id,
-		Type:           record.GetString("job_type"),
-		State:          record.GetString("state"),
-		TableID:        cursorEnvelope.TableID,
-		SchemaRevision: v2.FormatSchemaRevision(revision),
-		Cursor:         Cursor{LastRecordID: cursorEnvelope.LastRecordID},
-		Progress:       progress,
-		Error:          storedError,
-	}, nil
+	snapshot.TableID = cursorEnvelope.TableID
+	snapshot.Cursor = Cursor{LastRecordID: cursorEnvelope.LastRecordID}
+	snapshot.Progress = progress
+	snapshot.Error = storedError
+	return snapshot, nil
 }
 
 func (service *Service) findExistingFormulaJob(

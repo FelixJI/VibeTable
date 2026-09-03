@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/pocketbase/dbx"
-	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 )
@@ -61,8 +60,8 @@ func (hub *Hub) recoveryBacklog(ctx context.Context, after string) ([]Event, int
 	}
 	var backlog []Event
 	var highWater int64
-	err := hub.app.RunInTransaction(func(txApp core.App) error {
-		rows, err := readRows(txApp, `WHERE rowid IN (
+	readSnapshot := func(tx dbx.Builder) error {
+		rows, err := readRows(tx, `WHERE rowid IN (
 			SELECT rowid FROM vibetable_outbox ORDER BY rowid DESC LIMIT {:limit}
 		) ORDER BY rowid ASC`, dbx.Params{"limit": maxCatchupEvents})
 		if err != nil {
@@ -103,7 +102,7 @@ func (hub *Hub) recoveryBacklog(ctx context.Context, after string) ([]Event, int
 			ContractVersion: mutation.ContractVersion, Topic: "realtime.recovered",
 			ActiveFormulaTasks: []FormulaTaskState{}, TerminalNotifications: []TaskChangedEvent{},
 		}
-		active, err := jobs.ReadActiveSnapshots(ctx, txApp)
+		active, err := jobs.ReadActiveSnapshots(ctx, tx)
 		if err != nil {
 			var jobErr *jobs.JobError
 			if errors.As(err, &jobErr) {
@@ -142,15 +141,12 @@ func (hub *Hub) recoveryBacklog(ctx context.Context, after string) ([]Event, int
 				continue
 			}
 			var task TaskChangedEvent
-			if err := decodeStrict(event.Payload, &task); err != nil || task.TaskType != "formulaBackfill" {
+			if err := decodeStrict(event.Payload, &task); err != nil {
 				return corruptOutbox()
 			}
 			switch task.State {
 			case "succeeded", "failed", "cancelled":
 				snapshot.TerminalNotifications = append(snapshot.TerminalNotifications, task)
-			case "pending", "running":
-			default:
-				return corruptOutbox()
 			}
 		}
 		raw, err := json.Marshal(snapshot)
@@ -162,6 +158,18 @@ func (hub *Hub) recoveryBacklog(ctx context.Context, after string) ([]Event, int
 		}
 		backlog = []Event{{Topic: snapshot.Topic, Payload: raw, Cursor: fmt.Sprintf("rt:%d", highWater)}}
 		return ctx.Err()
-	})
+	}
+	// PocketBase's App transaction helper does not pass request cancellation to
+	// Begin. Use its same writer pool and a context-bound transaction for these reads;
+	// both queries retain one snapshot without cloning PocketBase's App internals.
+	db, ok := hub.app.NonconcurrentDB().(*dbx.DB)
+	if !ok {
+		// A nested App transaction could expose an outer, not-yet-committed state.
+		return nil, 0, &Error{Code: "realtime.unavailable", Message: "realtime recovery requires a committed app"}
+	}
+	err := db.WithContext(ctx).Transactional(func(tx *dbx.Tx) error { return readSnapshot(tx) })
+	if ctx.Err() != nil {
+		return nil, 0, ctx.Err()
+	}
 	return backlog, highWater, err
 }

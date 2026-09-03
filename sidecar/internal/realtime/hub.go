@@ -242,7 +242,7 @@ func (hub *Hub) publishLocked(event Event, rowID int64) {
 func (hub *Hub) drainDurable() error {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	rows, err := readRows(hub.app,
+	rows, err := readRows(hub.app.DB(),
 		"WHERE rowid > {:highWater} ORDER BY rowid ASC",
 		dbx.Params{"highWater": hub.highWater},
 	)
@@ -323,7 +323,7 @@ func (hub *Hub) catchup(afterEventID string) ([]Event, int64, error) {
 			Retryable: true,
 		}
 	}
-	rows, err := readRows(hub.app,
+	rows, err := readRows(hub.app.DB(),
 		`WHERE rowid IN (
 			SELECT rowid FROM vibetable_outbox
 			ORDER BY rowid DESC LIMIT {:limit}
@@ -404,11 +404,11 @@ type outboxRow struct {
 	PayloadJSON string `db:"payload_json"`
 }
 
-func readRows(app core.App, where string, params dbx.Params) ([]outboxRow, error) {
+func readRows(db dbx.Builder, where string, params dbx.Params) ([]outboxRow, error) {
 	var rows []outboxRow
 	query := `SELECT rowid AS row_id, event_id, topic, payload_json
 		FROM vibetable_outbox ` + where
-	if err := app.DB().NewQuery(query).Bind(params).All(&rows); err != nil {
+	if err := db.NewQuery(query).Bind(params).All(&rows); err != nil {
 		return nil, &Error{
 			Code: "realtime.storage_failed", Message: "realtime outbox could not be read",
 			Retryable: true,
@@ -431,8 +431,16 @@ func decodeOutboxRow(row outboxRow) (Event, error) {
 		if decodeStrict(raw, &event) != nil ||
 			event.ContractVersion != mutation.ContractVersion ||
 			event.Topic != "task.changed" || event.EventID != row.EventID ||
-			event.TaskID == "" || event.TaskType == "" || event.Sequence < 1 ||
+			event.TaskID == "" || event.TaskType != "formulaBackfill" || event.Sequence < 1 ||
 			event.Progress < 0 || event.Progress > 1 {
+			return Event{}, corruptOutbox()
+		}
+		if _, err := time.Parse(time.RFC3339, event.OccurredAt); err != nil {
+			return Event{}, corruptOutbox()
+		}
+		switch event.State {
+		case "pending", "running", "succeeded", "failed", "cancelled":
+		default:
 			return Event{}, corruptOutbox()
 		}
 	default:

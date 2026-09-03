@@ -47,6 +47,9 @@ func registerRealtimeRoutes(
 		}
 		subscription, err := subscribe(request.Request.Context(), after)
 		if err != nil {
+			if request.Request.Context().Err() != nil {
+				return nil
+			}
 			return writeRealtimeError(request, err)
 		}
 		defer subscription.Close()
