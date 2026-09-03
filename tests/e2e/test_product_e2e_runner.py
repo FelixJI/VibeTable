@@ -2537,6 +2537,29 @@ def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
     assert "storageProof.counts?.outbox === 0" in source
     assert "handled_storage_proof_ids" in orchestrator
     assert "result.requestId !== requestId" in source
+    scenario = source[
+        source.index("async function scenario09") : source.index("async function scenario10")
+    ]
+    assert "beginImportFaultOutcomeCapture(page)" in scenario
+    assert "waitForCreatedTask()" in scenario
+    assert "openFaultWindow({ deadlineAt: faultDeadline })" in scenario
+    assert "waitForMutationBarrier(runtime)" in scenario
+    assert "requestSidecarKill(runtime" in scenario
+    assert "waitForFailedImportUi(page, faultDeadline)" in scenario
+    assert "importFaultCapture.settle({" in scenario
+    assert "await acknowledgeExpectedBridgeFailure(page, outcome.failure);" in scenario
+    assert scenario.index("beginImportFaultOutcomeCapture(page)") < scenario.index(
+        "confirmImportPreview(page)"
+    )
+    assert (
+        scenario.index("waitForMutationBarrier(runtime)")
+        < scenario.index("openFaultWindow({ deadlineAt: faultDeadline })")
+        < scenario.index("requestSidecarKill(runtime")
+    )
+    assert scenario.index("verifiedFault") < scenario.index("importFaultCapture.settle({")
+    assert scenario.index("waitForFailedImportUi(page, faultDeadline)") < scenario.index(
+        "importFaultCapture.settle({"
+    )
 
 
 def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -> None:
@@ -3000,6 +3023,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("import_fault_outcome.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
         runner.NODE_RUNNER.with_name("packaged_runtime_probe.test.mjs"),
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),

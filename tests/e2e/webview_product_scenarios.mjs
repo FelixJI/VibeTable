@@ -16,6 +16,7 @@ import {
   installBridgeDiagnosticsInPage,
   readBridgeDiagnosticsInPage,
 } from "./bridge_diagnostics_instrumentation.mjs";
+import { beginImportFaultOutcomeCapture } from "./import_fault_outcome.mjs";
 import {
   captureDialogFocusLeaseInPage,
   hasDialogFocusLeaseRestoredFocusInPage,
@@ -459,6 +460,37 @@ async function confirmImportPreview(page, timeoutMs = 60_000) {
   const confirmation = await panel.innerText();
   await page.getByTestId("import-confirm").click();
   return confirmation;
+}
+
+async function waitForFailedImportUi(page, deadlineAt) {
+  const panel = page.getByTestId("import-preview-panel");
+  const error = page.getByTestId("import-apply-error");
+  let errorLength = 0;
+  while (Date.now() < deadlineAt) {
+    if (await error.isVisible().catch(() => false)) {
+      errorLength = (await error.innerText()).trim().length;
+      const confirmEnabled = !await page.getByTestId("import-confirm").isDisabled();
+      const cancelEnabled = !await page.getByTestId("import-cancel").isDisabled();
+      if (errorLength > 0 && confirmEnabled && cancelEnabled) {
+        await page.getByTestId("import-cancel").click();
+        await panel.waitFor({ state: "hidden", timeout: Math.max(1, deadlineAt - Date.now()) });
+        await page.getByTestId("toolbar-more").click();
+        const importOption = page.locator(".n-dropdown-option-body")
+          .filter({ hasText: /导入数据|Import data/i }).last();
+        await importOption.waitFor({ timeout: Math.max(1, deadlineAt - Date.now()) });
+        const optionClass = await importOption.locator("xpath=..").getAttribute("class");
+        await page.keyboard.press("Escape");
+        return {
+          errorLength,
+          confirmEnabled,
+          cancelEnabled,
+          newImportAvailable: !optionClass?.includes("--disabled"),
+        };
+      }
+    }
+    await page.waitForTimeout(50);
+  }
+  throw new Error("faulted import did not reach an explicit non-busy UI failure state");
 }
 
 function cloneJson(value) {
@@ -3023,24 +3055,63 @@ async function scenario09(page, recorder, _network, runtime) {
     "utf8",
   );
   await chooseToolbarMore(page, "import");
-  const confirmation = await confirmImportPreview(page);
-  const barrier = await waitForMutationBarrier(runtime);
-  const fault = await requestSidecarKill(runtime, "interrupt active 1k-row import");
-  recorder.check("the exact sidecar was killed after its first uncommitted transactional record write",
-    fault.processName === "vibetable-pb.exe"
+  const importFaultCapture = await beginImportFaultOutcomeCapture(page);
+  let importFaultPrimaryError = null;
+  let confirmation;
+  let barrier;
+  let fault;
+  let rowCount;
+  try {
+    confirmation = await confirmImportPreview(page);
+    const importTask = await importFaultCapture.waitForCreatedTask();
+    barrier = await waitForMutationBarrier(runtime);
+    const faultDeadline = Date.now() + 60_000;
+    await importFaultCapture.openFaultWindow({ deadlineAt: faultDeadline });
+    fault = await requestSidecarKill(runtime, "interrupt active 1k-row import");
+    const verifiedFault = fault.status === "completed"
+      && fault.processName === "vibetable-pb.exe"
       && fault.pid === barrier.pid
-      && barrier.point === "after_record",
-  {
-    fault,
-    barrier,
-    confirmation,
-  });
-  const rowCount = await waitForTableRecovery(
-    page,
-    "E2E Atomic Import",
-    tableId,
-    0,
-  );
+      && barrier.point === "after_record";
+    recorder.check("the exact sidecar was killed after its first uncommitted transactional record write",
+      verifiedFault,
+    { fault, barrier, confirmation, importTask });
+    const failedUi = await waitForFailedImportUi(page, faultDeadline);
+    recorder.check("faulted import reports a non-busy, dismissible failure and enables a new import",
+      failedUi.errorLength > 0
+        && failedUi.confirmEnabled
+        && failedUi.cancelEnabled
+        && failedUi.newImportAvailable,
+      failedUi,
+    );
+    rowCount = await waitForTableRecovery(
+      page,
+      "E2E Atomic Import",
+      tableId,
+      0,
+      Math.max(1, faultDeadline - Date.now()),
+    );
+    const outcome = await importFaultCapture.settle({
+      deadlineAt: faultDeadline,
+      fault,
+      barrier,
+    });
+    if (outcome.kind === "expected-bridge-failure") {
+      await acknowledgeExpectedBridgeFailure(page, outcome.failure);
+    }
+  } catch (error) {
+    importFaultPrimaryError = error;
+    throw error;
+  } finally {
+    try {
+      await importFaultCapture.release();
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(
+        importFaultPrimaryError,
+        cleanupError,
+        "import fault outcome capture cleanup also failed",
+      )) throw cleanupError;
+    }
+  }
   recorder.check("failed import exposed no partially committed records in the UI", rowCount === 0);
   const historyDeadline = Date.now() + 30_000;
   let history;
