@@ -117,6 +117,7 @@ func TestSchemaGetTableProductHTTPMatchesPythonSnapshotProjection(t *testing.T) 
 		t.Fatalf("Product snapshot disagrees with authoritative REST: Product=%#v REST=%#v", snapshot, restSnapshot)
 	}
 	assertSchemaSnapshotModelDumpDefaults(t, field)
+	assertSchemaCapabilityModelDumpDefaults(t, snapshot["capabilities"])
 	identity := field["identity"].(map[string]any)
 	if identity["fieldId"] != file.FieldID {
 		t.Fatalf("Product field identity = %#v", identity)
@@ -164,14 +165,30 @@ func TestSchemaGetTableProductHTTPPreservesClosedParamsAndSchemaErrors(t *testin
 	if _, err := pb.DB().NewQuery("DROP TABLE vibetable_tables").Execute(); err != nil {
 		t.Fatal(err)
 	}
+	restStorage := httptest.NewRecorder()
+	mux.ServeHTTP(restStorage, httptest.NewRequest(
+		http.MethodGet, "/api/vibetable/v2/schema/tables/tbl_storage", nil,
+	))
+	if restStorage.Code != http.StatusInternalServerError {
+		t.Fatalf("former Python schema.getTable REST error = %d %s", restStorage.Code, restStorage.Body)
+	}
+	var restError map[string]any
+	if err := json.Unmarshal(restStorage.Body.Bytes(), &restError); err != nil {
+		t.Fatal(err)
+	}
+	if restError["code"] != "field.internal.failed" ||
+		restError["message"] != "field settings operation failed" ||
+		restError["retryable"] != true {
+		t.Fatalf("former Python schema.getTable REST error changed: %#v", restError)
+	}
 	storage := schemaProductRequestForMethod(
 		t, mux, context.Background(), "schema.getTable", `{"tableId":"tbl_storage"}`, schemaListWire,
 	)
 	wantStorage := &productrpc.ErrorObject{
 		Code: productrpc.CodeProductData, Message: "Product data error",
 		Data: map[string]any{
-			"kind": "product_data_error", "code": "schema.storage.failed", "path": "",
-			"message": "schema storage operation failed", "details": map[string]any{}, "retryable": false,
+			"kind": "product_data_error", "code": "field.internal.failed", "path": "",
+			"message": "field settings operation failed", "details": map[string]any{}, "retryable": true,
 		},
 	}
 	if !reflect.DeepEqual(storage.Error, wantStorage) {
@@ -386,6 +403,32 @@ func assertSchemaSnapshotModelDumpDefaults(t *testing.T, field map[string]any) {
 		for _, name := range []string{"pairId", "reciprocalFieldId"} {
 			if _, found := relation[name]; !found {
 				t.Fatalf("Python model_dump omitted relation default %q from %#v", name, relation)
+			}
+		}
+	}
+}
+
+func assertSchemaCapabilityModelDumpDefaults(t *testing.T, rawCapabilities any) {
+	t.Helper()
+	capabilities, ok := rawCapabilities.([]any)
+	if !ok || len(capabilities) == 0 {
+		t.Fatalf("Product capabilities = %#v", rawCapabilities)
+	}
+	for _, rawCapability := range capabilities {
+		capability, ok := rawCapability.(map[string]any)
+		if !ok {
+			t.Fatalf("Product capability = %#v", rawCapability)
+		}
+		recommended := capability["recommended"].(map[string]any)
+		for _, name := range []string{"file", "json"} {
+			if _, found := recommended[name]; !found {
+				t.Fatalf("Python model_dump omitted recommended default %q from %#v", name, recommended)
+			}
+		}
+		presence := recommended["value"].(map[string]any)["presence"].(map[string]any)
+		for _, name := range []string{"providerFieldId", "physicalName"} {
+			if _, found := presence[name]; !found {
+				t.Fatalf("Python model_dump omitted recommended presence default %q from %#v", name, presence)
 			}
 		}
 	}

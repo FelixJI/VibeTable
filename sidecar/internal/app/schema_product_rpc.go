@@ -15,7 +15,10 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 )
 
-var productSchemaTableID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+var (
+	productSchemaTableID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	productSchemaEmptyPath = ""
+)
 
 func schemaListRegistration(catalog schemaapi.SchemaCatalog) productrpc.Registration {
 	return productrpc.Registration{
@@ -64,7 +67,7 @@ func schemaGetTableRegistration(catalog schemaapi.SchemaCatalog) productrpc.Regi
 			}
 			table, err := catalog.Describe(ctx, params.TableID)
 			if err != nil {
-				return nil, publicSchemaProductError(err)
+				return nil, publicSchemaGetTableError(err)
 			}
 			return schemaSnapshotProductResult(table.Snapshot)
 		},
@@ -103,6 +106,21 @@ func publicSchemaProductError(err error) error {
 	}
 }
 
+func publicSchemaGetTableError(err error) error {
+	var productError *schemaerror.ProductError
+	if errors.As(err, &productError) && productError.Code == "schema.table.not_found" {
+		return publicSchemaProductError(err)
+	}
+	// The former Python owner delegated this request to the public field route.
+	// That route exposes every Describe failure except a missing table as this
+	// stable retryable field error; keep its public contract while sharing the
+	// same schema catalog authority.
+	return &productrpc.PublicError{
+		Code: "field.internal.failed", Path: &productSchemaEmptyPath,
+		Message: "field settings operation failed", Details: map[string]any{}, Retryable: true,
+	}
+}
+
 // schemaSnapshotProductResult keeps schema.getTable's existing public
 // shape: the former Python handler validated the REST response then serialized
 // SchemaSnapshotV2 with model_dump, which emits nullable defaults omitted by
@@ -134,16 +152,22 @@ func schemaSnapshotProductResult(snapshot v2.SchemaSnapshot) (map[string]any, er
 		}
 		addPythonSchemaFieldDefaults(field)
 	}
+	capabilities, ok := result["capabilities"].([]any)
+	if !ok {
+		return nil, errors.New("schema Product snapshot capabilities are invalid")
+	}
+	for _, rawCapability := range capabilities {
+		capability, ok := rawCapability.(map[string]any)
+		if !ok {
+			return nil, errors.New("schema Product snapshot capability is invalid")
+		}
+		addPythonSchemaRecommendedDefaults(capability["recommended"].(map[string]any))
+	}
 	return result, nil
 }
 
 func addPythonSchemaFieldDefaults(field map[string]any) {
-	presence := field["value"].(map[string]any)["presence"].(map[string]any)
-	for _, name := range []string{"providerFieldId", "physicalName"} {
-		if _, found := presence[name]; !found {
-			presence[name] = nil
-		}
-	}
+	addPythonSchemaValueDefaults(field["value"].(map[string]any))
 	display := field["display"].(map[string]any)
 	if _, found := display["indent"]; !found {
 		display["indent"] = nil
@@ -153,6 +177,24 @@ func addPythonSchemaFieldDefaults(field map[string]any) {
 			if _, found := relation[name]; !found {
 				relation[name] = nil
 			}
+		}
+	}
+}
+
+func addPythonSchemaRecommendedDefaults(recommended map[string]any) {
+	for _, name := range []string{"file", "json"} {
+		if _, found := recommended[name]; !found {
+			recommended[name] = nil
+		}
+	}
+	addPythonSchemaValueDefaults(recommended["value"].(map[string]any))
+}
+
+func addPythonSchemaValueDefaults(value map[string]any) {
+	presence := value["presence"].(map[string]any)
+	for _, name := range []string{"providerFieldId", "physicalName"} {
+		if _, found := presence[name]; !found {
+			presence[name] = nil
 		}
 	}
 }
