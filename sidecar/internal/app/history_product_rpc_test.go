@@ -74,12 +74,15 @@ func TestHistoryReadProductHTTPPreservesLegacyValidationAndPublicErrors(t *testi
 			`","limit":20,"offset":0,"scope":"row","actions":null}`,
 		"fractional limit reaches handler": `{"collection":"` + tableID + `","itemId":"` + recordID +
 			`","limit":1.5,"offset":0,"scope":"row","actions":[]}`,
+		"non-finite float stays parameter validation": `{"collection":"` + tableID + `","itemId":"` + recordID +
+			`","limit":1e309,"offset":0,"scope":"row","actions":[]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := productHistoryReadRequest(t, mux, params)
 			want := productrpc.CodeInternalError
 			if name == "missing required actions" ||
-				name == "forbidden nested credential stays parameter validation" {
+				name == "forbidden nested credential stays parameter validation" ||
+				name == "non-finite float stays parameter validation" {
 				want = productrpc.CodeInvalidParams
 			}
 			if response.Error == nil || response.Error.Code != want {
@@ -103,6 +106,14 @@ func TestHistoryReadProductHTTPPreservesLegacyValidationAndPublicErrors(t *testi
 		overflow.Error.Data["path"] != nil {
 		t.Fatalf("overflow paging public error = %+v", overflow.Error)
 	}
+	longFinite := productHistoryReadRequest(
+		t, mux, `{"collection":"`+tableID+`","itemId":"`+recordID+
+			`","limit":1e`+strings.Repeat("0", maxHistoryReadProductParamsBytes)+
+			`,"offset":0,"scope":"row","actions":[]}`,
+	)
+	if longFinite.Error == nil || longFinite.Error.Code != productrpc.CodeInternalError {
+		t.Fatalf("finite exponent budget did not reach the handler: %+v", longFinite.Error)
+	}
 	domain := productHistoryReadRequest(
 		t, mux, `{"collection":"不存在表","itemId":"`+recordID+
 			`","limit":20,"offset":0,"scope":"row","actions":[]}`,
@@ -112,6 +123,30 @@ func TestHistoryReadProductHTTPPreservesLegacyValidationAndPublicErrors(t *testi
 		domain.Error.Data["path"] != nil ||
 		!reflect.DeepEqual(domain.Error.Data["details"], map[string]any{}) {
 		t.Fatalf("domain public error = %+v", domain.Error)
+	}
+}
+
+func TestHistoryReadProductParamsSizeMatchesPythonNumberNormalization(t *testing.T) {
+	for _, testCase := range []struct {
+		name, raw, normalized string
+	}{
+		{"small exponent", `1e-5`, `1e-05`},
+		{"fixed million", `1e6`, `1000000.0`},
+		{"large exponent", `1e16`, `1e+16`},
+		{"negative integer zero", `-0`, `0`},
+		{"negative float zero", `-0.0`, `-0.0`},
+		{"underflow", `1e-400`, `0.0`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			size, err := historyReadProductParamsSize(
+				map[string]any{"limit": json.Number(testCase.raw)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := len(`{"limit":` + testCase.normalized + `}`); size != want {
+				t.Fatalf("Python normalized size = %d, want %d", size, want)
+			}
+		})
 	}
 }
 
