@@ -646,15 +646,33 @@ public sealed class WebMessageRouterTests
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        Guid workspaceId = Guid.NewGuid();
+        Guid operationId = Guid.NewGuid();
 
         foreach (string type in ProductDataRpcRegistry.RequestTypes)
         {
-            var reply = router.Route(JsonSerializer.Serialize(new
-            {
-                type,
-                requestId = $"request-{type}",
-                payload = new { },
-            }));
+            string request = type == "events.reconcile"
+                ? JsonSerializer.Serialize(new
+                {
+                    type,
+                    requestId = $"request-{type}",
+                    scope = new
+                    {
+                        scope = "workspace",
+                        workspaceId,
+                        sessionEpoch = 1,
+                        operationId,
+                        sequence = 0,
+                    },
+                    payload = new { },
+                })
+                : JsonSerializer.Serialize(new
+                {
+                    type,
+                    requestId = $"request-{type}",
+                    payload = new { },
+                });
+            var reply = router.Route(request);
             Assert.IsNull(reply, type);
             Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
         }
@@ -974,7 +992,10 @@ public sealed class WebMessageRouterTests
             }
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual("pythonBff", capability.Owner, route);
+            Assert.AreEqual(
+                route is "events.reconcile" or "schema.list" ? "goSidecar" : "pythonBff",
+                capability.Owner,
+                route);
         }
 
         foreach (string route in RelationLookupRpcRegistry.RequestTypes)

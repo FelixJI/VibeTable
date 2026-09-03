@@ -377,6 +377,7 @@ public sealed class HostProductRpcCompositionTests
 
         private Fixture(bool useTestPolicy)
         {
+            Http.UseTestPolicy = useTestPolicy;
             DirectoryInfo directory = new(AppContext.BaseDirectory);
             while (!File.Exists(Path.Combine(directory.FullName, "pyproject.toml")))
                 directory = directory.Parent ?? throw new InvalidOperationException("Repository not found.");
@@ -460,6 +461,7 @@ public sealed class HostProductRpcCompositionTests
     private sealed class HttpPeer : HttpMessageHandler
     {
         internal IDictionary<string, string> Environment { get; set; } = null!;
+        internal bool UseTestPolicy { get; set; }
         internal int ProductCalls { get; private set; }
         internal int ProductHandshakes { get; private set; }
         internal TaskCompletionSource RpcEntered { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -472,6 +474,16 @@ public sealed class HostProductRpcCompositionTests
             if (request.Method == HttpMethod.Get)
             {
                 if (request.RequestUri!.AbsolutePath.Contains("/product/", StringComparison.Ordinal)) ProductHandshakes++;
+                string[] methods = UseTestPolicy
+                    ? ["schema.list"]
+                    : ["events.reconcile", "schema.list"];
+                object[] registrations = UseTestPolicy
+                    ? [new { method = "schema.list", scope = "workspace" }]
+                    :
+                    [
+                        new { method = "events.reconcile", scope = "workspace" },
+                        new { method = "schema.list", scope = "workspace" },
+                    ];
                 return Reply(JsonSerializer.SerializeToElement(new
                 {
                     contractVersion = "2.0",
@@ -479,8 +491,8 @@ public sealed class HostProductRpcCompositionTests
                     sessionEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_SESSION_EPOCH"]),
                     fenceEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_FENCE_EPOCH"]),
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
-                    rpcMethods = new[] { "schema.list" },
-                    registrations = new[] { new { method = "schema.list", scope = "workspace" } },
+                    rpcMethods = methods,
+                    registrations,
                 }));
             }
             if (request.RequestUri!.AbsolutePath.EndsWith("/drain", StringComparison.Ordinal))

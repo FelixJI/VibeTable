@@ -415,13 +415,9 @@ func TestDispatchUsesStableMethodParamsAndCurrentIdentityErrors(t *testing.T) {
 func TestNewCapturesValidatedIdentitySnapshot(t *testing.T) {
 	identity := testIdentity()
 	if _, err := New(identity); err == nil {
-		t.Fatal("missing schema.list registration must fail closed")
+		t.Fatal("missing generated registrations must fail closed")
 	}
-	dispatcher, err := New(identity, Registration{
-		Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
-	})
+	dispatcher, err := New(identity, generatedGoSidecarRegistrations()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,16 +454,13 @@ func TestNewCapturesValidatedIdentitySnapshot(t *testing.T) {
 
 func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testing.T) {
 	identity := testIdentity()
-	dispatcher, err := New(identity, Registration{
-		Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
-	})
+	dispatcher, err := New(identity, generatedGoSidecarRegistrations()...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 1 || methods[0].Method != "schema.list" {
-		t.Fatalf("production registrations = %#v, want only schema.list", methods)
+	if methods := dispatcher.Methods(); len(methods) != 2 ||
+		methods[0].Method != "events.reconcile" || methods[1].Method != "schema.list" {
+		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, Registration{
 		Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,
@@ -487,6 +480,21 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	}})
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
 		t.Fatalf("unexpected scope mismatch error: %v", err)
+	}
+}
+
+func generatedGoSidecarRegistrations() []Registration {
+	validator := func(json.RawMessage) error { return nil }
+	handler := func(context.Context, json.RawMessage) (any, error) { return nil, nil }
+	return []Registration{
+		{
+			Method: "events.reconcile", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
 	}
 }
 
