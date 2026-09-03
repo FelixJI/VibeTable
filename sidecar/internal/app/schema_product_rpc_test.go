@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
@@ -193,6 +194,78 @@ func TestSchemaGetTableProductHTTPPreservesClosedParamsAndSchemaErrors(t *testin
 	}
 	if !reflect.DeepEqual(storage.Error, wantStorage) {
 		t.Fatalf("storage error exposed or changed: %+v", storage.Error)
+	}
+}
+
+func TestSchemaGetTableProductHTTPMatchesFieldRouteValidationError(t *testing.T) {
+	pb := schemaProductStore(t)
+	mux := schemaProductMux(t, pb)
+	lifecycle, err := schemacore.NewTableLifecycle(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+		DisplayName: "Invalid schema", OperationID: "schema-invalid-field",
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "Name", "schema-invalid-text")
+	encoded, err := json.Marshal(field.Definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var definition map[string]any
+	if err := json.Unmarshal(encoded, &definition); err != nil {
+		t.Fatal(err)
+	}
+	defaultSpec := definition["value"].(map[string]any)["default"].(map[string]any)
+	defaultSpec["enabled"] = false
+	defaultSpec["value"] = 1
+	stored, err := pb.FindFirstRecordByFilter(
+		"vibetable_fields", "field_id={:field}", dbx.Params{"field": field.FieldID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Set("definition_v2_json", definition)
+	if err := pb.Save(stored); err != nil {
+		t.Fatal(err)
+	}
+
+	rest := httptest.NewRecorder()
+	mux.ServeHTTP(rest, httptest.NewRequest(
+		http.MethodGet, "/api/vibetable/v2/schema/tables/"+table.TableID, nil,
+	))
+	if rest.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("former Python schema.getTable validation REST = %d %s", rest.Code, rest.Body)
+	}
+	var restError map[string]any
+	if err := json.Unmarshal(rest.Body.Bytes(), &restError); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"code": "field.contract.invalid", "path": "value.default.value",
+		"message": "disabled default must use null", "retryable": false,
+	}
+	for name, expected := range want {
+		if restError[name] != expected {
+			t.Fatalf("former Python schema.getTable validation %s = %#v, want %#v", name, restError[name], expected)
+		}
+	}
+	product := schemaProductRequestForMethod(
+		t, mux, context.Background(), "schema.getTable", `{"tableId":"`+table.TableID+`"}`, schemaListWire,
+	)
+	wantProduct := &productrpc.ErrorObject{
+		Code: productrpc.CodeProductData, Message: "Product data error",
+		Data: map[string]any{
+			"kind": "product_data_error", "code": "field.contract.invalid", "path": "value.default.value",
+			"message": "disabled default must use null", "details": map[string]any{}, "retryable": false,
+		},
+	}
+	if !reflect.DeepEqual(product.Error, wantProduct) {
+		t.Fatalf("Product validation error exposed or changed: %+v", product.Error)
 	}
 }
 
@@ -440,7 +513,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-	}, schemaGetTableRegistration(catalog), schemaListRegistration(catalog))
+	}, schemaGetTableRegistration(pb), schemaListRegistration(catalog))
 	if err != nil {
 		t.Fatal(err)
 	}

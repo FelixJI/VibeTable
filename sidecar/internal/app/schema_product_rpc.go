@@ -8,17 +8,16 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/productcapabilities"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
-var (
-	productSchemaTableID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
-	productSchemaEmptyPath = ""
-)
+var productSchemaTableID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
 func schemaListRegistration(catalog schemaapi.SchemaCatalog) productrpc.Registration {
 	return productrpc.Registration{
@@ -37,7 +36,7 @@ func schemaListRegistration(catalog schemaapi.SchemaCatalog) productrpc.Registra
 	}
 }
 
-func schemaGetTableRegistration(catalog schemaapi.SchemaCatalog) productrpc.Registration {
+func schemaGetTableRegistration(app core.App) productrpc.Registration {
 	return productrpc.Registration{
 		Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,
 		ValidateParams: func(raw json.RawMessage) error {
@@ -65,7 +64,7 @@ func schemaGetTableRegistration(catalog schemaapi.SchemaCatalog) productrpc.Regi
 			if !productSchemaTableID.MatchString(params.TableID) {
 				return nil, errors.New("table id is invalid")
 			}
-			table, err := catalog.Describe(ctx, params.TableID)
+			table, err := schemaexecution.Describe(ctx, app, params.TableID)
 			if err != nil {
 				return nil, publicSchemaGetTableError(err)
 			}
@@ -107,17 +106,17 @@ func publicSchemaProductError(err error) error {
 }
 
 func publicSchemaGetTableError(err error) error {
-	var productError *schemaerror.ProductError
-	if errors.As(err, &productError) && productError.Code == "schema.table.not_found" {
-		return publicSchemaProductError(err)
+	if errors.Is(err, schemaexecution.ErrTableNotFound) {
+		path := "tableId"
+		return &productrpc.PublicError{
+			Code: "schema.table.not_found", Path: &path,
+			Message: "table was not found", Details: map[string]any{}, Retryable: false,
+		}
 	}
-	// The former Python owner delegated this request to the public field route.
-	// That route exposes every Describe failure except a missing table as this
-	// stable retryable field error; keep its public contract while sharing the
-	// same schema catalog authority.
+	projected := classifyFieldError(err)
 	return &productrpc.PublicError{
-		Code: "field.internal.failed", Path: &productSchemaEmptyPath,
-		Message: "field settings operation failed", Details: map[string]any{}, Retryable: true,
+		Code: projected.code, Path: &projected.path,
+		Message: projected.message, Details: projected.details, Retryable: projected.retryable,
 	}
 }
 
