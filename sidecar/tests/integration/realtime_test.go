@@ -190,6 +190,72 @@ func TestRealtimeTaskCancellationAdvancesSequenceAndKeepsIdentity(t *testing.T) 
 	}
 }
 
+func TestRealtimeCatchupDoesNotSkipPendingPublicationForExistingSubscriber(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := realtime.New(app)
+	existing, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer existing.Close()
+	running := jobs.Snapshot{
+		JobID: "job-subscriber-catchup", State: "running",
+		Progress: jobs.Progress{Completed: 1, Total: 2},
+	}
+	// Commit before the original publisher gets to drain, as in a jobs transaction.
+	if err := hub.PersistTaskChanged(ctx, app, running); err != nil {
+		t.Fatal(err)
+	}
+	joining, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer joining.Close()
+	if len(joining.Backlog) != 1 {
+		t.Fatalf("joining backlog = %#v", joining.Backlog)
+	}
+	if err := hub.PublishTaskChanged(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-existing.Events:
+		if event.ID != joining.Backlog[0].ID {
+			t.Fatalf("existing subscriber received %q instead of committed event", event.ID)
+		}
+	default:
+		t.Fatal("joining catchup skipped committed task for existing subscriber")
+	}
+	select {
+	case duplicate := <-joining.Events:
+		t.Fatalf("joining subscriber duplicated its backlog: %#v", duplicate)
+	default:
+	}
+	completed := running
+	completed.State = "complete"
+	if err := hub.PublishTaskChanged(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+	for label, subscription := range map[string]*realtime.Subscription{
+		"existing": existing, "joining": joining,
+	} {
+		select {
+		case event := <-subscription.Events:
+			var snapshot realtime.TaskChangedEvent
+			if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.TaskID != running.JobID || snapshot.State != "succeeded" {
+				t.Fatalf("%s terminal snapshot = %#v", label, snapshot)
+			}
+		default:
+			t.Fatalf("%s subscriber missed terminal task snapshot", label)
+		}
+	}
+}
+
 func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	t *testing.T,
 ) {
