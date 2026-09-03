@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { flushPromises } from "@vue/test-utils";
 import type { HostBridge } from "@/bridge/hostBridge";
 import type {
   DataChangedEvent,
@@ -15,10 +16,70 @@ import {
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useHistoryStore } from "@/stores/historyStore";
 
 describe("tableService realtime product wiring", () => {
   beforeEach(() => setActivePinia(createPinia()));
+
+  it.each(["finishes", "fails"] as const)("keeps the new workspace dataset when an old epoch reconcile %s", async (outcome) => {
+    const harness = bridgeHarness({ action: "refresh-data" });
+    const previousRead = deferred<{ action: "refresh-data" }>();
+    harness.request.mockReturnValueOnce(previousRead.promise);
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+    try {
+      service.selectTable("orders");
+      harness.emit("table.datasetReady", dataset(11));
+      harness.emit("data.changed", dataEvent(15));
+      expect(harness.request).toHaveBeenCalledOnce();
+
+      openWorkspaceEpoch(2, "22222222-2222-4222-8222-222222222222");
+      service.selectTable("customers");
+      harness.emit("table.datasetReady", dataset(22, "customers"));
+      await flushPromises();
+      expect(table.revision?.dataRevision).toBe(22);
+
+      if (outcome === "fails") previousRead.reject(new Error("retired workspace read failed"));
+      else previousRead.resolve({ action: "refresh-data" });
+      await flushPromises();
+
+      expect(table.revision?.dataRevision).toBe(22);
+      expect(useRealtimeStore().lastInvalidation).toBeNull();
+      expect(useRealtimeStore().reconcileError).toBeNull();
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("does not publish a settled transport failure after its workspace epoch retires", async () => {
+    const harness = bridgeHarness({ action: "none" });
+    const retired = deferred<{ action: "none" }>();
+    harness.request.mockReturnValueOnce(retired.promise);
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    service.init();
+    try {
+      service.selectTable("orders");
+      harness.emit("table.datasetReady", dataset(11));
+      harness.emit("data.changed", dataEvent(15));
+      retired.reject(new Error("transport failed before epoch retirement"));
+      await retired.promise.catch(() => undefined);
+      openWorkspaceEpoch(2);
+      await flushPromises();
+      expect(useRealtimeStore().reconcileError).toBeNull();
+      harness.request.mockRejectedValueOnce(new Error("current workspace read failed"));
+      harness.emit("data.changed", dataEvent(16));
+      await flushPromises();
+      expect(useRealtimeStore().reconcileError).toBe("current workspace read failed");
+    } finally {
+      service.dispose();
+    }
+  });
 
   it("reconciles current-table data events and actively refreshes on a revision gap", async () => {
     const harness = bridgeHarness({ action: "refresh-data" });
@@ -45,6 +106,129 @@ describe("tableService realtime product wiring", () => {
     ));
     expect(useRealtimeStore().lastInvalidation?.action).toBe("refresh-data");
     service.dispose();
+  });
+
+  it("keeps the replayed request owned until its new-epoch read finishes", async () => {
+    const harness = bridgeHarness({ action: "refresh-data" });
+    const retired = deferred<{ action: "refresh-data" }>();
+    const current = deferred<{ action: "refresh-data" }>();
+    harness.request.mockReturnValueOnce(retired.promise).mockReturnValueOnce(current.promise);
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    service.init();
+    try {
+      service.selectTable("orders");
+      harness.emit("table.datasetReady", dataset(11));
+      harness.emit("data.changed", dataEvent(15));
+      openWorkspaceEpoch(2);
+      harness.emit("data.changed", dataEvent(15));
+      expect(harness.request).toHaveBeenCalledTimes(2);
+
+      retired.resolve({ action: "refresh-data" });
+      await flushPromises();
+      harness.emit("data.changed", dataEvent(15));
+      expect(harness.request).toHaveBeenCalledTimes(2);
+
+      current.resolve({ action: "refresh-data" });
+      await flushPromises();
+      expect(useRealtimeStore().lastInvalidation?.action).toBe("refresh-data");
+    } finally {
+      current.resolve({ action: "refresh-data" });
+      service.dispose();
+    }
+  });
+
+  it("rebuilds task display from durable replay after the epoch projection reset", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    const realtime = useRealtimeStore();
+    service.init();
+    try {
+      const running = taskEvent(20, "running", 0.42);
+      harness.emit("task.changed", running);
+      expect(realtime.activeFormulaBackfill?.progress).toBe(0.42);
+      openWorkspaceEpoch(2);
+      // WorkspaceView's epoch owner resets the displayed projections separately.
+      realtime.reset();
+      harness.emit("task.changed", {
+        ...running, taskId: "import-1", taskType: "import", eventId: "import-event",
+      });
+      harness.emit("task.changed", running);
+      expect(realtime.activeFormulaBackfill?.progress).toBe(0.42);
+      expect(realtime.tasksById["import-1"]?.state).toBe("running");
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it.each([true, false])("restores remembered selection only within the same workspace (%s)", async (sameWorkspace) => {
+    vi.useFakeTimers();
+    const harness = bridgeHarness({ action: "refresh-data" });
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    const service = useTableService();
+    service.init();
+    try {
+      service.selectTable("orders");
+      harness.emit("data.changed", dataEvent(15));
+      harness.emit("task.changed", taskEvent(24, "succeeded", 1));
+      openWorkspaceEpoch(2, sameWorkspace ? undefined : "22222222-2222-4222-8222-222222222222");
+      workspace.clear();
+      table.reset();
+      harness.notify.mockClear();
+      await vi.advanceTimersByTimeAsync(3_001);
+      expect(harness.notify).not.toHaveBeenCalled();
+
+      harness.emit("database.opened", { tables: ["orders"], views: [] });
+      expect(workspace.currentTable).toBe(sameWorkspace ? "orders" : null);
+      if (sameWorkspace) {
+        harness.emit("table.datasetReady", dataset(22));
+        expect(table.revision?.dataRevision).toBe(22);
+        expect(harness.notify).toHaveBeenCalledOnce();
+      } else {
+        expect(harness.notify).not.toHaveBeenCalled();
+      }
+      expect(harness.request).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retires disposed requests and selection before reinitializing in another workspace", async () => {
+    const harness = bridgeHarness({ action: "none" });
+    const retired = deferred<{ action: "none" }>();
+    harness.request.mockReturnValueOnce(retired.promise);
+    setHostBridgeForTesting(harness.bridge);
+    openWorkspaceEpoch(1);
+    const service = useTableService();
+    const realtime = useRealtimeStore();
+    service.init();
+    try {
+      service.selectTable("orders");
+      harness.emit("table.datasetReady", dataset(11));
+      harness.emit("data.changed", dataEvent(15));
+      harness.emit("task.changed", { ...taskEvent(20, "running", 0.4), taskType: "import" });
+      service.dispose();
+      expect(realtime.activeTask?.taskType).toBe("import");
+      openWorkspaceEpoch(2, "22222222-2222-4222-8222-222222222222");
+      useWorkspaceStore().clear();
+      useTableStore().reset();
+      realtime.reset();
+      service.init();
+      retired.reject(new Error("disposed read failed"));
+      await flushPromises();
+      expect(realtime.reconcileError).toBeNull();
+      harness.emit("database.opened", { tables: ["orders"], views: [] });
+      expect(useWorkspaceStore().currentTable).toBeNull();
+    } finally {
+      service.dispose();
+    }
   });
 
   it("defers reconciliation until the in-flight dataset has an authoritative revision", async () => {
@@ -513,6 +697,29 @@ describe("tableService realtime product wiring", () => {
     )).toEqual({ preserveHistory: true });
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function openWorkspaceEpoch(
+  sessionEpoch: number,
+  workspaceId = "11111111-1111-4111-8111-111111111111",
+): void {
+  const session = useWorkspaceSessionStore();
+  session.configureCapabilities(["workspace.session.v2"]);
+  session.applySession({
+    contractVersion: "2.0", workspaceId, sessionEpoch,
+    state: "openedWritable", openMode: "writable",
+    writable: true, provisional: false, phase: "idle", errorCode: null,
+  });
+}
 
 function bridgeHarness(reconcileResult: { action: "none" | "refresh-data" | "reload-schema" }) {
   const handlers = new Map<string, Set<(payload: unknown) => void>>();

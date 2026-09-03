@@ -1,5 +1,6 @@
 import { useHostBridge } from "./bridgeContext";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { registerWorkspaceEpochReset } from "@/stores/workspaceSessionStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
@@ -50,6 +51,7 @@ export function useTableService(): {
   const taskTracker = new RealtimeTaskTracker();
   const unsubscribe: Array<() => void> = [];
   let initialized = false;
+  let realtimeGeneration = 0;
   let pendingDataChange: DataChangedEvent | null = null;
   let refreshAfterLoad: TableRefreshOptions | null = null;
   let staleSnapshotRetries = 0;
@@ -137,6 +139,13 @@ export function useTableService(): {
   function init(): void {
     if (initialized) return;
     initialized = true;
+    unsubscribe.push(registerWorkspaceEpochReset(
+      "table-service-realtime",
+      ({ previousWorkspaceId, nextWorkspaceId }) => {
+        retireRealtime();
+        if (previousWorkspaceId !== nextWorkspaceId) lastSelectedTable = null;
+      },
+    ));
     unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       // After a sidecar-crash session recycle the host rebuilds the catalog
       // and re-posts it; the previously selected table must be re-driven
@@ -220,6 +229,14 @@ export function useTableService(): {
   function dispose(): void {
     for (const stop of unsubscribe.splice(0)) stop();
     initialized = false;
+    retireRealtime();
+    lastSelectedTable = null;
+  }
+
+  function retireRealtime(): void {
+    realtimeGeneration += 1;
+    realtime.reset();
+    taskTracker.reset();
     pendingDataChange = null;
     refreshAfterLoad = null;
     staleSnapshotRetries = 0;
@@ -277,11 +294,15 @@ export function useTableService(): {
   function reconcileDataChange(event: DataChangedEvent): void {
     const revision = tableStore.revision;
     if (!revision || event.tableId !== workspaceStore.currentTable) return;
+    const generation = realtimeGeneration;
     void realtime.handle(
       event,
       revision.schemaRevision,
       formatProductDataRevision(revision.dataRevision),
-    ).catch((error: unknown) => realtimeStore.failReconcile(error));
+    ).catch((error: unknown) => {
+      // The epoch can retire after handle rejects but before this consumer runs.
+      if (generation === realtimeGeneration) realtimeStore.failReconcile(error);
+    });
   }
 
   function invalidateAndRefresh(action: "refresh-data" | "reload-schema"): void {

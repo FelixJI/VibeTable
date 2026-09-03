@@ -21,11 +21,19 @@ export class RealtimeReconciler {
   private readonly seen = new Set<string>();
   private readonly inFlight = new Map<string, Promise<void>>();
   private generation = 0;
+  private lifecycle = 0;
 
   constructor(
     private readonly port: RealtimeReconcilePort,
     public readonly actions: RealtimeActions,
   ) {}
+
+  reset(): void {
+    this.lifecycle += 1;
+    this.generation += 1;
+    this.seen.clear();
+    this.inFlight.clear();
+  }
 
   async handle(
     event: DataChangedEvent,
@@ -36,23 +44,29 @@ export class RealtimeReconciler {
     const current = this.inFlight.get(event.eventId);
     if (current) return await current;
 
+    const lifecycle = this.lifecycle;
     const generation = ++this.generation;
     const work = (async () => {
-      const result = await this.port.reconcile({
-        tableId: event.tableId,
-        schemaRevision,
-        dataRevision,
-      });
-      this.remember(event.eventId);
-      if (generation !== this.generation) return;
-      if (result.action === "reload-schema") this.actions.reloadSchema();
-      else if (result.action === "refresh-data") this.actions.refreshData();
+      try {
+        const result = await this.port.reconcile({
+          tableId: event.tableId,
+          schemaRevision,
+          dataRevision,
+        });
+        if (lifecycle !== this.lifecycle) return;
+        this.remember(event.eventId);
+        if (generation !== this.generation) return;
+        if (result.action === "reload-schema") this.actions.reloadSchema();
+        else if (result.action === "refresh-data") this.actions.refreshData();
+      } catch (error) {
+        if (lifecycle === this.lifecycle) throw error;
+      }
     })();
     this.inFlight.set(event.eventId, work);
     try {
       await work;
     } finally {
-      this.inFlight.delete(event.eventId);
+      if (this.inFlight.get(event.eventId) === work) this.inFlight.delete(event.eventId);
     }
   }
 
@@ -76,6 +90,11 @@ export class RealtimeTaskTracker {
     readonly sequence: number;
     readonly occurredAt: string;
   }>();
+
+  reset(): void {
+    this.seen.clear();
+    this.latestByTask.clear();
+  }
 
   accept(event: TaskChangedEvent): boolean {
     const previous = this.latestByTask.get(event.taskId);
