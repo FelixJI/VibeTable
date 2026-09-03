@@ -26,7 +26,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "gridState.save",
         "history.applyRestore",
         "history.previewRestore",
-        "history.read",
         "insights.dashboardQueryLimits",
         "insights.deleteDashboardWorkspace",
         "insights.executeDashboardQuery",
@@ -105,6 +104,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
     "goSidecar": (
         "events.reconcile",
         "file.list",
+        "history.read",
         "lookup.list",
         "schema.describe",
         "schema.getTable",
