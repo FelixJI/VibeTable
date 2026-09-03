@@ -63,6 +63,7 @@ export function useDashboardService() {
   let recoveryMetadataGeneration = 0;
   let recoveryDirty = false;
   let recoverySurfaceVisible = true;
+  let recoveryPhase: { readonly ticket: number; readonly generation: number } | null = null;
   const unsubscribe: Array<() => void> = [];
   const activeQueryRequestIds = new Set<string>();
   const activePanelControllers = new Map<string, AbortController>();
@@ -78,7 +79,7 @@ export function useDashboardService() {
     unsubscribe.push(bridge.on("data.changed", (payload) => {
       // A live event remains independently handled below. It only retires an
       // in-flight recovery acknowledgement; it never waits behind recovery.
-      if (recoveryDirty) recoveryGeneration += 1;
+      if (recoveryDirty) invalidateRecoveryForLiveData();
       if (!store.current || document.hidden) return;
       const collection = payload.tableId;
       schemaCatalog.invalidate(collection);
@@ -160,6 +161,15 @@ export function useDashboardService() {
   }
 
   async function refresh(): Promise<void> {
+    // A user refresh is the explicit, observable way to retry a dirty
+    // recovery. It rebuilds metadata before querying the old panel set.
+    if (recoveryDirty) {
+      if (store.phase === "loading-list" || store.phase === "loading" || store.phase === "saving") return;
+      if (recoverySurfaceVisible && !draft.editing && !store.offline && !document.hidden) {
+        await recoverAuthoritative();
+      }
+      return;
+    }
     if (!store.current || (store.phase !== "ready" && store.phase !== "failed") ||
         store.offline || document.hidden) return;
     generation += 1;
@@ -192,16 +202,24 @@ export function useDashboardService() {
   async function recoverAuthoritative(): Promise<DashboardRecoveryResult> {
     const ticket = ++recoveryGeneration;
     recoveryDirty = true;
+    beginRecoveryPhase(ticket);
     const [listed, manifested] = await Promise.all([
       listWithReceipt(() => ticket === recoveryGeneration),
       loadManifestWithReceipt(() => ticket === recoveryGeneration),
     ]);
     if (disposed || ticket !== recoveryGeneration) return "retired";
-    if (!listed || !manifested) return "failed";
+    if (!listed || !manifested) {
+      clearRecoveryPhase(ticket);
+      return "failed";
+    }
     recoveryMetadataGeneration = ticket;
-    if (!recoverySurfaceVisible || draft.editing) return "dirty";
+    if (!recoverySurfaceVisible || draft.editing) {
+      clearRecoveryPhase(ticket);
+      return "dirty";
+    }
     const dashboardId = store.current?.id;
     if (!dashboardId) {
+      clearRecoveryPhase(ticket);
       recoveryDirty = false;
       return "applied";
     }
@@ -218,6 +236,7 @@ export function useDashboardService() {
     cancelActiveQueries();
     queue.clear();
     const selectedGeneration = generation;
+    beginRecoveryPhase(ticket);
     store.beginLoad();
     try {
       const result = await bridge.request("dashboard.readRequested", { dashboardId });
@@ -230,11 +249,14 @@ export function useDashboardService() {
       store.receiveWorkspace(result);
       configureRefreshTimer();
       await queryAllPanels(selectedGeneration);
-      return ticket === recoveryGeneration && selectedGeneration === generation && !draft.editing;
+      const accepted = ticket === recoveryGeneration && selectedGeneration === generation && !draft.editing;
+      clearRecoveryPhase(ticket);
+      return accepted;
     } catch (error) {
       if (ticket === recoveryGeneration && selectedGeneration === generation) {
         store.fail(errorMessage(error));
       }
+      clearRecoveryPhase(ticket);
       return false;
     }
   }
@@ -246,9 +268,39 @@ export function useDashboardService() {
 
   /** Retire renderer-local recovery reads when WorkspaceView rotates epoch. */
   function retireRecovery(): void {
+    const ticket = recoveryGeneration;
+    settleRetiredRecoveryPhase(ticket);
     recoveryGeneration += 1;
     recoveryMetadataGeneration = 0;
     recoveryDirty = false;
+    generation += 1;
+    cancelActiveQueries();
+    queue.clear();
+  }
+
+  function beginRecoveryPhase(ticket: number): void {
+    recoveryPhase = { ticket, generation };
+  }
+
+  function clearRecoveryPhase(ticket: number): void {
+    if (recoveryPhase?.ticket === ticket) recoveryPhase = null;
+  }
+
+  function settleRetiredRecoveryPhase(ticket: number): boolean {
+    if (recoveryPhase?.ticket !== ticket || recoveryPhase.generation !== generation) return false;
+    recoveryPhase = null;
+    if (store.phase !== "loading-list" && store.phase !== "loading") return false;
+    if (store.current) store.beginRefresh();
+    else store.reset();
+    return true;
+  }
+
+  function invalidateRecoveryForLiveData(): void {
+    const ticket = recoveryGeneration;
+    const retiredRecoveryLoad = settleRetiredRecoveryPhase(ticket);
+    recoveryGeneration += 1;
+    recoveryMetadataGeneration = 0;
+    if (!retiredRecoveryLoad) return;
     generation += 1;
     cancelActiveQueries();
     queue.clear();

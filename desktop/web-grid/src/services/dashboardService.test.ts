@@ -259,6 +259,60 @@ describe("dashboardService", () => {
     service.dispose();
   });
 
+  it("settles only a recovery-owned loading phase when live data retires that recovery", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Ops", note: "", panels: [panel] },
+      config: {}, revision: "r0", queryLimits: {},
+    });
+    const service = useDashboardService(); service.init();
+    void service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", {
+      dashboards: [{ id: "d1", name: "Ops", note: "", panels: [panel] }],
+    });
+    await flushPromises();
+    expect(store.phase).toBe("loading");
+
+    h.emit("data.changed", { tableId: "orders" });
+    expect(store.phase).toBe("ready");
+    void service.refresh();
+    await flushPromises();
+    expect(h.posted.filter((item) => item.type === "dashboard.listRequested")).toHaveLength(2);
+    service.dispose();
+  });
+
+  it("does not retire a user selection when live data supersedes an older recovery", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    const service = useDashboardService(); service.init();
+    void service.recoverAuthoritative();
+    await flushPromises();
+    const selecting = service.select("d2");
+    await flushPromises();
+    const selectedRead = h.posted.filter((item) => item.type === "dashboard.readRequested").at(-1)!;
+    expect(store.phase).toBe("loading");
+
+    h.emit("data.changed", { tableId: "orders" });
+    expect(store.phase).toBe("loading");
+    // The recovery is still dirty, but a refresh cannot start a new recovery
+    // over the unresolved user selection.
+    void service.refresh();
+    await flushPromises();
+    expect(h.posted.filter((item) => item.type === "dashboard.listRequested")).toHaveLength(1);
+
+    h.emit("dashboard.loaded", {
+      dashboard: { id: "d2", name: "Selected", note: "", panels: [] },
+      config: {}, revision: "r2", queryLimits: {},
+    }, String(selectedRead.requestId));
+    await selecting;
+    expect(store.current?.id).toBe("d2");
+    expect(store.phase).toBe("ready");
+    service.dispose();
+  });
+
   it("loads, queries, and applies session filters without persisting their values", async () => {
     const h = harness(); setHostBridgeForTesting(h.bridge);
     const service = useDashboardService(); service.init();

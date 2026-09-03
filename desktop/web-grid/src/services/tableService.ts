@@ -257,14 +257,16 @@ export function useTableService(): {
       try {
         delivery = taskTracker.acceptRecovery(payload);
       } catch {
-        // The transport frame is not a task event; reject malformed snapshots
-        // without disturbing ordinary realtime delivery.
+        // Keep malformed recovery frames visible through the existing stable
+        // reconcile diagnostic, without treating their unvalidated payload as
+        // an ordinary task event.
+        realtimeStore.failReconcile(new Error("Realtime recovery snapshot was rejected."));
         return;
       }
+      realtimeStore.clearReconcileError();
       realtimeStore.replaceFormulaTaskProjection(delivery.activeFormulaTasks);
-      const activeTaskIds = new Set(delivery.activeFormulaTasks.map((task) => task.taskId));
       queueRecoveredTerminals(
-        delivery.terminalNotifications.filter((task) => !activeTaskIds.has(task.taskId)),
+        delivery.terminalNotifications,
         realtimeGeneration,
       );
       onRealtimeRecovered?.();

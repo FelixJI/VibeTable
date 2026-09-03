@@ -61,9 +61,27 @@ export const useRealtimeStore = defineStore("realtime", () => {
    * erase a same-id formula task restored as current activity by a later frame.
    */
   function applyRecoveredTerminal(task: TaskChangedEvent): boolean {
-    if (formulaTaskProjectionById.value[task.taskId]) return false;
-    applyTask(task);
-    return latestTask.value?.eventId === task.eventId;
+    const previous = tasksById.value[task.taskId];
+    if (
+      previous
+      && task.sequence <= previous.sequence
+      && task.occurredAt <= previous.occurredAt
+    ) return false;
+
+    // Do not use applyTask here: its normal terminal path removes the active
+    // formula projection. A recovery terminal is a retained notification, not
+    // an assertion that the current same-id projection has finished.
+    nextReceiptOrder += 1;
+    latestTask.value = task;
+    tasksById.value = {
+      ...tasksById.value,
+      [task.taskId]: task,
+    };
+    receiptOrderByTask.value = {
+      ...receiptOrderByTask.value,
+      [task.taskId]: nextReceiptOrder,
+    };
+    return true;
   }
 
   /** Replaces only current Go formula work after recovery-frame validation. */

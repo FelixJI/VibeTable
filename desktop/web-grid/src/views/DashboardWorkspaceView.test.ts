@@ -318,6 +318,7 @@ describe("DashboardWorkspaceView", () => {
     toolbar.vm.$emit("discard");
     await flushPromises();
     expect(service.save).toHaveBeenCalled();
+    expect(service.discardEdit).toHaveBeenCalledTimes(1);
     expect(useDashboardDraftStore().editing).toBe(false);
 
     service.beginEdit();
