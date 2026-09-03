@@ -11,9 +11,14 @@ internal sealed class ProductRealtimeDelivery(
     internal event Action? Changed;
     internal long? Current { get { lock (_gate) return _ready ? _generation : null; } }
 
-    internal void SetReady()
+    internal void SetReady(RendererReadyPhase phase)
     {
-        lock (_gate) _ready = true;
+        if (phase != RendererReadyPhase.Business) return;
+        lock (_gate)
+        {
+            if (_ready) return;
+            _ready = true;
+        }
         Changed?.Invoke();
     }
 

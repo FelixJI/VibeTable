@@ -36,7 +36,7 @@ public sealed class HostProductRpcCompositionTests
         await using var owner = new ProductRealtimeSession(fixture.Factory,
             fixture.Factory.CaptureProductSidecarGeneration, fixture.Sessions,
             fixture.Leases, delivery, _ => { }, code => posted.TrySetException(new InvalidOperationException(code)), fixture.Http);
-        delivery.SetReady();
+        delivery.SetReady(RendererReadyPhase.Business);
         await posted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
         CollectionAssert.AreEqual(new[] { "database.collectionsChanged", "realtime.recovered" }, topics);

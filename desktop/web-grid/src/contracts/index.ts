@@ -1915,7 +1915,7 @@ export interface HostPayloadMap {
 
 /** Map of (outbound) message type -> payload type, for typed requests. */
 export interface WebPayloadMap {
-  "app.ready": Record<string, never>;
+  "app.ready": { readonly phase?: "shell" | "business" };
   "host.startupRetryRequested": Record<string, never>;
   "host.startupCancelRequested": Record<string, never>;
   "database.openRequested": DatabaseOpenRequestedPayload;

@@ -13,13 +13,45 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRealtimeSessionTests
 {
     [TestMethod]
+    public async Task FirstOpenWaitsForBusinessReadyAndDuplicateReadyKeepsTheCommittedBookmark()
+    {
+        await using var fixture = await Fixture.OpenAsync(initiallyClosed: true);
+        var controller = new HostLifecycleRequestController(new FakeWebReplySink(),
+            new HostLifecycleActions(fixture.Delivery.SetReady, () => { }, () => { },
+                () => false, _ => Task.CompletedTask));
+        void Ready(string payload) => controller.Dispatch(new RoutedWebRequest(
+            "app.ready", null, JsonSerializer.Deserialize<JsonElement>(payload), ""));
+        Ready("{}");
+        await fixture.Sessions.OpenAsync(Guid.Parse(fixture.Snapshot!.Identity.WorkspaceId),
+            WorkspaceOpenMode.ReadOnly);
+        // Host has published opened, but the renderer's first open reply is still held.
+        using (var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(150)))
+            await Assert.ThrowsAsync<OperationCanceledException>(() =>
+                fixture.Http.Connections.Reader.ReadAsync(timeout.Token).AsTask());
+        Ready("""{"phase":"business"}""");
+        Assert.IsNull(await fixture.NextConnection());
+        (await fixture.NextPost())();
+        await fixture.Delayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Ready("""{"phase":"business"}""");
+        Ready("""{"phase":"shell"}""");
+        Assert.IsFalse(fixture.Http.Connections.Reader.TryRead(out _));
+        fixture.ResumeDelay.TrySetResult();
+        Assert.AreEqual("rt:7", await fixture.NextConnection());
+        fixture.Delivery.Retire();
+        Ready("{}");
+        Assert.IsNull(fixture.Delivery.Current);
+        Ready("""{"phase":"business"}""");
+        Assert.IsNull(await fixture.NextConnection());
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task TerminalFailureIsPostedOnlyToItsCurrentRenderer(bool retireRenderer)
     {
         await using var fixture = await Fixture.OpenAsync();
         fixture.Http.CatalogFailure = true;
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         await fixture.NextFailure();
         Action post = await fixture.NextPost();
@@ -41,7 +73,7 @@ public sealed class ProductRealtimeSessionTests
     public async Task EpochDrainCancelsQueuedDeliveryWithoutReportingAnOperationalFailure()
     {
         await using var fixture = await Fixture.OpenAsync();
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         Action stale = await fixture.NextPost();
         WorkspaceSessionV2 session = fixture.Sessions.Current;
@@ -58,7 +90,7 @@ public sealed class ProductRealtimeSessionTests
     {
         await using var fixture = await Fixture.OpenAsync();
         fixture.Http.CatalogFailure = true;
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         string failure = await fixture.NextFailure();
         Assert.DoesNotContain("secret", failure);
@@ -72,14 +104,14 @@ public sealed class ProductRealtimeSessionTests
     {
         await using var fixture = await Fixture.OpenAsync();
         fixture.PostFailure = true;
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         (await fixture.NextPost())();
         Assert.DoesNotContain("secret", await fixture.NextFailure());
         Assert.IsFalse(fixture.Delayed.Task.IsCompleted);
         fixture.PostFailure = false;
         fixture.Delivery.Retire();
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         Assert.IsNull(await fixture.NextConnection());
         Assert.HasCount(0, fixture.Posted);
     }
@@ -88,7 +120,7 @@ public sealed class ProductRealtimeSessionTests
     public async Task SidecarReplacementRetainsOnlyTheActuallyPostedBookmark()
     {
         await using var fixture = await Fixture.OpenAsync();
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         (await fixture.NextPost())();
         await fixture.Delayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -104,16 +136,16 @@ public sealed class ProductRealtimeSessionTests
     public async Task RetiredRendererDropsQueuedRecoveryAndReopensColdWithoutWaitingForUi()
     {
         await using var fixture = await Fixture.OpenAsync();
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         Action stale = await fixture.NextPost();
         fixture.Delivery.Retire();
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         Assert.IsNull(await fixture.NextConnection());
         stale();
         Assert.HasCount(0, fixture.Posted);
         Assert.IsTrue(fixture.Http.Streams[0].Disposed);
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         Assert.IsFalse(fixture.Http.Connections.Reader.TryRead(out _));
     }
 
@@ -121,7 +153,7 @@ public sealed class ProductRealtimeSessionTests
     public async Task ClosingSessionDrainsQueuedUiDeliveryWithoutPostingOrWaitingForDispatcher()
     {
         await using var fixture = await Fixture.OpenAsync();
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         Action stale = await fixture.NextPost();
         await fixture.Sessions.CloseAsync("test-close").WaitAsync(TimeSpan.FromSeconds(5));
@@ -135,7 +167,7 @@ public sealed class ProductRealtimeSessionTests
     public async Task RetiredSidecarDropsQueuedPostEvenWhenTheWorkspaceIdentityIsUnchanged()
     {
         await using var fixture = await Fixture.OpenAsync();
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         Action stale = await fixture.NextPost();
         ProductSidecarGenerationSnapshot old = fixture.Snapshot!;
@@ -162,7 +194,7 @@ public sealed class ProductRealtimeSessionTests
             Content = new StringContent(JsonSerializer.Serialize(new { code, retryable, message = "secret" }),
                 Encoding.UTF8, "application/json"),
         });
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         await fixture.NextConnection();
         string failure = await fixture.Failures.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.DoesNotContain("secret", failure);
@@ -180,7 +212,7 @@ public sealed class ProductRealtimeSessionTests
             Content = new StringContent("""{"code":"realtime.capacity","message":"private detail","retryable":true}""",
                 Encoding.UTF8, "application/json"),
         });
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         Assert.IsNull(await fixture.NextConnection());
         await fixture.Delayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.IsFalse(fixture.Http.Connections.Reader.TryRead(out _));
@@ -194,7 +226,7 @@ public sealed class ProductRealtimeSessionTests
     {
         await using var fixture = await Fixture.OpenAsync();
         Assert.IsFalse(fixture.Http.Connections.Reader.TryRead(out _));
-        fixture.Delivery.SetReady();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
         Assert.IsNull(await fixture.NextConnection());
         Action post = await fixture.NextPost();
         Assert.HasCount(0, fixture.Posted);
@@ -228,7 +260,7 @@ public sealed class ProductRealtimeSessionTests
         internal ProductSidecarGenerationSnapshot? Snapshot { get; set; }
         internal bool PostFailure { get; set; }
 
-        internal static async Task<Fixture> OpenAsync()
+        internal static async Task<Fixture> OpenAsync(bool initiallyClosed = false)
         {
             var fixture = new Fixture();
             var registry = new WorkspaceRegistry(fixture._root);
@@ -243,8 +275,9 @@ public sealed class ProductRealtimeSessionTests
                 LastSnapshotAt = null, LastSyncAt = null, PendingSync = false,
             });
             fixture.Sessions = new WorkspaceSessionManager(registry, new RuntimeFactory());
-            WorkspaceSessionV2 session = await fixture.Sessions.OpenAsync(layout.Manifest.WorkspaceId,
-                WorkspaceOpenMode.ReadOnly);
+            WorkspaceSessionV2 session = initiallyClosed
+                ? fixture.Sessions.Current with { WorkspaceId = layout.Manifest.WorkspaceId, SessionEpoch = 1 }
+                : await fixture.Sessions.OpenAsync(layout.Manifest.WorkspaceId, WorkspaceOpenMode.ReadOnly);
             fixture.Leases = new WorkspaceSessionEnvelopeFilter(fixture.Sessions);
             fixture.Sessions.SetRequestDrainHook(fixture.Leases);
             fixture.Snapshot = new ProductSidecarGenerationSnapshot(fixture, 1,

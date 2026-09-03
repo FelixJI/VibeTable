@@ -2,9 +2,11 @@ using System.Text.Json;
 
 namespace VibeTable.Desktop.Services;
 
+internal enum RendererReadyPhase { Shell, Business }
+
 internal interface IHostLifecycleActions
 {
-    void RendererReady();
+    void RendererReady(RendererReadyPhase phase);
 
     void RequestExit();
 
@@ -45,7 +47,13 @@ internal sealed class HostLifecycleRequestController
         switch (request.Type)
         {
             case "app.ready":
-                _host.RendererReady();
+                if (!TryReadReadyPhase(request.Payload, out RendererReadyPhase phase))
+                {
+                    _reply.PostOperationFailed(request.RequestId,
+                        "The renderer readiness request is invalid.", "APP_READY_BAD_PAYLOAD");
+                    return;
+                }
+                _host.RendererReady(phase);
                 return;
             case "host.startupCancelRequested":
                 _host.RequestExit();
@@ -85,16 +93,29 @@ internal sealed class HostLifecycleRequestController
     private static bool HasEmptyObjectPayload(JsonElement payload) =>
         payload.ValueKind == JsonValueKind.Object
         && !payload.EnumerateObject().Any();
+
+    private static bool TryReadReadyPhase(JsonElement payload, out RendererReadyPhase phase)
+    {
+        phase = RendererReadyPhase.Shell;
+        if (HasEmptyObjectPayload(payload)) return true; // Legacy startup handshake only.
+        if (payload.ValueKind != JsonValueKind.Object || payload.EnumerateObject().Count() != 1
+            || !payload.TryGetProperty("phase", out JsonElement value)
+            || value.ValueKind != JsonValueKind.String) return false;
+        if (value.GetString() == "shell") return true;
+        if (value.GetString() != "business") return false;
+        phase = RendererReadyPhase.Business;
+        return true;
+    }
 }
 
 internal sealed class HostLifecycleActions(
-    Action rendererReady,
+    Action<RendererReadyPhase> rendererReady,
     Action requestExit,
     Action retryStartup,
     Func<bool> openAdmin,
     Func<RoutedWebRequest, Task> buildDiagnostics) : IHostLifecycleActions
 {
-    public void RendererReady() => rendererReady();
+    public void RendererReady(RendererReadyPhase phase) => rendererReady(phase);
 
     public void RequestExit() => requestExit();
 

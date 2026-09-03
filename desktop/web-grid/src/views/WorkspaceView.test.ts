@@ -64,7 +64,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function makeRecordingBridge(): {
+function makeRecordingBridge(onPost?: (message: Outbound) => void): {
   bridge: HostBridge;
   posted: Outbound[];
   emit: (message: unknown) => void;
@@ -85,6 +85,7 @@ function makeRecordingBridge(): {
         try {
           const parsed = JSON.parse(msg) as { type: string; payload?: unknown; requestId?: string };
           posted.push({ type: parsed.type, payload: parsed.payload, requestId: parsed.requestId });
+          onPost?.(posted[posted.length - 1]!);
           return;
         } catch {
           posted.push({ type: msg, payload: undefined });
@@ -93,6 +94,7 @@ function makeRecordingBridge(): {
       }
       const env = msg as { type?: string; payload?: unknown; requestId?: string };
       posted.push({ type: env.type ?? "(unknown)", payload: env.payload, requestId: env.requestId });
+      onPost?.(posted[posted.length - 1]!);
     },
   };
   const bridge = createHostBridge({ webview: shim });
@@ -153,7 +155,7 @@ function seedStructuredTablePage(column: ColumnSchema): void {
   });
 }
 
-function configureWorkspaceEpochPair(): {
+function configureWorkspaceEpochPair(openInitial = true): {
   readonly session: ReturnType<typeof useWorkspaceSessionStore>;
   readonly rotate: () => boolean;
 } {
@@ -186,7 +188,7 @@ function configureWorkspaceEpochPair(): {
     phase: "idle",
     errorCode: null,
   });
-  apply(workspaceA, 1);
+  if (openInitial) apply(workspaceA, 1);
   return { session, rotate: () => apply(workspaceB, 2) };
 }
 
@@ -1278,6 +1280,52 @@ describe("WorkspaceView", () => {
     const status = wrapper.get('[data-testid="realtime-task-progress"]');
     expect(status.text()).toContain("64%");
     expect(status.get('[role="progressbar"]').attributes("aria-valuenow")).toBe("64");
+  });
+
+  it("receives the first cold recovery only after a held first-open reply installs business subscriptions", async () => {
+    let connections = 0;
+    const { bridge, emit, posted } = makeRecordingBridge((message) => {
+      if (message.type !== "app.ready"
+        || (message.payload as { phase?: string }).phase !== "business") return;
+      connections += 1;
+      emit({ type: "realtime.recovered", payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [{ taskId: "first-cold-task", state: "running", progress: 0.5,
+          cursor: "0.5", error: null }], terminalNotifications: [],
+      } });
+    });
+    setHostBridgeForTesting(bridge);
+    const { session } = configureWorkspaceEpochPair(false);
+    session.setWorkspaces(session.workspaces.map((entry, index) => ({
+      ...entry, lastOpenedAt: index === 0 ? "2026-09-03T00:00:00Z" : null,
+    })));
+    useUiStore().setWorkspaceStartupPolicy("lastWorkspace");
+    const reply = deferred<void>();
+    const request = vi.fn(async () => {
+      const opened = {
+        contractVersion: "2.0" as const, workspaceId: session.workspaces[0]!.workspaceId,
+        sessionEpoch: 1, state: "openedWritable" as const, openMode: "writable" as const,
+        writable: true, provisional: false, phase: "idle" as const, errorCode: null,
+      };
+      session.applySession(opened);
+      await reply.promise;
+      return opened;
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    bridge.notify("app.ready", {}); // Legacy shell readiness is not business readiness.
+    mountView();
+    await flushPromises();
+    expect(request).toHaveBeenCalledOnce();
+    expect(session.hasOpenWorkspace).toBe(true);
+    expect(connections).toBe(0);
+    expect(useRealtimeStore().activeFormulaBackfill).toBeNull();
+    reply.resolve();
+    await flushPromises();
+    expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("first-cold-task");
+    expect(connections).toBe(1);
+    expect(posted).toContainEqual(expect.objectContaining({
+      type: "app.ready", payload: { phase: "business" },
+    }));
   });
 
   it("wires recovered realtime through the root consumer before app.ready and starts a correlated table reload", async () => {

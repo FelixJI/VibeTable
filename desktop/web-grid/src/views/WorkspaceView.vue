@@ -727,9 +727,9 @@ function initializeBusinessConsumers(): void {
   dashboardService.setRecoverySurfaceVisible(ui.activeView === "dashboard");
   void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until the host runtime is ready. Re-announce
-  // app.ready only after all business subscriptions are installed so the host
-  // replays database.opened that may have completed while StartupGate was shown.
-  hostBridge.notify("app.ready", {});
+  // business readiness means subscriptions are installed, not that any query
+  // or recovery has completed. The host can now replay database state and start SSE.
+  hostBridge.notify("app.ready", { phase: "business" });
 }
 
 watch(

@@ -781,7 +781,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnRendererReady()
+    private void OnRendererReady(RendererReadyPhase phase)
     {
         _router.IsReady = true;
         _dispatcher.RotateDocumentCapabilityEpoch();
@@ -791,7 +791,7 @@ public partial class MainWindow : Window
             CompleteRendererBootstrap();
         }
         TryWriteReadiness();
-        _webBridge.Realtime.SetReady();
+        _webBridge.Realtime.SetReady(phase);
     }
 
     private void CompleteRendererBootstrap()
