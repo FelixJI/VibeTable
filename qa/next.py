@@ -688,7 +688,11 @@ def stage_command(
         command.extend(f"/p:{name}={value}" for name, value in dotnet_coverage_properties().items())
         return command, str(REPO_ROOT)
     if stage == "web-test":
-        return [_resolve("npm"), "run", "test:coverage"], str(WEB_GRID_DIR)
+        return [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "automation_project.py"),
+            "node-tests",
+        ], str(REPO_ROOT)
     if stage == "web-build":
         return [_resolve("npm"), "run", "build"], str(WEB_GRID_DIR)
     if stage == "fault-injection":
