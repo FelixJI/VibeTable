@@ -558,7 +558,14 @@ func writeReport(path string, report qualificationReport) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(raw, '\n'), 0o600)
+	raw = append(raw, '\n')
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return err
+	}
+	// The QA lane report retains stdout on both success and budget failure.
+	// Emit the existing report so its precise measurements survive CI upload.
+	_, err = os.Stdout.Write(raw)
+	return err
 }
 
 func milliseconds(value time.Duration) float64 { return float64(value.Microseconds()) / 1000 }
