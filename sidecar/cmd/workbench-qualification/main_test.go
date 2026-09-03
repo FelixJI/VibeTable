@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,10 +60,10 @@ func TestQualificationEmitsTheCompleteReportForLaneEvidence(t *testing.T) {
 		emitted.FileDocuments != 2 || emitted.MaterializedBytes != 8192 {
 		t.Fatalf("unexpected qualification report: %#v", emitted)
 	}
-	// Even a small corpus can fail a size/performance budget. Its complete
-	// diagnostics must survive without turning that failure into success.
-	if (runErr == nil) != (len(emitted.Failures) == 0) {
-		t.Fatalf("report failures %v disagree with command result %v", emitted.Failures, runErr)
+	// This tiny corpus intentionally exceeds the fixed index-size multiplier.
+	// Keep a real failing command so success-only output cannot satisfy the test.
+	if runErr == nil || !slices.Contains(emitted.Failures, "index_multiplier_budget") {
+		t.Fatalf("expected index budget failure, got failures=%v error=%v", emitted.Failures, runErr)
 	}
 	if !reflect.DeepEqual(emitted, readReport(config.ReportPath)) {
 		t.Fatal("lane stdout did not retain the complete generated qualification report")
