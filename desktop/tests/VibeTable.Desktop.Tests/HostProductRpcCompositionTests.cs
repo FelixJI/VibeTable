@@ -14,6 +14,182 @@ namespace VibeTable.Desktop.Tests;
 public sealed class HostProductRpcCompositionTests
 {
     [TestMethod]
+    public async Task HealthReaderUsesExpectedEpochLeaseAndSelectedProductOwner()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
+        Assert.AreEqual(1, await reader.ReadTableCountAsync(fixture.Session, CancellationToken.None));
+        Assert.AreEqual(fixture.Session.WorkspaceId, fixture.Http.LastWire.GetProperty("workspaceId").GetGuid());
+        Assert.AreEqual(fixture.Session.SessionEpoch, fixture.Http.LastWire.GetProperty("sessionEpoch").GetUInt64());
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task HealthReaderRetainsBindingMismatchCodeForLateReply()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
+        fixture.Http.ReplyGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<int> pending = reader.ReadTableCountAsync(fixture.Session, CancellationToken.None);
+        try
+        {
+            await fixture.Http.RpcEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await fixture.Backend.StopAsync(CancellationToken.None);
+            await fixture.Backend.StartAsync(CancellationToken.None);
+        }
+        finally { fixture.Http.ReplyGate.TrySetResult(); }
+        UpdateWorkspaceHealthException error = await Assert.ThrowsExactlyAsync<UpdateWorkspaceHealthException>(() => pending);
+        Assert.AreEqual("update.workspace_probe_binding_mismatch", error.Code);
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    [DataRow("workspace")]
+    [DataRow("epoch")]
+    [DataRow("closed")]
+    [DataRow("draining")]
+    public async Task HealthReaderRejectsWrongOrUnavailableEpochWithoutSending(string condition)
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        WorkspaceSessionV2 expected = fixture.Session;
+        if (condition == "workspace") expected = expected with { WorkspaceId = Guid.NewGuid() };
+        if (condition == "epoch") expected = expected with { SessionEpoch = expected.SessionEpoch + 1 };
+        if (condition == "closed") await fixture.CloseAsync();
+        if (condition == "draining")
+            await fixture.Leases.DrainAsync(expected.WorkspaceId!.Value, expected.SessionEpoch, CancellationToken.None);
+        try
+        {
+            var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
+            UpdateWorkspaceHealthException error = await Assert.ThrowsExactlyAsync<UpdateWorkspaceHealthException>(
+                () => reader.ReadTableCountAsync(expected, CancellationToken.None));
+            Assert.AreEqual("update.workspace_probe_binding_mismatch", error.Code);
+            Assert.AreEqual(0, fixture.Http.ProductCalls);
+            Assert.AreEqual(0, fixture.Http.ProductHandshakes);
+        }
+        finally
+        {
+            if (condition == "draining") fixture.Leases.Resume(expected.WorkspaceId!.Value, expected.SessionEpoch);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("null")]
+    [DataRow("[]")]
+    [DataRow("{}")]
+    [DataRow("{\"tables\":{}}")]
+    public async Task HealthReaderRetainsStrictSchemaResponseError(string response)
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        fixture.Http.Result = Json(response);
+        var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
+        UpdateWorkspaceHealthException error = await Assert.ThrowsExactlyAsync<UpdateWorkspaceHealthException>(
+            () => reader.ReadTableCountAsync(fixture.Session, CancellationToken.None));
+        Assert.AreEqual("update.workspace_probe_response_invalid", error.Code);
+    }
+
+    [TestMethod]
+    public async Task HealthReaderPreservesRemoteErrorAndCloseCancelsInflightProbe()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
+        fixture.Http.Error = true;
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(
+            () => reader.ReadTableCountAsync(fixture.Session, CancellationToken.None));
+        Assert.AreEqual(-32602, error.Code);
+        fixture.Http.Error = false;
+        fixture.Http.RpcEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Http.ReplyGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<int> pending = reader.ReadTableCountAsync(fixture.Session, CancellationToken.None);
+        try
+        {
+            await fixture.Http.RpcEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Task close = fixture.CloseAsync();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+            await close.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally { fixture.Http.ReplyGate.TrySetResult(); }
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task LazyGatewayKeepsWorkspaceSupportOnReplacedPythonClient()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        _ = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+            lazy.GetGridStateAsync("workspace", "orders", CancellationToken.None));
+        await fixture.Backend.StopAsync(CancellationToken.None);
+        await fixture.Backend.StartAsync(CancellationToken.None);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+            lazy.GetGridStateAsync("workspace", "orders", CancellationToken.None));
+        Assert.AreEqual(-32601, error.Code); // Reached the paired new fake backend, not a disposed client.
+        Assert.AreEqual(0, fixture.Http.ProductCalls);
+        Assert.AreEqual(0, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
+    public async Task LazyGatewayUsesSelectedProductOwnerAndReusesTheCompleteBinding()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        fixture.Http.Result = Json("""{"tables":[{"tableId":"orders","kind":"base","displayName":"Orders"}]}""");
+        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        CollectionAssert.AreEqual(new[] { "orders" }, (await lazy.ListTablesAsync(CancellationToken.None)).Tables.ToArray());
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        _ = await lazy.ListTablesAsync(CancellationToken.None);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+        lazy.Unbind();
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => lazy.ListTablesAsync(CancellationToken.None));
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task LazyGatewayRotatesOnSameClientNewSnapshotWithoutDisposingInflightWork()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        fixture.Http.Result = Json("""{"tables":[{"tableId":"orders","kind":"base","displayName":"Orders"}]}""");
+        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
+        HostProductRpcBinding old = fixture.Factory.CaptureHostProductRpcBinding()!;
+        lazy.Bind(old);
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Http.ReplyGate = reply;
+        Task<TableSummary> pending = lazy.ListTablesAsync(CancellationToken.None);
+        using var releaseReady = new ManualResetEventSlim();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.BeforeSidecarReady = () =>
+        {
+            ready.TrySetResult();
+            Assert.IsTrue(releaseReady.Wait(TimeSpan.FromSeconds(5)));
+        };
+        Task? restarting = null;
+        try
+        {
+            await fixture.Http.RpcEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await fixture.Sidecar.StopAsync(CancellationToken.None);
+            restarting = Task.Run(() => fixture.Sidecar.StartAsync(CancellationToken.None));
+            await ready.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            HostProductRpcBinding current = fixture.Factory.CaptureHostProductRpcBinding()!;
+            Assert.AreSame(old.Client, current.Client);
+            lazy.Bind(current);
+            Assert.IsFalse(pending.IsCompleted, "Rebinding must not dispose the retired gateway.");
+            fixture.Http.ReplyGate = null;
+            CollectionAssert.AreEqual(new[] { "orders" }, (await lazy.ListTablesAsync(CancellationToken.None)).Tables.ToArray());
+            Assert.IsFalse(pending.IsCompleted);
+            reply.TrySetResult();
+            await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => pending);
+            Assert.AreEqual(2, fixture.Http.ProductHandshakes);
+        }
+        finally
+        {
+            reply.TrySetResult();
+            releaseReady.Set();
+            if (restarting is not null) await restarting.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [TestMethod]
     public async Task ReadyFactoryCapturesPairedClientAndUsesTypedSelectedRoute()
     {
         await using var fixture = await Fixture.OpenAsync();
@@ -280,9 +456,11 @@ public sealed class HostProductRpcCompositionTests
         internal IDictionary<string, string> Environment { get; set; } = null!;
         internal int ProductCalls { get; private set; }
         internal int ProductHandshakes { get; private set; }
-        internal TaskCompletionSource RpcEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource RpcEntered { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? ReplyGate { get; set; }
         internal bool Error { get; set; }
+        internal JsonElement Result { get; set; } = Json("""{"tables":["orders"]}""");
+        internal JsonElement LastWire { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             if (request.Method == HttpMethod.Get)
@@ -303,6 +481,7 @@ public sealed class HostProductRpcCompositionTests
                 return Reply(Json("""{"sourceEpoch":"test-epoch","sourceSequence":0,"chainHash":"test-chain"}"""));
             ProductCalls++;
             JsonElement call = Json(await request.Content!.ReadAsStringAsync(token));
+            LastWire = call.GetProperty("wire").Clone();
             RpcEntered.TrySetResult();
             if (ReplyGate is not null) await ReplyGate.Task.WaitAsync(token);
             if (Error)
@@ -318,7 +497,7 @@ public sealed class HostProductRpcCompositionTests
                 jsonrpc = "2.0",
                 id = call.GetProperty("id"),
                 wire = call.GetProperty("wire"),
-                result = new { tables = new[] { "orders" } },
+                result = Result,
             }));
         }
         private static HttpResponseMessage Reply(JsonElement result) => new(HttpStatusCode.OK)

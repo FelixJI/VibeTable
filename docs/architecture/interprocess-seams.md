@@ -29,12 +29,17 @@ binding 只提供配对 client、完整代际比较与 typed gateway 构造；�
 内部 construction seam 复用真实 supervisors 与现有 process/health/HTTP adapter，生产默认 policy
 不变；测试 policy 的 selector 与 canonical registrations 同源。
 
-三个生产入口（MainWindow、LazyProductTableGateway、update health reader）尚需独立接入，再进行
-L3A owner cutover。本前置不改变 renderer gateway lifecycle，也不宣称产品已走 Go。
+三个 Host-origin 生产入口已消费该 binding：MainWindow 一次捕获并将配对 client 交给其余 Python
+gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
+至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
+schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle，也不改变
+现行 Product owner（仍全部 Python）；Go 路由只在注入测试 policy 中验证。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
 非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认 owner 仍为 Python。
+同一真实 composition fixture 还覆盖 Lazy 同 Client 新 snapshot 轮换而不提前结束旧在途请求，
+以及 health reader 的期望 epoch lease、严格 schema.list、远端错误和 close 取消。
 
 ## 维护规则
 
