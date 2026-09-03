@@ -90,7 +90,6 @@ function exactFault(requestId = "import-status", overrides = {}) {
     type: "operation.failed",
     requestId,
     payload: {
-      operation: "task.status",
       code: "BACKEND_UNAVAILABLE",
       message: "private failure at C:\\secret",
     },
@@ -277,6 +276,7 @@ test("keeps an in-flight task status eligible only when its terminal arrives aft
 
 test("fails closed for mismatched scope, code, duplicate candidate, and unverified kill", async (t) => {
   const cases = [
+    { name: "wrong explicit operation", request: statusRequest(), terminal: exactFault("import-status", { payload: { operation: "task.cancel", code: "BACKEND_UNAVAILABLE" } }) },
     { name: "scope", request: statusRequest("task-import", { scope: scope({ sessionEpoch: 8 }) }), terminal: exactFault() },
     { name: "code", request: statusRequest(), terminal: exactFault("import-status", { payload: { operation: "task.status", code: "PRODUCT_DATA_FAILED" } }) },
     { name: "duplicate", request: statusRequest(), terminal: [exactFault(), exactFault()] },
