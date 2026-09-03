@@ -480,7 +480,7 @@
 	  "targetSlice": "L3A",
 	  "targetPr": null,
 	  "deleteWhen": "Python runtime route is removed; retain the public SchemaSnapshotV2 model_dump shape and the Go authoritative schema projection.",
-	  "evidence": ["sidecar/internal/app/schema_product_rpc.go", "sidecar/internal/app/field_routes.go", "sidecar/internal/schemaapi/catalog.go", "tests/e2e/pocketbase_product_scenarios.json"]
+	  "evidence": ["sidecar/internal/app/schema_product_rpc.go", "sidecar/internal/app/field_routes.go", "sidecar/internal/schemaexecution/table.go", "tests/e2e/pocketbase_product_scenarios.json"]
 	},
 	{
 	  "id": "rpc.schema-list",
