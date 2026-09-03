@@ -1530,6 +1530,7 @@ async function waitForPreviewArtifact(runtime, expectedHash, expectedSize, timeo
   while (Date.now() < deadline) {
     observed = [];
     for (const candidate of await listFilesRecursively(previewRoot)) {
+      if (/^\.vibetable-attachment-.*\.part$/u.test(path.basename(candidate))) continue;
       const bytes = await fs.readFile(candidate);
       const evidence = {
         path: path.relative(runtime.evidenceDir, candidate),
@@ -1544,6 +1545,12 @@ async function waitForPreviewArtifact(runtime, expectedHash, expectedSize, timeo
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`attachment preview artifact was not materialized: ${JSON.stringify(observed)}`);
+}
+
+async function waitForPublishedPreviewArtifact(runtime, expectedHash, expectedSize, page) {
+  const previewResult = await waitForCapturedBridgeMessage(page, 30_000);
+  const previewArtifact = await waitForPreviewArtifact(runtime, expectedHash, expectedSize);
+  return { previewArtifact, previewResult };
 }
 
 async function requestStorageProof(runtime, tableId, timeoutMs = 30_000) {
@@ -2500,10 +2507,11 @@ async function scenario07(page, recorder, _network, runtime) {
   await page.getByTestId("attachment-preview-0").waitFor({ timeout: 30_000 });
   await beginBridgeMessageCapture(page, ["file.previewRequested"]);
   await page.getByTestId("attachment-preview-0").click();
-  const previewArtifact = await waitForPreviewArtifact(
+  const { previewArtifact, previewResult } = await waitForPublishedPreviewArtifact(
     runtime,
     expectedOriginalHash,
     originalBytes.length,
+    page,
   );
   const preservedPreviewPath = path.join(
     runtime.evidenceDir,
@@ -2526,7 +2534,6 @@ async function scenario07(page, recorder, _network, runtime) {
       expectedSize: originalBytes.length,
     },
   );
-  const previewResult = await waitForCapturedBridgeMessage(page, 30_000);
   recorder.check(
     "native attachment preview reaches one correlated capability outcome",
     previewResult.type === "file.previewRequested"
