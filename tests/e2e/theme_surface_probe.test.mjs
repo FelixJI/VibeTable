@@ -6,17 +6,21 @@ import {
   collectBrowserSurfaceEvidence,
   sampleConnectedThemeSurfaces,
 } from "./theme_surface_probe.mjs";
+import { observeTestPhases } from "./test_phase_evidence.mjs";
 
 const tabulatorScript = fileURLToPath(
   new URL("../../desktop/web-grid/node_modules/tabulator-tables/dist/js/tabulator.min.js", import.meta.url),
 );
 const reproduceLegacyFailure = process.argv.includes("--legacy-red");
 
-test("connected theme sampling never reads a stale Tabulator cell", { timeout: 10_000 }, async () => {
-  const browser = await chromium.launch({ channel: "msedge", headless: true });
+test("connected theme sampling never reads a stale Tabulator cell", { timeout: 10_000 }, async (t) => {
+  const phases = observeTestPhases(t);
+  const browser = await phases.phase("launch Edge", () => (
+    chromium.launch({ channel: "msedge", headless: true })
+  ));
   try {
-    const page = await browser.newPage();
-    await page.setContent(`
+    const page = await phases.phase("open browser page", () => browser.newPage());
+    await phases.phase("render Tabulator fixture", () => page.setContent(`
       <style>
         html.dark { color-scheme: dark; }
         #grid, .tabulator, .tabulator-tableholder, .tabulator-row, .tabulator-cell {
@@ -32,25 +36,31 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
         }
       </style>
       <div id="grid"></div>
-    `);
-    await page.addScriptTag({ path: tabulatorScript });
-    await page.evaluate(() => {
+    `));
+    await phases.phase("load Tabulator", () => page.addScriptTag({ path: tabulatorScript }));
+    await phases.phase("create Tabulator", () => page.evaluate(() => {
       window.__themeProbeTable = new Tabulator("#grid", {
         data: [{ initial: "initial", replacement: "replacement" }],
         layout: "fitData",
         columns: [{ title: "Initial", field: "initial" }],
       });
-    });
+    }));
 
     const initialCell = page.locator(".tabulator-row .tabulator-cell").first();
-    await initialCell.waitFor({ state: "visible", timeout: 3_000 });
-    const staleCell = await initialCell.elementHandle();
-    await page.evaluate(() => window.__themeProbeTable.setColumns([
-      { title: "Replacement", field: "replacement" },
-    ]));
-    await page.locator(".tabulator-row .tabulator-cell").first().waitFor({ state: "visible" });
+    const staleCell = await phases.phase("capture initial Tabulator cell", async () => {
+      await initialCell.waitFor({ state: "visible", timeout: 3_000 });
+      return initialCell.elementHandle();
+    });
+    await phases.phase("replace Tabulator column", async () => {
+      await page.evaluate(() => window.__themeProbeTable.setColumns([
+        { title: "Replacement", field: "replacement" },
+      ]));
+      await page.locator(".tabulator-row .tabulator-cell").first().waitFor({ state: "visible" });
+    });
 
-    const staleEvidence = await staleCell.evaluate(collectBrowserSurfaceEvidence);
+    const staleEvidence = await phases.phase("sample stale Tabulator cell", () => (
+      staleCell.evaluate(collectBrowserSurfaceEvidence)
+    ));
     if (reproduceLegacyFailure) {
       assert.notEqual(staleEvidence.rawBackground, "", JSON.stringify(staleEvidence));
     } else {
@@ -59,7 +69,9 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
       assert.equal(staleEvidence.visible, false, JSON.stringify(staleEvidence));
     }
 
-    const recovered = await sampleConnectedThemeSurfaces(page);
+    const recovered = await phases.phase("sample recovered theme surfaces", () => (
+      sampleConnectedThemeSurfaces(page)
+    ));
     assert.equal(recovered.root.rootDark, false);
     assert.equal(recovered.table.visible, true, JSON.stringify(recovered));
     assert.equal(recovered.cell.visible, true, JSON.stringify(recovered));
@@ -67,31 +79,43 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
     assert.ok(recovered.cell.backgroundLuminance < 0.25, JSON.stringify(recovered));
     assert.ok(recovered.cell.contrast >= 4.5, JSON.stringify(recovered));
 
-    await page.evaluate(() => document.documentElement.classList.add("bad-contrast"));
-    const badContrast = await sampleConnectedThemeSurfaces(page);
+    const badContrast = await phases.phase("sample bad contrast theme surfaces", async () => {
+      await page.evaluate(() => document.documentElement.classList.add("bad-contrast"));
+      return sampleConnectedThemeSurfaces(page);
+    });
     assert.ok(badContrast.cell.backgroundLuminance < 0.25, JSON.stringify(badContrast));
     assert.ok(badContrast.cell.contrast < 4.5, JSON.stringify(badContrast));
 
-    await page.evaluate(() => {
-      document.documentElement.classList.remove("bad-contrast");
-      document.documentElement.classList.add("bad-palette");
+    const badPalette = await phases.phase("sample bad palette theme surfaces", async () => {
+      await page.evaluate(() => {
+        document.documentElement.classList.remove("bad-contrast");
+        document.documentElement.classList.add("bad-palette");
+      });
+      return sampleConnectedThemeSurfaces(page);
     });
-    const badPalette = await sampleConnectedThemeSurfaces(page);
     assert.equal(badPalette.cell.backgroundLuminance < 0.25, false, JSON.stringify(badPalette));
 
-    await page.locator(".tabulator-row .tabulator-cell").first().evaluate((element) => {
-      element.style.visibility = "hidden";
+    await phases.phase("verify hidden cell sampling timeout", async () => {
+      await page.locator(".tabulator-row .tabulator-cell").first().evaluate((element) => {
+        element.style.visibility = "hidden";
+      });
+      await assert.rejects(
+        () => sampleConnectedThemeSurfaces(page, { timeout: 50 }),
+        /Timeout 50ms exceeded/,
+      );
     });
-    await assert.rejects(
-      () => sampleConnectedThemeSurfaces(page, { timeout: 50 }),
-      /Timeout 50ms exceeded/,
-    );
-    await page.evaluate(() => document.querySelector("#grid")?.remove());
-    await assert.rejects(
-      () => sampleConnectedThemeSurfaces(page, { timeout: 50 }),
-      /Timeout 50ms exceeded/,
-    );
+    await phases.phase("verify removed grid sampling timeout", async () => {
+      await page.evaluate(() => document.querySelector("#grid")?.remove());
+      await assert.rejects(
+        () => sampleConnectedThemeSurfaces(page, { timeout: 50 }),
+        /Timeout 50ms exceeded/,
+      );
+    });
   } finally {
-    await browser.close();
+    try {
+      await phases.phase("close Edge", () => browser.close());
+    } finally {
+      phases.close();
+    }
   }
 });
