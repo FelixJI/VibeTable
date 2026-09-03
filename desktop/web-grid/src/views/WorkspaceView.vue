@@ -143,7 +143,9 @@ const pasteService = usePasteService();
 const dataIoService = useDataIoService();
 const mutationService = useMutationService();
 const tableAdminService = useTableAdminService();
-const errorRouter = useErrorRouter();
+const errorRouter = useErrorRouter({
+  onRealtimeFailure: () => message.error(t("workspace.notification.realtimeStopped")),
+});
 const pluginService = usePluginService();
 const revisionHistoryService = useRevisionHistoryService();
 const dashboardService = useDashboardService();

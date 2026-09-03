@@ -442,6 +442,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
         "plugin.file.requested",
         "plugin.interaction.requested",
         "plugin.task.changed",
+        "realtime.recovered",
         "task.changed",
     ]
     assert [case["method"] for case in catalog["rpcCases"]] == catalog["rpcMethods"]

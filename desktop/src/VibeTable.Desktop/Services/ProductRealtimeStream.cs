@@ -57,7 +57,7 @@ internal sealed class ProductRealtimeStream
             .ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         if (response.StatusCode != HttpStatusCode.OK)
-            throw new HttpRequestException("Realtime stream request failed.", null, response.StatusCode);
+            throw await ReadFailureAsync(response, cancellationToken).ConfigureAwait(false);
         if (response.Content.Headers.ContentType?.MediaType != "text/event-stream")
             throw InvalidFrame();
         await using Stream source = await ReadSafelyAsync(
@@ -115,6 +115,62 @@ internal sealed class ProductRealtimeStream
     }
 
     private static InvalidDataException InvalidFrame() => new("Invalid realtime frame.");
+
+    private static async Task<ProductRealtimeRequestException> ReadFailureAsync(
+        HttpResponseMessage response, CancellationToken token)
+    {
+        string code = "realtime.request_failed";
+        bool retryable = false;
+        // Only these statuses can carry a retryable Go error. Other HTTP errors
+        // remain terminal without reading their potentially unrelated body.
+        if (response.StatusCode is (HttpStatusCode.InternalServerError or HttpStatusCode.ServiceUnavailable)
+            && response.Content.Headers.ContentType?.MediaType == "application/json")
+        {
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await using Stream body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                byte[] bytes = new byte[8193];
+                int length = 0;
+                while (length < bytes.Length)
+                {
+                    int count = await body.ReadAsync(bytes.AsMemory(length), timeout.Token).ConfigureAwait(false);
+                    if (count == 0) break;
+                    length += count;
+                }
+                if (length <= 8192)
+                {
+                    using JsonDocument document = JsonDocument.Parse(bytes.AsMemory(0, length));
+                    JsonElement root = document.RootElement;
+                    if (root.ValueKind == JsonValueKind.Object
+                        && root.EnumerateObject().Count(property => property.Name == "code") == 1
+                        && root.EnumerateObject().Count(property => property.Name == "retryable") == 1
+                        && root.GetProperty("code").ValueKind == JsonValueKind.String
+                        && root.GetProperty("retryable").ValueKind == JsonValueKind.True)
+                    {
+                        string? candidate = root.GetProperty("code").GetString();
+                        retryable = response.StatusCode == HttpStatusCode.ServiceUnavailable
+                            ? candidate == "realtime.capacity"
+                            : candidate is "realtime.storage_failed" or "realtime.unavailable"
+                                or "realtime.streaming_unavailable" or "realtime.internal_failed";
+                        if (retryable) code = candidate!;
+                    }
+                }
+            }
+            catch (Exception error) when (error is JsonException or IOException
+                or HttpRequestException or OperationCanceledException) { }
+        }
+        token.ThrowIfCancellationRequested();
+        return new(code, response.StatusCode, retryable);
+    }
 }
 
 internal sealed record ProductRealtimeFrame(string Cursor, string Topic, JsonElement Payload);
+
+internal sealed class ProductRealtimeRequestException(string code, HttpStatusCode status, bool retryable)
+    : HttpRequestException("Realtime stream request failed.", null, status)
+{
+    internal string Code { get; } = code;
+    internal bool Retryable { get; } = retryable;
+}

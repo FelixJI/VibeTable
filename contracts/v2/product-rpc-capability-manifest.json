@@ -824,7 +824,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "realtime",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "notification"
     },
     {
@@ -860,11 +860,19 @@
       "effect": "notification"
     },
     {
+      "topic": "realtime.recovered",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "realtime",
+      "owner": "goSidecar",
+      "effect": "notification"
+    },
+    {
       "topic": "task.changed",
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "task.lifecycle",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "notification"
     }
   ]

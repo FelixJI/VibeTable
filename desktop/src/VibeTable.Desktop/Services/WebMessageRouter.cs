@@ -182,6 +182,7 @@ public sealed class WebMessageRouter
         // Provider-neutral, permission-filtered realtime invalidation.
         "data.changed",
         "task.changed",
+        "realtime.recovered",
         // B2 paste preview + apply outcomes.
         "table.pastePreviewReady",
         "table.pasteApplied",

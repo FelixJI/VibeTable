@@ -110,6 +110,7 @@
     {"topic":"plugin.file.requested","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.host"},
     {"topic":"plugin.interaction.requested","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.host"},
     {"topic":"plugin.task.changed","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
+    {"topic":"realtime.recovered","scope":"workspace","audience":"rendererPublic","capabilityId":"realtime"},
     {"topic":"task.changed","scope":"workspace","audience":"rendererPublic","capabilityId":"task.lifecycle"}
   ]
 }

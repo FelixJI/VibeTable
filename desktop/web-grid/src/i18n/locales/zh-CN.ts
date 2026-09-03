@@ -602,6 +602,7 @@ export const messages: Record<string, string> = {
   "workspace.notification.relationLookupFailed": "关系或 Lookup 操作失败，请稍后重试",
   "workspace.notification.relationLookupTimeout": "关系或 Lookup 操作超时，请重试",
   "workspace.notification.operationFailed": "操作失败，请重试",
+  "workspace.notification.realtimeStopped": "实时更新已停止，请关闭并重新打开工作区",
   "workspace.editRejected.conflict": "数据已在其他位置更新，本次编辑已恢复为最新值",
   "workspace.editRejected.schema": "表结构已变化，本次编辑未保存",
   "workspace.editRejected.validation": "该值未能保存，请检查后重试",

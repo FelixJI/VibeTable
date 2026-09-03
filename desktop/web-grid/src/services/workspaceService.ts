@@ -31,11 +31,16 @@ function toCollectionsFromChanged(
   payload: CollectionsChangedPayload,
 ): readonly CollectionSummary[] {
   const hashes = payload.capabilityHashes ?? {};
-  return payload.tables.map((t) => ({
+  const tables = payload.tables.map((t) => ({
     collection: t,
     metadata:
       t in hashes ? { capabilityHash: hashes[t] } : {},
   }));
+  const views = (payload.views ?? []).map((view) => ({
+    collection: view,
+    metadata: { kind: "view", ...(view in hashes ? { capabilityHash: hashes[view] } : {}) },
+  }));
+  return [...tables, ...views];
 }
 
 /** Subscribe to inbound host events for the workspace. Call once at app boot. */

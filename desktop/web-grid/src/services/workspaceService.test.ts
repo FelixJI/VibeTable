@@ -31,6 +31,26 @@ describe("workspaceService display names", () => {
   beforeEach(() => setActivePinia(createPinia()));
   afterEach(() => setHostBridgeForTesting(null));
 
+  it("keeps fresh base and view metadata when recovery replaces the catalog", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    useWorkspaceService().init();
+    emit("database.opened", {
+      tables: ["removed"], views: ["old_view"], displayNames: {},
+    });
+    emit("database.collectionsChanged", {
+      tables: ["orders"], views: ["recent_orders"],
+      displayNames: { orders: "订单", recent_orders: "近期订单" },
+      capabilityHashes: { recent_orders: "view-capability" },
+    });
+    const store = useWorkspaceStore();
+    expect(store.collections).toEqual([
+      { collection: "orders", metadata: {} },
+      { collection: "recent_orders", metadata: { kind: "view", capabilityHash: "view-capability" } },
+    ]);
+    expect(store.displayNames.recent_orders).toBe("近期订单");
+  });
+
   it("projects database.opened displayNames without changing physical keys", () => {
     const { bridge, emit } = makeShimBridge();
     setHostBridgeForTesting(bridge);

@@ -3280,8 +3280,50 @@ async function scenario10(page, recorder, _network, runtime) {
   const workspaceCenter = page.getByTestId("workspace-center");
   const workspace = workspaceCenter.getByRole("button", { name: /E2E Product Workspace/ });
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
-  await workspace.click();
-  const recoveredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+  const recoveryCapture = await page.evaluateHandle(() => {
+    const capture = { evidence: null };
+    const webview = window.chrome.webview;
+    const listener = (event) => {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      if (message?.type !== "realtime.recovered") return;
+      const payload = message.payload;
+      capture.evidence = {
+        valid: payload?.contractVersion === "2.0" && payload?.topic === "realtime.recovered"
+          && Array.isArray(payload.activeFormulaTasks) && Array.isArray(payload.terminalNotifications),
+        activeCount: Array.isArray(payload?.activeFormulaTasks) ? payload.activeFormulaTasks.length : null,
+        terminalCount: Array.isArray(payload?.terminalNotifications) ? payload.terminalNotifications.length : null,
+      };
+      webview.removeEventListener("message", listener);
+    };
+    webview.addEventListener("message", listener);
+    return { capture, release: () => webview.removeEventListener("message", listener) };
+  });
+  let recoveredBootstrap;
+  let recoveryError = null;
+  try {
+    await workspace.click();
+    recoveredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
+    await page.waitForFunction((handle) => handle.capture.evidence !== null, recoveryCapture,
+      { timeout: 60_000 });
+    const recovery = await recoveryCapture.evaluate((handle) => handle.capture.evidence);
+    recorder.check("the reopened epoch received the complete Go recovery shape through Host",
+      recovery.valid, recovery);
+  } catch (error) {
+    recoveryError = error;
+    throw error;
+  } finally {
+    try {
+      try { await recoveryCapture.evaluate((handle) => handle.release()); }
+      finally { await recoveryCapture.dispose(); }
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(recoveryError, cleanupError, "recovery capture cleanup also failed")) {
+        throw cleanupError;
+      }
+    }
+  }
   const recoveredSession = recoveredBootstrap.payload.session;
   recorder.check(
     "reopening after packaged backend exit published a fresh writable session epoch",

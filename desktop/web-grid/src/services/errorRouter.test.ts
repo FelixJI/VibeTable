@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
@@ -49,6 +49,26 @@ describe("errorRouter", () => {
   // fake would leak into OTHER test files, potentially breaking them. This is
   // the architecture-debt note from the task brief.
   afterEach(() => setHostBridgeForTesting(null));
+
+  it("routes a realtime stop to its notice without failing the table load or paste", () => {
+    const { bridge, emit } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const table = useTableStore();
+    const paste = usePasteStore();
+    table.beginLoad();
+    paste.setPlan({ rows: 1, columns: 1, cells: [] } as never);
+    paste.beginApply();
+    const onRealtimeFailure = vi.fn();
+    useErrorRouter({ onRealtimeFailure }).init();
+    emit("operation.failed", {
+      operation: "realtime.stream", code: "realtime.stopped", message: "Realtime stopped.",
+    });
+    expect(onRealtimeFailure).toHaveBeenCalledOnce();
+    expect(table.loading).toBe(true);
+    expect(table.error).toBeNull();
+    expect(paste.phase).toBe("applying");
+    expect(paste.error).toBeNull();
+  });
 
   it("leaves create failures to the correlated tableAdmin request", () => {
     const { bridge, emit } = makeShimBridge();

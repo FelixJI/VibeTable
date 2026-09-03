@@ -19,11 +19,6 @@ from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
 from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMetadataPort
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.realtime import (
-    PocketBaseRealtimeSupervisor,
-    ProductEvent,
-    StdlibSSEConnector,
-)
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.content_model_service import ContentModelService
 from backend.application.grid_state_service import GridStateService
@@ -362,84 +357,9 @@ def _register_plugin_methods(
     dispatcher.register("plugin.getTask", service.get_task, PluginTaskParams)
 
 
-class _RealtimeRuntime:
-    def __init__(self, task: asyncio.Task[None], stop: asyncio.Event) -> None:
-        self._task = task
-        self._stop = stop
-
-    async def close(self) -> None:
-        self._stop.set()
-        self._task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._task
-
-
-def _start_realtime(
-    server: RpcServer,
-    config: PocketBaseConfig | None,
-    client: PocketBaseClient | None,
-) -> _RealtimeRuntime | None:
-    if config is None or client is None:
-        return None
-    stop = asyncio.Event()
-    latest_by_table: dict[str, dict[str, Any]] = {}
-    emitted: set[str] = set()
-
-    async def reconcile_cursor_gap() -> None:
-        for table_id, previous in tuple(latest_by_table.items()):
-            result = await client.reconcile_realtime(
-                table_id=table_id,
-                schema_revision=str(previous["schemaRevision"]),
-                data_revision=str(previous["dataRevision"]),
-            )
-            action = result["action"]
-            if action == "none":
-                continue
-            identity = (
-                f"{table_id}\0{result['currentSchemaRevision']}"
-                f"\0{result['currentDataRevision']}\0{action}"
-            )
-            event_id = "evt_reconcile_" + hashlib.sha256(identity.encode()).hexdigest()[:24]
-            if event_id in emitted:
-                continue
-            emitted.add(event_id)
-            await server.notify(
-                "data.changed",
-                {
-                    "contractVersion": "2.0",
-                    "topic": "data.changed",
-                    "eventId": event_id,
-                    "sequence": int(previous["sequence"]) + 1,
-                    "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                    "schemaRevision": result["currentSchemaRevision"],
-                    "dataRevision": result["currentDataRevision"],
-                    "changeSetId": None,
-                    "tableId": table_id,
-                    "recordIds": [],
-                    "operation": "schema" if action == "reload-schema" else "update",
-                },
-            )
-
-    supervisor = PocketBaseRealtimeSupervisor(
-        StdlibSSEConnector(config),
-        reconcile_cursor_gap=reconcile_cursor_gap,
-    )
-
-    async def emit(event: ProductEvent) -> None:
-        if event.topic == "data.changed":
-            table_id = event.payload.get("tableId")
-            if isinstance(table_id, str) and table_id:
-                latest_by_table[table_id] = event.payload
-        await server.notify(event.topic, event.payload)
-
-    task = asyncio.create_task(supervisor.run(emit, stop), name="product-realtime")
-    return _RealtimeRuntime(task, stop)
-
-
 async def _build_server() -> tuple[
     RpcServer,
     PluginPlatformService | None,
-    _RealtimeRuntime | None,
 ]:
     server_ref: RpcServer | None = None
 
@@ -547,7 +467,7 @@ async def _build_server() -> tuple[
     )
     dispatcher.register("path.resolveGrant", task_service.resolve_grant, ResolveGrantParams)
 
-    product_service, client, config = _product_runtime()
+    product_service, client, _config = _product_runtime()
     plugin_service: PluginPlatformService | None = None
     if product_service is not None and client is not None:
         _register_pocketbase_product_methods(dispatcher, product_service)
@@ -684,19 +604,16 @@ async def _build_server() -> tuple[
                 await server.notify(method, event)
 
         plugin_service.set_notification_sink(notify_plugin)
-    return server, plugin_service, _start_realtime(server, config, client)
+    return server, plugin_service
 
 
 async def _main() -> None:
     _configure_logging()
     plugin_service: PluginPlatformService | None = None
-    realtime: _RealtimeRuntime | None = None
     try:
-        server, plugin_service, realtime = await _build_server()
+        server, plugin_service = await _build_server()
         await server.serve()
     finally:
-        if realtime is not None:
-            await realtime.close()
         if plugin_service is not None:
             await plugin_service.close()
 

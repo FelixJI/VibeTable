@@ -43,7 +43,9 @@ public sealed class ProductRpcCapabilityManifestTests
         Assert.IsFalse(manifest.TryGet("schema.unknown", out _));
         Assert.IsTrue(manifest.TryGetEvent("data.changed", out ProductEventCapability dataChanged));
         Assert.AreEqual("notification", dataChanged.Effect);
-        Assert.AreEqual("pythonBff", dataChanged.Owner);
+        Assert.AreEqual("goSidecar", dataChanged.Owner);
+        Assert.IsTrue(manifest.TryGetEvent("realtime.recovered", out ProductEventCapability recovery));
+        Assert.AreEqual("goSidecar", recovery.Owner);
         Assert.IsFalse(manifest.TryGetEvent("data.unknown", out _));
         IReadOnlyList<ProductSidecarRegistration> registrations = manifest.GetProductSidecarRegistrations();
         Assert.HasCount(2, registrations);

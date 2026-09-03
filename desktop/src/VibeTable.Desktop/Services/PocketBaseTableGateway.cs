@@ -601,6 +601,11 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         JsonElement response = await _product.ListTablesAsync(
             JsonSerializer.SerializeToElement(new Dictionary<string, object?>(), JsonOptions),
             token).ConfigureAwait(false);
+        return ParseTableSummary(response);
+    }
+
+    internal static TableSummary ParseTableSummary(JsonElement response)
+    {
         if (!response.TryGetProperty("tables", out var values)
             || values.ValueKind != JsonValueKind.Array)
         {

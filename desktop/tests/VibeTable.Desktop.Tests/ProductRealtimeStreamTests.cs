@@ -142,7 +142,7 @@ public sealed class ProductRealtimeStreamTests
     {
         using var source = new TestSseStream(Encoding.UTF8.GetBytes(Context.SessionSecret));
         using var handler = new ReplyHandler(source) { Status = (HttpStatusCode)status };
-        HttpRequestException error = await Assert.ThrowsExactlyAsync<HttpRequestException>(async () =>
+        HttpRequestException error = await Assert.ThrowsExactlyAsync<ProductRealtimeRequestException>(async () =>
         {
             await foreach (var item in new ProductRealtimeStream(Context, handler).ReadAsync()) Assert.Fail();
         });

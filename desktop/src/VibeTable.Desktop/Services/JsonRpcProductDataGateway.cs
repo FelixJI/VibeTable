@@ -36,7 +36,6 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
         _hostInvoker = hostInvoker;
     }
 
-    public event Action<DataChangedEvent>? DataChanged;
     public event Action<JsonElement>? TaskChanged;
 
     public Task<JsonElement> DescribeFieldSettingsAsync(JsonElement p, CancellationToken t)
@@ -203,23 +202,15 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     private void OnNotification(string method, JsonElement parameters)
     {
         if (_disposed) return;
-        if (string.Equals(method, "data.changed", StringComparison.Ordinal))
-        {
-            var value = parameters.Deserialize<DataChangedEvent>(JsonOptions);
-            if (value is not null
-                && value.ContractVersion == "2.0"
-                && value.Topic == "data.changed")
-            {
-                DataChanged?.Invoke(value);
-            }
-            return;
-        }
         if (string.Equals(method, "task.changed", StringComparison.Ordinal)
             && parameters.ValueKind == JsonValueKind.Object
             && parameters.TryGetProperty("contractVersion", out var contractVersion)
             && contractVersion.GetString() == "2.0"
             && parameters.TryGetProperty("topic", out var topic)
-            && topic.GetString() == "task.changed")
+            && topic.GetString() == "task.changed"
+            && parameters.TryGetProperty("taskType", out var taskType)
+            && taskType.ValueKind == JsonValueKind.String
+            && taskType.GetString() is ("import" or "export"))
         {
             TaskChanged?.Invoke(parameters.Clone());
         }

@@ -772,6 +772,7 @@ export interface TableAdminDeletePayload {
 }
 export interface CollectionsChangedPayload {
   readonly tables: readonly string[];
+  readonly views?: readonly string[];
   readonly capabilityHashes?: Readonly<Record<string, string>>;
   /** Physical collection -> user-facing label. */
   readonly displayNames: Readonly<Record<string, string>>;

@@ -356,6 +356,7 @@ public sealed class WebMessageRouterTests
         Assert.IsTrue(router.IsHostNotificationAllowed("table.datasetReady"));
         Assert.IsTrue(router.IsHostNotificationAllowed("operation.failed"));
         Assert.IsTrue(router.IsHostNotificationAllowed("data.changed"));
+        Assert.IsTrue(router.IsHostNotificationAllowed("realtime.recovered"));
         Assert.IsFalse(router.IsHostNotificationAllowed("dire" + "ctus.changed"));
         Assert.IsFalse(router.IsHostNotificationAllowed("system.warn"));
         Assert.IsFalse(router.IsHostNotificationAllowed(""));
