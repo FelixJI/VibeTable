@@ -212,18 +212,9 @@ def contracts() -> None:
     )
 
 
-def quality() -> None:
-    if _candidate_prepare_mode():
-        print(
-            "+ defer quality to immutable-candidate CI shards",
-            flush=True,
-        )
-        return
-    contracts()
+def python_quality() -> None:
+    """Run the same Python quality gate locally and in the candidate core lane."""
     commands = (
-        ("uv", "run", "python", "scripts/release.py", "--check"),
-        ("uv", "run", "python", "qa/version_check.py"),
-        ("uv", "run", "python", "qa/package_check.py"),
         ("uv", "run", "ruff", "format", "--check", "."),
         ("uv", "run", "ruff", "check", "."),
         ("uv", "run", "python", "-m", "pyright", "backend"),
@@ -237,10 +228,25 @@ def quality() -> None:
             "--ignore=tests/e2e/test_next_readonly_smoke.py",
             "--junitxml=build/automation/python-junit.xml",
             "--cov-report=xml:build/automation/python-coverage.xml",
+            "--cov-report=html:build/automation/python-coverage-html",
         ),
     )
     for command in commands:
         _run(*command)
+
+
+def quality() -> None:
+    if _candidate_prepare_mode():
+        print(
+            "+ defer quality to immutable-candidate CI shards",
+            flush=True,
+        )
+        return
+    contracts()
+    _run("uv", "run", "python", "scripts/release.py", "--check")
+    _run("uv", "run", "python", "qa/version_check.py")
+    _run("uv", "run", "python", "qa/package_check.py")
+    python_quality()
     node_env = _node_environment()
     for project in NPM_PROJECTS:
         _run("npm", "run", "typecheck", cwd=REPO_ROOT / project, env=node_env)
@@ -611,6 +617,7 @@ def _parser() -> argparse.ArgumentParser:
             "doctor",
             "contracts",
             "quality",
+            "python-quality",
             "pr-e2e",
             "build",
             "smoke",
@@ -640,6 +647,7 @@ def main(argv: list[str] | None = None) -> int:
         "bootstrap": bootstrap,
         "contracts": contracts,
         "quality": quality,
+        "python-quality": python_quality,
         "pr-e2e": pr_e2e,
         "build": build_candidate,
         "smoke": release_smoke,
