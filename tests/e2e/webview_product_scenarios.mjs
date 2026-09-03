@@ -2824,6 +2824,33 @@ async function scenario07(page, recorder, _network, runtime) {
       `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
     );
   }
+  const attachmentProductHistoryReply = await rawBridgeRequest(
+    page,
+    "history.queryRequested",
+    {
+      collection: tableId,
+      scope: "cell",
+      itemId: recordId,
+      field: attachmentField,
+      limit: 50,
+      offset: 0,
+      actions: [],
+    },
+    20_000,
+    ["history.pageLoaded"],
+  );
+  const attachmentProductHistory = attachmentProductHistoryReply.payload;
+  recorder.check(
+    "host Product history query returns the same attachment revision",
+    attachmentProductHistoryReply.type === "history.pageLoaded"
+      && attachmentProductHistory?.collection === tableId
+      && attachmentProductHistory?.scope === "cell"
+      && attachmentProductHistory?.itemId === recordId
+      && attachmentProductHistory?.field === attachmentField
+      && attachmentProductHistory?.changeSets?.some((changeSet) =>
+        changeSet.rootRevisionId === originalRevision),
+    { attachmentProductHistoryReply, originalRevision },
+  );
   const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });

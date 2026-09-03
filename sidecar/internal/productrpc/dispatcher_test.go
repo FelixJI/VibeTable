@@ -461,10 +461,11 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 6 ||
+	if methods := dispatcher.Methods(); len(methods) != 7 ||
 		methods[0].Method != "events.reconcile" || methods[1].Method != "file.list" ||
-		methods[2].Method != "lookup.list" || methods[3].Method != "schema.describe" ||
-		methods[4].Method != "schema.getTable" || methods[5].Method != "schema.list" {
+		methods[2] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[3].Method != "lookup.list" || methods[4].Method != "schema.describe" || methods[5].Method != "schema.getTable" ||
+		methods[6].Method != "schema.list" {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -506,6 +507,10 @@ func generatedGoSidecarRegistrations() []Registration {
 		},
 		{
 			Method: "file.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "history.read", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{

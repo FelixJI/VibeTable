@@ -474,7 +474,7 @@ flowchart LR
 可与 L3A 分支并行开发，但按最新 main 串行合并和重生成 catalog：
 
 - Relation/Lookup 描述与分页；
-- history list/preview；
+- history read；preview/apply 作为共享 token owner 的完整恢复能力组留在 L5；
 - attachment/file metadata 读取；
 - Formula/Field capability 描述；
 - 共享 schema projection。
@@ -495,7 +495,7 @@ flowchart LR
 
 - FieldChange、Mutation、Formula；
 - Relation/Lookup 写入；
-- row/history restore；
+- row/history restore（包括 history preview/apply 的同片迁移）；
 - Dashboard、Preset、Version、Surface、ContentProfile、RecordDocumentLink 等共享 workspace metadata。
 
 规则：

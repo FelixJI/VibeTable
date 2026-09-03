@@ -114,6 +114,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "lookup.list",
         "schema.describe",
         "file.list",
+        "history.read",
         "events.reconcile",
         "schema.getTable",
         "schema.list",
@@ -125,6 +126,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         | {
             "events.reconcile",
             "file.list",
+            "history.read",
             "lookup.list",
             "schema.describe",
             "schema.getTable",
