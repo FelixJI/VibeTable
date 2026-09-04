@@ -581,15 +581,15 @@ func secureSnapshotPackageFixture() (
 	map[string][]byte,
 ) {
 	return snapshotpkg.Metadata{
-		FormatVersion:     2,
-		WorkspaceID:       secureSnapshotPackageWorkspaceID,
-		SnapshotID:        "33333333-3333-4333-8333-333333333333",
-		WriterVersion:     "2.0.0",
-		MinimumAppVersion: "2.0.0",
-	}, map[string][]byte{
-		"snapshot/catalog.json": []byte(`{"proof":"catalog"}`),
-		"objects/database":      []byte("plaintext database proof"),
-	}
+			FormatVersion:     2,
+			WorkspaceID:       secureSnapshotPackageWorkspaceID,
+			SnapshotID:        "33333333-3333-4333-8333-333333333333",
+			WriterVersion:     "2.0.0",
+			MinimumAppVersion: "2.0.0",
+		}, map[string][]byte{
+			"snapshot/catalog.json": []byte(`{"proof":"catalog"}`),
+			"objects/database":      []byte("plaintext database proof"),
+		}
 }
 
 func snapshotPackageCredential(value string) *string {
