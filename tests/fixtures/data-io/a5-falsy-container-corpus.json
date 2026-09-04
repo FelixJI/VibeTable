@@ -1,0 +1,12 @@
+{"$schema": "vibetable.a5-falsy-container-corpus.v1",
+  "cases": [
+    {"key": "blank_number", "displayName": "Blank number", "logicalType": "number", "rawCell": "", "productValue": null, "exportText": ""},
+    {"key": "empty_text", "displayName": "Empty text", "logicalType": "text", "rawCell": "", "productValue": "", "exportText": ""},
+    {"key": "zero", "displayName": "Zero", "logicalType": "number", "rawCell": "0", "productValue": 0, "exportText": "0"},
+    {"key": "false", "displayName": "False", "logicalType": "bool", "rawCell": "false", "productValue": false, "exportText": "false"},
+    {"key": "empty_object", "displayName": "Empty object", "logicalType": "json", "rawCell": "{}", "productValue": {}, "exportText": "{}"},
+    {"key": "empty_array", "displayName": "Empty array", "logicalType": "json", "rawCell": "[]", "productValue": [], "exportText": "[]"},
+    {"key": "stable_select", "displayName": "Stable select", "logicalType": "select", "rawCell": "Qualified", "productValue": "opt_01JA5QUALIFIED",
+      "exportText": "opt_01JA5QUALIFIED", "selectOption": {"optionId": "opt_01JA5QUALIFIED", "label": "Qualified", "color": "#16a34a", "order": 10, "state": "active"}},
+    {"key": "formula_text", "displayName": "Formula text", "logicalType": "text", "rawCell": "=1+1", "productValue": "=1+1", "exportText": "=1+1"}
+  ]}
