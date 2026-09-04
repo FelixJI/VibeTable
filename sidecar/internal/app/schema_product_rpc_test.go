@@ -617,7 +617,11 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-	}, schemaGetTableRegistration(pb), schemaListRegistration(catalog))
+	},
+		schemaGetTableRegistration(pb),
+		schemaListRegistration(catalog),
+		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

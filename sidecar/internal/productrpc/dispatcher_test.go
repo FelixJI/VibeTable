@@ -418,6 +418,10 @@ func TestNewCapturesValidatedIdentitySnapshot(t *testing.T) {
 		t.Fatal("missing schema registrations must fail closed")
 	}
 	dispatcher, err := New(identity, Registration{
+		Method: "file.list", Scope: productcapabilities.WorkspaceScope,
+		ValidateParams: func(json.RawMessage) error { return nil },
+		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
+	}, Registration{
 		Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,
 		ValidateParams: func(json.RawMessage) error { return nil },
 		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
@@ -464,6 +468,10 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	identity := testIdentity()
 	validator := func(json.RawMessage) error { return nil }
 	handler := func(context.Context, json.RawMessage) (any, error) { return nil, nil }
+	fileList := Registration{
+		Method: "file.list", Scope: productcapabilities.WorkspaceScope,
+		ValidateParams: validator, Handler: handler,
+	}
 	schemaGetTable := Registration{
 		Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,
 		ValidateParams: validator, Handler: handler,
@@ -472,13 +480,13 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 		Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
 		ValidateParams: validator, Handler: handler,
 	}
-	dispatcher, err := New(identity, schemaGetTable, schemaList)
+	dispatcher, err := New(identity, fileList, schemaGetTable, schemaList)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 2 ||
-		methods[0].Method != "schema.getTable" || methods[1].Method != "schema.list" {
-		t.Fatalf("production registrations = %#v, want schema.getTable and schema.list", methods)
+	if methods := dispatcher.Methods(); len(methods) != 3 ||
+		methods[0].Method != "file.list" || methods[1].Method != "schema.getTable" || methods[2].Method != "schema.list" {
+		t.Fatalf("production registrations = %#v, want file.list and schema reads", methods)
 	}
 	_, err = New(identity, schemaGetTable)
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
@@ -488,11 +496,11 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 		Method: "schema.unknown", Scope: productcapabilities.WorkspaceScope,
 		ValidateParams: validator, Handler: handler,
 	}
-	_, err = New(identity, schemaGetTable, schemaList, unknown)
+	_, err = New(identity, fileList, schemaGetTable, schemaList, unknown)
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
 		t.Fatalf("unexpected unknown registry mismatch error: %v", err)
 	}
-	_, err = New(identity, schemaGetTable, schemaList, schemaGetTable)
+	_, err = New(identity, fileList, schemaGetTable, schemaList, schemaGetTable)
 	if err == nil || !strings.Contains(err.Error(), "duplicate Product RPC registration") {
 		t.Fatalf("unexpected duplicate registry error: %v", err)
 	}

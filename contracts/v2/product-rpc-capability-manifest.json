@@ -94,7 +94,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "file.attachment",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {

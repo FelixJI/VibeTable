@@ -6,7 +6,7 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRpcRouteSelectorTests
 {
     [TestMethod]
-    public void GeneratedPolicyMovesSchemaReadsToGo()
+    public void GeneratedPolicyMovesFileAndSchemaReadsToGo()
     {
         var selector = new ProductRpcRouteSelector(
             ProductRpcCapabilityManifest.Default);
@@ -20,7 +20,7 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "schema.getTable" or "schema.list"
+            Assert.AreEqual(method is "file.list" or "schema.getTable" or "schema.list"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
                 route, method);
         }

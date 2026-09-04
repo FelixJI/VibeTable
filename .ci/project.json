@@ -29,7 +29,8 @@
             "./internal/filehistory",
             "./internal/restore",
             "./internal/query",
-            "./internal/mutation"
+            "./internal/mutation",
+            "./internal/productrpc"
           ],
           "test_packages": [
             "./..."

@@ -129,6 +129,7 @@ def test_project_inventory_ratchets_authority_as_an_independent_group() -> None:
         "./internal/restore",
         "./internal/query",
         "./internal/mutation",
+        "./internal/productrpc",
     )
     assert authority.test_packages == ("./...",)
     assert (

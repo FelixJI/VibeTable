@@ -2448,6 +2448,19 @@ async function scenario07(page, recorder, _network, runtime) {
     expectedOriginalHash,
     expectedSize: originalBytes.length,
   });
+  const bridgeBeforeSidecarRestart = await waitForBridgeDiagnosticsToSettle(page);
+  const failuresBeforeSidecarRestart = bridgeBeforeSidecarRestart?.failures ?? [];
+  const pendingBeforeSidecarRestart = bridgeBeforeSidecarRestart?.pending ?? [];
+  recorder.check(
+    "attachment sidecar restart begins from a quiescent bridge",
+    bridgeBeforeSidecarRestart !== null
+      && failuresBeforeSidecarRestart.length === 0
+      && pendingBeforeSidecarRestart.length === 0,
+    {
+      failures: failuresBeforeSidecarRestart,
+      pending: pendingBeforeSidecarRestart,
+    },
+  );
   const recoveryFailureOwnerToken = `attachment-recovery-${crypto.randomUUID()}`;
   await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
     ownerToken: recoveryFailureOwnerToken,

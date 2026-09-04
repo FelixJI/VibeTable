@@ -38,7 +38,7 @@ def _assert_error(
     return caught.value
 
 
-def test_inventory_covers_the_fresh_product_catalog_with_schema_reads_on_go() -> None:
+def test_inventory_covers_the_fresh_product_catalog_with_file_and_schema_reads_on_go() -> None:
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
 
     inventory = load_product_runtime_inventory()
@@ -48,9 +48,21 @@ def test_inventory_covers_the_fresh_product_catalog_with_schema_reads_on_go() ->
     schema_get_table = inventory.require("rpc", "schema.getTable")
     assert schema_get_table.current_route == "goSidecar"
     assert schema_get_table.target_owner == "GO_AUTHORITY"
+    file_list = inventory.require("rpc", "file.list")
+    assert file_list.current_path == (
+        "wpfHost",
+        "goSidecar",
+        "pocketBase",
+    )
+    assert file_list.evidence[0] == "sidecar/internal/productrpc/attachment.go"
+    file_token = inventory.require("rpc", "file.token")
+    assert file_token.current_route == "pythonBff"
+    assert file_token.evidence[0] == (
+        "backend/adapters/pocketbase/product_relation_lookup_file_rpc.py"
+    )
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "goSidecar"
-    } == {"schema.getTable", "schema.list"}
+    } == {"file.list", "schema.getTable", "schema.list"}
 
 
 def test_inventory_rejects_duplicate_json_properties(tmp_path: Path) -> None:
@@ -168,7 +180,7 @@ def test_inventory_rejects_temporary_bff_without_a_python_route(tmp_path: Path) 
     source = _inventory_source()
     groups = source["groups"]
     assert isinstance(groups, list)
-    group = next(item for item in groups if item["id"] == "rpc.file-managed-read")
+    group = next(item for item in groups if item["id"] == "rpc.file-token-read")
     group["currentRoute"] = "goSidecar"
 
     error = _assert_error(
@@ -176,7 +188,7 @@ def test_inventory_rejects_temporary_bff_without_a_python_route(tmp_path: Path) 
         inventory_path=_write_inventory(tmp_path, source),
     )
 
-    assert error.subjects == ("rpc.file-managed-read",)
+    assert error.subjects == ("rpc.file-token-read",)
 
 
 def test_require_reports_unknown_entries() -> None:

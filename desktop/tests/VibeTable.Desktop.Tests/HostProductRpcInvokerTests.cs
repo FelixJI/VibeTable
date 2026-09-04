@@ -31,6 +31,26 @@ public sealed class HostProductRpcInvokerTests
         Assert.IsFalse(wire.TryGetProperty("fenceEpoch", out _));
     }
 
+    [TestMethod]
+    public async Task TypedHostFileListUsesPolicySelectedSidecarOnly()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Result = Json("""
+            {"attachments":[{"contractVersion":"2.0","tableId":"订单","recordId":"r-1","fieldId":"附件","storedName":"stored.pdf","originalName":"发票.pdf","mimeType":"application/pdf","size":7,"sha256":"existing-authoritative-hash","downloadCapability":"download-capability","thumbnails":[]}]}
+            """);
+        using JsonRpcProductDataGateway gateway = fixture.Gateway();
+
+        JsonElement result = await gateway.ListAttachmentRefsAsync(
+            Json("""{"tableId":"订单","recordId":"r-1","fieldId":"附件"}"""), CancellationToken.None);
+
+        JsonElement attachment = result.GetProperty("attachments")[0];
+        Assert.AreEqual("发票.pdf", attachment.GetProperty("originalName").GetString());
+        Assert.AreEqual("download-capability", attachment.GetProperty("downloadCapability").GetString());
+        Assert.AreEqual(0, attachment.GetProperty("thumbnails").GetArrayLength());
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        Assert.AreEqual("file.list", fixture.Http.Calls.Single().GetProperty("method").GetString());
+    }
+
     private static JsonElement Json(string text)
     {
         using JsonDocument document = JsonDocument.Parse(text);
@@ -296,7 +316,7 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("file.list", "workspace"), new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }
@@ -307,6 +327,8 @@ public sealed class HostProductRpcInvokerTests
                 new ProductRpcRouteSelector(ProductRpcCapabilityManifest.CreateForTests(
                     new ProductRpcCapability("history.read", "workspace", "hostOnly",
                         "history.read", "goSidecar", "read"),
+                    new ProductRpcCapability("file.list", "workspace", "hostOnly",
+                        "file.attachment", "goSidecar", "read"),
                     new ProductRpcCapability("schema.getTable", "workspace", "hostOnly",
                         "schema.read", "goSidecar", "read"),
                     new ProductRpcCapability("schema.list", "workspace", "hostOnly",
