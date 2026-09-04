@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -68,8 +69,7 @@ func Extract(
 	if err := ctx.Err(); err != nil {
 		return extractionError(ExtractionCancelled, "extract.cancelled")
 	}
-	if limits.MaximumInputBytes <= 0 || limits.MaximumTextCodePoints <= 0 ||
-		limits.MaximumDuration <= 0 {
+	if err := ValidateExtractionLimits(limits); err != nil {
 		return extractionError(ExtractionFailed, "extract.limits_invalid")
 	}
 	extractionCtx, cancel := context.WithTimeout(ctx, limits.MaximumDuration)
@@ -342,57 +342,166 @@ func extractPDF(ctx context.Context, payload []byte, limits ExtractionLimits) Ex
 	if err := ctx.Err(); err != nil {
 		return extractionContextError(ctx)
 	}
-	payloads := [][]byte{payload}
+	text := pdfTextAccumulator{limit: limits.MaximumTextCodePoints}
+	if err := extractPDFText(ctx, payload, &text); err != nil {
+		if errors.Is(err, errPDFStop) {
+			return text.result()
+		}
+		return extractionContextError(ctx)
+	}
 	var decodedTotal int64
-	for _, stream := range pdfFlateStream.FindAllSubmatch(payload, -1) {
-		if err := ctx.Err(); err != nil {
-			return extractionContextError(ctx)
-		}
-		reader, err := zlib.NewReader(bytes.NewReader(stream[1]))
+	var failure ExtractionResult
+	err := walkPDFMatches(ctx, pdfFlateStream, payload, 1, func(stream []byte) error {
+		reader, err := zlib.NewReader(bytes.NewReader(stream))
 		if err != nil {
-			return extractionError(ExtractionFailed, "extract.pdf_stream_invalid")
+			failure = extractionError(ExtractionFailed, "extract.pdf_stream_invalid")
+			return errPDFStop
 		}
-		decoded, readErr := readLimitedContext(ctx, reader, limits.MaximumPartBytes+1)
-		closeErr := reader.Close()
-		if readErr != nil || closeErr != nil {
-			if errors.Is(readErr, context.DeadlineExceeded) {
-				return extractionError(ExtractionResourceLimited, "extract.timeout")
-			}
-			return extractionError(ExtractionFailed, "extract.pdf_stream_invalid")
-		}
-		if int64(len(decoded)) > limits.MaximumPartBytes {
-			return extractionError(ExtractionResourceLimited, "extract.pdf_stream_limit")
+		decoded, streamFailure := readPDFStream(ctx, reader, limits.MaximumPartBytes)
+		if streamFailure.Status != "" {
+			failure = streamFailure
+			return errPDFStop
 		}
 		decodedTotal += int64(len(decoded))
 		if decodedTotal > limits.MaximumUncompressed {
-			return extractionError(ExtractionResourceLimited, "extract.pdf_total_limit")
+			failure = extractionError(ExtractionResourceLimited, "extract.pdf_total_limit")
+			return errPDFStop
 		}
-		payloads = append(payloads, decoded)
+		return extractPDFText(ctx, decoded, &text)
+	})
+	if failure.Status != "" {
+		return failure
 	}
-	var output strings.Builder
-	for _, content := range payloads {
-		for _, match := range pdfTextOperator.FindAllSubmatch(content, -1) {
-			appendPDFToken(&output, match[1])
-		}
-		for _, array := range pdfTextArray.FindAllSubmatch(content, -1) {
-			for _, token := range pdfStringToken.FindAll(array[1], -1) {
-				appendPDFToken(&output, token)
-			}
-		}
+	if errors.Is(err, errPDFStop) {
+		return text.result()
 	}
-	if output.Len() == 0 {
-		return extractionError(ExtractionNoTextLayer, "extract.pdf_no_text")
+	if err != nil {
+		return extractionContextError(ctx)
 	}
-	return boundedExtraction(strings.Join(strings.Fields(output.String()), " "), limits)
+	return text.result()
 }
 
-func appendPDFToken(output *strings.Builder, token []byte) {
-	decoded, ok := decodePDFString(token)
-	if !ok || strings.TrimSpace(decoded) == "" {
-		return
+var errPDFStop = errors.New("pdf extraction stopped")
+
+func readPDFStream(ctx context.Context, reader io.ReadCloser, limit int64) ([]byte, ExtractionResult) {
+	decoded, readErr := readLimitedContext(ctx, reader, limit+1)
+	closeErr := reader.Close()
+	if errors.Is(readErr, context.Canceled) {
+		return nil, extractionError(ExtractionCancelled, "extract.cancelled")
 	}
-	output.WriteString(decoded)
-	output.WriteByte(' ')
+	if errors.Is(readErr, context.DeadlineExceeded) {
+		return nil, extractionError(ExtractionResourceLimited, "extract.timeout")
+	}
+	if readErr != nil || closeErr != nil {
+		return nil, extractionError(ExtractionFailed, "extract.pdf_stream_invalid")
+	}
+	if int64(len(decoded)) > limit {
+		return nil, extractionError(ExtractionResourceLimited, "extract.pdf_stream_limit")
+	}
+	return decoded, ExtractionResult{}
+}
+
+func extractPDFText(ctx context.Context, content []byte, text *pdfTextAccumulator) error {
+	appendToken := func(token []byte) error {
+		if !text.appendToken(token) {
+			return errPDFStop
+		}
+		return nil
+	}
+	if err := walkPDFMatches(ctx, pdfTextOperator, content, 1, appendToken); err != nil {
+		return err
+	}
+	return walkPDFMatches(ctx, pdfTextArray, content, 1, func(array []byte) error {
+		return walkPDFMatches(ctx, pdfStringToken, array, 0, appendToken)
+	})
+}
+
+type pdfTextAccumulator struct {
+	output                   strings.Builder
+	limit, runes, limitBytes int
+	space                    bool
+}
+
+func (text *pdfTextAccumulator) appendToken(token []byte) bool {
+	decoded, ok := decodePDFString(token)
+	if !ok {
+		return true
+	}
+	for _, value := range decoded {
+		if unicode.IsSpace(value) {
+			text.space = text.runes > 0
+			continue
+		}
+		if text.space && !text.appendRune(' ') {
+			return false
+		}
+		text.space = false
+		if !text.appendRune(value) {
+			return false
+		}
+	}
+	text.space = text.runes > 0
+	return true
+}
+
+func (text *pdfTextAccumulator) appendRune(value rune) bool {
+	text.output.WriteRune(value)
+	text.runes++
+	if text.runes == text.limit {
+		text.limitBytes = text.output.Len()
+	}
+	return text.runes <= text.limit
+}
+
+func (text *pdfTextAccumulator) result() ExtractionResult {
+	if text.runes == 0 {
+		return extractionError(ExtractionNoTextLayer, "extract.pdf_no_text")
+	}
+	value := text.output.String()
+	if text.runes <= text.limit {
+		return ExtractionResult{Status: ExtractionIndexed, Text: value}
+	}
+	code := "extract.text_limit"
+	return ExtractionResult{Status: ExtractionTruncated, Text: value[:text.limitBytes], ErrorCode: &code}
+}
+
+func walkPDFMatches(
+	ctx context.Context,
+	expression *regexp.Regexp,
+	content []byte,
+	capture int,
+	visit func([]byte) error,
+) error {
+	for len(content) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		reader := &pdfContextReader{Context: ctx, RuneReader: bytes.NewReader(content)}
+		match := expression.FindReaderSubmatchIndex(reader)
+		if match == nil {
+			return ctx.Err()
+		}
+		start, end := match[capture*2], match[capture*2+1]
+		if start >= 0 {
+			if err := visit(content[start:end]); err != nil {
+				return err
+			}
+		}
+		content = content[match[1]:]
+	}
+	return ctx.Err()
+}
+
+type pdfContextReader struct {
+	context.Context
+	io.RuneReader
+}
+
+func (reader *pdfContextReader) ReadRune() (rune, int, error) {
+	if err := reader.Err(); err != nil {
+		return 0, 0, err
+	}
+	return reader.RuneReader.ReadRune()
 }
 
 func decodePDFString(token []byte) (string, bool) {

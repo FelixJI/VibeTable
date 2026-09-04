@@ -802,6 +802,7 @@ func (runtime *Runtime) attachmentSearchSource(
 	canonical := strings.Join([]string{tableID, recordID, fieldID, storedName}, ":")
 	body := strings.Join([]string{name, mimeType, fieldID}, " ")
 	status := "unsupported"
+	var extractionErrorCode *string
 	download, openErr := attachments.OpenForIndex(
 		ctx, runtime.app, tableID, recordID, fieldID, storedName,
 	)
@@ -811,12 +812,13 @@ func (runtime *Runtime) attachmentSearchSource(
 		)
 		_ = download.Reader.Close()
 		status = string(extraction.Status)
+		extractionErrorCode = extraction.ErrorCode
 		if extraction.Status == workspacesearch.ExtractionIndexed ||
 			extraction.Status == workspacesearch.ExtractionTruncated {
 			body += "\n" + extraction.Text
 		}
 	} else {
-		status = "failed"
+		status, extractionErrorCode = extractionOpenFailure(openErr)
 	}
 	return workspacesearch.SourceDocument{
 		Kind: "attachment", CanonicalID: canonical, Title: name,
@@ -824,9 +826,10 @@ func (runtime *Runtime) attachmentSearchSource(
 		SourceRevision: record.GetString("hash"), RevisionTime: recordTime(record),
 		TableID: &tableID, RecordID: &recordID, FieldID: &fieldID,
 		MIMEType: &mimeType, SizeBytes: &size, Status: status, Current: true,
-		Metadata: []contracts.SearchMetadataItem{
-			{Key: "storedName", Value: storedName}, {Key: "extractionStatus", Value: status},
-		},
+		Metadata: extractionMetadata(
+			[]contracts.SearchMetadataItem{{Key: "storedName", Value: storedName}},
+			status, extractionErrorCode,
+		),
 		OpenTarget: contracts.SearchOpenTarget{Kind: "attachment", TableId: &tableID, RecordId: &recordID, FieldId: &fieldID},
 	}
 }
@@ -896,7 +899,9 @@ func (runtime *Runtime) collectFileSearchSourcesFor(
 			}
 			mimeType, size := revision.MimeType, revision.Size
 			status := "failed"
+			extractionStatus := status
 			body := ""
+			var extractionErrorCode *string
 			_, content, openErr := runtime.history.OpenRevision(ctx, summary.DocumentID, revision.RevisionID)
 			if openErr == nil {
 				extraction := workspacesearch.Extract(
@@ -905,19 +910,23 @@ func (runtime *Runtime) collectFileSearchSourcesFor(
 				)
 				_ = content.Close()
 				status = string(extraction.Status)
+				extractionStatus = status
+				extractionErrorCode = extraction.ErrorCode
 				if extraction.Status == workspacesearch.ExtractionIndexed ||
 					extraction.Status == workspacesearch.ExtractionTruncated {
 					body = extraction.Text
 				}
+			} else {
+				status, extractionErrorCode = extractionOpenFailure(openErr)
+				extractionStatus = status
 			}
 			if summary.Status == filehistory.DocumentDeleted {
 				status = "deleted"
 			}
-			metadata := []contracts.SearchMetadataItem{
+			metadata := extractionMetadata([]contracts.SearchMetadataItem{
 				{Key: "relativePath", Value: summary.RelativePath},
 				{Key: "documentStatus", Value: string(summary.Status)},
-				{Key: "extractionStatus", Value: status},
-			}
+			}, extractionStatus, extractionErrorCode)
 			if revision.FormalVersion != nil {
 				metadata = append(metadata, contracts.SearchMetadataItem{
 					Key: "formalVersion", Value: float64(*revision.FormalVersion),
@@ -936,6 +945,29 @@ func (runtime *Runtime) collectFileSearchSourcesFor(
 		}
 	}
 	return sources, nil
+}
+
+func extractionMetadata(
+	metadata []contracts.SearchMetadataItem,
+	status string,
+	errorCode *string,
+) []contracts.SearchMetadataItem {
+	metadata = append(metadata, contracts.SearchMetadataItem{Key: "extractionStatus", Value: status})
+	if errorCode != nil {
+		metadata = append(metadata, contracts.SearchMetadataItem{Key: "extractionErrorCode", Value: *errorCode})
+	}
+	return metadata
+}
+
+func extractionOpenFailure(err error) (string, *string) {
+	status := string(workspacesearch.ExtractionFailed)
+	code := "extract.source_unavailable"
+	if errors.Is(err, context.DeadlineExceeded) {
+		status, code = string(workspacesearch.ExtractionResourceLimited), "extract.timeout"
+	} else if errors.Is(err, context.Canceled) {
+		status, code = string(workspacesearch.ExtractionCancelled), "extract.cancelled"
+	}
+	return status, &code
 }
 
 func (runtime *Runtime) collectChangedFileSearchSources(

@@ -137,6 +137,104 @@ func TestPDFExtractorRejectsCorruptFlateAndDecodedStreamLimit(t *testing.T) {
 	}
 }
 
+func TestPDFStreamReadMapsOnlyCausalCancellation(t *testing.T) {
+	tests := []struct {
+		name       string
+		readErr    error
+		wantStatus ExtractionStatus
+		wantCode   string
+	}{
+		{"cancelled read", context.Canceled, ExtractionCancelled, "extract.cancelled"},
+		{"deadline read", context.DeadlineExceeded, ExtractionResourceLimited, "extract.timeout"},
+		{"corrupt read during cancellation", io.ErrUnexpectedEOF, ExtractionFailed, "extract.pdf_stream_invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			reader := &blockedPDFReader{
+				started: make(chan struct{}), release: make(chan struct{}), err: test.readErr,
+			}
+			result := make(chan ExtractionResult, 1)
+			go func() {
+				_, failure := readPDFStream(ctx, reader, DefaultExtractionLimits.MaximumPartBytes)
+				result <- failure
+			}()
+			<-reader.started
+			cancel()
+			close(reader.release)
+			failure := <-result
+			assertExtractionCode(t, failure, test.wantStatus, test.wantCode)
+		})
+	}
+}
+
+func TestWalkPDFMatchesChecksContextAfterFinalToken(t *testing.T) {
+	payload := []byte("BT (searchable text) Tj ET")
+	ctx, cancel := context.WithCancel(context.Background())
+	err := walkPDFMatches(ctx, pdfTextOperator, payload, 1, func([]byte) error {
+		cancel()
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("tail cancellation = %v", err)
+	}
+
+	deadline := newFinishableContext()
+	err = walkPDFMatches(deadline, pdfTextOperator, payload, 1, func([]byte) error {
+		deadline.finish(context.DeadlineExceeded)
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("tail deadline = %v", err)
+	}
+	assertExtractionCode(t, extractionContextError(deadline), ExtractionResourceLimited, "extract.timeout")
+}
+
+func TestPDFMatcherCancelsDuringFlateDiscovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &blockedPDFReader{
+		started: make(chan struct{}), release: make(chan struct{}),
+		runes: strings.NewReader("x<< /FlateDecode >>\nstream\npayload\nendstream"),
+	}
+	result := make(chan []int, 1)
+	go func() {
+		result <- pdfFlateStream.FindReaderSubmatchIndex(&pdfContextReader{
+			Context: ctx, RuneReader: source,
+		})
+	}()
+	<-source.started
+	cancel()
+	close(source.release)
+	wrapped, raw := <-result, pdfFlateStream.FindReaderSubmatchIndex(source)
+	if wrapped != nil || raw == nil {
+		t.Fatalf("flate discovery matches: context-aware=%v raw=%v", wrapped, raw)
+	}
+}
+
+func TestPDFTextAccumulatorStoresAtMostLimitPlusOneRune(t *testing.T) {
+	text := pdfTextAccumulator{limit: 4}
+	if text.appendToken([]byte("(123456789)")) || text.runes != 5 {
+		t.Fatalf("bounded accumulator = %#v", text)
+	}
+	assertExtractionCode(t, text.result(), ExtractionTruncated, "extract.text_limit")
+	if result := text.result(); result.Text != "1234" {
+		t.Fatalf("truncated text = %q", result.Text)
+	}
+}
+
+func TestPDFExtractorTruncatesUncompressedTextAtRuneLimit(t *testing.T) {
+	limits := DefaultExtractionLimits
+	limits.MaximumTextCodePoints = 4
+	result := Extract(
+		context.Background(), "report.pdf", "application/pdf",
+		strings.NewReader("%PDF-1.7\nBT (123456) Tj ET"), limits,
+	)
+	assertExtractionCode(t, result, ExtractionTruncated, "extract.text_limit")
+	if result.Text != "1234" {
+		t.Fatalf("truncated text = %q", result.Text)
+	}
+}
+
 func TestPDFStringDecoderHandlesEveryLiteralEscapeAndHexBoundary(t *testing.T) {
 	literal := append([]byte(`(line\nreturn\rtab\tback\bform\fparen\(\)slash\\octal\101`), '\r', '\n')
 	literal = append(literal, []byte("continued\\\nend)")...)
@@ -170,35 +268,33 @@ func TestPDFStringDecoderHandlesEveryLiteralEscapeAndHexBoundary(t *testing.T) {
 			t.Fatalf("invalid token %q decoded as %q", token, value)
 		}
 	}
-	var output strings.Builder
-	appendPDFToken(&output, []byte("()"))
-	appendPDFToken(&output, []byte("<GG>"))
-	if output.Len() != 0 {
-		t.Fatalf("invalid or blank tokens appended %q", output.String())
+	text := pdfTextAccumulator{limit: 4}
+	if !text.appendToken([]byte("()")) || !text.appendToken([]byte("<GG>")) || text.runes != 0 {
+		t.Fatalf("invalid or blank tokens appended %#v", text)
 	}
 }
 
-func TestValidateExtractionLimitsRejectsEveryNonPositiveBoundary(t *testing.T) {
-	if err := ValidateExtractionLimits(DefaultExtractionLimits); err != nil {
-		t.Fatal(err)
-	}
+func TestExtractorRejectsEveryNonPositiveLimit(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*ExtractionLimits)
+		mutate func(*ExtractionLimits, int64)
 	}{
-		{"input", func(value *ExtractionLimits) { value.MaximumInputBytes = 0 }},
-		{"entries", func(value *ExtractionLimits) { value.MaximumZIPEntries = 0 }},
-		{"uncompressed", func(value *ExtractionLimits) { value.MaximumUncompressed = 0 }},
-		{"part", func(value *ExtractionLimits) { value.MaximumPartBytes = 0 }},
-		{"text", func(value *ExtractionLimits) { value.MaximumTextCodePoints = 0 }},
-		{"duration", func(value *ExtractionLimits) { value.MaximumDuration = 0 }},
+		{"input", func(limits *ExtractionLimits, value int64) { limits.MaximumInputBytes = value }},
+		{"entries", func(limits *ExtractionLimits, value int64) { limits.MaximumZIPEntries = int(value) }},
+		{"uncompressed", func(limits *ExtractionLimits, value int64) { limits.MaximumUncompressed = value }},
+		{"part", func(limits *ExtractionLimits, value int64) { limits.MaximumPartBytes = value }},
+		{"text", func(limits *ExtractionLimits, value int64) { limits.MaximumTextCodePoints = int(value) }},
+		{"duration", func(limits *ExtractionLimits, value int64) { limits.MaximumDuration = time.Duration(value) }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			limits := DefaultExtractionLimits
-			test.mutate(&limits)
-			if err := ValidateExtractionLimits(limits); err == nil {
-				t.Fatal("invalid limits unexpectedly accepted")
+			for _, value := range []int64{0, -1} {
+				limits := DefaultExtractionLimits
+				test.mutate(&limits, value)
+				assertExtractionCode(
+					t, Extract(context.Background(), "notes.txt", "text/plain", strings.NewReader("text"), limits),
+					ExtractionFailed, "extract.limits_invalid",
+				)
 			}
 		})
 	}
@@ -378,6 +474,46 @@ func (failingReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 type emptyReader struct{}
 
 func (emptyReader) Read([]byte) (int, error) { return 0, nil }
+
+type blockedPDFReader struct {
+	started, release chan struct{}
+	err              error
+	runes            io.RuneReader
+}
+
+func (reader *blockedPDFReader) Read([]byte) (int, error) {
+	close(reader.started)
+	<-reader.release
+	return 0, reader.err
+}
+
+func (reader *blockedPDFReader) ReadRune() (rune, int, error) {
+	if reader.started != nil {
+		close(reader.started)
+		<-reader.release
+		reader.started = nil
+	}
+	return reader.runes.ReadRune()
+}
+
+func (*blockedPDFReader) Close() error { return nil }
+
+type finishableContext struct {
+	context.Context
+	done chan struct{}
+	err  error
+}
+
+func newFinishableContext() *finishableContext {
+	return &finishableContext{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (controlled *finishableContext) Done() <-chan struct{} { return controlled.done }
+func (controlled *finishableContext) Err() error            { return controlled.err }
+func (controlled *finishableContext) finish(err error) {
+	controlled.err = err
+	close(controlled.done)
+}
 
 func (reader *delayedReader) Read(target []byte) (int, error) {
 	if reader.remaining == 0 {

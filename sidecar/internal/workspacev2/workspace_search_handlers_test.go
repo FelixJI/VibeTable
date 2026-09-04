@@ -3,6 +3,7 @@ package workspacev2
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	contracts "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/workspacesearch"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -66,41 +68,11 @@ func TestQuiesceWorkspaceSearchCancelsAndJoinsBothOwners(t *testing.T) {
 }
 
 func TestEnsureSearchProjectionReplaysChangedRecordWithoutFullRebuild(t *testing.T) {
-	ctx := context.Background()
-	root := createWorkspace(t, testWorkspaceID)
-	dataDir := filepath.Join(root, ".vibetable", "data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir: dataDir, HideStartBanner: true,
-	})
-	migrations.Register(app)
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Errorf("ResetBootstrapState(): %v", err)
-		}
-	})
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
 	tableID, recordID := "table-search", "record000000001"
-	seedSearchTable(t, app, tableID, recordID, "alpha payload")
-	insertSearchOutboxEvent(t, app, "event-initial", tableID, recordID, mutation.DataChangeInsert)
-	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ledger.Close() })
-	runtime, err := Open(ctx, Options{
-		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
-		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
+	ctx, app, runtime := openSearchTestRuntime(t, func(app *pocketbase.PocketBase) {
+		seedSearchTable(t, app, tableID, recordID, "alpha payload")
+		insertSearchOutboxEvent(t, app, "event-initial", tableID, recordID, mutation.DataChangeInsert)
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	target, _, err := runtime.searchProjectionSourceTail(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -147,40 +119,10 @@ func TestEnsureSearchProjectionReplaysChangedRecordWithoutFullRebuild(t *testing
 }
 
 func TestResolveWorkspaceSearchHitRefreshesFromAuthorityAndRemovesMissingSource(t *testing.T) {
-	ctx := context.Background()
-	root := createWorkspace(t, testWorkspaceID)
-	dataDir := filepath.Join(root, ".vibetable", "data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir: dataDir, HideStartBanner: true,
-	})
-	migrations.Register(app)
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Errorf("ResetBootstrapState(): %v", err)
-		}
-	})
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
 	tableID, recordID := "table-search", "record000000001"
-	seedSearchTable(t, app, tableID, recordID, "alpha payload")
-	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ledger.Close() })
-	runtime, err := Open(ctx, Options{
-		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
-		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
+	ctx, app, runtime := openSearchTestRuntime(t, func(app *pocketbase.PocketBase) {
+		seedSearchTable(t, app, tableID, recordID, "alpha payload")
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	target, _, err := runtime.searchProjectionSourceTail(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +179,134 @@ func TestResolveWorkspaceSearchHitRefreshesFromAuthorityAndRemovesMissingSource(
 	if hits := querySearch(t, runtime.search, "beta"); len(hits) != 0 {
 		t.Fatalf("missing authority left a searchable hit: %#v", hits)
 	}
+}
+
+func TestFileExtractionErrorCodeRoundTripsWithoutIndexingFailedContent(t *testing.T) {
+	ctx, _, runtime := openSearchTestRuntime(t, nil)
+	token, _ := runtime.coordinator.Current()
+	saved, err := runtime.history.Save(ctx, filehistory.SaveRequest{
+		Token: token, DocumentID: "22222222-2222-4222-8222-222222222222",
+		Path: "corrupt.pdf", Kind: filehistory.RevisionFormal,
+		Content:  []byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\nforbiddenpayload\nendstream"),
+		MimeType: "application/pdf", CreatedBy: "test", DeviceID: testClaimID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := runtime.collectFileSearchSources(ctx)
+	if err != nil || len(sources) != 1 || sources[0].Body != "" ||
+		sources[0].Status != "failed" {
+		t.Fatalf("file sources = %#v, err=%v", sources, err)
+	}
+	if err := runtime.search.RebuildProjection(
+		ctx, sources, workspacesearch.ProjectionCheckpoint{}, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	hits := querySearch(t, runtime.search, "corrupt")
+	if len(hits) != 1 {
+		t.Fatalf("filename hits = %#v", hits)
+	}
+	assertSearchMetadata(t, hits[0].Metadata, map[string]any{
+		"extractionStatus": "failed", "extractionErrorCode": "extract.pdf_stream_invalid",
+	})
+	if hits := querySearch(t, runtime.search, "forbiddenpayload"); len(hits) != 0 {
+		t.Fatalf("failed extraction content was indexed: %#v", hits)
+	}
+	if _, err := runtime.history.Delete(
+		ctx, token, saved.Document.DocumentID, &saved.Revision.RevisionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	sources, err = runtime.collectFileSearchSources(ctx)
+	if err != nil || len(sources) != 1 || sources[0].Status != "deleted" ||
+		!sources[0].Current {
+		t.Fatalf("deleted file sources = %#v, err=%v", sources, err)
+	}
+	assertSearchMetadata(t, sources[0].Metadata, map[string]any{
+		"documentStatus": "deleted", "extractionStatus": "failed",
+		"extractionErrorCode": "extract.pdf_stream_invalid",
+	})
+	if err := runtime.search.RebuildProjection(
+		ctx, sources, workspacesearch.ProjectionCheckpoint{}, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if hits := querySearch(t, runtime.search, "corrupt"); len(hits) != 0 {
+		t.Fatalf("deleted file became searchable: %#v", hits)
+	}
+	unavailableRepository := &unavailableOpenRepository{Repository: runtime.repository}
+	runtime.history, err = filehistory.OpenCurrent(
+		ctx, unavailableRepository, runtime.coordinator, runtime.headStore,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailableRepository.unavailable = true
+	sources, err = runtime.collectFileSearchSources(ctx)
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("unavailable sources = %#v, err=%v", sources, err)
+	}
+	assertSearchMetadata(t, sources[0].Metadata, map[string]any{
+		"extractionStatus": "failed", "extractionErrorCode": "extract.source_unavailable",
+	})
+}
+
+func openSearchTestRuntime(
+	t *testing.T,
+	prepare func(*pocketbase.PocketBase),
+) (context.Context, *pocketbase.PocketBase, *Runtime) {
+	t.Helper()
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: dataDir, HideStartBanner: true,
+	})
+	migrations.Register(app)
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := app.ResetBootstrapState(); err != nil {
+			t.Errorf("ResetBootstrapState(): %v", err)
+		}
+	})
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	if prepare != nil {
+		prepare(app)
+	}
+	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
+		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	return ctx, app, runtime
+}
+
+type unavailableOpenRepository struct {
+	objectrepo.Repository
+	unavailable bool
+}
+
+func (repository *unavailableOpenRepository) Open(
+	ctx context.Context, id objectrepo.ObjectID,
+) (io.ReadCloser, error) {
+	if repository.unavailable {
+		return nil, objectrepo.ErrNotFound
+	}
+	return repository.Repository.Open(ctx, id)
 }
 
 func resolveSearchHit(
@@ -488,4 +558,20 @@ func querySearch(
 		t.Fatal(err)
 	}
 	return result.Hits
+}
+
+func assertSearchMetadata(
+	t *testing.T,
+	metadata []contracts.SearchMetadataItem,
+	want map[string]any,
+) {
+	t.Helper()
+	for _, item := range metadata {
+		if value, found := want[item.Key]; found && item.Value == value {
+			delete(want, item.Key)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing search metadata = %#v; got=%#v", want, metadata)
+	}
 }
