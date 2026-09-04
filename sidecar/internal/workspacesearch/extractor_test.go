@@ -6,6 +6,7 @@ import (
 	"compress/zlib"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -137,6 +138,42 @@ func TestPDFExtractorRejectsCorruptFlateAndDecodedStreamLimit(t *testing.T) {
 	}
 }
 
+func TestPDFExtractorMapsOnlyCausalContextErrorsToCancellation(t *testing.T) {
+	compressed := zlibPayload(t, nil)
+	payload := pdfFlatePayload(compressed)
+	base, cancel := context.WithCancel(context.Background())
+	cancelDuringRead := &cancelOnErrCheckContext{
+		Context: base, cancel: cancel, checksBeforeCancel: 3,
+	}
+	assertExtractionCode(
+		t, extractPDF(cancelDuringRead, payload, DefaultExtractionLimits),
+		ExtractionCancelled, "extract.cancelled",
+	)
+	base, cancel = context.WithCancel(context.Background())
+	cancelDuringProcessing := &cancelOnErrCheckContext{
+		Context: base, cancel: cancel, checksBeforeCancel: 2,
+	}
+	assertExtractionCode(
+		t,
+		extractPDF(
+			cancelDuringProcessing, []byte("%PDF-1.7\nBT (searchable text) Tj ET"),
+			DefaultExtractionLimits,
+		),
+		ExtractionCancelled, "extract.cancelled",
+	)
+
+	corrupted := append([]byte(nil), compressed...)
+	corrupted[len(corrupted)-1] ^= 0xff
+	base, cancel = context.WithCancel(context.Background())
+	cancelAfterReadFailure := &cancelOnErrCheckContext{
+		Context: base, cancel: cancel, checksBeforeCancel: 4,
+	}
+	assertExtractionCode(
+		t, extractPDF(cancelAfterReadFailure, pdfFlatePayload(corrupted), DefaultExtractionLimits),
+		ExtractionFailed, "extract.pdf_stream_invalid",
+	)
+}
+
 func TestPDFStringDecoderHandlesEveryLiteralEscapeAndHexBoundary(t *testing.T) {
 	literal := append([]byte(`(line\nreturn\rtab\tback\bform\fparen\(\)slash\\octal\101`), '\r', '\n')
 	literal = append(literal, []byte("continued\\\nend)")...)
@@ -178,29 +215,29 @@ func TestPDFStringDecoderHandlesEveryLiteralEscapeAndHexBoundary(t *testing.T) {
 	}
 }
 
-func TestValidateExtractionLimitsRejectsEveryNonPositiveBoundary(t *testing.T) {
-	if err := ValidateExtractionLimits(DefaultExtractionLimits); err != nil {
-		t.Fatal(err)
-	}
+func TestExtractorRejectsEveryNonPositiveLimit(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*ExtractionLimits)
+		mutate func(*ExtractionLimits, int64)
 	}{
-		{"input", func(value *ExtractionLimits) { value.MaximumInputBytes = 0 }},
-		{"entries", func(value *ExtractionLimits) { value.MaximumZIPEntries = 0 }},
-		{"uncompressed", func(value *ExtractionLimits) { value.MaximumUncompressed = 0 }},
-		{"part", func(value *ExtractionLimits) { value.MaximumPartBytes = 0 }},
-		{"text", func(value *ExtractionLimits) { value.MaximumTextCodePoints = 0 }},
-		{"duration", func(value *ExtractionLimits) { value.MaximumDuration = 0 }},
+		{"input", func(limits *ExtractionLimits, value int64) { limits.MaximumInputBytes = value }},
+		{"entries", func(limits *ExtractionLimits, value int64) { limits.MaximumZIPEntries = int(value) }},
+		{"uncompressed", func(limits *ExtractionLimits, value int64) { limits.MaximumUncompressed = value }},
+		{"part", func(limits *ExtractionLimits, value int64) { limits.MaximumPartBytes = value }},
+		{"text", func(limits *ExtractionLimits, value int64) { limits.MaximumTextCodePoints = int(value) }},
+		{"duration", func(limits *ExtractionLimits, value int64) { limits.MaximumDuration = time.Duration(value) }},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			limits := DefaultExtractionLimits
-			test.mutate(&limits)
-			if err := ValidateExtractionLimits(limits); err == nil {
-				t.Fatal("invalid limits unexpectedly accepted")
-			}
-		})
+		for _, value := range []int64{0, -1} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, value), func(t *testing.T) {
+				limits := DefaultExtractionLimits
+				test.mutate(&limits, value)
+				assertExtractionCode(
+					t, Extract(context.Background(), "notes.txt", "text/plain", strings.NewReader("text"), limits),
+					ExtractionFailed, "extract.limits_invalid",
+				)
+			})
+		}
 	}
 }
 
@@ -379,6 +416,20 @@ type emptyReader struct{}
 
 func (emptyReader) Read([]byte) (int, error) { return 0, nil }
 
+type cancelOnErrCheckContext struct {
+	context.Context
+	cancel             context.CancelFunc
+	checksBeforeCancel int
+}
+
+func (controlled *cancelOnErrCheckContext) Err() error {
+	controlled.checksBeforeCancel--
+	if controlled.checksBeforeCancel == 0 {
+		controlled.cancel()
+	}
+	return controlled.Context.Err()
+}
+
 func (reader *delayedReader) Read(target []byte) (int, error) {
 	if reader.remaining == 0 {
 		return 0, io.EOF
@@ -423,6 +474,24 @@ func ooxmlMany(t *testing.T, entries map[string]string) []byte {
 		t.Fatal(err)
 	}
 	return output.Bytes()
+}
+
+func zlibPayload(t *testing.T, content []byte) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := zlib.NewWriter(&compressed)
+	if _, err := writer.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return compressed.Bytes()
+}
+
+func pdfFlatePayload(compressed []byte) []byte {
+	payload := append([]byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\n"), compressed...)
+	return append(payload, []byte("\nendstream\n%%EOF")...)
 }
 
 func assertExtractionCode(t *testing.T, result ExtractionResult, status ExtractionStatus, code string) {

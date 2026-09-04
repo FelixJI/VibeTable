@@ -68,8 +68,7 @@ func Extract(
 	if err := ctx.Err(); err != nil {
 		return extractionError(ExtractionCancelled, "extract.cancelled")
 	}
-	if limits.MaximumInputBytes <= 0 || limits.MaximumTextCodePoints <= 0 ||
-		limits.MaximumDuration <= 0 {
+	if err := ValidateExtractionLimits(limits); err != nil {
 		return extractionError(ExtractionFailed, "extract.limits_invalid")
 	}
 	extractionCtx, cancel := context.WithTimeout(ctx, limits.MaximumDuration)
@@ -355,6 +354,9 @@ func extractPDF(ctx context.Context, payload []byte, limits ExtractionLimits) Ex
 		decoded, readErr := readLimitedContext(ctx, reader, limits.MaximumPartBytes+1)
 		closeErr := reader.Close()
 		if readErr != nil || closeErr != nil {
+			if errors.Is(readErr, context.Canceled) {
+				return extractionError(ExtractionCancelled, "extract.cancelled")
+			}
 			if errors.Is(readErr, context.DeadlineExceeded) {
 				return extractionError(ExtractionResourceLimited, "extract.timeout")
 			}
@@ -371,10 +373,19 @@ func extractPDF(ctx context.Context, payload []byte, limits ExtractionLimits) Ex
 	}
 	var output strings.Builder
 	for _, content := range payloads {
+		if err := ctx.Err(); err != nil {
+			return extractionContextError(ctx)
+		}
 		for _, match := range pdfTextOperator.FindAllSubmatch(content, -1) {
+			if err := ctx.Err(); err != nil {
+				return extractionContextError(ctx)
+			}
 			appendPDFToken(&output, match[1])
 		}
 		for _, array := range pdfTextArray.FindAllSubmatch(content, -1) {
+			if err := ctx.Err(); err != nil {
+				return extractionContextError(ctx)
+			}
 			for _, token := range pdfStringToken.FindAll(array[1], -1) {
 				appendPDFToken(&output, token)
 			}

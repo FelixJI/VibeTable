@@ -239,6 +239,81 @@ func TestResolveWorkspaceSearchHitRefreshesFromAuthorityAndRemovesMissingSource(
 	}
 }
 
+func TestFileExtractionErrorCodeRoundTripsWithoutIndexingFailedContent(t *testing.T) {
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: dataDir, HideStartBanner: true,
+	})
+	migrations.Register(app)
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := app.ResetBootstrapState(); err != nil {
+			t.Errorf("ResetBootstrapState(): %v", err)
+		}
+	})
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
+		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	token, _ := runtime.coordinator.Current()
+	_, err = runtime.history.Save(ctx, filehistory.SaveRequest{
+		Token: token, DocumentID: "22222222-2222-4222-8222-222222222222",
+		Path: "corrupt.pdf", Kind: filehistory.RevisionFormal,
+		Content:  []byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\nforbiddenpayload\nendstream"),
+		MimeType: "application/pdf", CreatedBy: "test", DeviceID: testClaimID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := runtime.collectFileSearchSources(ctx)
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("file sources = %#v, err=%v", sources, err)
+	}
+	if sources[0].Body != "" || sources[0].Status != "failed" {
+		t.Fatalf("failed extraction source = %#v", sources[0])
+	}
+	if err := runtime.search.RebuildProjection(
+		ctx, sources, workspacesearch.ProjectionCheckpoint{}, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	hits := querySearch(t, runtime.search, "corrupt")
+	if len(hits) != 1 {
+		t.Fatalf("filename hits = %#v", hits)
+	}
+	wantMetadata := map[string]any{
+		"extractionStatus": "failed", "extractionErrorCode": "extract.pdf_stream_invalid",
+	}
+	for _, item := range hits[0].Metadata {
+		if value, found := wantMetadata[item.Key]; found && item.Value == value {
+			delete(wantMetadata, item.Key)
+		}
+	}
+	if len(wantMetadata) != 0 {
+		t.Fatalf("missing extraction metadata = %#v; hit=%#v", wantMetadata, hits[0])
+	}
+	if hits := querySearch(t, runtime.search, "forbiddenpayload"); len(hits) != 0 {
+		t.Fatalf("failed extraction content was indexed: %#v", hits)
+	}
+}
+
 func resolveSearchHit(
 	t *testing.T,
 	runtime *Runtime,
