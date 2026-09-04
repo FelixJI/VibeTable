@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": {
+    "word": "Microsoft Word 16.0",
+    "excel": "Microsoft Excel 16.0",
+    "wps": "WPS Office 12.1.0.28488 detected; qualification inconclusive"
+  },
+  "pairs": [
+    {
+      "id": "docx-cjk-single-character",
+      "before": "docx/cjk-before.docx",
+      "after": "docx/cjk-after.docx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "expectedOutcome": "ChangedWithDetails",
+      "producer": "Microsoft Office Word",
+      "covers": [
+        "docx.cjk.single-character"
+      ]
+    },
+    {
+      "id": "docx-content",
+      "before": "docx/content-before.docx",
+      "after": "docx/content-after.docx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "expectedOutcome": "ChangedWithDetails",
+      "producer": "Microsoft Office Word",
+      "covers": [
+        "docx.cjk.sentence-insert",
+        "docx.mixed-language",
+        "docx.punctuation",
+        "docx.paragraph-move",
+        "docx.table.cell",
+        "docx.table.row-column",
+        "docx.header-footer",
+        "docx.footnote",
+        "docx.text-box",
+        "docx.image"
+      ]
+    },
+    {
+      "id": "docx-format-only",
+      "before": "docx/format-before.docx",
+      "after": "docx/format-after.docx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "expectedOutcome": "Changed",
+      "producer": "Microsoft Office Word",
+      "covers": [
+        "docx.format.font",
+        "docx.format.paragraph-indent"
+      ]
+    },
+    {
+      "id": "docx-large-budget",
+      "before": "docx/large-before.docx",
+      "after": "docx/large-after.docx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "expectedOutcome": "Changed",
+      "producer": "Microsoft Office Word",
+      "covers": [
+        "docx.large"
+      ]
+    },
+    {
+      "id": "xlsx-content",
+      "before": "xlsx/content-before.xlsx",
+      "after": "xlsx/content-after.xlsx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "expectedOutcome": "ChangedWithDetails",
+      "producer": "Microsoft Excel",
+      "covers": [
+        "xlsx.value",
+        "xlsx.formula",
+        "xlsx.worksheet-add-delete",
+        "xlsx.merge",
+        "xlsx.hidden-row-column",
+        "xlsx.sparse-large"
+      ]
+    },
+    {
+      "id": "xlsx-format-only",
+      "before": "xlsx/format-before.xlsx",
+      "after": "xlsx/format-after.xlsx",
+      "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "expectedOutcome": "Changed",
+      "producer": "Microsoft Excel",
+      "covers": [
+        "xlsx.style"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "docx-existing-revisions",
+      "path": "docx/existing-revisions.docx",
+      "producer": "Microsoft Office Word",
+      "validPackage": true,
+      "covers": [
+        "docx.existing-revisions"
+      ]
+    },
+    {
+      "id": "docx-corrupt",
+      "path": "docx/corrupt.docx",
+      "producer": "synthetic",
+      "validPackage": false,
+      "covers": [
+        "docx.corrupt"
+      ]
+    },
+    {
+      "id": "xlsx-macro-container",
+      "path": "xlsx/macro-container.xlsm",
+      "producer": "Microsoft Excel",
+      "validPackage": true,
+      "covers": [
+        "xlsx.macro-container"
+      ]
+    },
+    {
+      "id": "clippit-cjk-compared-evidence",
+      "path": "evidence/clippit-cjk-compared.docx",
+      "producer": "Microsoft Office Word",
+      "validPackage": true,
+      "covers": []
+    },
+    {
+      "id": "clippit-format-compared-evidence",
+      "path": "evidence/clippit-format-compared.docx",
+      "producer": "Microsoft Office Word",
+      "validPackage": true,
+      "covers": []
+    },
+    {
+      "id": "clippit-existing-revisions-accepted-evidence",
+      "path": "evidence/clippit-existing-revisions-accepted.docx",
+      "producer": "Microsoft Office Word",
+      "validPackage": true,
+      "covers": []
+    }
+  ]
+}
