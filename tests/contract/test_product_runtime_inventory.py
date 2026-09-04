@@ -38,9 +38,7 @@ def _assert_error(
     return caught.value
 
 
-def test_inventory_covers_the_fresh_product_catalog_with_reconcile_file_and_schema_reads_on_go() -> (
-    None
-):
+def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners() -> None:
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
 
     inventory = load_product_runtime_inventory()
@@ -68,6 +66,21 @@ def test_inventory_covers_the_fresh_product_catalog_with_reconcile_file_and_sche
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "goSidecar"
     } == {"events.reconcile", "file.list", "schema.getTable", "schema.list"}
+    assert {
+        record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"
+    } == {"settings.readDevice", "settings.saveDevice"}
+    device_settings = inventory.require("rpc", "settings.readDevice")
+    assert device_settings.group_id == "rpc.device-settings"
+    assert device_settings.current_path == ("renderer", "wpfHost")
+    assert device_settings.product_scenarios == ()
+    assert device_settings.evidence == (
+        "backend/__main__.py",
+        "desktop/src/VibeTable.Desktop/MainWindow.Product.cs",
+        "desktop/src/VibeTable.Desktop/Services/DeviceSettingsRequestController.cs",
+        "desktop/src/VibeTable.Desktop/Services/DeviceSettingsStore.cs",
+        "desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs",
+        "backend/contracts/settings_commands.py",
+    )
 
 
 def test_inventory_rejects_duplicate_json_properties(tmp_path: Path) -> None:
@@ -170,7 +183,7 @@ def test_inventory_rejects_classification_target_mismatches(tmp_path: Path) -> N
     source = _inventory_source()
     groups = source["groups"]
     assert isinstance(groups, list)
-    group = next(item for item in groups if item["id"] == "rpc.device-command-shortcut")
+    group = next(item for item in groups if item["id"] == "rpc.device-settings")
     group["targetOwner"] = "GO_AUTHORITY"
 
     error = _assert_error(
@@ -178,7 +191,7 @@ def test_inventory_rejects_classification_target_mismatches(tmp_path: Path) -> N
         inventory_path=_write_inventory(tmp_path, source),
     )
 
-    assert error.subjects == ("rpc.device-command-shortcut",)
+    assert error.subjects == ("rpc.device-settings",)
 
 
 def test_inventory_rejects_temporary_bff_without_a_python_route(tmp_path: Path) -> None:

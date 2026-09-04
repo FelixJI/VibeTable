@@ -126,6 +126,7 @@ internal sealed class HostRequestDispatcher
         NativeProductFileRequestController nativeFiles,
         PluginRequestDispatcher plugins,
         WorkspaceRequestDispatcher workspace,
+        DeviceSettingsRequestController deviceSettings,
         Action<RoutedWebRequest>? beforeDispatch = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
@@ -136,6 +137,7 @@ internal sealed class HostRequestDispatcher
         ArgumentNullException.ThrowIfNull(nativeFiles);
         ArgumentNullException.ThrowIfNull(plugins);
         ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentNullException.ThrowIfNull(deviceSettings);
         _beforeDispatch = beforeDispatch;
         _routes =
         [
@@ -144,6 +146,8 @@ internal sealed class HostRequestDispatcher
                 request => _ = workspaceProduct.DispatchAsync(request)),
             new(ApplicationRequestController.Handles,
                 request => _ = application.DispatchAsync(request)),
+            new(DeviceSettingsRequestController.Handles,
+                request => _ = deviceSettings.DispatchAsync(request)),
             new(DocumentRequestController.Handles,
                 request => _ = documents.DispatchAsync(request)),
             new(NativeProductFileRequestController.Handles,

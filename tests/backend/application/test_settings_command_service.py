@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,11 +10,7 @@ from backend.application.settings_command_service import (
     SettingsCommandError,
     SettingsCommandService,
 )
-from backend.contracts.settings_commands import (
-    DeviceSettings,
-    ShortcutEntry,
-    ThemeTokens,
-)
+from backend.contracts.settings_commands import ShortcutEntry
 
 
 class FakeMetadataPort:
@@ -51,13 +46,11 @@ class FakeGrantAuthority:
 
 def _service(
     metadata: FakeMetadataPort,
-    state_path: Path,
     grant_authority: FakeGrantAuthority | None = None,
     command_executors: dict[str, Any] | None = None,
 ) -> SettingsCommandService:
     return SettingsCommandService(
         metadata_port=metadata,
-        device_state_path=state_path,
         grant_authority=grant_authority,
         command_executors=command_executors,
     )
@@ -68,31 +61,30 @@ def _service(
 # ---------------------------------------------------------------------------
 
 
-def test_device_settings_round_trip(tmp_path: Any) -> None:
+@pytest.mark.asyncio
+async def test_device_routes_are_removed_while_command_shortcut_routes_remain() -> None:
+    from backend.__main__ import _register_settings_methods
+    from backend.rpc.dispatcher import RpcDispatcher
+
     transport = FakeMetadataPort([])
-    service = _service(transport, tmp_path / "device.json")
-    settings = DeviceSettings(theme=ThemeTokens(mode="dark", accent="#ff0000"))
-    service.save_device(settings)
-    loaded = service.read_device()
-    assert loaded.theme.mode == "dark"
-    assert loaded.theme.accent == "#ff0000"
-
-
-def test_device_settings_recovers_from_corrupt_file(tmp_path: Any) -> None:
-    path = tmp_path / "device.json"
-    path.write_text("{not valid json", encoding="utf-8")
-    transport = FakeMetadataPort([])
-    service = _service(transport, path)
-    loaded = service.read_device()
-    # Corrupt → recover to defaults (never crash).
-    assert loaded.schema_version == 1
-
-
-def test_device_settings_defaults_when_missing(tmp_path: Any) -> None:
-    transport = FakeMetadataPort([])
-    service = _service(transport, tmp_path / "nonexistent.json")
-    loaded = service.read_device()
-    assert loaded.theme.mode == "system"
+    dispatcher = RpcDispatcher()
+    _register_settings_methods(dispatcher, _service(transport))
+    assert set(dispatcher.registered_methods) == {
+        "settings.readShared",
+        "command.list",
+        "command.run",
+        "shortcut.list",
+        "shortcut.save",
+        "shortcut.delete",
+        "shortcut.launch",
+    }
+    for method in ("settings.readDevice", "settings.saveDevice"):
+        response = await dispatcher.dispatch(
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}
+        )
+        assert response is not None
+        assert response["error"]["code"] == -32601
+    assert transport.requests == []
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +105,7 @@ async def test_read_shared_returns_entries() -> None:
             ]
         ]
     )
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     result = await service.read_shared("workspace", [])
     assert len(result.settings) == 1
     assert result.settings[0].key == "holiday"
@@ -130,7 +122,7 @@ async def test_read_shared_returns_entries() -> None:
 @pytest.mark.asyncio
 async def test_read_shared_offline_returns_empty_not_fake_defaults() -> None:
     transport = FakeMetadataPort([ConnectionError("offline")])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     result = await service.read_shared("workspace", [])
     assert result.settings == []
     assert result.fresh is False  # no fake defaults
@@ -143,7 +135,7 @@ async def test_read_shared_offline_returns_empty_not_fake_defaults() -> None:
 
 def test_list_commands_returns_catalog() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     result = service.list_commands()
     ids = {c.command_id for c in result.commands}
     assert "export.query" in ids
@@ -161,7 +153,7 @@ def test_list_commands_returns_catalog() -> None:
 @pytest.mark.asyncio
 async def test_run_command_requires_grant_when_needed() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     with pytest.raises(SettingsCommandError, match="requires a path grant"):
         await service.run_command("export.query", {})
 
@@ -175,7 +167,6 @@ async def test_run_command_executes_export_with_grant() -> None:
 
     service = _service(
         transport,
-        Path("x"),
         FakeGrantAuthority({("g1", "export_target", "write")}),
         {"export.query": execute},
     )
@@ -193,7 +184,6 @@ async def test_run_command_executes_export_with_grant() -> None:
 async def test_run_command_rejects_grant_with_wrong_scope() -> None:
     service = _service(
         FakeMetadataPort([]),
-        Path("x"),
         FakeGrantAuthority({("g1", "import_source", "read")}),
     )
     with pytest.raises(SettingsCommandError) as error:
@@ -204,7 +194,7 @@ async def test_run_command_rejects_grant_with_wrong_scope() -> None:
 @pytest.mark.asyncio
 async def test_run_command_rejects_unknown() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     with pytest.raises(SettingsCommandError, match="not in the static catalog"):
         await service.run_command("evil", {})
 
@@ -213,7 +203,6 @@ async def test_run_command_rejects_unknown() -> None:
 async def test_run_command_never_acknowledges_without_an_executor() -> None:
     service = _service(
         FakeMetadataPort([]),
-        Path("x"),
         FakeGrantAuthority({("g1", "export_target", "write")}),
     )
     with pytest.raises(SettingsCommandError) as error:
@@ -228,7 +217,7 @@ async def test_run_command_never_acknowledges_without_an_executor() -> None:
 
 def test_save_shortcut_validates_command_reference() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     with pytest.raises(SettingsCommandError, match="unknown command"):
         service.save_shortcut(
             ShortcutEntry(shortcut_id="s1", target="built-in-command", command_id="evil")
@@ -237,7 +226,7 @@ def test_save_shortcut_validates_command_reference() -> None:
 
 def test_save_shortcut_blocks_disallowed_url_scheme() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     with pytest.raises(SettingsCommandError, match="not allowed"):
         service.save_shortcut(
             ShortcutEntry(shortcut_id="s1", target="url", url="javascript:alert(1)")
@@ -246,7 +235,7 @@ def test_save_shortcut_blocks_disallowed_url_scheme() -> None:
 
 def test_save_shortcut_accepts_https_url() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     service.save_shortcut(
         ShortcutEntry(shortcut_id="s1", target="url", url="https://example.com", label="Example")
     )
@@ -256,7 +245,7 @@ def test_save_shortcut_accepts_https_url() -> None:
 
 def test_launch_action_succeeds_for_valid_shortcut() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     service.save_shortcut(ShortcutEntry(shortcut_id="s1", target="url", url="https://example.com"))
     result = service.launch_action("s1")
     assert result.launched is True
@@ -264,6 +253,6 @@ def test_launch_action_succeeds_for_valid_shortcut() -> None:
 
 def test_launch_action_rejects_unknown_shortcut() -> None:
     transport = FakeMetadataPort([])
-    service = _service(transport, Path("x"))
+    service = _service(transport)
     with pytest.raises(SettingsCommandError, match="not found"):
         service.launch_action("bogus")

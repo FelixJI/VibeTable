@@ -106,7 +106,6 @@ from backend.contracts.settings_commands import (
     ListShortcutsParams,
     ReadSharedSettingsParams,
     RunCommandParams,
-    SaveDeviceSettingsParams,
     SaveShortcutParams,
 )
 from backend.contracts.system import HandshakeParams
@@ -304,12 +303,6 @@ def _register_settings_methods(
     service: SettingsCommandService,
 ) -> None:
     register_application_errors(ErrorDomain.SETTINGS_COMMAND)
-    dispatcher.register(
-        "settings.readDevice",
-        lambda _params=None: service.read_device(),
-        ListCommandsParams,
-    )
-    dispatcher.register("settings.saveDevice", service.save_device, SaveDeviceSettingsParams)
     dispatcher.register("settings.readShared", service.read_shared, ReadSharedSettingsParams)
     dispatcher.register(
         "command.list",
@@ -580,7 +573,6 @@ async def _build_server() -> tuple[
 
         settings = SettingsCommandService(
             metadata_port=metadata_transport,
-            device_state_path=state_root / "device-settings.json",
             grant_authority=task_service.grants,
             command_executors={"export.query": execute_export_command},
         )
