@@ -27,6 +27,104 @@ func (err *ProductError) Error() string {
 	return err.Code + " at " + err.Path + ": " + err.Message
 }
 
+// ValidateSnapshot applies the complete public SchemaSnapshot contract after
+// its storage-backed fields and generated capabilities have been assembled.
+func ValidateSnapshot(snapshot SchemaSnapshot) error {
+	switch {
+	case snapshot.Contract != Contract:
+		return errors.New("schema snapshot contract is invalid")
+	case snapshot.TableID == "":
+		return errors.New("schema snapshot tableId is invalid")
+	case snapshot.DisplayName == "":
+		return errors.New("schema snapshot displayName is invalid")
+	case snapshot.Kind != "base" && snapshot.Kind != "view":
+		return errors.New("schema snapshot kind is invalid")
+	case snapshot.SchemaRevision == "":
+		return errors.New("schema snapshot schemaRevision is invalid")
+	case snapshot.DataRevision < 0:
+		return errors.New("schema snapshot dataRevision is invalid")
+	case snapshot.ArchivePolicy.Mode != "none" &&
+		snapshot.ArchivePolicy.Mode != "status" &&
+		snapshot.ArchivePolicy.Mode != "deletedAt":
+		return errors.New("schema snapshot archivePolicy is invalid")
+	case snapshot.Fields == nil:
+		return errors.New("schema snapshot fields are invalid")
+	case snapshot.Capabilities == nil:
+		return errors.New("schema snapshot capabilities are invalid")
+	}
+	if _, err := json.Marshal(snapshot.ArchivePolicy.ArchivedValue); err != nil {
+		return errors.New("schema snapshot archivePolicy is invalid")
+	}
+	for index, field := range snapshot.Fields {
+		if err := Validate(field); err != nil {
+			return fmt.Errorf("validate schema snapshot fields[%d]: %w", index, err)
+		}
+		if err := validateSnapshotFieldWire(field); err != nil {
+			return fmt.Errorf("validate schema snapshot fields[%d]: %w", index, err)
+		}
+	}
+	if len(snapshot.Capabilities) != len(LogicalTypes) {
+		return errors.New("schema snapshot capabilities are invalid")
+	}
+	for index, logicalType := range LogicalTypes {
+		expected, err := CapabilityFor(logicalType)
+		if err != nil {
+			return fmt.Errorf("build schema snapshot capability %q: %w", logicalType, err)
+		}
+		if !reflect.DeepEqual(snapshot.Capabilities[index], expected) {
+			return fmt.Errorf("schema snapshot capabilities[%d] is invalid", index)
+		}
+	}
+	return nil
+}
+
+// validateSnapshotFieldWire covers the JSON Schema constraints that are
+// intentionally outside Validate's field-behavior rules.
+func validateSnapshotFieldWire(field FieldDefinition) error {
+	length := field.Constraints.Length
+	if length.Min != nil && *length.Min < 0 || length.Max != nil && *length.Max < 0 {
+		return errors.New("constraints.length is invalid")
+	}
+	selection := field.Constraints.Selection
+	if selection.Min < 0 || selection.Max != nil && *selection.Max < 0 {
+		return errors.New("constraints.selection is invalid")
+	}
+	if field.Storage.Options.MaxSize < 0 {
+		return errors.New("storage.options.maxSize is invalid")
+	}
+	if err := validateSnapshotStringList(
+		"constraints.domains.only", field.Constraints.Domains.Only,
+	); err != nil {
+		return err
+	}
+	if err := validateSnapshotStringList(
+		"constraints.domains.except", field.Constraints.Domains.Except,
+	); err != nil {
+		return err
+	}
+	if field.File != nil {
+		if err := validateSnapshotStringList(
+			"file.allowedMimeTypes", field.File.AllowedMIMETypes,
+		); err != nil {
+			return err
+		}
+		if err := validateSnapshotStringList("file.thumbs", field.File.Thumbs); err != nil {
+			return err
+		}
+	}
+	if field.JSON != nil && field.JSON.Schema == nil {
+		return errors.New("json.schema is invalid")
+	}
+	return nil
+}
+
+func validateSnapshotStringList(path string, values []string) error {
+	if values == nil {
+		return fmt.Errorf("%s is invalid", path)
+	}
+	return nil
+}
+
 func Validate(definition FieldDefinition) error {
 	if definition.Contract != Contract {
 		return invalid("contract", "contract must be "+Contract)

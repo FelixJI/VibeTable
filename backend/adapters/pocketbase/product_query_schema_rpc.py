@@ -28,7 +28,6 @@ from backend.contracts.query import QuerySelectionProjectionResult
 from backend.contracts.schema_v2 import (
     FormulaPreviewRequestV2,
     FormulaValidateRequestV2,
-    SchemaSnapshotV2,
 )
 
 
@@ -46,7 +45,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "schema.getTable": self._get_table_schema,
             "schema.describe": self._describe_schema,
             "query.page": self._query_page,
             "query.cursorOpen": self._open_query_cursor,
@@ -234,20 +232,6 @@ class ProductQuerySchemaRpc:
             schema_revision=_text(params.root, "schemaRevision"),
             data_revision=_text(params.root, "dataRevision"),
         )
-
-    async def _get_table_schema(self, params: ProductParams) -> JsonObject:
-        table_id = _text(params.root, "tableId")
-        snapshot = SchemaSnapshotV2.model_validate(
-            _result_object(
-                await self._context.transport.request(
-                    "GET",
-                    f"/api/vibetable/v2/schema/tables/{_path_segment(table_id)}",
-                    headers=dict(self._context.headers),
-                    expected_status=(200,),
-                )
-            )
-        )
-        return snapshot.model_dump(mode="json", by_alias=True)
 
     async def _describe_schema(self, params: ProductParams) -> JsonObject:
         raw = params.root

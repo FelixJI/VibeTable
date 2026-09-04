@@ -426,12 +426,13 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				return err
 			}
 			capabilities := workspaceRuntime.Capabilities()
+			schemaCatalog := schemaapi.New(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
-			}, schemaListRegistration(schemaapi.New(pb)))
+			}, schemaGetTableRegistration(pb), schemaListRegistration(schemaCatalog))
 			if err != nil {
 				_ = rawListener.Close()
 				return fmt.Errorf("compose Product RPC dispatcher: %w", err)

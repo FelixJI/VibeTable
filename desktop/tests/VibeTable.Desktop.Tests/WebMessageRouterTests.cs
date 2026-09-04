@@ -646,15 +646,30 @@ public sealed class WebMessageRouterTests
     {
         var dispatched = new List<RoutedWebRequest>();
         var router = new WebMessageRouter(dispatched.Add) { IsReady = true };
+        Guid workspaceId = Guid.NewGuid();
+        Guid operationId = Guid.NewGuid();
 
         foreach (string type in ProductDataRpcRegistry.RequestTypes)
         {
-            var reply = router.Route(JsonSerializer.Serialize(new
+            var request = new Dictionary<string, object?>
             {
-                type,
-                requestId = $"request-{type}",
-                payload = new { },
-            }));
+                ["type"] = type,
+                ["requestId"] = $"request-{type}",
+                ["payload"] = new { },
+            };
+            if (type == "schema.getTable")
+            {
+                request["scope"] = new
+                {
+                    sequence = 0,
+                    operationId,
+                    scope = "workspace",
+                    sessionEpoch = 1,
+                    workspaceId,
+                };
+            }
+
+            var reply = router.Route(JsonSerializer.Serialize(request));
             Assert.IsNull(reply, type);
             Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
         }
@@ -974,7 +989,7 @@ public sealed class WebMessageRouterTests
             }
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual("pythonBff", capability.Owner, route);
+            Assert.AreEqual(route == "schema.getTable" ? "goSidecar" : "pythonBff", capability.Owner, route);
         }
 
         foreach (string route in RelationLookupRpcRegistry.RequestTypes)

@@ -31,23 +31,24 @@ public sealed class ProductRpcCapabilityManifestTests
     }
 
     [TestMethod]
-    public void GeneratedManifestProvidesClosedRouteLookupWithOnlySchemaListOnGo()
+    public void GeneratedManifestProvidesClosedRouteLookupWithSchemaReadsOnGo()
     {
         ProductRpcCapabilityManifest manifest = ProductRpcCapabilityManifest.Default;
 
         Assert.IsTrue(manifest.TryGet("schema.getTable", out ProductRpcCapability capability));
         Assert.AreEqual("workspace", capability.Scope);
         Assert.AreEqual("rendererPublic", capability.Audience);
-        Assert.AreEqual("pythonBff", capability.Owner);
+        Assert.AreEqual("goSidecar", capability.Owner);
         Assert.AreEqual("read", capability.Effect);
         Assert.IsFalse(manifest.TryGet("schema.unknown", out _));
         Assert.IsTrue(manifest.TryGetEvent("data.changed", out ProductEventCapability dataChanged));
         Assert.AreEqual("notification", dataChanged.Effect);
         Assert.AreEqual("pythonBff", dataChanged.Owner);
         Assert.IsFalse(manifest.TryGetEvent("data.unknown", out _));
-        Assert.HasCount(1, manifest.GetProductSidecarRegistrations());
-        Assert.AreEqual("schema.list", manifest.GetProductSidecarRegistrations()[0].Method);
+        Assert.HasCount(2, manifest.GetProductSidecarRegistrations());
+        Assert.AreEqual("schema.getTable", manifest.GetProductSidecarRegistrations()[0].Method);
         Assert.AreEqual("workspace", manifest.GetProductSidecarRegistrations()[0].Scope);
+        Assert.AreEqual("schema.list", manifest.GetProductSidecarRegistrations()[1].Method);
     }
 
     [TestMethod]

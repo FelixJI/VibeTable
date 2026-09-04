@@ -315,7 +315,16 @@ func decodeFieldRequest(reader io.Reader, target any) error {
 	return nil
 }
 
-func writeFieldError(request *core.RequestEvent, err error) error {
+type fieldErrorResponse struct {
+	status    int
+	code      string
+	path      string
+	message   string
+	details   map[string]any
+	retryable bool
+}
+
+func classifyFieldError(err error) fieldErrorResponse {
 	status := http.StatusUnprocessableEntity
 	code := "field.internal.failed"
 	path := ""
@@ -354,10 +363,18 @@ func writeFieldError(request *core.RequestEvent, err error) error {
 	if code == "field.change.plan_expired" {
 		status = http.StatusGone
 	}
-	return request.JSON(status, map[string]any{
+	return fieldErrorResponse{
+		status: status, code: code, path: path, message: message,
+		details: details, retryable: status >= http.StatusInternalServerError,
+	}
+}
+
+func writeFieldError(request *core.RequestEvent, err error) error {
+	projected := classifyFieldError(err)
+	return request.JSON(projected.status, map[string]any{
 		"contract": v2.Contract,
-		"code":     code, "path": path, "message": message,
-		"details": details, "retryable": status >= 500,
+		"code":     projected.code, "path": projected.path, "message": projected.message,
+		"details": projected.details, "retryable": projected.retryable,
 		"occurredAt": time.Now().UTC().Format(time.RFC3339Nano),
 	})
 }
