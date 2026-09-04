@@ -955,7 +955,10 @@ async def test_table_catalog_rows_and_snapshot_use_fixed_routes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> None:
+@pytest.mark.parametrize("output_storage", ["text", "datetime"])
+async def test_relation_renderer_contracts_are_adapted_from_product_shapes(
+    output_storage: str,
+) -> None:
     definition = _schema_v2_snapshot(
         [
             _schema_v2_field(
@@ -975,7 +978,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
         "relationFieldId": "customer",
         "targetFieldId": "name",
         "resultCardinality": "one",
-        "outputStorage": "text",
+        "outputStorage": output_storage,
         "revision": 3,
     }
     relation = {
@@ -1056,6 +1059,7 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
     assert described["requestGeneration"] == 9
     assert described["schema"]["normalizedRelations"][0]["kind"] == "m2o"
     assert listed["collection"] == "orders"
+    assert listed["definitions"][0]["outputType"] == output_storage
     assert "aggregation" not in listed["definitions"][0]
     assert listed["lookupRevision"] == described["schema"]["lookupRevision"]
     assert preview == {
