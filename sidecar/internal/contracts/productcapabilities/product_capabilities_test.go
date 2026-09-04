@@ -2,12 +2,18 @@ package productcapabilities
 
 import "testing"
 
-func TestGeneratedCurrentOwnerCatalogMovesFileListAndSchemaReadsToGo(t *testing.T) {
+func TestGeneratedCurrentOwnerCatalogMovesReconcileFileAndSchemaReadsToGo(t *testing.T) {
 	if HasCurrentOwnerRPCMethod(PythonBff, "file.list") {
 		t.Fatal("file.list must not remain on pythonBff after L3B")
 	}
 	if !HasCurrentOwnerRPCMethod(GoSidecar, "file.list") {
 		t.Fatal("L3B must route file.list through goSidecar")
+	}
+	if HasCurrentOwnerRPCMethod(PythonBff, "events.reconcile") {
+		t.Fatal("events.reconcile must not remain on pythonBff after L4")
+	}
+	if !HasCurrentOwnerRPCMethod(GoSidecar, "events.reconcile") {
+		t.Fatal("L4 must route events.reconcile through goSidecar")
 	}
 	if HasCurrentOwnerRPCMethod(PythonBff, "schema.getTable") {
 		t.Fatal("schema.getTable must not remain on pythonBff after L3A")
@@ -47,9 +53,11 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 3 ||
-		got[0].Method != "file.list" || got[1].Method != "schema.getTable" || got[2].Method != "schema.list" {
-		t.Fatalf("goSidecar descriptors = %#v, want file.list and schema reads", got)
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 4 ||
+		got[0].Method != "events.reconcile" || got[1].Method != "file.list" ||
+		got[2].Method != "schema.getTable" ||
+		got[3].Method != "schema.list" {
+		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 
 	descriptors[0].Method = "mutated"

@@ -78,7 +78,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "realtime",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {

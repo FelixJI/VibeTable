@@ -16,7 +16,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "data.export",
         "data.generateTemplate",
         "data.previewImport",
-        "events.reconcile",
         "file.applyHostChange",
         "file.saveHostFile",
         "file.token",
@@ -108,6 +107,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "version.save",
     ),
     "goSidecar": (
+        "events.reconcile",
         "file.list",
         "schema.getTable",
         "schema.list",

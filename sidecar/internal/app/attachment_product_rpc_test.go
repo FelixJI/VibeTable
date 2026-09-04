@@ -324,6 +324,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
+		productrpc.ReconcileRegistration(schemaapi.New(app)),
 		schemaGetTableRegistration(app),
 		schemaListRegistration(schemaapi.New(app)),
 		productrpc.AttachmentListRegistration(app, manager),
