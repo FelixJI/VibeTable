@@ -48,6 +48,18 @@ Catalog 投影。Python 保留全量参数模型，但不再注册或转发这�
 同一真实 composition fixture 还覆盖 Lazy 同 Client 新 snapshot 轮换而不提前结束旧在途请求，
 以及 health reader 的期望 epoch lease、严格 schema.list、远端错误和 close 取消。
 
+## Host 设备偏好（L6）
+
+`settings.readDevice` / `settings.saveDevice` 经 Router 闭集 manifest 校验后直达
+`DeviceSettingsRequestController`；owner 为 `wpfHost`，Python 不再注册这两个方法。
+`global` 仅是 transport scope：文件仍位于当前 runtime root 的
+`.vibetable/data/state/device-settings.json`，旧 snake JSON 与 camel wire 均保留。
+Host 捕获当前 workspace/epoch lease，在写入、同目录原子替换及回包前核对当前绑定；
+请求携带 workspace scope 时复用该 scope 的 epoch/sequence 准入，不重新绑定到当前 session。
+关闭/切换通过现有 drain 等待请求退出，无 Python Ready 前提，也不改变业务只读 authority。
+`DeviceSettingsRequestControllerTests` 以真实 session/临时 JSON 验证；尚无可见 UI 消费者，
+不把该测试当作 packaged UI/E2E 通过证据。
+
 ## 维护规则
 
 - 新跨进程 operation 同时更新本页、capability 矩阵、producer/Host/Web 的闭集测试和至少一条产品证据。

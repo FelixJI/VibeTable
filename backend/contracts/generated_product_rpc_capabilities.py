@@ -86,9 +86,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "schema.delete",
         "schema.describe",
         "schema.table.create",
-        "settings.readDevice",
         "settings.readShared",
-        "settings.saveDevice",
         "shortcut.delete",
         "shortcut.launch",
         "shortcut.list",
@@ -112,7 +110,10 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "schema.getTable",
         "schema.list",
     ),
-    "wpfHost": (),
+    "wpfHost": (
+        "settings.readDevice",
+        "settings.saveDevice",
+    ),
     "pythonWorker": (),
 }
 

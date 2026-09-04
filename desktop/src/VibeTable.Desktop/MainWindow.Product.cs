@@ -423,6 +423,10 @@ public partial class MainWindow : Window
             _nativeProductFiles,
             _pluginDispatcher,
             _dispatcher,
+            new DeviceSettingsRequestController(
+                _webBridge,
+                _workspaceSessionFilter,
+                () => _runtime.CurrentWorkspace),
             TraceHostRequest);
 
         _runtime.ClientReady += OnRuntimeClientReady;

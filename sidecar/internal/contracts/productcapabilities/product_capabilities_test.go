@@ -2,12 +2,14 @@ package productcapabilities
 
 import "testing"
 
-func TestGeneratedCurrentOwnerCatalogMovesReconcileFileAndSchemaReadsToGo(t *testing.T) {
-	if HasCurrentOwnerRPCMethod(PythonBff, "file.list") {
-		t.Fatal("file.list must not remain on pythonBff after L3B")
-	}
-	if !HasCurrentOwnerRPCMethod(GoSidecar, "file.list") {
-		t.Fatal("L3B must route file.list through goSidecar")
+func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
+	for _, method := range []string{"file.list"} {
+		if HasCurrentOwnerRPCMethod(PythonBff, method) {
+			t.Fatalf("%s must not remain on pythonBff after its Go migration", method)
+		}
+		if !HasCurrentOwnerRPCMethod(GoSidecar, method) {
+			t.Fatalf("%s must route through goSidecar", method)
+		}
 	}
 	if HasCurrentOwnerRPCMethod(PythonBff, "events.reconcile") {
 		t.Fatal("events.reconcile must not remain on pythonBff after L4")
@@ -20,6 +22,14 @@ func TestGeneratedCurrentOwnerCatalogMovesReconcileFileAndSchemaReadsToGo(t *tes
 	}
 	if !HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
 		t.Fatal("L3A must route schema.getTable through goSidecar")
+	}
+	for _, method := range []string{"settings.readDevice", "settings.saveDevice"} {
+		if HasCurrentOwnerRPCMethod(PythonBff, method) {
+			t.Fatalf("%s must not remain on pythonBff after L6", method)
+		}
+		if !HasCurrentOwnerRPCMethod(WpfHost, method) {
+			t.Fatalf("L6 must route %s through wpfHost", method)
+		}
 	}
 	if !HasCurrentOwnerEventTopic(PythonBff, "data.changed") {
 		t.Fatal("data.changed must remain on pythonBff during L1")
@@ -55,9 +65,12 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 4 ||
 		got[0].Method != "events.reconcile" || got[1].Method != "file.list" ||
-		got[2].Method != "schema.getTable" ||
-		got[3].Method != "schema.list" {
+		got[2].Method != "schema.getTable" || got[3].Method != "schema.list" {
 		t.Fatalf("goSidecar descriptors = %#v", got)
+	}
+	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||
+		got[0].Method != "settings.readDevice" || got[1].Method != "settings.saveDevice" {
+		t.Fatalf("wpfHost descriptors = %#v, want settings.readDevice and settings.saveDevice", got)
 	}
 
 	descriptors[0].Method = "mutated"
