@@ -351,19 +351,9 @@ func extractPDF(ctx context.Context, payload []byte, limits ExtractionLimits) Ex
 		if err != nil {
 			return extractionError(ExtractionFailed, "extract.pdf_stream_invalid")
 		}
-		decoded, readErr := readLimitedContext(ctx, reader, limits.MaximumPartBytes+1)
-		closeErr := reader.Close()
-		if readErr != nil || closeErr != nil {
-			if errors.Is(readErr, context.Canceled) {
-				return extractionError(ExtractionCancelled, "extract.cancelled")
-			}
-			if errors.Is(readErr, context.DeadlineExceeded) {
-				return extractionError(ExtractionResourceLimited, "extract.timeout")
-			}
-			return extractionError(ExtractionFailed, "extract.pdf_stream_invalid")
-		}
-		if int64(len(decoded)) > limits.MaximumPartBytes {
-			return extractionError(ExtractionResourceLimited, "extract.pdf_stream_limit")
+		decoded, failure := readPDFStream(ctx, reader, limits.MaximumPartBytes)
+		if failure.Status != "" {
+			return failure
 		}
 		decodedTotal += int64(len(decoded))
 		if decodedTotal > limits.MaximumUncompressed {
@@ -371,30 +361,96 @@ func extractPDF(ctx context.Context, payload []byte, limits ExtractionLimits) Ex
 		}
 		payloads = append(payloads, decoded)
 	}
-	var output strings.Builder
-	for _, content := range payloads {
-		if err := ctx.Err(); err != nil {
-			return extractionContextError(ctx)
-		}
-		for _, match := range pdfTextOperator.FindAllSubmatch(content, -1) {
-			if err := ctx.Err(); err != nil {
-				return extractionContextError(ctx)
-			}
-			appendPDFToken(&output, match[1])
-		}
-		for _, array := range pdfTextArray.FindAllSubmatch(content, -1) {
-			if err := ctx.Err(); err != nil {
-				return extractionContextError(ctx)
-			}
-			for _, token := range pdfStringToken.FindAll(array[1], -1) {
-				appendPDFToken(&output, token)
-			}
-		}
+	text, err := extractPDFText(ctx, payloads)
+	if err != nil {
+		return extractionContextError(ctx)
 	}
-	if output.Len() == 0 {
+	if text == "" {
 		return extractionError(ExtractionNoTextLayer, "extract.pdf_no_text")
 	}
-	return boundedExtraction(strings.Join(strings.Fields(output.String()), " "), limits)
+	return boundedExtraction(text, limits)
+}
+
+func readPDFStream(
+	ctx context.Context,
+	reader io.ReadCloser,
+	limit int64,
+) ([]byte, ExtractionResult) {
+	decoded, readErr := readLimitedContext(ctx, reader, limit+1)
+	closeErr := reader.Close()
+	if errors.Is(readErr, context.Canceled) {
+		return nil, extractionError(ExtractionCancelled, "extract.cancelled")
+	}
+	if errors.Is(readErr, context.DeadlineExceeded) {
+		return nil, extractionError(ExtractionResourceLimited, "extract.timeout")
+	}
+	if readErr != nil || closeErr != nil {
+		return nil, extractionError(ExtractionFailed, "extract.pdf_stream_invalid")
+	}
+	if int64(len(decoded)) > limit {
+		return nil, extractionError(ExtractionResourceLimited, "extract.pdf_stream_limit")
+	}
+	return decoded, ExtractionResult{}
+}
+
+func extractPDFText(ctx context.Context, payloads [][]byte) (string, error) {
+	var output strings.Builder
+	for _, content := range payloads {
+		if err := walkPDFMatches(ctx, pdfTextOperator, content, 1, func(token []byte) error {
+			appendPDFToken(&output, token)
+			return nil
+		}); err != nil {
+			return "", err
+		}
+		if err := walkPDFMatches(ctx, pdfTextArray, content, 1, func(array []byte) error {
+			return walkPDFMatches(ctx, pdfStringToken, array, 0, func(token []byte) error {
+				appendPDFToken(&output, token)
+				return nil
+			})
+		}); err != nil {
+			return "", err
+		}
+	}
+	return strings.Join(strings.Fields(output.String()), " "), ctx.Err()
+}
+
+func walkPDFMatches(
+	ctx context.Context,
+	expression *regexp.Regexp,
+	content []byte,
+	capture int,
+	visit func([]byte) error,
+) error {
+	for len(content) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		reader := &pdfContextReader{Context: ctx, Reader: bytes.NewReader(content)}
+		match := expression.FindReaderSubmatchIndex(reader)
+		if match == nil {
+			return ctx.Err()
+		}
+		start, end := match[capture*2], match[capture*2+1]
+		if start >= 0 {
+			if err := visit(content[start:end]); err != nil {
+				return err
+			}
+		}
+		content = content[match[1]:]
+	}
+	return ctx.Err()
+}
+
+type pdfContextReader struct {
+	context.Context
+	*bytes.Reader
+}
+
+func (reader *pdfContextReader) ReadRune() (rune, int, error) {
+	if err := reader.Err(); err != nil {
+		return 0, 0, err
+	}
+	return reader.Reader.ReadRune()
 }
 
 func appendPDFToken(output *strings.Builder, token []byte) {

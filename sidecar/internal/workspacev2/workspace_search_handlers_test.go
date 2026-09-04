@@ -3,6 +3,7 @@ package workspacev2
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	contracts "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/workspacesearch"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -273,7 +275,7 @@ func TestFileExtractionErrorCodeRoundTripsWithoutIndexingFailedContent(t *testin
 	}
 	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	token, _ := runtime.coordinator.Current()
-	_, err = runtime.history.Save(ctx, filehistory.SaveRequest{
+	saved, err := runtime.history.Save(ctx, filehistory.SaveRequest{
 		Token: token, DocumentID: "22222222-2222-4222-8222-222222222222",
 		Path: "corrupt.pdf", Kind: filehistory.RevisionFormal,
 		Content:  []byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\nforbiddenpayload\nendstream"),
@@ -283,11 +285,9 @@ func TestFileExtractionErrorCodeRoundTripsWithoutIndexingFailedContent(t *testin
 		t.Fatal(err)
 	}
 	sources, err := runtime.collectFileSearchSources(ctx)
-	if err != nil || len(sources) != 1 {
+	if err != nil || len(sources) != 1 || sources[0].Body != "" ||
+		sources[0].Status != "failed" {
 		t.Fatalf("file sources = %#v, err=%v", sources, err)
-	}
-	if sources[0].Body != "" || sources[0].Status != "failed" {
-		t.Fatalf("failed extraction source = %#v", sources[0])
 	}
 	if err := runtime.search.RebuildProjection(
 		ctx, sources, workspacesearch.ProjectionCheckpoint{}, nil,
@@ -298,20 +298,63 @@ func TestFileExtractionErrorCodeRoundTripsWithoutIndexingFailedContent(t *testin
 	if len(hits) != 1 {
 		t.Fatalf("filename hits = %#v", hits)
 	}
-	wantMetadata := map[string]any{
+	assertSearchMetadata(t, hits[0].Metadata, map[string]any{
 		"extractionStatus": "failed", "extractionErrorCode": "extract.pdf_stream_invalid",
-	}
-	for _, item := range hits[0].Metadata {
-		if value, found := wantMetadata[item.Key]; found && item.Value == value {
-			delete(wantMetadata, item.Key)
-		}
-	}
-	if len(wantMetadata) != 0 {
-		t.Fatalf("missing extraction metadata = %#v; hit=%#v", wantMetadata, hits[0])
-	}
+	})
 	if hits := querySearch(t, runtime.search, "forbiddenpayload"); len(hits) != 0 {
 		t.Fatalf("failed extraction content was indexed: %#v", hits)
 	}
+	if _, err := runtime.history.Delete(
+		ctx, token, saved.Document.DocumentID, &saved.Revision.RevisionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	sources, err = runtime.collectFileSearchSources(ctx)
+	if err != nil || len(sources) != 1 || sources[0].Status != "deleted" ||
+		!sources[0].Current {
+		t.Fatalf("deleted file sources = %#v, err=%v", sources, err)
+	}
+	assertSearchMetadata(t, sources[0].Metadata, map[string]any{
+		"documentStatus": "deleted", "extractionStatus": "failed",
+		"extractionErrorCode": "extract.pdf_stream_invalid",
+	})
+	if err := runtime.search.RebuildProjection(
+		ctx, sources, workspacesearch.ProjectionCheckpoint{}, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if hits := querySearch(t, runtime.search, "corrupt"); len(hits) != 0 {
+		t.Fatalf("deleted file became searchable: %#v", hits)
+	}
+	unavailableRepository := &unavailableOpenRepository{Repository: runtime.repository}
+	runtime.history, err = filehistory.OpenCurrent(
+		ctx, unavailableRepository, runtime.coordinator, runtime.headStore,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailableRepository.unavailable = true
+	sources, err = runtime.collectFileSearchSources(ctx)
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("unavailable sources = %#v, err=%v", sources, err)
+	}
+	assertSearchMetadata(t, sources[0].Metadata, map[string]any{
+		"extractionStatus": "failed", "extractionErrorCode": "extract.source_unavailable",
+	})
+}
+
+type unavailableOpenRepository struct {
+	objectrepo.Repository
+	unavailable bool
+}
+
+func (repository *unavailableOpenRepository) Open(
+	ctx context.Context, id objectrepo.ObjectID,
+) (io.ReadCloser, error) {
+	if repository.unavailable {
+		return nil, objectrepo.ErrNotFound
+	}
+	return repository.Repository.Open(ctx, id)
 }
 
 func resolveSearchHit(
@@ -563,4 +606,20 @@ func querySearch(
 		t.Fatal(err)
 	}
 	return result.Hits
+}
+
+func assertSearchMetadata(
+	t *testing.T,
+	metadata []contracts.SearchMetadataItem,
+	want map[string]any,
+) {
+	t.Helper()
+	for _, item := range metadata {
+		if value, found := want[item.Key]; found && item.Value == value {
+			delete(want, item.Key)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing search metadata = %#v; got=%#v", want, metadata)
+	}
 }
