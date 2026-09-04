@@ -137,7 +137,7 @@ VibeTable 不需要全面重写。长期 ownership 定义为：
 |---|---|---|---|
 | Workspace 生命周期 | create/open/switch、旧 epoch 拒绝和 Snapshot open-as-new 已闭环；relink 已隐藏；目录镜像仍在 PR #139 | **部分完成** | 合并目录镜像初始化、恢复、capability refresh 和重开产品证据；relink 未重新立项前保持 Hidden |
 | Schema、字段、记录 | Schema V2、字段计划/应用、迁移回滚和字段边界校验已强化；版本 policy 已冻结 | **基本完成** | 通过 N-1 正式 corpus 和当前 reader 证明长期兼容，不从 format 字段推断兼容 |
-| Query、Formula、Relation/Lookup | revision-bound 查询、cursor、分组、fanout、计算 freshness 和替代视图 mutation 已有产品证据 | **已完成（当前声明范围）** | Calendar/Timeline datetime/range 作为新纵切，不扩大既有 date/point 结论；同时收敛 Product RPC 中转 |
+| Query、Formula、Relation/Lookup | revision-bound 查询、cursor、分组、fanout、计算 freshness 和替代视图 mutation 已有局部产品证据；既有 Query/视图声明范围不等于 Formula/Relation/Lookup 作者与跨表计算链闭环 | **部分完成；既有 Query/视图声明范围已完成** | Formula/Relation/Lookup 按[专项资格规范](../quality/formula-relation-qualification.md)保持 Partial/Open 并收敛 Product RPC 中转；Calendar/Timeline datetime/range 作为独立纵切，不扩大既有 date/point 结论 |
 | 粘贴、导入、导出 | CSV/JSON 路径稳定，XLSX 导出已公开，公式样文本和 Unicode 往返有跨栈验证 | **部分完成** | 增加 packaged CSV/XLSX 空白、日期/时区、select/relation、NFC/NFD/emoji 和失败原子性矩阵 |
 | 文件、附件、历史、Diff | Document Diff、附件历史、CAS stale、文件工作区和键盘交互均已闭环；相关 Web ratchet 已建立 | **基本完成** | 保持大文件预算、取消和 OpenXml 语义；超大文档集合只在有真实瓶颈时扩展 |
 | 统一搜索与内容型记录 | WorkspaceSearch、内容型记录、文件/附件/记录搜索已闭环；Emoji codepoint 投影已收紧 | **基本完成** | 保留派生索引可重建原则；PDF 支持范围仍需独立决策和 corpus |
