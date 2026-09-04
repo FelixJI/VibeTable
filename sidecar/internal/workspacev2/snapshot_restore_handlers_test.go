@@ -1,21 +1,495 @@
 package workspacev2
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
+	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
+	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/workspacesearch"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
+	"github.com/vibetable/vibetable/sidecar/migrations"
 )
+
+func TestSnapshotRestoreRestoresManagedAttachmentObjects(t *testing.T) {
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: dataDir, HideStartBanner: true})
+	migrations.Register(app)
+	requireSnapshotRestore(t, app.Bootstrap())
+	requireSnapshotRestore(t, app.RunAllMigrations())
+	ledgerPath := filepath.Join(root, ".vibetable", "audit")
+	ledger, err := auditledger.Open(ledgerPath)
+	requireSnapshotRestore(t, err)
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
+		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		RequestShutdown: func() {}, DeferBackgroundWorkers: true,
+	})
+	requireSnapshotRestore(t, err)
+	definition, fileField, record := createSnapshotAttachmentFixture(t, ctx, app)
+	manager, err := attachments.New()
+	requireSnapshotRestore(t, err)
+	original := []byte("snapshot original cobaltarchive")
+	originalRef := setSnapshotAttachment(
+		t, ctx, app, manager, definition, record.Id, fileField.Identity.FieldID,
+		nil, "original", "notes.txt", original)
+	token, _ := runtime.coordinator.Current()
+	target, _, err := runtime.snapshots.Capture(ctx, snapshot.CaptureRequest{
+		WorkspaceID: testWorkspaceID, Authority: token.Authority(),
+		Trigger: snapshot.TriggerManual, Pinned: true,
+	})
+	requireSnapshotRestore(t, err)
+	setSnapshotAttachment(
+		t, ctx, app, manager, definition, record.Id, fileField.Identity.FieldID,
+		[]string{originalRef.StoredName}, "replacement", "replacement.txt",
+		[]byte("replacement magentaafter"))
+	if _, err := manager.Open(ctx, app, originalRef.DownloadCapability); err == nil {
+		t.Fatal("replaced attachment remained readable through its old authority")
+	}
+	previewRaw, _ := json.Marshal(previewSnapshotRestoreParams{
+		SnapshotID: target.SnapshotID, TargetMode: "currentWorkspace",
+	})
+	preview, err := runtime.previewSnapshotRestore(ctx, nil, previewRaw)
+	requireSnapshotRestore(t, err)
+	applyRaw, _ := json.Marshal(applySnapshotRestoreParams{
+		PlanID: preview.(map[string]any)["planId"].(string), Confirmed: true,
+	})
+	wire := json.RawMessage(`{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"sequence":1,"operationId":"dddddddd-dddd-4ddd-8ddd-dddddddddddd"}`)
+	_, err = runtime.applySnapshotRestore(ctx, wire, applyRaw)
+	requireSnapshotRestore(t, err)
+	requireSnapshotRestore(t, runtime.Close(ctx))
+	requireSnapshotRestore(t, ledger.Close())
+	requireSnapshotRestore(t, app.ResetBootstrapState())
+	if installed, err := ApplyPendingSnapshotRestore(
+		ctx, dataDir, testWorkspaceID,
+	); err != nil || !installed {
+		t.Fatalf("offline install = %v, %v", installed, err)
+	}
+	reopenedApp := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: dataDir, HideStartBanner: true})
+	requireSnapshotRestore(t, reopenedApp.Bootstrap())
+	t.Cleanup(func() { _ = reopenedApp.ResetBootstrapState() })
+	reopenedLedger, err := auditledger.Open(ledgerPath)
+	requireSnapshotRestore(t, err)
+	t.Cleanup(func() { _ = reopenedLedger.Close() })
+	reopened, err := Open(ctx, Options{
+		App: reopenedApp, DataDir: dataDir, WorkspaceID: testWorkspaceID,
+		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID,
+		Ledger: reopenedLedger, DeferBackgroundWorkers: true,
+	})
+	requireSnapshotRestore(t, err)
+	t.Cleanup(func() { _ = reopened.Close(ctx) })
+	requireSnapshotRestore(t, reopened.CompletePendingSnapshotRestore(ctx))
+	reopened.searchTaskWG.Wait()
+	restoredDefinition, err := schemaexecution.Describe(
+		ctx, reopenedApp, definition.Snapshot.TableID,
+	)
+	requireSnapshotRestore(t, err)
+	restoredRecord, err := reopenedApp.FindRecordById(
+		restoredDefinition.PhysicalName, record.Id,
+	)
+	requireSnapshotRestore(t, err)
+	restoredManager, _ := attachments.New()
+	refs, err := restoredManager.Refs(
+		ctx, reopenedApp, restoredDefinition, restoredRecord,
+		fileField.Identity.FieldID,
+	)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("restored refs = %#v, %v", refs, err)
+	}
+	download, err := restoredManager.Open(ctx, reopenedApp, refs[0].DownloadCapability)
+	requireSnapshotRestore(t, err)
+	restored, readErr := io.ReadAll(download.Reader)
+	closeErr := download.Reader.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(restored, original) {
+		t.Fatalf("restored attachment = %q, read=%v close=%v", restored, readErr, closeErr)
+	}
+	if hits := querySearch(t, reopened.search, "cobaltarchive"); len(hits) != 1 || hits[0].Kind != "attachment" {
+		t.Fatalf("restored attachment search hits = %#v", hits)
+	}
+	if hits := querySearch(t, reopened.search, "magentaafter"); len(hits) != 0 {
+		t.Fatalf("replacement attachment remained searchable: %#v", hits)
+	}
+}
+
+func createSnapshotAttachmentFixture(t *testing.T, ctx context.Context, app core.App) (
+	schemaexecution.Table, v2.FieldDefinition, *core.Record,
+) {
+	t.Helper()
+	lifecycle, err := schemacore.NewTableLifecycle(app)
+	requireSnapshotRestore(t, err)
+	table, err := lifecycle.Create(ctx, v2.TableCreateIntent{
+		DisplayName: "Snapshot attachments", OperationID: "snapshot_attachment_table",
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	requireSnapshotRestore(t, err)
+	recommended, err := v2.RecommendedDefaults(v2.LogicalFile)
+	requireSnapshotRestore(t, err)
+	draft := v2.FieldDraft{
+		DisplayName: "Documents", LogicalType: v2.LogicalFile,
+		Value: recommended.Value, Constraints: recommended.Constraints,
+		Storage: recommended.Storage, Display: recommended.Display,
+		File: &v2.FileSpec{
+			MaxFiles: 1, MaxBytesPerFile: 4096,
+			AllowedMIMETypes: []string{"text/plain"}, Thumbs: []string{}, Protected: true,
+		},
+	}
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(app, store)
+	plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: table.TableID,
+		ExpectedSchemaRev: table.SchemaRevision, Draft: &draft,
+		Actor: v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	if err != nil || !plan.CanApply {
+		t.Fatalf("attachment field plan = %#v, %v", plan.Errors, err)
+	}
+	receipt, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: plan.PlanID, PlanHash: plan.PlanHash,
+		OperationID: "snapshot_attachment_field",
+		Actor:       v2.Actor{ID: "local-user", Kind: "user"},
+	})
+	requireSnapshotRestore(t, err)
+	definition, err := schemaexecution.Describe(ctx, app, table.TableID)
+	requireSnapshotRestore(t, err)
+	field, found := definition.Field(receipt.FieldID)
+	if !found {
+		t.Fatal("attachment field was not projected")
+	}
+	collection, err := app.FindCollectionByNameOrId(definition.PhysicalName)
+	requireSnapshotRestore(t, err)
+	record := core.NewRecord(collection)
+	requireSnapshotRestore(t, app.Save(record))
+	return definition, field, record
+}
+
+func setSnapshotAttachment(
+	t *testing.T, ctx context.Context, app core.App, manager *attachments.Manager,
+	definition schemaexecution.Table, recordID, fieldID string, removed []string,
+	handle, name string, content []byte,
+) attachments.Ref {
+	t.Helper()
+	requireSnapshotRestore(t, manager.Stage(handle, name, content))
+	defer manager.Drop(handle)
+	err := app.RunInTransaction(func(txApp core.App) error {
+		record, err := txApp.FindRecordById(definition.PhysicalName, recordID)
+		if err != nil {
+			return err
+		}
+		finalize, err := manager.Prepare(
+			ctx, txApp, definition, record, mutation.AttachmentChange{
+				FieldID: fieldID, UploadHandles: []string{handle},
+				RemoveStoredNames: removed,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		if err := txApp.Save(record); err != nil {
+			return err
+		}
+		return finalize(txApp, record)
+	})
+	requireSnapshotRestore(t, err)
+	record, err := app.FindRecordById(definition.PhysicalName, recordID)
+	requireSnapshotRestore(t, err)
+	refs, err := manager.Refs(ctx, app, definition, record, fieldID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("attachment refs = %#v, %v", refs, err)
+	}
+	return refs[0]
+}
+
+func requireSnapshotRestore(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func updateSnapshotStorage(t *testing.T, app core.App, remove, name, content string) {
+	t.Helper()
+	storage, err := app.NewFilesystem()
+	requireSnapshotRestore(t, err)
+	if remove != "" {
+		err = storage.Delete(remove)
+	}
+	requireSnapshotRestore(t, errors.Join(err, storage.Upload([]byte(content), name), storage.Close()))
+}
+
+func requireRestoreFile(t *testing.T, path, want string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != want {
+		t.Fatalf("restore file %s = %q, %v", path, raw, err)
+	}
+}
+
+func TestSnapshotRestoreValidatesWindowsStorageKeysBeforeAttachmentStaging(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		keys []string
+	}{
+		{name: "alternate data stream", keys: []string{"pb_data/record/receipt.pdf:stream"}},
+		{name: "trailing dot", keys: []string{"pb_data/record/receipt.pdf."}},
+		{name: "trailing space", keys: []string{"pb_data/record /receipt.pdf"}},
+		{name: "control character", keys: []string{"pb_data/record/receipt\x1f.pdf"}},
+		{name: "reserved name with extension", keys: []string{"pb_data/record/cOn.txt"}},
+		{name: "reserved com port", keys: []string{"pb_data/record/COM9"}},
+		{name: "reserved printer port", keys: []string{"pb_data/record/lPt1.pdf"}},
+		{name: "reserved superscript com port", keys: []string{"pb_data/record/COM¹.txt"}},
+		{name: "reserved superscript printer port", keys: []string{"pb_data/record/lPt².PDF"}},
+		{
+			name: "case insensitive collision",
+			keys: []string{
+				"pb_data/record/Receipt.PDF",
+				"PB_DATA/RECORD/receipt.pdf",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			paths, _, err := stageSnapshotAttachmentKeys(t, test.keys, false)
+			if err == nil || err.Error() != "restore.path_invalid" {
+				t.Fatalf("snapshot with Windows-invalid storage keys = %v", err)
+			}
+			operationID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+			if _, statErr := os.Lstat(restoreStagingRoot(paths, operationID)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("rejected snapshot left partial storage staging: %v", statErr)
+			}
+			if _, statErr := os.Lstat(restoreJournalPath(paths)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("rejected snapshot wrote restore journal: %v", statErr)
+			}
+		})
+	}
+
+	t.Run("valid PocketBase key", func(t *testing.T) {
+		const key = "pb_data/records/receipt_2026-final.PDF"
+		_, journal, err := stageSnapshotAttachmentKeys(t, []string{key}, true)
+		if err != nil {
+			t.Fatalf("valid PocketBase storage key = %v", err)
+		}
+		if _, found := journal.Attachments[key]; !found {
+			t.Fatalf("valid PocketBase storage key missing from journal: %#v", journal.Attachments)
+		}
+	})
+}
+
+func TestRestoreJournalRejectsWindowsInvalidAttachmentKeys(t *testing.T) {
+	paths, journal, err := stageSnapshotAttachmentKeys(
+		t,
+		[]string{"pb_data/records/receipt.pdf"},
+		true,
+	)
+	requireSnapshotRestore(t, err)
+	requireSnapshotRestore(t, os.Remove(restoreJournalPath(paths)))
+	for _, test := range []struct {
+		name string
+		keys []string
+	}{
+		{name: "alternate data stream", keys: []string{"pb_data/record/receipt.pdf:stream"}},
+		{name: "trailing dot", keys: []string{"pb_data/record/receipt.pdf."}},
+		{name: "reserved device", keys: []string{"pb_data/record/nUl.bin"}},
+		{name: "reserved superscript com port", keys: []string{"pb_data/record/COM¹.txt"}},
+		{name: "reserved superscript printer port", keys: []string{"pb_data/record/lPt².PDF"}},
+		{
+			name: "case insensitive collision",
+			keys: []string{
+				"pb_data/record/Receipt.PDF",
+				"PB_DATA/RECORD/receipt.pdf",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := journal
+			candidate.Attachments = make(map[string]restoreStagedFile, len(test.keys))
+			for _, key := range test.keys {
+				candidate.Attachments[key] = restoreStagedFile{Hash: "sha256:test", Size: 1}
+			}
+			err := writeRestoreJournal(paths, candidate)
+			if err == nil || err.Error() != "restore.journal_corrupt" {
+				t.Fatalf("journal with Windows-invalid storage keys = %v", err)
+			}
+			if _, statErr := os.Lstat(restoreJournalPath(paths)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("rejected journal was persisted: %v", statErr)
+			}
+			raw, marshalErr := json.Marshal(candidate)
+			requireSnapshotRestore(t, marshalErr)
+			requireSnapshotRestore(t, os.WriteFile(restoreJournalPath(paths), raw, 0o600))
+			if _, found, readErr := readRestoreJournal(paths); readErr == nil ||
+				readErr.Error() != "restore.journal_corrupt" || found {
+				t.Fatalf("read Windows-invalid restore journal = found %v, %v", found, readErr)
+			}
+			requireSnapshotRestore(t, os.Remove(restoreJournalPath(paths)))
+		})
+	}
+}
+
+func stageSnapshotAttachmentKeys(
+	t *testing.T,
+	keys []string,
+	useExistingObject bool,
+) (workspacePaths, pendingSnapshotRestore, error) {
+	t.Helper()
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: dataDir, HideStartBanner: true,
+	})
+	requireSnapshotRestore(t, app.Bootstrap())
+	t.Cleanup(func() { _ = app.ResetBootstrapState() })
+	createAuditOutbox(t, app)
+	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
+	requireSnapshotRestore(t, err)
+	t.Cleanup(func() { _ = ledger.Close() })
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
+		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		RequestShutdown: func() {}, DeferBackgroundWorkers: true,
+	})
+	requireSnapshotRestore(t, err)
+	t.Cleanup(func() { _ = runtime.Close(ctx) })
+	token, _ := runtime.coordinator.Current()
+	record, _, err := runtime.snapshots.Capture(ctx, snapshot.CaptureRequest{
+		WorkspaceID: testWorkspaceID, Authority: token.Authority(),
+		Trigger: snapshot.TriggerManual, Pinned: true,
+	})
+	requireSnapshotRestore(t, err)
+	bundle, err := snapshot.LoadSnapshotBundle(ctx, runtime.repository, record)
+	requireSnapshotRestore(t, err)
+	var historyRoot objectrepo.ManifestID
+	if bundle.HistoryRoot != nil {
+		historyRoot = bundle.HistoryRoot.ID
+	}
+	objectID := objectrepo.ObjectID("obj_missing")
+	if useExistingObject {
+		objectID = record.ObjectMap["database"]
+	}
+	for _, key := range keys {
+		record.ObjectMap["attachment:"+key] = objectID
+	}
+	receipt := protocolv2.OperationReceipt{
+		OperationID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		WorkspaceID: testWorkspaceID,
+		Method:      "snapshot.applyRestore",
+		Scope:       protocolv2.WorkspaceScope,
+		RequestHash: "sha256:test",
+		Result:      json.RawMessage(`{"state":"prepared"}`),
+	}
+	_, stageErr := runtime.coordinator.Write(
+		ctx,
+		token,
+		func(ctx context.Context, intent writecoordinator.WriteIntent) error {
+			staged, stageHistoryErr := runtime.history.StageSnapshotRestore(
+				ctx,
+				intent,
+				historyRoot,
+			)
+			if stageHistoryErr != nil {
+				return stageHistoryErr
+			}
+			return runtime.stagePendingSnapshotRestore(
+				ctx, 1, receipt, record, record, staged,
+			)
+		},
+	)
+	paths := mustResolvePaths(t, dataDir)
+	journal, _, readErr := readRestoreJournal(paths)
+	if stageErr == nil && readErr != nil {
+		t.Fatalf("read staged restore journal: %v", readErr)
+	}
+	return paths, journal, stageErr
+}
+
+func TestRestoreReadsAttachmentBackendFromTargetDatabase(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: dataDir, HideStartBanner: true})
+	requireSnapshotRestore(t, app.Bootstrap())
+	t.Cleanup(func() { _ = app.ResetBootstrapState() })
+	target := filepath.Join(dataDir, "data.db")
+	requireSnapshotRestore(t, verifyLocalRestoreStorage(target))
+	app.Settings().S3 = core.S3Config{
+		Enabled: true, Bucket: "target", Region: "local", Endpoint: "https://s3.invalid",
+		AccessKey: "access", Secret: "secret",
+	}
+	requireSnapshotRestore(t, app.Save(app.Settings()))
+	if err := verifyLocalRestoreStorage(target); err == nil || err.Error() != "restore.attachment_storage_unsupported" {
+		t.Fatalf("target S3 storage backend = %v", err)
+	}
+	requireSnapshotRestore(t, app.ResetBootstrapState())
+}
+
+func TestSnapshotRestoreStorageMatcherRejectsInvalidRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "storage")
+	requireSnapshotRestore(t, os.WriteFile(root, []byte("not a directory"), 0o600))
+	if matched, err := snapshotRestoreStorageMatches(root, nil); err == nil || matched {
+		t.Fatalf("invalid storage root match = %v, %v", matched, err)
+	}
+	root = filepath.Join(t.TempDir(), "storage")
+	requireSnapshotRestore(t, os.MkdirAll(filepath.Join(root, "expected.txt"), 0o700))
+	if matched, err := snapshotRestoreStorageMatches(root, map[string]restoreStagedFile{"expected.txt": {Hash: "x"}}); err == nil || matched {
+		t.Fatalf("invalid inner node match = %v, %v", matched, err)
+	}
+}
+
+func TestSnapshotRestoreStorageMatcherChecksSizeBeforeReading(t *testing.T) {
+	root := t.TempDir()
+	requireSnapshotRestore(t, os.WriteFile(filepath.Join(root, "object"), []byte("too large"), 0o600))
+	matched, err := snapshotRestoreStorageMatchesWithHasher(
+		root, map[string]restoreStagedFile{"object": {Hash: "x", Size: 1}},
+		func(string) (string, int64, error) {
+			t.Fatal("size-mismatched attachment was read")
+			return "", 0, nil
+		},
+	)
+	if err != nil || matched {
+		t.Fatalf("size-mismatched storage match = %v, %v", matched, err)
+	}
+}
+
+func TestSnapshotRestoreRollbackPreservesLiveCreatedAfterQuarantine(t *testing.T) {
+	paths := mustResolvePaths(t, filepath.Join(createWorkspace(t, testWorkspaceID), ".vibetable", "data"))
+	journal := pendingSnapshotRestore{
+		OperationID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		Phase:       restorePhaseInstalling, PreviousStorage: true,
+	}
+	rollback := restoreRollbackRoot(paths, journal.OperationID)
+	live := filepath.Join(paths.data, "storage")
+	requireSnapshotRestore(t, os.MkdirAll(rollback, 0o700))
+	requireSnapshotRestore(t, os.MkdirAll(live, 0o700))
+	requireSnapshotRestore(t, os.WriteFile(filepath.Join(live, "old.txt"), []byte("old"), 0o600))
+	err := rollbackSnapshotRestoreStorageWithMatcher(paths, journal, func(quarantine string, _ map[string]restoreStagedFile) (bool, error) {
+		requireRestoreFile(t, filepath.Join(quarantine, "old.txt"), "old")
+		requireSnapshotRestore(t, os.MkdirAll(live, 0o700))
+		requireSnapshotRestore(t, os.WriteFile(filepath.Join(live, "foreign.txt"), []byte("foreign"), 0o600))
+		return false, nil
+	})
+	if err == nil {
+		t.Fatal("foreign live race was accepted")
+	}
+	requireRestoreFile(t, filepath.Join(live, "foreign.txt"), "foreign")
+	requireRestoreFile(t, filepath.Join(rollback, "storage-quarantine", "old.txt"), "old")
+}
 
 func TestSnapshotRestoreAcceptsSnapshotWithoutFileHistory(
 	t *testing.T,
@@ -517,6 +991,18 @@ func containsRestorePreviewPrefix(values []string, prefix string) bool {
 func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 	t *testing.T,
 ) {
+	for _, crash := range []string{
+		"before-old-move", "old-moved", "new-installed", "foreign-live-conflict",
+		"invalid-quarantine", "quarantine-with-foreign-live",
+		"missing-previous", "installing-missing-previous", "quarantine-missing-previous",
+	} {
+		t.Run(crash, func(t *testing.T) {
+			testInterruptedSnapshotRestoreStorageRollback(t, crash)
+		})
+	}
+}
+
+func testInterruptedSnapshotRestoreStorageRollback(t *testing.T, crash string) {
 	ctx := context.Background()
 	root := createWorkspace(t, testWorkspaceID)
 	dataDir := filepath.Join(root, ".vibetable", "data")
@@ -542,7 +1028,7 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 		App: app, DataDir: dataDir,
 		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		RequestShutdown: func() {},
+		RequestShutdown: func() {}, DeferBackgroundWorkers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -563,6 +1049,7 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 	); err != nil {
 		t.Fatal(err)
 	}
+	updateSnapshotStorage(t, app, "", "restore-state/snapshot.txt", "snapshot storage")
 	target, _, err := runtime.snapshots.Capture(
 		ctx,
 		snapshot.CaptureRequest{
@@ -575,6 +1062,9 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 	if err != nil {
 		t.Fatal(err)
 	}
+	updateSnapshotStorage(
+		t, app, "restore-state/snapshot.txt", "restore-state/live.txt", "old live storage",
+	)
 	if _, err := app.DB().NewQuery(
 		`UPDATE restore_probe SET value = 'old-live'`,
 	).Execute(); err != nil {
@@ -632,6 +1122,48 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 		t.Fatal(err)
 	}
 	paths := mustResolvePaths(t, dataDir)
+	if crash == "new-installed" {
+		journal, found, err := readRestoreJournal(paths)
+		if err != nil || !found {
+			t.Fatalf("requested journal = %#v, %v", journal, err)
+		}
+		overLimit := journal
+		overLimit.Attachments = map[string]restoreStagedFile{
+			"first":  {Hash: "x", Size: maxSnapshotWorkingSet},
+			"second": {Hash: "x", Size: 1},
+		}
+		if err := validateRestoreJournal(paths, overLimit); err == nil || err.Error() != "restore.journal_corrupt" {
+			t.Fatalf("oversized attachment journal validation = %v", err)
+		}
+		legacy := journal
+		legacy.FormatVersion, legacy.Attachments = 2, nil
+		legacy.StorageCaptured, legacy.PreviousStorage = false, false
+		requireSnapshotRestore(t, writeRestoreJournal(paths, legacy))
+		raw, err := os.ReadFile(restoreJournalPath(paths))
+		if err != nil || bytes.Contains(raw, []byte(`"attachments"`)) ||
+			bytes.Contains(raw, []byte(`"previousStorage"`)) {
+			t.Fatalf("legacy restore journal gained v3 fields: %s, %v", raw, err)
+		}
+		decoded, found, err := readRestoreJournal(paths)
+		if err != nil || !found || decoded.FormatVersion != 2 {
+			t.Fatalf("rewritten legacy restore journal = %#v, %v", decoded, err)
+		}
+		requireSnapshotRestore(t, writeRestoreJournal(paths, journal))
+		for _, targetSize := range []int{restoreJournalMaxBytes - 1, restoreJournalMaxBytes + 1} {
+			boundary := journal
+			boundary.Attachments = map[string]restoreStagedFile{"x": {Hash: "sha256:x"}}
+			raw, _ := json.Marshal(boundary)
+			key := string(bytes.Repeat([]byte("x"), targetSize-len(raw)+1))
+			boundary.Attachments = map[string]restoreStagedFile{key: {Hash: "sha256:x"}}
+			if err := writeRestoreJournal(paths, boundary); err == nil || err.Error() != "restore.journal_resource_limit" {
+				t.Fatalf("restore journal size %d write = %v", targetSize, err)
+			}
+		}
+		persisted, found, err := readRestoreJournal(paths)
+		if err != nil || !found || persisted.OperationID != journal.OperationID {
+			t.Fatalf("journal after rejected oversized write = %#v, %v", persisted, err)
+		}
+	}
 	statePath := filepath.Join(paths.coordination, "workspace-v2.db")
 	stateBackup := statePath + ".restore-test-backup"
 	if err := os.Rename(statePath, stateBackup); err != nil {
@@ -677,6 +1209,83 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 	); err != nil || !installed {
 		t.Fatalf("initial offline install = %v, %v", installed, err)
 	}
+	storageRoot := filepath.Join(dataDir, "storage", "restore-state")
+	requireRestoreFile(t, filepath.Join(storageRoot, "snapshot.txt"), "snapshot storage")
+	if _, err := os.Lstat(filepath.Join(storageRoot, "live.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("install retained old live storage: %v", err)
+	}
+	journal, found, err := readRestoreJournal(paths)
+	if err != nil || !found {
+		t.Fatalf("installed journal = %#v, %v", journal, err)
+	}
+	journal.Phase = restorePhaseInstalling
+	if crash == "missing-previous" || crash == "quarantine-missing-previous" {
+		journal.Phase = restorePhaseInstalled
+	}
+	if crash == "foreign-live-conflict" {
+		journal.PreviousStorage = false
+	}
+	requireSnapshotRestore(t, writeRestoreJournal(paths, journal))
+	if crash == "missing-previous" || crash == "installing-missing-previous" {
+		requireSnapshotRestore(t, os.RemoveAll(filepath.Join(restoreRollbackRoot(paths, journal.OperationID), "storage")))
+		if installed, err := ApplyPendingSnapshotRestore(ctx, dataDir, testWorkspaceID); err == nil || installed {
+			t.Fatalf("missing previous storage recovery = %v, %v", installed, err)
+		}
+		requireRestoreFile(t, filepath.Join(storageRoot, "snapshot.txt"), "snapshot storage")
+		if _, found, err := readRestoreJournal(paths); err != nil || !found {
+			t.Fatalf("ambiguous recovery lost journal: found=%v err=%v", found, err)
+		}
+		return
+	}
+	if crash == "invalid-quarantine" || crash == "quarantine-with-foreign-live" ||
+		crash == "quarantine-missing-previous" {
+		quarantine := filepath.Join(restoreRollbackRoot(paths, journal.OperationID), "storage-quarantine")
+		requireSnapshotRestore(t, os.Rename(filepath.Dir(storageRoot), quarantine))
+		if crash == "quarantine-missing-previous" {
+			requireSnapshotRestore(t, os.RemoveAll(filepath.Join(restoreRollbackRoot(paths, journal.OperationID), "storage")))
+		} else if crash == "invalid-quarantine" {
+			requireSnapshotRestore(t, os.WriteFile(filepath.Join(quarantine, "restore-state", "snapshot.txt"), []byte("corrupt"), 0o600))
+		} else {
+			requireSnapshotRestore(t, os.RemoveAll(filepath.Join(restoreRollbackRoot(paths, journal.OperationID), "storage")))
+			requireSnapshotRestore(t, os.MkdirAll(storageRoot, 0o700))
+			requireSnapshotRestore(t, os.WriteFile(filepath.Join(storageRoot, "foreign.txt"), []byte("foreign"), 0o600))
+		}
+		if installed, err := ApplyPendingSnapshotRestore(ctx, dataDir, testWorkspaceID); err == nil || installed {
+			t.Fatalf("quarantined storage recovery = %v, %v", installed, err)
+		}
+		if crash == "invalid-quarantine" {
+			requireRestoreFile(t, filepath.Join(storageRoot, "snapshot.txt"), "corrupt")
+		} else {
+			requireRestoreFile(t, filepath.Join(quarantine, "restore-state", "snapshot.txt"), "snapshot storage")
+		}
+		if _, found, err := readRestoreJournal(paths); crash == "quarantine-missing-previous" && (err != nil || !found) {
+			t.Fatalf("ambiguous quarantine lost journal: found=%v err=%v", found, err)
+		}
+		if crash == "quarantine-with-foreign-live" {
+			requireRestoreFile(t, filepath.Join(storageRoot, "foreign.txt"), "foreign")
+		}
+		return
+	}
+	if crash == "foreign-live-conflict" {
+		requireSnapshotRestore(t, os.RemoveAll(filepath.Join(restoreRollbackRoot(paths, journal.OperationID), "storage")))
+		requireSnapshotRestore(t, os.RemoveAll(filepath.Dir(storageRoot)))
+		requireSnapshotRestore(t, os.MkdirAll(storageRoot, 0o700))
+		requireSnapshotRestore(t, os.WriteFile(filepath.Join(storageRoot, "foreign.txt"), []byte("foreign"), 0o600))
+		if installed, err := ApplyPendingSnapshotRestore(ctx, dataDir, testWorkspaceID); err == nil || installed {
+			t.Fatalf("foreign live storage recovery = %v, %v", installed, err)
+		}
+		requireRestoreFile(t, filepath.Join(storageRoot, "foreign.txt"), "foreign")
+		return
+	}
+	if crash == "old-moved" || crash == "before-old-move" {
+		staging := restoreStagingRoot(paths, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+		if err := os.Rename(filepath.Dir(storageRoot), filepath.Join(staging, "storage")); err != nil {
+			t.Fatal(err)
+		}
+		if crash == "before-old-move" {
+			requireSnapshotRestore(t, os.Rename(filepath.Join(rollback, "storage"), filepath.Dir(storageRoot)))
+		}
+	}
 	// Simulate process death after installation but before Runtime health and
 	// CompletePendingSnapshotRestore. The next startup must restore old-live.
 	if installed, err := ApplyPendingSnapshotRestore(
@@ -699,6 +1308,10 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 	).Row(&value); err != nil || value != "old-live" {
 		t.Fatalf("rollback database value = %q, %v", value, err)
 	}
+	requireRestoreFile(t, filepath.Join(storageRoot, "live.txt"), "old live storage")
+	if _, err := os.Lstat(filepath.Join(storageRoot, "snapshot.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback retained snapshot storage: %v", err)
+	}
 	rolledBackLedger, err := auditledger.Open(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
@@ -708,6 +1321,7 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 		App: rolledBackApp, DataDir: dataDir,
 		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: testClaimID, Ledger: rolledBackLedger,
+		DeferBackgroundWorkers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -729,6 +1343,7 @@ func TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness(
 	if _, found, err := readRestoreJournal(mustResolvePaths(t, dataDir)); err != nil || found {
 		t.Fatalf("rollback left restore journal: found=%v err=%v", found, err)
 	}
+	requireSnapshotRestore(t, errors.Join(rolledBack.Close(ctx), rolledBackLedger.Close(), rolledBackApp.ResetBootstrapState()))
 }
 
 func TestProtectionSnapshotReceiptReusesPublishedSnapshotAfterRetry(
