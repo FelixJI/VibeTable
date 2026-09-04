@@ -221,10 +221,12 @@ def test_product_params_enforce_json_size_depth_and_closed_shapes() -> None:
 )
 @pytest.mark.asyncio
 async def test_public_invoke_rejects_non_finite_product_response(non_finite: float) -> None:
-    service, _transport = service_with([{"tables": [non_finite]}])
+    service, _transport = service_with([{"fields": [non_finite]}])
 
     with pytest.raises(ValueError, match="non-finite JSON number"):
-        await service.invoke("schema.list", ProductParams.model_validate({}))
+        await service.invoke(
+            "field.recycleBin.list", ProductParams.model_validate({"tableId": "orders"})
+        )
 
 
 @pytest.mark.asyncio
@@ -454,7 +456,7 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
             "query.readRows",
             ProductParams.model_validate({"tableId": "orders", "rowIds": [""]}),
         )
-    with pytest.raises(ValueError, match="does not accept"):
+    with pytest.raises(ValueError, match=r"unknown product RPC method: schema\.list"):
         await service.invoke("schema.list", ProductParams.model_validate({"unexpected": 1}))
     with pytest.raises(ValueError, match="variant must be a string"):
         await service.invoke(

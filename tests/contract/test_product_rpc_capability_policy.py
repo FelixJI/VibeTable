@@ -38,7 +38,7 @@ def _invalidate_first_rpc_scope(source: dict[str, object]) -> None:
     first["scope"] = "session"
 
 
-def test_policy_joins_catalog_and_inventory_without_changing_l1_routes() -> None:
+def test_policy_joins_catalog_and_inventory_with_only_schema_list_migrated() -> None:
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
@@ -53,7 +53,18 @@ def test_policy_joins_catalog_and_inventory_without_changing_l1_routes() -> None
         "owner": "pythonBff",
         "effect": "read",
     }
-    assert {item["owner"] for item in manifest["rpcMethods"]} == {"pythonBff"}
+    assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
+        "schema.list"
+    }
+    schema_list = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.list")
+    assert schema_list == {
+        "method": "schema.list",
+        "scope": "workspace",
+        "audience": "rendererPublic",
+        "capabilityId": "schema.query",
+        "owner": "goSidecar",
+        "effect": "read",
+    }
     assert {item["owner"] for item in manifest["eventTopics"]} == {"pythonBff"}
     events = {item["topic"]: item for item in manifest["eventTopics"]}
     assert events["plugin.interaction.requested"]["audience"] == "rendererPublic"
@@ -118,9 +129,9 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 102
+    assert len(methods) == 101
     assert methods[0] == "command.list"
-    assert current_owner_methods("goSidecar") == ()
+    assert current_owner_methods("goSidecar") == ("schema.list",)
     with pytest.raises(ValueError, match="unknown current owner"):
         current_owner_methods(cast(CurrentOwner, "retiredOwner"))
 

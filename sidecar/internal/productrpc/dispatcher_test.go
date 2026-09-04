@@ -414,7 +414,14 @@ func TestDispatchUsesStableMethodParamsAndCurrentIdentityErrors(t *testing.T) {
 
 func TestNewCapturesValidatedIdentitySnapshot(t *testing.T) {
 	identity := testIdentity()
-	dispatcher, err := New(identity)
+	if _, err := New(identity); err == nil {
+		t.Fatal("missing schema.list registration must fail closed")
+	}
+	dispatcher, err := New(identity, Registration{
+		Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
+		ValidateParams: func(json.RawMessage) error { return nil },
+		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,12 +458,16 @@ func TestNewCapturesValidatedIdentitySnapshot(t *testing.T) {
 
 func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testing.T) {
 	identity := testIdentity()
-	dispatcher, err := New(identity)
+	dispatcher, err := New(identity, Registration{
+		Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
+		ValidateParams: func(json.RawMessage) error { return nil },
+		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 0 {
-		t.Fatalf("production registrations = %#v, want empty during L2a", methods)
+	if methods := dispatcher.Methods(); len(methods) != 1 || methods[0].Method != "schema.list" {
+		t.Fatalf("production registrations = %#v, want only schema.list", methods)
 	}
 	_, err = New(identity, Registration{
 		Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,

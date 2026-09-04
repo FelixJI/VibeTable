@@ -19,6 +19,7 @@ from pydantic import BaseModel, RootModel, TypeAdapter
 import backend.__main__ as composition
 from backend.contracts.product_rpc import (
     PRODUCT_RPC_REGISTRY as PRODUCT_PARAM_MODELS,
+    WORKSPACE_CATALOG_METHODS,
     ProductParams,
 )
 from backend.contracts.data_io import (
@@ -766,15 +767,7 @@ def main() -> None:
 
     path = Path(__file__).with_name("fixtures") / "product-rpc-catalog.json"
     models = _registered_models()
-    workspace_catalog_methods = {
-        "field.change.apply",
-        "field.change.cancel",
-        "field.change.plan",
-        "field.change.status",
-        "field.recycleBin.list",
-        "field.settings.describe",
-    }
-    methods = sorted(set(models) - workspace_catalog_methods)
+    methods = sorted(set(models) - WORKSPACE_CATALOG_METHODS)
     result_specs = _result_specs(path.parent)
     missing_results = sorted(set(methods) - result_specs.keys())
     stale_results = sorted(result_specs.keys() - set(methods))
