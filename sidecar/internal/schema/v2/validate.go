@@ -59,6 +59,9 @@ func ValidateSnapshot(snapshot SchemaSnapshot) error {
 		if err := Validate(field); err != nil {
 			return fmt.Errorf("validate schema snapshot fields[%d]: %w", index, err)
 		}
+		if err := validateSnapshotFieldWire(field); err != nil {
+			return fmt.Errorf("validate schema snapshot fields[%d]: %w", index, err)
+		}
 	}
 	if len(snapshot.Capabilities) != len(LogicalTypes) {
 		return errors.New("schema snapshot capabilities are invalid")
@@ -71,6 +74,53 @@ func ValidateSnapshot(snapshot SchemaSnapshot) error {
 		if !reflect.DeepEqual(snapshot.Capabilities[index], expected) {
 			return fmt.Errorf("schema snapshot capabilities[%d] is invalid", index)
 		}
+	}
+	return nil
+}
+
+// validateSnapshotFieldWire covers the JSON Schema constraints that are
+// intentionally outside Validate's field-behavior rules.
+func validateSnapshotFieldWire(field FieldDefinition) error {
+	length := field.Constraints.Length
+	if length.Min != nil && *length.Min < 0 || length.Max != nil && *length.Max < 0 {
+		return errors.New("constraints.length is invalid")
+	}
+	selection := field.Constraints.Selection
+	if selection.Min < 0 || selection.Max != nil && *selection.Max < 0 {
+		return errors.New("constraints.selection is invalid")
+	}
+	if field.Storage.Options.MaxSize < 0 {
+		return errors.New("storage.options.maxSize is invalid")
+	}
+	if err := validateSnapshotStringList(
+		"constraints.domains.only", field.Constraints.Domains.Only,
+	); err != nil {
+		return err
+	}
+	if err := validateSnapshotStringList(
+		"constraints.domains.except", field.Constraints.Domains.Except,
+	); err != nil {
+		return err
+	}
+	if field.File != nil {
+		if err := validateSnapshotStringList(
+			"file.allowedMimeTypes", field.File.AllowedMIMETypes,
+		); err != nil {
+			return err
+		}
+		if err := validateSnapshotStringList("file.thumbs", field.File.Thumbs); err != nil {
+			return err
+		}
+	}
+	if field.JSON != nil && field.JSON.Schema == nil {
+		return errors.New("json.schema is invalid")
+	}
+	return nil
+}
+
+func validateSnapshotStringList(path string, values []string) error {
+	if values == nil {
+		return fmt.Errorf("%s is invalid", path)
 	}
 	return nil
 }

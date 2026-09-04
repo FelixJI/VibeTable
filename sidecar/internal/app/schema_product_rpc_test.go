@@ -311,6 +311,68 @@ func TestSchemaGetTableProductHTTPRejectsInvalidTableMetadata(t *testing.T) {
 	}
 }
 
+func TestSchemaGetTableProductHTTPRejectsInvalidFieldWireShape(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		corrupt func(map[string]any)
+	}{
+		{"null-list", func(definition map[string]any) {
+			constraints := definition["constraints"].(map[string]any)
+			constraints["domains"].(map[string]any)["only"] = nil
+		}},
+		{"negative-number", func(definition map[string]any) {
+			constraints := definition["constraints"].(map[string]any)
+			constraints["length"].(map[string]any)["min"] = -1
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pb := schemaProductStore(t)
+			lifecycle, err := schemacore.NewTableLifecycle(pb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+				DisplayName: "Invalid field", OperationID: "schema-invalid-field-" + test.name,
+				Actor: v2.Actor{ID: "local-user", Kind: "user"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			field := createSchemaProductField(
+				t, pb, table.TableID, v2.LogicalText, "Name", "schema-invalid-wire-"+test.name,
+			)
+			encoded, err := json.Marshal(field.Definition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var definition map[string]any
+			if err := json.Unmarshal(encoded, &definition); err != nil {
+				t.Fatal(err)
+			}
+			test.corrupt(definition)
+			stored, err := pb.FindFirstRecordByFilter(
+				"vibetable_fields", "field_id={:field}", dbx.Params{"field": field.FieldID},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored.Set("definition_v2_json", definition)
+			if err := pb.Save(stored); err != nil {
+				t.Fatal(err)
+			}
+
+			response := schemaProductRequestForMethod(
+				t, schemaProductMux(t, pb), context.Background(), "schema.getTable",
+				`{"tableId":"`+table.TableID+`"}`, schemaListWire,
+			)
+			if response.Error == nil || response.Error.Code != productrpc.CodeInternalError ||
+				response.Error.Data != nil {
+				t.Fatalf("invalid field wire shape escaped Product validation: %+v", response)
+			}
+		})
+	}
+}
+
 func TestSchemaListProductHTTPRejectsInvalidParamsAndStaleScopeBeforeStorage(t *testing.T) {
 	pb := schemaProductStore(t)
 	mux := schemaProductMux(t, pb)
