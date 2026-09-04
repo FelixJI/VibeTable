@@ -186,6 +186,39 @@ func PersistPocketBaseReceipt(
 	return txApp.Save(record)
 }
 
+// ClassifyPocketBaseTransactionError preserves a prepared intent unless a
+// missing business receipt proves that the authoritative transaction rolled back.
+func ClassifyPocketBaseTransactionError(
+	ctx context.Context,
+	app core.App,
+	transactionErr error,
+) error {
+	if transactionErr == nil || errors.Is(transactionErr, ErrExternalCommitted) {
+		return transactionErr
+	}
+	intent, ok := businessIntentFrom(ctx)
+	if !ok {
+		return transactionErr
+	}
+	committed, err := HasPocketBaseReceipt(
+		context.WithoutCancel(ctx),
+		app,
+		intent.Token,
+		intent.MutationRevision,
+	)
+	if err != nil {
+		return errors.Join(
+			ErrExternalCommitted,
+			transactionErr,
+			fmt.Errorf("verify PocketBase business receipt: %w", err),
+		)
+	}
+	if !committed {
+		return transactionErr
+	}
+	return errors.Join(ErrExternalCommitted, transactionErr)
+}
+
 func HasPocketBaseReceipt(
 	ctx context.Context,
 	app core.App,
