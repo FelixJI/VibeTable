@@ -145,6 +145,7 @@ func TestPDFStreamReadMapsOnlyCausalCancellation(t *testing.T) {
 		wantCode   string
 	}{
 		{"cancelled read", context.Canceled, ExtractionCancelled, "extract.cancelled"},
+		{"deadline read", context.DeadlineExceeded, ExtractionResourceLimited, "extract.timeout"},
 		{"corrupt read during cancellation", io.ErrUnexpectedEOF, ExtractionFailed, "extract.pdf_stream_invalid"},
 	}
 	for _, test := range tests {
@@ -217,6 +218,19 @@ func TestPDFTextAccumulatorStoresAtMostLimitPlusOneRune(t *testing.T) {
 	}
 	assertExtractionCode(t, text.result(), ExtractionTruncated, "extract.text_limit")
 	if result := text.result(); result.Text != "1234" {
+		t.Fatalf("truncated text = %q", result.Text)
+	}
+}
+
+func TestPDFExtractorTruncatesUncompressedTextAtRuneLimit(t *testing.T) {
+	limits := DefaultExtractionLimits
+	limits.MaximumTextCodePoints = 4
+	result := Extract(
+		context.Background(), "report.pdf", "application/pdf",
+		strings.NewReader("%PDF-1.7\nBT (123456) Tj ET"), limits,
+	)
+	assertExtractionCode(t, result, ExtractionTruncated, "extract.text_limit")
+	if result.Text != "1234" {
 		t.Fatalf("truncated text = %q", result.Text)
 	}
 }
