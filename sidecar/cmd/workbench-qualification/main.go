@@ -38,6 +38,7 @@ const (
 	maximumIncrementalP95  = 2 * time.Second
 	searchableCodePoints   = 4096
 	streamBufferBytes      = 1 << 20
+	qualificationPDFCount  = 4
 )
 
 type qualificationConfig struct {
@@ -64,6 +65,10 @@ type qualificationReport struct {
 	ExtractorIndexed            int      `json:"extractorIndexed"`
 	ExtractorTruncated          int      `json:"extractorTruncated"`
 	ExtractorFailures           int      `json:"extractorFailures"`
+	PDFDocuments                int      `json:"pdfDocuments"`
+	PDFIndexed                  int      `json:"pdfIndexed"`
+	PDFNoText                   int      `json:"pdfNoText"`
+	PDFResourceLimited          int      `json:"pdfResourceLimited"`
 	IndexBytes                  int64    `json:"indexBytes"`
 	IndexMultiplier             float64  `json:"indexMultiplier"`
 	PeakHeapBytes               uint64   `json:"peakHeapBytes"`
@@ -124,7 +129,7 @@ func validateConfig(config qualificationConfig) error {
 			"qualification --work-root must be repository build/qa/workbench-qualification-runs",
 		)
 	}
-	if config.Records < 1 || config.Files < 1 ||
+	if config.Records < 1 || config.Files <= qualificationPDFCount ||
 		config.LogicalCorpusBytes < int64(config.Files)*1024 {
 		return fmt.Errorf("qualification corpus dimensions are invalid")
 	}
@@ -244,7 +249,7 @@ func run(ctx context.Context, config qualificationConfig) error {
 		return err
 	}
 	report := qualificationReport{
-		SchemaVersion: 3, Profile: config.Profile,
+		SchemaVersion: 4, Profile: config.Profile,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Records:     config.Records, FileDocuments: config.Files,
 		LogicalCorpusBytes:    corpusResult.LogicalBytes,
@@ -256,6 +261,10 @@ func run(ctx context.Context, config qualificationConfig) error {
 		ExtractorIndexed:      corpusResult.Extraction.Indexed,
 		ExtractorTruncated:    corpusResult.Extraction.Truncated,
 		ExtractorFailures:     corpusResult.Extraction.Failures,
+		PDFDocuments:          corpusResult.Extraction.PDFDocuments,
+		PDFIndexed:            corpusResult.Extraction.PDFIndexed,
+		PDFNoText:             corpusResult.Extraction.PDFNoText,
+		PDFResourceLimited:    corpusResult.Extraction.PDFResourceLimited,
 		IndexBytes:            indexBytes,
 		IndexMultiplier:       float64(indexBytes) / float64(max(1, sourceBytes)),
 		PeakHeapBytes:         heapBytes, PeakRSSBytes: peakRSS,
@@ -275,11 +284,7 @@ func run(ctx context.Context, config qualificationConfig) error {
 		corpusResult.ExtractedInputBytes != config.LogicalCorpusBytes {
 		report.Failures = append(report.Failures, "corpus_bytes_incomplete")
 	}
-	if corpusResult.Extraction.Documents != config.Files ||
-		corpusResult.Extraction.Indexed+corpusResult.Extraction.Truncated != config.Files ||
-		corpusResult.Extraction.Failures != 0 {
-		report.Failures = append(report.Failures, "extractor_corpus_incomplete")
-	}
+	appendExtractionFailures(&report, corpusResult.Extraction, config.Files)
 	if config.Profile == "release" && corpusResult.LogicalBytes < requiredLogicalCorpusBytes {
 		report.Failures = append(report.Failures, "logical_corpus_too_small")
 	}
@@ -307,7 +312,7 @@ func run(ctx context.Context, config qualificationConfig) error {
 	if len(report.Failures) != 0 {
 		return fmt.Errorf(
 			"workbench qualification failed: %v; rebuild=%s (budget %s), warmP95=%s, firstScreen=%s, incrementalP95=%s, peakRSS=%d",
-			report.Failures,
+			qualificationFailureMessage(report.Failures, corpusResult.Extraction.PDFStatusMismatchDetails),
 			rebuildDuration.Round(time.Millisecond),
 			maximumRebuildDuration,
 			percentile(warm, 0.95).Round(time.Millisecond),
@@ -319,11 +324,69 @@ func run(ctx context.Context, config qualificationConfig) error {
 	return nil
 }
 
+func qualificationFailureMessage(failures, pdfMismatchDetails []string) string {
+	if len(pdfMismatchDetails) == 0 {
+		return fmt.Sprint(failures)
+	}
+	return fmt.Sprintf("%v; pdfMismatchDetails=%v", failures, pdfMismatchDetails)
+}
+
 type extractionSummary struct {
-	Documents int
-	Indexed   int
-	Truncated int
-	Failures  int
+	Documents                int
+	Indexed                  int
+	Truncated                int
+	Failures                 int
+	PDFDocuments             int
+	PDFIndexed               int
+	PDFNoText                int
+	PDFResourceLimited       int
+	PDFStatusMismatches      int
+	PDFStatusMismatchDetails []string
+}
+
+func appendExtractionFailures(
+	report *qualificationReport, extraction extractionSummary, fileCount int,
+) {
+	if extraction.Documents != fileCount ||
+		extraction.Indexed+extraction.Truncated+
+			extraction.PDFNoText+extraction.PDFResourceLimited != fileCount ||
+		extraction.Failures != 0 {
+		report.Failures = append(report.Failures, "extractor_corpus_incomplete")
+	}
+	if extraction.PDFDocuments != qualificationPDFCount ||
+		extraction.PDFIndexed != 2 || extraction.PDFNoText != 1 ||
+		extraction.PDFResourceLimited != 1 || extraction.PDFStatusMismatches != 0 {
+		report.Failures = append(report.Failures, "pdf_fixture_status_mismatch")
+	}
+}
+
+func recordPDFExtraction(summary *extractionSummary, fixtureIndex int,
+	expected workspacesearch.ExtractionStatus, actual workspacesearch.ExtractionResult,
+) {
+	summary.PDFDocuments++
+	switch actual.Status {
+	case workspacesearch.ExtractionIndexed:
+		summary.PDFIndexed++
+	case workspacesearch.ExtractionNoTextLayer:
+		summary.PDFNoText++
+	case workspacesearch.ExtractionResourceLimited:
+		summary.PDFResourceLimited++
+	}
+	if actual.Status == expected {
+		return
+	}
+	summary.Failures++
+	summary.PDFStatusMismatches++
+	errorCode := "<nil>"
+	if actual.ErrorCode != nil {
+		errorCode = *actual.ErrorCode
+	}
+	if len(summary.PDFStatusMismatchDetails) < qualificationPDFCount {
+		summary.PDFStatusMismatchDetails = append(summary.PDFStatusMismatchDetails, fmt.Sprintf(
+			"fixture=%d expected=%s actual=%s errorCode=%s",
+			fixtureIndex, expected, actual.Status, errorCode,
+		))
+	}
 }
 
 type corpusSummary struct {
@@ -335,6 +398,12 @@ type corpusSummary struct {
 	MaterializationDuration time.Duration
 }
 
+type qualificationPDFFixture struct {
+	Payload          []byte
+	Expected         workspacesearch.ExtractionStatus
+	MaximumPartBytes int64
+}
+
 func corpus(
 	ctx context.Context,
 	fileRoot string,
@@ -343,6 +412,19 @@ func corpus(
 ) ([]workspacesearch.SourceDocument, int64, corpusSummary, error) {
 	if err := os.MkdirAll(fileRoot, 0o755); err != nil {
 		return nil, 0, corpusSummary{}, err
+	}
+	pdfFixtures, err := qualificationPDFFixtures(recordCount)
+	if err != nil {
+		return nil, 0, corpusSummary{}, err
+	}
+	var pdfBytes int64
+	for _, fixture := range pdfFixtures {
+		pdfBytes += int64(len(fixture.Payload))
+	}
+	textFileCount := fileCount - len(pdfFixtures)
+	textBytes := logicalCorpusBytes - pdfBytes
+	if textFileCount < 1 || textBytes < int64(textFileCount)*1024 {
+		return nil, 0, corpusSummary{}, fmt.Errorf("qualification corpus is too small for PDF fixtures")
 	}
 	result := make([]workspacesearch.SourceDocument, 0, recordCount+fileCount)
 	combinedDigest := sha256.New()
@@ -366,22 +448,41 @@ func corpus(
 			fileIndex := index - recordCount
 			canonicalID = fmt.Sprintf("document-%06d", fileIndex)
 			open = contracts.SearchOpenTarget{Kind: "file", DocumentId: stringPointer(canonicalID)}
-			logical := logicalCorpusBytes / int64(fileCount)
-			if fileIndex == fileCount-1 {
-				logical += logicalCorpusBytes % int64(fileCount)
-			}
-			path := filepath.Join(fileRoot, fmt.Sprintf("document-%06d.txt", fileIndex))
+			logical := int64(0)
+			path := ""
+			var expected workspacesearch.ExtractionStatus
+			maximumPartBytes := workspacesearch.DefaultExtractionLimits.MaximumPartBytes
 			materializeStarted := time.Now()
-			materializedDigest, materializeErr := materializeCorpusFile(
-				ctx, path, logical, index, fileIndex,
-			)
+			var materializedDigest string
+			var materializeErr error
+			if fileIndex < len(pdfFixtures) {
+				fixture := pdfFixtures[fileIndex]
+				logical = int64(len(fixture.Payload))
+				path = filepath.Join(fileRoot, fmt.Sprintf("document-%06d.pdf", fileIndex))
+				expected = fixture.Expected
+				maximumPartBytes = fixture.MaximumPartBytes
+				materializedDigest, materializeErr = materializePDFCorpusFile(path, fixture.Payload)
+			} else {
+				textIndex := fileIndex - len(pdfFixtures)
+				logical = textBytes / int64(textFileCount)
+				if textIndex == textFileCount-1 {
+					logical += textBytes % int64(textFileCount)
+				}
+				path = filepath.Join(fileRoot, fmt.Sprintf("document-%06d.txt", fileIndex))
+				materializedDigest, materializeErr = materializeCorpusFile(
+					ctx, path, logical, index, fileIndex,
+				)
+			}
 			summary.MaterializationDuration += time.Since(materializeStarted)
 			if materializeErr != nil {
 				return nil, 0, summary, fmt.Errorf("materialize corpus file: %w", materializeErr)
 			}
 			summary.LogicalBytes += logical
 			summary.MaterializedBytes += logical
-			extracted, readBytes, extractedDigest, status, extractErr := extractCorpusFile(ctx, path)
+			extraction, readBytes, extractedDigest, extractErr := extractCorpusFileWithPartLimit(
+				ctx, path, maximumPartBytes,
+			)
+			status := extraction.Status
 			summary.Extraction.Documents++
 			if extractErr != nil || materializedDigest != extractedDigest {
 				summary.Extraction.Failures++
@@ -396,12 +497,15 @@ func corpus(
 				summary.Extraction.Indexed++
 			case workspacesearch.ExtractionTruncated:
 				summary.Extraction.Truncated++
-			default:
+			}
+			if fileIndex < len(pdfFixtures) {
+				recordPDFExtraction(&summary.Extraction, fileIndex, expected, extraction)
+			} else if status != workspacesearch.ExtractionIndexed &&
+				status != workspacesearch.ExtractionTruncated {
 				summary.Extraction.Failures++
-				return nil, 0, summary, fmt.Errorf("unexpected extraction status %s", status)
 			}
 			_, _ = io.WriteString(combinedDigest, extractedDigest)
-			body = extracted
+			body = extraction.Text
 			size = &logical
 		}
 		sourceBytes += int64(len(title) + len(body))
@@ -415,6 +519,52 @@ func corpus(
 	}
 	summary.Digest = hex.EncodeToString(combinedDigest.Sum(nil))
 	return result, sourceBytes, summary, nil
+}
+
+func qualificationPDFFixtures(recordCount int) ([]qualificationPDFFixture, error) {
+	definitions := []struct {
+		content          string
+		flate            bool
+		expected         workspacesearch.ExtractionStatus
+		maximumPartBytes int64
+	}{
+		{fmt.Sprintf("BT /F1 12 Tf (needle-%06d native PDF) Tj ET", recordCount), false, workspacesearch.ExtractionIndexed, workspacesearch.DefaultExtractionLimits.MaximumPartBytes},
+		{fmt.Sprintf("BT /F1 12 Tf (needle-%06d compressed PDF) Tj ET", recordCount+1), true, workspacesearch.ExtractionIndexed, workspacesearch.DefaultExtractionLimits.MaximumPartBytes},
+		{"q 1 0 0 1 0 0 cm Q", false, workspacesearch.ExtractionNoTextLayer, workspacesearch.DefaultExtractionLimits.MaximumPartBytes},
+		{"BT /F1 12 Tf (resource limited PDF) Tj ET", true, workspacesearch.ExtractionResourceLimited, 4},
+	}
+	fixtures := make([]qualificationPDFFixture, 0, len(definitions))
+	for _, definition := range definitions {
+		payload, err := pdfQualificationDocument([]byte(definition.content), definition.flate)
+		if err != nil {
+			return nil, err
+		}
+		fixtures = append(fixtures, qualificationPDFFixture{
+			Payload: payload, Expected: definition.expected,
+			MaximumPartBytes: definition.maximumPartBytes,
+		})
+	}
+	return fixtures, nil
+}
+
+func materializePDFCorpusFile(path string, payload []byte) (string, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := file.Write(payload); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func materializeCorpusFile(
@@ -493,31 +643,46 @@ func (reader *digestingReader) Read(target []byte) (int, error) {
 func extractCorpusFile(
 	ctx context.Context,
 	path string,
-) (string, int64, string, workspacesearch.ExtractionStatus, error) {
+) (workspacesearch.ExtractionResult, int64, string, error) {
+	result, readBytes, digest, err := extractCorpusFileWithPartLimit(
+		ctx, path, workspacesearch.DefaultExtractionLimits.MaximumPartBytes,
+	)
+	if err == nil && result.Status != workspacesearch.ExtractionIndexed &&
+		result.Status != workspacesearch.ExtractionTruncated {
+		err = fmt.Errorf("extract corpus file: unexpected status %s", result.Status)
+	}
+	return result, readBytes, digest, err
+}
+
+func extractCorpusFileWithPartLimit(
+	ctx context.Context,
+	path string,
+	maximumPartBytes int64,
+) (workspacesearch.ExtractionResult, int64, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", 0, "", "", err
+		return workspacesearch.ExtractionResult{}, 0, "", err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return "", 0, "", "", err
+		return workspacesearch.ExtractionResult{}, 0, "", err
 	}
 	tracked := &digestingReader{reader: file, digest: sha256.New()}
 	limits := workspacesearch.DefaultExtractionLimits
 	limits.MaximumInputBytes = info.Size()
+	limits.MaximumPartBytes = maximumPartBytes
 	limits.MaximumTextCodePoints = searchableCodePoints
-	result := workspacesearch.Extract(ctx, filepath.Base(path), "text/plain", tracked, limits)
-	if result.Status != workspacesearch.ExtractionIndexed &&
-		result.Status != workspacesearch.ExtractionTruncated {
-		return "", tracked.bytes, "", result.Status,
-			fmt.Errorf("extract corpus file: %#v", result)
+	mimeType := "text/plain"
+	if filepath.Ext(path) == ".pdf" {
+		mimeType = "application/pdf"
 	}
+	result := workspacesearch.Extract(ctx, filepath.Base(path), mimeType, tracked, limits)
 	if tracked.bytes != info.Size() {
-		return "", tracked.bytes, "", result.Status,
+		return result, tracked.bytes, "",
 			fmt.Errorf("extractor read %d of %d bytes", tracked.bytes, info.Size())
 	}
-	return result.Text, tracked.bytes, hex.EncodeToString(tracked.digest.Sum(nil)), result.Status, nil
+	return result, tracked.bytes, hex.EncodeToString(tracked.digest.Sum(nil)), nil
 }
 
 func searchRequest(query string) contracts.SearchRequest {
