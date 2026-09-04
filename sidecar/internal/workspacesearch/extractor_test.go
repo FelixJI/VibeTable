@@ -162,9 +162,6 @@ func TestPDFStreamReadMapsOnlyCausalCancellation(t *testing.T) {
 			cancel()
 			close(reader.release)
 			failure := <-result
-			if failure.Status == "" {
-				t.Fatal("stream failure was lost")
-			}
 			assertExtractionCode(t, failure, test.wantStatus, test.wantCode)
 		})
 	}
@@ -189,15 +186,14 @@ func TestWalkPDFMatchesChecksContextAfterFinalToken(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("tail deadline = %v", err)
 	}
-	assertExtractionCode(
-		t, extractionContextError(deadline), ExtractionResourceLimited, "extract.timeout",
-	)
+	assertExtractionCode(t, extractionContextError(deadline), ExtractionResourceLimited, "extract.timeout")
 }
 
 func TestPDFMatcherCancelsDuringFlateDiscovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	source := &blockedPDFReader{
-		started: make(chan struct{}), release: make(chan struct{}), err: context.Canceled,
+		started: make(chan struct{}), release: make(chan struct{}),
+		runes: strings.NewReader("x<< /FlateDecode >>\nstream\npayload\nendstream"),
 	}
 	result := make(chan []int, 1)
 	go func() {
@@ -208,8 +204,9 @@ func TestPDFMatcherCancelsDuringFlateDiscovery(t *testing.T) {
 	<-source.started
 	cancel()
 	close(source.release)
-	if match := <-result; match != nil || !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatalf("flate discovery match=%v err=%v", match, ctx.Err())
+	wrapped, raw := <-result, pdfFlateStream.FindReaderSubmatchIndex(source)
+	if wrapped != nil || raw == nil {
+		t.Fatalf("flate discovery matches: context-aware=%v raw=%v", wrapped, raw)
 	}
 }
 
@@ -465,9 +462,9 @@ type emptyReader struct{}
 func (emptyReader) Read([]byte) (int, error) { return 0, nil }
 
 type blockedPDFReader struct {
-	started chan struct{}
-	release chan struct{}
-	err     error
+	started, release chan struct{}
+	err              error
+	runes            io.RuneReader
 }
 
 func (reader *blockedPDFReader) Read([]byte) (int, error) {
@@ -477,9 +474,12 @@ func (reader *blockedPDFReader) Read([]byte) (int, error) {
 }
 
 func (reader *blockedPDFReader) ReadRune() (rune, int, error) {
-	close(reader.started)
-	<-reader.release
-	return 0, 0, reader.err
+	if reader.started != nil {
+		close(reader.started)
+		<-reader.release
+		reader.started = nil
+	}
+	return reader.runes.ReadRune()
 }
 
 func (*blockedPDFReader) Close() error { return nil }
