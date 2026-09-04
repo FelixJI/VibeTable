@@ -265,8 +265,32 @@ export interface SearchStatus {
   readonly errorCode: string | null;
 }
 
+export interface FormulaTextPosition {
+  readonly line: number;
+  readonly character: number;
+}
+
+export interface FormulaTextRange {
+  readonly start: FormulaTextPosition;
+  readonly end: FormulaTextPosition;
+}
+
+export interface FormulaAuthorToken {
+  readonly range: FormulaTextRange;
+  readonly kind: "field" | "relation" | "relationTarget";
+  readonly fieldId: string;
+  readonly relationFieldId: string | null;
+  readonly targetFieldId: string | null;
+}
+
+export interface FormulaAuthorDocument {
+  readonly displaySource: string;
+  readonly tokens: ReadonlyArray<FormulaAuthorToken>;
+  readonly documentRevision: number;
+}
+
 export interface ComputedCellEnvelope {
-  readonly state: "ready" | "pending" | "stale" | "error";
+  readonly state: "ready" | "updating" | "failed" | "cancelled" | "invalid" | "too_expensive";
   readonly value: string | number | boolean | null;
   readonly definitionVersion: number;
   readonly sourceDataRevision: number;

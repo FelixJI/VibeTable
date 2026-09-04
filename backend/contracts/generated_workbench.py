@@ -326,8 +326,32 @@ class SearchStatus(V2Model):
     error_code: str | None
 
 
+class FormulaTextPosition(V2Model):
+    line: Annotated[int, Field(ge=0)]
+    character: Annotated[int, Field(ge=0)]
+
+
+class FormulaTextRange(V2Model):
+    start: FormulaTextPosition
+    end: FormulaTextPosition
+
+
+class FormulaAuthorToken(V2Model):
+    range: FormulaTextRange
+    kind: Literal["field", "relation", "relationTarget"]
+    field_id: Annotated[str, Field(min_length=1)]
+    relation_field_id: Annotated[str | None, Field(min_length=1)]
+    target_field_id: Annotated[str | None, Field(min_length=1)]
+
+
+class FormulaAuthorDocument(V2Model):
+    display_source: str
+    tokens: list[FormulaAuthorToken]
+    document_revision: Annotated[int, Field(ge=1)]
+
+
 class ComputedCellEnvelope(V2Model):
-    state: Literal["ready", "pending", "stale", "error"]
+    state: Literal["ready", "updating", "failed", "cancelled", "invalid", "too_expensive"]
     value: str | float | bool | None
     definition_version: Annotated[int, Field(ge=1)]
     source_data_revision: Annotated[int, Field(ge=0)]

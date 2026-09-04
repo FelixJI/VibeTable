@@ -353,6 +353,38 @@ public sealed record SearchStatus
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record FormulaTextPosition
+{
+    [JsonRequired, JsonPropertyName("line")] public required long Line { get; init; }
+    [JsonRequired, JsonPropertyName("character")] public required long Character { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record FormulaTextRange
+{
+    [JsonRequired, JsonPropertyName("start")] public required FormulaTextPosition Start { get; init; }
+    [JsonRequired, JsonPropertyName("end")] public required FormulaTextPosition End { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record FormulaAuthorToken
+{
+    [JsonRequired, JsonPropertyName("range")] public required FormulaTextRange Range { get; init; }
+    [JsonRequired, JsonPropertyName("kind")] public required string Kind { get; init; }
+    [JsonRequired, JsonPropertyName("fieldId")] public required string FieldId { get; init; }
+    [JsonRequired, JsonPropertyName("relationFieldId")] public required string? RelationFieldId { get; init; }
+    [JsonRequired, JsonPropertyName("targetFieldId")] public required string? TargetFieldId { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record FormulaAuthorDocument
+{
+    [JsonRequired, JsonPropertyName("displaySource")] public required string DisplaySource { get; init; }
+    [JsonRequired, JsonPropertyName("tokens")] public required IReadOnlyList<FormulaAuthorToken> Tokens { get; init; }
+    [JsonRequired, JsonPropertyName("documentRevision")] public required long DocumentRevision { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ComputedCellEnvelope
 {
     [JsonRequired, JsonPropertyName("state")] public required string State { get; init; }

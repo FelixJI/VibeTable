@@ -1,6 +1,9 @@
 export const messages: Record<string, string> = {
   "grid.formula.updating": "Calculating",
   "grid.formula.failed": "Calculation failed",
+  "grid.formula.cancelled": "Calculation cancelled",
+  "grid.formula.invalid": "Invalid formula",
+  "grid.formula.too_expensive": "Calculation too expensive",
   "common.copy": "Copy",
   "common.copied": "Copied",
   "files.import": "Import files",

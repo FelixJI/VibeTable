@@ -210,11 +210,11 @@ func (source *Source) describeField(
 			Message: "formula value is being recalculated", Details: map[string]any{},
 		}
 		if formulaStatus == "failed" {
-			result.ComputedStatus = "error"
+			result.ComputedStatus = "failed"
 			result.ComputedError.Code = "calculation.failed"
 			result.ComputedError.Message = "formula recalculation failed"
 		} else if formulaStatus == "cancelled" {
-			result.ComputedStatus = "error"
+			result.ComputedStatus = "cancelled"
 			result.ComputedError.Code = "calculation.cancelled"
 			result.ComputedError.Message = "formula recalculation was cancelled"
 		}

@@ -77,30 +77,39 @@ func TestQueryFieldTypeMapsSchemaV2LogicalTypes(t *testing.T) {
 	}
 }
 
-func TestDescribeFieldExposesCancelledFormulaDiagnostic(t *testing.T) {
+func TestDescribeFieldExposesTerminalFormulaStateAndDiagnostic(t *testing.T) {
 	field := v2.FieldDefinition{
 		Identity:    v2.FieldIdentity{FieldID: "fld_formula", PhysicalName: "f_total"},
 		LogicalType: v2.LogicalFormula,
 		Formula:     &v2.FormulaSpec{ResultType: v2.LogicalNumber},
 	}
-	descriptor, err := (&Source{}).describeField(
-		context.Background(),
-		nil,
-		schemaexecution.Table{
-			Snapshot: v2.SchemaSnapshot{Fields: []v2.FieldDefinition{field}},
-			FormulaRuntime: map[string]schemaexecution.FormulaRuntime{
-				"fld_formula": {Status: "cancelled", Version: 1},
-			},
-		},
-		field,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if descriptor.ComputedReady || descriptor.ComputedStatus != "error" ||
-		descriptor.ComputedError == nil ||
-		descriptor.ComputedError.Code != "calculation.cancelled" {
-		t.Fatalf("cancelled formula descriptor = %#v", descriptor)
+	for _, test := range []struct {
+		status string
+		code   string
+	}{
+		{status: "failed", code: "calculation.failed"},
+		{status: "cancelled", code: "calculation.cancelled"},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			descriptor, err := (&Source{}).describeField(
+				context.Background(),
+				nil,
+				schemaexecution.Table{
+					Snapshot: v2.SchemaSnapshot{Fields: []v2.FieldDefinition{field}},
+					FormulaRuntime: map[string]schemaexecution.FormulaRuntime{
+						"fld_formula": {Status: test.status, Version: 1},
+					},
+				},
+				field,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if descriptor.ComputedReady || descriptor.ComputedStatus != test.status ||
+				descriptor.ComputedError == nil || descriptor.ComputedError.Code != test.code {
+				t.Fatalf("%s formula descriptor = %#v", test.status, descriptor)
+			}
+		})
 	}
 }
 
