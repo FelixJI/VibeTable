@@ -68,41 +68,11 @@ func TestQuiesceWorkspaceSearchCancelsAndJoinsBothOwners(t *testing.T) {
 }
 
 func TestEnsureSearchProjectionReplaysChangedRecordWithoutFullRebuild(t *testing.T) {
-	ctx := context.Background()
-	root := createWorkspace(t, testWorkspaceID)
-	dataDir := filepath.Join(root, ".vibetable", "data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir: dataDir, HideStartBanner: true,
-	})
-	migrations.Register(app)
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Errorf("ResetBootstrapState(): %v", err)
-		}
-	})
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
 	tableID, recordID := "table-search", "record000000001"
-	seedSearchTable(t, app, tableID, recordID, "alpha payload")
-	insertSearchOutboxEvent(t, app, "event-initial", tableID, recordID, mutation.DataChangeInsert)
-	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ledger.Close() })
-	runtime, err := Open(ctx, Options{
-		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
-		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
+	ctx, app, runtime := openSearchTestRuntime(t, func(app *pocketbase.PocketBase) {
+		seedSearchTable(t, app, tableID, recordID, "alpha payload")
+		insertSearchOutboxEvent(t, app, "event-initial", tableID, recordID, mutation.DataChangeInsert)
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	target, _, err := runtime.searchProjectionSourceTail(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -149,40 +119,10 @@ func TestEnsureSearchProjectionReplaysChangedRecordWithoutFullRebuild(t *testing
 }
 
 func TestResolveWorkspaceSearchHitRefreshesFromAuthorityAndRemovesMissingSource(t *testing.T) {
-	ctx := context.Background()
-	root := createWorkspace(t, testWorkspaceID)
-	dataDir := filepath.Join(root, ".vibetable", "data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir: dataDir, HideStartBanner: true,
-	})
-	migrations.Register(app)
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Errorf("ResetBootstrapState(): %v", err)
-		}
-	})
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
 	tableID, recordID := "table-search", "record000000001"
-	seedSearchTable(t, app, tableID, recordID, "alpha payload")
-	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ledger.Close() })
-	runtime, err := Open(ctx, Options{
-		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
-		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
+	ctx, app, runtime := openSearchTestRuntime(t, func(app *pocketbase.PocketBase) {
+		seedSearchTable(t, app, tableID, recordID, "alpha payload")
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	target, _, err := runtime.searchProjectionSourceTail(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -242,38 +182,7 @@ func TestResolveWorkspaceSearchHitRefreshesFromAuthorityAndRemovesMissingSource(
 }
 
 func TestFileExtractionErrorCodeRoundTripsWithoutIndexingFailedContent(t *testing.T) {
-	ctx := context.Background()
-	root := createWorkspace(t, testWorkspaceID)
-	dataDir := filepath.Join(root, ".vibetable", "data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir: dataDir, HideStartBanner: true,
-	})
-	migrations.Register(app)
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Errorf("ResetBootstrapState(): %v", err)
-		}
-	})
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
-	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ledger.Close() })
-	runtime, err := Open(ctx, Options{
-		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
-		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	ctx, _, runtime := openSearchTestRuntime(t, nil)
 	token, _ := runtime.coordinator.Current()
 	saved, err := runtime.history.Save(ctx, filehistory.SaveRequest{
 		Token: token, DocumentID: "22222222-2222-4222-8222-222222222222",
@@ -341,6 +250,49 @@ func TestFileExtractionErrorCodeRoundTripsWithoutIndexingFailedContent(t *testin
 	assertSearchMetadata(t, sources[0].Metadata, map[string]any{
 		"extractionStatus": "failed", "extractionErrorCode": "extract.source_unavailable",
 	})
+}
+
+func openSearchTestRuntime(
+	t *testing.T,
+	prepare func(*pocketbase.PocketBase),
+) (context.Context, *pocketbase.PocketBase, *Runtime) {
+	t.Helper()
+	ctx := context.Background()
+	root := createWorkspace(t, testWorkspaceID)
+	dataDir := filepath.Join(root, ".vibetable", "data")
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: dataDir, HideStartBanner: true,
+	})
+	migrations.Register(app)
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := app.ResetBootstrapState(); err != nil {
+			t.Errorf("ResetBootstrapState(): %v", err)
+		}
+	})
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	if prepare != nil {
+		prepare(app)
+	}
+	ledger, err := auditledger.Open(filepath.Join(root, ".vibetable", "audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	runtime, err := Open(ctx, Options{
+		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
+		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
+		DeferBackgroundWorkers: true, DisableReplicaWorker: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	return ctx, app, runtime
 }
 
 type unavailableOpenRepository struct {

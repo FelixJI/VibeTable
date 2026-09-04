@@ -194,6 +194,36 @@ func TestWalkPDFMatchesChecksContextAfterFinalToken(t *testing.T) {
 	)
 }
 
+func TestPDFMatcherCancelsDuringFlateDiscovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	source := &blockedPDFReader{
+		started: make(chan struct{}), release: make(chan struct{}), err: context.Canceled,
+	}
+	result := make(chan []int, 1)
+	go func() {
+		result <- pdfFlateStream.FindReaderSubmatchIndex(&pdfContextReader{
+			Context: ctx, RuneReader: source,
+		})
+	}()
+	<-source.started
+	cancel()
+	close(source.release)
+	if match := <-result; match != nil || !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("flate discovery match=%v err=%v", match, ctx.Err())
+	}
+}
+
+func TestPDFTextAccumulatorStoresAtMostLimitPlusOneRune(t *testing.T) {
+	text := pdfTextAccumulator{limit: 4}
+	if text.appendToken([]byte("(123456789)")) || text.runes != 5 {
+		t.Fatalf("bounded accumulator = %#v", text)
+	}
+	assertExtractionCode(t, text.result(), ExtractionTruncated, "extract.text_limit")
+	if result := text.result(); result.Text != "1234" {
+		t.Fatalf("truncated text = %q", result.Text)
+	}
+}
+
 func TestPDFStringDecoderHandlesEveryLiteralEscapeAndHexBoundary(t *testing.T) {
 	literal := append([]byte(`(line\nreturn\rtab\tback\bform\fparen\(\)slash\\octal\101`), '\r', '\n')
 	literal = append(literal, []byte("continued\\\nend)")...)
@@ -227,11 +257,9 @@ func TestPDFStringDecoderHandlesEveryLiteralEscapeAndHexBoundary(t *testing.T) {
 			t.Fatalf("invalid token %q decoded as %q", token, value)
 		}
 	}
-	var output strings.Builder
-	appendPDFToken(&output, []byte("()"))
-	appendPDFToken(&output, []byte("<GG>"))
-	if output.Len() != 0 {
-		t.Fatalf("invalid or blank tokens appended %q", output.String())
+	text := pdfTextAccumulator{limit: 4}
+	if !text.appendToken([]byte("()")) || !text.appendToken([]byte("<GG>")) || text.runes != 0 {
+		t.Fatalf("invalid or blank tokens appended %#v", text)
 	}
 }
 
@@ -446,6 +474,12 @@ func (reader *blockedPDFReader) Read([]byte) (int, error) {
 	close(reader.started)
 	<-reader.release
 	return 0, reader.err
+}
+
+func (reader *blockedPDFReader) ReadRune() (rune, int, error) {
+	close(reader.started)
+	<-reader.release
+	return 0, 0, reader.err
 }
 
 func (*blockedPDFReader) Close() error { return nil }
