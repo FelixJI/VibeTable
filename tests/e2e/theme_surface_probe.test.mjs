@@ -18,7 +18,15 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
   const browser = await phases.phase("launch Edge", () => (
     chromium.launch({ channel: "msedge", headless: true })
   ));
-  try {
+  t.after(async () => {
+    try {
+      await phases.phase("close Edge", () => browser.close());
+    } finally {
+      phases.close();
+    }
+  }, { timeout: 10_000 });
+
+  {
     const page = await phases.phase("open browser page", () => browser.newPage());
     await phases.phase("render Tabulator fixture", () => page.setContent(`
       <style>
@@ -111,11 +119,5 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
         /Timeout 50ms exceeded/,
       );
     });
-  } finally {
-    try {
-      await phases.phase("close Edge", () => browser.close());
-    } finally {
-      phases.close();
-    }
   }
 });
