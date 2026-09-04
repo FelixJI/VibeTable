@@ -375,6 +375,7 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		emittedEventIDs = emitted
 		return nil
 	})
+	err = writecoordinator.ClassifyPocketBaseTransactionError(ctx, kernel.app, err)
 	kernel.coordinator.release()
 	gateHeld = false
 	if err != nil {
@@ -637,11 +638,10 @@ func (kernel *Kernel) applyOperation(
 			return nil, err
 		}
 		if kernel.attachments != nil {
-			if err := kernel.attachments.CleanupRecord(ctx, app, definition, record); err != nil {
+			if err := kernel.attachments.DeleteRecord(ctx, app, definition, record); err != nil {
 				return nil, err
 			}
-		}
-		if err := app.Delete(record); err != nil {
+		} else if err := app.Delete(record); err != nil {
 			return nil, storageFailure()
 		}
 		return nil, nil

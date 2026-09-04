@@ -93,7 +93,7 @@ type AttachmentManager interface {
 		*core.Record,
 		AttachmentChange,
 	) (AttachmentFinalizer, error)
-	CleanupRecord(
+	DeleteRecord(
 		context.Context,
 		core.App,
 		schemaexecution.Table,
