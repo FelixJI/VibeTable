@@ -125,6 +125,9 @@ func publicSchemaGetTableError(err error) error {
 // SchemaSnapshotV2 with model_dump, which emits nullable defaults omitted by
 // Go's REST JSON tags.
 func schemaSnapshotProductResult(snapshot v2.SchemaSnapshot) (map[string]any, error) {
+	if err := v2.ValidateSnapshot(snapshot); err != nil {
+		return nil, fmt.Errorf("validate schema Product snapshot: %w", err)
+	}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		return nil, fmt.Errorf("marshal schema Product snapshot: %w", err)

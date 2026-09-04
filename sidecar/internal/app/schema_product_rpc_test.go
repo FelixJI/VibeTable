@@ -269,6 +269,48 @@ func TestSchemaGetTableProductHTTPMatchesFieldRouteValidationError(t *testing.T)
 	}
 }
 
+func TestSchemaGetTableProductHTTPRejectsInvalidTableMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		statement string
+		value     any
+	}{
+		{"display-name", "UPDATE vibetable_tables SET display_name={:value} WHERE table_id={:table}", ""},
+		{"kind", "UPDATE vibetable_tables SET kind={:value} WHERE table_id={:table}", "corrupt"},
+		{"data-revision", "UPDATE vibetable_tables SET data_revision={:value} WHERE table_id={:table}", -1},
+		{"archive-policy", "UPDATE vibetable_tables SET archive_policy={:value} WHERE table_id={:table}", `{"mode":"corrupt","fieldId":null,"archivedValue":null}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pb := schemaProductStore(t)
+			lifecycle, err := schemacore.NewTableLifecycle(pb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+				DisplayName: "Invalid metadata", OperationID: "schema-invalid-" + test.name,
+				Actor: v2.Actor{ID: "local-user", Kind: "user"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pb.DB().NewQuery(test.statement).Bind(dbx.Params{
+				"table": table.TableID, "value": test.value,
+			}).Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			response := schemaProductRequestForMethod(
+				t, schemaProductMux(t, pb), context.Background(), "schema.getTable",
+				`{"tableId":"`+table.TableID+`"}`, schemaListWire,
+			)
+			if response.Error == nil || response.Error.Code != productrpc.CodeInternalError ||
+				response.Error.Data != nil {
+				t.Fatalf("invalid table metadata escaped Product validation: %+v", response)
+			}
+		})
+	}
+}
+
 func TestSchemaListProductHTTPRejectsInvalidParamsAndStaleScopeBeforeStorage(t *testing.T) {
 	pb := schemaProductStore(t)
 	mux := schemaProductMux(t, pb)

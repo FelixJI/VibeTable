@@ -27,6 +27,54 @@ func (err *ProductError) Error() string {
 	return err.Code + " at " + err.Path + ": " + err.Message
 }
 
+// ValidateSnapshot applies the complete public SchemaSnapshot contract after
+// its storage-backed fields and generated capabilities have been assembled.
+func ValidateSnapshot(snapshot SchemaSnapshot) error {
+	switch {
+	case snapshot.Contract != Contract:
+		return errors.New("schema snapshot contract is invalid")
+	case snapshot.TableID == "":
+		return errors.New("schema snapshot tableId is invalid")
+	case snapshot.DisplayName == "":
+		return errors.New("schema snapshot displayName is invalid")
+	case snapshot.Kind != "base" && snapshot.Kind != "view":
+		return errors.New("schema snapshot kind is invalid")
+	case snapshot.SchemaRevision == "":
+		return errors.New("schema snapshot schemaRevision is invalid")
+	case snapshot.DataRevision < 0:
+		return errors.New("schema snapshot dataRevision is invalid")
+	case snapshot.ArchivePolicy.Mode != "none" &&
+		snapshot.ArchivePolicy.Mode != "status" &&
+		snapshot.ArchivePolicy.Mode != "deletedAt":
+		return errors.New("schema snapshot archivePolicy is invalid")
+	case snapshot.Fields == nil:
+		return errors.New("schema snapshot fields are invalid")
+	case snapshot.Capabilities == nil:
+		return errors.New("schema snapshot capabilities are invalid")
+	}
+	if _, err := json.Marshal(snapshot.ArchivePolicy.ArchivedValue); err != nil {
+		return errors.New("schema snapshot archivePolicy is invalid")
+	}
+	for index, field := range snapshot.Fields {
+		if err := Validate(field); err != nil {
+			return fmt.Errorf("validate schema snapshot fields[%d]: %w", index, err)
+		}
+	}
+	if len(snapshot.Capabilities) != len(LogicalTypes) {
+		return errors.New("schema snapshot capabilities are invalid")
+	}
+	for index, logicalType := range LogicalTypes {
+		expected, err := CapabilityFor(logicalType)
+		if err != nil {
+			return fmt.Errorf("build schema snapshot capability %q: %w", logicalType, err)
+		}
+		if !reflect.DeepEqual(snapshot.Capabilities[index], expected) {
+			return fmt.Errorf("schema snapshot capabilities[%d] is invalid", index)
+		}
+	}
+	return nil
+}
+
 func Validate(definition FieldDefinition) error {
 	if definition.Contract != Contract {
 		return invalid("contract", "contract must be "+Contract)
