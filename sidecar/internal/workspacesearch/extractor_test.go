@@ -3,7 +3,6 @@ package workspacesearch
 import (
 	"archive/zip"
 	"bytes"
-	"compress/zlib"
 	"context"
 	"errors"
 	"io"
@@ -23,7 +22,11 @@ func TestExtractorCoversTextHTMLJSONOOXMLAndNativePDF(t *testing.T) {
 		{"record.json", "application/json", []byte(`{"title":"Quarterly report"}`), "Quarterly report"},
 		{"page.html", "text/html", []byte(`<p>Visible report</p><script>secret</script>`), "Visible report"},
 		{"report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ooxml(t, "word/document.xml", `<w:document xmlns:w="w"><w:t>Document report</w:t></w:document>`), "Document report"},
-		{"report.pdf", "application/pdf", []byte("%PDF-1.7\nBT (Native PDF report) Tj ET"), "Native PDF report"},
+		{
+			"report.pdf", "application/pdf",
+			pdfQualificationDocument(t, []byte(`BT /F1 12 Tf (Native PDF report) Tj ET`), false),
+			"Native PDF report",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,7 +46,11 @@ func TestExtractorFailsPerSourceWithoutBlockingAndHonorsLimits(t *testing.T) {
 	limits.MaximumInputBytes = 8
 	limited := Extract(context.Background(), "notes.txt", "text/plain", strings.NewReader("more than eight"), limits)
 	password := Extract(context.Background(), "locked.pdf", "application/pdf", strings.NewReader("%PDF-1.7 /Encrypt"), DefaultExtractionLimits)
-	noText := Extract(context.Background(), "scan.pdf", "application/pdf", strings.NewReader("%PDF-1.7 image"), DefaultExtractionLimits)
+	noTextPDF := pdfQualificationDocument(t, []byte(`q 1 0 0 1 0 0 cm Q`), false)
+	noText := Extract(
+		context.Background(), "scan.pdf", "application/pdf",
+		bytes.NewReader(noTextPDF), DefaultExtractionLimits,
+	)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	cancelled := Extract(ctx, "notes.txt", "text/plain", strings.NewReader("text"), DefaultExtractionLimits)
@@ -87,32 +94,92 @@ func TestExtractorTimesOutDuringIncrementalInputRead(t *testing.T) {
 	}
 }
 
-func TestPDFExtractorReadsFlateStreamsArraysEscapesAndUTF16(t *testing.T) {
-	content := []byte(`BT [(Quarterly\040) 20 (report)] TJ <FEFF6570636E5DE54F5C> Tj ET`)
-	var compressed bytes.Buffer
-	writer := zlib.NewWriter(&compressed)
-	if _, err := writer.Write(content); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	payload := append([]byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\n"), compressed.Bytes()...)
-	payload = append(payload, []byte("\nendstream\n%%EOF")...)
+func TestPDFExtractorReadsFlateStreamsArraysAndEscapes(t *testing.T) {
+	content := []byte(`BT /F1 12 Tf [(Quarterly\040) 20 (report)] TJ ET`)
+	payload := pdfQualificationDocument(t, content, true)
 
 	result := Extract(
 		context.Background(), "report.pdf", "application/pdf",
 		bytes.NewReader(payload), DefaultExtractionLimits,
 	)
 	if result.Status != ExtractionIndexed ||
-		!strings.Contains(result.Text, "Quarterly report") ||
-		!strings.Contains(result.Text, "数据工作") {
+		!strings.Contains(result.Text, "Quarterly report") {
 		t.Fatalf("Extract() = %#v", result)
 	}
 }
 
+func TestPDFExtractorReadsUTF16FromType0Font(t *testing.T) {
+	payload := pdfQualificationUTF16Document(t)
+	assertValidPDFCrossReferences(t, payload)
+	if repeated := pdfQualificationUTF16Document(t); !bytes.Equal(payload, repeated) {
+		t.Fatal("UTF-16 PDF corpus generation is not deterministic")
+	}
+	for _, token := range [][]byte{
+		[]byte("/Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H " +
+			"/DescendantFonts [5 0 R] /ToUnicode 7 0 R"),
+		[]byte("/Subtype /CIDFontType0 /BaseFont /STSong-Light"),
+		[]byte("/CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 0 >>"),
+		[]byte("/FontDescriptor 6 0 R /DW 1000"),
+		[]byte("/Type /FontDescriptor /FontName /STSong-Light /Flags 6"),
+		[]byte("7 0 obj\n<< /Length "),
+		[]byte("begincodespacerange\n<0000> <FFFF>\nendcodespacerange"),
+		[]byte("<6570> <6570>\n<636E> <636E>\n<5DE5> <5DE5>\n<4F5C> <4F5C>"),
+		[]byte("8 0 obj\n<< /Length "),
+		[]byte(" /Filter /FlateDecode >>\nstream\n"),
+	} {
+		if !bytes.Contains(payload, token) {
+			t.Fatalf("UTF-16 font corpus is missing %q", token)
+		}
+	}
+	if bytes.Contains(payload, []byte("/CIDToGIDMap")) || bytes.Contains(payload, []byte("/Identity-H")) {
+		t.Fatal("non-embedded CJK font must not use a TrueType identity mapping")
+	}
+
+	result := Extract(
+		context.Background(), "report.pdf", "application/pdf",
+		bytes.NewReader(payload), DefaultExtractionLimits,
+	)
+	if result.Status != ExtractionIndexed || !strings.Contains(result.Text, "数据工作") {
+		t.Fatalf("Extract() = %#v", result)
+	}
+}
+
+func TestPDFQualificationCorpusUsesValidCrossReferenceTables(t *testing.T) {
+	for _, document := range []struct {
+		name    string
+		content []byte
+		flate   bool
+	}{
+		{"plain text layer", []byte(`BT /F1 12 Tf (Native PDF report) Tj ET`), false},
+		{"Flate text layer", []byte(`BT /F1 12 Tf [(Quarterly\040) 20 (report)] TJ ET`), true},
+		{"no text layer", []byte(`q 1 0 0 1 0 0 cm Q`), false},
+	} {
+		t.Run(document.name, func(t *testing.T) {
+			payload := pdfQualificationDocument(t, document.content, document.flate)
+			assertValidPDFCrossReferences(t, payload)
+			if repeated := pdfQualificationDocument(t, document.content, document.flate); !bytes.Equal(payload, repeated) {
+				t.Fatal("PDF corpus generation is not deterministic")
+			}
+		})
+	}
+}
+
 func TestPDFExtractorRejectsCorruptFlateAndDecodedStreamLimit(t *testing.T) {
-	corrupt := []byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\nnot-zlib\nendstream")
+	corrupt := pdfQualificationDocument(t, []byte(`BT /F1 12 Tf (corrupt) Tj ET`), true)
+	streamMarker := []byte("\nstream\n")
+	streamStart := bytes.Index(corrupt, streamMarker)
+	if streamStart < 0 {
+		t.Fatal("content stream marker is missing")
+	}
+	streamStart += len(streamMarker)
+	streamEnd := bytes.Index(corrupt[streamStart:], []byte("\nendstream"))
+	if streamEnd <= 0 {
+		t.Fatal("content stream terminator is missing")
+	}
+	for index := streamStart; index < streamStart+streamEnd; index++ {
+		corrupt[index] = 0xff
+	}
+	assertValidPDFCrossReferences(t, corrupt)
 	result := Extract(
 		context.Background(), "corrupt.pdf", "application/pdf",
 		bytes.NewReader(corrupt), DefaultExtractionLimits,
@@ -122,12 +189,7 @@ func TestPDFExtractorRejectsCorruptFlateAndDecodedStreamLimit(t *testing.T) {
 		t.Fatalf("corrupt = %#v", result)
 	}
 
-	var compressed bytes.Buffer
-	writer := zlib.NewWriter(&compressed)
-	_, _ = writer.Write([]byte("BT (text longer than limit) Tj ET"))
-	_ = writer.Close()
-	payload := append([]byte("%PDF-1.7\n<< /Filter /FlateDecode >>\nstream\n"), compressed.Bytes()...)
-	payload = append(payload, []byte("\nendstream")...)
+	payload := pdfQualificationDocument(t, []byte("BT /F1 12 Tf (text longer than limit) Tj ET"), true)
 	limits := DefaultExtractionLimits
 	limits.MaximumPartBytes = 4
 	result = Extract(context.Background(), "limited.pdf", "application/pdf", bytes.NewReader(payload), limits)
@@ -257,6 +319,7 @@ func TestPDFStringDecoderHandlesEveryLiteralEscapeAndHexBoundary(t *testing.T) {
 	}{
 		{"<41 42>", "AB"},
 		{"<414>", "A@"},
+		{"<FEFF6570636E5DE54F5C>", "数据工作"},
 	} {
 		value, valid := decodePDFString([]byte(test.token))
 		if !valid || value != test.want {
