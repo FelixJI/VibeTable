@@ -101,6 +101,23 @@ public sealed class DocumentDiffV2ContractTests
     }
 
     [TestMethod]
+    public void Session_AcceptsOnlyTheDocumentedProviderMatrix()
+    {
+        _ = Session(
+            provider: DocumentDiffProvider.WordNative,
+            fidelity: DocumentDiffFidelity.OfficeNative);
+        _ = Session(
+            format: DocumentDiffFormat.Xlsx,
+            provider: DocumentDiffProvider.XlsxBuiltIn);
+        _ = Session(format: DocumentDiffFormat.Text);
+        _ = Session(format: DocumentDiffFormat.Binary);
+
+        Assert.ThrowsExactly<ArgumentException>(() => Session(
+            format: (DocumentDiffFormat)999,
+            provider: DocumentDiffProvider.BuiltIn));
+    }
+
+    [TestMethod]
     public void SummaryCoverageAndWarnings_RejectContradictoryStates()
     {
         Assert.ThrowsExactly<ArgumentException>(() =>
@@ -126,6 +143,40 @@ public sealed class DocumentDiffV2ContractTests
                 new(DocumentDiffCoverageArea.Formatting, DocumentDiffCoverageStatus.Partial),
             ],
             warnings: []));
+    }
+
+    [TestMethod]
+    public void CoverageAndWarnings_RejectMalformedClosedValues()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DocumentDiffCoverageEntry(
+                (DocumentDiffCoverageArea)999,
+                DocumentDiffCoverageStatus.Covered));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DocumentDiffCoverageEntry(
+                DocumentDiffCoverageArea.VisibleText,
+                (DocumentDiffCoverageStatus)999));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffCoverage([], truncated: false));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffCoverage([null!], truncated: false));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => Session(
+            warnings: [(DocumentDiffWarning)999]));
+        Assert.ThrowsExactly<ArgumentException>(() => Session(
+            warnings:
+            [
+                DocumentDiffWarning.ExistingRevisionsNormalized,
+                DocumentDiffWarning.ExistingRevisionsNormalized,
+            ]));
+
+        _ = Session(
+            coverage: new DocumentDiffCoverage(
+            [
+                new(DocumentDiffCoverageArea.VisibleText, DocumentDiffCoverageStatus.Covered),
+            ], truncated: true),
+            warnings: [DocumentDiffWarning.ResultTruncated]);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            DocumentDiffSessionResult.Failed((DocumentDiffSessionFailure)999));
     }
 
     [TestMethod]
@@ -158,6 +209,191 @@ public sealed class DocumentDiffV2ContractTests
             before: null,
             after: null,
             DocumentDiffConfidence.Exact);
+    }
+
+    [TestMethod]
+    public void RichRunsAndSnippets_RejectMalformedContent()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffRichRun("", DocumentDiffRichRunRole.Context));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DocumentDiffRichRun("text", (DocumentDiffRichRunRole)999));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DocumentDiffRichRun(
+                "text",
+                DocumentDiffRichRunRole.Context,
+                fontSizePt: 0));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DocumentDiffRichRun(
+                "text",
+                DocumentDiffRichRunRole.Context,
+                fontSizePt: double.PositiveInfinity));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffRichRun(
+                "text",
+                DocumentDiffRichRunRole.Context,
+                fontFamily: " "));
+        _ = new DocumentDiffRichRun(
+            "text",
+            DocumentDiffRichRunRole.Changed,
+            fontSizePt: 11,
+            fontFamily: "Aptos",
+            foreground: "#000000",
+            background: "#ffffff",
+            styleName: "Normal");
+
+        Assert.ThrowsExactly<ArgumentException>(() => new DocumentDiffRichSnippet([]));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffRichSnippet([null!]));
+    }
+
+    [TestMethod]
+    public void Locations_EnforceDocumentAndWorksheetCoordinateDomains()
+    {
+        _ = new DocumentDiffLocation(
+            DocumentDiffPart.Worksheet,
+            rowIndex: 2,
+            columnIndex: 3,
+            sheetName: "Sheet1",
+            cellAddress: "D3");
+        _ = new DocumentDiffLocation(DocumentDiffPart.Header, sectionIndex: 0);
+        _ = new DocumentDiffLocation(DocumentDiffPart.Footer, sectionIndex: 1);
+        _ = new DocumentDiffLocation(
+            DocumentDiffPart.Body,
+            tableIndex: 0,
+            rowIndex: 1,
+            columnIndex: 2);
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DocumentDiffLocation((DocumentDiffPart)999));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(DocumentDiffPart.Worksheet));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(
+                DocumentDiffPart.Worksheet,
+                sectionIndex: 0,
+                sheetName: "Sheet1"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(
+                DocumentDiffPart.Worksheet,
+                paragraphIndex: 0,
+                sheetName: "Sheet1"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(
+                DocumentDiffPart.Worksheet,
+                nearestHeading: "Heading",
+                sheetName: "Sheet1"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(
+                DocumentDiffPart.Worksheet,
+                tableIndex: 0,
+                sheetName: "Sheet1"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(DocumentDiffPart.Body, sheetName: "Sheet1"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(DocumentDiffPart.Body, cellAddress: "A1"));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(DocumentDiffPart.Header));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(DocumentDiffPart.Footer));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(DocumentDiffPart.Body, rowIndex: 0));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            new DocumentDiffLocation(DocumentDiffPart.Body, columnIndex: 0));
+    }
+
+    [TestMethod]
+    public void Changes_EnforceClosedKindsAndSnippetShapes()
+    {
+        var location = new DocumentDiffLocation(DocumentDiffPart.Body);
+        DocumentDiffRichSnippet before = Snippet("before", DocumentDiffRichRunRole.Deleted);
+        DocumentDiffRichSnippet after = Snippet("after", DocumentDiffRichRunRole.Inserted);
+
+        _ = new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Insert,
+            location,
+            before: null,
+            after,
+            DocumentDiffConfidence.Exact);
+        _ = new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Delete,
+            location,
+            before,
+            after: null,
+            DocumentDiffConfidence.Normalized);
+        _ = new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Move,
+            location,
+            before,
+            after,
+            DocumentDiffConfidence.Heuristic);
+        _ = new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Format,
+            location,
+            before,
+            after,
+            DocumentDiffConfidence.Exact);
+        _ = new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Table,
+            location,
+            before,
+            after: null,
+            DocumentDiffConfidence.Exact);
+        _ = new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Comment,
+            location,
+            before: null,
+            after,
+            DocumentDiffConfidence.Exact);
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new DocumentDiffChange(
+            ChangeId,
+            (DocumentDiffChangeKind)999,
+            location,
+            before,
+            after,
+            DocumentDiffConfidence.Exact));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Replace,
+            location,
+            before,
+            after,
+            (DocumentDiffConfidence)999));
+        Assert.ThrowsExactly<ArgumentException>(() => new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Insert,
+            location,
+            before: null,
+            after: null,
+            DocumentDiffConfidence.Exact));
+        Assert.ThrowsExactly<ArgumentException>(() => new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Delete,
+            location,
+            before: null,
+            after,
+            DocumentDiffConfidence.Exact));
+        Assert.ThrowsExactly<ArgumentException>(() => new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Move,
+            location,
+            before: null,
+            after,
+            DocumentDiffConfidence.Exact));
+        Assert.ThrowsExactly<ArgumentException>(() => new DocumentDiffChange(
+            ChangeId,
+            DocumentDiffChangeKind.Table,
+            location,
+            before: null,
+            after: null,
+            DocumentDiffConfidence.Exact));
     }
 
     [TestMethod]
@@ -253,6 +489,31 @@ public sealed class DocumentDiffV2ContractTests
             SessionId,
             [Change(), Change(Guid.Parse("66666666-6666-4666-8666-666666666666"))],
             null));
+    }
+
+    [TestMethod]
+    public void ReadyPage_RejectsMalformedCollectionsAndAllowsTerminalEmptyPage()
+    {
+        var request = new DocumentDiffChangePageRequest(SessionId, "cursor-1", limit: 3);
+
+        DocumentDiffChangePageResult terminal = DocumentDiffChangePageResult.Ready(
+            request,
+            SessionId,
+            [],
+            nextCursor: null);
+        Assert.IsEmpty(terminal.Page!.Changes);
+
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            DocumentDiffChangePageResult.Ready(request, SessionId, [Change()], " "));
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            DocumentDiffChangePageResult.Ready(request, SessionId, [null!], null));
+        Assert.ThrowsExactly<ArgumentException>(() => DocumentDiffChangePageResult.Ready(
+            request,
+            SessionId,
+            [Change(), Change()],
+            null));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            DocumentDiffChangePageResult.Failed((DocumentDiffPageFailure)999));
     }
 
     [TestMethod]
