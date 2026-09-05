@@ -13,7 +13,7 @@ import (
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 )
 
-//go:embed manifest.json 2026072401_bootstrap.go 2026072402_internal_collections.go 2026072404_realtime_outbox_retention.go 2026072801_field_settings_v2_metadata.go 2026072805_audit_outbox.go 2026080501_relation_pairs.go 2026081201_interfaces.go 2026081202_content_links.go 2026081203_view_v2_metadata.go
+//go:embed manifest.json 2026072401_bootstrap.go 2026072402_internal_collections.go 2026072404_realtime_outbox_retention.go 2026072801_field_settings_v2_metadata.go 2026072805_audit_outbox.go 2026080501_relation_pairs.go 2026081201_interfaces.go 2026081202_content_links.go 2026081203_view_v2_metadata.go 2026090601_computation_dependencies.go
 var manifestFS embed.FS
 
 var checksumPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)

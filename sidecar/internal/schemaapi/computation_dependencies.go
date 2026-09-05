@@ -143,3 +143,21 @@ func saveComputationDependency(
 	}
 	return nil
 }
+
+// RebuildComputationDependencies restores the derived graph from authoritative
+// Formula and Lookup metadata. Callers must supply an app in a schema transaction.
+func (catalog *Catalog) RebuildComputationDependencies(ctx context.Context) error {
+	definitions, err := catalog.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, definition := range definitions {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := catalog.replaceComputationDependencies(ctx, catalog.app, definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
