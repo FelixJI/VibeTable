@@ -63,4 +63,19 @@
 - 既有[方案比较](2026-09-04-pdf-extraction-adapter-options.md)继续有效；纯 Go候选在已测 Type0 中文样本上的乱码
   不能用字面 BOM 样本覆盖，native/JVM/商业方案的离线和许可成本也不能被“更成熟”代替。
 
+## 固定包的分发材料核对
+
+本机 `net10.0` 探针的 assets 图只有 PdfPig 0.1.16 和 SharpZipLib 1.4.2 两个 NuGet 包，分别选择
+`net9.0` 和 `net6.0` 资产；不能把旧目标框架的依赖组计入本次实际闭包。包元数据分别声明 Apache-2.0 和
+MIT，并绑定下表固定源码。这里只核对来源和分发材料，不宣称许可、NOTICE 或正式 SBOM 已通过发布资格。
+
+| 材料 | 已核事实 | 采用前的分发检查 |
+| --- | --- | --- |
+| PdfPig [LICENSE](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/LICENSE) / [NOTICES.txt](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/NOTICES.txt) | 固定源码保留 Apache、PDFBox/FontBox 和 Adobe 归属说明；NuGet 文件清单没有独立 LICENSE/NOTICES 文件。 | 在候选材料清单中明确保留位置，不能仅以 NuGet license expression 代替分发材料。 |
+| Adobe 字形表 | 固定包 `UglyToad.PdfPig.Fonts.dll` 确有 `glyphlist` 和 `zapfdingbats` 嵌入资源；[原始头部](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Fonts/Resources/GlyphList/glyphlist)包含二进制再分发的归属、条件和免责声明要求。 | 核对两份原始声明在分发文档或材料中的保留；根目录 NOTICES 的归属摘要不等于完整声明。 |
+| Adobe AFM | [Fonts 项目](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Fonts/UglyToad.PdfPig.Fonts.csproj)嵌入 AFM 与 `MustRead.html`；DLL 资源清单确认二者存在。 | [MustRead](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Fonts/Resources/AdobeFontMetrics/MustRead.html)要求保留归属、伴随说明及修改声明；不得因输出目录没有独立 HTML 就误报 DLL 缺少它。 |
+| SharpZipLib [LICENSE.txt](https://github.com/icsharpcode/SharpZipLib/blob/33f64eb0f28cdd2b084cb822fcc224c7c5aba553/LICENSE.txt) | 固定源码提供 MIT 完整原文；NuGet 使用 license expression，未附独立文本。 | 保留该版本原文及归属，不手写替代其年份或文本。 |
+
+原文和实际 DLL 资源清单保留为本地资格证据，未复制到产品或提交第三方资源。最终 worker 的资产集合、裁剪
+结果和 SBOM 尚未确定；采用时仍需以实际离线发布候选核对，不能用当前两个包的图代表未来完整发布闭包。
 下一步应将发现样本转为版本化、可独立核对的资格入口，补齐剩余边界后决定是否接受 ADR。
