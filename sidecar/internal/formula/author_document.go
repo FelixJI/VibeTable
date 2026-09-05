@@ -337,7 +337,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 			atomStarts[lexeme.start] = true
 		}
 	}
-	scanned, err := scanDisplayTokens(maskedSource)
+	scanned, err := scanDisplayTokens(maskedSource, definition, targets)
 	if err != nil {
 		return nil, err
 	}

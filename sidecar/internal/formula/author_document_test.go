@@ -604,3 +604,39 @@ func TestAuthorDocumentResolvesPastedFieldInsideMap(t *testing.T) {
 		t.Fatalf("pasted map reference = %#v", result)
 	}
 }
+
+func TestAuthorDocumentPreservesPastedColonDisplayNames(t *testing.T) {
+	for _, name := range []string{"成本:税前", "Cost:Before"} {
+		t.Run(name, func(t *testing.T) {
+			definition, targets := authorFixture()
+			definition.Fields[1].DisplayName = name
+			result, err := AuthorV2Document(definition, targets, workbench.FormulaAuthorDocument{
+				DisplaySource: "{" + name + "} + 1", DocumentRevision: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.CanonicalSource != "f_shipping + 1" || len(result.Document.Tokens) != 1 {
+				t.Fatalf("pasted colon name lost stable reference: canonical=%q tokens=%d", result.CanonicalSource, len(result.Document.Tokens))
+			}
+		})
+	}
+}
+
+func TestAuthorDocumentDisambiguatesMapFromMatchingBoundLabel(t *testing.T) {
+	definition, targets := authorFixture()
+	definition.Fields[1].DisplayName = `"x": 1`
+	for _, source := range []string{`size({"x": 1})`, `f_shipping + 1`} {
+		restored, err := RestoreV2AuthorDocument(definition, targets, source, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authored, err := AuthorV2Document(definition, targets, restored.Document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if authored.CanonicalSource != source {
+			t.Fatalf("label collision changed %q to %q", source, authored.CanonicalSource)
+		}
+	}
+}

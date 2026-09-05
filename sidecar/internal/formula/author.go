@@ -44,7 +44,7 @@ func CanonicalizeExecutionDisplaySource(
 	return strings.TrimSpace(result.CanonicalSource), nil
 }
 
-func scanDisplayTokens(source string) ([]displayToken, *Error) {
+func scanDisplayTokens(source string, definition V2Table, targets map[string]V2Table) ([]displayToken, *Error) {
 	tokens := []displayToken{}
 	cursor := 0
 	lexemes := authorSyntaxLexemes(source)
@@ -56,7 +56,7 @@ func scanDisplayTokens(source string) ([]displayToken, *Error) {
 		}
 		switch lexeme.kind {
 		case gen.CELLexerLBRACE:
-			if maps[index] {
+			if mapEnd := maps[index]; mapEnd > 0 && !isDisplayNameInsteadOfMap(source[index:mapEnd], definition, targets) {
 				continue
 			}
 			endOffset := strings.IndexByte(source[index+1:], '}')
@@ -118,22 +118,27 @@ func uniqueDisplayField(
 // to CEL map syntax. Nested author references remain independent lexical atoms.
 // Bound labels were already masked, so punctuation in their display names
 // cannot change this distinction.
-func mapLiteralStarts(source string, lexemes []authorLexeme) map[int]bool {
-	result := map[int]bool{}
+func mapLiteralStarts(source string, lexemes []authorLexeme) map[int]int {
+	result := map[int]int{}
 	var delimiters []authorLexeme
+	maps := map[int]bool{}
 	for index, lexeme := range lexemes {
 		switch lexeme.kind {
 		case gen.CELLexerLBRACE, gen.CELLexerLBRACKET, gen.CELLexerLPAREN:
 			delimiters = append(delimiters, lexeme)
 			if lexeme.kind == gen.CELLexerLBRACE && index+1 < len(lexemes) && lexemes[index+1].kind == gen.CELLexerRBRACE && emptyMapBody(source[lexeme.end:lexemes[index+1].start]) {
-				result[lexeme.start] = true
+				maps[lexeme.start] = true
 			}
 		case gen.CELLexerCOLON:
 			if len(delimiters) > 0 && delimiters[len(delimiters)-1].kind == gen.CELLexerLBRACE {
-				result[delimiters[len(delimiters)-1].start] = true
+				maps[delimiters[len(delimiters)-1].start] = true
 			}
 		case gen.CELLexerRBRACE, gen.CELLexerRPRACKET, gen.CELLexerRPAREN:
 			if len(delimiters) > 0 {
+				opening := delimiters[len(delimiters)-1]
+				if opening.kind == gen.CELLexerLBRACE && lexeme.kind == gen.CELLexerRBRACE && maps[opening.start] {
+					result[opening.start] = lexeme.end
+				}
 				delimiters = delimiters[:len(delimiters)-1]
 			}
 		}
@@ -141,6 +146,29 @@ func mapLiteralStarts(source string, lexemes []authorLexeme) map[int]bool {
 	return result
 }
 
+// Without a bound token, valid CEL syntax wins an exact label collision.
+// Otherwise punctuation remains part of a pasted display name. Use the existing
+// compiler only for such collisions; it remains the sole CEL semantics owner.
+func isDisplayNameInsteadOfMap(source string, definition V2Table, targets map[string]V2Table) bool {
+	name := strings.TrimSpace(source[1 : len(source)-1])
+	known := func(fields []v2.FieldDefinition) bool {
+		for _, field := range fields {
+			if field.DisplayName == name {
+				return true
+			}
+		}
+		return false
+	}
+	found := known(definition.Fields)
+	for _, target := range targets {
+		found = found || known(target.Fields)
+	}
+	if !found {
+		return false
+	}
+	_, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, "size("+source+")")
+	return err != nil
+}
 func emptyMapBody(source string) bool {
 	covered := 0
 	for _, lexeme := range authorLexemes(source) {
