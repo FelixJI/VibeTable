@@ -3,7 +3,6 @@ package replica
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,54 +105,57 @@ func TestPersistentQueueRetriesIdempotentlyAcrossRestart(t *testing.T) {
 }
 
 func TestQueueDoesNotHoldMutexDuringNetworkIO(t *testing.T) {
-	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
-	queue, err := OpenPersistentQueue(sqliteTestPath(t, "retry.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer queue.Close()
-	queue.now = func() time.Time { return now }
-	if err := queue.Enqueue(SyncTask{
-		TaskID: "task-1", WorkspaceID: "workspace-1",
-		SnapshotID: "snapshot-1",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	drained := make(chan error, 1)
-	var once sync.Once
-	go func() {
-		drained <- queue.Drain(
-			context.Background(),
-			syncerFunc(func(context.Context, SyncTask) error {
-				once.Do(func() {
-					close(entered)
-					<-release
-				})
-				return nil
-			}),
-		)
-	}()
-	<-entered
-	enqueued := make(chan error, 1)
-	go func() {
-		enqueued <- queue.Enqueue(SyncTask{
-			TaskID: "task-2", WorkspaceID: "workspace-1",
-			SnapshotID: "snapshot-2",
-		})
-	}()
-	select {
-	case err := <-enqueued:
-		if err != nil {
-			t.Fatal(err)
+	for _, persistent := range []bool{false, true} {
+		name := "memory"
+		if persistent {
+			name = "persistent"
 		}
-	case <-time.After(time.Second):
-		t.Fatal("enqueue blocked behind network I/O")
-	}
-	close(release)
-	if err := <-drained; err != nil {
-		t.Fatal(err)
+		t.Run(name, func(t *testing.T) {
+			queue := NewQueue()
+			if persistent {
+				var err error
+				queue, err = OpenPersistentQueue(sqliteTestPath(t, "retry.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			defer queue.Close()
+			now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+			queue.now = func() time.Time { return now }
+			if err := queue.Enqueue(SyncTask{
+				TaskID: "task-1", WorkspaceID: "workspace-1", SnapshotID: "snapshot-1",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			if err := queue.Drain(context.Background(), syncerFunc(func(_ context.Context, task SyncTask) error {
+				calls++
+				// Observe the actual resources at the network boundary rather than
+				// treating a disk write exceeding a wall-clock budget as a held lock.
+				if !queue.mu.TryLock() {
+					t.Fatal("queue mutex is held during network I/O")
+				}
+				queue.mu.Unlock()
+				if queue.db != nil && queue.db.Stats().InUse != 0 {
+					t.Fatal("queue database connection is held during network I/O")
+				}
+				if task.TaskID == "task-1" {
+					return queue.Enqueue(SyncTask{
+						TaskID: "task-2", WorkspaceID: "workspace-1", SnapshotID: "snapshot-2",
+					})
+				}
+				return nil
+			})); err != nil {
+				t.Fatal(err)
+			}
+			tasks, err := queue.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 || len(tasks) != 2 || !tasks[0].Completed || !tasks[1].Completed {
+				t.Fatalf("network callback enqueue was not drained: calls=%d tasks=%#v", calls, tasks)
+			}
+		})
 	}
 }
 
