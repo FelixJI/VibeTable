@@ -2,6 +2,8 @@ import { onBeforeUnmount, ref, watch, type Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 
 import { useTableStore } from "@/stores/tableStore";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { buildTabulatorColumns, createGrid } from "@/grid/createGrid";
 import type { CellEditedHandler, CellValidationErrorHandler, RelationLookupGridContext } from "@/grid/createGrid";
 import type { ColumnEditSchema, ColumnSchema, LookupValueProvenance, NormalizedRelationDescriptor, TablePage } from "@/contracts";
@@ -63,6 +65,26 @@ function sameRows(
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+interface CellRangeSelection {
+  readonly rowKeys: readonly (string | number)[];
+  readonly fields: readonly string[];
+}
+
+interface RangeRuntime {
+  getRanges?: () => Array<{
+    getRows?: () => Array<{ getData: () => Record<string, unknown> }>;
+    getColumns?: () => Array<{ getField: () => string }>;
+    setBounds?: (start: unknown, end: unknown) => void;
+    remove?: () => void;
+  }>;
+  getRows?: (range?: string) => Array<{
+    getData: () => Record<string, unknown>;
+    getCell?: (field: string) => unknown;
+  }>;
+  getColumns?: () => Array<{ getField: () => string; isVisible?: () => boolean }>;
+  addRange?: () => unknown;
 }
 
 /** Options accepted by `useTabulator` (Task M3: editable grid wiring). */
@@ -150,6 +172,8 @@ export function useTabulator(
   options?: UseTabulatorOptions,
 ) {
   const store = useTableStore();
+  const workspace = useWorkspaceStore();
+  const workspaceSession = useWorkspaceSessionStore();
   const relationLookupStore = useRelationLookupStore();
   // Use the caller-provided ref if present (Task M5: WorkspaceView shares the
   // ref with the keyboard shortcuts via provide/inject). Otherwise create a
@@ -197,6 +221,28 @@ export function useTabulator(
   let lastViewQuerySignature = "";
   let gridReady = false;
   let gridOperationsReady = false;
+  let selectionContext = 0;
+  let renderedSelectionContext = 0;
+  let pendingCellRanges: readonly CellRangeSelection[] | null = null;
+
+  // A load generation changes during same-table refreshes; the workspace/table
+  // context is the boundary that must never inherit the old cells.
+  watch(
+    [() => workspace.currentTable, () => workspaceSession.activeWorkspaceId,
+      () => workspaceSession.sessionEpoch],
+    () => {
+      selectionContext += 1;
+      pendingCellRanges = null;
+    },
+    { flush: "sync" },
+  );
+  const invalidatePendingCellRanges = () => { pendingCellRanges = null; };
+  watch(gridEl, (host, previous) => {
+    for (const event of ["pointerdown", "keydown"]) {
+      previous?.removeEventListener(event, invalidatePendingCellRanges, true);
+      host?.addEventListener(event, invalidatePendingCellRanges, true);
+    }
+  }, { immediate: true, flush: "sync" });
 
   /**
    * Holder for the latest `onValidationError` callback. Same rationale as
@@ -254,6 +300,7 @@ export function useTabulator(
         onValidationError: (rk, col, err) => currentOnValidationError?.(rk, col, err),
         relationLookup: relationContext(),
       });
+      renderedSelectionContext = selectionContext;
       gridOperationsReady =
         (tabulator.value as unknown as { initialized?: boolean }).initialized !== false;
       const eventGrid = tabulator.value as unknown as {
@@ -262,6 +309,10 @@ export function useTabulator(
         getHeaderFilters?: () => Array<{ field: string; value: unknown }>;
       };
       rangeChangedHandler = (rawRange: unknown) => {
+        // Tabulator schedules range initialization; a retired range can still
+        // emit after a rebuild. Only the currently installed ranges own UI state.
+        const ranges = (tabulator.value as unknown as RangeRuntime | null)?.getRanges?.() ?? [];
+        if (!ranges.includes(rawRange as (typeof ranges)[number])) return;
         const range = rawRange as {
           getRows?: () => Array<{ getData: () => Record<string, unknown> }>;
           getColumns?: () => Array<{ getField: () => string }>;
@@ -401,6 +452,10 @@ export function useTabulator(
   );
 
   onBeforeUnmount(() => {
+    pendingCellRanges = null;
+    for (const event of ["pointerdown", "keydown"]) {
+      gridEl.value?.removeEventListener(event, invalidatePendingCellRanges, true);
+    }
     gridReady = false;
     gridOperationsReady = false;
     queuedRows = null;
@@ -458,8 +513,12 @@ export function useTabulator(
           queuedRows = null;
           lastSeededRows = rows;
           const anchorAndSelection = captureViewportState(grid);
+          const cellRanges = captureCellRanges(grid);
+          const context = selectionContext;
           await Promise.resolve(grid.setData([...rows]));
+          renderedSelectionContext = context;
           await restoreViewportState(grid, anchorAndSelection);
+          restoreCellRanges(grid, cellRanges);
         }
       } finally {
         dataApplying.value = false;
@@ -547,6 +606,7 @@ export function useTabulator(
         }
         queuedColumnRefresh = false;
         const carrier = { columns: schema } as TablePage;
+        const cellRanges = captureCellRanges(grid);
         retireDomSelectionBeforeColumnRefresh();
         try {
           // Tabulator may complete setColumns asynchronously. Serializing the
@@ -564,6 +624,7 @@ export function useTabulator(
           lastEditSignature = editSchemaSignature(store.editSchema);
           lastRelationSignature = relationSignature();
           refreshLocalizedPlaceholder(grid, gridEl.value);
+          restoreCellRanges(grid, cellRanges);
         } catch {
           queuedRows = store.allRows;
         }
@@ -589,6 +650,61 @@ export function useTabulator(
     if (active instanceof HTMLElement && host.contains(active)) active.blur();
     const selection = window.getSelection();
     if (selection?.rangeCount) selection.removeAllRanges();
+  }
+
+  function captureCellRanges(grid: TabulatorFull): readonly CellRangeSelection[] | null {
+    if (renderedSelectionContext !== selectionContext) return null;
+    if (pendingCellRanges) return pendingCellRanges;
+    const ranges = (grid as unknown as RangeRuntime).getRanges?.() ?? [];
+    const selections = ranges.map(range => ({
+      rowKeys: (range.getRows?.() ?? []).flatMap(row => {
+        const key = row.getData().rowKey;
+        return typeof key === "string" || typeof key === "number" ? [key] : [];
+      }),
+      fields: (range.getColumns?.() ?? []).map(column => column.getField()),
+    })).filter(range => range.rowKeys.length > 0 && range.fields.length > 0);
+    pendingCellRanges = selections.length > 0 ? selections : null;
+    return pendingCellRanges;
+  }
+
+  function restoreCellRanges(
+    grid: TabulatorFull,
+    selections: readonly CellRangeSelection[] | null,
+  ): void {
+    if (!selections || selections !== pendingCellRanges || tabulator.value !== grid) return;
+    // beginLoad temporarily clears the rows. Keep the logical selection until
+    // the replacement window has actually reached Tabulator.
+    if (queuedRows || (store.loading && store.pages.length === 0)) return;
+    const runtime = grid as unknown as RangeRuntime;
+    const rows = runtime.getRows?.("active") ?? [];
+    const columns = (runtime.getColumns?.() ?? []).filter(column => column.isVisible?.() !== false);
+    const rowPositions = new Map(rows.map((row, index) => [row.getData().rowKey, index]));
+    const fields = columns.map(column => column.getField());
+    const columnPositions = new Map(fields.map((field, index) => [field, index]));
+    const bounds = selections.map(selection => {
+      const rowIndices = selection.rowKeys.map(key => rowPositions.get(key) ?? -1).sort((a, b) => a - b);
+      const columnIndices = selection.fields.map(field => columnPositions.get(field) ?? -1).sort((a, b) => a - b);
+      // Missing or interleaved keys cannot describe the same rectangular range.
+      const contiguous = (indices: number[]) => indices[0]! >= 0
+        && indices.every((index, offset) => index === indices[0]! + offset);
+      if (!contiguous(rowIndices) || !contiguous(columnIndices)) return null;
+      const start = rows[rowIndices[0]!]!.getCell?.(fields[columnIndices[0]!]!);
+      const end = rows[rowIndices.at(-1)!]!.getCell?.(fields[columnIndices.at(-1)!]!);
+      return start && end ? { start, end } : null;
+    });
+    pendingCellRanges = null;
+    if (bounds.some(bound => !bound)) return;
+    const existing = runtime.getRanges?.() ?? [];
+    // addRange(start, end) defers its bounds in Tabulator. Create it without
+    // bounds, then use the public component synchronously so no delayed bounds
+    // can overwrite a newer user selection. Neither path moves DOM focus.
+    for (const range of existing.slice(bounds.length)) range.remove?.();
+    bounds.forEach((bound, index) => {
+      if (!existing[index]) runtime.addRange?.();
+      const range = existing[index] ?? runtime.getRanges?.().at(-1);
+      if (bound) range?.setBounds?.(bound.start, bound.end);
+    });
+    currentOnRangeSelectionChanged?.(selections.at(-1)!);
   }
 
   function relationSignature(): string {

@@ -3,9 +3,11 @@ import { createPinia, setActivePinia } from "pinia";
 import { defineComponent, h, ref, type Ref } from "vue";
 import { mount, flushPromises } from "@vue/test-utils";
 
-import { useTabulator } from "./useTabulator";
+import { useTabulator, type UseTabulatorOptions } from "./useTabulator";
 import { useTableStore } from "@/stores/tableStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type {
   ColumnSchema,
   DatasetReadyPayload,
@@ -38,6 +40,8 @@ interface MockTabulator {
   getSorters: ReturnType<typeof vi.fn>;
   getHeaderFilters: ReturnType<typeof vi.fn>;
   getRanges: ReturnType<typeof vi.fn>;
+  getColumns: ReturnType<typeof vi.fn>;
+  addRange: ReturnType<typeof vi.fn>;
   getRows: ReturnType<typeof vi.fn>;
   getSelectedRows: ReturnType<typeof vi.fn>;
   getRow: ReturnType<typeof vi.fn>;
@@ -60,6 +64,8 @@ vi.mock("@/grid/createGrid", () => ({
       getSorters: vi.fn().mockReturnValue([]),
       getHeaderFilters: vi.fn().mockReturnValue([]),
       getRanges: vi.fn().mockReturnValue([]),
+      getColumns: vi.fn().mockReturnValue([]),
+      addRange: vi.fn(),
       getRows: vi.fn().mockReturnValue([]),
       getSelectedRows: vi.fn().mockReturnValue([]),
       getRow: vi.fn().mockReturnValue(false),
@@ -166,14 +172,72 @@ function relationSchema(
  * Mount a host component that exposes a `gridEl` ref to useTabulator. The
  * template renders the div immediately so the ref is populated on mount.
  */
-function mountHost(gridEl: Ref<HTMLElement | null>) {
+function mountHost(gridEl: Ref<HTMLElement | null>, options?: UseTabulatorOptions) {
   const Host = defineComponent({
     setup() {
-      useTabulator(gridEl);
+      useTabulator(gridEl, options);
       return () => h("div", { class: "wrapper" });
     },
   });
   return mount(Host);
+}
+
+/** Model the destructive range reset shared by Tabulator's data/column rebuilds. */
+function installRangeRuntime(mock: MockTabulator) {
+  type Cell = { rowKey: string; field: string };
+  let rows = ["a", "b"];
+  let fields = ["id", "payload", "status"];
+  const row = (rowKey: string) => ({
+    getData: () => ({ rowKey }),
+    getCell: (field: string) => ({ rowKey, field }),
+  });
+  const column = (field: string) => ({ getField: () => field });
+  const emit = (event: string, value: unknown) => {
+    for (const call of mock.on.mock.calls) if (call[0] === event) call[1](value);
+  };
+  const range = (start: Cell, end = start) => ({
+    getRows: () => rows.slice(rows.indexOf(start.rowKey), rows.indexOf(end.rowKey) + 1).map(row),
+    getColumns: () => fields.slice(fields.indexOf(start.field), fields.indexOf(end.field) + 1).map(column),
+    setBounds: (nextStart: Cell, nextEnd = nextStart) => {
+      start = nextStart;
+      end = nextEnd;
+      emit("rangeChanged", current.at(-1));
+    },
+    remove: () => { current = []; },
+  });
+  let current: ReturnType<typeof range>[] = [];
+  let retiredRange: ReturnType<typeof range> | undefined;
+  const select = (field = "payload", lastRow = "a") => {
+    current = [range({ rowKey: "a", field }, { rowKey: lastRow, field })];
+    emit("rangeChanged", current[0]);
+  };
+  const reset = () => {
+    retiredRange = current[0];
+    current = rows.length && fields.length ? [range({ rowKey: rows[0]!, field: fields[0]! })] : [];
+    if (current[0]) emit("rangeAdded", current[0]);
+  };
+  mock.getRows.mockImplementation(() => rows.map(row));
+  mock.getColumns.mockImplementation(() => fields.map(column));
+  mock.getRanges.mockImplementation(() => current);
+  mock.addRange.mockImplementation(() => {
+    const added = range({ rowKey: rows[0]!, field: fields[0]! });
+    current.push(added);
+    // The installed version returns its internal Range here, not a component.
+    // Consumers must obtain the public component through getRanges().
+    return {};
+  });
+  mock.setData.mockImplementation(async (data: Array<{ rowKey: string }>) => {
+    rows = data.map(item => item.rowKey);
+    reset();
+  });
+  mock.setColumns.mockImplementation((columns: Array<{ field: string }>) => {
+    fields = columns.map(item => item.field);
+    reset();
+  });
+  return { select, emitRetiredRange: () => emit("rangeChanged", retiredRange), selection: () => current.map(item => ({
+    rowKeys: item.getRows().map(item => item.getData().rowKey),
+    fields: item.getColumns().map(item => item.getField()),
+  })) };
 }
 
 describe("useTabulator", () => {
@@ -187,6 +251,118 @@ describe("useTabulator", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("retains cell ranges through an empty loading window and consecutive column rebuilds", async () => {
+    const table = useTableStore();
+    useWorkspaceStore().selectTable("users");
+    const gridEl = ref<HTMLElement | null>(document.createElement("div"));
+    const columns = ["id", "payload", "status"].map(makeColumn);
+    table.appendPage(makePage([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    const onRangeSelectionChanged = vi.fn();
+    const wrapper = mountHost(gridEl, { onRangeSelectionChanged });
+    await flushPromises();
+    const runtime = installRangeRuntime(lastMock!);
+    runtime.select("payload", "b");
+
+    table.beginLoad();
+    await flushPromises();
+    expect(lastMock!.setData).toHaveBeenCalledWith([]);
+    table.setDatasetReady(makeDatasetReady([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    await flushPromises();
+    expect(runtime.selection()).toEqual([{ rowKeys: ["a", "b"], fields: ["payload"] }]);
+    setLocale("en-US");
+    await flushPromises();
+
+    expect(lastMock!.setColumns).toHaveBeenCalledTimes(2);
+    const selectionEvents = onRangeSelectionChanged.mock.calls.length;
+    runtime.emitRetiredRange();
+    expect(onRangeSelectionChanged).toHaveBeenCalledTimes(selectionEvents);
+    expect(runtime.selection()).toEqual([{ rowKeys: ["a", "b"], fields: ["payload"] }]);
+    expect(onRangeSelectionChanged).toHaveBeenLastCalledWith({ rowKeys: ["a", "b"], fields: ["payload"] });
+    wrapper.unmount();
+  });
+
+  it.each(["row", "column", "table", "workspace"])("does not resurrect a range after its %s disappears", async (boundary) => {
+    const table = useTableStore();
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("users");
+    const gridEl = ref<HTMLElement | null>(document.createElement("div"));
+    const columns = ["id", "payload", "status"].map(makeColumn);
+    table.appendPage(makePage([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    const wrapper = mountHost(gridEl);
+    await flushPromises();
+    const runtime = installRangeRuntime(lastMock!);
+    runtime.select("payload", "b");
+    table.beginLoad();
+    await flushPromises();
+    if (boundary === "table") workspace.selectTable("orders");
+    if (boundary === "workspace") useWorkspaceSessionStore().sessionEpoch += 1;
+    table.setDatasetReady(makeDatasetReady(
+      boundary === "row" ? [{ rowKey: "b" }] : [{ rowKey: "a" }, { rowKey: "b" }],
+      boundary === "column" ? [makeColumn("id"), makeColumn("status")] : columns,
+    ));
+    await flushPromises();
+    // A later refresh must not resurrect a removed selection when names return.
+    table.setDatasetReady(makeDatasetReady([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    await flushPromises();
+    expect(runtime.selection()).not.toContainEqual({ rowKeys: ["a", "b"], fields: ["payload"] });
+    wrapper.unmount();
+  });
+
+  it.each(["data", "columns"])("keeps a later user range when an earlier %s application completes", async (operation) => {
+    const table = useTableStore();
+    useWorkspaceStore().selectTable("users");
+    const gridEl = ref<HTMLElement | null>(document.createElement("div"));
+    const columns = ["id", "payload", "status"].map(makeColumn);
+    table.appendPage(makePage([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    const wrapper = mountHost(gridEl);
+    await flushPromises();
+    const runtime = installRangeRuntime(lastMock!);
+    runtime.select();
+    const method = operation === "data" ? lastMock!.setData : lastMock!.setColumns;
+    const apply = method.getMockImplementation() as (data: unknown) => unknown;
+    let finish!: () => void;
+    method.mockImplementation((data) => {
+      apply(data);
+      return new Promise<void>(resolve => { finish = resolve; });
+    });
+    if (operation === "data") {
+      table.setDatasetReady(makeDatasetReady([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    } else {
+      setLocale("en-US");
+    }
+    await flushPromises();
+    gridEl.value!.dispatchEvent(new Event("pointerdown"));
+    runtime.select("status");
+    finish();
+    await flushPromises();
+    expect(runtime.selection()).toEqual([{ rowKeys: ["a"], fields: ["status"] }]);
+    wrapper.unmount();
+  });
+
+  it("restores a data-only refresh without taking focus from an open dialog", async () => {
+    const table = useTableStore();
+    const gridEl = ref<HTMLElement | null>(document.createElement("div"));
+    const columns = ["id", "payload", "status"].map(makeColumn);
+    table.appendPage(makePage([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    const wrapper = mountHost(gridEl);
+    await flushPromises();
+    const runtime = installRangeRuntime(lastMock!);
+    runtime.select();
+    const input = document.createElement("input");
+    document.body.append(input);
+    input.focus();
+    table.setDatasetReady(makeDatasetReady([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    await flushPromises();
+    expect(runtime.selection()).toEqual([{ rowKeys: ["a"], fields: ["payload"] }]);
+    expect(document.activeElement).toBe(input);
+    setLocale("en-US");
+    await flushPromises();
+    expect(runtime.selection()).toEqual([{ rowKeys: ["a"], fields: ["payload"] }]);
+    expect(document.activeElement).toBe(input);
+    input.remove();
+    wrapper.unmount();
   });
 
   it("does NOT call createGrid before the first page arrives", async () => {
@@ -681,13 +857,15 @@ describe("useTabulator", () => {
       | ((range: unknown) => void)
       | undefined;
     expect(rangeHandler).toBeTypeOf("function");
-    rangeHandler!({
+    const range = {
       getRows: () => [
         { getData: () => ({ rowKey: 1 }) },
         { getData: () => ({ rowKey: 2 }) },
       ],
       getColumns: () => [{ getField: () => "status" }],
-    });
+    };
+    lastMock!.getRanges.mockReturnValue([range]);
+    rangeHandler!(range);
     expect(onRangeSelectionChanged).toHaveBeenCalledWith({ rowKeys: [1, 2], fields: ["status"] });
     wrapper.unmount();
   });

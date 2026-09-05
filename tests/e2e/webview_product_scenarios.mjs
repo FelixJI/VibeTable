@@ -1844,6 +1844,117 @@ async function scenario03(page, recorder) {
   return;
 }
 
+function controlOwnJsonReconcileInPage({ operation, tableId, field }) {
+  const key = "__vibetableE2EOwnJsonReconcile";
+  if (operation !== "start") return window[key]?.[operation]() ?? null;
+  const webview = window.chrome.webview;
+  const originalPostMessage = webview.postMessage;
+  const state = { heldRequestId: null, forwards: 0, released: null, error: null };
+  let held = null;
+  let deadline = null;
+  let rowKey = null;
+  let revision = null;
+  let schemaRevision = null;
+  let reconciled = false;
+  let refreshes = 0;
+  let datasetReady = false;
+  let schemaReady = false;
+  const parse = (value) => {
+    if (typeof value !== "string") return value;
+    try { return JSON.parse(value); } catch { return null; }
+  };
+  const forward = (reason) => {
+    if (!held) return;
+    const pending = held;
+    held = null;
+    clearTimeout(deadline);
+    state.released = reason;
+    state.forwards += 1;
+    return originalPostMessage.apply(pending.receiver, pending.args);
+  };
+  function postMessage(...args) {
+    const message = parse(args[0]);
+    if (rowKey === null && message?.type === "table.updateCellRequested"
+      && message.payload?.table === tableId && message.payload?.column === field) {
+      rowKey = message.payload.rowKey;
+    }
+    if (rowKey !== null && message?.type === "events.reconcile"
+      && message.payload?.tableId === tableId) {
+      if (held) {
+        state.error ??= "controlled reconcile received a competing request";
+      } else if (state.heldRequestId === null) {
+        state.heldRequestId = message.requestId;
+        held = { receiver: this, args };
+        deadline = setTimeout(() => {
+          state.error ??= "controlled reconcile hold exceeded 8 seconds";
+          forward("deadline");
+        }, 8_000);
+        return;
+      } else {
+        state.error ??= "controlled reconcile received a competing request";
+      }
+    }
+    if (rowKey !== null && message?.type === "table.selected" && message.payload?.table === tableId) {
+      refreshes += 1;
+      if (state.released !== "after-selection" || refreshes !== 1) {
+        state.error ??= "controlled reconcile observed an unexpected table refresh";
+      }
+    }
+    return originalPostMessage.apply(this, args);
+  }
+  const receive = (event) => {
+    const message = parse(event.data);
+    const payload = message?.payload;
+    if (message?.type === "table.editCommitted" && payload?.rowKey === rowKey
+      && payload.column === field && payload.storedValue?.nested?.value === 7) {
+      revision = payload.revision;
+    }
+    if (message?.type === "events.reconcile" && message.requestId === state.heldRequestId) {
+      reconciled = payload?.action === "refresh-data";
+      if (!reconciled) state.error ??= "controlled reconcile did not return refresh-data";
+    }
+    if (state.released === "after-selection" && refreshes === 1 && payload?.table === tableId) {
+      if (message?.type === "table.datasetReady" && payload.revision?.dataRevision >= revision?.dataRevision
+        && payload.rows?.some((row) => row.rowKey === rowKey && row[field]?.nested?.value === 7)) {
+        datasetReady = true;
+        schemaRevision = payload.revision.schemaRevision;
+      }
+      if (message?.type === "table.editSchemaLoaded" && payload.schemaRevision === schemaRevision) {
+        schemaReady = true;
+      }
+    }
+  };
+  const ready = (afterRefresh) => {
+    if (state.error) throw new Error(state.error);
+    const cell = document.querySelector(
+      `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${field}"]`,
+    );
+    return Boolean(cell && revision && (afterRefresh
+      ? reconciled && refreshes === 1 && datasetReady && schemaReady
+      : held));
+  };
+  webview.postMessage = postMessage;
+  webview.addEventListener("message", receive);
+  window[key] = {
+    "selection-ready": () => ready(false),
+    "refresh-ready": () => ready(true),
+    release: () => {
+      if (!held || state.error) throw new Error(state.error ?? "controlled reconcile was not held");
+      forward("after-selection");
+    },
+    stop: () => {
+      try { forward("cleanup"); } finally {
+        clearTimeout(deadline);
+        webview.removeEventListener("message", receive);
+        if (webview.postMessage === postMessage) webview.postMessage = originalPostMessage;
+        else state.error ??= "controlled reconcile postMessage owner changed";
+        delete window[key];
+      }
+      return { ...state, reconciled, refreshes, datasetReady, schemaReady };
+    },
+  };
+}
+
 async function scenario04(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -1969,32 +2080,77 @@ async function scenario04(page, recorder, _network, runtime) {
     enabled: true,
   };
   await page.getByTestId("json-editor-input").fill(JSON.stringify(expectedEditorValue));
-  await page.getByTestId("json-editor-save").click();
-  await page.getByTestId("json-editor-modal").waitFor({ state: "hidden", timeout: 30_000 });
-  const editorQuery = await waitForQueryPage(page, {
-    tableId,
-    query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  }, (payload) => payload?.rows?.[0]?.[jsonField]?.nested?.value === 7);
-  const editorValue = editorQuery.payload?.rows?.[0]?.[jsonField];
-  recorder.check("structured JSON editor committed a typed object through the UI",
-    editorQuery.type === "query.page"
-      && canonicalJsonText(editorValue) === canonicalJsonText(expectedEditorValue),
-  {
-    editorValue,
-    expectedEditorValue,
-    normalizedEditorValue: canonicalJsonText(editorValue),
-  });
+  await page.evaluate(controlOwnJsonReconcileInPage, { operation: "start", tableId, field: jsonField });
+  try {
+    await page.getByTestId("json-editor-save").click();
+    await page.getByTestId("json-editor-modal").waitFor({ state: "hidden", timeout: 30_000 });
+    const editorQuery = await waitForQueryPage(page, {
+      tableId,
+      query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    }, (payload) => payload?.rows?.[0]?.[jsonField]?.nested?.value === 7);
+    const editorValue = editorQuery.payload?.rows?.[0]?.[jsonField];
+    recorder.check("structured JSON editor committed a typed object through the UI",
+      editorQuery.type === "query.page"
+        && canonicalJsonText(editorValue) === canonicalJsonText(expectedEditorValue),
+    {
+      editorValue,
+      expectedEditorValue,
+      normalizedEditorValue: canonicalJsonText(editorValue),
+    });
 
-  await page.context().grantPermissions(
-    ["clipboard-read", "clipboard-write"],
-    { origin: "https://app.vibetable.local" },
-  );
-  await page.evaluate(async (value) => navigator.clipboard.writeText(value),
-    '{"nested":{"value":8},"items":[4,5],"enabled":false}');
-  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
-  await jsonCell.click();
-  await page.keyboard.press("Control+V");
-  await page.getByTestId("paste-panel").waitFor({ timeout: 30_000 });
+    await page.context().grantPermissions(
+      ["clipboard-read", "clipboard-write"],
+      { origin: "https://app.vibetable.local" },
+    );
+    await page.evaluate(async (value) => navigator.clipboard.writeText(value),
+      '{"nested":{"value":8},"items":[4,5],"enabled":false}');
+    await page.waitForFunction(
+      controlOwnJsonReconcileInPage,
+      { operation: "selection-ready" },
+      { timeout: 30_000 },
+    );
+    jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
+    await jsonCell.click();
+    const selectedBeforeRefresh = await jsonCell.evaluate((cell) => ({
+      range: cell.getAttribute("data-range"),
+      selected: cell.getAttribute("aria-selected"),
+    }));
+    recorder.check("JSON Payload range selection is active before its reconcile refresh",
+      selectedBeforeRefresh.range === "0" && selectedBeforeRefresh.selected === "true",
+      { selectedBeforeRefresh },
+    );
+    await page.evaluate(controlOwnJsonReconcileInPage, { operation: "release" });
+    await page.waitForFunction(
+      controlOwnJsonReconcileInPage,
+      { operation: "refresh-ready" },
+      { timeout: 30_000 },
+    );
+    const rangeSelection = await jsonCell.evaluate((cell) => ({
+      range: cell.getAttribute("data-range"),
+      selected: cell.getAttribute("aria-selected"),
+    }));
+    recorder.check("JSON Payload range selection survives its own reconcile refresh",
+      rangeSelection.range === "0" && rangeSelection.selected === "true",
+      { rangeSelection },
+    );
+    await page.keyboard.press("Control+V");
+    await page.getByTestId("paste-panel").waitFor({ timeout: 30_000 });
+  } finally {
+    const controlledReconcile = await page.evaluate(
+      controlOwnJsonReconcileInPage,
+      { operation: "stop" },
+    );
+    recorder.check("JSON reconcile control forwarded exactly one original request and restored the bridge",
+      controlledReconcile?.error === null
+        && controlledReconcile.forwards === 1
+        && controlledReconcile.released === "after-selection"
+        && controlledReconcile.reconciled
+        && controlledReconcile.refreshes === 1
+        && controlledReconcile.datasetReady
+        && controlledReconcile.schemaReady,
+      { controlledReconcile },
+    );
+  }
   const ack = page.getByTestId("paste-ack");
   if (await ack.isVisible().catch(() => false)) await ack.click();
   await page.getByTestId("paste-confirm").click();
