@@ -45,7 +45,7 @@
 
 未修改的默认 PdfPig 对两份文件均返回一页、无 warning，并命中 `Test Document`、`Header One`、`Lorem ipsum`
 和 `WCAG2.0`；不要求两个引擎的空白和字符计数逐字相同。严格探针对两份均 exit 1、stdout 为空：xref 流使用
-`Predictor 12`，Columns 分别为3及4/5，命中尚未实现的参数拒绝。初始失败与默认路径对照分别冻结为
+`Predictor 12`，Columns 分别为3/4及4/5，命中尚未实现的参数拒绝。初始失败与默认路径对照分别冻结为
 `scan-pair-initial-expectation-failure.json` 和 `w3c-predictor-default-discovery.json`，不覆盖此前27样本结果。
 
 固定源码的 [PngPredictor](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig/Filters/PngPredictor.cs)
