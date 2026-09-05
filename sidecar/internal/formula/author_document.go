@@ -129,6 +129,40 @@ func authorLexemes(source string) []authorLexeme {
 	return result
 }
 
+func authorSyntaxLexemes(source string) []authorLexeme {
+	var result []authorLexeme
+	for _, token := range authorLexemes(source) {
+		if token.kind != gen.CELLexerWHITESPACE && token.kind != gen.CELLexerCOMMENT {
+			result = append(result, token)
+		}
+	}
+	return result
+}
+
+func displayFunctionName(name string, singleRelationTarget bool) string {
+	// Lowercase min/max are also native binary CEL functions. Their display
+	// aggregate shorthand is unambiguous only with one relation-target argument.
+	if (name == "min" || name == "max") && !singleRelationTarget {
+		return ""
+	}
+	return displayAggregateFunctions[strings.ToUpper(name)]
+}
+
+func authorReferenceCall(tokens []authorLexeme, span SourceSpan) (authorLexeme, bool) {
+	for index, token := range tokens {
+		if token.start != span.Start || index < 2 || tokens[index-1].kind != gen.CELLexerLPAREN || tokens[index-2].kind != gen.CELLexerIDENTIFIER {
+			continue
+		}
+		for _, next := range tokens[index+1:] {
+			if next.start >= span.End {
+				return tokens[index-2], next.kind == gen.CELLexerRPAREN
+			}
+		}
+		return tokens[index-2], false
+	}
+	return authorLexeme{}, false
+}
+
 func renderAuthor(source string, revision int64, edits []authorEdit, restoring bool) (*AuthorResult, *Error) {
 	sort.Slice(edits, func(i, j int) bool { return edits[i].span.Start < edits[j].span.Start })
 	result := &AuthorResult{Document: workbench.FormulaAuthorDocument{DocumentRevision: revision, Tokens: []workbench.FormulaAuthorToken{}}}
@@ -296,7 +330,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		masked[span.Start] = '0'
 	}
 	maskedSource := string(masked)
-	lexemes := authorLexemes(maskedSource)
+	lexemes := authorSyntaxLexemes(maskedSource)
 	atomStarts := make(map[int]bool, len(bindings))
 	for _, lexeme := range lexemes {
 		if lexeme.kind == gen.CELLexerNUM_INT && lexeme.text == "0" {
@@ -315,6 +349,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 	}
 	sort.Slice(scanned, func(i, j int) bool { return scanned[i].start < scanned[j].start })
 	var edits []authorEdit
+	relationCalls := map[int]string{}
 	for i := 0; i < len(scanned); i++ {
 		first := scanned[i]
 		span := SourceSpan{Start: first.start, End: first.end}
@@ -390,9 +425,10 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		if root != nil {
 			display = authorLabel(*root) + "." + display
 			canonical = root.Identity.PhysicalName + "." + canonical
-			function := precedingFunction(document.DisplaySource, span.Start)
-			if name := displayAggregateFunctions[function]; name != "" && name != "relationCount" {
+			function, singleArgument := authorReferenceCall(lexemes, span)
+			if name := displayFunctionName(function.text, singleArgument); name != "" && name != "relationCount" {
 				canonical = root.Identity.PhysicalName + ", " + strconv.Quote(field.Identity.PhysicalName)
+				relationCalls[function.start] = name
 			}
 		}
 		edits = append(edits, authorEdit{span: span, display: display, canonical: canonical, token: &token})
@@ -400,7 +436,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 	if len(bindings) > 0 {
 		return nil, formulaError("formula.author.range", "token must cover one complete reference outside literals", nil)
 	}
-	for _, lexeme := range lexemes {
+	for index, lexeme := range lexemes {
 		if lexeme.kind != gen.CELLexerIDENTIFIER {
 			continue
 		}
@@ -414,7 +450,11 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		if inside {
 			continue
 		}
-		if canonical := displayAggregateFunctions[strings.ToUpper(lexeme.text)]; canonical != "" && strings.HasPrefix(strings.TrimSpace(document.DisplaySource[lexeme.end:]), "(") {
+		canonical := relationCalls[lexeme.start]
+		if canonical == "" {
+			canonical = displayFunctionName(lexeme.text, false)
+		}
+		if canonical != "" && index+1 < len(lexemes) && lexemes[index+1].kind == gen.CELLexerLPAREN {
 			edits = append(edits, authorEdit{span: SourceSpan{Start: lexeme.start, End: lexeme.end}, display: lexeme.text, canonical: canonical})
 		}
 	}
@@ -436,12 +476,7 @@ func RestoreV2AuthorDocument(definition V2Table, targets map[string]V2Table, can
 	for _, field := range definition.Fields {
 		locals[field.Identity.PhysicalName] = field
 	}
-	var tokens []authorLexeme
-	for _, token := range authorLexemes(canonicalSource) {
-		if token.kind != gen.CELLexerWHITESPACE && token.kind != gen.CELLexerCOMMENT {
-			tokens = append(tokens, token)
-		}
-	}
+	tokens := authorSyntaxLexemes(canonicalSource)
 	var edits []authorEdit
 	for i := 0; i < len(tokens); i++ {
 		token := tokens[i]

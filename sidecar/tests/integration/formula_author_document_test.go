@@ -110,6 +110,20 @@ func TestFormulaAuthorCatalogRoundTripAfterTargetRename(t *testing.T) {
 	if err != nil || inspection.CanonicalSource != rebound.CanonicalSource {
 		t.Fatalf("existing compiler inspection = %#v, %v", inspection, err)
 	}
+	for _, scalarSource := range []string{"min(8, 3)", "max(8, 3)"} {
+		scalar, err := catalog.RestoreFormulaDocument(ctx, source.TableID, scalarSource, 9)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roundTrip, err := catalog.AuthorFormulaDocument(ctx, source.TableID, scalar.Document)
+		if err != nil || roundTrip.CanonicalSource != scalarSource {
+			t.Fatalf("native scalar function changed: %#v, %v", roundTrip, err)
+		}
+		inspection, err := catalog.InspectFormulaDraft(ctx, source.TableID, roundTrip.CanonicalSource)
+		if err != nil || inspection.CanonicalSource != scalarSource {
+			t.Fatalf("native scalar inspection = %#v, %v", inspection, err)
+		}
+	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err := catalog.AuthorFormulaDocument(cancelled, source.TableID, document); !errors.Is(err, context.Canceled) {

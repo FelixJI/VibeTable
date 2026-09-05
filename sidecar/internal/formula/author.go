@@ -3,7 +3,6 @@ package formula
 import (
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/google/cel-go/parser/gen"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
@@ -108,23 +107,4 @@ func uniqueDisplayField(
 	return v2.FieldDefinition{}, formulaError(
 		"formula.dependency", "field display name was not found", details,
 	)
-}
-
-func precedingFunction(source string, tokenStart int) string {
-	index := tokenStart - 1
-	for index >= 0 && unicode.IsSpace(rune(source[index])) {
-		index--
-	}
-	if index < 0 || source[index] != '(' {
-		return ""
-	}
-	index--
-	for index >= 0 && unicode.IsSpace(rune(source[index])) {
-		index--
-	}
-	end := index + 1
-	for index >= 0 && (unicode.IsLetter(rune(source[index])) || source[index] == '_') {
-		index--
-	}
-	return strings.ToUpper(source[index+1 : end])
 }
