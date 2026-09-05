@@ -19,11 +19,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	contractsv2 "github.com/vibetable/vibetable/sidecar/internal/contracts/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshotpkg"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacedb"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -532,6 +534,7 @@ func (runtime *Runtime) importSnapshotPackage(
 	source.repository = runtime.repository
 	if params.TargetMode == snapshotpkg.TargetNewWorkspace {
 		if err := source.rewriteWorkspace(
+			ctx,
 			sourceWorkspaceID,
 			runtime.manifest.WorkspaceID,
 		); err != nil {
@@ -1253,6 +1256,7 @@ func (source *importedSnapshotSource) Freeze(
 }
 
 func (source *importedSnapshotSource) rewriteWorkspace(
+	ctx context.Context,
 	from string,
 	to string,
 ) error {
@@ -1286,9 +1290,32 @@ func (source *importedSnapshotSource) rewriteWorkspace(
 	if err != nil {
 		return err
 	}
-	if bytes.Contains(source.database, []byte(from)) {
-		return errors.New("snapshot.import_workspace_identity_conflict")
+	// decodeImportedSnapshot has already verified the source audit chain and
+	// its bundle anchor. Retire only runtime state proven by that history;
+	// user values containing the source UUID remain ordinary business data.
+	var verifiedPrefix auditledger.Prefix
+	if err := json.Unmarshal(source.auditPrefix, &verifiedPrefix); err != nil {
+		return err
 	}
+	prepared, err := workspacedb.PrepareImportedSnapshot(ctx, source.database, from, to, verifiedPrefix)
+	if err != nil {
+		return errors.Join(errors.New("snapshot.import_workspace_identity_conflict"), err)
+	}
+	var topology map[string]json.RawMessage
+	if err := json.Unmarshal(source.topologyPayload, &topology); err != nil {
+		return err
+	}
+	// Update the existing topology-to-database integrity binding for the
+	// new image; bundle validation continues to consume this same field.
+	topology["businessDatabaseHash"], err = json.Marshal(digestBytes(prepared))
+	if err != nil {
+		return err
+	}
+	source.topologyPayload, err = json.Marshal(topology)
+	if err != nil {
+		return err
+	}
+	source.database = prepared
 	source.workspaceID = to
 	source.record.WorkspaceID = to
 	source.manifest.WorkspaceID = to

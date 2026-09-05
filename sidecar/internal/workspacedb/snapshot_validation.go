@@ -42,7 +42,8 @@ var requiredSnapshotTables = map[string][]string{
 }
 
 var optionalSnapshotTables = map[string][]string{
-	"_vibetable_sidecar_meta": {"key", "value", "updated"},
+	"workspace_v2_imported_completions": {"workspace_id", "kind", "identity"},
+	"_vibetable_sidecar_meta":           {"key", "value", "updated"},
 }
 
 // ValidateSnapshot validates an immutable PocketBase database image entirely
@@ -148,6 +149,17 @@ func ValidateSnapshot(
 					column,
 				)
 			}
+		}
+	}
+	if _, found, err := optionalSnapshotTableColumns(ctx, connection, "workspace_v2_imported_completions"); err != nil {
+		return err
+	} else if found {
+		matches, err := snapshotPrimaryKeyMatches(ctx, connection, "workspace_v2_imported_completions", []string{"workspace_id", "kind", "identity"})
+		if err != nil {
+			return err
+		}
+		if !matches {
+			return fmt.Errorf("%w: imported completions primary key", ErrSnapshotDatabaseInvalid)
 		}
 	}
 	for _, constraint := range []struct {
