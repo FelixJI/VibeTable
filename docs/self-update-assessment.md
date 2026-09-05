@@ -75,7 +75,8 @@ VibeTable 已具备端到端的稳定版自我更新能力。用户可在“设�
   `schema.list` 健康确认与延迟清理已经实现。真实打包 smoke 还会注册一个隔离的失效工作区，
   强制健康探测失败并核对 `workspaceHealthProbeFailed` terminal receipt、失败新版进程退出、
   旧包恢复及重新启动，以及未知安装根文件和外部用户数据不变。健康超时受控路径也会
-  运行独立真实打包回退 smoke；新版进程真实崩溃仍未覆盖，不能从受控退出场景推断其已验收。
+  运行独立真实打包回退 smoke；新版进程真实崩溃路径由进程外 observer 持有精确进程句柄，
+  触发固定 `Environment.FailFast` 请求，并把异常退出绑定到同一次回退 receipt。
 
 ## 回归覆盖
 
@@ -83,7 +84,6 @@ VibeTable 已具备端到端的稳定版自我更新能力。用户可在“设�
 同通道代理重写、校验文件格式及与 API digest 的交叉校验、
 无更新结果、包身份、Zip Slip/ADS 拒绝、只替换包拥有入口、未知文件保留、复制失败
 回滚和成功更新后的 cleanup 身份。release build 在 atomic publish 前依次运行真实打包成功更新、
-`workspaceHealthProbeFailed` 自动回退、新版宿主受控退出自动回退和 `healthTimeout` 受控回退
-smoke；回退场景同时验证旧包恢复、restored shell readiness 和用户数据边界。Web 测试覆盖
-代理保存、手动检查、两版本间多版日志、第三方披露和安装 RPC；新版 crash 的真实打包 smoke
-尚未加入。
+`workspaceHealthProbeFailed` 自动回退、新版宿主受控退出自动回退、真实异常退出自动回退和
+`healthTimeout` 受控回退 smoke；回退场景同时验证旧包恢复、restored shell readiness 和用户数据
+边界。Web 测试覆盖代理保存、手动检查、两版本间多版日志、第三方披露和安装 RPC。
