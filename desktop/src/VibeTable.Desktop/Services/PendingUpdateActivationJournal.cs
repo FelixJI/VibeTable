@@ -594,6 +594,10 @@ internal static class PendingUpdateActivationJournal
             {
                 throw InvalidPointer("watchdog 与当前更新 attempt 不一致。");
             }
+            if (current.State == "rollbackFailed")
+            {
+                return current;
+            }
             return current with
             {
                 State = "rollbackFailed",
