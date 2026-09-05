@@ -26,11 +26,13 @@ type materializeDiffPairParams struct {
 }
 
 type materializeDiffPairResult struct {
-	DocumentID           string `json:"documentId"`
-	HistoricalRevisionID string `json:"historicalRevisionId"`
-	EffectiveRevisionID  string `json:"effectiveRevisionId"`
-	HistoricalMimeType   string `json:"historicalMimeType"`
-	EffectiveMimeType    string `json:"effectiveMimeType"`
+	DocumentID            string `json:"documentId"`
+	HistoricalRevisionID  string `json:"historicalRevisionId"`
+	HistoricalContentHash string `json:"historicalContentHash"`
+	EffectiveRevisionID   string `json:"effectiveRevisionId"`
+	EffectiveContentHash  string `json:"effectiveContentHash"`
+	HistoricalMimeType    string `json:"historicalMimeType"`
+	EffectiveMimeType     string `json:"effectiveMimeType"`
 }
 
 func (runtime *Runtime) materializeDiffPair(
@@ -99,25 +101,33 @@ func (runtime *Runtime) materializeDiffPair(
 	); err != nil {
 		return nil, err
 	}
-	if err := runtime.history.AssertEffectiveRevision(
+	if err := runtime.history.AssertDiffPair(
 		params.DocumentID,
+		params.HistoricalRevisionID,
+		pair.HistoricalRevision.ContentHash,
 		params.ExpectedEffectiveRevisionID,
+		pair.EffectiveRevision.ContentHash,
 	); err != nil {
 		return nil, err
 	}
 	cleanup = false
 	return materializeDiffPairResult{
-		DocumentID:           params.DocumentID,
-		HistoricalRevisionID: pair.HistoricalRevision.RevisionID,
-		EffectiveRevisionID:  pair.EffectiveRevision.RevisionID,
-		HistoricalMimeType:   pair.HistoricalRevision.MimeType,
-		EffectiveMimeType:    pair.EffectiveRevision.MimeType,
+		DocumentID:            params.DocumentID,
+		HistoricalRevisionID:  pair.HistoricalRevision.RevisionID,
+		HistoricalContentHash: pair.HistoricalRevision.ContentHash,
+		EffectiveRevisionID:   pair.EffectiveRevision.RevisionID,
+		EffectiveContentHash:  pair.EffectiveRevision.ContentHash,
+		HistoricalMimeType:    pair.HistoricalRevision.MimeType,
+		EffectiveMimeType:     pair.EffectiveRevision.MimeType,
 	}, nil
 }
 
 type assertEffectiveRevisionParams struct {
-	DocumentID                  string `json:"documentId"`
-	ExpectedEffectiveRevisionID string `json:"expectedEffectiveRevisionId"`
+	DocumentID                    string `json:"documentId"`
+	HistoricalRevisionID          string `json:"historicalRevisionId"`
+	ExpectedHistoricalContentHash string `json:"expectedHistoricalContentHash"`
+	ExpectedEffectiveRevisionID   string `json:"expectedEffectiveRevisionId"`
+	ExpectedEffectiveContentHash  string `json:"expectedEffectiveContentHash"`
 }
 
 func (runtime *Runtime) assertEffectiveRevision(
@@ -129,21 +139,25 @@ func (runtime *Runtime) assertEffectiveRevision(
 		wireRaw,
 		paramsRaw,
 	)
-	if err != nil ||
-		!validUUID(params.DocumentID) ||
-		!validUUID(params.ExpectedEffectiveRevisionID) {
+	if err != nil {
 		return nil, errors.New("file_history.request_invalid")
 	}
-	if err := runtime.history.AssertEffectiveRevision(
+	if err := runtime.history.AssertDiffPair(
 		params.DocumentID,
+		params.HistoricalRevisionID,
+		params.ExpectedHistoricalContentHash,
 		params.ExpectedEffectiveRevisionID,
+		params.ExpectedEffectiveContentHash,
 	); err != nil {
 		return nil, err
 	}
 	return map[string]any{
-		"documentId":          params.DocumentID,
-		"effectiveRevisionId": params.ExpectedEffectiveRevisionID,
-		"stable":              true,
+		"documentId":            params.DocumentID,
+		"historicalRevisionId":  params.HistoricalRevisionID,
+		"effectiveRevisionId":   params.ExpectedEffectiveRevisionID,
+		"historicalContentHash": params.ExpectedHistoricalContentHash,
+		"effectiveContentHash":  params.ExpectedEffectiveContentHash,
+		"stable":                true,
 	}, nil
 }
 

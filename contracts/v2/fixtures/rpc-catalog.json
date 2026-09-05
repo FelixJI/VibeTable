@@ -6456,6 +6456,8 @@
           "documentId",
           "historicalRevisionId",
           "effectiveRevisionId",
+          "historicalContentHash",
+          "effectiveContentHash",
           "historicalMimeType",
           "effectiveMimeType"
         ],
@@ -6467,6 +6469,12 @@
             "type": "string"
           },
           "effectiveRevisionId": {
+            "type": "string"
+          },
+          "historicalContentHash": {
+            "type": "string"
+          },
+          "effectiveContentHash": {
             "type": "string"
           },
           "historicalMimeType": {
@@ -6509,6 +6517,8 @@
           "documentId": "22222222-2222-4222-8222-222222222222",
           "historicalRevisionId": "66666666-6666-4666-8666-666666666666",
           "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "historicalContentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "effectiveContentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "historicalMimeType": "text/plain",
           "effectiveMimeType": "text/plain"
         }
@@ -6543,13 +6553,25 @@
         "additionalProperties": false,
         "required": [
           "documentId",
-          "expectedEffectiveRevisionId"
+          "historicalRevisionId",
+          "expectedHistoricalContentHash",
+          "expectedEffectiveRevisionId",
+          "expectedEffectiveContentHash"
         ],
         "properties": {
           "documentId": {
             "type": "string"
           },
+          "historicalRevisionId": {
+            "type": "string"
+          },
+          "expectedHistoricalContentHash": {
+            "type": "string"
+          },
           "expectedEffectiveRevisionId": {
+            "type": "string"
+          },
+          "expectedEffectiveContentHash": {
             "type": "string"
           }
         }
@@ -6559,14 +6581,26 @@
         "additionalProperties": false,
         "required": [
           "documentId",
+          "historicalRevisionId",
           "effectiveRevisionId",
+          "historicalContentHash",
+          "effectiveContentHash",
           "stable"
         ],
         "properties": {
           "documentId": {
             "type": "string"
           },
+          "historicalRevisionId": {
+            "type": "string"
+          },
           "effectiveRevisionId": {
+            "type": "string"
+          },
+          "historicalContentHash": {
+            "type": "string"
+          },
+          "effectiveContentHash": {
             "type": "string"
           },
           "stable": {
@@ -6587,7 +6621,10 @@
         },
         "params": {
           "documentId": "22222222-2222-4222-8222-222222222222",
-          "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333"
+          "historicalRevisionId": "66666666-6666-4666-8666-666666666666",
+          "expectedHistoricalContentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expectedEffectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "expectedEffectiveContentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         }
       },
       "success": {
@@ -6602,7 +6639,10 @@
         },
         "result": {
           "documentId": "22222222-2222-4222-8222-222222222222",
+          "historicalRevisionId": "66666666-6666-4666-8666-666666666666",
           "effectiveRevisionId": "33333333-3333-4333-8333-333333333333",
+          "historicalContentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "effectiveContentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "stable": true
         }
       },

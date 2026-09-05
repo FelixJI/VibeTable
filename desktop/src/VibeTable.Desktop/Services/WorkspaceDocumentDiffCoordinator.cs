@@ -10,28 +10,19 @@ internal sealed class WorkspaceDocumentDiffCoordinator
     public const string HistoricalFileName = "historical.content";
     public const string EffectiveFileName = "effective.content";
 
-    private static readonly string[] CleanupFileNames =
-    [
-        "historical.content.partial",
-        "effective.content.partial",
-        HistoricalFileName,
-        EffectiveFileName,
-    ];
-
     private readonly IWorkspaceHostEpochLeaseSource _epochLeaseSource;
     private readonly IDocumentDiffEngine _engine;
-    private readonly string _tempRoot;
+    private readonly DocumentDiffArtifactBroker _artifacts;
 
     public WorkspaceDocumentDiffCoordinator(
         IWorkspaceHostEpochLeaseSource epochLeaseSource,
         IDocumentDiffEngine engine,
-        string tempRoot)
+        DocumentDiffArtifactBroker artifacts)
     {
         _epochLeaseSource = epochLeaseSource
             ?? throw new ArgumentNullException(nameof(epochLeaseSource));
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
-        ArgumentException.ThrowIfNullOrWhiteSpace(tempRoot);
-        _tempRoot = Path.GetFullPath(tempRoot);
+        _artifacts = artifacts ?? throw new ArgumentNullException(nameof(artifacts));
     }
 
     public async Task<DocumentDiffPayload> CompareAsync(
@@ -78,16 +69,24 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                    cancellationToken,
                    lease.CancellationToken))
         {
-            string operationDirectory = CreateOperationDirectory(operationId);
             try
             {
+                using DocumentDiffArtifactOperation artifacts = _artifacts.CreateOperation(
+                    operationId,
+                    binding.WorkspaceId,
+                    binding.SessionEpoch);
                 MaterializedDiffPair pair = await MaterializeAsync(
                     binding,
                     descriptor,
                     historicalId,
                     expectedId,
-                    operationDirectory,
+                    artifacts.InputDirectory,
                     lease,
+                    linkedCancellation.Token).ConfigureAwait(false);
+                await using DocumentDiffVerifiedInputLease inputs =
+                    await artifacts.OpenVerifiedInputsAsync(
+                    pair.HistoricalContentHash,
+                    pair.EffectiveContentHash,
                     linkedCancellation.Token).ConfigureAwait(false);
                 if (!_epochLeaseSource.IsCurrent(lease))
                     return Failure(entryHandle, historicalRevisionId,
@@ -98,11 +97,11 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                         ContentSource(
                             descriptor.RelativePath,
                             pair.HistoricalMimeType,
-                            Path.Combine(operationDirectory, HistoricalFileName)),
+                            artifacts.HistoricalInputPath),
                         ContentSource(
                             descriptor.RelativePath,
                             pair.EffectiveMimeType,
-                            Path.Combine(operationDirectory, EffectiveFileName))),
+                            artifacts.EffectiveInputPath)),
                     linkedCancellation.Token).ConfigureAwait(false);
                 if (outcome.Kind == DocumentDiffOutcomeKind.Failure)
                 {
@@ -116,13 +115,17 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                 DocumentDiffPayload? assertionFailure = await AssertEffectiveAsync(
                     binding,
                     descriptor.DocumentId,
+                    historicalId,
+                    pair.HistoricalContentHash,
                     expectedId,
+                    pair.EffectiveContentHash,
                     entryHandle,
                     historicalRevisionId,
                     lease,
                     linkedCancellation.Token).ConfigureAwait(false);
                 if (assertionFailure is not null)
                     return assertionFailure;
+                inputs.ConfirmSourceStable();
                 return new DocumentDiffPayload(
                     entryHandle,
                     historicalId.ToString("D"),
@@ -145,15 +148,16 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                 return Failure(entryHandle, historicalRevisionId,
                     expectedEffectiveRevisionId, exception.Failure);
             }
+            catch (DocumentDiffArtifactStaleException)
+            {
+                return Failure(entryHandle, historicalRevisionId,
+                    expectedEffectiveRevisionId, "stale");
+            }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException or JsonException)
             {
                 return Failure(entryHandle, historicalRevisionId,
                     expectedEffectiveRevisionId, "io");
-            }
-            finally
-            {
-                CleanupOperationDirectory(operationDirectory);
             }
         }
     }
@@ -196,18 +200,22 @@ internal sealed class WorkspaceDocumentDiffCoordinator
             "historicalRevisionId",
             "effectiveRevisionId",
             "historicalMimeType",
-            "effectiveMimeType");
+            "effectiveMimeType",
+            "historicalContentHash",
+            "effectiveContentHash");
         var pair = new MaterializedDiffPair(
             RequiredGuid(result, "documentId"),
             RequiredGuid(result, "historicalRevisionId"),
             RequiredGuid(result, "effectiveRevisionId"),
             RequiredString(result, "historicalMimeType"),
-            RequiredString(result, "effectiveMimeType"));
+            RequiredString(result, "effectiveMimeType"),
+            RequiredString(result, "historicalContentHash"),
+            RequiredString(result, "effectiveContentHash"));
         if (pair.DocumentId != descriptor.DocumentId ||
             pair.HistoricalRevisionId != historicalRevisionId ||
             pair.EffectiveRevisionId != expectedEffectiveRevisionId ||
-            !File.Exists(Path.Combine(destination, HistoricalFileName)) ||
-            !File.Exists(Path.Combine(destination, EffectiveFileName)))
+            !File.Exists(Path.Combine(destination, "historical.content")) ||
+            !File.Exists(Path.Combine(destination, "effective.content")))
             throw new JsonException("Materialized diff identity is invalid.");
         return pair;
     }
@@ -215,9 +223,12 @@ internal sealed class WorkspaceDocumentDiffCoordinator
     private async Task<DocumentDiffPayload?> AssertEffectiveAsync(
         WorkspaceDocumentBinding binding,
         Guid documentId,
+        Guid historicalRevisionId,
+        string expectedHistoricalContentHash,
         Guid expectedEffectiveRevisionId,
+        string expectedEffectiveContentHash,
         string entryHandle,
-        string historicalRevisionId,
+        string historicalRevisionIdText,
         WorkspaceRequestEpochLease operationLease,
         CancellationToken cancellationToken)
     {
@@ -228,7 +239,7 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                 out WorkspaceRequestEpochLease? assertionLease) ||
             assertionLease is null)
         {
-            return Failure(entryHandle, historicalRevisionId,
+            return Failure(entryHandle, historicalRevisionIdText,
                 expectedEffectiveRevisionId.ToString("D"), "stale");
         }
         using (assertionLease)
@@ -240,13 +251,16 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                 JsonSerializer.SerializeToElement(new
                 {
                     documentId = documentId.ToString("D"),
+                    historicalRevisionId = historicalRevisionId.ToString("D"),
+                    expectedHistoricalContentHash,
                     expectedEffectiveRevisionId =
                         expectedEffectiveRevisionId.ToString("D"),
+                    expectedEffectiveContentHash,
                 }),
                 pathGrant: null,
                 cancellationToken).ConfigureAwait(false);
             if (response.Error is not null)
-                return Failure(entryHandle, historicalRevisionId,
+                return Failure(entryHandle, historicalRevisionIdText,
                     expectedEffectiveRevisionId.ToString("D"),
                     MapSidecarFailure(response.Error.Code));
             JsonElement result = response.Result
@@ -254,61 +268,31 @@ internal sealed class WorkspaceDocumentDiffCoordinator
             RequireExactProperties(
                 result,
                 "documentId",
+                "historicalRevisionId",
                 "effectiveRevisionId",
+                "historicalContentHash",
+                "effectiveContentHash",
                 "stable");
             if (RequiredGuid(result, "documentId") != documentId ||
+                RequiredGuid(result, "historicalRevisionId") != historicalRevisionId ||
                 RequiredGuid(result, "effectiveRevisionId") !=
                     expectedEffectiveRevisionId ||
+                !string.Equals(
+                    RequiredString(result, "historicalContentHash"),
+                    expectedHistoricalContentHash,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    RequiredString(result, "effectiveContentHash"),
+                    expectedEffectiveContentHash,
+                    StringComparison.Ordinal) ||
                 result.GetProperty("stable").ValueKind != JsonValueKind.True ||
                 !_epochLeaseSource.IsCurrent(operationLease) ||
                 !_epochLeaseSource.IsCurrent(assertionLease))
             {
-                return Failure(entryHandle, historicalRevisionId,
+                return Failure(entryHandle, historicalRevisionIdText,
                     expectedEffectiveRevisionId.ToString("D"), "stale");
             }
             return null;
-        }
-    }
-
-    private string CreateOperationDirectory(Guid operationId)
-    {
-        Directory.CreateDirectory(_tempRoot);
-        if (File.GetAttributes(_tempRoot).HasFlag(FileAttributes.ReparsePoint))
-            throw new IOException("Diff temp root cannot be a reparse point.");
-        string destination = Path.GetFullPath(Path.Combine(
-            _tempRoot,
-            operationId.ToString("N")));
-        string prefix = _tempRoot.TrimEnd(
-            Path.DirectorySeparatorChar,
-            Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (!destination.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            throw new IOException("Diff temp path escaped its root.");
-        Directory.CreateDirectory(destination);
-        return destination;
-    }
-
-    private static void CleanupOperationDirectory(string destination)
-    {
-        foreach (string name in CleanupFileNames)
-        {
-            try
-            {
-                File.Delete(Path.Combine(destination, name));
-            }
-            catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException)
-            {
-                // Best effort for app-owned disposable materializations.
-            }
-        }
-        try
-        {
-            Directory.Delete(destination, recursive: false);
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException)
-        {
-            // Never delete unknown files recursively.
         }
     }
 
@@ -422,7 +406,9 @@ internal sealed class WorkspaceDocumentDiffCoordinator
         Guid HistoricalRevisionId,
         Guid EffectiveRevisionId,
         string HistoricalMimeType,
-        string EffectiveMimeType);
+        string EffectiveMimeType,
+        string HistoricalContentHash,
+        string EffectiveContentHash);
 
     private sealed class DocumentDiffSidecarException(string failure)
         : Exception
