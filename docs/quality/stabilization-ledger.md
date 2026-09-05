@@ -60,3 +60,9 @@
   新 epoch 的 mutation 成功；全部场景 Host exit code 为 0、无后代进程且端口释放。
 - 当前程序处于开发阶段，不再构建历史候选或把跨版本 workspace 升级作为发布门禁；发布资产继续
   沿用既有 checksum 契约。
+
+## 2026-09-06 目录副本恢复证据
+
+场景 `23-directory-replica-recovery` 已进入可信 main 的打包报告，见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)。公开释放活动缓存后同 UUID 重开，再经精确 sidecar 终止和替代进程 readiness，记录、revision 与 replica 状态保持；退出清理亦通过。
+
+这关闭了目录副本恢复的场景缺口。V-02 所述手动 `replica.synchronize` 保持 Internal only，不以内部协调成功替代公开手动同步、跨设备 reconnect、冲突或 exclusive-writer 资格。

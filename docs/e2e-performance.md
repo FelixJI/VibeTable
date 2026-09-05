@@ -4,55 +4,54 @@
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@24c7d3ec7c3766f46b8a3e5879fd9f12e12b434a`
-- GitHub run：[main CI 33028988918](https://github.com/FelixJI/VibeTable/actions/runs/33028988918)
+- source SHA：`GitHub/main@ede74ab2d9880052beb7532f039cd3ac3420611b`
+- GitHub run：[main CI 33975773081](https://github.com/FelixJI/VibeTable/actions/runs/33975773081)
 - 报告契约：`contractVersion=2.0`
-- 结果：22/22 passed、0 failed、0 skipped。
-- 当前 manifest gap：1（`23-directory-replica-recovery`）。
+- 结果：23/23 passed、0 failed、0 skipped。
+- 当前 manifest gap：无。
 - 当前 manifest surplus：无。
-- 诊断：0 个未确认 bridge failure、0 个 pending request；`history.query` 与
+- 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
-Timeline point/date 移动已在同一 `main` 打包候选上通过，并确认正常退出后的 Host、WebView2、
-BFF 与 sidecar 生命周期清理完成；对应声明范围由此闭环。
+目录镜像工作区的公开创建、表与记录写入、释放活动缓存、同 UUID 重开，以及精确终止 sidecar 后的替代进程恢复，均已在同一 main 打包候选的场景 23 通过。16 项断言包含单次 `query.page` 与 `replica.status` 观察、精确终态、记录及 revision 保持。全部场景均附着真实 WebView2；正常退出后 Host exit code 为 0、进程组及后代为空、端口已释放。
 
-该功能场景已进入 manifest，但尚无对应 `required` 打包报告；当前权威
-基线仍是上述 22/22，不得提前宣称 canonical 23/23。
+本结论仅覆盖场景声明的目录副本恢复，不扩展为手动同步、跨设备 offline/reconnect、冲突处理或 exclusive-writer 资格。手动 `replica.synchronize` 继续 Internal only。
 
 该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
 保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。
 
-### 当前 22 场景耗时（2026-08-27）
+### 当前 23 场景耗时（2026-09-06）
 
 | 场景 | 耗时 |
 |---|---:|
-| `01-offline-first-start` | 7.739s |
-| `02-all-field-schema` | 56.809s |
-| `03-schema-errors` | 31.333s |
-| `04-json-round-trip` | 32.527s |
-| `05-formula-lifecycle` | 20.491s |
-| `06-relation-fanout` | 30.876s |
-| `07-attachment-history` | 33.075s |
-| `08-stale-conflict` | 18.379s |
-| `09-atomic-import-scale` | 17.947s |
-| `10-sse-reconnect` | 31.743s |
-| `11-plugin-mutation` | 23.227s |
-| `12-backup-consistency` | 55.677s |
-| `13-protection-policy` | 10.133s |
-| `14-document-diff` | 11.230s |
-| `15-workspace-snapshot-package` | 71.576s |
-| `16-dashboard-lifecycle` | 49.583s |
-| `17-interface-lifecycle` | 34.577s |
-| `18-workspace-search` | 67.268s |
-| `19-gallery-lifecycle` | 36.683s |
-| `20-kanban-lane-drag` | 41.138s |
-| `21-calendar-date-move` | 42.814s |
-| `22-timeline-date-move` | 46.657s |
+| `01-offline-first-start` | 6.421s |
+| `02-all-field-schema` | 48.319s |
+| `03-schema-errors` | 34.583s |
+| `04-json-round-trip` | 35.900s |
+| `05-formula-lifecycle` | 30.614s |
+| `06-relation-fanout` | 16.260s |
+| `07-attachment-history` | 23.165s |
+| `08-stale-conflict` | 16.044s |
+| `09-atomic-import-scale` | 19.081s |
+| `10-sse-reconnect` | 28.551s |
+| `11-plugin-mutation` | 17.088s |
+| `12-backup-consistency` | 53.705s |
+| `13-protection-policy` | 8.534s |
+| `14-document-diff` | 9.413s |
+| `15-workspace-snapshot-package` | 64.465s |
+| `16-dashboard-lifecycle` | 47.677s |
+| `17-interface-lifecycle` | 28.134s |
+| `18-workspace-search` | 55.800s |
+| `19-gallery-lifecycle` | 25.694s |
+| `20-kanban-lane-drag` | 45.762s |
+| `21-calendar-date-move` | 45.006s |
+| `22-timeline-date-move` | 36.335s |
+| `23-directory-replica-recovery` | 50.376s |
 
-当前 `history.query` 共 8 次，p50 50.6ms、p95/max 240.1ms，低于 500ms 告警线；
-`history.drawer.initialLoad` 共 2 次，p50 110.57ms、p95/max 318.45ms，低于 750ms 告警线。
-场景耗时范围为 7.739s–71.576s，均低于 180s 防挂死上限；这些耗时包含应用启动与 fixture
-准备，不能解释为单次用户交互延迟。
+当前 `history.query` 共 8 次，p50 31.1ms、p95/max 352.6ms，低于 500ms 告警线；
+`history.drawer.initialLoad` 共 2 次，p50 140.41ms、p95/max 355.38ms，低于 750ms 告警线。
+场景耗时范围为 6.421s–64.465s，均低于 180s 防挂死上限；这些耗时包含应用启动与 fixture
+准备，不能解释为单次用户交互延迟，也不据单次样本宣称性能改善。
 
 ## 测量口径
 
