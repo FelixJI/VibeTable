@@ -130,5 +130,11 @@
     "title": "Timeline 单日期拖动持久化",
     "requirement": "通过真实 Tables UI 创建 date 字段并配置无结束字段的 Timeline；把权威 point 记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。",
     "capabilities": ["timeline.lifecycle", "mutation.authority"]
+  },
+  {
+    "id": "23-directory-replica-recovery",
+    "title": "目录副本释放、重开与进程恢复",
+    "requirement": "通过真实 Workspace Center 创建目录镜像工作区，并在真实 Tables UI 写入表与记录；公开释放活动缓存后以同一 workspace UUID 重开，等待 database.opened，再以单次 query.page 与 replica.status 验证目录副本；精确终止 sidecar 并等待同 session 的 replacement database.opened，最后以单次查询和状态读取证明数据与副本状态保持一致。",
+    "capabilities": ["workspace.lifecycle", "workspace.protection", "replica.recovery"]
   }
 ]

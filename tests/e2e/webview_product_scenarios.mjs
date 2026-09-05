@@ -36,6 +36,7 @@ import {
   waitForCapturedBridgeMessage,
 } from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
+import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { waitForWorkspaceSearchRebuildTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
@@ -6314,6 +6315,293 @@ async function scenario22(page, recorder, _network, runtime) {
   });
 }
 
+function hasExactWorkspaceWire(message) {
+  const outer = message?.wire;
+  const inner = message?.payload?.wire;
+  if (!outer || !inner || typeof outer !== "object" || typeof inner !== "object") return false;
+  const outerKeys = Object.keys(outer).sort();
+  const innerKeys = Object.keys(inner).sort();
+  return typeof message.requestId === "string"
+    && message.requestId.length > 0
+    && typeof outer.operationId === "string"
+    && outer.scope === "global"
+    && outerKeys.length === 3
+    && innerKeys.length === 3
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+      .test(outer.operationId)
+    && Number.isSafeInteger(outer.sequence)
+    && outer.sequence >= 0
+    && outerKeys.length === innerKeys.length
+    && outerKeys.every((key, index) => key === innerKeys[index] && outer[key] === inner[key]);
+}
+
+async function activateDirectoryReplicaWorkspace(page, { method, activate }) {
+  const workspaceCenter = page.getByTestId("workspace-center");
+  const databaseOpened = await activateWorkspaceAndWaitForDatabaseOpened({
+    beginCapture: (expectation) => beginWorkspaceActivationCapture(page, {
+      ...expectation, waitForHydration: true,
+    }),
+    activate,
+    waitForActivation: (timeoutMs) => Promise.race([
+      workspaceCenter.waitFor({ state: "hidden", timeout: timeoutMs })
+        .then(() => ({ kind: "opened" })),
+      page.getByTestId("workspace-operation-error")
+        .waitFor({ state: "visible", timeout: timeoutMs })
+        .then(async () => ({
+          kind: "failed",
+          message: await page.getByTestId("workspace-operation-error").innerText(),
+        })),
+    ]),
+    method,
+  });
+  const session = await page.evaluate(
+    () => window.__vibetableE2EBridgeCapture?.session ?? null,
+  );
+  if (!session) throw new Error(`activation capture omitted ${method} session`);
+  return { databaseOpened, session };
+}
+
+async function readDirectoryReplicaCheckpoint(page, tableId) {
+  const query = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  const replicaReply = await rawWorkspaceV2Request(page, "replica.status", {});
+  return { query, replica: replicaReply.result };
+}
+
+async function scenario23(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const originalSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeCapture?.session ?? null,
+  );
+  if (!originalSession) throw new Error("initial workspace activation omitted its session");
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  const modal = page.getByTestId("workspace-flow-modal");
+  const workspaceName = "E2E Directory Replica";
+  await modal.locator("input").first().fill(workspaceName);
+  await modal.locator('.n-radio-button:has(input[value="other"])').click();
+  await modal.locator('.n-radio-button:has(input[value="mirrored"])').click();
+  const syncMark = page.getByTestId("workspace-user-marked-sync");
+  await syncMark.click();
+  recorder.check("Workspace Center exposes the requested mirrored directory topology",
+    await modal.locator('input[value="other"]').isChecked()
+      && await modal.locator('input[value="mirrored"]').isChecked()
+      && await syncMark.getAttribute("aria-checked") === "true",
+  { workspaceName });
+
+  await beginWorkspaceV2MethodCapture(page, "workspace.create");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const createTerminal = await waitForCapturedBridgeMessage(page, 60_000);
+  const workspaceId = createTerminal.payload?.result?.workspaceId;
+  recorder.check("mirrored workspace creation returns one exact global wire terminal",
+    createTerminal.type === "workspace.v2.response"
+      && createTerminal.payload?.method === "workspace.create"
+      && createTerminal.payload?.ok === true
+      && createTerminal.payload?.result?.status === "created"
+      && typeof workspaceId === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+        .test(workspaceId)
+      && hasExactWorkspaceWire(createTerminal),
+  { createTerminal });
+  const card = page.getByTestId("workspace-center").getByRole("button", {
+    name: new RegExp(workspaceName),
+  });
+  await card.waitFor({ state: "visible", timeout: 60_000 });
+
+  const initial = await activateDirectoryReplicaWorkspace(page, {
+    method: "workspace.switch",
+    activate: () => card.click(),
+  });
+  const initialSession = initial.session;
+  const initialIdentity = workspaceId.replaceAll("-", "");
+  recorder.check("new directory replica opens one exact provisional project session",
+    initialSession.workspaceId === workspaceId
+      && initialSession.sessionEpoch > originalSession.sessionEpoch
+      && initialSession.state === "openedProvisional"
+      && initialSession.openMode === "provisional"
+      && initialSession.writable === false
+      && initialSession.provisional === true
+      && initial.databaseOpened.payload?.projectKey === `local:${initialIdentity}`
+      && initial.databaseOpened.payload?.projectRevision
+        === `${initialIdentity}:${initialSession.sessionEpoch}`,
+  { originalSession, initial });
+
+  await page.getByTestId("home-view").waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("nav-tables").click();
+  const tableName = "E2E Directory Replica Records";
+  const table = await createSimpleTable(page, tableName, "Value");
+  await selectTable(page, tableName);
+  const insertCaptureId = await page.evaluate(
+    installTableMutationReceiptCaptureInPage,
+    { requestType: "table.insertRowRequested" },
+  );
+  await page.getByTestId("toolbar-insert-row").click({ timeout: 30_000 });
+  const insertReceipt = await waitForCapturedBridgeMessage(page, 30_000, insertCaptureId);
+  recorder.check("public row insertion returns one exact committed mutation receipt",
+    insertReceipt.type === "table.rowsInserted"
+      && insertReceipt.owner?.requestType === "table.insertRowRequested"
+      && insertReceipt.owner?.table === table.tableId
+      && insertReceipt.owner?.workspaceId === initialSession.workspaceId
+      && insertReceipt.owner?.sessionEpoch === initialSession.sessionEpoch
+      && Array.isArray(insertReceipt.owner?.valueKeys)
+      && insertReceipt.owner.valueKeys.length === 0
+      && (typeof insertReceipt.payload?.rowKey === "string"
+        || Number.isSafeInteger(insertReceipt.payload?.rowKey))
+      && typeof insertReceipt.payload?.revision?.databaseSessionId === "string"
+      && insertReceipt.payload.revision.databaseSessionId.length > 0
+      && typeof insertReceipt.payload?.revision?.schemaRevision === "string"
+      && insertReceipt.payload.revision.schemaRevision.length > 0
+      && insertReceipt.owner?.schemaRevision === insertReceipt.payload.revision.schemaRevision
+      && Number.isSafeInteger(insertReceipt.payload?.revision?.dataRevision)
+      && insertReceipt.payload.revision.dataRevision >= 0,
+  { insertReceipt });
+  const value = "directory replica survives";
+  const cell = page.locator(
+    `.tabulator-cell.tabulator-editable[tabulator-field="${table.field.physicalName}"]`,
+  ).first();
+  await cell.waitFor({ state: "visible", timeout: 30_000 });
+  await cell.dblclick();
+  const editor = cell.locator("input, textarea").first();
+  await editor.waitFor({ state: "visible", timeout: 10_000 });
+  await editor.fill(value);
+  const editCaptureId = await page.evaluate(
+    installTableMutationReceiptCaptureInPage,
+    { requestType: "table.updateCellRequested" },
+  );
+  await editor.press("Enter");
+  const editTerminal = await waitForCapturedBridgeMessage(page, 30_000, editCaptureId);
+  recorder.check("public cell edit commits the inserted row with an advancing revision",
+    editTerminal.type === "table.editCommitted"
+      && editTerminal.owner?.requestType === "table.updateCellRequested"
+      && editTerminal.owner?.table === table.tableId
+      && editTerminal.owner?.workspaceId === initialSession.workspaceId
+      && editTerminal.owner?.sessionEpoch === initialSession.sessionEpoch
+      && editTerminal.owner?.rowKey === insertReceipt.payload?.rowKey
+      && editTerminal.owner?.column === table.field.physicalName
+      && editTerminal.owner?.schemaRevision === insertReceipt.payload?.revision?.schemaRevision
+      && editTerminal.payload?.rowKey === insertReceipt.payload?.rowKey
+      && editTerminal.payload?.column === table.field.physicalName
+      && editTerminal.payload?.storedValue === value
+      && editTerminal.payload?.currentRow?.[table.field.physicalName] === value
+      && editTerminal.payload?.revision?.databaseSessionId
+        === insertReceipt.payload?.revision?.databaseSessionId
+      && editTerminal.payload?.revision?.schemaRevision
+        === insertReceipt.payload?.revision?.schemaRevision
+      && Number.isSafeInteger(editTerminal.payload?.revision?.dataRevision)
+      && editTerminal.payload.revision.dataRevision
+        > insertReceipt.payload?.revision?.dataRevision,
+  { insertReceipt, editTerminal });
+  await cell.filter({ hasText: value }).waitFor({ state: "visible", timeout: 30_000 });
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  await page.getByTestId("storage-settings").waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("workspace-storage-release-cache-preview").click({ timeout: 90_000 });
+  await page.getByTestId("workspace-storage-confirmation").locator("input").fill(workspaceName);
+  await beginWorkspaceV2MethodCapture(page, "workspace.storage.apply");
+  await page.getByTestId("workspace-storage-relocate-apply").click();
+  const releaseTerminal = await waitForCapturedBridgeMessage(page, 60_000);
+  const releasedStorage = releaseTerminal.payload?.result?.storage;
+  recorder.check("public storage release applies the verified replica and exact wire identity",
+    releaseTerminal.type === "workspace.v2.response"
+      && releaseTerminal.payload?.method === "workspace.storage.apply"
+      && releaseTerminal.payload?.ok === true
+      && releaseTerminal.payload?.result?.workspaceId === workspaceId
+      && releaseTerminal.payload?.result?.status === "applied"
+      && releasedStorage?.mode === "mirrored"
+      && releasedStorage?.pendingSync === false
+      && releasedStorage?.replicaVerified === true
+      && hasExactWorkspaceWire(releaseTerminal),
+  { releaseTerminal });
+
+  await page.getByTestId("nav-home").click();
+  const workspaceCenter = page.getByTestId("workspace-center");
+  await workspaceCenter.waitFor({ state: "visible", timeout: 60_000 });
+  const reopenCard = workspaceCenter.getByRole("button", { name: new RegExp(workspaceName) });
+  const reopened = await activateDirectoryReplicaWorkspace(page, {
+    method: "workspace.open",
+    activate: () => reopenCard.click(),
+  });
+  const session = reopened.session;
+  const identity = workspaceId.replaceAll("-", "");
+  recorder.check("released directory replica reopens the same UUID as one provisional session",
+    session.workspaceId === workspaceId
+      && session.sessionEpoch > initialSession.sessionEpoch
+      && session.state === "openedProvisional"
+      && session.openMode === "provisional"
+      && session.writable === false
+      && session.provisional === true
+      && reopened.databaseOpened.payload?.projectKey === `local:${identity}`
+      && reopened.databaseOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
+  { initialSession, reopened });
+
+  const beforeRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const beforeRow = beforeRestart.query.payload?.rows?.[0];
+  const beforeSnapshot = beforeRestart.query.payload?.snapshot;
+  const replica = beforeRestart.replica;
+  recorder.check("one query and one status expose the released directory replica",
+    beforeRestart.query.type === "query.page"
+      && beforeRestart.query.payload?.rows?.length === 1
+      && beforeRow?.[table.field.physicalName] === value
+      && beforeRow?.id === insertReceipt.payload?.rowKey
+      && beforeSnapshot?.table === table.tableId
+      && typeof beforeSnapshot?.databaseId === "string"
+      && beforeSnapshot.databaseId.length > 0
+      && beforeSnapshot?.schemaRevision === editTerminal.payload?.revision?.schemaRevision
+      && beforeSnapshot?.dataRevision === editTerminal.payload?.revision?.dataRevision
+      && replica.coordinationStrength === "advisory"
+      && replica.syncState === "replicated"
+      && replica.pendingSync === false,
+  { beforeRestart });
+
+  const bridgeBeforeRestart = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("directory replica restart begins from a quiescent bridge",
+    bridgeBeforeRestart !== null
+      && (bridgeBeforeRestart.failures ?? []).length === 0
+      && (bridgeBeforeRestart.pending ?? []).length === 0,
+  { bridgeBeforeRestart });
+
+  await beginBridgeMessageCapture(page, ["database.opened"]);
+  const kill = await requestSidecarKill(
+    runtime,
+    "verify released directory replica survives restart",
+  );
+  const replacementOpened = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("the packaged controller kills one exact sidecar before same-session readiness",
+    kill.status === "completed"
+      && kill.action === "kill-sidecar"
+      && kill.processName === "vibetable-pb.exe"
+      && Number.isInteger(kill.pid)
+      && kill.pid > 0
+      && replacementOpened.type === "database.opened"
+      && replacementOpened.payload?.projectKey === `local:${identity}`
+      && replacementOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
+  { kill, replacementOpened, session });
+
+  const afterRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const afterRow = afterRestart.query.payload?.rows?.[0];
+  const afterSnapshot = afterRestart.query.payload?.snapshot;
+  recorder.check("replacement sidecar preserves the exact row, revisions, and replica status",
+    afterRestart.query.type === "query.page"
+      && afterRestart.query.payload?.rows?.length === 1
+      && afterRow?.id === beforeRow.id
+      && afterRow?.[table.field.physicalName] === value
+      && afterSnapshot?.table === beforeSnapshot.table
+      && afterSnapshot?.databaseId === beforeSnapshot.databaseId
+      && afterSnapshot?.schemaRevision === beforeSnapshot.schemaRevision
+      && afterSnapshot?.dataRevision === beforeSnapshot.dataRevision
+      && afterRestart.replica.coordinationStrength === replica.coordinationStrength
+      && afterRestart.replica.syncState === replica.syncState
+      && afterRestart.replica.pendingSync === replica.pendingSync,
+  { beforeRestart, afterRestart });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "23-directory-replica-recovery.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -6337,6 +6625,7 @@ const scenarios = {
   "20-kanban-lane-drag": scenario20,
   "21-calendar-date-move": scenario21,
   "22-timeline-date-move": scenario22,
+  "23-directory-replica-recovery": scenario23,
 };
 
 async function main() {
