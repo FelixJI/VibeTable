@@ -436,25 +436,26 @@ func (repository *KopiaRepository) advanceRetentionJournal(
 		}
 		next.Revision++
 		journal.Stage = "mapping-removed"
-		sessionCtx, writer, err := direct.NewDirectWriter(
+		if err := withDirectWriter(
 			ctx,
-			kopiarepo.WriteSessionOptions{
-				Purpose: "VibeTable retention mapping removal",
+			direct,
+			"VibeTable retention mapping removal",
+			func(sessionCtx context.Context, writer kopiarepo.DirectRepositoryWriter) error {
+				if err := putKopiaState(sessionCtx, writer, next); err != nil {
+					return err
+				}
+				if err := putRetentionJournal(sessionCtx, writer, *journal); err != nil {
+					return err
+				}
+				if err := writer.Flush(sessionCtx); err != nil {
+					return err
+				}
+				repository.state = next
+				return nil
 			},
-		)
-		if err != nil {
+		); err != nil {
 			return err
 		}
-		if err := putKopiaState(sessionCtx, writer, next); err != nil {
-			return err
-		}
-		if err := putRetentionJournal(sessionCtx, writer, *journal); err != nil {
-			return err
-		}
-		if err := writer.Flush(sessionCtx); err != nil {
-			return err
-		}
-		repository.state = next
 		if err := injectRetentionFault(
 			ctx,
 			retentionAfterMappingRemoval,
@@ -476,55 +477,50 @@ func (repository *KopiaRepository) advanceRetentionJournal(
 		); err != nil {
 			return err
 		}
-		sessionCtx, writer, err := direct.NewDirectWriter(
+		if err := withDirectWriter(
 			ctx,
-			kopiarepo.WriteSessionOptions{
-				Purpose: "VibeTable retention content retirement",
-			},
-		)
-		if err != nil {
-			return err
-		}
-		for _, item := range journal.Objects {
-			for _, rawID := range item.ContentIDs {
-				contentID, parseErr := kopiacontent.ParseID(rawID)
-				if parseErr != nil {
-					return ErrCorrupt
-				}
-				info, infoErr := writer.ContentManager().ContentInfo(
-					sessionCtx,
-					contentID,
-				)
-				if infoErr == nil && !info.Deleted {
-					if err := writer.ContentManager().DeleteContent(
-						sessionCtx,
-						contentID,
-					); err != nil {
-						return err
+			direct,
+			"VibeTable retention content retirement",
+			func(sessionCtx context.Context, writer kopiarepo.DirectRepositoryWriter) error {
+				for _, item := range journal.Objects {
+					for _, rawID := range item.ContentIDs {
+						contentID, parseErr := kopiacontent.ParseID(rawID)
+						if parseErr != nil {
+							return ErrCorrupt
+						}
+						info, infoErr := writer.ContentManager().ContentInfo(
+							sessionCtx,
+							contentID,
+						)
+						if infoErr == nil && !info.Deleted {
+							if err := writer.ContentManager().DeleteContent(
+								sessionCtx,
+								contentID,
+							); err != nil {
+								return err
+							}
+						}
 					}
 				}
-			}
-		}
-		// Make the delete markers durable before the next crash boundary.
-		// A raw DeleteContent call can leave an active Kopia write session;
-		// abandoning it would correctly block all future destructive work as
-		// an unknown pending publication. Flushing the content manager first
-		// makes this boundary both crash-testable and replayable.
-		if err := writer.ContentManager().Flush(sessionCtx); err != nil {
-			return err
-		}
-		if err := injectRetentionFault(
-			ctx,
-			retentionAfterContentDelete,
-		); err != nil {
-			return err
-		}
-		if err := writer.Flush(sessionCtx); err != nil {
-			return err
-		}
-		if err := injectRetentionFault(
-			ctx,
-			retentionAfterContentFlush,
+				// Make the delete markers durable before the next crash boundary.
+				// A raw DeleteContent call can leave an active Kopia write session;
+				// abandoning it would correctly block all future destructive work as
+				// an unknown pending publication. Flushing the content manager first
+				// makes this boundary both crash-testable and replayable.
+				if err := writer.ContentManager().Flush(sessionCtx); err != nil {
+					return err
+				}
+				if err := injectRetentionFault(
+					ctx,
+					retentionAfterContentDelete,
+				); err != nil {
+					return err
+				}
+				if err := writer.Flush(sessionCtx); err != nil {
+					return err
+				}
+				return injectRetentionFault(ctx, retentionAfterContentFlush)
+			},
 		); err != nil {
 			return err
 		}
@@ -553,35 +549,33 @@ func (repository *KopiaRepository) advanceRetentionJournal(
 	); err != nil {
 		return err
 	}
-	sessionCtx, writer, err := direct.NewDirectWriter(
-		ctx,
-		kopiarepo.WriteSessionOptions{
-			Purpose: "VibeTable retention journal completion",
-		},
-	)
-	if err != nil {
-		return err
-	}
 	// Completing a retirement is itself an inventory publication.  This
 	// additional revision is essential when a process restarts after the
 	// public mapping was removed: the replay request is bound to that current
 	// revision and must still return a strictly newer verified inventory.
 	next := cloneKopiaState(repository.state)
 	next.Revision++
-	if journal.Stage != "completed" {
-		journal.Stage = "completed"
-		if err := putRetentionJournal(sessionCtx, writer, *journal); err != nil {
-			return err
-		}
-	}
-	if err := putKopiaState(sessionCtx, writer, next); err != nil {
-		return err
-	}
-	if err := writer.Flush(sessionCtx); err != nil {
-		return err
-	}
-	repository.state = next
-	return nil
+	return withDirectWriter(
+		ctx,
+		direct,
+		"VibeTable retention journal completion",
+		func(sessionCtx context.Context, writer kopiarepo.DirectRepositoryWriter) error {
+			if journal.Stage != "completed" {
+				journal.Stage = "completed"
+				if err := putRetentionJournal(sessionCtx, writer, *journal); err != nil {
+					return err
+				}
+			}
+			if err := putKopiaState(sessionCtx, writer, next); err != nil {
+				return err
+			}
+			if err := writer.Flush(sessionCtx); err != nil {
+				return err
+			}
+			repository.state = next
+			return nil
+		},
+	)
 }
 
 func (repository *KopiaRepository) verifyNoSharedLiveContent(
@@ -632,44 +626,42 @@ func (repository *KopiaRepository) runFullMaintenance(
 	ctx context.Context,
 	direct kopiarepo.DirectRepository,
 ) error {
-	sessionCtx, writer, err := direct.NewDirectWriter(
+	return withDirectWriter(
 		ctx,
-		kopiarepo.WriteSessionOptions{
-			Purpose: "VibeTable retention full maintenance",
-		},
-	)
-	if err != nil {
-		return err
-	}
-	params, err := maintenance.GetParams(sessionCtx, writer)
-	if err != nil {
-		return err
-	}
-	owner := writer.ClientOptions().UsernameAtHost()
-	if params.Owner == "" {
-		params.Owner = owner
-		if err := maintenance.SetParams(sessionCtx, writer, params); err != nil {
-			return err
-		}
-		if err := writer.Flush(sessionCtx); err != nil {
-			return err
-		}
-	} else if params.Owner != owner {
-		return errors.New("retention.maintenance_owner_mismatch")
-	}
-	return maintenance.RunExclusive(
-		sessionCtx,
-		writer,
-		maintenance.ModeFull,
-		true,
-		func(
-			runCtx context.Context,
-			parameters maintenance.RunParameters,
-		) error {
-			return maintenance.Run(
-				runCtx,
-				parameters,
-				maintenance.SafetyFull,
+		direct,
+		"VibeTable retention full maintenance",
+		func(sessionCtx context.Context, writer kopiarepo.DirectRepositoryWriter) error {
+			params, err := maintenance.GetParams(sessionCtx, writer)
+			if err != nil {
+				return err
+			}
+			owner := writer.ClientOptions().UsernameAtHost()
+			if params.Owner == "" {
+				params.Owner = owner
+				if err := maintenance.SetParams(sessionCtx, writer, params); err != nil {
+					return err
+				}
+				if err := writer.Flush(sessionCtx); err != nil {
+					return err
+				}
+			} else if params.Owner != owner {
+				return errors.New("retention.maintenance_owner_mismatch")
+			}
+			return maintenance.RunExclusive(
+				sessionCtx,
+				writer,
+				maintenance.ModeFull,
+				true,
+				func(
+					runCtx context.Context,
+					parameters maintenance.RunParameters,
+				) error {
+					return maintenance.Run(
+						runCtx,
+						parameters,
+						maintenance.SafetyFull,
+					)
+				},
 			)
 		},
 	)
@@ -715,19 +707,36 @@ func (repository *KopiaRepository) writeRetentionJournal(
 	direct kopiarepo.DirectRepository,
 	journal retentionJournal,
 ) error {
+	return withDirectWriter(
+		ctx,
+		direct,
+		"VibeTable retention journal",
+		func(sessionCtx context.Context, writer kopiarepo.DirectRepositoryWriter) error {
+			if err := putRetentionJournal(sessionCtx, writer, journal); err != nil {
+				return err
+			}
+			return writer.Flush(sessionCtx)
+		},
+	)
+}
+
+func withDirectWriter(
+	ctx context.Context,
+	direct kopiarepo.DirectRepository,
+	purpose string,
+	use func(context.Context, kopiarepo.DirectRepositoryWriter) error,
+) (err error) {
 	sessionCtx, writer, err := direct.NewDirectWriter(
 		ctx,
-		kopiarepo.WriteSessionOptions{
-			Purpose: "VibeTable retention journal",
-		},
+		kopiarepo.WriteSessionOptions{Purpose: purpose},
 	)
 	if err != nil {
 		return err
 	}
-	if err := putRetentionJournal(sessionCtx, writer, journal); err != nil {
-		return err
-	}
-	return writer.Flush(sessionCtx)
+	defer func() {
+		err = errors.Join(err, writer.Close(context.WithoutCancel(sessionCtx)))
+	}()
+	return use(sessionCtx, writer)
 }
 
 func putRetentionJournal(
