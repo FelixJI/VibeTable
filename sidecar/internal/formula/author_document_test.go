@@ -22,6 +22,68 @@ func authorFixture() (V2Table, map[string]V2Table) {
 	return V2Table{TableID: "orders", Fields: []v2.FieldDefinition{lines, shipping}}, map[string]V2Table{"f_lines": {TableID: "line_items", Fields: []v2.FieldDefinition{amount}}}
 }
 
+func TestAuthorDocumentRestoresCompilerAcceptedMemberCall(t *testing.T) {
+	field := scalarField("text_id", "f_text", textType)
+	field.DisplayName = "文本"
+	definition := V2Table{TableID: "table", Fields: []v2.FieldDefinition{field}}
+	canonical := "f_text.size()"
+	if _, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, canonical); err != nil {
+		t.Fatalf("existing compiler rejects fixture: %v", err)
+	}
+	restored, err := RestoreV2AuthorDocument(definition, nil, canonical, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Document.DisplaySource != "{文本}.size()" || len(restored.Document.Tokens) != 1 || restored.Document.Tokens[0].Kind != "field" {
+		t.Fatalf("member projection = %#v", restored)
+	}
+	authored, err := AuthorV2Document(definition, nil, restored.Document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authored.CanonicalSource != canonical {
+		t.Fatalf("member round trip = %q", authored.CanonicalSource)
+	}
+}
+
+func TestAuthorDocumentBoundLabelsAreLexicalAtoms(t *testing.T) {
+	for _, name := range []string{"金}额", "金{额", "金\"额", "金'额", "金\r\n😀额", "金) + SUM(额", "金}.{额", "金//额"} {
+		t.Run(name, func(t *testing.T) {
+			definition, targets := authorFixture()
+			definition.Fields[0].DisplayName = name
+			definition.Fields[1].DisplayName = name
+			target := targets["f_lines"]
+			target.Fields[0].DisplayName = name
+			targets["f_lines"] = target
+			canonical := `f_shipping + relationSum(f_lines, "f_amount") + relationCount(f_lines)`
+			restored, err := RestoreV2AuthorDocument(definition, targets, canonical, 5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authored, err := AuthorV2Document(definition, targets, restored.Document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authored.CanonicalSource != canonical || !reflect.DeepEqual(authored.Document, restored.Document) {
+				t.Fatalf("bound label changed semantics: %#v", authored)
+			}
+			definition.Fields[1].DisplayName = "再次改名"
+			renamed, err := AuthorV2Document(definition, targets, authored.Document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if renamed.CanonicalSource != canonical {
+				t.Fatalf("stale bound label changed canonical: %#v", renamed)
+			}
+			renamed.Document.DisplaySource += " + {再次改名}"
+			mixed, err := AuthorV2Document(definition, targets, renamed.Document)
+			if err != nil || mixed.CanonicalSource != canonical+" + f_shipping" {
+				t.Fatalf("bound label interfered with unbound paste: %#v / %v", mixed, err)
+			}
+		})
+	}
+}
+
 func TestAuthorDocumentStableIdentityRenameAndRoundTrip(t *testing.T) {
 	definition, targets := authorFixture()
 	document := workbench.FormulaAuthorDocument{DisplaySource: "SUM({明细}.{金额}) + {运费}", DocumentRevision: 19}
@@ -134,7 +196,10 @@ func FuzzAuthorDocumentCanonicalRoundTrip(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		definition.Fields[1].DisplayName = "改名😀" + strconv.Itoa(int(variant))
+		definition.Fields[1].DisplayName = "改名😀" + literal
+		target := targets["f_lines"]
+		target.Fields[0].DisplayName = "目标" + literal
+		targets["f_lines"] = target
 		restored, err := RestoreV2AuthorDocument(definition, targets, authored.CanonicalSource, authored.Document.DocumentRevision)
 		if err != nil {
 			t.Fatal(err)
@@ -221,6 +286,11 @@ func TestAuthorDocumentRejectsForgedRangesAndIdentityCombinations(t *testing.T) 
 			d.Tokens[0].FieldId = "deleted"
 			d.Tokens[0].Range.Start.Character = 1
 			d.Tokens[0].Range.End.Character = 6
+		}},
+		{"comment", func(d *workbench.FormulaAuthorDocument) {
+			d.DisplaySource = "// {运费}"
+			d.Tokens[0].Range.Start.Character = 3
+			d.Tokens[0].Range.End.Character = 7
 		}},
 		{"surrogate", func(d *workbench.FormulaAuthorDocument) {
 			d.DisplaySource = "😀{运费}"
