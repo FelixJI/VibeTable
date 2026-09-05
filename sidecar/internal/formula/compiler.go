@@ -114,8 +114,8 @@ func (compiler *Compiler) Compile(
 			"language": field.Formula.Language,
 		})
 	}
-	source := strings.TrimSpace(field.Formula.Source)
-	if source == "" {
+	source := field.Formula.Source
+	if strings.TrimSpace(source) == "" {
 		return nil, formulaError("formula.syntax", "formula source is empty", nil)
 	}
 	if len(source) > compiler.limits.SourceBytes {
@@ -130,9 +130,7 @@ func (compiler *Compiler) Compile(
 	}
 	parsed, issues := env.Parse(source)
 	if issues != nil && issues.Err() != nil {
-		return nil, formulaError("formula.syntax", "formula could not be parsed", map[string]any{
-			"reason": issues.Err().Error(),
-		})
+		return nil, formulaIssuesError("formula.syntax", "formula could not be parsed", source, issues)
 	}
 	ast, issues := env.Check(parsed)
 	if issues != nil && issues.Err() != nil {
@@ -142,9 +140,7 @@ func (compiler *Compiler) Compile(
 			code = "formula.dependency"
 			message = "formula references an unknown field or function"
 		}
-		return nil, formulaError(code, message, map[string]any{
-			"reason": issues.Err().Error(),
-		})
+		return nil, formulaIssuesError(code, message, source, issues)
 	}
 	checked, err := cel.AstToCheckedExpr(ast)
 	if err != nil {
@@ -220,8 +216,7 @@ func (compiler *Compiler) InferExecutionSource(
 	definition schemaexecution.Table,
 	source string,
 ) (ValueType, *Error) {
-	source = strings.TrimSpace(source)
-	if source == "" {
+	if strings.TrimSpace(source) == "" {
 		return ValueType{}, formulaError("formula.syntax", "formula source is empty", nil)
 	}
 	if len(source) > compiler.limits.SourceBytes {
@@ -236,10 +231,7 @@ func (compiler *Compiler) InferExecutionSource(
 	}
 	parsed, issues := env.Parse(source)
 	if issues != nil && issues.Err() != nil {
-		return ValueType{}, formulaError(
-			"formula.syntax", "formula could not be parsed",
-			map[string]any{"reason": issues.Err().Error()},
-		)
+		return ValueType{}, formulaIssuesError("formula.syntax", "formula could not be parsed", source, issues)
 	}
 	ast, issues := env.Check(parsed)
 	if issues != nil && issues.Err() != nil {
@@ -249,9 +241,7 @@ func (compiler *Compiler) InferExecutionSource(
 			code = "formula.dependency"
 			message = "formula references an unknown field or function"
 		}
-		return ValueType{}, formulaError(code, message, map[string]any{
-			"reason": issues.Err().Error(),
-		})
+		return ValueType{}, formulaIssuesError(code, message, source, issues)
 	}
 	checked, err := cel.AstToCheckedExpr(ast)
 	if err != nil {

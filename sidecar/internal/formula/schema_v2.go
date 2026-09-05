@@ -1,6 +1,9 @@
 package formula
 
 import (
+	"strings"
+
+	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -41,11 +44,11 @@ func CanonicalizeV2DisplaySource(
 	targets map[string]V2Table,
 	displaySource string,
 ) (string, *Error) {
-	executionTargets := make(map[string]schemaexecution.Table, len(targets))
-	for physicalName, target := range targets {
-		executionTargets[physicalName] = executionTable(target)
+	result, err := AuthorV2Document(definition, targets, workbench.FormulaAuthorDocument{
+		DisplaySource: displaySource, DocumentRevision: 1,
+	})
+	if err != nil {
+		return "", err
 	}
-	return CanonicalizeExecutionDisplaySource(
-		executionTable(definition), executionTargets, displaySource,
-	)
+	return strings.TrimSpace(result.CanonicalSource), nil
 }
