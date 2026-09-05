@@ -1664,17 +1664,31 @@ def _wait_for_self_update_rollback(
         ):
             time.sleep(0.05)
             continue
+        evidence_role = "failed-readiness"
         try:
             failed = (
                 json.loads(health_failure_readiness.read_text(encoding="utf-8"))
                 if health_failure_readiness is not None
                 else None
             )
+            evidence_role = "rollback-receipt"
             receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+            evidence_role = "restored-readiness"
             restored = json.loads(restored_readiness.read_text(encoding="utf-8"))
+            evidence_role = "restored-state"
             state = json.loads(restored_state.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise BuildError("desktop self-update smoke rollback evidence is invalid") from exc
+        except json.JSONDecodeError as exc:
+            raise BuildError(
+                "desktop self-update smoke rollback evidence is invalid: "
+                f"{scenario_slug}/{evidence_role}: "
+                f"JSONDecodeError line={exc.lineno} column={exc.colno}"
+            ) from exc
+        except OSError as exc:
+            raise BuildError(
+                "desktop self-update smoke rollback evidence is invalid: "
+                f"{scenario_slug}/{evidence_role}: {type(exc).__name__} "
+                f"errno={exc.errno} winerror={getattr(exc, 'winerror', None)}"
+            ) from exc
         if health_failure_readiness is not None and (
             not isinstance(failed, dict)
             or failed.get("ready") is not False
