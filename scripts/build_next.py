@@ -1727,8 +1727,6 @@ def trigger_self_update_crash(
             "schemaVersion": 2,
             "state": "awaitingHealth",
             "smokeTest": True,
-            "targetRoot": str(target),
-            "stagingRoot": str(stage),
             "token": token,
             "currentVersion": "1.0.0",
             "targetVersion": "1.0.1",
@@ -1738,6 +1736,11 @@ def trigger_self_update_crash(
             "updatedProcessId": process_id,
             "launchNonce": None,
         }.items()
+    ):
+        raise BuildError("desktop self-update crash awaiting-health identity is invalid")
+    if any(
+        not isinstance(pointer.get(key), str) or Path(pointer[key]).resolve() != expected.resolve()
+        for key, expected in (("targetRoot", target), ("stagingRoot", stage))
     ):
         raise BuildError("desktop self-update crash awaiting-health identity is invalid")
     started = pointer.get("updatedStartedAtUtc")

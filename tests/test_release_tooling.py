@@ -996,10 +996,12 @@ def test_self_update_health_timeout_accepts_strict_rollback_after_hold_consumpti
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows process handle contract")
 @pytest.mark.parametrize(
-    "fault", [None, "normal", "reused-pid", "wait", "not-owned", "not-claimed", "open"]
+    "fault",
+    [None, "normal", "reused-pid", "wait", "not-owned", "not-claimed", "open", "target", "stage"],
 )
+@pytest.mark.parametrize("path_suffix", ["", os.sep])
 def test_crash_observer_holds_exact_handle_before_request_and_rejects_normal_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None, path_suffix: str
 ) -> None:
     import ctypes
     from ctypes import wintypes
@@ -1020,6 +1022,10 @@ def test_crash_observer_holds_exact_handle_before_request_and_rejects_normal_exi
         "updatedStartedAtUtc": started,
         "failureCode": None,
     }
+    pointer["targetRoot"] = str(fixture.target) + path_suffix
+    pointer["stagingRoot"] = str(fixture.stage) + path_suffix
+    if fault in ("target", "stage"):
+        pointer["targetRoot" if fault == "target" else "stagingRoot"] = str(tmp_path / "wrong")
     if fault == "not-claimed":
         pointer["state"] = "launchingUpdatedApp"
     (tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER).write_text(json.dumps(pointer))
@@ -1103,13 +1109,15 @@ def test_crash_observer_holds_exact_handle_before_request_and_rejects_normal_exi
         "not-owned": "not owned",
         "not-claimed": "identity is invalid",
         "open": "open failed",
+        "target": "identity is invalid",
+        "stage": "identity is invalid",
     }
     if fault is not None:
         with pytest.raises(build_next.BuildError, match=errors[fault]):
             observe()
     else:
         assert observe() == build_next._SelfUpdateCrashObservation(700, started, exit_code)
-    if fault in ("not-owned", "not-claimed"):
+    if fault in ("not-owned", "not-claimed", "target", "stage"):
         assert events == []
     elif fault == "open":
         assert events == ["open"]
