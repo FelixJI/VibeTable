@@ -595,6 +595,8 @@ public sealed class WorkspaceDocumentOsAdapterTests
         string diffRoot = Path.Combine(directory.Path, "diff-sessions");
         Directory.CreateDirectory(Path.GetDirectoryName(materialized)!);
         await File.WriteAllTextAsync(materialized, "current leaf");
+        byte[] sourceContent = await File.ReadAllBytesAsync(materialized);
+        DateTime sourceLastWriteTime = File.GetLastWriteTimeUtc(materialized);
         var engine = new InspectingDiffEngine();
         var epochs = new FakeEpochLeaseSource();
         var handler = new RecordingHandler(request =>
@@ -694,6 +696,8 @@ public sealed class WorkspaceDocumentOsAdapterTests
         Assert.AreEqual(1, result.RemovedLines);
         Assert.AreEqual("before", engine.Before);
         Assert.AreEqual("after", engine.After);
+        CollectionAssert.AreEqual(sourceContent, await File.ReadAllBytesAsync(materialized));
+        Assert.AreEqual(sourceLastWriteTime, File.GetLastWriteTimeUtc(materialized));
         Assert.IsTrue(!Directory.Exists(diffRoot) ||
             Directory.GetFileSystemEntries(diffRoot).Length == 0);
         Assert.AreEqual(3, epochs.LeaseCount);
