@@ -274,7 +274,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 	if document.DocumentRevision <= 0 {
 		return nil, formulaError("formula.author.revision", "documentRevision must be positive", nil)
 	}
-	if len(document.DisplaySource) > DefaultSourceLimit || len(document.Tokens) > DefaultSourceLimit {
+	if len(document.Tokens) > DefaultSourceLimit {
 		return nil, formulaError("formula.resource_limit", "author document exceeds the source limit", map[string]any{"limit": DefaultSourceLimit})
 	}
 	coordinates, err := indexAuthorSource(document.DisplaySource)
@@ -464,7 +464,13 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 			edits = append(edits, authorEdit{span: SourceSpan{Start: lexeme.start, End: lexeme.end}, display: lexeme.text, canonical: canonical})
 		}
 	}
-	return renderAuthor(document.DisplaySource, document.DocumentRevision, edits, false)
+	result, renderErr := renderAuthor(document.DisplaySource, document.DocumentRevision, edits, false)
+	// Display labels may expand after a rename without changing the executable
+	// formula. Apply CEL's byte budget to the resolved source, not those labels.
+	if result != nil && len(result.CanonicalSource) > DefaultSourceLimit {
+		return nil, formulaError("formula.resource_limit", "canonical source exceeds the source limit", map[string]any{"limit": DefaultSourceLimit})
+	}
+	return result, renderErr
 }
 
 // RestoreV2AuthorDocument projects persisted CEL without rewriting its bytes.

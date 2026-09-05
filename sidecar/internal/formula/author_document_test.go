@@ -22,6 +22,48 @@ func authorFixture() (V2Table, map[string]V2Table) {
 	return V2Table{TableID: "orders", Fields: []v2.FieldDefinition{lines, shipping}}, map[string]V2Table{"f_lines": {TableID: "line_items", Fields: []v2.FieldDefinition{amount}}}
 }
 
+func TestAuthorDocumentSourceBudgetExcludesExpandedLabels(t *testing.T) {
+	definition, targets := authorFixture()
+	canonical := strings.Repeat("f_shipping + ", 39) + "f_shipping"
+	if _, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, canonical); err != nil {
+		t.Fatalf("compiler rejects fixture: %v", err)
+	}
+	definition.Fields[1].DisplayName = strings.Repeat("费", 40)
+	restored, err := RestoreV2AuthorDocument(definition, targets, canonical, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Document.DisplaySource) <= DefaultSourceLimit {
+		t.Fatal("fixture must expand beyond the executable source budget")
+	}
+	for _, bound := range []bool{true, false} {
+		document := restored.Document
+		if !bound {
+			document.Tokens = nil
+		}
+		authored, err := AuthorV2Document(definition, targets, document)
+		if err != nil {
+			t.Fatalf("bound=%v: expanded labels rejected: %v", bound, err)
+		}
+		if authored.CanonicalSource != canonical || len(authored.Document.Tokens) != 40 {
+			t.Fatalf("bound=%v: round trip lost source or identities: %#v", bound, authored)
+		}
+	}
+}
+
+func TestAuthorDocumentSourceBudgetAppliesAfterReferenceExpansion(t *testing.T) {
+	definition, targets := authorFixture()
+	definition.Fields[1].DisplayName = "x"
+	display := strings.Repeat("{x} + ", 319) + "{x}"
+	if len(display) >= DefaultSourceLimit {
+		t.Fatal("fixture must fit the display budget")
+	}
+	_, err := AuthorV2Document(definition, targets, workbench.FormulaAuthorDocument{
+		DisplaySource: display, DocumentRevision: 1,
+	})
+	assertFormulaCode(t, err, "formula.resource_limit")
+}
+
 func TestAuthorDocumentRestoresCompilerAcceptedMemberCall(t *testing.T) {
 	field := scalarField("text_id", "f_text", textType)
 	field.DisplayName = "文本"
