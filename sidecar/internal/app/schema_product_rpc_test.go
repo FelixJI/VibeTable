@@ -29,14 +29,14 @@ import (
 
 const schemaListWire = `{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","sequence":1}`
 
-type schemaHistoryReadMustNotRun struct{ t *testing.T }
+type unrelatedHistoryReadMustNotRun struct{ t *testing.T }
 
-func (reader schemaHistoryReadMustNotRun) ReadBusinessHistory(
+func (reader unrelatedHistoryReadMustNotRun) ReadBusinessHistory(
 	context.Context,
 	audit.ReadParams,
 ) (audit.Page, error) {
 	reader.t.Helper()
-	reader.t.Fatal("schema.list fixture unexpectedly invoked history.read")
+	reader.t.Fatal("unrelated Product fixture unexpectedly invoked history.read")
 	return audit.Page{}, errors.New("unexpected history.read invocation")
 }
 
@@ -644,7 +644,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
-		historyReadRegistration(schemaHistoryReadMustNotRun{t: t}),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)
