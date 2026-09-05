@@ -1,8 +1,10 @@
 package objectrepo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -28,64 +30,110 @@ func TestWorkspaceBackupProofUsesSaltedArgon2idAndDetectsChanges(t *testing.T) {
 }
 
 func TestWorkspaceRepositoryFactoryCreatesOnceAndReopens(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	spec := WorkspaceRepositorySpec{
-		Format:           workspaceRepositoryFormat,
-		CoordinationRoot: filepath.Join(root, "coordination"),
-		ObjectsRoot:      filepath.Join(root, "objects"),
-		Password:         []byte("workspace-factory-password"),
-	}
-	if _, err := OpenWorkspaceRepository(ctx, spec); !errors.Is(
-		err,
-		ErrRepositoryNotInitialized,
-	) {
-		t.Fatalf("missing open error = %v", err)
-	}
-	repository, created, err := OpenOrCreateWorkspaceRepository(ctx, spec)
-	if err != nil || !created {
-		t.Fatalf("create = %v created=%v", err, created)
-	}
-	authority := Authority{
-		WorkspaceID: "workspace-factory",
-		FenceEpoch:  1,
-		ClaimID:     "claim-factory",
-	}
-	if err := repository.AcceptAuthority(ctx, nil, authority); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := repository.Commit(ctx, CommitRequest{
-		Authority: authority,
-		Objects: []ObjectInput{{
-			Name: "proof", Content: []byte("factory-data"),
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
-	reopened, created, err := OpenOrCreateWorkspaceRepository(ctx, spec)
-	if err != nil || created {
-		t.Fatalf("reopen = %v created=%v", err, created)
-	}
-	reader, err := reopened.Open(ctx, receipt.Objects["proof"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, readErr := io.ReadAll(reader)
-	closeReaderErr := reader.Close()
-	closeRepositoryErr := reopened.Close(ctx)
-	if err := errors.Join(
-		readErr,
-		closeReaderErr,
-		closeRepositoryErr,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if string(raw) != "factory-data" {
-		t.Fatalf("reopened data = %q", raw)
+	for _, publish := range []bool{false, true} {
+		t.Run(fmt.Sprintf("publish=%v", publish), func(t *testing.T) {
+			ctx := context.Background()
+			parent := t.TempDir()
+			root := filepath.Join(parent, "staging")
+			spec := WorkspaceRepositorySpec{
+				Format:           workspaceRepositoryFormat,
+				CoordinationRoot: filepath.Join(root, "coordination"),
+				ObjectsRoot:      filepath.Join(root, "objects"),
+				Password:         []byte("workspace-factory-password"),
+			}
+			if _, err := OpenWorkspaceRepository(ctx, spec); !errors.Is(
+				err,
+				ErrRepositoryNotInitialized,
+			) {
+				t.Fatalf("missing open error = %v", err)
+			}
+			repository, created, err := OpenOrCreateWorkspaceRepository(ctx, spec)
+			if err != nil || !created {
+				t.Fatalf("create = %v created=%v", err, created)
+			}
+			authority := Authority{
+				WorkspaceID: "workspace-factory",
+				FenceEpoch:  1,
+				ClaimID:     "claim-factory",
+			}
+			if err := repository.AcceptAuthority(ctx, nil, authority); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := repository.Commit(ctx, CommitRequest{
+				Authority: authority,
+				Objects: []ObjectInput{{
+					Name: "proof", Content: []byte("factory-data"),
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if publish {
+				finalRoot := filepath.Join(parent, "published")
+				if err := os.Rename(root, finalRoot); err != nil {
+					t.Fatal(err)
+				}
+				spec.CoordinationRoot = filepath.Join(finalRoot, "coordination")
+				spec.ObjectsRoot = filepath.Join(finalRoot, "objects")
+
+				configFile, _, err := workspaceRepositoryPaths(spec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original, err := os.ReadFile(configFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, invalid := range []WorkspaceRepositorySpec{
+					{Format: spec.Format, CoordinationRoot: spec.CoordinationRoot, ObjectsRoot: spec.ObjectsRoot, Password: []byte("wrong-password")},
+					{Format: spec.Format, CoordinationRoot: spec.CoordinationRoot, ObjectsRoot: filepath.Join(parent, "missing"), Password: spec.Password},
+				} {
+					unexpected, err := OpenWorkspaceRepository(ctx, invalid)
+					if err == nil {
+						_ = unexpected.Close(ctx)
+						t.Fatal("invalid relocated repository opened")
+					}
+					after, readErr := os.ReadFile(configFile)
+					if readErr != nil || !bytes.Equal(after, original) {
+						t.Fatalf("failed open changed config: %v", readErr)
+					}
+				}
+				if _, err := os.Stat(filepath.Join(parent, "missing")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("missing object store was created: %v", err)
+				}
+			}
+			reopened, created, err := OpenOrCreateWorkspaceRepository(ctx, spec)
+			if err != nil || created {
+				t.Fatalf("reopen = %v created=%v", err, created)
+			}
+			reader, err := reopened.Open(ctx, receipt.Objects["proof"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, readErr := io.ReadAll(reader)
+			closeReaderErr := reader.Close()
+			closeRepositoryErr := reopened.Close(ctx)
+			if err := errors.Join(
+				readErr,
+				closeReaderErr,
+				closeRepositoryErr,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) != "factory-data" {
+				t.Fatalf("reopened data = %q", raw)
+			}
+			existing, err := OpenWorkspaceRepository(ctx, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := existing.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
