@@ -281,6 +281,66 @@ func TestRealtimeLiveDrainUsesDurableRowIDOrderWhenLaterPublishWins(t *testing.T
 	}
 }
 
+func TestRealtimeCatchupKeepsPendingDurableEventsForExistingSubscribers(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := realtime.New(app)
+	existing, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer existing.Close()
+
+	event := realtimeDataEvent(1)
+	saveRealtimeOutboxEvent(t, app, event)
+	joining, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer joining.Close()
+	if len(joining.Backlog) != 1 || joining.Backlog[0].ID != event.EventID {
+		t.Fatalf("joining backlog = %#v", joining.Backlog)
+	}
+
+	if err := hub.Publish(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delivered := <-existing.Events:
+		if delivered.ID != event.EventID {
+			t.Fatalf("existing event = %#v", delivered)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("existing subscriber missed pending durable event")
+	}
+	select {
+	case duplicate := <-joining.Events:
+		t.Fatalf("joining subscriber duplicated replayed event %#v", duplicate)
+	default:
+	}
+
+	next := realtimeDataEvent(2)
+	saveRealtimeOutboxEvent(t, app, next)
+	if err := hub.Publish(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	for name, subscription := range map[string]*realtime.Subscription{
+		"existing": existing,
+		"joining":  joining,
+	} {
+		select {
+		case delivered := <-subscription.Events:
+			if delivered.ID != next.EventID {
+				t.Fatalf("%s next event = %#v", name, delivered)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s subscriber missed next durable event", name)
+		}
+	}
+}
+
 func TestRealtimeResumeAtWindowTailAdvancesLiveHighWater(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)

@@ -62,7 +62,8 @@ func (subscription *Subscription) Close() {
 }
 
 type subscriber struct {
-	events chan Event
+	events          chan Event
+	replayedThrough int64
 }
 
 type Hub struct {
@@ -221,11 +222,14 @@ func (hub *Hub) PersistTaskChanged(
 func (hub *Hub) publish(event Event) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	hub.publishLocked(event)
+	hub.publishLocked(event, 0)
 }
 
-func (hub *Hub) publishLocked(event Event) {
+func (hub *Hub) publishLocked(event Event, rowID int64) {
 	for id, subscription := range hub.subscribers {
+		if rowID > 0 && rowID <= subscription.replayedThrough {
+			continue
+		}
 		select {
 		case subscription.events <- event:
 		default:
@@ -250,7 +254,7 @@ func (hub *Hub) drainDurable() error {
 		if decodeErr != nil {
 			return decodeErr
 		}
-		hub.publishLocked(event)
+		hub.publishLocked(event, row.RowID)
 		hub.highWater = row.RowID
 	}
 	return nil
@@ -291,9 +295,7 @@ func (hub *Hub) Subscribe(
 		hub.mu.Unlock()
 		return nil, err
 	}
-	if retainedHighWater > hub.highWater {
-		hub.highWater = retainedHighWater
-	}
+	entry.replayedThrough = retainedHighWater
 	hub.mu.Unlock()
 	go func() {
 		<-ctx.Done()
