@@ -115,13 +115,15 @@ class FieldChangePlanParams(ProductParams):
             "confirmation",
             "backupReceipt",
             "relationPair",
+            "relationPairPatch",
         }
     )
-    _required_fields = _allowed_fields - {"relationPair"}
+    _required_fields = _allowed_fields - {"relationPair", "relationPairPatch"}
     _field_types = {
         "draft": (dict, type(None)),
         "actor": (dict,),
         "relationPair": (dict, type(None)),
+        "relationPairPatch": (dict, type(None)),
     }
 
     _catalog_example = {

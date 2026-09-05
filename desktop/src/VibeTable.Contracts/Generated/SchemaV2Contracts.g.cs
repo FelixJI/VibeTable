@@ -592,6 +592,25 @@ public sealed record FieldRelationPairDraftV2
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record RelationPairPatchV2
+{
+    [JsonPropertyName("sourceDisplayName")]
+    public string? SourceDisplayName { get; init; }
+    [JsonPropertyName("reciprocalDisplayName")]
+    public string? ReciprocalDisplayName { get; init; }
+    [JsonPropertyName("sourceCardinality")]
+    public string? SourceCardinality { get; init; }
+    [JsonPropertyName("reciprocalCardinality")]
+    public string? ReciprocalCardinality { get; init; }
+    [JsonPropertyName("sourceDisplayFieldId")]
+    public string? SourceDisplayFieldId { get; init; }
+    [JsonPropertyName("reciprocalDisplayFieldId")]
+    public string? ReciprocalDisplayFieldId { get; init; }
+    [JsonPropertyName("deletePolicy")]
+    public string? DeletePolicy { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record FieldChangeIntentV2
 {
     [JsonPropertyName("action")]
@@ -616,6 +635,8 @@ public sealed record FieldChangeIntentV2
     [JsonRequired] public required string BackupReceipt { get; init; }
     [JsonPropertyName("relationPair")]
     public FieldRelationPairDraftV2? RelationPair { get; init; }
+    [JsonPropertyName("relationPairPatch")]
+    public RelationPairPatchV2? RelationPairPatch { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -688,6 +709,8 @@ public sealed record RelatedFieldChangeV2
     [JsonRequired] public required FieldDefinitionV2? After { get; init; }
     [JsonPropertyName("expectedSchemaRevision")]
     [JsonRequired] public required string ExpectedSchemaRevision { get; init; }
+    [JsonPropertyName("expectedDataRevision")]
+    public long? ExpectedDataRevision { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
