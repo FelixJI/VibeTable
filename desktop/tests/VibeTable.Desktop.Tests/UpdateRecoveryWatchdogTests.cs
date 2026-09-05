@@ -68,6 +68,30 @@ public sealed class UpdateRecoveryWatchdogTests
     }
 
     [TestMethod]
+    public async Task WorkerIoFailureSurvivesWatchdogFinalization()
+    {
+        const string groupId = "failed-owned-group";
+        (UpdateApplyPlan plan, UpdateProcessIdentity watchdog, UpdateProcessIdentity updated) =
+            PrepareAwaitingHealth("worker-io-failure", groupId);
+        var processes = new RecordingProcessPort(watchdog, failWorkerRecovery: true);
+        using UpdateOwnedProcessGroup failedGroup = RecordingProcessPort.Group(groupId, updated);
+        var recovery = new UpdateRecoveryWatchdog(processes);
+
+        await recovery.RecoverAsync(
+            plan,
+            watchdog,
+            failedGroup,
+            groupId,
+            UpdateActivationFailureCode.HealthTimeout,
+            CancellationToken.None);
+
+        Assert.AreEqual("rollbackFailed", ReadPendingString(plan, "state"));
+        Assert.AreEqual("UPDATE_ROLLBACK_IO_FAILED", ReadPendingString(plan, "rollbackErrorCode"));
+        Assert.AreEqual(1, processes.Events.Count(value => value == "start-worker"));
+        Assert.IsNull(processes.RestoredLaunch);
+    }
+
+    [TestMethod]
     public async Task FailedGroupWaitExceptionRequiresExplicitTerminationBeforeWorker()
     {
         const string groupId = "failed-owned-group";
@@ -1078,7 +1102,8 @@ public sealed class UpdateRecoveryWatchdogTests
         Exception? ownedGroupWaitFailure = null,
         Exception? terminationFailure = null,
         Exception? workerExactWaitFailure = null,
-        Action<UpdateRollbackLaunch>? afterRollbackWorker = null)
+        Action<UpdateRollbackLaunch>? afterRollbackWorker = null,
+        bool failWorkerRecovery = false)
         : IUpdateRecoveryProcessPort
     {
         private readonly UpdateProcessIdentity _watchdog = watchdog;
@@ -1154,10 +1179,20 @@ public sealed class UpdateRecoveryWatchdogTests
                 _identityMismatchProcessId = worker.ProcessId;
                 return Group(launch.OwnedGroupId!, worker);
             }
-            PendingUpdateActivationJournal.RunRollbackWorker(
-                launch.Arguments[targetIndex + 1],
-                launch.Arguments[nonceIndex + 1],
-                worker);
+            try
+            {
+                PendingUpdateActivationJournal.RunRollbackWorker(
+                    launch.Arguments[targetIndex + 1],
+                    launch.Arguments[nonceIndex + 1],
+                    worker,
+                    failWorkerRecovery
+                        ? _ => throw new IOException("simulated worker file access failure")
+                        : null);
+            }
+            catch (IOException) when (failWorkerRecovery)
+            {
+                // The child process exits after persisting its failure in the journal.
+            }
             afterRollbackWorker?.Invoke(launch);
             return Group(launch.OwnedGroupId!, worker);
         }
