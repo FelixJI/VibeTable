@@ -37,7 +37,7 @@ import {
 } from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
-import { classifyWorkspaceSearchObservation } from "./workspace_search_terminal.mjs";
+import { waitForWorkspaceSearchRebuildTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 import {
   collectBrowserSurfaceEvidence,
@@ -3673,44 +3673,7 @@ async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000)
     throw new Error(`WorkspaceSearch rebuild was not accepted: ${JSON.stringify(response)}`);
   }
 
-  await page.waitForFunction(
-    ({ expectedGeneration }) => {
-      const index = document.querySelector(".index-state");
-      const state = index?.getAttribute("data-state");
-      const generation = index?.getAttribute("data-generation");
-      return state === "building" && generation === String(expectedGeneration);
-    },
-    { expectedGeneration: accepted.generation },
-    { timeout: 30_000 },
-  );
-  const terminalStates = ["ready", "failed", "degraded"];
-  await page.waitForFunction(
-    ({ terminalStates }) => {
-      const index = document.querySelector(".index-state");
-      const state = index?.getAttribute("data-state");
-      return terminalStates.includes(state);
-    },
-    { terminalStates },
-    { timeout },
-  );
-  const terminal = await page.getByTestId("workspace-search-view")
-    .locator(".index-state")
-    .evaluate((element) => ({
-      state: element.getAttribute("data-state"),
-      generation: Number(element.getAttribute("data-generation")),
-    }));
-  if (classifyWorkspaceSearchObservation({
-    acceptedGeneration: accepted.generation,
-    ...terminal,
-  }) !== "terminal") {
-    throw new Error(
-      `WorkspaceSearch terminal does not belong to accepted rebuild: ${JSON.stringify({
-        accepted,
-        terminal,
-      })}`,
-    );
-  }
-  return { ...terminal, accepted };
+  return waitForWorkspaceSearchRebuildTerminal(page, accepted, timeout);
 }
 
 async function scenario12(page, recorder, _network, runtime) {
