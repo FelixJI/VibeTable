@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
@@ -30,6 +31,45 @@ type FormulaDraftInspection struct {
 
 func NewCatalog(app core.App) *Catalog {
 	return &Catalog{app: app}
+}
+
+// AuthorFormulaDocument resolves editor references against active catalog IDs.
+// A non-nil result with an error is diagnostic-only and must not be submitted.
+func (catalog *Catalog) AuthorFormulaDocument(
+	ctx context.Context,
+	tableID string,
+	document workbench.FormulaAuthorDocument,
+) (*formula.AuthorResult, error) {
+	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID)
+	if err != nil {
+		return nil, err
+	}
+	result, authorErr := formula.AuthorV2Document(current, targets, document)
+	if authorErr != nil {
+		return result, authorErr
+	}
+	return result, nil
+}
+
+// RestoreFormulaDocument derives display text from persisted canonical source;
+// it never rewrites the stored expression when a field is renamed or deleted.
+func (catalog *Catalog) RestoreFormulaDocument(
+	ctx context.Context,
+	tableID string,
+	canonicalSource string,
+	documentRevision int64,
+) (*formula.AuthorResult, error) {
+	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID)
+	if err != nil {
+		return nil, err
+	}
+	result, authorErr := formula.RestoreV2AuthorDocument(
+		current, targets, canonicalSource, documentRevision,
+	)
+	if authorErr != nil {
+		return result, authorErr
+	}
+	return result, nil
 }
 
 func (catalog *Catalog) InspectFormulaDraft(
@@ -83,23 +123,9 @@ func (catalog *Catalog) NormalizeDefinition(
 		definition.Formula == nil {
 		return nil
 	}
-	current, err := catalog.formulaDefinition(ctx, tableID)
+	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID)
 	if err != nil {
 		return err
-	}
-	targets := make(map[string]formula.V2Table)
-	for _, field := range current.Fields {
-		if field.LogicalType != v2.LogicalRelation || field.Relation == nil {
-			continue
-		}
-		target := current
-		if field.Relation.TargetTableID != tableID {
-			target, err = catalog.formulaDefinition(ctx, field.Relation.TargetTableID)
-			if err != nil {
-				return err
-			}
-		}
-		targets[field.Identity.PhysicalName] = target
 	}
 	canonical, formulaErr := formula.CanonicalizeV2DisplaySource(
 		current, targets, definition.Formula.Source,
@@ -145,6 +171,37 @@ func (catalog *Catalog) NormalizeDefinition(
 		}
 	}
 	return nil
+}
+
+// formulaAuthorSchemas supplies the same active field identities to draft
+// normalization and structured author documents. Targets are keyed by the
+// source relation's permanent physical name, as required by the formula owner.
+func (catalog *Catalog) formulaAuthorSchemas(
+	ctx context.Context,
+	tableID string,
+) (formula.V2Table, map[string]formula.V2Table, error) {
+	current, err := catalog.formulaDefinition(ctx, tableID)
+	if err != nil {
+		return formula.V2Table{}, nil, err
+	}
+	targets := make(map[string]formula.V2Table)
+	loaded := map[string]formula.V2Table{tableID: current}
+	for _, field := range current.Fields {
+		if field.LogicalType != v2.LogicalRelation || field.Relation == nil {
+			continue
+		}
+		targetID := field.Relation.TargetTableID
+		target, exists := loaded[targetID]
+		if !exists {
+			target, err = catalog.formulaDefinition(ctx, targetID)
+			if err != nil {
+				return formula.V2Table{}, nil, err
+			}
+			loaded[targetID] = target
+		}
+		targets[field.Identity.PhysicalName] = target
+	}
+	return current, targets, nil
 }
 
 func (catalog *Catalog) formulaDefinition(

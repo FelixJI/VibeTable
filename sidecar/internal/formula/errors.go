@@ -3,6 +3,8 @@ package formula
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/google/cel-go/cel"
 )
 
 const ContractVersion = "2.0"
@@ -50,4 +52,15 @@ func formulaError(code, message string, details map[string]any) *Error {
 		Message:         message,
 		Details:         details,
 	}
+}
+
+func formulaIssuesError(code, message, source string, issues *cel.Issues) *Error {
+	result := formulaError(code, message, map[string]any{"reason": issues.Err().Error()})
+	if diagnostics := issues.Errors(); len(diagnostics) > 0 {
+		location := diagnostics[0].Location
+		if span, ok := celLocationSpan(source, location.Line(), location.Column()); ok {
+			result.SourceSpan = &span
+		}
+	}
+	return result
 }
