@@ -640,3 +640,28 @@ func TestAuthorDocumentDisambiguatesMapFromMatchingBoundLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthorDocumentBoundMapIgnoresMaskedLabelCollision(t *testing.T) {
+	definition, targets := authorFixture()
+	textField := scalarField("shipping_id", "f_shipping", textType)
+	textField.DisplayName = "运费"
+	definition.Fields[1] = textField
+	shadow := scalarField("shadow_id", "f_shadow", numberType)
+	shadow.DisplayName = `"x": 0       .size()`
+	definition.Fields = append(definition.Fields, shadow)
+	source := `size({"x": f_shipping.size()})`
+	if _, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, source); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreV2AuthorDocument(definition, targets, source, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authored, err := AuthorV2Document(definition, targets, restored.Document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authored.CanonicalSource != source {
+		t.Fatalf("bound map changed: %q", authored.CanonicalSource)
+	}
+}

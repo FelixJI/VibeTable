@@ -44,7 +44,7 @@ func CanonicalizeExecutionDisplaySource(
 	return strings.TrimSpace(result.CanonicalSource), nil
 }
 
-func scanDisplayTokens(source string, definition V2Table, targets map[string]V2Table) ([]displayToken, *Error) {
+func scanDisplayTokens(source string, definition V2Table, targets map[string]V2Table, bindings map[SourceSpan]workbench.FormulaAuthorToken) ([]displayToken, *Error) {
 	tokens := []displayToken{}
 	cursor := 0
 	lexemes := authorSyntaxLexemes(source)
@@ -56,8 +56,19 @@ func scanDisplayTokens(source string, definition V2Table, targets map[string]V2T
 		}
 		switch lexeme.kind {
 		case gen.CELLexerLBRACE:
-			if mapEnd := maps[index]; mapEnd > 0 && !isDisplayNameInsteadOfMap(source[index:mapEnd], definition, targets) {
-				continue
+			if mapEnd := maps[index]; mapEnd > 0 {
+				containsBinding := false
+				for span := range bindings {
+					if span.Start > index && span.End < mapEnd {
+						containsBinding = true
+						break
+					}
+				}
+				// A map containing a stable reference cannot be a whole field label.
+				// Masked placeholders must never participate in display-name lookup.
+				if containsBinding || !isDisplayNameInsteadOfMap(source[index:mapEnd], definition, targets) {
+					continue
+				}
 			}
 			endOffset := strings.IndexByte(source[index+1:], '}')
 			if endOffset < 0 {
