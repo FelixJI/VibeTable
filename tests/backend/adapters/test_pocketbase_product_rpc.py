@@ -160,14 +160,17 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["schema.getTable", "schema.list"])
-async def test_go_owned_schema_methods_are_retired_from_python_adapter_without_transport(
+@pytest.mark.parametrize("method", ["file.list", "schema.getTable", "schema.list"])
+async def test_go_owned_reads_are_retired_from_python_adapter_without_transport(
     method: str,
 ) -> None:
     service, transport = _service([{"tables": []}])
-    params = PRODUCT_RPC_REGISTRY[method].model_validate(
-        {"tableId": "orders"} if method == "schema.getTable" else {}
-    )
+    params_by_method = {
+        "file.list": {"tableId": "t", "recordId": "r", "fieldId": "f"},
+        "schema.getTable": {"tableId": "orders"},
+        "schema.list": {},
+    }
+    params = PRODUCT_RPC_REGISTRY[method].model_validate(params_by_method[method])
 
     with pytest.raises(ValueError, match=rf"unknown product RPC method: {method}"):
         await service.invoke(method, params)
@@ -785,13 +788,12 @@ async def test_reconcile_validates_sidecar_action() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
+async def test_history_routes_use_closed_product_routes() -> None:
     service, transport = _service(
         [
             {"changeSets": [], "total": 0},
             {"token": "restore-token", "canApply": True},
             {"restoredToRevision": "rev-1"},
-            {"attachments": []},
         ]
     )
 
@@ -825,18 +827,10 @@ async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
             {"collection": "orders", "itemId": "order-1", "token": "restore-token"}
         ),
     )
-    await service.invoke(
-        "file.list",
-        ProductParams.model_validate(
-            {"tableId": "orders", "recordId": "order-1", "fieldId": "invoice"}
-        ),
-    )
-
     assert transport.requests[0]["path"] == "/api/vibetable/v1/history/change-sets"
     assert transport.requests[0]["query"]["action"] == ["update", "restore"]
     assert transport.requests[1]["path"] == "/api/vibetable/v1/history/restore-preview"
     assert transport.requests[2]["path"] == "/api/vibetable/v1/history/restore-apply"
-    assert transport.requests[3]["path"].endswith("/attachments/refs")
 
 
 @pytest.mark.asyncio

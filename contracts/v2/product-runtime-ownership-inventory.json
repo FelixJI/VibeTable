@@ -183,15 +183,15 @@
       "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "desktop/src/VibeTable.Desktop/Services/NativeProductFileRequestController.cs", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
-      "id": "rpc.file-managed-read",
+      "id": "rpc.file-list-read",
       "kind": "rpc",
-      "names": ["file.list", "file.token"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
-      "currentRoute": "pythonBff",
-      "classification": "TEMPORARY_BFF",
+      "names": ["file.list"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["file.list", "file.token"], "write": [], "notification": [], "state": []},
+      "effects": {"read": ["file.list"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
@@ -200,7 +200,7 @@
       "targetSlice": "L3B",
       "targetPr": null,
       "deleteWhen": "WPF reads attachment metadata and capabilities directly from the Go Product Adapter and the Python projection route is deleted.",
-      "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/attachment_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "evidence": ["sidecar/internal/productrpc/attachment.go", "sidecar/internal/app/attachment_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
       "id": "rpc.file-managed-write",
@@ -221,6 +221,26 @@
       "targetPr": null,
       "deleteWhen": "WPF supplies a task-scoped native capability and Go atomically owns the attachment mutation; Python no longer builds multipart mutation requests.",
       "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "desktop/src/VibeTable.Desktop/Services/NativeProductFileRequestController.cs", "sidecar/internal/app/attachment_routes.go", "sidecar/internal/app/mutation_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.file-token-read",
+      "kind": "rpc",
+      "names": ["file.token"],
+      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
+      "currentRoute": "pythonBff",
+      "classification": "TEMPORARY_BFF",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": ["file.token"], "write": [], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "clientPendingOnly",
+      "timeout": "perHopBounded",
+      "productScenarios": ["02-all-field-schema", "07-attachment-history"],
+      "targetSlice": "L3B",
+      "targetPr": null,
+      "deleteWhen": "WPF reads attachment metadata and capabilities directly from the Go Product Adapter and the Python projection route is deleted.",
+      "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/attachment_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
       "id": "rpc.grid-state",

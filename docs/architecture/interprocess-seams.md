@@ -12,7 +12,7 @@
 | Web Document Diff → WPF → sidecar | `document.diffRequested` / `document.diffCancelRequested` → `WorkspaceDocumentOsAdapter` / coordinator → Host-only `fileHistory.materializeDiffPair` 与 `assertEffectiveRevision` | sidecar 固定 target/effective revision；Host 持有两文件 path grant 和 epoch/sequence lease；Web 只持 entry handle/revision id。 | operationId + entryHandle 精确取消；materialize 前后 CAS stale 映射为稳定 `stale`；epoch 轮换取消在途请求，raw Web materialize 被拒绝。 | Workspace/OpenXml engine tests、Desktop adapter/cancel tests、Web service/store/view tests、产品场景 `14-document-diff`。 |
 | WPF test-mode controls → 产品 E2E | runner 写入受控 controls dir → WPF test-mode picker/normal-close watcher | 仅 `--test-mode + --e2e-controls-dir` 可用；production 始终使用 native picker，不向 renderer 暴露 raw path route。 | 缺失/无效 fixture fail closed；normal close 后报告 Host exit、后代进程和端口释放。 | `ProductE2eControlTests`、`WorkspacePathGrantStoreTests`、runner 契约，以及[当前场景声明](../quality/product-e2e-capability-index.md)与对应 `required` 报告。 |
 
-## 宿主 Product 调用与首个 Go owner
+## 宿主 Product 调用与 Go owner
 
 `JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method、严格 Schema v2 解析
 及原 Python client 的通知。invoker 只读现有生成 policy/Workspace catalog 分类，拥有固定代际
@@ -33,15 +33,16 @@ binding 只提供配对 client、完整代际比较与 typed gateway 构造；�
 gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
 至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
 schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
-现行 Product owner 中 `schema.getTable` 与 `schema.list` 已迁到 Go；`schema.describe`、Python SSE/gap
-恢复以及 Python 本地 task producer 仍由后续切片负责，其他方法保持 Python。
+现行 Product owner 中 `file.list`、`schema.getTable` 与 `schema.list` 已迁到 Go；`file.token`、
+`schema.describe`、Python SSE/gap 恢复以及 Python 本地 task producer 仍由后续切片负责，其他方法保持 Python。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
-非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认 `schema.getTable`/
-`schema.list` 选中 Go 且其他读方法仍为 Python。Go Product 与 REST 的 `schema.getTable` 共用
-`schemaexecution.Describe` 投影与 field 错误分类；`schema.list` 共用 Catalog 投影。Python 保留全量
-参数模型，但不再注册或转发这两个方法。独立 Workspace catalog 的六个
+非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认 `file.list`/
+`schema.getTable`/`schema.list` 选中 Go 且其他读方法仍为 Python。Go Product 与 REST 的
+`file.list` 共用 attachment manager，`schema.getTable` 共用 `schemaexecution.Describe` 投影与 field
+错误分类，`schema.list` 共用 Catalog 投影。Python 保留全量参数模型，但不再注册或转发这三个方法。
+独立 Workspace catalog 的六个
 既有方法名单由参数 contract 与 golden generator 共享，不作为未知方法的默认 Python fallback。
 同一真实 composition fixture 还覆盖 Lazy 同 Client 新 snapshot 轮换而不提前结束旧在途请求，
 以及 health reader 的期望 epoch lease、严格 schema.list、远端错误和 close 取消。

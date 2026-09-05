@@ -341,18 +341,23 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
-    public async Task DefaultPolicySelectsGoForSchemaReadsAndKeepsOtherReadsOnPython()
+    public async Task DefaultPolicySelectsGoForFileAndSchemaReadsAndKeepsOtherReadsOnPython()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
         using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
             .CreateGateway(fixture.Leases, fixture.Http);
         JsonElement result = await gateway.ListTablesAsync(Json("{}"), CancellationToken.None);
         Assert.AreEqual("orders", result.GetProperty("tables")[0].GetString());
+        fixture.Http.Result = Json("""{"attachments":[]}""");
+        JsonElement files = await gateway.ListAttachmentRefsAsync(
+            Json("""{"tableId":"orders","recordId":"record-1","fieldId":"files"}"""),
+            CancellationToken.None);
+        Assert.AreEqual(0, files.GetProperty("attachments").GetArrayLength());
         fixture.Http.Error = true;
         RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
             gateway.GetTableSchemaAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
         Assert.AreEqual(-32602, error.Code);
-        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        Assert.AreEqual(3, fixture.Http.ProductCalls);
         Assert.AreEqual(1, fixture.Http.ProductHandshakes);
     }
 
@@ -484,11 +489,12 @@ public sealed class HostProductRpcCompositionTests
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
                     rpcMethods = UseTestPolicy
                         ? new[] { "schema.list" }
-                        : new[] { "schema.getTable", "schema.list" },
+                        : new[] { "file.list", "schema.getTable", "schema.list" },
                     registrations = UseTestPolicy
                         ? new[] { new { method = "schema.list", scope = "workspace" } }
                         : new[]
                         {
+                            new { method = "file.list", scope = "workspace" },
                             new { method = "schema.getTable", scope = "workspace" },
                             new { method = "schema.list", scope = "workspace" },
                         },

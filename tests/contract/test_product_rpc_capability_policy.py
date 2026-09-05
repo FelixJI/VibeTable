@@ -38,7 +38,7 @@ def _invalidate_first_rpc_scope(source: dict[str, object]) -> None:
     first["scope"] = "session"
 
 
-def test_policy_joins_catalog_and_inventory_with_schema_reads_migrated() -> None:
+def test_policy_joins_catalog_and_inventory_with_file_and_schema_reads_migrated() -> None:
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
@@ -54,6 +54,7 @@ def test_policy_joins_catalog_and_inventory_with_schema_reads_migrated() -> None
         "effect": "read",
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
+        "file.list",
         "schema.getTable",
         "schema.list",
     }
@@ -130,9 +131,9 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 100
+    assert len(methods) == 99
     assert methods[0] == "command.list"
-    assert current_owner_methods("goSidecar") == ("schema.getTable", "schema.list")
+    assert current_owner_methods("goSidecar") == ("file.list", "schema.getTable", "schema.list")
     with pytest.raises(ValueError, match="unknown current owner"):
         current_owner_methods(cast(CurrentOwner, "retiredOwner"))
 

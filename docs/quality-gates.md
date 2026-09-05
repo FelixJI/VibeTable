@@ -36,8 +36,9 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
   line/branch/diff 阈值；未知字段、空清单、重复或跨组重叠包、非法路径、缺失阈值及空
   line/branch 分母都会 fail closed。分析器固定按产品目标 `windows/amd64` 解析 build
   constraints，不把 `!windows` 源码计入分母。authority 组覆盖 `filehistory`、`restore`、
-  `query` 与 `mutation`，并用 `./...` 汇集自测、跨包接口测试和 integration 对这四包的
-  覆盖；完整无 instrumentation 的 `go test ./...` 与产品 E2E 仍由独立门禁执行。
+  `query`、`mutation` 与 Go `productrpc` adapter，并用 `./...` 汇集自测、跨包接口测试和
+  integration 对这些包的覆盖；完整无 instrumentation 的 `go test ./...` 与产品 E2E 仍由
+  独立门禁执行。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
 - Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a` 与
   `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、以三个

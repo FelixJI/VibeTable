@@ -31,7 +31,6 @@ class ProductRelationLookupFileRpc:
     def __init__(self, context: PocketBaseProductContext) -> None:
         self._context = context
         self._handlers: dict[str, ProductRpcHandler] = {
-            "file.list": self._list_attachment_refs,
             "file.token": self._create_file_token,
             "file.applyHostChange": self._apply_host_attachment_change,
             "file.saveHostFile": self._save_attachment_to_host,
@@ -70,18 +69,6 @@ class ProductRelationLookupFileRpc:
             await self._context.transport.request(
                 "GET",
                 "/api/vibetable/v1/files/token",
-                query=query,
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
-        )
-
-    async def _list_attachment_refs(self, params: ProductParams) -> JsonObject:
-        query = {name: _text(params.root, name) for name in ("tableId", "recordId", "fieldId")}
-        return _result_object(
-            await self._context.transport.request(
-                "GET",
-                "/api/vibetable/v1/attachments/refs",
                 query=query,
                 headers=dict(self._context.headers),
                 expected_status=(200,),
