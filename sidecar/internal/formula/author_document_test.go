@@ -68,6 +68,37 @@ func TestAuthorDocumentRestoresCompilerAcceptedNativeMinMax(t *testing.T) {
 	}
 }
 
+func TestAuthorDocumentRestoresCompilerAcceptedJSONAccess(t *testing.T) {
+	field := scalarField("payload_id", "f_payload", jsonType)
+	field.DisplayName = "内容"
+	definition := V2Table{TableID: "table", Fields: []v2.FieldDefinition{field}}
+	for _, canonical := range []string{`f_payload.name`, `f_payload["name"]`, `f_payload.customer.name`, `f_payload["customer"].name`, `f_payload.items[0].name`} {
+		t.Run(canonical, func(t *testing.T) {
+			// JSON selection is dyn; existing formulas supply an explicit result
+			// type rather than asking the inference-only author helper to guess it.
+			if _, err := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
+				field, formulaField("result_id", "f_result", textType, canonical),
+			)); err != nil {
+				t.Fatalf("existing compiler rejects fixture: %v", err)
+			}
+			restored, err := RestoreV2AuthorDocument(definition, nil, canonical, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(restored.Document.Tokens) != 1 || restored.Document.Tokens[0].Kind != "field" || restored.Document.Tokens[0].FieldId != field.Identity.FieldID {
+				t.Fatalf("JSON access must bind only its root field: %#v", restored.Document)
+			}
+			authored, err := AuthorV2Document(definition, nil, restored.Document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authored.CanonicalSource != canonical {
+				t.Fatalf("JSON round trip = %q, want %q", authored.CanonicalSource, canonical)
+			}
+		})
+	}
+}
+
 func TestAuthorDocumentAggregateCallCommentsRoundTrip(t *testing.T) {
 	definition, targets := authorFixture()
 	for _, canonical := range []string{
