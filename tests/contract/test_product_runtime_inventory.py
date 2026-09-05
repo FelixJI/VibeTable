@@ -38,7 +38,9 @@ def _assert_error(
     return caught.value
 
 
-def test_inventory_covers_the_fresh_product_catalog_with_reconcile_file_and_schema_reads_on_go() -> None:
+def test_inventory_covers_the_fresh_product_catalog_with_reconcile_file_and_schema_reads_on_go() -> (
+    None
+):
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
 
     inventory = load_product_runtime_inventory()
