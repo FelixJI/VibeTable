@@ -46,6 +46,65 @@ func TestAuthorDocumentRestoresCompilerAcceptedMemberCall(t *testing.T) {
 	}
 }
 
+func TestAuthorDocumentRestoresCompilerAcceptedNativeMinMax(t *testing.T) {
+	definition, targets := authorFixture()
+	for _, canonical := range []string{"min(8, 3)", "max(8, 3)", "min(f_shipping, 3.0)", "max(min(8, 3), 2)"} {
+		t.Run(canonical, func(t *testing.T) {
+			if _, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, canonical); err != nil {
+				t.Fatalf("existing compiler rejects fixture: %v", err)
+			}
+			restored, err := RestoreV2AuthorDocument(definition, targets, canonical, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authored, err := AuthorV2Document(definition, targets, restored.Document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authored.CanonicalSource != canonical {
+				t.Fatalf("native round trip = %q, want %q", authored.CanonicalSource, canonical)
+			}
+		})
+	}
+}
+
+func TestAuthorDocumentAggregateCallCommentsRoundTrip(t *testing.T) {
+	definition, targets := authorFixture()
+	for _, canonical := range []string{
+		"relationSum // function comment\n(f_lines, \"f_amount\")",
+		"relationSum(// argument comment\n f_lines, \"f_amount\")",
+	} {
+		if _, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, canonical); err != nil {
+			t.Fatalf("existing compiler rejects fixture: %v", err)
+		}
+		restored, err := RestoreV2AuthorDocument(definition, targets, canonical, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authored, err := AuthorV2Document(definition, targets, restored.Document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if authored.CanonicalSource != canonical {
+			t.Errorf("comment round trip = %q, want %q", authored.CanonicalSource, canonical)
+		}
+	}
+}
+
+func TestAuthorDocumentKeepsCaseInsensitiveRelationAggregates(t *testing.T) {
+	definition, targets := authorFixture()
+	for _, function := range []string{"MIN", "MAX", "min", "max", "sum", "average", "Min", "Max"} {
+		result, err := AuthorV2Document(definition, targets, workbench.FormulaAuthorDocument{DisplaySource: function + " // name\n( // argument\n{明细}.{金额})", DocumentRevision: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := displayAggregateFunctions[strings.ToUpper(function)] + " // name\n( // argument\nf_lines, \"f_amount\")"
+		if result.CanonicalSource != want {
+			t.Errorf("%s aggregate = %q, want %q", function, result.CanonicalSource, want)
+		}
+	}
+}
+
 func TestAuthorDocumentBoundLabelsAreLexicalAtoms(t *testing.T) {
 	for _, name := range []string{"金}额", "金{额", "金\"额", "金'额", "金\r\n😀额", "金) + SUM(额", "金}.{额", "金//额"} {
 		t.Run(name, func(t *testing.T) {
