@@ -507,11 +507,11 @@ func RestoreV2AuthorDocument(definition V2Table, targets map[string]V2Table, can
 		bound := authorToken(field, nil)
 		targetName := ""
 		endIndex := i
-		if i+2 < len(tokens) && tokens[i+1].kind == gen.CELLexerDOT && tokens[i+2].kind == gen.CELLexerIDENTIFIER &&
+		if field.LogicalType == v2.LogicalRelation && i+2 < len(tokens) && tokens[i+1].kind == gen.CELLexerDOT && tokens[i+2].kind == gen.CELLexerIDENTIFIER &&
 			(i+3 >= len(tokens) || tokens[i+3].kind != gen.CELLexerLPAREN) {
 			targetName = tokens[i+2].text
 			endIndex = i + 2
-		} else if i >= 2 && tokens[i-1].kind == gen.CELLexerLPAREN && i+2 < len(tokens) && tokens[i+1].kind == gen.CELLexerCOMMA && tokens[i+2].kind == gen.CELLexerSTRING {
+		} else if field.LogicalType == v2.LogicalRelation && i >= 2 && tokens[i-1].kind == gen.CELLexerLPAREN && i+2 < len(tokens) && tokens[i+1].kind == gen.CELLexerCOMMA && tokens[i+2].kind == gen.CELLexerSTRING {
 			for _, canonical := range displayAggregateFunctions {
 				if tokens[i-2].text == canonical && canonical != "relationCount" {
 					env, _ := cel.NewEnv()
