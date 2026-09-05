@@ -31,7 +31,7 @@ public sealed class ProductRpcCapabilityManifestTests
     }
 
     [TestMethod]
-    public void GeneratedManifestProvidesClosedRouteLookupWithFileAndSchemaReadsOnGo()
+    public void GeneratedManifestProvidesClosedRouteLookupWithReconcileFileAndSchemaReadsOnGo()
     {
         ProductRpcCapabilityManifest manifest = ProductRpcCapabilityManifest.Default;
 
@@ -45,11 +45,16 @@ public sealed class ProductRpcCapabilityManifestTests
         Assert.AreEqual("notification", dataChanged.Effect);
         Assert.AreEqual("pythonBff", dataChanged.Owner);
         Assert.IsFalse(manifest.TryGetEvent("data.unknown", out _));
-        Assert.HasCount(3, manifest.GetProductSidecarRegistrations());
-        Assert.AreEqual("file.list", manifest.GetProductSidecarRegistrations()[0].Method);
-        Assert.AreEqual("workspace", manifest.GetProductSidecarRegistrations()[0].Scope);
-        Assert.AreEqual("schema.getTable", manifest.GetProductSidecarRegistrations()[1].Method);
-        Assert.AreEqual("schema.list", manifest.GetProductSidecarRegistrations()[2].Method);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "events.reconcile:workspace",
+                "file.list:workspace",
+                "schema.getTable:workspace",
+                "schema.list:workspace",
+            },
+            manifest.GetProductSidecarRegistrations()
+                .Select(item => $"{item.Method}:{item.Scope}").ToArray());
     }
 
     [TestMethod]

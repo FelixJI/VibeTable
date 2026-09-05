@@ -160,20 +160,30 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["file.list", "schema.getTable", "schema.list"])
-async def test_go_owned_reads_are_retired_from_python_adapter_without_transport(
-    method: str,
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        (
+            "events.reconcile",
+            {
+                "tableId": "orders",
+                "schemaRevision": "schema_0001",
+                "dataRevision": "data_0001",
+            },
+        ),
+        ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
+        ("schema.getTable", {"tableId": "orders"}),
+        ("schema.list", {}),
+    ],
+)
+async def test_go_owned_methods_are_retired_from_python_adapter_without_transport(
+    method: str, params: dict[str, object]
 ) -> None:
     service, transport = _service([{"tables": []}])
-    params_by_method = {
-        "file.list": {"tableId": "t", "recordId": "r", "fieldId": "f"},
-        "schema.getTable": {"tableId": "orders"},
-        "schema.list": {},
-    }
-    params = PRODUCT_RPC_REGISTRY[method].model_validate(params_by_method[method])
+    validated = PRODUCT_RPC_REGISTRY[method].model_validate(params)
 
     with pytest.raises(ValueError, match=rf"unknown product RPC method: {method}"):
-        await service.invoke(method, params)
+        await service.invoke(method, validated)
 
     assert transport.requests == []
 
@@ -758,33 +768,20 @@ async def test_relation_delta_translates_legacy_target_names() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconcile_validates_sidecar_action() -> None:
-    service, transport = _service(
-        [
-            {
-                "tableId": "orders",
-                "clientSchemaRevision": "schema_0001",
-                "clientDataRevision": "data_0001",
-                "currentSchemaRevision": "schema_0001",
-                "currentDataRevision": "data_0002",
-                "action": "refresh-data",
-            }
-        ]
+async def test_reconcile_has_no_python_transport_fallback() -> None:
+    service, transport = _service([])
+    params = ProductParams.model_validate(
+        {
+            "tableId": "orders",
+            "schemaRevision": "schema_0001",
+            "dataRevision": "data_0001",
+        }
     )
 
-    result = await service.invoke(
-        "events.reconcile",
-        ProductParams.model_validate(
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_0001",
-                "dataRevision": "data_0001",
-            }
-        ),
-    )
+    with pytest.raises(ValueError, match=r"unknown product RPC method: events\.reconcile"):
+        await service.invoke("events.reconcile", params)
 
-    assert result["action"] == "refresh-data"
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/events/reconcile"
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

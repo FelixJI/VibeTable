@@ -32,13 +32,21 @@ class FakeProductService:
 @pytest.mark.parametrize(
     ("method", "params"),
     [
+        (
+            "events.reconcile",
+            {
+                "tableId": "orders",
+                "schemaRevision": "schema_0001",
+                "dataRevision": "data_0001",
+            },
+        ),
         ("schema.list", {}),
         ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
     ],
 )
-async def test_go_owned_reads_have_no_python_registration_or_fallback(
+async def test_go_owned_product_methods_have_no_python_registration_or_fallback(
     method: str,
     params: dict[str, object],
 ) -> None:
@@ -104,13 +112,15 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
         "file.list",
+        "events.reconcile",
         "schema.getTable",
         "schema.list",
     }
     assert set(PYTHON_PRODUCT_RPC_REGISTRY) == set(dispatcher.registered_methods)
     assert set(dispatcher.registered_methods) >= WORKSPACE_CATALOG_METHODS
     assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
-        WORKSPACE_CATALOG_METHODS | {"file.list", "schema.getTable", "schema.list"}
+        WORKSPACE_CATALOG_METHODS
+        | {"events.reconcile", "file.list", "schema.getTable", "schema.list"}
     )
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods

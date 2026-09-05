@@ -58,7 +58,6 @@ class ProductQuerySchemaRpc:
             "formula.validate": self._validate_formula,
             "formula.draft.validate": self._validate_formula_draft,
             "formula.preview": self._preview_formula,
-            "events.reconcile": self._reconcile,
         }
         self.methods = frozenset(self._handlers)
 
@@ -225,13 +224,6 @@ class ProductQuerySchemaRpc:
     async def _preview_formula(self, params: ProductParams) -> JsonObject:
         FormulaPreviewRequestV2.model_validate(params.root)
         return await self._context.post("/api/vibetable/v1/formulas/preview", params.root)
-
-    async def _reconcile(self, params: ProductParams) -> JsonObject:
-        return await self._context.client.reconcile_realtime(
-            table_id=_text(params.root, "tableId"),
-            schema_revision=_text(params.root, "schemaRevision"),
-            data_revision=_text(params.root, "dataRevision"),
-        )
 
     async def _describe_schema(self, params: ProductParams) -> JsonObject:
         raw = params.root

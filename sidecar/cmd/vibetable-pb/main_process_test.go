@@ -482,17 +482,20 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 3 ||
-		productCapabilities.RPCMethods[0] != "file.list" ||
-		productCapabilities.RPCMethods[1] != "schema.getTable" ||
-		productCapabilities.RPCMethods[2] != "schema.list" ||
-		len(productCapabilities.Registrations) != 3 ||
-		productCapabilities.Registrations[0].Method != "file.list" ||
+		len(productCapabilities.RPCMethods) != 4 ||
+		productCapabilities.RPCMethods[0] != "events.reconcile" ||
+		productCapabilities.RPCMethods[1] != "file.list" ||
+		productCapabilities.RPCMethods[2] != "schema.getTable" ||
+		productCapabilities.RPCMethods[3] != "schema.list" ||
+		len(productCapabilities.Registrations) != 4 ||
+		productCapabilities.Registrations[0].Method != "events.reconcile" ||
 		productCapabilities.Registrations[0].Scope != "workspace" ||
-		productCapabilities.Registrations[1].Method != "schema.getTable" ||
+		productCapabilities.Registrations[1].Method != "file.list" ||
 		productCapabilities.Registrations[1].Scope != "workspace" ||
-		productCapabilities.Registrations[2].Method != "schema.list" ||
-		productCapabilities.Registrations[2].Scope != "workspace" {
+		productCapabilities.Registrations[2].Method != "schema.getTable" ||
+		productCapabilities.Registrations[2].Scope != "workspace" ||
+		productCapabilities.Registrations[3].Method != "schema.list" ||
+		productCapabilities.Registrations[3].Scope != "workspace" {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
 

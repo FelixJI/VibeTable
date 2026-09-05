@@ -433,6 +433,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				productrpc.ReconcileRegistration(schemaCatalog),
 				schemaGetTableRegistration(pb),
 				schemaListRegistration(schemaCatalog),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),

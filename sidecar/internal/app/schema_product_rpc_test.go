@@ -618,6 +618,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
+		productrpc.ReconcileRegistration(catalog),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
@@ -630,6 +631,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	})
 	registerFieldRoutes(r, pb, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
+	registerRealtimeRoutes(r, nil, catalog)
 	registerProductRoutes(r, dispatcher)
 	mux, err := r.BuildMux()
 	if err != nil {

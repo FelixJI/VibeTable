@@ -657,7 +657,7 @@ public sealed class WebMessageRouterTests
                 ["requestId"] = $"request-{type}",
                 ["payload"] = new { },
             };
-            if (type is "file.list" or "schema.getTable")
+            if (type is "events.reconcile" or "file.list" or "schema.getTable")
             {
                 request["scope"] = new
                 {
@@ -989,7 +989,12 @@ public sealed class WebMessageRouterTests
             }
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual(route is "file.list" or "schema.getTable" ? "goSidecar" : "pythonBff", capability.Owner, route);
+            Assert.AreEqual(
+                route is "events.reconcile" or "file.list" or "schema.getTable"
+                    ? "goSidecar"
+                    : "pythonBff",
+                capability.Owner,
+                route);
         }
 
         foreach (string route in RelationLookupRpcRegistry.RequestTypes)
