@@ -1,7 +1,7 @@
 """Provider-neutral settings, typed local commands and shortcuts service.
 
-* **Settings**: device-local settings persist to a local JSON file with version
-  migration; shared settings are read through an internal-metadata product port.
+* **Settings**: shared settings are read through an internal-metadata product port.
+  Device-local JSON settings are owned by the C# Host.
 * **Commands**: a static catalog of typed, whitelisted commands. No arbitrary
   code/DSL/dynamic import.
 * **Shortcuts**: reference versioned built-in commands or approved URL/file
@@ -10,16 +10,13 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any, Protocol
 
 from backend.contracts.settings_commands import (
     CommandResult,
     CommandsResult,
-    DeviceSettings,
     LaunchActionResult,
     LocalCommandCatalogEntry,
     SharedSettingsEntry,
@@ -84,37 +81,17 @@ class SettingsCommandService:
         self,
         *,
         metadata_port: InternalMetadataPort,
-        device_state_path: Path,
         grant_authority: GrantAuthority | None = None,
         command_executors: dict[str, CommandExecutor] | None = None,
     ) -> None:
         self._metadata = metadata_port
         self._grant_authority = grant_authority
-        self._device_state_path = device_state_path
         self._command_executors = dict(command_executors or {})
         self._shortcuts: dict[str, ShortcutEntry] = {}
 
     # ------------------------------------------------------------------
     # Settings (D2.1)
     # ------------------------------------------------------------------
-
-    def read_device(self) -> DeviceSettings:
-        """Read device-local settings with version migration + corrupt recovery."""
-        if not self._device_state_path.is_file():
-            return DeviceSettings()
-        try:
-            raw = json.loads(self._device_state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            # Corrupt state → recover to defaults (never crash the app).
-            return DeviceSettings()
-        return self._migrate_device(raw)
-
-    def save_device(self, settings: DeviceSettings) -> DeviceSettings:
-        self._device_state_path.parent.mkdir(parents=True, exist_ok=True)
-        self._device_state_path.write_text(
-            json.dumps(settings.model_dump(mode="json"), indent=2), encoding="utf-8"
-        )
-        return settings
 
     async def read_shared(self, collection: str, keys: list[str]) -> SharedSettingsResult:
         try:
@@ -141,14 +118,6 @@ class SettingsCommandService:
             cached_on=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             fresh=True,
         )
-
-    def _migrate_device(self, raw: dict[str, Any]) -> DeviceSettings:
-        version = int(raw.get("schema_version", 1))
-        # Future migrations: version 1 → 2 → ... (each step transforms in place).
-        try:
-            return DeviceSettings.model_validate(raw)
-        except Exception:
-            return DeviceSettings(schema_version=version)
 
     # ------------------------------------------------------------------
     # Typed local commands (D2.3)

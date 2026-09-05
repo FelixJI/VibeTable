@@ -670,7 +670,7 @@
       "scope": "global",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
@@ -686,7 +686,7 @@
       "scope": "global",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
