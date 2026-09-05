@@ -89,6 +89,9 @@ func (runtime *Runtime) ReadBusinessHistory(
 	params audit.ReadParams,
 ) (audit.Page, error) {
 	if err := runtime.drainBusinessHistory(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return audit.Page{}, err
+		}
 		return audit.Page{}, &audit.Error{
 			Code: "history.storage_failed", Message: "history could not be read",
 			Details: map[string]any{}, Retryable: true,
