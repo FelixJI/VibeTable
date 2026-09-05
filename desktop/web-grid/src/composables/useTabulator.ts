@@ -681,19 +681,19 @@ export function useTabulator(
     const rowPositions = new Map(rows.map((row, index) => [row.getData().rowKey, index]));
     const fields = columns.map(column => column.getField());
     const columnPositions = new Map(fields.map((field, index) => [field, index]));
-    const bounds = selections.map(selection => {
+    const bounds = selections.flatMap(selection => {
       const rowIndices = selection.rowKeys.map(key => rowPositions.get(key) ?? -1).sort((a, b) => a - b);
       const columnIndices = selection.fields.map(field => columnPositions.get(field) ?? -1).sort((a, b) => a - b);
       // Missing or interleaved keys cannot describe the same rectangular range.
       const contiguous = (indices: number[]) => indices[0]! >= 0
         && indices.every((index, offset) => index === indices[0]! + offset);
-      if (!contiguous(rowIndices) || !contiguous(columnIndices)) return null;
+      if (!contiguous(rowIndices) || !contiguous(columnIndices)) return [];
       const start = rows[rowIndices[0]!]!.getCell?.(fields[columnIndices[0]!]!);
       const end = rows[rowIndices.at(-1)!]!.getCell?.(fields[columnIndices.at(-1)!]!);
-      return start && end ? { start, end } : null;
+      return start && end ? [{ start, end, selection }] : [];
     });
     pendingCellRanges = null;
-    if (bounds.some(bound => !bound)) return;
+    if (bounds.length === 0) return;
     const existing = runtime.getRanges?.() ?? [];
     // addRange(start, end) defers its bounds in Tabulator. Create it without
     // bounds, then use the public component synchronously so no delayed bounds
@@ -702,9 +702,9 @@ export function useTabulator(
     bounds.forEach((bound, index) => {
       if (!existing[index]) runtime.addRange?.();
       const range = existing[index] ?? runtime.getRanges?.().at(-1);
-      if (bound) range?.setBounds?.(bound.start, bound.end);
+      range?.setBounds?.(bound.start, bound.end);
     });
-    currentOnRangeSelectionChanged?.(selections.at(-1)!);
+    currentOnRangeSelectionChanged?.(bounds.at(-1)!.selection);
   }
 
   function relationSignature(): string {

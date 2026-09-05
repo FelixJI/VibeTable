@@ -211,6 +211,10 @@ function installRangeRuntime(mock: MockTabulator) {
     current = [range({ rowKey: "a", field }, { rowKey: lastRow, field })];
     emit("rangeChanged", current[0]);
   };
+  const addSelection = (rowKey: string, field: string) => {
+    current.push(range({ rowKey, field }));
+    emit("rangeChanged", current.at(-1));
+  };
   const reset = () => {
     retiredRange = current[0];
     current = rows.length && fields.length ? [range({ rowKey: rows[0]!, field: fields[0]! })] : [];
@@ -234,7 +238,7 @@ function installRangeRuntime(mock: MockTabulator) {
     fields = columns.map(item => item.field);
     reset();
   });
-  return { select, emitRetiredRange: () => emit("rangeChanged", retiredRange), selection: () => current.map(item => ({
+  return { select, addSelection, emitRetiredRange: () => emit("rangeChanged", retiredRange), selection: () => current.map(item => ({
     rowKeys: item.getRows().map(item => item.getData().rowKey),
     fields: item.getColumns().map(item => item.getField()),
   })) };
@@ -307,6 +311,30 @@ describe("useTabulator", () => {
     table.setDatasetReady(makeDatasetReady([{ rowKey: "a" }, { rowKey: "b" }], columns));
     await flushPromises();
     expect(runtime.selection()).not.toContainEqual({ rowKeys: ["a", "b"], fields: ["payload"] });
+    wrapper.unmount();
+  });
+
+  it.each(["row", "column"])("retains independent ranges when another range loses a %s", async (boundary) => {
+    const table = useTableStore();
+    const gridEl = ref<HTMLElement | null>(document.createElement("div"));
+    const columns = ["id", "payload", "status"].map(makeColumn);
+    table.appendPage(makePage([{ rowKey: "a" }, { rowKey: "b" }], columns));
+    const onRangeSelectionChanged = vi.fn();
+    const wrapper = mountHost(gridEl, { onRangeSelectionChanged });
+    await flushPromises();
+    const runtime = installRangeRuntime(lastMock!);
+    runtime.select("payload");
+    runtime.addSelection("b", "status");
+
+    table.setDatasetReady(makeDatasetReady(
+      boundary === "row" ? [{ rowKey: "a" }] : [{ rowKey: "a" }, { rowKey: "b" }],
+      boundary === "column" ? [makeColumn("id"), makeColumn("payload")] : columns,
+    ));
+    await flushPromises();
+
+    const retained = { rowKeys: ["a"], fields: ["payload"] };
+    expect(runtime.selection()).toEqual([retained]);
+    expect(onRangeSelectionChanged).toHaveBeenLastCalledWith(retained);
     wrapper.unmount();
   });
 
