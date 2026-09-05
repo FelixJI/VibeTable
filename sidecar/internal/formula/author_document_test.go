@@ -548,3 +548,59 @@ func TestAuthorSourceMapMapsRealCELDiagnosticAfterUnicodeAndAggregate(t *testing
 		t.Fatal("negative span accepted")
 	}
 }
+
+func TestAuthorDocumentRestoresCELMapLiterals(t *testing.T) {
+	definition, targets := authorFixture()
+	for _, source := range []string{
+		`size({"x": 1})`,
+		`size({})`,
+		"size({// empty map\n})",
+		`size({"outer": {"inner": 1}})`,
+		`size({"amount": f_shipping})`,
+		`size({(true ? "x" : "y"): f_shipping})`,
+		`size({"braces": "{not a field}"})`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			if _, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, source); err != nil {
+				t.Fatalf("compiler rejects fixture: %v", err)
+			}
+			restored, err := RestoreV2AuthorDocument(definition, targets, source, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authored, err := AuthorV2Document(definition, targets, restored.Document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authored.CanonicalSource != source || !reflect.DeepEqual(authored.Document, restored.Document) {
+				t.Fatalf("map round trip changed canonical or author document: %#v / %#v", restored, authored)
+			}
+		})
+	}
+}
+
+func TestAuthorDocumentRejectsUnboundReferenceContainingBoundToken(t *testing.T) {
+	definition, targets := authorFixture()
+	restored, err := RestoreV2AuthorDocument(definition, targets, "f_shipping", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.Document.DisplaySource = "{x " + restored.Document.DisplaySource + "}"
+	restored.Document.Tokens[0].Range.Start.Character += 3
+	restored.Document.Tokens[0].Range.End.Character += 3
+	_, err = AuthorV2Document(definition, targets, restored.Document)
+	assertFormulaCode(t, err, "formula.author.range")
+}
+
+func TestAuthorDocumentResolvesPastedFieldInsideMap(t *testing.T) {
+	definition, targets := authorFixture()
+	result, err := AuthorV2Document(definition, targets, workbench.FormulaAuthorDocument{
+		DisplaySource: `size({"amount": {运费}})`, DocumentRevision: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalSource != `size({"amount": f_shipping})` || len(result.Document.Tokens) != 1 {
+		t.Fatalf("pasted map reference = %#v", result)
+	}
+}

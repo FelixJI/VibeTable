@@ -348,6 +348,11 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		scanned = append(scanned, displayToken{start: span.Start, end: span.End})
 	}
 	sort.Slice(scanned, func(i, j int) bool { return scanned[i].start < scanned[j].start })
+	for index := 1; index < len(scanned); index++ {
+		if scanned[index-1].end > scanned[index].start {
+			return nil, formulaError("formula.author.range", "author references overlap", nil)
+		}
+	}
 	var edits []authorEdit
 	relationCalls := map[int]string{}
 	for i := 0; i < len(scanned); i++ {

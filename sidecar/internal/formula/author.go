@@ -47,13 +47,18 @@ func CanonicalizeExecutionDisplaySource(
 func scanDisplayTokens(source string) ([]displayToken, *Error) {
 	tokens := []displayToken{}
 	cursor := 0
-	for _, lexeme := range authorLexemes(source) {
+	lexemes := authorSyntaxLexemes(source)
+	maps := mapLiteralStarts(source, lexemes)
+	for _, lexeme := range lexemes {
 		index := lexeme.start
 		if index < cursor {
 			continue
 		}
 		switch lexeme.kind {
 		case gen.CELLexerLBRACE:
+			if maps[index] {
+				continue
+			}
 			endOffset := strings.IndexByte(source[index+1:], '}')
 			if endOffset < 0 {
 				return nil, formulaError("formula.syntax", "field token is not closed", nil)
@@ -107,4 +112,44 @@ func uniqueDisplayField(
 	return v2.FieldDefinition{}, formulaError(
 		"formula.dependency", "field display name was not found", details,
 	)
+}
+
+// A colon at the brace's own delimiter depth, or an empty brace pair, belongs
+// to CEL map syntax. Nested author references remain independent lexical atoms.
+// Bound labels were already masked, so punctuation in their display names
+// cannot change this distinction.
+func mapLiteralStarts(source string, lexemes []authorLexeme) map[int]bool {
+	result := map[int]bool{}
+	var delimiters []authorLexeme
+	for index, lexeme := range lexemes {
+		switch lexeme.kind {
+		case gen.CELLexerLBRACE, gen.CELLexerLBRACKET, gen.CELLexerLPAREN:
+			delimiters = append(delimiters, lexeme)
+			if lexeme.kind == gen.CELLexerLBRACE && index+1 < len(lexemes) && lexemes[index+1].kind == gen.CELLexerRBRACE && emptyMapBody(source[lexeme.end:lexemes[index+1].start]) {
+				result[lexeme.start] = true
+			}
+		case gen.CELLexerCOLON:
+			if len(delimiters) > 0 && delimiters[len(delimiters)-1].kind == gen.CELLexerLBRACE {
+				result[delimiters[len(delimiters)-1].start] = true
+			}
+		case gen.CELLexerRBRACE, gen.CELLexerRPRACKET, gen.CELLexerRPAREN:
+			if len(delimiters) > 0 {
+				delimiters = delimiters[:len(delimiters)-1]
+			}
+		}
+	}
+	return result
+}
+
+func emptyMapBody(source string) bool {
+	covered := 0
+	for _, lexeme := range authorLexemes(source) {
+		if lexeme.kind != gen.CELLexerWHITESPACE && lexeme.kind != gen.CELLexerCOMMENT {
+			return false
+		}
+		covered += lexeme.end - lexeme.start
+	}
+	// CEL skips characters that are valid in display labels, such as Chinese.
+	// Unlexed bytes must not turn a nonempty field label into an empty map.
+	return covered == len(source)
 }
