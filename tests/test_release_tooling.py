@@ -2271,3 +2271,75 @@ def test_upgrade_migration_failure_automatically_keeps_old_binary_and_data(
     assert (data / "data.db").read_bytes() == b"old-db"
     manifest = json.loads(transaction.manifest.read_text(encoding="utf-8"))
     assert manifest["activation"]["status"] == "rolledBack"
+
+
+@pytest.mark.parametrize(
+    ("role", "relative_path"),
+    [
+        ("failed-readiness", "self-update-readiness/vibetable-readiness.json"),
+        ("rollback-receipt", None),
+        ("restored-readiness", "self-update-restored-readiness/vibetable-readiness.json"),
+        ("restored-state", "self-update-restored-controls/host-lifecycle-state.json"),
+    ],
+)
+def test_self_update_rollback_reports_invalid_json_role_without_contents(
+    tmp_path: Path, role: str, relative_path: str | None
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={"ready": False, "error": "fixture failure"},
+    )
+    evidence_path = fixture.receipt_path if relative_path is None else tmp_path / relative_path
+    evidence_path.write_text("{private-test-payload", encoding="utf-8")
+    with pytest.raises(build_next.BuildError) as caught:
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+    message = str(caught.value)
+    assert role in message
+    assert "JSONDecodeError line=1 column=2" in message
+    assert "private-test-payload" not in message
+    assert str(tmp_path) not in message
+    assert fixture.token not in message
+
+
+def test_self_update_rollback_reports_os_error_without_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={"ready": False, "error": "fixture failure"},
+    )
+    original = Path.read_text
+
+    def read_evidence(path: Path, *args: object, **kwargs: object) -> str:
+        if path == fixture.receipt_path:
+            raise PermissionError(13, "private-test-error", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_evidence)
+    with pytest.raises(build_next.BuildError) as caught:
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+    message = str(caught.value)
+    assert "rollback-receipt" in message
+    assert "PermissionError errno=13" in message
+    assert str(tmp_path) not in message
+    assert "private-test-error" not in message
