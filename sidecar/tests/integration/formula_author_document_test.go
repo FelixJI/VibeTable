@@ -61,7 +61,7 @@ func TestFormulaAuthorCatalogRoundTripAfterTargetRename(t *testing.T) {
 	}
 
 	// Rename through the normal schema planner/executor, not a metadata shortcut.
-	rename := fieldDraftForIntegration(t, v2.LogicalNumber, "金额😀")
+	rename := fieldDraftForIntegration(t, v2.LogicalNumber, "金}额😀")
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
 	revisions, err := catalog.Revisions(ctx, target.TableID)
@@ -92,9 +92,13 @@ func TestFormulaAuthorCatalogRoundTripAfterTargetRename(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Document.DisplaySource != "SUM({明细}.{金额😀})" ||
+	if restored.Document.DisplaySource != "SUM({明细}.{金}额😀})" ||
 		restored.Document.DocumentRevision != 8 {
 		t.Fatalf("restored document = %#v", restored.Document)
+	}
+	roundTrip, err := catalog.AuthorFormulaDocument(ctx, source.TableID, restored.Document)
+	if err != nil || roundTrip.CanonicalSource != stored.Formula.Source {
+		t.Fatalf("restored special-character token rejected: %#v, %v", roundTrip, err)
 	}
 	// An editor holding the old display text still resolves its bound stable IDs.
 	rebound, err := catalog.AuthorFormulaDocument(ctx, source.TableID, authored.Document)

@@ -247,10 +247,6 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 	if err != nil {
 		return nil, err
 	}
-	scanned, err := scanDisplayTokens(document.DisplaySource)
-	if err != nil {
-		return nil, err
-	}
 	bindings := map[SourceSpan]workbench.FormulaAuthorToken{}
 	var previous SourceSpan
 	ordered := append([]workbench.FormulaAuthorToken(nil), document.Tokens...)
@@ -283,12 +279,52 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		}
 		bindings[span] = token
 	}
+	// Stable tokens are lexical atoms, including punctuation in their stale
+	// labels. Equal-byte placeholders preserve offsets while CEL's lexer checks
+	// that each atom is outside literals/comments. Only unbound text is scanned
+	// for display names; labels never get another chance to choose an identity.
+	masked := []byte(document.DisplaySource)
+	for span, binding := range bindings {
+		label := document.DisplaySource[span.Start:span.End]
+		if label != "#REF!" && (!strings.HasPrefix(label, "{") || !strings.HasSuffix(label, "}") ||
+			len(label) <= 2 || binding.Kind == "relationTarget" && !strings.Contains(label, "}.{")) {
+			return nil, formulaError("formula.author.range", "token must cover a complete reference label", nil)
+		}
+		for offset := span.Start; offset < span.End; offset++ {
+			masked[offset] = ' '
+		}
+		masked[span.Start] = '0'
+	}
+	maskedSource := string(masked)
+	lexemes := authorLexemes(maskedSource)
+	atomStarts := make(map[int]bool, len(bindings))
+	for _, lexeme := range lexemes {
+		if lexeme.kind == gen.CELLexerNUM_INT && lexeme.text == "0" {
+			atomStarts[lexeme.start] = true
+		}
+	}
+	scanned, err := scanDisplayTokens(maskedSource)
+	if err != nil {
+		return nil, err
+	}
+	for span := range bindings {
+		if !atomStarts[span.Start] {
+			return nil, formulaError("formula.author.range", "token must be outside literals and comments", nil)
+		}
+		scanned = append(scanned, displayToken{start: span.Start, end: span.End})
+	}
+	sort.Slice(scanned, func(i, j int) bool { return scanned[i].start < scanned[j].start })
 	var edits []authorEdit
 	for i := 0; i < len(scanned); i++ {
 		first := scanned[i]
 		span := SourceSpan{Start: first.start, End: first.end}
 		targetName := ""
 		if i+1 < len(scanned) && document.DisplaySource[first.end:scanned[i+1].start] == "." {
+			_, firstBound := bindings[span]
+			_, nextBound := bindings[SourceSpan{Start: scanned[i+1].start, End: scanned[i+1].end}]
+			if firstBound || nextBound {
+				return nil, formulaError("formula.author.range", "relation target token must cover the entire field path", nil)
+			}
 			i++
 			span.End = scanned[i].end
 			targetName = scanned[i].name
@@ -299,9 +335,6 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		var resolveErr *Error
 		if bound {
 			delete(bindings, span)
-			if (targetName != "") != (binding.Kind == "relationTarget") && document.DisplaySource[span.Start:span.End] != "#REF!" {
-				return nil, formulaError("formula.author.token", "token kind does not match the full reference range", nil)
-			}
 			id := binding.FieldId
 			if binding.Kind == "relationTarget" {
 				id = *binding.RelationFieldId
@@ -367,7 +400,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 	if len(bindings) > 0 {
 		return nil, formulaError("formula.author.range", "token must cover one complete reference outside literals", nil)
 	}
-	for _, lexeme := range authorLexemes(document.DisplaySource) {
+	for _, lexeme := range lexemes {
 		if lexeme.kind != gen.CELLexerIDENTIFIER {
 			continue
 		}
@@ -439,7 +472,8 @@ func RestoreV2AuthorDocument(definition V2Table, targets map[string]V2Table, can
 		bound := authorToken(field, nil)
 		targetName := ""
 		endIndex := i
-		if i+2 < len(tokens) && tokens[i+1].kind == gen.CELLexerDOT && tokens[i+2].kind == gen.CELLexerIDENTIFIER {
+		if i+2 < len(tokens) && tokens[i+1].kind == gen.CELLexerDOT && tokens[i+2].kind == gen.CELLexerIDENTIFIER &&
+			(i+3 >= len(tokens) || tokens[i+3].kind != gen.CELLexerLPAREN) {
 			targetName = tokens[i+2].text
 			endIndex = i + 2
 		} else if i >= 2 && tokens[i-1].kind == gen.CELLexerLPAREN && i+2 < len(tokens) && tokens[i+1].kind == gen.CELLexerCOMMA && tokens[i+2].kind == gen.CELLexerSTRING {
