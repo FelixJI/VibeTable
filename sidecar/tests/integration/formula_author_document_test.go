@@ -7,8 +7,34 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
+
+func TestFormulaAuthorCatalogMissingReferenceCannotBindDisplayName(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	table := createV2IntegrationTable(t, ctx, app, "Missing refs", "author_missing_table")
+	field := createV2IntegrationField(t, ctx, app, table.TableID,
+		fieldDraftForIntegration(t, v2.LogicalNumber, "#REF!"), "author_ref_label")
+	catalog := fieldchange.NewCatalog(app)
+	restored, err := catalog.RestoreFormulaDocument(ctx, table.TableID, "f_missing_author", 1)
+	var diagnostic *formula.Error
+	if !errors.As(err, &diagnostic) || diagnostic.Code != "formula.reference" || restored == nil {
+		t.Fatalf("missing canonical diagnostic = %v", err)
+	}
+	_, err = catalog.AuthorFormulaDocument(ctx, table.TableID, restored.Document)
+	if !errors.As(err, &diagnostic) || diagnostic.Code != "formula.reference" {
+		t.Fatalf("missing marker rebound to a real field: %v", err)
+	}
+	actual, err := catalog.AuthorFormulaDocument(ctx, table.TableID, workbench.FormulaAuthorDocument{
+		DisplaySource: "{#REF!}", DocumentRevision: 2,
+	})
+	if err != nil || len(actual.Document.Tokens) != 1 || actual.Document.Tokens[0].FieldId != field.FieldID {
+		t.Fatalf("explicit real field reference rejected: %v", err)
+	}
+}
 
 func TestFormulaAuthorCatalogRoundTripAfterTargetRename(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))

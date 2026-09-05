@@ -351,6 +351,41 @@ func TestAuthorDocumentDeletionRetainsIdentityAcrossEdits(t *testing.T) {
 	}
 }
 
+func TestAuthorDocumentUnboundReferenceMarkerNeverBindsDisplayName(t *testing.T) {
+	for _, withNamedField := range []bool{false, true} {
+		t.Run(strconv.FormatBool(withNamedField), func(t *testing.T) {
+			definition := V2Table{TableID: "table"}
+			if withNamedField {
+				field := scalarField("marker_id", "f_marker_field", numberType)
+				field.DisplayName = "#REF!"
+				definition.Fields = append(definition.Fields, field)
+			}
+			restored, err := RestoreV2AuthorDocument(definition, nil, "f_old_field", 1)
+			assertFormulaCode(t, err, "formula.reference")
+			if restored == nil || restored.Document.DisplaySource != "#REF!" || len(restored.Document.Tokens) != 0 {
+				t.Fatalf("deleted restore = %#v", restored)
+			}
+			for range 2 {
+				authored, authorErr := AuthorV2Document(definition, nil, restored.Document)
+				assertFormulaCode(t, authorErr, "formula.reference")
+				if authored == nil || authored.Document.DisplaySource != "#REF!" || len(authored.Document.Tokens) != 0 || authorErr.Details["range"] == nil {
+					t.Fatalf("deleted marker changed identity or lost diagnostic: %#v / %v", authored, authorErr)
+				}
+				restored = authored
+			}
+			if withNamedField {
+				explicit, err := AuthorV2Document(definition, nil, workbench.FormulaAuthorDocument{DisplaySource: "{#REF!}", DocumentRevision: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if explicit.CanonicalSource != "f_marker_field" || len(explicit.Document.Tokens) != 1 || explicit.Document.Tokens[0].FieldId != "marker_id" {
+					t.Fatalf("explicit real field reference = %#v", explicit)
+				}
+			}
+		})
+	}
+}
+
 func TestAuthorDocumentRejectsForgedRangesAndIdentityCombinations(t *testing.T) {
 	definition, targets := authorFixture()
 	base, err := AuthorV2Document(definition, targets, workbench.FormulaAuthorDocument{DisplaySource: "{运费}", DocumentRevision: 1})
