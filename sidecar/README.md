@@ -44,3 +44,9 @@ go run ./cmd/vibetable-pb --build-info
 Release builds should populate `internal/buildinfo.Version`,
 `internal/buildinfo.Commit`, and `internal/buildinfo.BuildTime` with `-ldflags
 -X`.
+
+## 数据库前向迁移
+
+已执行过的迁移按文件名记录。新增内部 collection 必须提供新的前向迁移，不能只修改旧 bootstrap；派生依赖图应在同一迁移事务中从现有定义恢复。已有图保持原记录，失败不留下部分图或已应用标记。
+
+更新 `migrations/manifest.json` 中的迁移条目与 schema 版本后，在仓库根目录运行 `uv run python scripts/update_migration_manifest.py` 和 `uv run python scripts/build_next.py --write-source-layout`，生成既有发布 checksum、embed 和布局元数据。迁移测试及发布契约必须同步通过；历史 producer 样本不得随迁移重新生成。
