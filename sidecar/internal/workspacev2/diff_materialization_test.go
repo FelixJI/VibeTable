@@ -133,7 +133,9 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 	projection := result.(materializeDiffPairResult)
 	if projection.DocumentID != documentID ||
 		projection.HistoricalRevisionID != first.Revision.RevisionID ||
-		projection.EffectiveRevisionID != second.Revision.RevisionID {
+		projection.HistoricalContentHash != first.Revision.ContentHash ||
+		projection.EffectiveRevisionID != second.Revision.RevisionID ||
+		projection.EffectiveContentHash != second.Revision.ContentHash {
 		t.Fatalf("result = %#v", projection)
 	}
 	for name, expected := range map[string]string{
@@ -149,6 +151,34 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("entries = %#v, %v", entries, err)
 	}
+	assertParams := json.RawMessage(`{"documentId":"` + documentID +
+		`","historicalRevisionId":"` + first.Revision.RevisionID +
+		`","expectedHistoricalContentHash":"` + first.Revision.ContentHash +
+		`","expectedEffectiveRevisionId":"` + second.Revision.RevisionID +
+		`","expectedEffectiveContentHash":"` + second.Revision.ContentHash + `"}`)
+	assertion, err := runtime.assertEffectiveRevision(
+		context.Background(), wire, assertParams,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual := assertion.(map[string]any); actual["documentId"] != documentID ||
+		actual["historicalRevisionId"] != first.Revision.RevisionID ||
+		actual["historicalContentHash"] != first.Revision.ContentHash ||
+		actual["effectiveRevisionId"] != second.Revision.RevisionID ||
+		actual["effectiveContentHash"] != second.Revision.ContentHash ||
+		actual["stable"] != true || len(actual) != 6 {
+		t.Fatalf("assertion = %#v", actual)
+	}
+	invalidHashParams := json.RawMessage(`{"documentId":"` + documentID +
+		`","historicalRevisionId":"` + first.Revision.RevisionID +
+		`","expectedHistoricalContentHash":"sha256:not-a-valid-hash","expectedEffectiveRevisionId":"` + second.Revision.RevisionID +
+		`","expectedEffectiveContentHash":"` + second.Revision.ContentHash + `"}`)
+	if _, err := runtime.assertEffectiveRevision(
+		context.Background(), wire, invalidHashParams,
+	); err == nil || err.Error() != "file_history.request_invalid" {
+		t.Fatalf("invalid hash error = %v", err)
+	}
 
 	third, err := runtime.history.Save(context.Background(), filehistory.SaveRequest{
 		Token: token, DocumentID: documentID,
@@ -159,8 +189,6 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 	if err != nil || third.Revision.RevisionID == "" {
 		t.Fatal(err)
 	}
-	assertParams := json.RawMessage(`{"documentId":"` + documentID +
-		`","expectedEffectiveRevisionId":"` + second.Revision.RevisionID + `"}`)
 	if _, err := runtime.assertEffectiveRevision(
 		context.Background(), wire, assertParams,
 	); !errors.Is(err, filehistory.ErrEffectiveRevisionStale) {

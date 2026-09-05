@@ -1297,14 +1297,21 @@ func (service *Service) OpenDiffPair(
 	}, nil
 }
 
-// AssertEffectiveRevision is the post-comparison CAS. It deliberately uses
-// the same stable stale outcome as OpenDiffPair so callers never publish a
-// result computed for an effective revision that has since moved.
-func (service *Service) AssertEffectiveRevision(
+// AssertDiffPair is the post-comparison CAS. It deliberately uses the same
+// stable stale outcome as OpenDiffPair so callers never publish a result for
+// a revision pair whose identity or immutable content changed.
+func (service *Service) AssertDiffPair(
 	documentID string,
+	historicalRevisionID string,
+	expectedHistoricalContentHash string,
 	expectedEffectiveRevisionID string,
+	expectedEffectiveContentHash string,
 ) error {
-	if !validUUID(documentID) || !validUUID(expectedEffectiveRevisionID) {
+	if !validUUID(documentID) ||
+		!validUUID(historicalRevisionID) ||
+		!validContentHash(expectedHistoricalContentHash) ||
+		!validUUID(expectedEffectiveRevisionID) ||
+		!validContentHash(expectedEffectiveContentHash) {
 		return errors.New("file_history.request_invalid")
 	}
 	service.mu.RLock()
@@ -1320,6 +1327,24 @@ func (service *Service) AssertEffectiveRevision(
 		return ErrStateCorrupt
 	}
 	if document.EffectiveRevisionID != expectedEffectiveRevisionID {
+		return ErrEffectiveRevisionStale
+	}
+	var historical, effective *Revision
+	for index := range document.Revisions {
+		revision := &document.Revisions[index]
+		if revision.DocumentID != documentID {
+			return ErrStateCorrupt
+		}
+		if revision.RevisionID == historicalRevisionID {
+			historical = revision
+		}
+		if revision.RevisionID == expectedEffectiveRevisionID {
+			effective = revision
+		}
+	}
+	if historical == nil || effective == nil ||
+		historical.ContentHash != expectedHistoricalContentHash ||
+		effective.ContentHash != expectedEffectiveContentHash {
 		return ErrEffectiveRevisionStale
 	}
 	return nil

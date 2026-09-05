@@ -351,6 +351,10 @@ public sealed class WorkspaceDocumentOsAdapterTests
 
     private const string DiffOperationId =
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    private const string BeforeHash =
+        "sha256:6db7d803e74f1ffa7d8f5adc0bf95b3e15bf4c8373fffadf546227cc6c6742cb";
+    private const string AfterHash =
+        "sha256:f39592393ef0859cb196a52693d2cea00fb2df784b3c04ae54aa7cadb8e562f8";
     private static readonly Guid WorkspaceId =
         Guid.Parse("11111111-1111-4111-8111-111111111111");
     private static readonly Guid DocumentId =
@@ -609,6 +613,10 @@ public sealed class WorkspaceDocumentOsAdapterTests
             {
                 using JsonDocument grant = JsonDocument.Parse(DecodeGrant(request));
                 string destination = grant.RootElement.GetProperty("path").GetString()!;
+                Assert.AreEqual("input", Path.GetFileName(destination));
+                Assert.IsTrue(File.Exists(Path.Combine(
+                    Directory.GetParent(destination)!.FullName,
+                    "manifest.json")));
                 File.WriteAllText(
                     Path.Combine(
                         destination,
@@ -627,19 +635,34 @@ public sealed class WorkspaceDocumentOsAdapterTests
                       "historicalRevisionId":"44444444-4444-4444-8444-444444444444",
                       "effectiveRevisionId":"{{RevisionId:D}}",
                       "historicalMimeType":"text/plain",
-                      "effectiveMimeType":"text/plain"
+                      "effectiveMimeType":"text/plain",
+                      "historicalContentHash":"{{BeforeHash}}",
+                      "effectiveContentHash":"{{AfterHash}}"
                     }
                     """);
             }
             Assert.AreEqual(
                 WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod,
                 method);
+            JsonElement parameters = root.GetProperty("params");
+            Assert.AreEqual(
+                "44444444-4444-4444-8444-444444444444",
+                parameters.GetProperty("historicalRevisionId").GetString());
+            Assert.AreEqual(
+                BeforeHash,
+                parameters.GetProperty("expectedHistoricalContentHash").GetString());
+            Assert.AreEqual(
+                AfterHash,
+                parameters.GetProperty("expectedEffectiveContentHash").GetString());
             return RpcSuccess(
                 root,
                 $$"""
                 {
                   "documentId":"{{DocumentId:D}}",
+                  "historicalRevisionId":"44444444-4444-4444-8444-444444444444",
                   "effectiveRevisionId":"{{RevisionId:D}}",
+                  "historicalContentHash":"{{BeforeHash}}",
+                  "effectiveContentHash":"{{AfterHash}}",
                   "stable":true
                 }
                 """);
@@ -675,6 +698,79 @@ public sealed class WorkspaceDocumentOsAdapterTests
             Directory.GetFileSystemEntries(diffRoot).Length == 0);
         Assert.AreEqual(3, epochs.LeaseCount);
         Assert.AreEqual(3, epochs.CompletedLeaseCount);
+    }
+
+    [TestMethod]
+    public async Task DiffRejectsMaterializedContentWhenRevisionHashDoesNotMatch()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        string materialized = Path.Combine(workspaceRoot, "files", "reports", "q3.txt");
+        string diffRoot = Path.Combine(directory.Path, "diff-sessions");
+        Directory.CreateDirectory(Path.GetDirectoryName(materialized)!);
+        await File.WriteAllTextAsync(materialized, "current leaf");
+        var engine = new InspectingDiffEngine();
+        var handler = new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            JsonElement root = body.RootElement;
+            string method = root.GetProperty("method").GetString()!;
+            if (method == WorkspaceDocumentOsAdapter.QueryDocumentsMethod)
+            {
+                return RpcSuccess(
+                    root,
+                    DocumentQueryResult(FileDocumentSummary("reports/q3.txt", 3)));
+            }
+            Assert.AreEqual(WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod, method);
+            using JsonDocument grant = JsonDocument.Parse(DecodeGrant(request));
+            string destination = grant.RootElement.GetProperty("path").GetString()!;
+            File.WriteAllText(
+                Path.Combine(destination, WorkspaceDocumentDiffCoordinator.HistoricalFileName),
+                "tampered");
+            File.WriteAllText(
+                Path.Combine(destination, WorkspaceDocumentDiffCoordinator.EffectiveFileName),
+                "after");
+            return RpcSuccess(
+                root,
+                $$"""
+                {
+                  "documentId":"{{DocumentId:D}}",
+                  "historicalRevisionId":"44444444-4444-4444-8444-444444444444",
+                  "effectiveRevisionId":"{{RevisionId:D}}",
+                  "historicalMimeType":"text/plain",
+                  "effectiveMimeType":"text/plain",
+                  "historicalContentHash":"{{BeforeHash}}",
+                  "effectiveContentHash":"{{AfterHash}}"
+                }
+                """);
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        using WorkspaceDocumentOsAdapter adapter = Adapter(
+            workspaceRoot,
+            gateway,
+            [
+                WorkspaceDocumentOsAdapter.QueryDocumentsMethod,
+                WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
+                WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod,
+            ],
+            new FakeEpochLeaseSource(),
+            engine,
+            diffRoot);
+        DocumentBridgeEntry entry = (await adapter.ListGlobalAsync(
+            CancellationToken.None)).Entries.Single();
+
+        DocumentDiffPayload result = await adapter.CompareAsync(
+            entry.EntryHandle,
+            "44444444-4444-4444-8444-444444444444",
+            RevisionId.ToString("D"),
+            CancellationToken.None);
+
+        Assert.AreEqual("failure", result.Outcome);
+        Assert.AreEqual("stale", result.Failure);
+        Assert.IsNull(engine.Before);
+        Assert.IsTrue(!Directory.Exists(diffRoot) ||
+            Directory.GetFileSystemEntries(diffRoot).Length == 0);
     }
 
     [TestMethod]
@@ -722,7 +818,9 @@ public sealed class WorkspaceDocumentOsAdapterTests
                   "historicalRevisionId":"44444444-4444-4444-8444-444444444444",
                   "effectiveRevisionId":"{{RevisionId:D}}",
                   "historicalMimeType":"text/plain",
-                  "effectiveMimeType":"text/plain"
+                  "effectiveMimeType":"text/plain",
+                  "historicalContentHash":"{{BeforeHash}}",
+                  "effectiveContentHash":"{{AfterHash}}"
                 }
                 """);
         });
@@ -831,7 +929,9 @@ public sealed class WorkspaceDocumentOsAdapterTests
                   "historicalRevisionId":"44444444-4444-4444-8444-444444444444",
                   "effectiveRevisionId":"{{RevisionId:D}}",
                   "historicalMimeType":"text/plain",
-                  "effectiveMimeType":"text/plain"
+                  "effectiveMimeType":"text/plain",
+                  "historicalContentHash":"{{BeforeHash}}",
+                  "effectiveContentHash":"{{AfterHash}}"
                 }
                 """);
         });
