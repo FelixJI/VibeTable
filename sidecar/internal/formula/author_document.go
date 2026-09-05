@@ -353,6 +353,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 	for i := 0; i < len(scanned); i++ {
 		first := scanned[i]
 		span := SourceSpan{Start: first.start, End: first.end}
+		missingReference := document.DisplaySource[first.start:first.end] == "#REF!"
 		targetName := ""
 		if i+1 < len(scanned) && document.DisplaySource[first.end:scanned[i+1].start] == "." {
 			_, firstBound := bindings[span]
@@ -363,6 +364,7 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 			i++
 			span.End = scanned[i].end
 			targetName = scanned[i].name
+			missingReference = missingReference || document.DisplaySource[scanned[i].start:scanned[i].end] == "#REF!"
 		}
 		binding, bound := bindings[span]
 		var field v2.FieldDefinition
@@ -393,6 +395,10 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 					return nil, formulaError("formula.author.token", "token kind differs from its stable field", nil)
 				}
 			}
+		} else if missingReference {
+			// A bare marker has no recoverable field identity. Only the explicit
+			// {#REF!} spelling may resolve a real field with that display name.
+			resolveErr = authorReferenceError(nil)
 		} else {
 			local, localErr := uniqueDisplayField(fieldsByDisplayName(definition.Fields), first.name, "local")
 			resolveErr = localErr
