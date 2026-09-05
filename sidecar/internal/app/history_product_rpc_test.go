@@ -307,7 +307,13 @@ func historyReadProductFixture(
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: capabilities.WorkspaceID, SessionEpoch: capabilities.SessionEpoch,
 		FenceEpoch: capabilities.FenceEpoch, ClaimID: capabilities.ClaimID,
-	}, schemaListRegistration(schemaapi.New(pb)), historyReadRegistration(runtime))
+	},
+		productrpc.ReconcileRegistration(schemaapi.New(pb)),
+		schemaGetTableRegistration(pb),
+		schemaListRegistration(schemaapi.New(pb)),
+		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		historyReadRegistration(runtime),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
