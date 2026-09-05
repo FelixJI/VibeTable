@@ -56,3 +56,9 @@ worker，并以进程边界实施预算。未实测前这些是验收项，不�
 下一实现必须以同一 corpus 验收：上述 MUST 的精确状态/token、页面外文本零召回、无乱码/假无文本、既有预算与
 取消语义、以及成功/失败 rebuild 的 generation 行为。对任何拟采用 adapter，另行完成正确性、资源、许可、离线
 分发、Windows x64 release candidate、NOTICE/SBOM 和包体差值门禁；本策略不预选 PDFium、收费方案或新增依赖。
+
+## 决策进展
+
+[ADR 0014](../adr/0014-pdf-extraction-adapter-qualification.md)与
+[2026-09-06 候选发现](../research/2026-09-06-pdfpig-qualification-observations.md)记录隔离实测和未完成门禁。
+ADR 状态为提议；不表示适配器已采纳、A6 已完成或产品提取器已经替换。
