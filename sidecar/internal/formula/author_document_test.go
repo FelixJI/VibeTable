@@ -111,6 +111,11 @@ func TestAuthorSourceMapUsesCompilerErrorSpanWithoutTrimming(t *testing.T) {
 	if !ok || value.Start.Line != 1 || value.Start.Character != 23 {
 		t.Fatalf("compiler display range = %#v (%v)", value, compileErr)
 	}
+	coordinates, _ := indexAuthorSource(source)
+	span, rangeErr := coordinates.byteRange(value)
+	if rangeErr != nil || source[span.Start:span.End] != "m" {
+		t.Fatalf("diagnostic does not point to missing: %#v / %v", value, rangeErr)
+	}
 }
 
 func FuzzAuthorDocumentCanonicalRoundTrip(f *testing.F) {
@@ -163,9 +168,14 @@ func TestAuthorDocumentDeletionRetainsIdentityAcrossEdits(t *testing.T) {
 				t.Fatal(err)
 			}
 			if removeTarget {
-				targets["f_lines"] = V2Table{TableID: "line_items"}
+				replacement := scalarField("replacement_id", "f_replacement", numberType)
+				replacement.DisplayName = "金额"
+				targets["f_lines"] = V2Table{TableID: "line_items", Fields: []v2.FieldDefinition{replacement}}
 			} else {
 				definition.Fields = definition.Fields[:1]
+				replacement := scalarField("replacement_id", "f_replacement", numberType)
+				replacement.DisplayName = "运费"
+				definition.Fields = append(definition.Fields, replacement)
 			}
 			deleted, err := AuthorV2Document(definition, targets, original.Document)
 			assertFormulaCode(t, err, "formula.reference")
