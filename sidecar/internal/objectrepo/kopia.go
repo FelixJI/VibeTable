@@ -73,6 +73,52 @@ func CreateKopiaFilesystem(
 	return OpenKopia(ctx, configFile, password)
 }
 
+// The client config is local connection state, not workspace identity. A staged
+// recovery can be renamed by the host before its first live open. Validate the
+// existing repository at the workspace-owned root before publishing that path.
+func openWorkspaceKopia(ctx context.Context, configFile, storageRoot, password string) (*KopiaRepository, error) {
+	config, err := kopiarepo.LoadConfigFromFile(configFile)
+	if err != nil {
+		return nil, err
+	}
+	if config.Storage == nil {
+		return nil, errors.New("repository.storage_invalid")
+	}
+	options, ok := config.Storage.Config.(*filesystem.Options)
+	if !ok {
+		return nil, errors.New("repository.storage_invalid")
+	}
+	if filepath.Clean(options.Path) == filepath.Clean(storageRoot) {
+		return OpenKopia(ctx, configFile, password)
+	}
+	options.Path = storageRoot
+	raw, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	staged, err := os.CreateTemp(filepath.Dir(configFile), ".kopia-relocate-*.config")
+	if err != nil {
+		return nil, err
+	}
+	stagedPath := staged.Name()
+	defer os.Remove(stagedPath)
+	_, writeErr := staged.Write(raw)
+	if err := errors.Join(writeErr, staged.Close()); err != nil {
+		return nil, err
+	}
+	verified, err := OpenKopia(ctx, stagedPath, password)
+	if err != nil {
+		return nil, err
+	}
+	if err := verified.Close(ctx); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(stagedPath, configFile); err != nil {
+		return nil, err
+	}
+	return OpenKopia(ctx, configFile, password)
+}
+
 func OpenKopia(ctx context.Context, configFile string, password string) (*KopiaRepository, error) {
 	normalizedConfig, err := filepath.Abs(configFile)
 	if err != nil {
