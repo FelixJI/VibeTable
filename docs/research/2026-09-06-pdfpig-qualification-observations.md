@@ -36,6 +36,22 @@
 这些 PDF 仅保留在本地，未提交副本。CTAN [包页](https://ctan.org/pkg/ctex)标明 LPPL 1.3c；
 再分发前仍需核对完整文档许可资产。记录 URL、版本、页面和 token，不把再次下载或普通本地 hash 当资格。
 
+### W3C predictor 反证
+
+另取 [PDF7 原示例](https://www.w3.org/WAI/WCAG20/Techniques/working-examples/PDF7/ocr-example.pdf)
+和 [OCR/tagged 示例](https://www.w3.org/WAI/WCAG20/Techniques/working-examples/PDF7/ocr-example-tagged.pdf)，
+分别为894,734和431,357字节。最初把前者预注册为无文本扫描件，Poppler 实测返回一页2333个 code points，
+该预期明确失败；后者为一页2243个 code points。它们都不能作为无文本扫描件资格证据。
+
+未修改的默认 PdfPig 对两份文件均返回一页、无 warning，并命中 `Test Document`、`Header One`、`Lorem ipsum`
+和 `WCAG2.0`；不要求两个引擎的空白和字符计数逐字相同。严格探针对两份均 exit 1、stdout 为空：xref 流使用
+`Predictor 12`，Columns 分别为3及4/5，命中尚未实现的参数拒绝。初始失败与默认路径对照分别冻结为
+`scan-pair-initial-expectation-failure.json` 和 `w3c-predictor-default-discovery.json`，不覆盖此前27样本结果。
+
+固定源码的 [PngPredictor](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig/Filters/PngPredictor.cs)
+是 internal 类；公共 [FlateFilter](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig/Filters/FlateFilter.cs)
+会吞掉解码异常并返回输入。候选目前没有公开、独立且可靠暴露失败的 predictor 接口；不能据默认路径成功直接
+替换严格路径。参数支持、错误分类和维护成本仍需决策，本轮未通过反射调用内部实现或放宽流完整性检查。
 ## 资源与退出测量
 
 前两行取自最后一轮27样本 warning 拒绝探针，原始记录另存为
