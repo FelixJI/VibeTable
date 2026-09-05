@@ -52,6 +52,23 @@
 是 internal 类；公共 [FlateFilter](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig/Filters/FlateFilter.cs)
 会吞掉解码异常并返回输入。候选目前没有公开、独立且可靠暴露失败的 predictor 接口；不能据默认路径成功直接
 替换严格路径。参数支持、错误分类和维护成本仍需决策，本轮未通过反射调用内部实现或放宽流完整性检查。
+### 无文本图片页对照
+
+固定上游的 [LibreOffice 图片页](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Tests/Integration/Documents/Single%20Page%20Images%20-%20from%20libre%20office.pdf)
+也不能按文件名认定无文本：89,006字节、一页、3个页面图片映射；Poppler、默认 PdfPig 和严格探针均读到
+9个 code points，原空文本预期失败，保留为 `libreoffice-image-discovery.json`。
+
+随后用本地 Poppler 将上述 W3C 原示例第一页渲染到144 DPI的 ARGB32 位图，再由
+[Cairo PDF surface](https://www.cairographics.org/manual/cairo-PDF-Surfaces.html)仅绘制该位图，生成新的图片页。
+这是明确记录转换过程的测试样本，不是未修改的外部扫描原件。生成物为270,527字节、PDF 1.7，producer
+`cairo 1.18.4`；页面渲染人工检查保留标题、段落和列表，可见内容不是空白。
+
+预注册一页、空文本且有页面图片后，[Poppler 页面图片映射](https://poppler.freedesktop.org/api/glib/poppler-Poppler-Page.html#poppler-page-get-image-mapping)
+确认1个图片；Poppler、默认 PdfPig 和严格探针均返回一页、0个 code points，后两者无 warning。
+严格探针本机单次为173 ms wall、234.375 ms CPU、61,132,800 B峰值工作集。独立记录为
+`raster-image-expectation.json`、`raster-image-discovery.json`，不覆盖27样本或此前失败记录。
+该发现仅补充已知无文本图片页的解析行为；产品 `noTextLayer` 映射、全 corpus、取消和分发资格仍待验收，
+原件与转换副本均未提交，再分发许可未据此认定通过。
 ## 资源与退出测量
 
 前两行取自最后一轮27样本 warning 拒绝探针，原始记录另存为
