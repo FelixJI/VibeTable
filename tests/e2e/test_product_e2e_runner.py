@@ -3035,7 +3035,12 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
     ]
     completed = subprocess.run(
-        [str(ensure_node(runner.ROOT)), "--test", *(str(path) for path in test_files)],
+        [
+            str(ensure_node(runner.ROOT)),
+            "--test",
+            "--test-concurrency=1",
+            *(str(path) for path in test_files),
+        ],
         check=False,
         capture_output=True,
         text=True,
