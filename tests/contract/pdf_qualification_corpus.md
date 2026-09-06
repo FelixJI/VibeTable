@@ -19,7 +19,24 @@ zlib 完整结束与预算、xref 声明 Length 和流外分隔符。正负样�
 实际运行 adapter 时须记录真实状态、正文和资源测量，逐项比较预期；拒绝、取消时正文必须为空，
 indexed 路径必须保留 token 并排除 forbiddenTokens。DISCOVERY 允许显式 unsupported 的条目不等于 MUST。
 
-本入口尚不是产品资格 runner，也没有将候选进程 ExitCode 等同于产品状态。
+## 当前 Go 实现的差距报告
+
+```text
+go -C sidecar build -o ../build/qa/pdf-qualification/pdf-qualification.exe ./cmd/pdf-qualification
+build/qa/pdf-qualification/pdf-qualification.exe tests/contract/pdf_qualification_corpus.json build/qa/pdf-qualification/v1 > build/qa/pdf-qualification/current-go.json
+```
+
+命令调用当前实际 `workspacesearch.Extract`，先核对 manifest 预算与实际默认值一致，再逐项输出状态、
+错误码、正文 code points、耗时及语义差距。没有完整正文输出；状态/token/页面外文本或拒绝正文断言不符时，
+仍写出完整报告并以 exit 1 结束。样本缺失、损坏 manifest 或预算漂移同样非零退出，不产生伪成功报告。
+这是手动决策入口，不新增或替换现有 CI 门禁，也不将候选进程 ExitCode 等同于产品状态。
+
+在 main1553ca 的当前提取器上，20 项中 8 项不匹配：非恒等中文、缺字映射、无 ToUnicode 映射、
+孤立对象、Flate 尾随数据、xref 声明内尾随数据、xref 短 Length、页面边界排除。前者、孤立对象、
+Flate 尾随数据和页面边界属于 MUST。该 RED 是保留的能力差距，不能修改 manifest 或标记 xfail 来刷绿。
+报告器自身的测试验证真实损坏 PDF 状态的接纳/错误预期拒绝，以及预算不一致时先于提取拒绝。
+
+本入口尚不是包含 worker、宿主和派生 generation 的完整产品资格 runner。
 manifest 的 `remainingCoverage` 保留独立生产者、普通 Tj/TJ、对象流/predictor、图片页、
 输入/输出/取消、加密、深层对象与产品 generation 事务等缺口；已有本地发现记录不能替代这些门禁。
 预算字段是原有输入/解码/输出/时间契约，不是实测通过声明，也不将累计解码预算冒充进程内存限制。
