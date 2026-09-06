@@ -235,3 +235,45 @@ func TestReplicaOneShotModesRequireTrustedExclusivePaths(t *testing.T) {
 		t.Fatalf("missing replica root error = %v", err)
 	}
 }
+
+func TestLegacyMigrationRequiresTrustedOfflineIdentity(t *testing.T) {
+	for _, scenario := range []string{"valid", "missing-data", "missing-identity", "flag-path", "single-dash-equals", "single-dash-separated", "conflicting-mode", "replica", "activity"} {
+		t.Run(scenario, func(t *testing.T) {
+			env := map[string]string{
+				SessionSecretEnv: strings.Repeat("01", 32), DataDirEnv: "offline-copy",
+				WorkspaceIDEnv:  "11111111-1111-4111-8111-111111111111",
+				SessionEpochEnv: "7", FenceEpochEnv: "3",
+				ClaimIDEnv: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			}
+			args := []string{"--verify-legacy-workspace-migration"}
+			switch scenario {
+			case "missing-data":
+				delete(env, DataDirEnv)
+			case "missing-identity":
+				for _, key := range []string{WorkspaceIDEnv, SessionEpochEnv, FenceEpochEnv, ClaimIDEnv} {
+					delete(env, key)
+				}
+			case "flag-path":
+				args = append(args, "--data-dir=untrusted")
+			case "single-dash-equals":
+				args = append(args, "-data-dir=untrusted")
+			case "single-dash-separated":
+				args = append(args, "-data-dir", "untrusted")
+			case "conflicting-mode":
+				args = append(args, "--build-info")
+			case "replica":
+				env[ReplicaRootEnv] = "replica"
+			case "activity":
+				env[ActivityRootEnv] = "activity"
+			}
+			cfg, err := Parse(args, func(key string) string { return env[key] })
+			if scenario == "valid" {
+				if err != nil || !cfg.VerifyLegacyWorkspaceMigration || cfg.DataDir != env[DataDirEnv] {
+					t.Fatalf("valid migration rejected: %v", err)
+				}
+			} else if err == nil {
+				t.Fatal("invalid migration configuration accepted")
+			}
+		})
+	}
+}

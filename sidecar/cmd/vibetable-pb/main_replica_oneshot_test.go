@@ -528,6 +528,8 @@ func TestReplicaOneShotCLIHelperProcess(t *testing.T) {
 		flag = "--recover-workspace-replica"
 	case "verify":
 		flag = "--verify-workspace-replica"
+	case "migration":
+		flag = "--verify-legacy-workspace-migration"
 	default:
 		os.Exit(2)
 	}

@@ -121,21 +121,42 @@ type CapabilityDocument struct {
 	Registrations   []protocolv2.Method `json:"registrations"`
 }
 
-func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
+func validateRuntimeOptions(options Options) error {
 	if options.App == nil || options.Ledger == nil {
-		return nil, errors.New("workspace.v2.dependencies_required")
+		return errors.New("workspace.v2.dependencies_required")
 	}
 	if !validUUID(options.WorkspaceID) ||
 		!validUUID(options.ClaimID) ||
 		options.SessionEpoch == 0 ||
 		options.FenceEpoch == 0 {
-		return nil, errors.New("workspace.v2.identity_invalid")
+		return errors.New("workspace.v2.identity_invalid")
+	}
+	return nil
+}
+
+func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
+	if err := validateRuntimeOptions(options); err != nil {
+		return nil, err
 	}
 	paths, manifest, err := validateBinding(
 		options.DataDir,
 		options.WorkspaceID,
 	)
 	if err != nil {
+		return nil, err
+	}
+	return openBoundRuntime(ctx, options, paths, manifest)
+}
+
+// openBoundRuntime composes storage only after the caller validates its binding.
+// Callers must validate manifest identity and schema before composition.
+func openBoundRuntime(
+	ctx context.Context,
+	options Options,
+	paths workspacePaths,
+	manifest contractsv2.WorkspaceManifest,
+) (_ *Runtime, err error) {
+	if err := validateRuntimeOptions(options); err != nil {
 		return nil, err
 	}
 	for _, path := range []string{

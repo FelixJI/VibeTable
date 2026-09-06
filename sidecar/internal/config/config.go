@@ -33,19 +33,20 @@ type WorkspaceIdentity struct {
 }
 
 type Config struct {
-	DataDir                       string
-	Dev                           bool
-	BuildInfoOnly                 bool
-	InitializeWorkspaceRepository bool
-	UnlockWorkspaceRepository     bool
-	RotateWorkspaceRepository     bool
-	InitializeWorkspaceReplica    bool
-	RecoverWorkspaceReplica       bool
-	VerifyWorkspaceReplica        bool
-	Session                       auth.Secret
-	WorkspaceV2                   *WorkspaceIdentity
-	ReplicaRoot                   string
-	ActivityRoot                  string
+	VerifyLegacyWorkspaceMigration bool
+	DataDir                        string
+	Dev                            bool
+	BuildInfoOnly                  bool
+	InitializeWorkspaceRepository  bool
+	UnlockWorkspaceRepository      bool
+	RotateWorkspaceRepository      bool
+	InitializeWorkspaceReplica     bool
+	RecoverWorkspaceReplica        bool
+	VerifyWorkspaceReplica         bool
+	Session                        auth.Secret
+	WorkspaceV2                    *WorkspaceIdentity
+	ReplicaRoot                    string
+	ActivityRoot                   string
 }
 
 func Parse(args []string, getenv func(string) string) (Config, error) {
@@ -96,6 +97,12 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		false,
 		"read-only verify the bound workspace replica and exit",
 	)
+	flags.BoolVar(
+		&result.VerifyLegacyWorkspaceMigration,
+		"verify-legacy-workspace-migration",
+		false,
+		"verify a caller-owned offline migration copy and print its proposed manifest",
+	)
 	if err := flags.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -105,6 +112,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	modeCount := 0
 	for _, enabled := range []bool{
 		result.BuildInfoOnly,
+		result.VerifyLegacyWorkspaceMigration,
 		result.InitializeWorkspaceRepository,
 		result.UnlockWorkspaceRepository,
 		result.RotateWorkspaceRepository,
@@ -194,6 +202,23 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 					"replica root must come from the environment",
 				)
 			}
+		}
+	}
+	if result.VerifyLegacyWorkspaceMigration {
+		if strings.TrimSpace(getenv(DataDirEnv)) == "" || result.WorkspaceV2 == nil {
+			return Config{}, errors.New("legacy migration requires env dataDir and workspace identity")
+		}
+		dataDirFlagSet := false
+		flags.Visit(func(option *flag.Flag) {
+			if option.Name == "data-dir" {
+				dataDirFlagSet = true
+			}
+		})
+		if dataDirFlagSet {
+			return Config{}, errors.New("legacy migration dataDir must come from the environment")
+		}
+		if result.ReplicaRoot != "" {
+			return Config{}, errors.New("legacy migration requires a direct offline copy")
 		}
 	}
 	activityRoot := strings.TrimSpace(getenv(ActivityRootEnv))

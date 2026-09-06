@@ -529,6 +529,16 @@ func openReplicaOneShotRuntimeWithMigrationLoader(
 	if err != nil {
 		return nil, nil, err
 	}
+	return openBoundOneShotRuntime(ctx, options, paths, Open, loadMigrationManifest)
+}
+
+func openBoundOneShotRuntime(
+	ctx context.Context,
+	options ReplicaOneShotOptions,
+	paths workspacePaths,
+	openRuntime func(context.Context, Options) (*Runtime, error),
+	loadMigrationManifest func() error,
+) (*Runtime, func() error, error) {
 	if err := startup.ValidateMigrationManifest(loadMigrationManifest); err != nil {
 		return nil, nil, err
 	}
@@ -548,7 +558,7 @@ func openReplicaOneShotRuntimeWithMigrationLoader(
 		_ = app.ResetBootstrapState()
 		return nil, nil, err
 	}
-	runtime, err := Open(ctx, Options{
+	runtime, err := openRuntime(ctx, Options{
 		App:                  app,
 		DataDir:              options.DataDir,
 		WorkspaceID:          options.WorkspaceID,

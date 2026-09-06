@@ -39,6 +39,37 @@ type WorkspaceRepositorySpec struct {
 	Password         []byte
 }
 
+// ValidateExistingWorkspaceRepositoryLayout rejects unsupported or missing
+// storage before a migration opens any database. It does not open or create
+// the repository; callers must still verify its contents after opening it.
+func ValidateExistingWorkspaceRepositoryLayout(spec WorkspaceRepositorySpec) error {
+	configFile, storageRoot, err := workspaceRepositoryPaths(spec)
+	if err != nil {
+		return err
+	}
+	config, err := os.Lstat(configFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrRepositoryNotInitialized
+	}
+	if err != nil {
+		return err
+	}
+	if !config.Mode().IsRegular() || config.Size() == 0 {
+		return errors.New("repository.config_invalid")
+	}
+	storage, err := os.Lstat(storageRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrRepositoryNotInitialized
+	}
+	if err != nil {
+		return err
+	}
+	if !storage.IsDir() || storage.Mode()&os.ModeSymlink != 0 {
+		return errors.New("repository.storage_invalid")
+	}
+	return nil
+}
+
 // OpenWorkspaceRepository opens an existing workspace repository.
 func OpenWorkspaceRepository(
 	ctx context.Context,

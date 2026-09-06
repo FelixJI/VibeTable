@@ -36,6 +36,24 @@ func run(args []string) int {
 		}
 		return 0
 	}
+	if cfg.VerifyLegacyWorkspaceMigration {
+		manifest, err := workspacev2.VerifyLegacyMigrationCopy(context.Background(), workspacev2.ReplicaOneShotOptions{
+			DataDir:      cfg.DataDir,
+			WorkspaceID:  cfg.WorkspaceV2.WorkspaceID,
+			SessionEpoch: cfg.WorkspaceV2.SessionEpoch,
+			FenceEpoch:   cfg.WorkspaceV2.FenceEpoch,
+			ClaimID:      cfg.WorkspaceV2.ClaimID,
+		})
+		if err != nil {
+			logError("verify legacy workspace migration copy", err)
+			return 1
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(manifest); err != nil {
+			logError("write verified migration manifest", err)
+			return 1
+		}
+		return 0
+	}
 	if cfg.InitializeWorkspaceRepository {
 		result, err := workspacev2.InitializeRepository(
 			context.Background(),
