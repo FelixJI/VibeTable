@@ -1478,6 +1478,7 @@ def persist_runtime_baseline_evidence(
         "sampling",
         "workspace",
         "firstTable",
+        "rpcLatency",
         "measurements",
         "lifecycle",
         "errors",
