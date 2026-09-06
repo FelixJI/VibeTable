@@ -715,7 +715,7 @@ describe("workspace v2 closed result catalog", () => {
     ["snapshot.update", { snapshotId: "s-1", state: "ready", integrity: "verified" }],
     ["snapshot.previewRestore", { planId: "plan-1", protectionRequired: true, changes: ["tables"] }],
     ["snapshot.export", { displayName: "quarter.vtsnapshot", sha256: `sha256:${"ab".repeat(32)}` }],
-    ["snapshot.inspectPackage", { planId: "plan-1", trusted: false, workspaceId: "w-1", sourceSnapshotId: null, snapshotCount: 2, encrypted: true, verified: false, expiresAt: "2026-08-13T00:00:00Z" }],
+    ["snapshot.inspectPackage", { planId: "plan-1", trusted: false, workspaceId: "", sourceSnapshotId: null, snapshotCount: 0, encrypted: true, verified: false, expiresAt: "2026-08-13T00:00:00Z" }],
     ["fileHistory.applyPendingChange", { changeId: "c-1", state: "dismissed", document: null }],
     ["fileHistory.activateLeaf", { revisionId: "r-1", effective: true }],
     ["workspaceSearch.status", status],
@@ -735,6 +735,23 @@ describe("workspace v2 closed result catalog", () => {
     expect(parsed.method).toBe(method);
   });
 
+  it.each([
+    { encrypted: false, verified: false, sourceSnapshotId: null, snapshotCount: 0 },
+    { encrypted: true, verified: true, sourceSnapshotId: "s-1", snapshotCount: 1 },
+    { encrypted: true, verified: false, sourceSnapshotId: null, snapshotCount: 1 },
+  ])("rejects missing package workspace identity outside the locked state: %j", (state) => {
+    expect(() => parseWorkspaceV2Reply({
+      ...reply,
+      method: "snapshot.inspectPackage",
+      result: {
+        planId: "plan-1",
+        trusted: false,
+        workspaceId: "",
+        expiresAt: "2026-08-13T00:00:00Z",
+        ...state,
+      },
+    })).toThrow("workspaceId must be a non-empty string");
+  });
   it("parses every JSON scalar metadata form and rejects non-finite search values", () => {
     const searchHit = {
       contractVersion: "1.0",

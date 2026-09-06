@@ -680,9 +680,9 @@ describe("workspace protection UI capability gates", () => {
     protection.setSnapshotPackagePlan({
       planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       trusted: false,
-      workspaceId: "11111111-1111-4111-8111-111111111111",
+      workspaceId: "",
       sourceSnapshotId: null,
-      snapshotCount: 2,
+      snapshotCount: 0,
       encrypted: true,
       verified: false,
       expiresAt: "2026-07-28T10:10:00Z",
