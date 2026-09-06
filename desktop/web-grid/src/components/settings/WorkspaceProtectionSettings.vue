@@ -851,7 +851,7 @@ function applyStoragePlan(): void {
       @update:show="show => { if (!show) closeImport() }"
     >
       <template v-if="protection.snapshotPackagePlan">
-        <NAlert
+        <NAlert tabindex="0"
           :type="protection.snapshotPackagePlan.trusted ? 'success' : 'warning'"
           :title="protection.snapshotPackagePlan.trusted ? t('workspaceV2.snapshot.packageTrusted') : t('workspaceV2.snapshot.packageUntrusted')"
         >

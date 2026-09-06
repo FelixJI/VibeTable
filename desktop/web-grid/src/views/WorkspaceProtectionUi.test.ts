@@ -644,6 +644,35 @@ describe("workspace protection UI capability gates", () => {
     wrapper.unmount();
   });
 
+  it.each([false, true])("keeps import focus in visible dialog content after inspection finishes (busy=%s)", async (busy) => {
+    useWorkspaceSessionStore().configureCapabilities([
+      "workspace.session.v2", "snapshot.package.v2",
+    ]);
+    const protection = useWorkspaceProtectionStore();
+    const wrapper = mount(WorkspaceProtectionSettings, {
+      props: { mode: "versions" }, attachTo: document.body,
+      global: { stubs: { transition: false } },
+    });
+    try {
+      const lease = busy ? protection.beginOperation("snapshot.inspectPackage") : null;
+      protection.setSnapshotPackagePlan({
+        planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        trusted: true,
+        workspaceId: "11111111-1111-4111-8111-111111111111",
+        sourceSnapshotId: "22222222-2222-4222-8222-222222222222",
+        snapshotCount: 2, encrypted: false, verified: true,
+        expiresAt: "2026-07-28T10:10:00Z",
+      });
+      await wrapper.vm.$nextTick();
+      if (lease) protection.finishOperation(lease);
+      await wrapper.vm.$nextTick();
+      const modal = document.querySelector('.snapshot-restore-modal[role="dialog"]')!;
+      expect(modal.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement?.closest('[aria-hidden="true"]')).toBeNull();
+    } finally {
+      wrapper.unmount();
+    }
+  });
   it("renders snapshot package failures through a stable product selector", async () => {
     useWorkspaceSessionStore().configureCapabilities([
       "workspace.session.v2",
