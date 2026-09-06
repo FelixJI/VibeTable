@@ -6707,6 +6707,209 @@ const scenarios = {
   "26-lookup-definition-read": scenario26,
 };
 
+async function naturalSnapshot(page, recorder, previousIds) {
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-versions").click();
+  const settings = page.getByTestId("snapshot-settings");
+  await settings.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("snapshot-create").click();
+  let listed = null;
+  let snapshot = null;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline && !snapshot) {
+    listed = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+    snapshot = listed.result?.snapshots?.find((item) => !previousIds.includes(item.snapshotId)
+      && item.state === "ready" && item.integrity === "verified") ?? null;
+    if (!snapshot) await page.waitForTimeout(100);
+  }
+  recorder.check("manual snapshot is ready and verified through public snapshot.list",
+    typeof snapshot?.snapshotId === "string", { snapshot, listed: listed.result });
+  return snapshot;
+}
+
+async function seedNaturalRetentionAging(page, recorder) {
+  await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
+  const center = page.getByTestId("workspace-center");
+  await center.waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("workspace-create").click();
+  const modal = page.getByTestId("workspace-flow-modal");
+  await modal.locator("input").first().fill("A1 Natural Retention");
+  const locationPolicy = modal.getByTestId("workspace-location-policy");
+  await locationPolicy.locator('label:has(input[value="other"])').click();
+  recorder.check("seed selects the custom workspace location through its visible label",
+    await locationPolicy.locator('input[value="other"]').isChecked());
+  await page.getByTestId("workspace-flow-confirm").click();
+  const workspace = center.getByRole("button", { name: /A1 Natural Retention/ });
+  await workspace.waitFor({ state: "visible", timeout: 60_000 });
+  await workspace.click();
+  await page.getByTestId("home-view").waitFor({ state: "visible", timeout: 60_000 });
+
+  await page.getByTestId("nav-tables").click();
+  await createEmptyTable(page, "A1 older snapshot content");
+  await closeFieldSettingsDrawer(page);
+  const beforeOlder = (await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 }))
+    .result?.snapshots?.map((item) => item.snapshotId) ?? [];
+  const older = await naturalSnapshot(page, recorder, beforeOlder);
+
+  await page.getByTestId("nav-tables").click();
+  await createEmptyTable(page, "A1 newer snapshot content");
+  await closeFieldSettingsDrawer(page);
+  const beforeNewer = (await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 }))
+    .result?.snapshots?.map((item) => item.snapshotId) ?? [];
+  const newer = await naturalSnapshot(page, recorder, beforeNewer);
+
+  const olderRow = page.locator(`[id="snapshot-${older.snapshotId}"]`);
+  await olderRow.click();
+  await beginWorkspaceV2MethodCapture(page, "snapshot.update");
+  await page.getByTestId("snapshot-settings").locator(".detail-title button").click();
+  const unpinUpdate = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("Versions UI receives the older snapshot unpin terminal",
+    unpinUpdate.payload?.method === "snapshot.update" && unpinUpdate.payload?.ok === true,
+  { unpinUpdate });
+  const unpinned = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+  recorder.check("older snapshot is unpinned through the Versions UI",
+    unpinned.result?.snapshots?.some((item) => item.snapshotId === older.snapshotId && !item.pinned),
+  { older: older.snapshotId, snapshots: unpinned.result?.snapshots });
+
+  await page.getByTestId("settings-nav-storage").click();
+  const storage = page.getByTestId("storage-settings");
+  await storage.waitFor({ state: "visible", timeout: 30_000 });
+  const retention = storage.locator(".retention-grid");
+  await retention.locator(".n-input-number input").nth(0).fill("1");
+  await retention.locator(".n-input-number input").nth(1).fill("1");
+  await retention.locator(".n-input-number input").nth(2).fill("1");
+  await retention.locator(".n-input-number input").nth(3).fill("1");
+  for (const bucketField of [
+    retention.locator(".bucket-field").first(),
+    retention.locator(".bucket-field").nth(1),
+  ]) {
+    const buckets = bucketField.locator(".n-base-close");
+    while (await buckets.count()) await buckets.first().click();
+  }
+  await beginWorkspaceV2MethodCapture(page, "retention.update");
+  await page.getByTestId("retention-save").click();
+  const retentionUpdate = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("Settings UI receives the retention update terminal",
+    retentionUpdate.payload?.method === "retention.update" && retentionUpdate.payload?.ok === true,
+  { retentionUpdate });
+  const policy = (await rawWorkspaceV2Request(page, "retention.get", {})).result;
+  recorder.check("Settings UI saves one-day, one-item policy with no retention buckets",
+    policy?.snapshotDays === 1 && policy?.snapshotCount === 1
+      && Array.isArray(policy?.snapshotBuckets) && policy.snapshotBuckets.length === 0
+      && policy?.fileRevisionDays === 1 && policy?.fileRevisionCount === 1
+      && Array.isArray(policy?.fileRevisionBuckets) && policy.fileRevisionBuckets.length === 0,
+  { policy });
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null);
+  recorder.check("seed exposes the workspace UUID after real UI creation", typeof session?.workspaceId === "string", { session });
+  return { workspaceId: session.workspaceId, olderSnapshotId: older.snapshotId, newerSnapshotId: newer.snapshotId };
+}
+
+function hasActiveNaturalAgingWorkspaceSessionInPage() {
+  const session = window.__vibetableE2EBridgeDiagnostics?.workspaceSession;
+  return typeof session?.workspaceId === "string"
+    && Number.isSafeInteger(session.sessionEpoch)
+    && session.sessionEpoch > 0;
+}
+
+function openNaturalAgingWorkspaceInPage(targetTestId) {
+  const session = window.__vibetableE2EBridgeDiagnostics?.workspaceSession;
+  if (typeof session?.workspaceId === "string"
+    && Number.isSafeInteger(session.sessionEpoch)
+    && session.sessionEpoch > 0) return false;
+  // Locate the UUID-bound card through its existing marker; never click Delete.
+  const card = document.querySelector(`[data-testid="${targetTestId}"]`)
+    ?.closest(".workspace-card");
+  const button = card?.querySelector("button[aria-label]");
+  if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+  button.click();
+  return true;
+}
+
+async function resumeNaturalRetentionAging(page, recorder, statePath) {
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  const center = page.getByTestId("workspace-center");
+  const home = page.getByTestId("home-view");
+  const start = await Promise.race([
+    center.waitFor({ state: "visible", timeout: 60_000 }).then(() => "center"),
+    home.waitFor({ state: "visible", timeout: 60_000 }).then(() => "home"),
+  ]);
+  const switchParams = { targetWorkspaceId: state.workspaceId, openMode: "writable" };
+  let switched;
+  try {
+    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
+  } catch (error) {
+    const prefix = "workspace.switch failed closed: ";
+    let failure;
+    try {
+      failure = error instanceof Error && error.message.startsWith(prefix)
+        ? JSON.parse(error.message.slice(prefix.length))
+        : null;
+    } catch {
+      throw error;
+    }
+    if (!["workspace.capability_unavailable", "workspace.session_required"]
+      .includes(failure?.code)) throw error;
+    const activeSession = page.waitForFunction(
+      hasActiveNaturalAgingWorkspaceSessionInPage,
+      undefined,
+      { timeout: 60_000 },
+    );
+    const targetTestId = `workspace-delete-${state.workspaceId}`;
+    const activation = await Promise.race([
+      activeSession.then(() => "session"),
+      page.getByTestId(targetTestId).waitFor({ state: "visible", timeout: 60_000 })
+        .then(() => "center"),
+    ]);
+    if (activation === "center") {
+      await page.evaluate(openNaturalAgingWorkspaceInPage, targetTestId);
+    }
+    await activeSession;
+    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
+  }
+  recorder.check(
+    "resume switch opens the seeded workspace writable",
+    switched.result?.workspaceId === state.workspaceId
+      && Number.isSafeInteger(switched.result?.sessionEpoch)
+      && switched.result.sessionEpoch > 0
+      && switched.result?.state === "openedWritable",
+    { start, expected: state.workspaceId, switched: switched.result },
+  );
+  await page.getByTestId("nav-home").click();
+  await home.waitFor({ state: "visible", timeout: 60_000 });
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  const plan = page.getByTestId("retention-plan-preview");
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
+  await plan.click();
+  const preview = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("mature retention plan has reclaimable bytes", preview.payload?.result?.reclaimableBytes > 0,
+    { preview });
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await page.getByTestId("retention-plan-apply").click();
+  const applied = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("mature retention apply deletes logical objects without physical reclaim",
+    applied.payload?.result?.deletedObjects > 0 && applied.payload?.result?.reclaimedBytes === 0,
+  { applied });
+  const remaining = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+  recorder.check("retention removes the aged snapshot and preserves the newer snapshot",
+    !remaining.result?.snapshots?.some((item) => item.snapshotId === state.olderSnapshotId)
+      && remaining.result?.snapshots?.some((item) => item.snapshotId === state.newerSnapshotId),
+  { remaining: remaining.result });
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
+  await plan.click();
+  const secondPlan = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("second retention plan is empty", secondPlan.payload?.result?.reclaimableBytes === 0,
+    { secondPlan });
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await page.getByTestId("retention-plan-apply").click();
+  const secondApply = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("second retention apply is a zero logical cleanup",
+    secondApply.payload?.result?.deletedObjects === 0 && secondApply.payload?.result?.reclaimedBytes === 0,
+  { secondApply });
+  return {};
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 1 && argv[0] === "--list-scenarios") {
@@ -6771,9 +6974,13 @@ async function main() {
     page = await locateProductPage(browser);
     observePage(page);
     await installBridgeDiagnostics(page);
-    const implementation = scenarios[args.scenario];
+    const implementation = args["natural-aging-phase"] === "seed"
+      ? (candidate, checks) => seedNaturalRetentionAging(candidate, checks)
+      : args["natural-aging-phase"] === "resume"
+        ? (candidate, checks) => resumeNaturalRetentionAging(candidate, checks, args.state)
+        : scenarios[args.scenario];
     if (implementation) {
-      await implementation(page, recorder, network, {
+      const phaseResult = await implementation(page, recorder, network, {
         evidenceDir,
         controlsDir: path.resolve(args["controls-dir"]),
         dataRoot: path.resolve(args["data-root"]),
@@ -6785,6 +6992,7 @@ async function main() {
           });
         },
       });
+      if (phaseResult && args["natural-aging-phase"]) Object.assign(result, phaseResult);
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
     result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);
