@@ -2,8 +2,65 @@
   "contractVersion": "2.0",
   "schemaVersion": 1,
   "appendOnly": true,
-  "previousFormalReleases": [],
-  "previousFormalReleaseNote": "VibeTable is still pre-release and has no prior formal workspace artifact. This corpus establishes the immutable first-release baseline; a release gate must append the first signed release artifact before any later release.",
+  "previousFormalReleases": [
+    {
+      "writerVersion": "0.5.0",
+      "sourceRelease": {
+        "tag": "v0.5.0",
+        "sourceCommit": "9a3077b019eb94fba30761f21b6442fc7034fea8",
+        "assetName": "VibeTable-v0.5.0-win-x64.zip"
+      },
+      "artifacts": [
+        {
+          "id": "v050-workspace",
+          "kind": "workspace-archive",
+          "path": "fixtures/formal-v0.5.0/workspace.zip",
+          "sha256": "ae44928168add7c7e997e19a029dcc9c734fc9ebec270bb2c003c8f81a912c8c"
+        },
+        {
+          "id": "v050-plain",
+          "kind": "snapshot-package",
+          "path": "fixtures/formal-v0.5.0/plain.vtsnapshot",
+          "sha256": "0f1ec6dff1d9e3c146e1599faba518e4e4611b75f5770106074bbdad92c39d6d"
+        },
+        {
+          "id": "v050-passphrase",
+          "kind": "snapshot-package",
+          "path": "fixtures/formal-v0.5.0/passphrase.vtsnapshot",
+          "sha256": "4d2bd0728e862ab3819bbdade0bce9a81810b42926f821617d89042349c4f5e0"
+        },
+        {
+          "id": "v050-truncated",
+          "kind": "snapshot-package",
+          "path": "fixtures/formal-v0.5.0/truncated.vtsnapshot",
+          "sha256": "eba743a8775ae15deeb6e7a172f41ff31bf8fe8151139f0790f0361cd6815b27"
+        }
+      ],
+      "cases": [
+        {
+          "operation": "workspace.open",
+          "artifactId": "v050-workspace",
+          "expected": "migrate"
+        },
+        {
+          "operation": "snapshot.import",
+          "artifactId": "v050-plain",
+          "expected": "migrate"
+        },
+        {
+          "operation": "snapshot.import",
+          "artifactId": "v050-passphrase",
+          "expected": "migrate"
+        },
+        {
+          "operation": "snapshot.import",
+          "artifactId": "v050-truncated",
+          "expected": "reject-zero-write"
+        }
+      ]
+    }
+  ],
+  "previousFormalReleaseNote": "v0.5.0 formal producer inputs are collected; cases describe required consumer outcomes, not observed compatibility. Runtime verification and an independent remote-main anchor remain pending; the immutable first-release baseline is preserved.",
   "baselines": [
     {
       "writerVersion": "0.1.0-dev",
