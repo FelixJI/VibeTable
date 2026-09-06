@@ -1,0 +1,272 @@
+{
+  "corpusVersion": 1,
+  "purpose": "A6 decision evidence; not a production adapter acceptance result",
+  "producer": "Repository-owned generated PDF objects; no copied third-party PDF/font assets",
+  "budgets": {
+    "inputBytes": 67108864,
+    "singleDecodedStreamBytes": 33554432,
+    "cumulativeDecodedBytes": 268435456,
+    "outputCodePoints": 2000000,
+    "deadlineSeconds": 30
+  },
+  "cases": [
+    {
+      "file": "nonidentity-tounicode-cjk.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "indexed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "数据工作"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "非恒等字码必须消费 ToUnicode，不能用 UTF-16 BOM 解码冒充字体映射。"
+    },
+    {
+      "file": "missing-glyph-mapping.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": [
+        "unsupported",
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "已知一个可达字码没有映射，不能接受部分正文或报无文本。"
+    },
+    {
+      "file": "missing-tounicode.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": [
+        "indexed",
+        "unsupported",
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "!\"#"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "缺 ToUnicode 不等于无法解码；若接纳必须与独立 Poppler 已观察到的 Adobe 映射 token 一致。"
+    },
+    {
+      "file": "orphan-content.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "indexed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "Visible report"
+      ],
+      "forbiddenTokens": [
+        "ORPHAN FORBIDDEN"
+      ],
+      "emptyTextOnRejection": true,
+      "reason": "未被页面引用的 stream 不属于正文。"
+    },
+    {
+      "file": "flate-over-32m.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "resourceLimited"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "单流解码为 33 MiB，超过 32 MiB 限制，不得接纳部分正文。"
+    },
+    {
+      "file": "flate-missing-trailer.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "zlib 流必须完整结束且协议有效；声明流内尾随数据不属于可忽略的 PDF 分隔符。"
+    },
+    {
+      "file": "flate-missing-trailer-1.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "zlib 流必须完整结束且协议有效；声明流内尾随数据不属于可忽略的 PDF 分隔符。"
+    },
+    {
+      "file": "flate-missing-trailer-2.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "zlib 流必须完整结束且协议有效；声明流内尾随数据不属于可忽略的 PDF 分隔符。"
+    },
+    {
+      "file": "flate-missing-trailer-3.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "zlib 流必须完整结束且协议有效；声明流内尾随数据不属于可忽略的 PDF 分隔符。"
+    },
+    {
+      "file": "flate-wrong-adler.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "zlib 流必须完整结束且协议有效；声明流内尾随数据不属于可忽略的 PDF 分隔符。"
+    },
+    {
+      "file": "flate-trailing-data.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "zlib 流必须完整结束且协议有效；声明流内尾随数据不属于可忽略的 PDF 分隔符。"
+    },
+    {
+      "file": "flate-invalid-window.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "zlib 流必须完整结束且协议有效；声明流内尾随数据不属于可忽略的 PDF 分隔符。"
+    },
+    {
+      "file": "flate-empty.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "noTextLayer"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "可达合法空 Flate 内容流，区别于损坏流。"
+    },
+    {
+      "file": "flate-preset-dictionary.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": [
+        "unsupported",
+        "failed"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "PDF Flate 预置字典在此资格范围明确拒绝，无部分正文。"
+    },
+    {
+      "file": "flate-cumulative-over-256m.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "resourceLimited"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "九个可达流每个 32 MiB，单流合规但累计超过 256 MiB。"
+    },
+    {
+      "file": "xref-lf.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": [
+        "indexed",
+        "unsupported"
+      ],
+      "requiredTokensWhenIndexed": [
+        "Xref boundary"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "xref stream 的声明 Length 之外是合法 PDF 换行；不能当作压缩流内部尾随字节。"
+    },
+    {
+      "file": "xref-crlf.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": [
+        "indexed",
+        "unsupported"
+      ],
+      "requiredTokensWhenIndexed": [
+        "Xref boundary"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "xref stream 的声明 Length 之外是合法 PDF 换行；不能当作压缩流内部尾随字节。"
+    },
+    {
+      "file": "xref-trailing-inside-length.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": [
+        "failed",
+        "unsupported"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "xref 声明范围内的尾随字节或截断不能借边界适配静默接纳。"
+    },
+    {
+      "file": "xref-short-declared-length.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": [
+        "failed",
+        "unsupported"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "xref 声明范围内的尾随字节或截断不能借边界适配静默接纳。"
+    },
+    {
+      "file": "page-boundary-exclusions.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "indexed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "Visible boundary report"
+      ],
+      "forbiddenTokens": [
+        "METADATA FORBIDDEN",
+        "ATTACHMENT FORBIDDEN",
+        "ANNOTATION FORBIDDEN",
+        "UNREACHABLE PAGE FORBIDDEN",
+        "APPEARANCE FORBIDDEN"
+      ],
+      "emptyTextOnRejection": true,
+      "reason": "metadata、附件、批注及其外观、不可达 page 不能污染页面正文。"
+    }
+  ],
+  "remainingCoverage": [
+    "independent redistributable producer samples",
+    "plain/Flate Tj/TJ and escaping comparison",
+    "object streams and predictors",
+    "image-only page",
+    "input/output/deadline/cancellation boundaries",
+    "encryption",
+    "deep/cyclic objects",
+    "product status mapping and generation transaction"
+  ]
+}
