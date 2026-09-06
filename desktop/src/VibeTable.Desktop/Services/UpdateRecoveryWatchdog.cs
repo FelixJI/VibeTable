@@ -706,11 +706,13 @@ internal sealed class UpdateRecoveryWatchdog(
             string path = plan.StagingRoot.TrimEnd(
                 Path.DirectorySeparatorChar,
                 Path.AltDirectorySeparatorChar) + ".recovery-read-error.json";
-            File.WriteAllText(path, JsonSerializer.Serialize(new
+            _ = UpdateProcessCommand.RejectReparsePointChainsToVolumeRoot(path);
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            JsonSerializer.Serialize(stream, new
             {
                 exceptionType = exception.GetType().FullName,
                 hResult = exception.HResult,
-            }));
+            });
         }
         catch (Exception)
         {

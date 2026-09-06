@@ -696,9 +696,11 @@ public sealed class UpdateRecoveryWatchdogTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task MalformedConfirmedStateTerminatesOwnedGroupAndFailsClosed(bool blockDiagnosticWrite)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task MalformedConfirmedStateTerminatesOwnedGroupAndFailsClosed(
+        bool blockDiagnosticWrite, bool existingDiagnostic)
     {
         UpdateApplyPlan plan = PreparePublishedPlan("malformed-confirmed");
         var watchdog = new UpdateProcessIdentity(
@@ -719,6 +721,10 @@ public sealed class UpdateRecoveryWatchdogTests
         {
             Directory.CreateDirectory(diagnosticPath);
         }
+        if (existingDiagnostic)
+        {
+            File.WriteAllText(diagnosticPath, "retained evidence");
+        }
         await recovery.RunUpdatedPackageAsync(plan, CancellationToken.None);
 
         CollectionAssert.AreEqual(
@@ -728,7 +734,11 @@ public sealed class UpdateRecoveryWatchdogTests
         Assert.AreEqual(
             "UPDATE_ACTIVATION_INVALID",
             ReadPendingString(plan, "rollbackErrorCode"));
-        if (!blockDiagnosticWrite)
+        if (existingDiagnostic)
+        {
+            Assert.AreEqual("retained evidence", File.ReadAllText(diagnosticPath));
+        }
+        if (!blockDiagnosticWrite && !existingDiagnostic)
         {
             var diagnostic = JsonNode.Parse(File.ReadAllText(diagnosticPath))!.AsObject();
             CollectionAssert.AreEquivalent(
