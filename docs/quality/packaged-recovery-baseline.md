@@ -6,7 +6,7 @@
 
 | 名称 | 起点 | 终点 |
 | --- | --- | --- |
-| recovery.sidecar.killToReadableTable | 发出受控 sidecar kill 请求前 | 原选中表通过后端读取与可见行校验 |
+| recovery.sidecar.killToReadableTable | 发出受控 sidecar kill 请求前 | 原选中表的 query.page 成功返回预期行数及有效 schemaRevision |
 | recovery.backend.killToWritableSession | 发出受控 BFF kill 请求前 | 重开后验证同 workspace 的新可写 epoch |
 | recovery.workspace.closeAfterBackendExit | 故障后发送 workspace.close 前 | 验证返回 closed 且 workspaceId 为空 |
 | recovery.workspace.reopenAfterBackendExit | 点击该 workspace 前 | 验证新可写 epoch |
