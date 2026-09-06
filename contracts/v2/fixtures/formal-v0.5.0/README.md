@@ -1,9 +1,9 @@
 # v0.5.0 正式发布包产生的兼容性输入
 
 这些文件是旧版 producer 输入，不是当前版本兼容性通过证明。当前 policy 继续保持
-`pending/unverified` 和 disabled verification gate；本次只追加 corpus 尾项，不移动 anchor。
+`pending/unverified` 和 disabled verification gate。Producer PR #246 已合并，policy revision 2 通过独立后续变更将 anchor 前移到其 squash commit，冻结本组输入。
 `cases.expected` 是后续 consumer 必须实现和验证的目标，其中 format 1 工作区的 `migrate`
-目前尚未实现。后续独立 PR 先冻结已合并 producer，再实现、验证 reader/import/零写入及 promotion。
+目前尚未实现。冻结不代表执行资格通过，后续仍需独立实现、验证 reader/import/零写入，再进行 promotion。
 
 ## 来源与采集
 
