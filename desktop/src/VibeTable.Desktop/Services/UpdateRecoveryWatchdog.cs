@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace VibeTable.Desktop.Services;
 
@@ -138,8 +139,9 @@ internal sealed class UpdateRecoveryWatchdog(
                 {
                     state = PendingUpdateActivationJournal.ReadRecoveryState(plan, watchdog);
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
+                    RecordRecoveryReadFailure(plan, exception);
                     ownershipTransferred = await TerminateAndRecordFailureAsync(
                         plan,
                         watchdog,
@@ -696,4 +698,23 @@ internal sealed class UpdateRecoveryWatchdog(
 
     private static string Nonce() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
         .ToLowerInvariant();
+
+    private static void RecordRecoveryReadFailure(UpdateApplyPlan plan, Exception exception)
+    {
+        try
+        {
+            string path = plan.StagingRoot.TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar) + ".recovery-read-error.json";
+            File.WriteAllText(path, JsonSerializer.Serialize(new
+            {
+                exceptionType = exception.GetType().FullName,
+                hResult = exception.HResult,
+            }));
+        }
+        catch (Exception)
+        {
+            // Diagnostics must never replace the recovery result.
+        }
+    }
 }

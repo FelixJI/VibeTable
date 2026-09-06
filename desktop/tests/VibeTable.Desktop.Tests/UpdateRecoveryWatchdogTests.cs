@@ -696,7 +696,9 @@ public sealed class UpdateRecoveryWatchdogTests
     }
 
     [TestMethod]
-    public async Task MalformedConfirmedStateTerminatesOwnedGroupAndFailsClosed()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task MalformedConfirmedStateTerminatesOwnedGroupAndFailsClosed(bool blockDiagnosticWrite)
     {
         UpdateApplyPlan plan = PreparePublishedPlan("malformed-confirmed");
         var watchdog = new UpdateProcessIdentity(
@@ -711,6 +713,12 @@ public sealed class UpdateRecoveryWatchdogTests
             }));
         var recovery = new UpdateRecoveryWatchdog(processes);
 
+        string diagnosticPath = plan.StagingRoot.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".recovery-read-error.json";
+        if (blockDiagnosticWrite)
+        {
+            Directory.CreateDirectory(diagnosticPath);
+        }
         await recovery.RunUpdatedPackageAsync(plan, CancellationToken.None);
 
         CollectionAssert.AreEqual(
@@ -720,6 +728,16 @@ public sealed class UpdateRecoveryWatchdogTests
         Assert.AreEqual(
             "UPDATE_ACTIVATION_INVALID",
             ReadPendingString(plan, "rollbackErrorCode"));
+        if (!blockDiagnosticWrite)
+        {
+            var diagnostic = JsonNode.Parse(File.ReadAllText(diagnosticPath))!.AsObject();
+            CollectionAssert.AreEquivalent(
+                new[] { "exceptionType", "hResult" }, diagnostic.Select(entry => entry.Key).ToArray());
+            Assert.AreEqual(
+                typeof(ReleaseUpdateException).FullName,
+                diagnostic["exceptionType"]!.GetValue<string>());
+            Assert.IsTrue(diagnostic["hResult"]!.GetValue<int>() < 0);
+        }
     }
 
     [TestMethod]
