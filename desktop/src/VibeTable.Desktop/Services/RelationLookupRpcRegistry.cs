@@ -28,12 +28,6 @@ internal static class RelationLookupRpcRegistry
     private static readonly RelationLookupRpcEndpoint[] RegisteredEndpoints =
     [
         new(
-            "schema.describe",
-            payload => HasString(payload, "collection")
-                && HasNumber(payload, "requestGeneration")
-                && HasArray(payload, "accepts"),
-            (gateway, payload, token) => gateway.DescribeSchemaAsync(payload, token)),
-        new(
             "relation.searchTargets",
             payload => HasString(payload, "relationId"),
             (gateway, payload, token) => gateway.SearchRelationTargetsAsync(payload, token)),

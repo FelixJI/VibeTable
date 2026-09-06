@@ -84,7 +84,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "relation.searchTargets",
         "relation.updateSingle",
         "schema.delete",
-        "schema.describe",
         "schema.table.create",
         "settings.readShared",
         "shortcut.delete",
@@ -107,6 +106,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
     "goSidecar": (
         "events.reconcile",
         "file.list",
+        "schema.describe",
         "schema.getTable",
         "schema.list",
     ),

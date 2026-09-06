@@ -9,6 +9,50 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductDataSidecarRoutingTests
 {
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task SchemaDescribeUsesGeneratedGoOwnerWithoutPythonFallback(bool bound)
+    {
+        var sink = new FakeWebReplySink();
+        var sidecar = SuccessForwarder();
+        var pythonTransport = new CountingQueryTransport();
+        await using var pythonClient = new JsonRpcClient(pythonTransport);
+        using var pythonGateway = new JsonRpcProductDataGateway(pythonClient);
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(pythonGateway);
+        if (bound) controller.SetProductSidecarForwarder(sidecar);
+        RoutedWebRequest request = QueryRequest("describe-go") with
+        {
+            Type = "schema.describe",
+            Payload = JsonSerializer.SerializeToElement(new
+            {
+                collection = "tbl_records", requestGeneration = 1,
+                accepts = new[] { "vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1" },
+            }),
+        };
+
+        await controller.DispatchAsync(request);
+
+        FakeWebReplySink.Reply? reply = bound
+            ? await sink.WaitForAsync("schema.describe")
+            : await sink.WaitForFailedAsync();
+        Assert.IsNotNull(reply);
+        Assert.AreEqual(bound ? 1 : 0, sidecar.CallCount);
+        Assert.AreEqual(0, pythonTransport.WriteCount);
+        if (bound)
+        {
+            ProductSidecarForwardCall call = sidecar.Calls.Single();
+            Assert.AreEqual("schema.describe", call.Method);
+            Assert.IsTrue(JsonElement.DeepEquals(request.Wire, call.Wire));
+            Assert.IsTrue(JsonElement.DeepEquals(request.Payload, call.Parameters));
+        }
+        else
+        {
+            StringAssert.Contains(JsonSerializer.Serialize(reply.Payload), "BACKEND_UNAVAILABLE");
+        }
+    }
+
+    [TestMethod]
     public async Task GoQueryUsesOneSidecarSendAndNeverCallsPythonGateway()
     {
         var sink = new FakeWebReplySink();
