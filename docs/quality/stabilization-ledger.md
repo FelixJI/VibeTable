@@ -1,6 +1,6 @@
 # 稳定化台账
 
-> source SHA、GitHub run、报告契约和当前通过状态见[已通过的产品 E2E 样本](../e2e-performance.md#已通过的产品-e2e-样本)。
+> source SHA、GitHub run、报告契约和当前通过状态见[已通过的产品 E2E 样本](../e2e-performance.md#当前产品-e2e-证据)。
 > 历史候选与后续验收增量按下文日期记录。本台账只记录可复现缺陷、已关闭根因和仍待证的明确边界，
 > 不以静态搜索把未知问题伪装为 bug。
 
@@ -63,6 +63,6 @@
 
 ## 2026-09-06 目录副本恢复证据
 
-场景 `23-directory-replica-recovery` 已进入可信 main 的打包报告，见[已通过的产品 E2E 样本](../e2e-performance.md#已通过的产品-e2e-样本)。公开释放活动缓存后同 UUID 重开，再经精确 sidecar 终止和替代进程 readiness，记录、revision 与 replica 状态保持；退出清理亦通过。
+场景 `23-directory-replica-recovery` 已进入可信 main 的打包报告，见[已通过的产品 E2E 样本](../e2e-performance.md#当前产品-e2e-证据)。公开释放活动缓存后同 UUID 重开，再经精确 sidecar 终止和替代进程 readiness，记录、revision 与 replica 状态保持；退出清理亦通过。
 
 这补齐了目录副本恢复的首次通过记录；后续 CI34026490000 的场景 23 失败仍未关闭，当前稳定性待验收。V-02 所述手动 `replica.synchronize` 保持 Internal only，不以内部协调成功替代公开手动同步、跨设备 reconnect、冲突或 exclusive-writer 资格。

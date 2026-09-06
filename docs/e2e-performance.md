@@ -2,14 +2,14 @@
 
 本页记录真实发布包在 Windows WPF/WebView2 + Python + PocketBase 进程栈上的首轮可比较基线。它不是浏览器 mock，也不把 20–30 秒的测试等待上限当作性能目标。
 
-## 已通过的产品 E2E 样本
+## 当前产品 E2E 证据
 
 - source SHA：`GitHub/main@ede74ab2d9880052beb7532f039cd3ac3420611b`
 - GitHub run：[main CI 33975773081](https://github.com/FelixJI/VibeTable/actions/runs/33975773081)
 - 报告契约：`contractVersion=2.0`
 - 结果：23/23 passed、0 failed、0 skipped。
-- 该运行 manifest gap：无。
-- 该运行 manifest surplus：无。
+- 当前 manifest gap：无。
+- 当前 manifest surplus：无。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
@@ -17,7 +17,7 @@
 
 本结论仅覆盖场景声明的目录副本恢复，不扩展为手动同步、跨设备 offline/reconnect、冲突处理或 exclusive-writer 资格。手动 `replica.synchronize` 继续 Internal only。
 
-后续 [PR #246 CI 34026490000](https://github.com/FelixJI/VibeTable/actions/runs/34026490000)（head `3a3fbbce17149cd70b406ce27099086a76788b1f`）在场景 23 等待释放活动缓存按钮可用时超时；[main CI 34024595177](https://github.com/FelixJI/VibeTable/actions/runs/34024595177)（source `4be7c93d86c9453b7befd20544ac0635507f8ebe`）在场景 14 出现未确认桥接失败。两次失败的根因均未关闭，因此本页保留的是一次已通过样本，不代表最新 main 的全场景零失败结论。后续本地场景 23 通过也不能替代失败根因确认及当前提交的完整 CI。
+后续 CI 的场景 23 按钮超时与场景 14 桥接失败尚未查明根因，详见[历史失败记录](quality/product-e2e-failure-notes.md)。因此本节记录的是一份已通过样本，不代表最新 main 的全场景零失败结论。后续局部测试通过不能替代失败根因确认及当前提交的完整 CI。
 
 该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
 保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。
