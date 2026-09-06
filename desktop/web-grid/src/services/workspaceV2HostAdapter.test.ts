@@ -144,9 +144,9 @@ function fakeBridge(resultFor?: (payload: WorkspaceV2RequestPayload) => unknown)
       result = {
         planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         trusted: false,
-        workspaceId: WORKSPACE_ID,
+        workspaceId: "",
         sourceSnapshotId: null,
-        snapshotCount: 2,
+        snapshotCount: 0,
         encrypted: true,
         verified: false,
         expiresAt: "2026-07-28T10:10:00Z",
