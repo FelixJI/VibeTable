@@ -667,16 +667,17 @@ describe("workspace protection UI capability gates", () => {
     );
   });
 
-  it("requires credentials for encrypted imports and sends the staged plan only", async () => {
+  it.each(["settings", "center"] as const)("requires credentials for encrypted imports from %s", async (surface) => {
     useWorkspaceSessionStore().configureCapabilities([
       "workspace.session.v2",
       "snapshot.package.v2",
     ]);
     const protection = useWorkspaceProtectionStore();
-    const wrapper = mount(WorkspaceProtectionSettings, {
+    const prefix = surface === "settings" ? "snapshot" : "workspace";
+    const wrapper = surface === "settings" ? mount(WorkspaceProtectionSettings, {
       props: { mode: "versions" },
       attachTo: document.body,
-    });
+    }) : mount(WorkspaceCenter, { attachTo: document.body });
     protection.setSnapshotPackagePlan({
       planId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       trusted: false,
@@ -690,13 +691,13 @@ describe("workspace protection UI capability gates", () => {
     await wrapper.vm.$nextTick();
 
     const apply = document.body.querySelector<HTMLButtonElement>(
-      '[data-testid="snapshot-import-apply"]',
+      `[data-testid="${prefix}-import-apply"]`,
     )!;
     expect(apply.disabled).toBe(true);
-    expect(document.body.querySelector(".snapshot-restore-modal .plan-summary")).toBeNull();
+    expect(document.body.querySelector(".snapshot-restore-modal .plan-summary, .workspace-flow-modal .import-summary")).toBeNull();
     expect(document.body.textContent).not.toContain("包含 0 个快照");
     const credential = document.body.querySelector<HTMLInputElement>(
-      '[data-testid="snapshot-import-credential"] input',
+      `[data-testid="${prefix}-import-credential"] input`,
     )!;
     credential.value = "correct horse battery staple";
     credential.dispatchEvent(new Event("input", { bubbles: true }));

@@ -549,11 +549,14 @@ watch(
             ? t('workspaceV2.snapshot.packageTrusted')
             : t('workspaceV2.snapshot.packageUntrusted')"
         >
-          {{ t("workspaceV2.snapshot.packageCount", {
-            count: protection.snapshotPackagePlan.snapshotCount,
-          }) }}
+          <template v-if="protection.snapshotPackagePlan.verified">
+            {{ t("workspaceV2.snapshot.packageCount", {
+              count: protection.snapshotPackagePlan.snapshotCount,
+            }) }}
+          </template>
+          <template v-else>{{ t("workspaceV2.snapshot.packageCredential") }}</template>
         </NAlert>
-        <dl class="import-summary">
+        <dl v-if="protection.snapshotPackagePlan.verified" class="import-summary">
           <div>
             <dt>{{ t("workspaceV2.snapshot.packageWorkspace") }}</dt>
             <dd><code>{{ protection.snapshotPackagePlan.workspaceId }}</code></dd>
