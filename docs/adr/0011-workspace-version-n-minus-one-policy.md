@@ -22,8 +22,7 @@ WorkspaceManifest 还携带独立的 `topologySchemaVersion` 与 `businessSchema
 历史条目没有与 fixture/checksum 在同一次提交中一起改写。历史上这类同步更新已经发生过，因此
 `appendOnly: true` 和自带 checksum 不能单独充当 append-only 证据。
 
-当前应用版本是 0.5.1，上一正式版本是 v0.5.0。仓库没有由 v0.5.0 正式发布包产生并经过当前 reader
-验证的独立 Workspace/SnapshotPackage corpus，所以不能宣称 v0.5.0 已兼容。
+当前应用版本是 0.5.1，上一正式版本是 v0.5.0。正式发布包产生的 Workspace/SnapshotPackage corpus 已通过独立 producer PR #246 合并，但完整 workspace.open 迁移和打包 consumer 资格仍未闭合，所以不能宣称 v0.5.0 已兼容。
 
 ## 决策
 
@@ -40,7 +39,7 @@ artifact 存在性与 checksum。包内同时改写 policy 的 current/accepted 
 并同步自带 checksum，都不能形成一份新的自洽 authority。
 
 `writerCompatibility.verificationGate` 在本 revision 固定为
-`disabled-until-packaged-runtime-evidence`。它是 closed capability 状态，不是说明文字：PR-14a 尚未拥有
+`disabled-until-packaged-runtime-evidence`。它是 closed capability 状态，不是说明文字：初始 PR-14a 尚未拥有
 可验证 GitHub formal Release/tag/asset 的 producer，也没有 PR-14b/14c 的 packaged runtime
 reader/import/零写入 execution consumer，因此任何 `accepted.status: verified` 都必须稳定 fail closed。
 
@@ -108,7 +107,7 @@ append-only 精确定义为：已经冻结的 `baselines` 与 `previousFormalRel
 字节，但不承担历史不可重写证明。
 
 独立权威 producer 是已合并的 Git commit
-`b28a0fc3f0829ed9fd7c9b974daf41d350eba560` 中的
+`9be3e4ce584709765322434fe9c9068ee6f84287` 中的
 `contracts/v2/compatibility-corpus.json` tree entry。policy 记录该 anchor 与已冻结条目计数；contract
 test 只从本地 Git object database 读取 anchor，并从 `.ci/project.json` 取得正式 GitHub repository
 identity；只有 URL 精确指向该 identity 的 GitHub remote 所对应的 `refs/remotes/<remote>/main` 才是
@@ -123,6 +122,16 @@ authority ref、anchor 不可达或不含目标路径一律以清晰错误 fail 
 以后扩展冻结前缀时，新增 corpus 尾项必须先存在于一个独立、已合并且不可改写的 producer commit；
 后续变更才能把 anchor 和计数前移到该 commit。不得在加入条目的同一提交中用同步修改 artifact、
 checksum、policy 与测试的方式自我批准。
+
+## Policy revision 2：冻结正式 producer
+
+PR #246 的 squash commit `9be3e4ce584709765322434fe9c9068ee6f84287` 已进入正式 remote main。
+本 revision 只将 immutable prefix 前移到该独立 producer，保留 1 条 baseline，并冻结首条正式
+v0.5.0 Release 记录。四个历史输入及 corpus 清单不改写，原 anchor 的 baseline 继续保留。
+
+这完成 producer 之后的 anchor 阶段。`verificationGate` 仍为 disabled，v0.5.0 仍为
+pending/unverified；旧 workspace format 1 继续按当前运行时拒绝。完整 consumer、迁移与零误写
+执行证据成立后，才能通过后续独立 policy 变更进行 promotion，不能由本次冻结推断已兼容。
 
 ## 后果
 
