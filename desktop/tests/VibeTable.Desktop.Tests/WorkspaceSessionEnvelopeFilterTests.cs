@@ -173,7 +173,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task OldResponseIsDroppedAfterWorkspaceSwitch()
+    public async Task OldResponseSettlesAsStaleAfterWorkspaceSwitch()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -195,14 +195,13 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
         transport.CompleteResponse();
-        await Task.Delay(150);
+        await sink.WaitForFailedAsync();
 
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "old-response"));
+        AssertRetiredReply(sink, "old-response");
     }
 
     [TestMethod]
-    public async Task GoRouteHonorsEpochCancellationWithoutRendererReply()
+    public async Task GoRouteSettlesEpochCancellationWithoutSuccess()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -244,12 +243,11 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await switching.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(1, sidecar.CallCount);
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "go-cancel"));
+        AssertRetiredReply(sink, "go-cancel");
     }
 
     [TestMethod]
-    public async Task GoRouteDropsLateResultWhenForwarderIgnoresEpochCancellation()
+    public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -295,8 +293,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await switching.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(1, sidecar.CallCount);
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "go-late"));
+        AssertRetiredReply(sink, "go-late");
     }
 
     [TestMethod]
@@ -363,8 +360,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await Task.Delay(200);
 
         Assert.AreEqual(0, replacementTransport.WriteCount);
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "stale-retry"));
+        AssertRetiredReply(sink, "stale-retry");
     }
 
     [TestMethod]
@@ -667,6 +663,15 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         StringAssert.Contains(
             JsonSerializer.Serialize(failure.Payload),
             @"""code"":""BAD_PAYLOAD""");
+    }
+
+    private static void AssertRetiredReply(FakeWebReplySink sink, string requestId)
+    {
+        FakeWebReplySink.Reply reply = sink.Replies.Single(item => item.RequestId == requestId);
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("workspace.session_stale", payload.GetProperty("code").GetString());
+        Assert.IsFalse(sink.Replies.Any(item => item.RequestId is null));
     }
 
     private static WorkspaceRequestDispatcher CreateDispatcher(

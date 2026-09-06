@@ -239,7 +239,7 @@ public sealed class ProductDataRequestController
                 endpoint,
                 epochLease,
                 protectionContext).ConfigureAwait(false);
-            if (!IsRequestCurrent(epochLease))
+            if (!CanCompleteRequest(request, epochLease))
                 return;
             JsonElement result;
             if (route == ProductRpcRoute.GoSidecar)
@@ -261,7 +261,7 @@ public sealed class ProductDataRequestController
                         forwardedPayload,
                         epochLease?.CancellationToken
                             ?? CancellationToken.None).ConfigureAwait(false);
-                if (!IsRequestCurrent(epochLease))
+                if (!CanCompleteRequest(request, epochLease))
                     return;
                 if (forwarded is ProductSidecarFailure failure)
                 {
@@ -293,7 +293,7 @@ public sealed class ProductDataRequestController
                                 epochLease?.CancellationToken
                                     ?? CancellationToken.None).ConfigureAwait(false);
             }
-            if (!IsRequestCurrent(epochLease))
+            if (!CanCompleteRequest(request, epochLease))
                 return;
             endpoint.ProtectionPolicy?.ObserveSuccessfulResponse(
                 result,
@@ -304,24 +304,25 @@ public sealed class ProductDataRequestController
         catch (OperationCanceledException)
             when (epochLease?.CancellationToken.IsCancellationRequested == true)
         {
+            PostRetiredRequest(request);
         }
         catch (RpcRemoteException exception)
             when (exception.ErrorData is JsonElement data
                 && ProductRpcErrorMapper.TryMap(data, out _))
         {
-            if (!IsRequestCurrent(epochLease))
+            if (!CanCompleteRequest(request, epochLease))
                 return;
             ProductRpcErrorMapper.TryMap(exception.ErrorData!.Value, out var mapped);
             _reply.PostResponse(request.Type, request.RequestId, mapped);
         }
         catch (RpcRemoteException exception) when (exception.Code == -32602)
         {
-            if (IsRequestCurrent(epochLease))
+            if (CanCompleteRequest(request, epochLease))
                 RejectPayload(request);
         }
         catch (WorkspaceRegistryException exception)
         {
-            if (IsRequestCurrent(epochLease))
+            if (CanCompleteRequest(request, epochLease))
             {
                 _reply.PostOperationFailed(
                     request.RequestId,
@@ -333,7 +334,7 @@ public sealed class ProductDataRequestController
             when (exception is BackendUnavailableException
                 or ObjectDisposedException)
         {
-            if (!IsRequestCurrent(epochLease))
+            if (!CanCompleteRequest(request, epochLease))
                 return;
             Trace.TraceWarning(
                 $"Product data backend unavailable ({request.Type}): {exception.Message}");
@@ -344,7 +345,7 @@ public sealed class ProductDataRequestController
         }
         catch (Exception)
         {
-            if (!IsRequestCurrent(epochLease))
+            if (!CanCompleteRequest(request, epochLease))
                 return;
             TraceFailure(request.Type, "PRODUCT_RPC_FAILED");
             _reply.PostOperationFailed(
@@ -482,6 +483,23 @@ public sealed class ProductDataRequestController
                 epochLease?.CancellationToken
                     ?? CancellationToken.None).ConfigureAwait(false);
         }
+    }
+
+    private bool CanCompleteRequest(
+        RoutedWebRequest request, WorkspaceRequestEpochLease? epochLease)
+    {
+        if (IsRequestCurrent(epochLease)) return true;
+        PostRetiredRequest(request);
+        return false;
+    }
+
+    private void PostRetiredRequest(RoutedWebRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.RequestId)) return;
+        _reply.PostOperationFailed(
+            request.RequestId,
+            "The workspace request was cancelled because its session ended.",
+            "workspace.session_stale");
     }
 
     private bool IsRequestCurrent(WorkspaceRequestEpochLease? epochLease)
