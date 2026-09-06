@@ -422,6 +422,13 @@ func changedLines(
 	if err != nil {
 		return nil, "", err
 	}
+	mergeBase := exec.Command("git", "merge-base", base, "HEAD")
+	mergeBase.Dir = repositoryRoot
+	baseOutput, err := mergeBase.Output()
+	if err != nil {
+		return nil, "", fmt.Errorf("git merge-base %s HEAD: %w", base, err)
+	}
+	base = strings.TrimSpace(string(baseOutput))
 	args := []string{"diff", "--unified=0", "--no-ext-diff", base, "--"}
 	args = append(args, scopes...)
 	command := exec.Command("git", args...)

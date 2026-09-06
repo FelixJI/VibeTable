@@ -38,7 +38,8 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
   constraints，不把 `!windows` 源码计入分母。authority 组覆盖 `filehistory`、`restore`、
   `query`、`mutation` 与 Go `productrpc` adapter，并用 `./...` 汇集自测、跨包接口测试和
   integration 对这些包的覆盖；完整无 instrumentation 的 `go test ./...` 与产品 E2E 仍由
-  独立门禁执行。
+  独立门禁执行。差异覆盖率以所选基线与当前 HEAD 的 Git merge-base 提交为准，
+  报告记录该固定提交；保留工作区及未跟踪 Go 文件的差异，不计入仅在后续 main 上出现的改动。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
 - Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a` 与
   `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、以三个
