@@ -65,7 +65,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert reconcile.target_owner == "GO_AUTHORITY"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "goSidecar"
-    } == {"events.reconcile", "file.list", "schema.getTable", "schema.list"}
+    } == {"events.reconcile", "file.list", "schema.describe", "schema.getTable", "schema.list"}
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"
     } == {"settings.readDevice", "settings.saveDevice"}

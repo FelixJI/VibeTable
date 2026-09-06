@@ -434,6 +434,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				ClaimID:      capabilities.ClaimID,
 			},
 				productrpc.ReconcileRegistration(schemaCatalog),
+				schemaDescribeRegistration(pb, relationService),
 				schemaGetTableRegistration(pb),
 				schemaListRegistration(schemaCatalog),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
