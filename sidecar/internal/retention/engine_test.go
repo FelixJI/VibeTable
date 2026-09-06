@@ -94,7 +94,7 @@ func TestPreviewFailsClosedForMissingRootOrChild(t *testing.T) {
 			Nodes:    map[objectrepo.ObjectID]Node{},
 			Snapshots: []Snapshot{{
 				SnapshotID: "snapshot-1",
-				Root:       "missing",
+				Roots:      []objectrepo.ObjectID{"missing"},
 				CreatedAt:  time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC),
 			}},
 		},
@@ -112,22 +112,22 @@ func TestPreviewFailsClosedForMissingRootOrChild(t *testing.T) {
 func TestPolicyRetainsPinnedRecentAndTimeBuckets(t *testing.T) {
 	now := time.Date(2026, 7, 28, 12, 30, 0, 0, time.UTC)
 	snapshots := []Snapshot{
-		{SnapshotID: "recent-new", Root: "recent-new", CreatedAt: now.Add(-10 * time.Minute)},
-		{SnapshotID: "recent-second", Root: "recent-second", CreatedAt: now.Add(-20 * time.Minute)},
-		{SnapshotID: "same-hour-old", Root: "same-hour-old", CreatedAt: now.Add(-30 * time.Minute)},
-		{SnapshotID: "hour-previous", Root: "hour-previous", CreatedAt: now.Add(-90 * time.Minute)},
-		{SnapshotID: "day-previous", Root: "day-previous", CreatedAt: now.Add(-25 * time.Hour)},
-		{SnapshotID: "same-day-old", Root: "same-day-old", CreatedAt: now.Add(-26 * time.Hour)},
-		{SnapshotID: "week-previous", Root: "week-previous", CreatedAt: now.Add(-7 * 24 * time.Hour)},
-		{SnapshotID: "same-week-old", Root: "same-week-old", CreatedAt: now.Add(-8 * 24 * time.Hour)},
-		{SnapshotID: "month-previous", Root: "month-previous", CreatedAt: time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)},
-		{SnapshotID: "same-month-old", Root: "same-month-old", CreatedAt: time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)},
-		{SnapshotID: "pinned-old", Root: "pinned-old", CreatedAt: time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC), Pinned: true},
-		{SnapshotID: "stale", Root: "stale", CreatedAt: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)},
+		{SnapshotID: "recent-new", Roots: []objectrepo.ObjectID{"recent-new"}, CreatedAt: now.Add(-10 * time.Minute)},
+		{SnapshotID: "recent-second", Roots: []objectrepo.ObjectID{"recent-second"}, CreatedAt: now.Add(-20 * time.Minute)},
+		{SnapshotID: "same-hour-old", Roots: []objectrepo.ObjectID{"same-hour-old"}, CreatedAt: now.Add(-30 * time.Minute)},
+		{SnapshotID: "hour-previous", Roots: []objectrepo.ObjectID{"hour-previous"}, CreatedAt: now.Add(-90 * time.Minute)},
+		{SnapshotID: "day-previous", Roots: []objectrepo.ObjectID{"day-previous"}, CreatedAt: now.Add(-25 * time.Hour)},
+		{SnapshotID: "same-day-old", Roots: []objectrepo.ObjectID{"same-day-old"}, CreatedAt: now.Add(-26 * time.Hour)},
+		{SnapshotID: "week-previous", Roots: []objectrepo.ObjectID{"week-previous"}, CreatedAt: now.Add(-7 * 24 * time.Hour)},
+		{SnapshotID: "same-week-old", Roots: []objectrepo.ObjectID{"same-week-old"}, CreatedAt: now.Add(-8 * 24 * time.Hour)},
+		{SnapshotID: "month-previous", Roots: []objectrepo.ObjectID{"month-previous"}, CreatedAt: time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)},
+		{SnapshotID: "same-month-old", Roots: []objectrepo.ObjectID{"same-month-old"}, CreatedAt: time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)},
+		{SnapshotID: "pinned-old", Roots: []objectrepo.ObjectID{"pinned-old"}, CreatedAt: time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC), Pinned: true},
+		{SnapshotID: "stale", Roots: []objectrepo.ObjectID{"stale"}, CreatedAt: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)},
 	}
 	nodes := make(map[objectrepo.ObjectID]Node, len(snapshots))
 	for _, snapshot := range snapshots {
-		nodes[snapshot.Root] = Node{ID: snapshot.Root, Size: 1}
+		nodes[snapshot.Roots[0]] = Node{ID: snapshot.Roots[0], Size: 1}
 	}
 	source := &fakeInventory{value: Inventory{
 		Revision:  1,
@@ -247,12 +247,12 @@ func TestSnapshotRetentionReasonsMatchActualRuleUnion(t *testing.T) {
 		Snapshots: []Snapshot{
 			{
 				SnapshotID: "newest",
-				Root:       "newest",
+				Roots:      []objectrepo.ObjectID{"newest"},
 				CreatedAt:  now.Add(-time.Hour),
 			},
 			{
 				SnapshotID: "pinned-old",
-				Root:       "pinned-old",
+				Roots:      []objectrepo.ObjectID{"pinned-old"},
 				CreatedAt:  now.Add(-90 * 24 * time.Hour),
 				Pinned:     true,
 			},
@@ -275,5 +275,41 @@ func TestSnapshotRetentionReasonsMatchActualRuleUnion(t *testing.T) {
 		[]string{"pinned"},
 	) {
 		t.Fatalf("pinned reasons = %#v", got)
+	}
+}
+
+func TestSnapshotRootMembershipIsBoundToCleanupPlan(t *testing.T) {
+	ctx := context.Background()
+	source := &fakeInventory{value: Inventory{
+		Revision: 1,
+		Nodes: map[objectrepo.ObjectID]Node{
+			"shared":   {ID: "shared", Size: 1},
+			"database": {ID: "database", Size: 2},
+			"other":    {ID: "other", Size: 3},
+		},
+		Snapshots: []Snapshot{{SnapshotID: "retained", Roots: []objectrepo.ObjectID{"shared", "database"},
+			CreatedAt: time.Now().UTC(), Pinned: true}},
+	}}
+	engine := New(source, &fakeCleaner{})
+	policy := DefaultPolicy()
+	plan, err := engine.Preview(ctx, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.value.Snapshots[0].Roots = []objectrepo.ObjectID{"database", "shared"}
+	if err := engine.Apply(ctx, plan, policy); err != nil {
+		t.Fatalf("root ordering changed semantic inventory: %v", err)
+	}
+	source.value.Snapshots[0].Roots = []objectrepo.ObjectID{"shared", "other"}
+	if err := engine.Apply(ctx, plan, policy); !errors.Is(err, ErrInventoryChanged) {
+		t.Fatalf("changed snapshot membership did not reject stale plan: %v", err)
+	}
+	source.value.Snapshots[0].Roots = []objectrepo.ObjectID{"shared", "missing"}
+	if _, err := engine.Preview(ctx, policy); !errors.Is(err, ErrUnsafeInventory) {
+		t.Fatalf("missing secondary snapshot root was accepted: %v", err)
+	}
+	source.value.Snapshots[0].Roots = nil
+	if _, err := engine.Preview(ctx, policy); !errors.Is(err, ErrUnsafeInventory) {
+		t.Fatalf("empty snapshot closure was accepted: %v", err)
 	}
 }

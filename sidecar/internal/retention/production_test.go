@@ -409,7 +409,7 @@ func TestApplyPersistsSnapshotTombstoneAndCoordinatorReceiptAtomically(
 		},
 		Snapshots: []Snapshot{{
 			SnapshotID: "snapshot-old",
-			Root:       "snapshot-root",
+			Roots:      []objectrepo.ObjectID{"snapshot-root"},
 			CreatedAt:  time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 		}},
 	}}
