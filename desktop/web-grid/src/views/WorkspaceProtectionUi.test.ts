@@ -693,6 +693,8 @@ describe("workspace protection UI capability gates", () => {
       '[data-testid="snapshot-import-apply"]',
     )!;
     expect(apply.disabled).toBe(true);
+    expect(document.body.querySelector(".snapshot-restore-modal .plan-summary")).toBeNull();
+    expect(document.body.textContent).not.toContain("包含 0 个快照");
     const credential = document.body.querySelector<HTMLInputElement>(
       '[data-testid="snapshot-import-credential"] input',
     )!;
