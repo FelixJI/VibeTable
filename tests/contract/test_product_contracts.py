@@ -385,6 +385,7 @@ def test_wire_schema_does_not_leak_storage_provider_names() -> None:
 
 
 def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
+    from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
     from backend.contracts.plugin import PluginEventEnvelope
     from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY
 
@@ -401,6 +402,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
         and isinstance(call.args[0].value, str)
     }
     registered.update(PRODUCT_RPC_REGISTRY)
+    registered.update(current_owner_methods("wpfHost"))
 
     catalog = _load(FIXTURES / "product-rpc-catalog.json")
     workspace_catalog_methods = {

@@ -73,6 +73,8 @@ public sealed class WebMessageRouter
         "diagnostics.get",
         "appPreferences.get",
         "appPreferences.update",
+        "settings.readDevice",
+        "settings.saveDevice",
         "update.check",
         "update.install",
         // G1 history query + two-phase safe restore.
@@ -191,6 +193,8 @@ public sealed class WebMessageRouter
         "diagnostics.get",
         "appPreferences.get",
         "appPreferences.update",
+        "settings.readDevice",
+        "settings.saveDevice",
         "update.check",
         "update.install",
         // G1 history query + two-phase safe restore outcomes.
@@ -377,6 +381,20 @@ public sealed class WebMessageRouter
                 return BuildOperationFailed(
                     requestId,
                     $"Web request type '{type}' is not a public renderer capability.",
+                    "CAPABILITY_NOT_PUBLIC");
+            }
+
+            if (DeviceSettingsRequestController.Handles(type)
+                && (!_productRpcCapabilities.TryGet(
+                        type,
+                        out ProductRpcCapability? deviceCapability)
+                    || deviceCapability.Owner != "wpfHost"
+                    || deviceCapability.Scope != "global"
+                    || deviceCapability.Audience != "rendererPublic"))
+            {
+                return BuildOperationFailed(
+                    requestId,
+                    "Device settings capability is unavailable.",
                     "CAPABILITY_NOT_PUBLIC");
             }
 
