@@ -168,6 +168,10 @@ def test_version_update_derives_workspace_policy_without_claiming_n_minus_one(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / relative, target)
 
+    shutil.copytree(
+        REPO_ROOT / "contracts/v2/fixtures",
+        tmp_path / "contracts/v2/fixtures",
+    )
     changed = update_versions(tmp_path, "0.5.2")
     policy = json.loads(
         (tmp_path / "contracts/v2/workspace-version-policy.json").read_text(encoding="utf-8")
@@ -1760,7 +1764,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
 
     shutil.copy2(REPO_ROOT / "contracts/v2/workspace-version-policy.json", policy_path)
     restored_policy = json.loads(policy_path.read_text(encoding="utf-8"))
-    assert restored_policy["compatibilityCorpus"]["immutablePrefix"]["formalReleaseCount"] == 0
+    assert restored_policy["compatibilityCorpus"]["immutablePrefix"]["baselineCount"] >= 1
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
     baseline_artifact = corpus["baselines"][0]["artifacts"][0]
     baseline_path = desktop_contracts / baseline_artifact["path"]
