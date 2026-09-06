@@ -741,6 +741,8 @@ internal static class PendingUpdateActivationJournal
             TryMarkRollbackFailed(attempt, worker, exception is ReleaseUpdateException
                 ? "UPDATE_ROLLBACK_SHAPE_AMBIGUOUS"
                 : "UPDATE_ROLLBACK_IO_FAILED");
+            UpdateRecoveryFailureEvidence.WriteOnce(
+                attempt.StagingRoot, ".rollback-worker-error.json", exception);
             throw;
         }
     }
