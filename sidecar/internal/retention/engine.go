@@ -50,7 +50,7 @@ type Node struct {
 
 type Snapshot struct {
 	SnapshotID string
-	Root       objectrepo.ObjectID
+	Roots      []objectrepo.ObjectID
 	CreatedAt  time.Time
 	Pinned     bool
 }
@@ -233,11 +233,11 @@ func validateInventory(inventory Inventory) error {
 	allRoots = append(allRoots, inventory.PinnedRoots...)
 	for _, snapshot := range inventory.Snapshots {
 		if snapshot.SnapshotID == "" ||
-			snapshot.Root == "" ||
+			len(snapshot.Roots) == 0 ||
 			snapshot.CreatedAt.IsZero() {
 			return ErrUnsafeInventory
 		}
-		allRoots = append(allRoots, snapshot.Root)
+		allRoots = append(allRoots, snapshot.Roots...)
 	}
 	for _, root := range allRoots {
 		if _, exists := inventory.Nodes[root]; !exists {
@@ -269,7 +269,9 @@ func retentionRoots(
 	retained := make([]string, 0, len(selected))
 	for id, snapshot := range selected {
 		retained = append(retained, id)
-		rootSet[snapshot.Root] = struct{}{}
+		for _, root := range snapshot.Roots {
+			rootSet[root] = struct{}{}
+		}
 	}
 	sort.Strings(retained)
 	roots := make([]objectrepo.ObjectID, 0, len(rootSet))
@@ -430,6 +432,10 @@ func inventoryDigest(inventory Inventory) (string, error) {
 	sortIDs(roots)
 	sortIDs(pinnedRoots)
 	snapshots := append([]Snapshot(nil), inventory.Snapshots...)
+	for index := range snapshots {
+		snapshots[index].Roots = append([]objectrepo.ObjectID(nil), snapshots[index].Roots...)
+		sortIDs(snapshots[index].Roots)
+	}
 	sort.Slice(snapshots, func(left, right int) bool {
 		return snapshots[left].SnapshotID < snapshots[right].SnapshotID
 	})
