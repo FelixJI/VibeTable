@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from qa import next as next_gate
 from qa import release_candidate
 from scripts.qa.windows_process_scope import (
     ProcessWorkingSetMember,
@@ -258,6 +259,14 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         "rpc",
         "exit",
     ]
+    archived_report = next_gate.persist_runtime_baseline_evidence(
+        report_path,
+        tmp_path / "archived-evidence",
+        expected_candidate=candidate_evidence,
+        require_passing_report=not rpc_fails,
+    )
+    assert archived_report is not None
+    assert json.loads(archived_report.read_text(encoding="utf-8")) == report
     if rpc_fails:
         assert report["status"] == "failed"
         assert report["coverage"]["rpcLatency"] == "not-measured"
