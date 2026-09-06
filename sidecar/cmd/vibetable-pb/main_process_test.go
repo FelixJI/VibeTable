@@ -482,26 +482,29 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 6 ||
+		len(productCapabilities.RPCMethods) != 7 ||
 		productCapabilities.RPCMethods[0] != "events.reconcile" ||
 		productCapabilities.RPCMethods[1] != "file.list" ||
-		productCapabilities.RPCMethods[2] != "lookup.list" ||
-		productCapabilities.RPCMethods[3] != "schema.describe" ||
-		productCapabilities.RPCMethods[4] != "schema.getTable" ||
-		productCapabilities.RPCMethods[5] != "schema.list" ||
-		len(productCapabilities.Registrations) != 6 ||
+		productCapabilities.RPCMethods[2] != "history.read" ||
+		productCapabilities.RPCMethods[3] != "lookup.list" ||
+		productCapabilities.RPCMethods[4] != "schema.describe" ||
+		productCapabilities.RPCMethods[5] != "schema.getTable" ||
+		productCapabilities.RPCMethods[6] != "schema.list" ||
+		len(productCapabilities.Registrations) != 7 ||
 		productCapabilities.Registrations[0].Method != "events.reconcile" ||
 		productCapabilities.Registrations[0].Scope != "workspace" ||
 		productCapabilities.Registrations[1].Method != "file.list" ||
 		productCapabilities.Registrations[1].Scope != "workspace" ||
-		productCapabilities.Registrations[2].Method != "lookup.list" ||
+		productCapabilities.Registrations[2].Method != "history.read" ||
 		productCapabilities.Registrations[2].Scope != "workspace" ||
-		productCapabilities.Registrations[3].Method != "schema.describe" ||
+		productCapabilities.Registrations[3].Method != "lookup.list" ||
 		productCapabilities.Registrations[3].Scope != "workspace" ||
-		productCapabilities.Registrations[4].Method != "schema.getTable" ||
+		productCapabilities.Registrations[4].Method != "schema.describe" ||
 		productCapabilities.Registrations[4].Scope != "workspace" ||
-		productCapabilities.Registrations[5].Method != "schema.list" ||
-		productCapabilities.Registrations[5].Scope != "workspace" {
+		productCapabilities.Registrations[5].Method != "schema.getTable" ||
+		productCapabilities.Registrations[5].Scope != "workspace" ||
+		productCapabilities.Registrations[6].Method != "schema.list" ||
+		productCapabilities.Registrations[6].Scope != "workspace" {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
 
