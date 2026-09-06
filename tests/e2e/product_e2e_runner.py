@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -1104,6 +1105,14 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
     operation_samples: dict[str, list[dict[str, Any]]] = {}
     ui_samples: dict[str, list[float]] = {}
     pending_requests = 0
+    recovery_names = {
+        "recovery.sidecar.killToReadableTable",
+        "recovery.backend.killToWritableSession",
+        "recovery.workspace.closeAfterBackendExit",
+        "recovery.workspace.reopenAfterBackendExit",
+    }
+    recovery_runs: list[dict[str, object]] = []
+    unmeasured_recovery_runs = 0
     for result in results:
         duration = result.get("durationMs")
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
@@ -1114,12 +1123,25 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     "durationMs": round(float(duration), 2),
                 }
             )
+        recovery_timings: list[tuple[str, float | None]] = []
         ui_timings = result.get("uiTimings")
         if isinstance(ui_timings, list):
             for timing in ui_timings:
                 if not isinstance(timing, dict):
                     continue
                 name = timing.get("name")
+                if isinstance(name, str) and name.startswith("recovery."):
+                    value = timing.get("durationMs")
+                    duration = (
+                        float(value)
+                        if isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and math.isfinite(value)
+                        and value >= 0
+                        else None
+                    )
+                    recovery_timings.append((name, duration))
+                    continue
                 ui_duration = timing.get("durationMs")
                 if (
                     isinstance(name, str)
@@ -1127,6 +1149,23 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     and not isinstance(ui_duration, bool)
                 ):
                     ui_samples.setdefault(name, []).append(float(ui_duration))
+        if result.get("scenario") == "10-sse-reconnect":
+            lifecycle = result.get("lifecycle")
+            if (
+                result.get("status") == "passed"
+                and isinstance(lifecycle, dict)
+                and lifecycle.get("status") == "passed"
+                and len(recovery_timings) == len(recovery_names)
+                and {name for name, _ in recovery_timings} == recovery_names
+                and all(duration is not None for _, duration in recovery_timings)
+            ):
+                recovery_runs.append(
+                    {
+                        "durationsMs": dict(recovery_timings),
+                    }
+                )
+            else:
+                unmeasured_recovery_runs += 1
         diagnostics = result.get("bridgeDiagnostics")
         if not isinstance(diagnostics, dict):
             continue
@@ -1227,6 +1266,14 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "bridgeFailures": sum(operation["failures"] for operation in by_operation),
         },
         "scenarios": scenario_timings,
+        "recovery": {
+            "status": "measured"
+            if recovery_runs and not unmeasured_recovery_runs
+            else "not-measured",
+            "clock": "node-performance-now",
+            "runs": recovery_runs,
+            "unmeasuredRuns": unmeasured_recovery_runs,
+        },
         "byUiAction": by_ui_action,
         "byOperation": by_operation,
     }

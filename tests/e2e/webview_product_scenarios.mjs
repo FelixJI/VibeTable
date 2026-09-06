@@ -3328,6 +3328,7 @@ async function scenario10(page, recorder, _network, runtime) {
     { baselineRowCount },
   );
 
+  const sidecarRecoveryStarted = performance.now();
   const fault = await requestPackagedProcessKill(
     runtime,
     "kill-sidecar",
@@ -3340,6 +3341,9 @@ async function scenario10(page, recorder, _network, runtime) {
     page,
     tableId,
     1,
+  );
+  runtime.recordUiTiming(
+    "recovery.sidecar.killToReadableTable", performance.now() - sidecarRecoveryStarted,
   );
   const activeSidebarTable = page
     .getByTestId("sidebar-table-name")
@@ -3389,6 +3393,7 @@ async function scenario10(page, recorder, _network, runtime) {
   const backendSourceSession = await page.evaluate(
     () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null,
   );
+  const backendRecoveryStarted = performance.now();
   const backendFault = await requestPackagedProcessKill(
     runtime,
     "kill-backend",
@@ -3405,6 +3410,7 @@ async function scenario10(page, recorder, _network, runtime) {
     backendSourceSession.sessionEpoch,
     "workspace.open",
   );
+  const closeStarted = performance.now();
   const closed = await rawLifecycleWorkspaceV2Request(
     page,
     "workspace.close",
@@ -3416,10 +3422,14 @@ async function scenario10(page, recorder, _network, runtime) {
     closed.result?.state === "closed" && closed.result?.workspaceId === null,
     { closed },
   );
+  runtime.recordUiTiming(
+    "recovery.workspace.closeAfterBackendExit", performance.now() - closeStarted,
+  );
   await openWorkspaceCenterFromSwitcher(page);
   const workspaceCenter = page.getByTestId("workspace-center");
   const workspace = workspaceCenter.getByRole("button", { name: /E2E Product Workspace/ });
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  const reopenStarted = performance.now();
   await workspace.click();
   const recoveredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
   const recoveredSession = recoveredBootstrap.payload.session;
@@ -3430,6 +3440,14 @@ async function scenario10(page, recorder, _network, runtime) {
       && recoveredSession.writable === true
       && recoveredSession.sessionEpoch > backendSourceSession.sessionEpoch,
     { backendSourceSession, recoveredSession },
+  );
+
+  const writableSessionObserved = performance.now();
+  runtime.recordUiTiming(
+    "recovery.workspace.reopenAfterBackendExit", writableSessionObserved - reopenStarted,
+  );
+  runtime.recordUiTiming(
+    "recovery.backend.killToWritableSession", writableSessionObserved - backendRecoveryStarted,
   );
 
   const retentionBeforeStaleWrite = (

@@ -3227,3 +3227,76 @@ def test_nonzero_node_exit_preserves_structured_scenario_failure_but_rejects_pas
     assert result["nodeExitCode"] == 7
     assert result["error"]["code"] == expected_code
     assert expected_message in result["error"]["message"]
+
+
+RECOVERY_SAMPLE_NAMES = (
+    "recovery.sidecar.killToReadableTable",
+    "recovery.backend.killToWritableSession",
+    "recovery.workspace.closeAfterBackendExit",
+    "recovery.workspace.reopenAfterBackendExit",
+)
+
+
+def _recovery_timing_result():
+    return {
+        "scenario": "10-sse-reconnect",
+        "status": "passed",
+        "lifecycle": {"status": "passed"},
+        "uiTimings": [
+            {"name": name, "durationMs": index * 100.5}
+            for index, name in enumerate(RECOVERY_SAMPLE_NAMES, start=1)
+        ],
+    }
+
+
+def test_recovery_timings_are_separate_and_require_clean_lifecycle() -> None:
+    result = _recovery_timing_result()
+    summary = runner.summarize_performance([result])
+    assert summary["byUiAction"] == []
+    assert summary["recovery"] == {
+        "status": "measured",
+        "clock": "node-performance-now",
+        "runs": [
+            {"durationsMs": dict(zip(RECOVERY_SAMPLE_NAMES, (100.5, 201, 301.5, 402), strict=True))}
+        ],
+        "unmeasuredRuns": 0,
+    }
+    result["lifecycle"]["status"] = "failed"
+    summary = runner.summarize_performance([result])
+    assert summary["recovery"]["status"] == "not-measured"
+    assert summary["recovery"]["runs"] == []
+    assert summary["recovery"]["unmeasuredRuns"] == 1
+
+
+@pytest.mark.parametrize(
+    "defect", ["scenario-failed", "missing", "duplicate", "unknown", "negative", "bool", "nan"]
+)
+def test_recovery_summary_rejects_partial_or_invalid_measurements(defect: str) -> None:
+    result = _recovery_timing_result()
+    if defect == "scenario-failed":
+        result["status"] = "failed"
+    elif defect == "missing":
+        result["uiTimings"].pop()
+    elif defect == "duplicate":
+        result["uiTimings"].append(result["uiTimings"][0])
+    elif defect == "unknown":
+        result["uiTimings"][0]["name"] = "recovery.unknown"
+    else:
+        result["uiTimings"][0]["durationMs"] = {"negative": -1, "bool": True, "nan": float("nan")}[
+            defect
+        ]
+    summary = runner.summarize_performance([result])
+    assert summary["recovery"]["status"] == "not-measured"
+    assert summary["recovery"]["runs"] == []
+    assert summary["recovery"]["unmeasuredRuns"] == 1
+
+
+def test_recovery_summary_does_not_claim_unscheduled_recovery() -> None:
+    result = _recovery_timing_result()
+    result["scenario"] = "07-attachment-history"
+    assert runner.summarize_performance([result])["recovery"] == {
+        "status": "not-measured",
+        "clock": "node-performance-now",
+        "runs": [],
+        "unmeasuredRuns": 0,
+    }
