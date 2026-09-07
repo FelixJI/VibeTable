@@ -18,6 +18,8 @@ public sealed class WorkspaceV2HttpGateway : IDisposable
     private const int MaxResponseBytes = 4 * 1024 * 1024;
     private readonly Func<PocketBaseAdminContext?> _contextProvider;
     private readonly HttpClient _client;
+    private readonly object _forwardGate = new();
+    private Task _forwardTail = Task.CompletedTask;
     private bool _disposed;
 
     public WorkspaceV2HttpGateway(
@@ -115,7 +117,70 @@ public sealed class WorkspaceV2HttpGateway : IDisposable
             rpcMethods);
     }
 
-    public async Task<WorkspaceV2ForwardResult> ForwardAsync(
+    // Host document commands and renderer RPCs share the Sidecar sequence
+    // high-watermark. Keep their HTTP exchanges in admission order so a later
+    // request cannot commit while an earlier request is still in transit.
+    public Task<WorkspaceV2ForwardResult> ForwardAsync(
+        string requestId,
+        string method,
+        JsonElement wire,
+        JsonElement parameters,
+        WorkspaceSidecarPathGrant? pathGrant,
+        CancellationToken cancellationToken)
+    {
+        return ForwardPreparedAsync(requestId, method, wire,
+            () => (parameters, pathGrant), cancellationToken);
+    }
+
+    internal Task<WorkspaceV2ForwardResult> ForwardPreparedAsync(
+        string requestId,
+        string method,
+        JsonElement wire,
+        Func<(JsonElement Parameters, WorkspaceSidecarPathGrant? PathGrant)> prepare,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(prepare);
+        Task predecessor;
+        var completion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_forwardGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            predecessor = _forwardTail;
+            _forwardTail = completion.Task;
+        }
+        return ForwardInOrderAsync();
+
+        async Task<WorkspaceV2ForwardResult> ForwardInOrderAsync()
+        {
+            try
+            {
+                // Native path pickers must resume on the caller's UI context.
+                await predecessor.WaitAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                var prepared = prepare();
+                cancellationToken.ThrowIfCancellationRequested();
+                return await ForwardCoreAsync(requestId, method, wire, prepared.Parameters,
+                    prepared.PathGrant, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (predecessor.IsCompleted)
+                    completion.TrySetResult();
+                else
+                    _ = ReleaseCancelledSlotAsync();
+            }
+        }
+        async Task ReleaseCancelledSlotAsync()
+        {
+            // A cancelled queued caller may return now, but its successor must
+            // still wait for the preceding exchange. Queue tails never fault.
+            await predecessor.ConfigureAwait(false);
+            completion.TrySetResult();
+        }
+    }
+
+    private async Task<WorkspaceV2ForwardResult> ForwardCoreAsync(
         string requestId,
         string method,
         JsonElement wire,

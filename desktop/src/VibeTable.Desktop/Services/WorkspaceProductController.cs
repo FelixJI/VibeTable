@@ -389,23 +389,19 @@ public sealed class WorkspaceProductController : IAsyncDisposable
                             "workspace.capability_unavailable",
                             "This workspace v2 capability is not connected in this build.");
                     }
-                    JsonElement materialized =
-                        _workspacePathGrants.MaterializeSentinels(
-                            request.V2Method!,
-                            operationId,
-                            parameters);
-                    WorkspaceSidecarPathGrant? sidecarPathGrant =
-                        _workspacePathGrants.ConsumeForSidecar(
-                            materialized,
-                            request.V2Method!,
-                            operationId);
                     WorkspaceV2ForwardResult forwarded =
-                        await gateway.ForwardAsync(
+                        await gateway.ForwardPreparedAsync(
                             request.RequestId ?? operationId.ToString("D"),
                             request.V2Method!,
                             request.Wire,
-                            materialized,
-                            sidecarPathGrant,
+                            () =>
+                            {
+                                JsonElement materialized = _workspacePathGrants.MaterializeSentinels(
+                                    request.V2Method!, operationId, parameters);
+                                WorkspaceSidecarPathGrant? grant = _workspacePathGrants.ConsumeForSidecar(
+                                    materialized, request.V2Method!, operationId);
+                                return (materialized, grant);
+                            },
                             requestToken);
                     if (epochLease is not null &&
                         !_session.IsCurrent(epochLease))
