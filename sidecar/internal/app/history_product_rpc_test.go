@@ -21,6 +21,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
@@ -309,6 +310,7 @@ func historyReadProductFixture(
 		FenceEpoch: capabilities.FenceEpoch, ClaimID: capabilities.ClaimID,
 	},
 		productrpc.ReconcileRegistration(schemaapi.New(pb)),
+		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(schemaapi.New(pb)),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
