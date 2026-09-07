@@ -17,12 +17,15 @@ import (
 )
 
 type corpusCase struct {
-	File                 string                             `json:"file"`
-	Tier                 string                             `json:"tier"`
-	ExpectedStatuses     []workspacesearch.ExtractionStatus `json:"expectedStatuses"`
-	RequiredTokens       []string                           `json:"requiredTokensWhenIndexed"`
-	ForbiddenTokens      []string                           `json:"forbiddenTokens"`
-	EmptyTextOnRejection bool                               `json:"emptyTextOnRejection"`
+	ExpectedRepeatedCharacter string                             `json:"expectedRepeatedCharacter"`
+	File                      string                             `json:"file"`
+	Tier                      string                             `json:"tier"`
+	ExpectedStatuses          []workspacesearch.ExtractionStatus `json:"expectedStatuses"`
+	RequiredTokens            []string                           `json:"requiredTokensWhenIndexed"`
+	ForbiddenTokens           []string                           `json:"forbiddenTokens"`
+	EmptyTextOnRejection      bool                               `json:"emptyTextOnRejection"`
+	ExpectedCodePoints        *int                               `json:"expectedCodePoints"`
+	ExpectedErrorCode         *string                            `json:"expectedErrorCode"`
 }
 
 type corpusBudgets struct {
@@ -82,6 +85,9 @@ func run(manifestPath, directory string, output io.Writer) error {
 		if item.File == "." || filepath.Base(item.File) != item.File || filepath.Ext(item.File) != ".pdf" || seen[item.File] || len(item.ExpectedStatuses) == 0 {
 			return errors.New("invalid or duplicate PDF corpus case")
 		}
+		if item.ExpectedRepeatedCharacter != "" && utf8.RuneCountInString(item.ExpectedRepeatedCharacter) != 1 {
+			return errors.New("expected repeated PDF character must be one code point")
+		}
 		seen[item.File] = true
 	}
 	rows := make([]observation, 0, len(definition.Cases))
@@ -99,6 +105,15 @@ func run(manifestPath, directory string, output io.Writer) error {
 		row := observation{File: item.File, Tier: item.Tier, Status: result.Status, ErrorCode: result.ErrorCode, CodePoints: utf8.RuneCountInString(result.Text), ElapsedMilliseconds: time.Since(started).Milliseconds(), Mismatches: []string{}}
 		if !slices.Contains(item.ExpectedStatuses, result.Status) {
 			row.Mismatches = append(row.Mismatches, "status")
+		}
+		if item.ExpectedRepeatedCharacter != "" && strings.Trim(result.Text, item.ExpectedRepeatedCharacter) != "" {
+			row.Mismatches = append(row.Mismatches, "repeated text character")
+		}
+		if item.ExpectedCodePoints != nil && row.CodePoints != *item.ExpectedCodePoints {
+			row.Mismatches = append(row.Mismatches, "code points")
+		}
+		if item.ExpectedErrorCode != nil && (result.ErrorCode == nil || *result.ErrorCode != *item.ExpectedErrorCode) {
+			row.Mismatches = append(row.Mismatches, "error code")
 		}
 		if result.Status == workspacesearch.ExtractionIndexed {
 			for _, token := range item.RequiredTokens {

@@ -152,6 +152,26 @@ def generated_documents() -> dict[str, bytes]:
         ),
     ]
     samples["page-boundary-exclusions.pdf"] = document(outside_page_objects)
+    image_objects = [
+        *common,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>",
+        stream(b"q 200 0 0 200 72 500 cm /Im1 Do Q"),
+        stream(bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])).replace(
+            b"<< /Length",
+            b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length",
+        ),
+    ]
+    samples["image-only-rgb.pdf"] = document(image_objects)
+    oversized_input = list(image_objects)
+    oversized_input.append(stream(b" " * (64 * 1024 * 1024)))
+    samples["input-over-64m.pdf"] = document(oversized_input)
+    output_objects = [
+        *common,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 2000 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream(b"BT /F1 0.001 Tf 10 720 Td " + (b"(" + b"B" * 500 + b") Tj\n") * 4001 + b"ET"),
+    ]
+    samples["output-over-2m.pdf"] = document(output_objects)
     return samples
 
 

@@ -1,6 +1,6 @@
 # A6 自有 PDF 决策语料 v1
 
-`pdf_qualification_corpus.json` 冻结 20 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
+`pdf_qualification_corpus.json` 冻结 23 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
 `generate_pdf_qualification_corpus.py` 仅用标准库构造 PDF 对象，不复制字体或第三方文件。
 
 ```text
@@ -37,9 +37,20 @@ Flate 尾随数据和页面边界属于 MUST。该 RED 是保留的能力差距�
 报告器自身的测试验证真实损坏 PDF 状态的接纳/错误预期拒绝，以及预算不一致时先于提取拒绝。
 
 本入口尚不是包含 worker、宿主和派生 generation 的完整产品资格 runner。
-manifest 的 `remainingCoverage` 保留独立生产者、普通 Tj/TJ、对象流/predictor、图片页、
-输入/输出/取消、加密、深层对象与产品 generation 事务等缺口；已有本地发现记录不能替代这些门禁。
+manifest 的 `remainingCoverage` 保留独立生产者、普通 Tj/TJ、对象流/predictor、
+输入/输出精确临界值、deadline/取消、加密、深层对象与产品 generation 事务等缺口；已有本地发现记录不能替代这些门禁。
 预算字段是原有输入/解码/输出/时间契约，不是实测通过声明，也不将累计解码预算冒充进程内存限制。
 
 新增样本先声明目标输入与语义、再运行独立 oracle；保留负证据。A6 是能力决策，产品 adapter、
 worker 生命周期、依赖接入与正式发布资格须在接受决策后分别完成。该语料不批准依赖切换。
+## 图片页、输入和输出超限补充
+
+新增三项 MUST，生成器与 manifest 在观察提取结果前共同声明：
+
+- `image-only-rgb.pdf`：仅绘制自有 2×2 RGB 像素，无字体或文本运算符。独立 Poppler 确認一页、一个图像、正文为空；不是外部扫描件或 OCR 验收。
+- `input-over-64m.pdf`：合法图片页后增加未引用的 64 MiB 流，整个输入超过既有预算。预期 `resourceLimited / extract.input_limit`，正文长度 0。
+- `output-over-2m.pdf`：可达页面内 4,001 个各含 500 个 B 的 Tj 运算符，每个字符串均小于 32 KiB。预期 `truncated / extract.text_limit`，输出精确 2,000,000 code points，并以 `expectedRepeatedCharacter` 断言每个字符均为 B。固定 PdfPig 独立读出全部 2,000,500 个 B，无 warning；原型尚未执行输出上限，该观察不算候选通过。
+
+可选 `expectedCodePoints` 与 `expectedErrorCode` 由报告器直接核对实际结果；零长度也必须检查。报告器回归证明旧版会漏报错误长度与错误码，新增检查后拒绝该错误预期。另以同长度的错误正文预期验证字符断言，防止只有长度正确便通过。
+
+在 `main@fa2e3f83` 的当前提取器上，图片页和输入超限两项匹配。输出样本虽为 `truncated / extract.text_limit` 且长度 2,000,000，但全文字符断言失败：当前 accumulator 在相邻 Tj token 间增加分隔空格，独立 PdfPig 读取该连续正文则全部为 B。补强断言前的长度检查曾通过，不能覆盖此最终反证；23 项整体保留原 8 项并新增该 MUST 差距，共 9 项不匹配、exit 1。生成器/报告器源码变化不修改产品提取器、预算或拒绝策略。
