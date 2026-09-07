@@ -32,7 +32,7 @@
   {
     "id": "06-relation-fanout",
     "title": "关系 cascade 方向与影响预览",
-    "requirement": "关系字段切换 cascade 前，冻结计划明确标记危险级别，并返回受影响记录与依赖信息。",
+    "requirement": "关系字段切换 cascade 前，冻结计划明确标记危险级别，并返回受影响记录与依赖信息；创建 Lookup 后，通过真实 Product 桥接读取持久定义，并核对目标字段、关系路径与 schema.describe 的 Lookup revision。",
     "capabilities": ["relation.fanout"]
   },
   {
