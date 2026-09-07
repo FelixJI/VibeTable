@@ -297,11 +297,40 @@
       "expectedErrorCode": "extract.text_limit",
       "reason": "页面内 4001 个 500 字符文本运算符，超过输出上限；只输出精确 2000000 code points，不把截断当拒绝。",
       "expectedRepeatedCharacter": "B"
+    },
+    {
+      "file": "text-operators-plain.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "indexed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "Operator (report) \\ path",
+        "Array joined token",
+        "Octal ABC"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "同一正文的普通/Flate 成对样本；Tj、TJ 数组及括号、反斜线、八进制转义必须得到相同 token。"
+    },
+    {
+      "file": "text-operators-flate.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "indexed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "Operator (report) \\ path",
+        "Array joined token",
+        "Octal ABC"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "同一正文的普通/Flate 成对样本；Tj、TJ 数组及括号、反斜线、八进制转义必须得到相同 token。"
     }
   ],
   "remainingCoverage": [
     "independent redistributable producer samples",
-    "plain/Flate Tj/TJ and escaping comparison",
     "object streams and predictors",
     "input/output exact-edge and deadline/cancellation boundaries",
     "encryption",

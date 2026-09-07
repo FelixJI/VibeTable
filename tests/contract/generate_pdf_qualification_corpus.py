@@ -172,6 +172,23 @@ def generated_documents() -> dict[str, bytes]:
         stream(b"BT /F1 0.001 Tf 10 720 Td " + (b"(" + b"B" * 500 + b") Tj\n") * 4001 + b"ET"),
     ]
     samples["output-over-2m.pdf"] = document(output_objects)
+    text_operators = (
+        b"BT /F1 12 Tf 72 720 Td "
+        rb"(Operator \(report\) \\ path) Tj "
+        b"0 -20 Td [(Array ) 0 (joined ) 0 (token)] TJ "
+        rb"0 -20 Td (Octal \101\102\103) Tj ET"
+    )
+    for name, payload, filter_name in (
+        ("text-operators-plain.pdf", text_operators, ""),
+        ("text-operators-flate.pdf", zlib.compress(text_operators), "FlateDecode"),
+    ):
+        operator_objects = [
+            *common,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            stream(payload, filter_name),
+        ]
+        samples[name] = document(operator_objects)
     return samples
 
 

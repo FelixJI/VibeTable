@@ -37,7 +37,7 @@ Flate 尾随数据和页面边界属于 MUST。该 RED 是保留的能力差距�
 报告器自身的测试验证真实损坏 PDF 状态的接纳/错误预期拒绝，以及预算不一致时先于提取拒绝。
 
 本入口尚不是包含 worker、宿主和派生 generation 的完整产品资格 runner。
-manifest 的 `remainingCoverage` 保留独立生产者、普通 Tj/TJ、对象流/predictor、
+manifest 的 `remainingCoverage` 保留独立生产者、对象流/predictor、
 输入/输出精确临界值、deadline/取消、加密、深层对象与产品 generation 事务等缺口；已有本地发现记录不能替代这些门禁。
 预算字段是原有输入/解码/输出/时间契约，不是实测通过声明，也不将累计解码预算冒充进程内存限制。
 
@@ -54,3 +54,14 @@ worker 生命周期、依赖接入与正式发布资格须在接受决策后分�
 可选 `expectedCodePoints` 与 `expectedErrorCode` 由报告器直接核对实际结果；零长度也必须检查。报告器回归证明旧版会漏报错误长度与错误码，新增检查后拒绝该错误预期。另以同长度的错误正文预期验证字符断言，防止只有长度正确便通过。
 
 在 `main@fa2e3f83` 的当前提取器上，图片页和输入超限两项匹配。输出样本虽为 `truncated / extract.text_limit` 且长度 2,000,000，但全文字符断言失败：当前 accumulator 在相邻 Tj token 间增加分隔空格，独立 PdfPig 读取该连续正文则全部为 B。补强断言前的长度检查曾通过，不能覆盖此最终反证；23 项整体保留原 8 项并新增该 MUST 差距，共 9 项不匹配、exit 1。生成器/报告器源码变化不修改产品提取器、预算或拒绝策略。
+
+## 普通与 Flate 文本运算符对照
+
+`text-operators-plain.pdf` 与 `text-operators-flate.pdf` 是同一页面内容流的普通和压缩表示。
+预注册 MUST token 为 `Operator (report) \ path`、`Array joined token` 和 `Octal ABC`，分别覆盖
+Tj 的括号/反斜线转义、TJ 数组连接和八进制转义；不涉及版面恢复或复杂字距承诺。
+
+独立 Poppler 对两个样本都返回相同三行正文、一页、无图片。沿用当前 Go 报告器与提取器，两个样本均为
+indexed、53 code points、无错误码或 token 差距。完整 25 项仍有原 9 项不匹配，exit 1；这只补齐
+该成对对照，不关闭其他 remainingCoverage 或 A6。原始本地证据分别为
+`build/qa/pdf-qualification/text-operators-poppler.jsonl` 与 `build/qa/pdf-qualification/current-go-25.json`。
