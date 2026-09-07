@@ -132,6 +132,45 @@ func TestLookupListParamsKeepPythonSemanticBudget(t *testing.T) {
 	}
 }
 
+func TestLookupListProductHTTPKeepsSemanticBudgetAcrossWireEscaping(t *testing.T) {
+	pb := schemaProductStore(t)
+	mux := schemaProductMux(t, pb)
+	available := (1 << 20) - len(`{"collection":""}`)
+	for _, sample := range []struct {
+		name          string
+		wireCharacter string
+		semanticBytes int
+	}{
+		{"ascii", "a", 1},
+		{"escaped-unicode", `\u00e9`, 2},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			value := strings.Repeat(sample.wireCharacter, available/sample.semanticBytes) + strings.Repeat("a", available%sample.semanticBytes)
+			for _, boundary := range []struct {
+				name   string
+				suffix string
+				code   int
+			}{
+				{"exact", "", productrpc.CodeProductData},
+				{"one-byte-over", "a", productrpc.CodeInvalidParams},
+			} {
+				t.Run(boundary.name, func(t *testing.T) {
+					params := `{"collection":"` + value + boundary.suffix + `"}`
+					response := schemaProductRequestForMethod(t, mux, context.Background(), "lookup.list", params, schemaListWire)
+					if response.Error == nil || response.Error.Code != boundary.code || len(response.Result) != 0 {
+						t.Fatalf("semantic boundary: %#v", response.Error)
+					}
+					// An accepted parameter reaches the real catalog and reports the
+					// missing table; exceeding the parameter budget never reaches it.
+					if boundary.suffix == "" && response.Error.Data["code"] != "mutation.internal.failed" {
+						t.Fatalf("catalog error: %#v", response.Error)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestLookupListProductHTTPPreservesErrorsAndScope(t *testing.T) {
 	pb := schemaProductStore(t)
 	mux := schemaProductMux(t, pb)
