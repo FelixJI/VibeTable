@@ -50,6 +50,7 @@ public sealed class ProductRpcCapabilityManifestTests
             {
                 "events.reconcile:workspace",
                 "file.list:workspace",
+                "lookup.list:workspace",
                 "schema.describe:workspace",
                 "schema.getTable:workspace",
                 "schema.list:workspace",

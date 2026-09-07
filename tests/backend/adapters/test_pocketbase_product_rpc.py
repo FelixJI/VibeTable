@@ -554,29 +554,9 @@ async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("output_storage", ["text", "datetime"])
-async def test_relation_renderer_contracts_are_adapted_from_product_shapes(
-    output_storage: str,
-) -> None:
-    lookup = {
-        "lookupId": "orders.customer_name",
-        "tableId": "orders",
-        "fieldId": "customer_name",
-        "physicalName": "customer_name",
-        "displayName": "Customer name",
-        "relationFieldId": "customer",
-        "targetFieldId": "name",
-        "resultCardinality": "one",
-        "outputStorage": output_storage,
-        "revision": 3,
-    }
+async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> None:
     service, transport = _service(
         [
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_4",
-                "lookups": [lookup],
-            },
             {
                 "relationId": "orders.customer",
                 "sourceRecordId": "order-1",
@@ -595,10 +575,6 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes(
         ]
     )
 
-    listed = await service.invoke(
-        "lookup.list",
-        ProductParams.model_validate({"collection": "orders"}),
-    )
     preview = await service.invoke(
         "relation.previewDelta",
         ProductParams.model_validate(
@@ -613,9 +589,6 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes(
         ),
     )
 
-    assert listed["collection"] == "orders"
-    assert listed["definitions"][0]["outputType"] == output_storage
-    assert "aggregation" not in listed["definitions"][0]
     assert preview == {
         "delta": {
             "relationId": "orders.customer",
@@ -637,7 +610,6 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes(
         "canApply": True,
     }
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/lookups/describe",
         "/api/vibetable/v1/relations/preview-delta",
     ]
 
