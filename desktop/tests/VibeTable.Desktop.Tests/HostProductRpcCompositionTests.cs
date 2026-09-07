@@ -194,6 +194,20 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    public async Task QueryPageUsesDefaultGoOwnerAndPreservesProductProjection()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        fixture.Http.Result = Json("""{"rows":[{"id":"r1","value":false}],"offset":0,"limit":5,"filteredRows":1,"totalRows":1,"snapshot":{"schemaRevision":"schema_1","dataRevision":0}}""");
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!.CreateGateway(fixture.Leases, fixture.Http);
+        JsonElement result = await gateway.QueryPageAsync(Json("""{"tableId":"orders","query":{"offset":0,"limit":5}}"""), CancellationToken.None);
+        Assert.IsFalse(result.GetProperty("rows")[0].GetProperty("value").GetBoolean());
+        Assert.AreEqual("schema_1", result.GetProperty("snapshot").GetProperty("schemaRevision").GetString());
+        Assert.IsFalse(result.TryGetProperty("querySnapshot", out _));
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
     public async Task ReadyFactoryCapturesPairedClientAndUsesTypedSelectedRoute()
     {
         await using var fixture = await Fixture.OpenAsync();
@@ -489,7 +503,7 @@ public sealed class HostProductRpcCompositionTests
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
                     rpcMethods = UseTestPolicy
                         ? new[] { "schema.list" }
-                        : new[] { "events.reconcile", "file.list", "lookup.list", "schema.describe", "schema.getTable", "schema.list" },
+                        : new[] { "events.reconcile", "file.list", "lookup.list", "query.page", "schema.describe", "schema.getTable", "schema.list" },
                     registrations = UseTestPolicy
                         ? new[] { new { method = "schema.list", scope = "workspace" } }
                         : new[]
@@ -497,6 +511,7 @@ public sealed class HostProductRpcCompositionTests
                             new { method = "events.reconcile", scope = "workspace" },
                             new { method = "file.list", scope = "workspace" },
                             new { method = "lookup.list", scope = "workspace" },
+                            new { method = "query.page", scope = "workspace" },
                             new { method = "schema.describe", scope = "workspace" },
                             new { method = "schema.getTable", scope = "workspace" },
                             new { method = "schema.list", scope = "workspace" },

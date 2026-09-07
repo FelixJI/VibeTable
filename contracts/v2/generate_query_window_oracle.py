@@ -1,4 +1,4 @@
-"""Capture the current Python query window contract without running a Sidecar."""
+"""Replay the remaining Python cursor contract against the immutable query window oracle."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from backend.rpc.product_errors import register_product_rpc_errors
 PRODUCER_COMMIT = "c97c83336e4aa1bdf993fc46a7de57040219fb03"
 OUTPUT = Path(__file__).with_name("query-window-python-oracle.json")
 METHODS = ("query.page", "query.cursorOpen", "query.cursorFetch")
+PYTHON_REPLAY_METHODS = ("query.cursorOpen", "query.cursorFetch")
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,10 @@ def cases() -> tuple[Case, ...]:
     )
 
 
+def replay_cases() -> tuple[Case, ...]:
+    return tuple(case for case in cases() if case.method in PYTHON_REPLAY_METHODS)
+
+
 class RecordingTransport:
     """Only the authority HTTP boundary is scripted; Python code executes unchanged."""
 
@@ -179,6 +184,8 @@ class RecordingTransport:
 
 
 async def capture_case(case: Case) -> JsonObject:
+    if case.method not in PYTHON_REPLAY_METHODS:
+        raise ValueError(f"Python oracle replay is retired for {case.method}")
     transport = RecordingTransport(case)
     service = PocketBaseProductRpc(
         client=PocketBaseClient(transport=transport, session_secret="oracle-only"),
@@ -187,7 +194,7 @@ async def capture_case(case: Case) -> JsonObject:
     )
     dispatcher = RpcDispatcher()
     register_product_rpc_errors()
-    for method in METHODS:
+    for method in PYTHON_REPLAY_METHODS:
         dispatcher.register(
             method, partial(service.invoke, method), PYTHON_PRODUCT_RPC_REGISTRY[method]
         )
@@ -211,7 +218,7 @@ async def capture() -> JsonObject:
     return {
         "producerCommit": PRODUCER_COMMIT,
         "boundary": "Python Product dispatcher + adapter; scripted authority transport",
-        "cases": [await capture_case(case) for case in cases()],
+        "cases": [await capture_case(case) for case in replay_cases()],
     }
 
 
@@ -222,22 +229,23 @@ def render(value: JsonObject) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--write", action="store_true", help="Create the oracle once; never overwrite"
+        "--write",
+        action="store_true",
+        help="Retired: the frozen producer oracle cannot be regenerated",
     )
     parser.add_argument(
         "--check", action="store_true", help="Compare without changing the frozen oracle (default)"
     )
     args = parser.parse_args()
-    if args.write and args.check:
-        parser.error("Choose either --write or --check")
-    generated = render(asyncio.run(capture()))
     if args.write:
-        with OUTPUT.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(generated)
-        return 0
-    if OUTPUT.read_text(encoding="utf-8") != generated:
+        parser.error("The frozen producer oracle cannot be regenerated after owner migration")
+    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    frozen["cases"] = [
+        case for case in frozen["cases"] if case["request"]["method"] in PYTHON_REPLAY_METHODS
+    ]
+    if render(frozen) != render(asyncio.run(capture())):
         parser.error(
-            "Python query window contract differs from the frozen producer; inspect the change, do not regenerate"
+            "Python cursor contract differs from the frozen producer; inspect the change, do not regenerate"
         )
     return 0
 

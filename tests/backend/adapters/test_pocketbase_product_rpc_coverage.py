@@ -320,7 +320,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
                 "displayName": "订单",
                 "schemaRevision": "schema_0001",
             },
-            page([{"id": "row-1"}], limit=1),
             {"canApply": True, "operations": []},
             {"status": "applied", "receipt": {"id": "change-1"}},
             {"valid": True, "diagnostics": []},
@@ -350,11 +349,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             ),
         )
     )["tableId"] == "tbl_orders"
-    queried = await service.invoke(
-        "query.page", ProductParams.model_validate({"tableId": "orders", "query": {"limit": 1}})
-    )
-    assert queried["rows"] == [{"id": "row-1"}]
-    assert queried["snapshot"] == {"digest": "snapshot"}
     assert (
         await service.invoke("mutation.preview", ProductParams.model_validate({"operations": []}))
     )["canApply"] is True

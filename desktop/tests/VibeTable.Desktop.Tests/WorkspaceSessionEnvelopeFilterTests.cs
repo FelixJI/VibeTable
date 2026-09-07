@@ -173,7 +173,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task OldResponseSettlesAsStaleAfterWorkspaceSwitch()
+    public async Task PythonCursorResponseSettlesAsStaleAfterWorkspaceSwitch()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -189,7 +189,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var dispatcher = CreateDispatcher(sink, filter);
         dispatcher.SetProductDataGateway(gateway);
 
-        dispatcher.Dispatch(QueryRequest("old-response", ScopeFor(opened, 1)));
+        dispatcher.Dispatch(PythonCursorRequest("old-response", ScopeFor(opened, 1)));
         await transport.WaitForWriteAsync();
         await fixture.Manager.SwitchAsync(
             second.WorkspaceId,
@@ -329,37 +329,44 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task RecoverableReadDoesNotRetryOnNewEpochGateway()
+    public async Task GoQueryDoesNotReplayOldEpochFailureOnReplacementForwarder()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
         WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
         WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
-            first.WorkspaceId,
-            WorkspaceOpenMode.Writable);
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
         using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
-        await using var staleClient = new JsonRpcClient(
-            new ControlledQueryTransport());
-        using var staleGateway = new JsonRpcProductDataGateway(staleClient);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ProductSidecarForwardResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldForwarder = new ControlledProductSidecarForwarder((_, _) =>
+        {
+            started.TrySetResult();
+            return response.Task;
+        });
+        var replacement = new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("Old epoch request must not be replayed"));
+        var python = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(python);
+        using var gateway = new JsonRpcProductDataGateway(client);
         var sink = new FakeWebReplySink();
-        var dispatcher = CreateDispatcher(sink, filter);
-        dispatcher.SetProductDataGateway(staleGateway);
-        staleGateway.Dispose();
+        var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
+        controller.SetGateway(gateway);
+        controller.SetProductSidecarForwarder(oldForwarder);
+        RoutedWebRequest request = GoQueryRequest("stale-retry", ScopeFor(opened, 1));
 
-        dispatcher.Dispatch(QueryRequest("stale-retry", ScopeFor(opened, 1)));
-        await Task.Delay(60);
-        await fixture.Manager.SwitchAsync(
-            second.WorkspaceId,
-            WorkspaceOpenMode.Writable);
-        var replacementTransport = new ControlledQueryTransport();
-        await using var replacementClient = new JsonRpcClient(
-            replacementTransport);
-        using var replacementGateway = new JsonRpcProductDataGateway(
-            replacementClient);
-        dispatcher.SetProductDataGateway(replacementGateway);
-        await Task.Delay(200);
+        Task dispatch = controller.DispatchAsync(request);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+        controller.SetProductSidecarForwarder(replacement);
+        response.SetException(new BackendUnavailableException("Old sidecar unavailable"));
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
 
-        Assert.AreEqual(0, replacementTransport.WriteCount);
+        Assert.AreEqual(1, oldForwarder.CallCount);
+        Assert.IsTrue(JsonElement.DeepEquals(request.Wire, oldForwarder.Calls.Single().Wire));
+        Assert.AreEqual(0, replacement.CallCount);
+        Assert.AreEqual(0, python.WriteCount);
         AssertRetiredReply(sink, "stale-retry");
     }
 
@@ -880,14 +887,14 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             await Task.Delay(10, timeout.Token);
     }
 
-    private static RoutedWebRequest QueryRequest(
+    private static RoutedWebRequest PythonCursorRequest(
         string requestId,
         WorkspaceWireScope scope)
     {
         using var document = JsonDocument.Parse(
             """{"tableId":"tbl_records","query":{"filters":[],"sorts":[],"offset":0,"limit":100}}""");
         return new RoutedWebRequest(
-            "query.page",
+            "query.cursorOpen",
             requestId,
             document.RootElement.Clone(),
             string.Empty,
@@ -898,7 +905,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         string requestId,
         WorkspaceWireScope scope)
     {
-        RoutedWebRequest request = QueryRequest(requestId, scope);
+        RoutedWebRequest request = PythonCursorRequest(requestId, scope) with { Type = "query.page" };
         JsonElement wire = JsonSerializer.SerializeToElement(new
         {
             scope = scope.Scope,
@@ -911,14 +918,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     private static ProductRpcRouteSelector GoQuerySelector()
-        => new(ProductRpcCapabilityManifest.CreateForTests(
-            new ProductRpcCapability(
-                "query.page",
-                "workspace",
-                "rendererPublic",
-                "product.query.page",
-                "goSidecar",
-                "read")));
+        => new(ProductRpcCapabilityManifest.Default);
 
     private static WorkspaceWireScope ScopeFor(
         WorkspaceSessionV2 session,
@@ -1168,8 +1168,19 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                   "id": "{{_requestId}}",
                   "result": {
                     "rows": [],
-                    "total": 0,
-                    "snapshot": {"schemaRevision": "schema_0001"}
+                    "nextCursor": null,
+                    "hasMore": false,
+                    "filteredRows": 0,
+                    "totalRows": 0,
+                    "querySnapshot": {
+                      "workspaceId": "00000000000000000000000000000000",
+                      "sessionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "provider": "local",
+                      "table": "tbl_records",
+                      "schemaRevision": "schema_0001",
+                      "dataRevision": 0,
+                      "query": {"offset": 0, "limit": 100}
+                    }
                   }
                 }
                 """);
