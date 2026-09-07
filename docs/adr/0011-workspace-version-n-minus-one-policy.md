@@ -1,8 +1,18 @@
 # ADR 0011：Workspace 版本采用 N-1 验证策略
 
-- 状态：已接受
+- 状态：已接受；2026-09-07 起旧版兼容交付目标在开发阶段暂停，证据与拒绝契约继续有效
 - 日期：2026-08-27
 - 当前 writer：VibeTable 0.5.1
+
+## 开发阶段适用范围（2026-09-07）
+
+依据 [#140 实施指南的范围调整](../plans/2026-08-29-vibetable-maturity-convergence-and-runtime-evolution.md)，
+开发阶段允许破坏性更新，0.5.0/N-1 兼容移出当前开发验收。暂停为该版本建设迁移 consumer 和
+执行 compatibility promotion；已有 producer、anchor、checksum 与静态验证继续保留。
+
+下文 N-1 窗口与 promotion 流程保留为未来承诺旧版支持时的证据要求。当前 machine-readable policy
+和 runtime admission 不变：pending/unverified 不是支持承诺，不得因调整目标而标为 verified；当前
+不支持格式仍明确拒绝且不改写原数据。当前版本的数据恢复、更新回退和发布门禁继续执行。
 
 ## 背景
 
@@ -58,7 +68,7 @@ C#/Go writer/reader source contract 独立绑定，不因当前数值相同而�
 - WorkspaceManifest current writer 的 topology schema 与 business schema version 均为 1；
 - SnapshotPackage 当前格式与最低支持格式均为 2；
 - SnapshotPackage 内部 snapshot manifest 当前格式为 2，但独立于 package format 演进；
-- writer compatibility 的目标窗口是当前正式版本 N 与上一正式版本 N-1。
+- 若重新承诺旧版支持，writer compatibility 的原定窗口是当前正式版本 N 与上一正式版本 N-1；开发阶段暂不承诺该窗口。
 
 ### 2. 接受与待验证是不同状态
 
