@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
@@ -26,6 +28,17 @@ import (
 )
 
 const schemaListWire = `{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","sequence":1}`
+
+type unrelatedHistoryReadMustNotRun struct{ t *testing.T }
+
+func (reader unrelatedHistoryReadMustNotRun) ReadBusinessHistory(
+	context.Context,
+	audit.ReadParams,
+) (audit.Page, error) {
+	reader.t.Helper()
+	reader.t.Fatal("unrelated Product fixture unexpectedly invoked history.read")
+	return audit.Page{}, errors.New("unexpected history.read invocation")
+}
 
 func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
 	pb := schemaProductStore(t)
@@ -657,6 +670,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)

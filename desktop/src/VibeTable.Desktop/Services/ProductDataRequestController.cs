@@ -117,6 +117,17 @@ public sealed class ProductDataRequestController
 
     private async Task DispatchRelationLookupAsync(RoutedWebRequest request)
     {
+        WorkspaceRequestEpochLease? epochLease = null;
+        if (_sessionEnvelopeFilter is not null
+            && !_sessionEnvelopeFilter.TryCapture(request.Scope, out epochLease))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Workspace request belongs to a stale or invalid session.",
+                "BAD_WORKSPACE_SCOPE");
+            return;
+        }
+        using WorkspaceRequestEpochLease? requestLease = epochLease;
         if (!RelationLookupRpcRegistry.TryGet(request.Type, out var endpoint))
         {
             RejectUnknown(request);
@@ -152,8 +163,17 @@ public sealed class ProductDataRequestController
             JsonElement result = await endpoint.InvokeAsync(
                 gateway,
                 request.Payload,
-                CancellationToken.None).ConfigureAwait(false);
+                epochLease?.CancellationToken ?? CancellationToken.None).ConfigureAwait(false);
+            if (!IsRequestCurrent(epochLease))
+            {
+                PostRetiredRelationRequest();
+                return;
+            }
             _reply.PostResponse(request.Type, request.RequestId, result);
+        }
+        catch (Exception) when (!IsRequestCurrent(epochLease))
+        {
+            PostRetiredRelationRequest();
         }
         catch (JsonException)
         {
@@ -177,6 +197,15 @@ public sealed class ProductDataRequestController
                 request.RequestId,
                 "Relation or lookup operation failed.",
                 "RELATION_LOOKUP_FAILED");
+        }
+
+        void PostRetiredRelationRequest()
+        {
+            if (string.IsNullOrWhiteSpace(request.RequestId)) return;
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "The workspace request was cancelled because its session ended.",
+                "workspace.session_stale");
         }
     }
 

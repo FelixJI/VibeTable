@@ -2,7 +2,12 @@ package app
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/router"
 )
 
 func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
@@ -69,4 +74,65 @@ func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkspaceV2WriteRejectionDrainsBodyWithinLimit(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		body          string
+		contentLength int64
+		unread        int
+		close         bool
+	}{
+		{"known length", "{}", 2, 0, false},
+		{"unknown length", "{}", -1, 0, false},
+		{"bounded unknown length", strings.Repeat("x", (1<<20)+1), -1, 1, true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			body := strings.NewReader(testCase.body)
+			response := &rejectionBodyResponse{
+				ResponseRecorder: httptest.NewRecorder(), body: body, t: t, unread: testCase.unread,
+			}
+			r := router.NewRouter(func(writer http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
+				return &core.RequestEvent{Event: router.Event{Response: writer, Request: request}}, nil
+			})
+			bindWorkspaceV2WriteBoundary(&core.ServeEvent{Router: r})
+			called := false
+			r.POST("/api/vibetable/v1/history/restore-apply", func(event *core.RequestEvent) error {
+				called = true
+				return event.NoContent(http.StatusOK)
+			})
+			mux, err := r.BuildMux()
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/vibetable/v1/history/restore-apply", body)
+			request.ContentLength = testCase.contentLength
+			request.Close = true
+			mux.ServeHTTP(response, request)
+			if (response.Header().Get("Connection") == "close") != testCase.close {
+				t.Fatal("bounded rejection did not close unread connection")
+			}
+			if called {
+				t.Fatal("rejected write reached handler")
+			}
+			if response.Code != http.StatusLocked || !strings.Contains(response.Body.String(), "workspace.v1_write_disabled") {
+				t.Fatalf("rejection = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+type rejectionBodyResponse struct {
+	*httptest.ResponseRecorder
+	body   *strings.Reader
+	t      *testing.T
+	unread int
+}
+
+func (response *rejectionBodyResponse) WriteHeader(status int) {
+	if response.body.Len() != response.unread {
+		response.t.Errorf("rejection response started with %d unread request bytes, want %d", response.body.Len(), response.unread)
+	}
+	response.ResponseRecorder.WriteHeader(status)
 }

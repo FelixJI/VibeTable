@@ -41,7 +41,6 @@ class ProductRelationLookupFileRpc:
             "relation.applyDelta": self._apply_relation_delta,
             "lookup.query": self._query_lookups,
             "lookup.valuePage": self._lookup_value_page,
-            "history.read": self._read_history,
             "history.previewRestore": self._preview_history_restore,
             "history.applyRestore": self._apply_history_restore,
         }
@@ -421,37 +420,6 @@ class ProductRelationLookupFileRpc:
             field_id=_text(lookup, "fieldId"),
             offset=offset,
             limit=limit,
-        )
-
-    async def _read_history(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        query: JsonObject = {
-            "collection": _text_any(raw, "collection", "tableId"),
-            "limit": _integer(raw, "limit", 50),
-            "offset": _integer(raw, "offset", 0),
-            "scope": _optional_text(raw, "scope") or "row",
-        }
-        for source in ("itemId", "field", "search", "actorId", "dateFrom", "dateTo", "recordId"):
-            value = raw.get(source)
-            if value is not None:
-                if not isinstance(value, str) or not value:
-                    raise ValueError(f"{source} must be a non-empty string")
-                query[source] = value
-        actions = raw.get("actions", [])
-        if not isinstance(actions, list) or not all(
-            isinstance(item, str) and item for item in actions
-        ):
-            raise ValueError("actions must contain non-empty strings")
-        if actions:
-            query["action"] = actions
-        return _result_object(
-            await self._context.transport.request(
-                "GET",
-                "/api/vibetable/v1/history/change-sets",
-                query=query,
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
         )
 
     async def _preview_history_restore(self, params: ProductParams) -> JsonObject:
