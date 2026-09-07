@@ -11,7 +11,7 @@ from contracts.v2 import generate_query_window_oracle as oracle
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", oracle.cases(), ids=lambda case: case.name)
+@pytest.mark.parametrize("case", oracle.replay_cases(), ids=lambda case: case.name)
 async def test_python_query_window_matches_frozen_wire(case: oracle.Case) -> None:
     frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
     expected = next(item for item in frozen["cases"] if item["name"] == case.name)
@@ -78,8 +78,9 @@ def test_capture_refuses_to_replace_frozen_output(
     target.write_text("retained evidence", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
-    with pytest.raises(FileExistsError):
+    with pytest.raises(SystemExit) as failure:
         oracle.main()
+    assert failure.value.code == 2
     assert target.read_text(encoding="utf-8") == "retained evidence"
 
 
@@ -88,10 +89,36 @@ def test_check_detects_changed_output_without_rewriting(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "oracle.json"
-    target.write_text("{}\n", encoding="utf-8")
+    target.write_text('{"cases": []}\n', encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--check"])
     with pytest.raises(SystemExit) as failure:
         oracle.main()
     assert failure.value.code == 2
-    assert target.read_text(encoding="utf-8") == "{}\n"
+    assert target.read_text(encoding="utf-8") == '{"cases": []}\n'
+
+
+@pytest.mark.asyncio
+async def test_query_page_replay_is_retired_while_cursor_replay_remains_python() -> None:
+    from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
+    from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
+
+    assert "query.page" in current_owner_methods("goSidecar")
+    assert "query.page" not in PYTHON_PRODUCT_RPC_REGISTRY
+    assert oracle.PYTHON_REPLAY_METHODS == ("query.cursorOpen", "query.cursorFetch")
+    assert set(oracle.PYTHON_REPLAY_METHODS) <= set(PYTHON_PRODUCT_RPC_REGISTRY)
+    assert len(oracle.replay_cases()) == 17
+    with pytest.raises(ValueError, match=r"Python oracle replay is retired for query\.page"):
+        await oracle.capture_case(oracle.cases()[0])
+
+
+def test_write_cannot_recreate_missing_frozen_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "missing.json"
+    monkeypatch.setattr(oracle, "OUTPUT", target)
+    monkeypatch.setattr("sys.argv", ["oracle", "--write"])
+    with pytest.raises(SystemExit) as failure:
+        oracle.main()
+    assert failure.value.code == 2
+    assert not target.exists()

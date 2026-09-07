@@ -41,6 +41,8 @@ class FakeProductService:
             },
         ),
         ("schema.list", {}),
+        ("query.page", {"tableId": "orders", "query": {}}),
+        ("query.page", {"extra": True}),
         ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
@@ -112,6 +114,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
         "lookup.list",
+        "query.page",
         "schema.describe",
         "file.list",
         "history.read",
@@ -128,6 +131,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "file.list",
             "history.read",
             "lookup.list",
+            "query.page",
             "schema.describe",
             "schema.getTable",
             "schema.list",
@@ -147,14 +151,14 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
         {
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "query.page",
+            "method": "query.cursorOpen",
             "params": {"tableId": "orders", "query": {}},
         }
     )
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "query.page"
+    assert method == "query.cursorOpen"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -162,10 +166,10 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("query.page", {"tableId": "orders", "query": {}, "extra": True}),
-        ("query.page", {}),
-        ("query.page", {"tableId": 7, "query": {}}),
-        ("query.page", {"tableId": "orders", "query": {}, "collection": "orders"}),
+        ("query.cursorOpen", {"tableId": "orders", "query": {}, "extra": True}),
+        ("query.cursorOpen", {}),
+        ("query.cursorOpen", {"tableId": 7, "query": {}}),
+        ("query.cursorOpen", {"tableId": "orders", "query": {}, "collection": "orders"}),
     ],
 )
 async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
@@ -218,7 +222,7 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "query.page",
+            "method": "query.cursorOpen",
             "params": {"tableId": "orders", "query": {}},
         }
     )

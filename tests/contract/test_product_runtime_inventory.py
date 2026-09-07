@@ -70,10 +70,19 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "file.list",
         "history.read",
         "lookup.list",
+        "query.page",
         "schema.describe",
         "schema.getTable",
         "schema.list",
     }
+    query_page = inventory.require("rpc", "query.page")
+    assert query_page.group_id == "rpc.query-page"
+    assert query_page.current_path == ("wpfHost", "goSidecar", "pocketBase")
+    assert query_page.classification == "GO_AUTHORITY"
+    assert query_page.cancellation == "cooperative"
+    assert query_page.product_scenarios == ("04-json-round-trip",)
+    for method in ("query.readRows", "query.cursorOpen", "query.cursorFetch"):
+        assert inventory.require("rpc", method).current_route == "pythonBff"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"
     } == {"settings.readDevice", "settings.saveDevice"}
