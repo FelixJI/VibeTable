@@ -230,6 +230,67 @@ public sealed class WorkspaceProductControllerInterfaceTests
         Assert.AreEqual(0, fixture.Reply.Notifications.Count);
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PickerReentryCannotSendLaterWorkspaceSequenceBeforeExport(bool cancelPicker)
+    {
+        var picker = new NullPathPicker();
+        using var fixture = new Fixture(picker);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace", WorkspaceId = Guid.NewGuid(), SessionEpoch = 7,
+            OperationId = Guid.NewGuid(), Sequence = 100,
+        };
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        JsonElement wire = JsonSerializer.SerializeToElement(scope, options);
+        JsonElement laterWire = JsonSerializer.SerializeToElement(
+            scope with { OperationId = Guid.NewGuid(), Sequence = 101 }, options);
+        fixture.Session.Lease = new WorkspaceRequestEpochLease(scope, CancellationToken.None, () => { });
+        fixture.Session.CurrentSession = OpenSession(scope.WorkspaceId, scope.SessionEpoch);
+        fixture.Session.Capabilities = new WorkspaceV2SidecarCapabilities(
+            "2.0", scope.WorkspaceId.ToString("D"), 7, 1, Guid.NewGuid().ToString("D"), ["snapshot.export"]);
+        ulong watermark = 0;
+        var received = new List<ulong>();
+        using var handler = new ForwardHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            JsonElement root = body.RootElement;
+            JsonElement requestWire = root.GetProperty("wire");
+            ulong sequence = requestWire.GetProperty("sequence").GetUInt64();
+            received.Add(sequence);
+            object payload = sequence <= watermark
+                ? new { jsonrpc = "2.0", id = root.GetProperty("id").GetString(), wire = requestWire,
+                    error = new { code = "workspace.sequence_stale", message = "stale", retryable = false } }
+                : new { jsonrpc = "2.0", id = root.GetProperty("id").GetString(), wire = requestWire, result = new { } };
+            watermark = Math.Max(watermark, sequence);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var gateway = new WorkspaceV2HttpGateway(() => new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:8090/"), new Uri("http://127.0.0.1:8090/"),
+            "X-VibeTable-Session", "test-secret"), handler);
+        fixture.Session.Gateway = gateway;
+        Task<WorkspaceV2ForwardResult>? later = null;
+        picker.SnapshotExport = () =>
+        {
+            later = gateway.ForwardAsync("host-query", "fileHistory.queryDocuments", laterWire,
+                JsonSerializer.SerializeToElement(new { }), null, CancellationToken.None);
+            return cancelPicker ? null : Path.Combine(Path.GetTempPath(), "ordered-export.vtsnapshot");
+        };
+        await fixture.Controller.DispatchAsync(Request("snapshot.export", "export",
+            new { pathGrant = WorkspacePathGrantStore.SnapshotExportSentinel }) with { Scope = scope, Wire = wire });
+        Assert.IsNotNull(later);
+        Assert.IsNull((await later.WaitAsync(TimeSpan.FromSeconds(5))).Error);
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.AreEqual(!cancelPicker, response.GetProperty("ok").GetBoolean(), response.GetRawText());
+        if (cancelPicker)
+            Assert.AreEqual("workspace.path_selection_cancelled",
+                response.GetProperty("error").GetProperty("code").GetString());
+        CollectionAssert.AreEqual(cancelPicker ? new ulong[] { 101 } : [100, 101], received);
+    }
     private sealed class ForwardHandler(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
@@ -292,7 +353,7 @@ public sealed class WorkspaceProductControllerInterfaceTests
             "vibetable-workspace-product-" + Guid.NewGuid().ToString("N"));
         private readonly WorkspaceSessionManager _brokerSessions;
 
-        public Fixture()
+        public Fixture(IWorkspacePathPicker? picker = null)
         {
             Directory.CreateDirectory(_root);
             var registry = new WorkspaceRegistry(_root);
@@ -330,7 +391,7 @@ public sealed class WorkspaceProductControllerInterfaceTests
                 RegistryTopology,
                 ReplicaStatus,
                 Bootstrap,
-                new WorkspacePathGrantStore(new NullPathPicker()),
+                new WorkspacePathGrantStore(picker ?? new NullPathPicker()),
                 snapshots,
                 storage);
         }
@@ -489,7 +550,8 @@ public sealed class WorkspaceProductControllerInterfaceTests
     private sealed class NullPathPicker : IWorkspacePathPicker
     {
         public string? PickWorkspaceRoot() => null;
-        public string? PickSnapshotExportTarget() => null;
+        public Func<string?>? SnapshotExport { get; set; }
+        public string? PickSnapshotExportTarget() => SnapshotExport?.Invoke();
         public string? PickSnapshotImportSource() => null;
         public string? PickSnapshotExtractTarget() => null;
         public string? PickFileUpgradeSource() => null;

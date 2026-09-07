@@ -491,6 +491,75 @@ public sealed class WorkspaceDocumentOsAdapterTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ConcurrentRendererReadCannotOvertakeHostImport(bool cancelMiddle)
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        string source = Path.Combine(directory.Path, "report.txt");
+        Directory.CreateDirectory(Path.Combine(workspaceRoot, "files"));
+        await File.WriteAllTextAsync(source, "authoritative input");
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ulong highWatermark = 0;
+        var handler = new AsyncRecordingHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            JsonElement root = body.RootElement;
+            bool isImport = root.GetProperty("method").GetString() == WorkspaceDocumentOsAdapter.ImportDocumentMethod;
+            if (isImport)
+            {
+                entered.TrySetResult(true);
+                await release.Task.WaitAsync(token);
+            }
+            ulong sequence = root.GetProperty("wire").GetProperty("sequence").GetUInt64();
+            // Match the Sidecar dispatcher's strict committed high-watermark.
+            if (sequence <= highWatermark)
+                return Json(JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0", id = root.GetProperty("id").GetString(),
+                    wire = root.GetProperty("wire"),
+                    error = new { code = "workspace.sequence_stale", message = "stale", retryable = false },
+                }));
+            highWatermark = sequence;
+            return RpcSuccess(root, isImport ? FileDocument("report.txt", 2)
+                : "{\"documents\":[],\"nextCursor\":null,\"topologyRevision\":0}");
+        });
+        var epochs = new FakeEpochLeaseSource(initialSequence: 100);
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        using WorkspaceDocumentOsAdapter adapter = Adapter(workspaceRoot, gateway,
+            [WorkspaceDocumentOsAdapter.ImportDocumentMethod], epochs);
+        Task<WorkspaceDocumentImportResult> import = adapter.ImportFromHostPathAsync(source, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = "workspace", workspaceId = WorkspaceId, sessionEpoch = 7,
+            operationId = Guid.NewGuid(), sequence = 1124,
+        });
+        using var cancelRead = new CancellationTokenSource();
+        Task<WorkspaceV2ForwardResult> read = gateway.ForwardAsync("renderer-read",
+            WorkspaceDocumentOsAdapter.QueryDocumentsMethod, wire,
+            JsonSerializer.SerializeToElement(new { }), null, cancelRead.Token);
+        if (cancelMiddle)
+        {
+            cancelRead.Cancel();
+            Assert.IsTrue(read.IsCanceled, "Queued cancellation must be observed before the predecessor finishes.");
+            read = gateway.ForwardAsync("renderer-after-cancel",
+                WorkspaceDocumentOsAdapter.QueryDocumentsMethod, wire,
+                JsonSerializer.SerializeToElement(new { }), null, CancellationToken.None);
+            Assert.IsFalse(read.IsCompleted, "Cancellation must not let the successor overtake the import.");
+        }
+        release.TrySetResult(true);
+        WorkspaceDocumentImportResult imported = await import.WaitAsync(TimeSpan.FromSeconds(5));
+        WorkspaceV2ForwardResult listed = await read.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual("report.txt", imported.RelativePath);
+        Assert.IsNull(listed.Error);
+        Assert.AreEqual<ulong>(1124, highWatermark);
+        Assert.AreEqual(1, epochs.CompletedLeaseCount);
+    }
+
+    [TestMethod]
     public async Task ListProjectsFormalVersionSeparatelyFromEffectiveUuid()
     {
         using var directory = new TemporaryDirectory();
