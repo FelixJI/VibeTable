@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
+
 import {
   collectBrowserSurfaceEvidence,
   sampleConnectedThemeSurfaces,
 } from "./theme_surface_probe.mjs";
 import { observeTestPhases } from "./test_phase_evidence.mjs";
+
+// Preserve Edge process diagnostics in the captured Node output if bootstrap fails.
+process.env.DEBUG = [process.env.DEBUG, "pw:browser"].filter(Boolean).join(",");
+const { chromium } = await import("../../desktop/web-grid/node_modules/playwright-core/index.mjs");
 
 const tabulatorScript = fileURLToPath(
   new URL("../../desktop/web-grid/node_modules/tabulator-tables/dist/js/tabulator.min.js", import.meta.url),
@@ -27,7 +31,8 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
   }, { timeout: 10_000 });
 
   {
-    const page = await phases.phase("open browser page", () => browser.newPage());
+    const context = await phases.phase("create browser context", () => browser.newContext());
+    const page = await phases.phase("open browser page", () => context.newPage());
     await phases.phase("render Tabulator fixture", () => page.setContent(`
       <style>
         html.dark { color-scheme: dark; }
