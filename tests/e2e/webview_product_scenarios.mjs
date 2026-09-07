@@ -2493,6 +2493,27 @@ async function scenario06(page, recorder) {
       ),
     { cascade: cascade.planned },
   );
+  return;
+}
+
+async function scenario26(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const authors = await createSimpleTable(page, "Lookup Authors", "Name");
+  const articleTableId = await createEmptyTable(page, "Lookup Articles");
+  await closeFieldSettingsDrawer(page);
+  await createV2Field(page, articleTableId, "Title", "text");
+  const relation = await createV2Field(
+    page,
+    articleTableId,
+    "Author",
+    "relation",
+    (draft) => {
+      draft.relation.targetTableId = authors.tableId;
+      draft.relation.displayFieldId = authors.field.fieldId;
+      return draft;
+    },
+  );
   const lookup = await createV2Field(
     page,
     articleTableId,
@@ -6683,6 +6704,7 @@ const scenarios = {
   "21-calendar-date-move": scenario21,
   "22-timeline-date-move": scenario22,
   "23-directory-replica-recovery": scenario23,
+  "26-lookup-definition-read": scenario26,
 };
 
 async function main() {
