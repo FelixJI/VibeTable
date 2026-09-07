@@ -133,3 +133,17 @@ Poppler 对自有 RGB 图片页确认一个图像且正文为空；它是明确�
 均匹配预注册契约。但新增完整字符断言后，输出样本未通过：当前 accumulator 在相邻 Tj token 之间增加分隔
 空格，独立 PdfPig 读出的 2,000,500 字符则全部为 B。初次仅检查长度时漏掉此差距，最终报告不得沿用初次通过
 结论。完整23项保留原8项并新增这项 MUST 差距，共9项不匹配、exit 1；图片页和输入超限通过，不表示 A6 完成。
+
+## 输出截断不能替代解析资源边界
+
+对同一 `output-over-2m.pdf`，隔离探针新增 `--bounded-output` 发现模式：按 Unicode rune 汇总最多
+2,000,000 code points，发现下一字符时报告截断。该模式仍先由 PdfPig 构造完整页面，不是产品实现。
+
+本机单次观察为 exit 0、truncated=true、正文精确2,000,000个B、无warning；wall1269ms、CPU1328.125ms、
+峰值工作集826,925,056字节。原未截断发现值为799,211,520字节；两次观察不用于推导性能回归或稳定差值，
+但均表明最终输出上限不能证明解析峰值内存受控。原型只解决本样本的最终正文长度，不关闭 worker RSS、
+取消/终止、后续页完整验证或产品状态映射资格。不得将这个实验模式接入生产或据此接受 ADR。
+
+本地原始输出与去正文观察分别保留为 `build/a6-pdfpig-spike/output-bounded-result.json` 和
+`output-bounded-observation.json`；修改前探针源码保留为 `Program.before-output-bound.txt`。复用原有
+PdfPig0.1.16/SharpZipLib1.4.2恢复资产，无依赖或产品构建配置变更。
