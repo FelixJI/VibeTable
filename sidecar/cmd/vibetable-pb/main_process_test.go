@@ -482,15 +482,18 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 7 ||
+		len(productCapabilities.RPCMethods) != 10 ||
 		productCapabilities.RPCMethods[0] != "events.reconcile" ||
 		productCapabilities.RPCMethods[1] != "file.list" ||
 		productCapabilities.RPCMethods[2] != "history.read" ||
 		productCapabilities.RPCMethods[3] != "lookup.list" ||
-		productCapabilities.RPCMethods[4] != "schema.describe" ||
-		productCapabilities.RPCMethods[5] != "schema.getTable" ||
-		productCapabilities.RPCMethods[6] != "schema.list" ||
-		len(productCapabilities.Registrations) != 7 ||
+		productCapabilities.RPCMethods[4] != "query.cursorFetch" ||
+		productCapabilities.RPCMethods[5] != "query.cursorOpen" ||
+		productCapabilities.RPCMethods[6] != "query.readRows" ||
+		productCapabilities.RPCMethods[7] != "schema.describe" ||
+		productCapabilities.RPCMethods[8] != "schema.getTable" ||
+		productCapabilities.RPCMethods[9] != "schema.list" ||
+		len(productCapabilities.Registrations) != 10 ||
 		productCapabilities.Registrations[0].Method != "events.reconcile" ||
 		productCapabilities.Registrations[0].Scope != "workspace" ||
 		productCapabilities.Registrations[1].Method != "file.list" ||
@@ -499,12 +502,18 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.Registrations[2].Scope != "workspace" ||
 		productCapabilities.Registrations[3].Method != "lookup.list" ||
 		productCapabilities.Registrations[3].Scope != "workspace" ||
-		productCapabilities.Registrations[4].Method != "schema.describe" ||
+		productCapabilities.Registrations[4].Method != "query.cursorFetch" ||
 		productCapabilities.Registrations[4].Scope != "workspace" ||
-		productCapabilities.Registrations[5].Method != "schema.getTable" ||
+		productCapabilities.Registrations[5].Method != "query.cursorOpen" ||
 		productCapabilities.Registrations[5].Scope != "workspace" ||
-		productCapabilities.Registrations[6].Method != "schema.list" ||
-		productCapabilities.Registrations[6].Scope != "workspace" {
+		productCapabilities.Registrations[6].Method != "query.readRows" ||
+		productCapabilities.Registrations[6].Scope != "workspace" ||
+		productCapabilities.Registrations[7].Method != "schema.describe" ||
+		productCapabilities.Registrations[7].Scope != "workspace" ||
+		productCapabilities.Registrations[8].Method != "schema.getTable" ||
+		productCapabilities.Registrations[8].Scope != "workspace" ||
+		productCapabilities.Registrations[9].Method != "schema.list" ||
+		productCapabilities.Registrations[9].Scope != "workspace" {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
 
@@ -522,6 +531,22 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || string(catalogResponse.Result) != `{"tables":[]}` || len(catalogResponse.Error) != 0 {
 		t.Fatalf("schema.list production response = %d %+v", response.StatusCode, catalogResponse)
+	}
+
+	response = requestJSON(
+		t, client, http.MethodPost, baseURL+"/api/vibetable/v2/product/rpc", secret,
+		workspaceV2Request(0, 7, "query.readRows", `{"tableId":"orders","rowIds":[]}`),
+	)
+	var rowsResponse struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&rowsResponse); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(rowsResponse.Result) != `{"rows":[]}` || len(rowsResponse.Error) != 0 {
+		t.Fatalf("query.readRows production response = %d %+v", response.StatusCode, rowsResponse)
 	}
 
 	response = requestJSON(

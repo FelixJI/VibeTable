@@ -20,6 +20,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -666,6 +667,9 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	},
 		productrpc.ReconcileRegistration(catalog),
 		lookupListRegistration(relation.New(pb, nil, nil)),
+		queryReadRowsRegistration(query.NewPort(pb, nil)),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),

@@ -10,7 +10,6 @@ from backend.adapters.pocketbase.client import (
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
-    _array,
     _object,
     _path_segment,
     _result_object,
@@ -39,11 +38,8 @@ class ProductQuerySchemaRpc:
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
             "query.page": self._query_page,
-            "query.cursorOpen": self._open_query_cursor,
             "query.selectionOpen": self._open_selection_projection,
-            "query.cursorFetch": self._fetch_query_cursor,
             "query.view": self._query_view,
-            "query.readRows": self._read_rows,
             "query.validateSnapshot": self._validate_snapshot,
             "mutation.preview": self._preview_mutation,
             "mutation.apply": self._apply_mutation,
@@ -132,15 +128,6 @@ class ProductQuerySchemaRpc:
             }
         )
 
-    async def _open_query_cursor(self, params: ProductParams) -> JsonObject:
-        window = await self._context.client.open_query_cursor(
-            QueryCursorOpenCommand(
-                table_id=_text(params.root, "tableId"),
-                query=_object(params.root, "query"),
-            )
-        )
-        return _cursor_window_result(window)
-
     async def _open_selection_projection(self, params: ProductParams) -> JsonObject:
         projection = await self._context.client.open_selection_projection(
             QueryCursorOpenCommand(
@@ -149,12 +136,6 @@ class ProductQuerySchemaRpc:
             )
         )
         return _selection_projection_result(projection)
-
-    async def _fetch_query_cursor(self, params: ProductParams) -> JsonObject:
-        window = await self._context.client.fetch_query_cursor(
-            cursor=_text(params.root, "cursor"),
-        )
-        return _cursor_window_result(window)
 
     async def _query_view(self, params: ProductParams) -> JsonObject:
         result = await self._context.client.execute_view(
@@ -176,20 +157,6 @@ class ProductQuerySchemaRpc:
                 "groupOffset": result.group_offset,
                 "groupLimit": result.group_limit,
                 "hasMoreGroups": result.has_more_groups,
-            }
-        )
-
-    async def _read_rows(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        row_ids = _array(raw, "rowIds")
-        if not all(isinstance(item, str) and item for item in row_ids):
-            raise ValueError("rowIds must contain non-empty strings")
-        return _result_object(
-            {
-                "rows": await self._context.client.read_rows(
-                    table_id=_text(raw, "tableId"),
-                    row_ids=[item for item in row_ids if isinstance(item, str)],
-                )
             }
         )
 
