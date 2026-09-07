@@ -10,7 +10,6 @@ from pydantic import ValidationError
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
-from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
 class ScriptedTransport:
@@ -227,86 +226,6 @@ async def test_public_invoke_rejects_non_finite_product_response(non_finite: flo
         await service.invoke(
             "field.recycleBin.list", ProductParams.model_validate({"tableId": "orders"})
         )
-
-
-@pytest.mark.asyncio
-async def test_selection_open_returns_one_strict_revision_matched_projection() -> None:
-    schema = snapshot_v2("orders", [field_v2("name")], revision="schema_0001")
-    snapshot = {
-        "snapshotId": "0" * 32,
-        "digest": "d" * 64,
-        "databaseId": "db",
-        "table": "orders",
-        "schemaRevision": "schema_0001",
-        "dataRevision": 1,
-        "normalizedQuery": {"offset": 0, "limit": 10},
-    }
-    service, transport = service_with(
-        [
-            {
-                "schemaSnapshot": schema,
-                "cursorWindow": {
-                    "rows": [{"id": "row-1"}],
-                    "nextCursor": None,
-                    "hasMore": False,
-                    "filteredRows": 1,
-                    "totalRows": 1,
-                    "querySnapshot": snapshot,
-                },
-            }
-        ]
-    )
-
-    result = await service.invoke(
-        "query.selectionOpen",
-        PRODUCT_RPC_REGISTRY["query.selectionOpen"].model_validate(
-            {"tableId": "orders", "query": {"limit": 10}}
-        ),
-    )
-
-    assert result["schemaSnapshot"]["schemaRevision"] == "schema_0001"
-    assert result["cursorWindow"]["querySnapshot"]["dataRevision"] == 1
-    assert transport.requests[0]["json_body"]["operation"] == "selection.open"
-    assert transport.responses == []
-
-
-@pytest.mark.asyncio
-async def test_selection_open_rejects_malformed_schema_without_retry() -> None:
-    service, transport = service_with(
-        [
-            {
-                "schemaSnapshot": {
-                    "tableId": "orders",
-                    "schemaRevision": "schema_0001",
-                    "dataRevision": 1,
-                },
-                "cursorWindow": {
-                    "rows": [],
-                    "nextCursor": None,
-                    "hasMore": False,
-                    "filteredRows": 0,
-                    "totalRows": 0,
-                    "querySnapshot": {
-                        "snapshotId": "0" * 32,
-                        "digest": "d" * 64,
-                        "databaseId": "db",
-                        "table": "orders",
-                        "schemaRevision": "schema_0001",
-                        "dataRevision": 1,
-                        "normalizedQuery": {"offset": 0, "limit": 10},
-                    },
-                },
-            }
-        ]
-    )
-
-    with pytest.raises(ValidationError):
-        await service.invoke(
-            "query.selectionOpen",
-            ProductParams.model_validate({"tableId": "orders", "query": {"limit": 10}}),
-        )
-
-    assert len(transport.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -767,3 +686,14 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
                 }
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_migrated_selection_open_cannot_reenter_python_transport() -> None:
+    service, transport = service_with([])
+    with pytest.raises(ValueError, match=r"unknown product RPC method: query\.selectionOpen"):
+        await service.invoke(
+            "query.selectionOpen",
+            ProductParams.model_validate({"tableId": "orders", "query": {"limit": 10}}),
+        )
+    assert transport.requests == []

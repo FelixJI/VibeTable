@@ -20,6 +20,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -671,6 +672,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -688,4 +690,11 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		t.Fatal(err)
 	}
 	return mux
+}
+
+type unrelatedSelectionMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedSelectionMustNotRun) OpenSelectionProjection(context.Context, string, query.TableQuery) (query.SelectionProjection, error) {
+	probe.t.Fatal("unrelated query.selectionOpen must not execute")
+	return query.SelectionProjection{}, nil
 }

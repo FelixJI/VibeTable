@@ -316,6 +316,7 @@ func historyReadProductFixture(
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(runtime),
 		lookupListRegistration(relation.New(pb, nil, nil)),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)
