@@ -257,14 +257,53 @@
       ],
       "emptyTextOnRejection": true,
       "reason": "metadata、附件、批注及其外观、不可达 page 不能污染页面正文。"
+    },
+    {
+      "file": "image-only-rgb.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "noTextLayer"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "expectedCodePoints": 0,
+      "expectedErrorCode": "extract.pdf_no_text",
+      "reason": "仅绘制自有 RGB 图片，无字体或文本运算符；独立 oracle 必须确认页面有图片且无正文。"
+    },
+    {
+      "file": "input-over-64m.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "resourceLimited"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "expectedCodePoints": 0,
+      "expectedErrorCode": "extract.input_limit",
+      "reason": "合法 PDF 包含超过 64 MiB 的未引用流；输入预算先于页面提取，拒绝正文。"
+    },
+    {
+      "file": "output-over-2m.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "truncated"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": false,
+      "expectedCodePoints": 2000000,
+      "expectedErrorCode": "extract.text_limit",
+      "reason": "页面内 4001 个 500 字符文本运算符，超过输出上限；只输出精确 2000000 code points，不把截断当拒绝。",
+      "expectedRepeatedCharacter": "B"
     }
   ],
   "remainingCoverage": [
     "independent redistributable producer samples",
     "plain/Flate Tj/TJ and escaping comparison",
     "object streams and predictors",
-    "image-only page",
-    "input/output/deadline/cancellation boundaries",
+    "input/output exact-edge and deadline/cancellation boundaries",
     "encryption",
     "deep/cyclic objects",
     "product status mapping and generation transaction"
