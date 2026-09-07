@@ -38,7 +38,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "interface.delete",
         "interface.list",
         "interface.load",
-        "lookup.list",
         "lookup.query",
         "lookup.valuePage",
         "mutation.apply",
@@ -106,6 +105,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
     "goSidecar": (
         "events.reconcile",
         "file.list",
+        "lookup.list",
         "schema.describe",
         "schema.getTable",
         "schema.list",

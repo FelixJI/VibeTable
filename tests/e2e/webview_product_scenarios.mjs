@@ -2496,6 +2496,66 @@ async function scenario06(page, recorder) {
   return;
 }
 
+async function scenario26(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const authors = await createSimpleTable(page, "Lookup Authors", "Name");
+  const articleTableId = await createEmptyTable(page, "Lookup Articles");
+  await closeFieldSettingsDrawer(page);
+  await createV2Field(page, articleTableId, "Title", "text");
+  const relation = await createV2Field(
+    page,
+    articleTableId,
+    "Author",
+    "relation",
+    (draft) => {
+      draft.relation.targetTableId = authors.tableId;
+      draft.relation.displayFieldId = authors.field.fieldId;
+      return draft;
+    },
+  );
+  const lookup = await createV2Field(
+    page,
+    articleTableId,
+    "Author name",
+    "lookup",
+    (draft) => {
+      draft.lookup = {
+        path: [{ relationFieldId: relation.fieldId }],
+        targetFieldId: authors.field.fieldId,
+      };
+      return draft;
+    },
+  );
+  const listed = await rawBridgeRequest(page, "lookup.list", { collection: articleTableId });
+  const definition = listed.payload?.definitions?.find(
+    (item) => item.fieldKey === lookup.physicalName,
+  );
+  const described = await rawBridgeRequest(page, "schema.describe", {
+    collection: articleTableId,
+    requestGeneration: 7006,
+    accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+  });
+  recorder.check(
+    "lookup list reads the persisted definition through the packaged Product bridge",
+    listed.type === "lookup.list"
+      && listed.payload?.collection === articleTableId
+      && listed.payload?.definitions?.length === 1
+      && definition?.displayName === "Author name"
+      && definition?.source?.kind === "target_field"
+      && definition?.source?.fieldRef === authors.field.fieldId
+      && definition?.path?.length === 1
+      && definition?.path?.[0]?.relationId === `${articleTableId}.${relation.fieldId}`
+      && definition?.outputType === "text"
+      && definition?.state === "valid"
+      && described.type === "schema.describe"
+      && typeof listed.payload?.lookupRevision === "string"
+      && listed.payload.lookupRevision.length > 0
+      && listed.payload.lookupRevision === described.payload?.schema?.lookupRevision,
+    { listed, described },
+  );
+}
+
 async function selectTable(page, displayName) {
   const name = page.getByTestId("sidebar-table-name").filter({ hasText: displayName });
   await name.waitFor();
@@ -6644,6 +6704,7 @@ const scenarios = {
   "21-calendar-date-move": scenario21,
   "22-timeline-date-move": scenario22,
   "23-directory-replica-recovery": scenario23,
+  "26-lookup-definition-read": scenario26,
 };
 
 async function main() {

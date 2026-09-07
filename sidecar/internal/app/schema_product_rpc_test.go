@@ -472,24 +472,30 @@ func createSchemaProductField(
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog := fieldchange.NewCatalog(pb)
-	store := fieldchange.NewPocketBasePlanStore(pb)
-	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
-	executor := fieldchange.NewExecutor(pb, store)
-	revisions, err := catalog.Revisions(context.Background(), tableID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
-		Action: v2.ActionCreate, TableID: tableID, ExpectedSchemaRev: revisions.Schema,
+	return applySchemaProductField(t, pb, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: tableID,
 		Draft: &v2.FieldDraft{
 			DisplayName: displayName, LogicalType: logicalType,
 			Value: recommended.Value, Constraints: recommended.Constraints,
 			Storage: recommended.Storage, Display: recommended.Display,
 			File: recommended.File, JSON: recommended.JSON,
 		},
-		Actor: v2.Actor{ID: "local-user", Kind: "user"},
-	})
+	}, operationID)
+}
+
+func applySchemaProductField(t *testing.T, pb *pocketbase.PocketBase, intent v2.FieldChangeIntent, operationID string) v2.ApplyReceipt {
+	t.Helper()
+	catalog := fieldchange.NewCatalog(pb)
+	store := fieldchange.NewPocketBasePlanStore(pb)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(pb, store)
+	revisions, err := catalog.Revisions(context.Background(), intent.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.ExpectedSchemaRev = revisions.Schema
+	intent.Actor = v2.Actor{ID: "local-user", Kind: "user"}
+	plan, err := planner.Plan(context.Background(), intent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,6 +626,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
 		productrpc.ReconcileRegistration(catalog),
+		lookupListRegistration(relation.New(pb, nil, nil)),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
@@ -633,6 +640,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	})
 	registerFieldRoutes(r, pb, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
+	registerRelationRoutes(r, relation.New(pb, nil, nil))
 	registerRealtimeRoutes(r, nil, catalog)
 	registerProductRoutes(r, dispatcher)
 	mux, err := r.BuildMux()

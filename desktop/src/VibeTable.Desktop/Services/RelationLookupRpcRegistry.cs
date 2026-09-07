@@ -54,10 +54,6 @@ internal static class RelationLookupRpcRegistry
             IsValidRelationDelta,
             (gateway, payload, token) => gateway.ApplyRelationDeltaAsync(payload, token)),
         new(
-            "lookup.list",
-            payload => HasString(payload, "collection"),
-            (gateway, payload, token) => gateway.ListLookupsAsync(payload, token)),
-        new(
             "lookup.query",
             IsValidLookupQuery,
             (gateway, payload, token) => gateway.QueryLookupsAsync(payload, token)),
