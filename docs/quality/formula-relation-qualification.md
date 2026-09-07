@@ -7,6 +7,9 @@
 
 ## 1. 证据规则
 
+按 [2026-09-07 开发阶段范围调整](../plans/2026-08-29-vibetable-maturity-convergence-and-runtime-evolution.md)，
+0.5.0/N-1 兼容不作为当前开发资格。此范围变化不改变下列新版产品、性能、恢复或 CI 证据要求。
+
 能力只有同时具备 producer、Host/allowlist、Web consumer、capability 和真实打包产品 E2E 证据时才可在
 [能力闭环矩阵](capability-matrix.md) 标记 Closed。unit、integration、组件测试、生成索引、旧的 main run
 或未绑定 source SHA 的报告都不能单独形成产品放行结论。
@@ -62,7 +65,7 @@ profile 使用确定性数据生成器；测试只断言可观察契约，不读
 | Web | Formula Workbench、Relation Picker、键盘、迟到响应、冲突重载 |
 | Host bridge | allowlist、单一 RPC owner、取消、超时、session epoch |
 | Product E2E | 创建链、改名、来源修改、重启、snapshot、来源删除和 stale 查询拒绝 |
-| Compatibility | N-1 reader 对可理解数据只读/迁移；无法理解的新结构零写入拒绝 |
+| Format admission | 当前格式正常读取与恢复；不支持的旧/新格式零写入拒绝。开发阶段不承诺 N-1 迁移 |
 
 Formula differential test 必须在同一 Schema/data revision 上证明 preview 与 Mutation Kernel 提交结果
 一致。Relation model test 随机执行 add/remove/replace/delete/retry/stale，每一步都证明
@@ -128,7 +131,7 @@ audit 与 outbox 不重复。snapshot 恢复后重建依赖并得到相同结果
 - stale 结果不参与任何查询或下游计算；fan-out 可取消、恢复和重启续跑。
 - `ready/updating/failed/cancelled/invalid/too_expensive` 六态在 query page、Formula/Lookup 单元格、
   字段设置、任务中心和 Realtime 均有产品证据，不接受未知 fallback 状态。
-- snapshot 恢复与 N-1 资格成立；10k/100k fixture 无无界内存。
+- 当前格式 snapshot 恢复与不支持格式零写入拒绝成立；10k/100k fixture 无无界内存。
 - 三条产品场景、能力矩阵、E2E 索引、用户文档和截图与同一 fresh main 证据一致。
 
 任一条缺少证据时维持 Open/Partial，不用相邻测试或实现存在性推断 Closed。

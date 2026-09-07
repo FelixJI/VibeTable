@@ -119,8 +119,10 @@ message key、UTF-16 range（适用时）、severity 和 details。
 现有 canonical Formula 和 Relation 数据不改写。新依赖元数据必须可由 Schema 重建；Relation 完整性
 修复遵循 inspect → preview → backup receipt → Mutation Kernel apply，不直接 SQL 修补业务记录。
 
-新能力先以内部 capability 存在，经 contracts、runtime、Host、Web、打包产品 E2E 与 N-1 资格闭合后再
-默认开启。回滚关闭 capability，但不能依赖反向改写用户公式或制造双 authoritative write。
+新能力先以内部 capability 存在，经 contracts、runtime、Host、Web 与打包产品 E2E 资格闭合后再
+默认开启。按 [开发阶段范围调整](../plans/2026-08-29-vibetable-maturity-convergence-and-runtime-evolution.md)，
+旧版 N-1 兼容不阻塞当前能力开放；当前格式 snapshot 恢复和不支持格式零写入拒绝仍须验证。
+回滚关闭 capability，但不能依赖反向改写用户公式或制造双 authoritative write。
 
 ## 后果
 
@@ -135,7 +137,7 @@ message key、UTF-16 range（适用时）、severity 和 details。
 
 - RPC owner 切换必须跨 Go、Host、Python inventory 和四语言 contract 协调。
 - Formula author document、Relation picker 与公开计算状态需要前后端共同演进。
-- 完成资格需要真实打包 WPF/WebView2、10k/100k、snapshot 和 N-1 证据。
+- 完成资格需要真实打包 WPF/WebView2、10k/100k、当前格式 snapshot 恢复与不支持格式零写入拒绝证据。
 
 ## 被否决方案
 
