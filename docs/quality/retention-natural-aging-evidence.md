@@ -23,4 +23,17 @@ resume 退出码 0，1/1 场景、8/8 断言通过。首次 plan 的 `reclaimabl
 
 ## 资格边界
 
-这是自然等待超过 24 小时后的产品逻辑清理样本；不是自然等待 90 天的物理回收实验。物理 Sweep 必须另外通过受控 Clock、真实 Kopia repository 和重启恢复 seam 验证，不能由本报告推断完成。迁入最新代码的验收入口还须经过对应 PR 的相关测试、双轴审查和完整 fresh CI；本机冻结候选的通过不替代该门禁。
+这是自然等待超过 24 小时后的产品逻辑清理样本；不是自然等待 90 天的物理回收实验。物理 Sweep 的独立证据见下节，不能由本报告的零回收字节数推断。迁入最新代码的验收入口还须经过对应 PR 的相关测试、双轴审查和完整 fresh CI；本机冻结候选的通过不替代该门禁。
+
+## 独立物理 Sweep 验证
+
+2026-09-07，在入口与证据提交 `6a236532e8ea41c2d090f6b8ada55ca19e5ea693` 上复用现有 Go 环境执行：
+
+```powershell
+cd sidecar
+go test -race ./internal/workspacev2 -run '^TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance$' -count=1
+```
+
+结果 passed，6.912 秒。该既有测试使用真实 Kopia repository、受控领域 Clock 和工作区 runtime：Apply 后推进 91 天，Sweep 完成 1 个对象的物理退休，仓库 revision 推进且 verification 执行；退休对象 Open 返回 NotFound、CompletedRetirements 有记录，受保留快照及历史对象仍可读。关闭并重新打开 runtime 后再次 Sweep 的删除数为 0。
+
+此结论是物理退休与重启幂等的领域验证，不保证新写入的 pack 当轮缩小，也不声称真实等待 90 天。它与前述 packaged 自然老化样本分别保留报告和结论；当前 PR 的完整 fresh CI 与合并后门禁仍待完成。
