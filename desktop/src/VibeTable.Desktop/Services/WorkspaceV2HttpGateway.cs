@@ -149,14 +149,14 @@ public sealed class WorkspaceV2HttpGateway : IDisposable
             predecessor = _forwardTail;
             _forwardTail = completion.Task;
         }
-        return ForwardInOrderAsync().WaitAsync(cancellationToken);
+        return ForwardInOrderAsync();
 
         async Task<WorkspaceV2ForwardResult> ForwardInOrderAsync()
         {
             try
             {
                 // Native path pickers must resume on the caller's UI context.
-                await predecessor;
+                await predecessor.WaitAsync(cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 var prepared = prepare();
                 cancellationToken.ThrowIfCancellationRequested();
@@ -165,8 +165,18 @@ public sealed class WorkspaceV2HttpGateway : IDisposable
             }
             finally
             {
-                completion.TrySetResult();
+                if (predecessor.IsCompleted)
+                    completion.TrySetResult();
+                else
+                    _ = ReleaseCancelledSlotAsync();
             }
+        }
+        async Task ReleaseCancelledSlotAsync()
+        {
+            // A cancelled queued caller may return now, but its successor must
+            // still wait for the preceding exchange. Queue tails never fault.
+            await predecessor.ConfigureAwait(false);
+            completion.TrySetResult();
         }
     }
 

@@ -291,6 +291,45 @@ public sealed class WorkspaceProductControllerInterfaceTests
                 response.GetProperty("error").GetProperty("code").GetString());
         CollectionAssert.AreEqual(cancelPicker ? new ulong[] { 101 } : [100, 101], received);
     }
+    [TestMethod]
+    public async Task StartedRpcCancellationWaitsForTheActualExchangeToExit()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new ForwardHandler(async (request, _) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            entered.TrySetResult();
+            // Deliberately delay transport teardown after cancellation is requested.
+            await release.Task;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0", id = "active", wire = body.RootElement.GetProperty("wire"), result = new { },
+                }), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var gateway = new WorkspaceV2HttpGateway(() => new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:8090/"), new Uri("http://127.0.0.1:8090/"),
+            "X-VibeTable-Session", "test-secret"), handler);
+        using var cancellation = new CancellationTokenSource();
+        JsonElement wire = JsonSerializer.SerializeToElement(new { scope = "workspace", sequence = 1 });
+        Task<WorkspaceV2ForwardResult> pending = gateway.ForwardAsync("active", "snapshot.list",
+            wire, JsonSerializer.SerializeToElement(new { }), null, cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        try
+        {
+            Assert.IsFalse(pending.IsCompleted,
+                "A started exchange must retain its caller's lease until transport teardown completes.");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await pending);
+    }
     private sealed class ForwardHandler(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
