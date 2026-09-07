@@ -2225,6 +2225,20 @@ async function scenario04(page, recorder, _network, runtime) {
     },
   );
 
+  const rowIds = (authoritative.payload?.rows ?? []).map((row) => row.id);
+  const readRows = await rawBridgeRequest(page, "query.readRows", { tableId, rowIds });
+  const readValues = (readRows.payload?.rows ?? []).map((row) => row[jsonField]);
+  recorder.check(
+    "Go-owned query.readRows returns the exact JSON values and requested row order",
+    rowIds.length === 2
+      && rowIds.every((id) => typeof id === "string" && id.length > 0)
+      && readRows.type === "query.readRows"
+      && JSON.stringify((readRows.payload?.rows ?? []).map((row) => row.id))
+        === JSON.stringify(rowIds)
+      && JSON.stringify(canonicalJsonSet(readValues)) === JSON.stringify(expectedFinalValues),
+    { rowIds, readRows },
+  );
+
   await setProductLocale(page, "en-US");
   jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
   const englishFilter = page.locator(

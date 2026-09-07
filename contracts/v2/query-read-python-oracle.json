@@ -1,0 +1,912 @@
+{
+  "producerCommit": "b55f878641bf74c0b49b04222a217c48abf544a7",
+  "boundary": "Python Product dispatcher + adapter; scripted authority transport",
+  "cases": [
+    {
+      "name": "read-unicode-falsy",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-unicode-falsy",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            "r1"
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "r1"
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-unicode-falsy",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "read-empty-ids",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-empty-ids",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": []
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": []
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-empty-ids",
+        "result": {
+          "rows": []
+        }
+      }
+    },
+    {
+      "name": "read-duplicate-whitespace-ids",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-duplicate-whitespace-ids",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            "r1",
+            "r1",
+            " "
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "r1",
+              "r1",
+              " "
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-duplicate-whitespace-ids",
+        "result": {
+          "rows": []
+        }
+      }
+    },
+    {
+      "name": "read-table-not-path-segment",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-table-not-path-segment",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "中文/表",
+          "rowIds": [
+            "r1"
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "readRows",
+            "tableId": "中文/表",
+            "rowIds": [
+              "r1"
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-table-not-path-segment",
+        "result": {
+          "rows": []
+        }
+      }
+    },
+    {
+      "name": "read-missing-ids",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-missing-ids",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-missing-ids",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "read-ids-wrong-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-ids-wrong-type",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": "r1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-ids-wrong-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "read-empty-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-empty-id",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            ""
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-empty-id",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "read-zero-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-zero-id",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            0
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-zero-id",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "read-empty-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-empty-table",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "",
+          "rowIds": [
+            "r1"
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-empty-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "read-unknown-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-unknown-field",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            "r1"
+          ],
+          "limit": 0
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-unknown-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "read-malformed-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-malformed-rows",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            "r1"
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            null
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "r1"
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-malformed-rows",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "read-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-product-error",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            "r1"
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "r1"
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "read-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "read-transport-error",
+        "method": "query.readRows",
+        "params": {
+          "tableId": "orders",
+          "rowIds": [
+            "r1"
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "r1"
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "read-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "validate-query-unicode-falsy",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-query-unicode-falsy",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": "data_0"
+          },
+          "currentQuery": {
+            "filters": [
+              {
+                "value": "中文‏عربي"
+              }
+            ],
+            "sorts": [],
+            "offset": 0,
+            "limit": 0,
+            "blank": "",
+            "enabled": false
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "reason": "",
+          "revision": 0
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "schemaRevision": "schema_1",
+              "dataRevision": "data_0"
+            },
+            "currentQuery": {
+              "filters": [
+                {
+                  "value": "中文‏عربي"
+                }
+              ],
+              "sorts": [],
+              "offset": 0,
+              "limit": 0,
+              "blank": "",
+              "enabled": false
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-query-unicode-falsy",
+        "result": {
+          "valid": true,
+          "reason": "",
+          "revision": 0
+        }
+      }
+    },
+    {
+      "name": "validate-empty-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-empty-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {}
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": false,
+          "reason": "snapshot_stale"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {}
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-empty-snapshot",
+        "result": {
+          "valid": false,
+          "reason": "snapshot_stale"
+        }
+      }
+    },
+    {
+      "name": "validate-empty-current-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-empty-current-query",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": "data_0"
+          },
+          "currentQuery": {}
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "schemaRevision": "schema_1",
+              "dataRevision": "data_0"
+            },
+            "currentQuery": {}
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-empty-current-query",
+        "result": {
+          "valid": true
+        }
+      }
+    },
+    {
+      "name": "validate-missing-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-missing-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {}
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-missing-snapshot",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "validate-null-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-null-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": null
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-null-snapshot",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "validate-null-current-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-null-current-query",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": "data_0"
+          },
+          "currentQuery": null
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-null-current-query",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "validate-unknown-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-unknown-field",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": "data_0"
+          },
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-unknown-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "validate-malformed-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-malformed-response",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": "data_0"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "schemaRevision": "schema_1",
+              "dataRevision": "data_0"
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-malformed-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "validate-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-product-error",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": "data_0"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "schemaRevision": "schema_1",
+              "dataRevision": "data_0"
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "validate-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "validate-transport-error",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": "data_0"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "schemaRevision": "schema_1",
+              "dataRevision": "data_0"
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "validate-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    }
+  ]
+}

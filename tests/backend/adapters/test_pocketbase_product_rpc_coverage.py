@@ -451,7 +451,7 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
 @pytest.mark.asyncio
 async def test_route_validation_rejects_bad_rows_attachments_files_and_history() -> None:
     service, transport = service_with([])
-    with pytest.raises(ValueError, match="rowIds"):
+    with pytest.raises(ValueError, match=r"unknown product RPC method: query\.readRows"):
         await service.invoke(
             "query.readRows",
             ProductParams.model_validate({"tableId": "orders", "rowIds": [""]}),

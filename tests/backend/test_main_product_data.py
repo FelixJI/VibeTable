@@ -112,6 +112,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
         "lookup.list",
+        "query.readRows",
         "schema.describe",
         "file.list",
         "events.reconcile",
@@ -126,6 +127,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "events.reconcile",
             "file.list",
             "lookup.list",
+            "query.readRows",
             "schema.describe",
             "schema.getTable",
             "schema.list",

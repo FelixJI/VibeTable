@@ -10,7 +10,6 @@ from backend.adapters.pocketbase.client import (
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
-    _array,
     _object,
     _path_segment,
     _result_object,
@@ -43,7 +42,6 @@ class ProductQuerySchemaRpc:
             "query.selectionOpen": self._open_selection_projection,
             "query.cursorFetch": self._fetch_query_cursor,
             "query.view": self._query_view,
-            "query.readRows": self._read_rows,
             "query.validateSnapshot": self._validate_snapshot,
             "mutation.preview": self._preview_mutation,
             "mutation.apply": self._apply_mutation,
@@ -176,20 +174,6 @@ class ProductQuerySchemaRpc:
                 "groupOffset": result.group_offset,
                 "groupLimit": result.group_limit,
                 "hasMoreGroups": result.has_more_groups,
-            }
-        )
-
-    async def _read_rows(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        row_ids = _array(raw, "rowIds")
-        if not all(isinstance(item, str) and item for item in row_ids):
-            raise ValueError("rowIds must contain non-empty strings")
-        return _result_object(
-            {
-                "rows": await self._context.client.read_rows(
-                    table_id=_text(raw, "tableId"),
-                    row_ids=[item for item in row_ids if isinstance(item, str)],
-                )
             }
         )
 

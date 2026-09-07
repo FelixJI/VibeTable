@@ -508,10 +508,9 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
 
 
 @pytest.mark.asyncio
-async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
+async def test_snapshot_uses_fixed_route() -> None:
     service, transport = _service(
         [
-            {"rows": [{"id": "row-1"}]},
             {
                 "valid": True,
                 "currentDataRevision": 2,
@@ -520,10 +519,6 @@ async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
         ]
     )
 
-    assert await service.invoke(
-        "query.readRows",
-        ProductParams.model_validate({"tableId": "orders", "rowIds": ["row-1"]}),
-    ) == {"rows": [{"id": "row-1"}]}
     await service.invoke(
         "query.validateSnapshot",
         ProductParams.model_validate(
@@ -548,7 +543,6 @@ async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
     )
 
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/query",
         "/api/vibetable/v1/query/validate-snapshot",
     ]
 
