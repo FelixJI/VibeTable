@@ -39,9 +39,7 @@ class ProductQuerySchemaRpc:
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
             "query.page": self._query_page,
-            "query.cursorOpen": self._open_query_cursor,
             "query.selectionOpen": self._open_selection_projection,
-            "query.cursorFetch": self._fetch_query_cursor,
             "query.view": self._query_view,
             "query.readRows": self._read_rows,
             "query.validateSnapshot": self._validate_snapshot,
@@ -132,15 +130,6 @@ class ProductQuerySchemaRpc:
             }
         )
 
-    async def _open_query_cursor(self, params: ProductParams) -> JsonObject:
-        window = await self._context.client.open_query_cursor(
-            QueryCursorOpenCommand(
-                table_id=_text(params.root, "tableId"),
-                query=_object(params.root, "query"),
-            )
-        )
-        return _cursor_window_result(window)
-
     async def _open_selection_projection(self, params: ProductParams) -> JsonObject:
         projection = await self._context.client.open_selection_projection(
             QueryCursorOpenCommand(
@@ -149,12 +138,6 @@ class ProductQuerySchemaRpc:
             )
         )
         return _selection_projection_result(projection)
-
-    async def _fetch_query_cursor(self, params: ProductParams) -> JsonObject:
-        window = await self._context.client.fetch_query_cursor(
-            cursor=_text(params.root, "cursor"),
-        )
-        return _cursor_window_result(window)
 
     async def _query_view(self, params: ProductParams) -> JsonObject:
         result = await self._context.client.execute_view(

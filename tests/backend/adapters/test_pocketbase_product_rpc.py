@@ -100,6 +100,8 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
         ("schema.getTable", {"tableId": "orders"}),
         ("schema.list", {}),
+        ("query.cursorOpen", {"tableId": "orders", "query": {}}),
+        ("query.cursorFetch", {"cursor": "opaque"}),
         ("schema.describe", {"collection": "orders", "requestGeneration": 1, "accepts": []}),
     ],
 )

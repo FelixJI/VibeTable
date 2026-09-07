@@ -2,7 +2,7 @@
 
 本语料为 PR140 的 L3A 后续迁移冻结 `query.page`、`query.cursorOpen` 和
 `query.cursorFetch` 的 Python 契约。生产者固定为 Git 基线
-`c97c83336e4aa1bdf993fc46a7de57040219fb03`；本片不修改生产路径、owner、catalog 或 CI。
+`c97c83336e4aa1bdf993fc46a7de57040219fb03`。冻结时没有修改生产路径；当前游标迁移已退役 cursorOpen/cursorFetch 的 Python replay，只保留仍属 Python 的 page replay。
 
 27 个固定输入执行真实 `RpcDispatcher`、闭合 ProductParams、Python adapter 与
 PocketBaseClient，仅下游 transport 返回预设响应或异常。原件记录完整 JSON-RPC
@@ -18,13 +18,12 @@ PocketBaseClient，仅下游 transport 返回预设响应或异常。原件记�
 冻结结果不能由后续实现重算替代；owner 迁移时应明确退役对应 Python replay，并独立
 消费原件验证新 owner。没有新增依赖、摘要或通用生成框架。
 
-生成一次，后续只读比较（复用锁定环境）：
+原27个案例保持不可变；当前只读比较尚未迁移的10个page案例（复用锁定环境）：
 
 ```text
-uv run --frozen --no-sync python -m contracts.v2.generate_query_window_oracle --write
 uv run --frozen --no-sync python -m contracts.v2.generate_query_window_oracle --check
 uv run --frozen --no-sync python -m pytest --no-cov tests/contract/test_query_window_python_oracle.py -q
 ```
 
-`--write` 排他创建，不能覆盖已有原件；默认与 `--check` 均只读，偏差时报错。
+迁移后的 `--write` 一律拒绝，包括原件不存在的情况；默认与 `--check` 均只读，偏差时报错。游标完整HTTP对照和typed补充的适用边界见 [补充语料说明](query-cursor-typed-python-oracle.md)。
 聚焦测试的 `--no-cov` 不替代完整 CI 的覆盖率与发布门禁。

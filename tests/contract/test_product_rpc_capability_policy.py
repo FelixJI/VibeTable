@@ -57,6 +57,8 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "events.reconcile",
         "file.list",
         "lookup.list",
+        "query.cursorFetch",
+        "query.cursorOpen",
         "schema.describe",
         "schema.getTable",
         "schema.list",
@@ -136,12 +138,14 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 94
+    assert len(methods) == 92
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "events.reconcile",
         "file.list",
         "lookup.list",
+        "query.cursorFetch",
+        "query.cursorOpen",
         "schema.describe",
         "schema.getTable",
         "schema.list",

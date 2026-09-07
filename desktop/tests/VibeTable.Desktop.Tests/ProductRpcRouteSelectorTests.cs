@@ -20,7 +20,7 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "events.reconcile" or "file.list" or "lookup.list" or "schema.describe" or "schema.getTable" or "schema.list"
+            Assert.AreEqual(method is "events.reconcile" or "file.list" or "lookup.list" or "query.cursorOpen" or "query.cursorFetch" or "schema.describe" or "schema.getTable" or "schema.list"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
                 route, method);
         }

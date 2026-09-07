@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -26,6 +28,20 @@ import (
 )
 
 const schemaListWire = `{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","sequence":1}`
+
+type unrelatedQueryCursorMustNotRun struct{ t *testing.T }
+
+func (port unrelatedQueryCursorMustNotRun) OpenCursor(context.Context, string, query.TableQuery) (query.CursorWindow, error) {
+	port.t.Helper()
+	port.t.Fatal("unrelated Product fixture unexpectedly invoked query.cursorOpen")
+	return query.CursorWindow{}, errors.New("unexpected query.cursorOpen invocation")
+}
+
+func (port unrelatedQueryCursorMustNotRun) FetchCursor(context.Context, string) (query.CursorWindow, error) {
+	port.t.Helper()
+	port.t.Fatal("unrelated Product fixture unexpectedly invoked query.cursorFetch")
+	return query.CursorWindow{}, errors.New("unexpected query.cursorFetch invocation")
+}
 
 func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
 	pb := schemaProductStore(t)
@@ -653,6 +669,8 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	},
 		productrpc.ReconcileRegistration(catalog),
 		lookupListRegistration(relation.New(pb, nil, nil)),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),

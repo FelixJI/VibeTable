@@ -361,6 +361,28 @@ public sealed class HostProductRpcCompositionTests
         Assert.AreEqual(1, fixture.Http.ProductHandshakes);
     }
 
+    [TestMethod]
+    public async Task CursorWindowUsesDefaultGoOwnerForOpenAndFetch()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
+            .CreateGateway(fixture.Leases, fixture.Http);
+        fixture.Http.Result = Json("""{"rows":[{"id":"row-1","value":false}],"nextCursor":"opaque-next","hasMore":true,"filteredRows":2,"totalRows":2,"querySnapshot":{"table":"orders"}}""");
+        JsonElement first = await gateway.OpenQueryCursorAsync(
+            Json("""{"tableId":"orders","query":{"limit":1}}"""), CancellationToken.None);
+        Assert.IsFalse(first.GetProperty("rows")[0].GetProperty("value").GetBoolean());
+        Assert.IsTrue(first.GetProperty("hasMore").GetBoolean());
+        fixture.Http.Result = Json("""{"rows":[{"id":"row-2","value":"中文"}],"nextCursor":null,"hasMore":false,"filteredRows":2,"totalRows":2,"querySnapshot":{"table":"orders"}}""");
+        JsonElement second = await gateway.FetchQueryCursorAsync(
+            JsonSerializer.SerializeToElement(new { cursor = first.GetProperty("nextCursor").GetString() }),
+            CancellationToken.None);
+        Assert.AreEqual("中文", second.GetProperty("rows")[0].GetProperty("value").GetString());
+        Assert.IsFalse(second.GetProperty("hasMore").GetBoolean());
+        Assert.IsTrue(second.TryGetProperty("querySnapshot", out _));
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
     private static JsonElement Json(string value)
     {
         using JsonDocument document = JsonDocument.Parse(value);
@@ -489,7 +511,7 @@ public sealed class HostProductRpcCompositionTests
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
                     rpcMethods = UseTestPolicy
                         ? new[] { "schema.list" }
-                        : new[] { "events.reconcile", "file.list", "lookup.list", "schema.describe", "schema.getTable", "schema.list" },
+                        : new[] { "events.reconcile", "file.list", "lookup.list", "query.cursorFetch", "query.cursorOpen", "schema.describe", "schema.getTable", "schema.list" },
                     registrations = UseTestPolicy
                         ? new[] { new { method = "schema.list", scope = "workspace" } }
                         : new[]
@@ -497,6 +519,8 @@ public sealed class HostProductRpcCompositionTests
                             new { method = "events.reconcile", scope = "workspace" },
                             new { method = "file.list", scope = "workspace" },
                             new { method = "lookup.list", scope = "workspace" },
+                            new { method = "query.cursorFetch", scope = "workspace" },
+                            new { method = "query.cursorOpen", scope = "workspace" },
                             new { method = "schema.describe", scope = "workspace" },
                             new { method = "schema.getTable", scope = "workspace" },
                             new { method = "schema.list", scope = "workspace" },

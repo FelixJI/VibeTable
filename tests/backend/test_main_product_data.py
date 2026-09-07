@@ -41,6 +41,10 @@ class FakeProductService:
             },
         ),
         ("schema.list", {}),
+        ("query.cursorOpen", {"tableId": "orders", "query": {}}),
+        ("query.cursorFetch", {"cursor": "opaque"}),
+        ("query.cursorOpen", {"extra": True}),
+        ("query.cursorFetch", {"extra": True}),
         ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
@@ -112,6 +116,8 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
         "lookup.list",
+        "query.cursorFetch",
+        "query.cursorOpen",
         "schema.describe",
         "file.list",
         "events.reconcile",
@@ -126,6 +132,8 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "events.reconcile",
             "file.list",
             "lookup.list",
+            "query.cursorFetch",
+            "query.cursorOpen",
             "schema.describe",
             "schema.getTable",
             "schema.list",
