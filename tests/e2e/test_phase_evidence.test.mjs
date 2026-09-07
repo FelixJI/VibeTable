@@ -44,6 +44,10 @@ if (process.env.THEME_PHASE_EVIDENCE_CHILD) {
           throw new Error("original assertion boundary failure");
         });
       }
+      if (mode === "body-history") {
+        assert.equal(await phases.phase("launch Edge", async () => "launched"), "launched");
+        await phases.phase("open browser page", async () => {});
+      }
       if (!isClose) await phases.phase(phase, waitForAbort);
     } finally {
       if (!usesAfterHook) {
@@ -75,6 +79,22 @@ if (process.env.THEME_PHASE_EVIDENCE_CHILD) {
     assert.equal((output.match(/pending phase/g) ?? []).length, 1, output);
   });
 
+  test("theme probe timeout retains completed phase durations in order", () => {
+    const { output, status } = childResult("body-history");
+    assert.equal(status, 1, output);
+    assert.match(output, /failureType: 'testTimeoutFailure'/);
+    const line = output.match(/theme probe completed phases: (\[.*\])/);
+    assert.ok(line, output);
+    const completed = JSON.parse(line[1]);
+    assert.deepEqual(completed.map((entry) => entry.name), ["launch Edge", "open browser page"]);
+    for (const entry of completed) {
+      assert.equal(Number.isInteger(entry.elapsedMs), true);
+      assert.ok(entry.elapsedMs >= 0);
+    }
+    assert.equal((output.match(/theme probe completed phases:/g) ?? []).length, 1, output);
+    assert.equal((output.match(/pending phase/g) ?? []).length, 1, output);
+  });
+
   test("theme probe timeout close reports the pending phase once", () => {
     const { output, status } = childResult("close");
     assert.equal(status, 1, output);
@@ -90,7 +110,7 @@ if (process.env.THEME_PHASE_EVIDENCE_CHILD) {
 
     const { output, status } = childResult("after-independent");
     assert.equal(status, 0, output);
-    assert.doesNotMatch(output, /pending phase/);
+    assert.doesNotMatch(output, /pending phase|completed phases/);
   });
 
   test("theme probe cleanup hook timeout reports the pending phase once", () => {
@@ -104,13 +124,13 @@ if (process.env.THEME_PHASE_EVIDENCE_CHILD) {
   test("completed phase stays quiet in TAP", () => {
     const { output, status } = childResult("success");
     assert.equal(status, 0, output);
-    assert.doesNotMatch(output, /pending phase/);
+    assert.doesNotMatch(output, /pending phase|completed phases/);
   });
 
   test("ordinary failure keeps its original TAP error", () => {
     const { output, status } = childResult("assertion");
     assert.equal(status, 1, output);
     assert.match(output, /original assertion boundary failure/);
-    assert.doesNotMatch(output, /pending phase/);
+    assert.doesNotMatch(output, /pending phase|completed phases/);
   });
 }
