@@ -259,14 +259,14 @@ public sealed class ProductSidecarHttpGatewayTests
     }
 
     [TestMethod]
-    public async Task RequestOverOneMiBIsRejectedWithoutPost()
+    public async Task RequestOverFourMiBIsRejectedWithoutPost()
     {
         var handler = ProductHandler(_ =>
             throw new AssertFailedException("Oversize request was sent."));
         using var gateway = await ReadyGatewayAsync(handler);
         using JsonDocument empty = JsonDocument.Parse("{}");
         using JsonDocument parameters = JsonDocument.Parse(
-            JsonSerializer.Serialize(new { value = new string('x', 1024 * 1024) }));
+            JsonSerializer.Serialize(new { value = new string('x', 4 * 1024 * 1024) }));
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.ForwardAsync(
@@ -277,6 +277,35 @@ public sealed class ProductSidecarHttpGatewayTests
                 CancellationToken.None));
 
         Assert.AreEqual(1, handler.SendCount);
+    }
+
+    [TestMethod]
+    [DataRow('x', 1)]
+    [DataRow('é', 2)]
+    public async Task OneMiBSemanticParamsLeaveRoomForEnvelopeAndEscaping(char character, int bytesPerCharacter)
+    {
+        byte[]? body = null;
+        var handler = ProductHandler(request =>
+        {
+            body = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            return Json(SuccessResponse());
+        });
+        using var gateway = await ReadyGatewayAsync(handler);
+        using JsonDocument empty = JsonDocument.Parse("{}");
+        int available = 1024 * 1024 - "{\"collection\":\"\"}".Length;
+        string collection = new string(character, available / bytesPerCharacter)
+            + new string('x', available % bytesPerCharacter);
+        JsonElement parameters = JsonSerializer.SerializeToElement(new { collection });
+
+        await gateway.ForwardAsync("request-1", "query.page", empty.RootElement,
+            parameters, CancellationToken.None);
+
+        Assert.IsNotNull(body);
+        Assert.IsGreaterThan(1024 * 1024, body.Length);
+        Assert.IsLessThanOrEqualTo(4 * 1024 * 1024, body.Length);
+        using JsonDocument envelope = JsonDocument.Parse(body);
+        Assert.AreEqual(collection, envelope.RootElement.GetProperty("params").GetProperty("collection").GetString());
+        Assert.AreEqual(2, handler.SendCount);
     }
 
     [TestMethod]
