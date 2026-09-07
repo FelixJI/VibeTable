@@ -195,6 +195,50 @@ func TestHistoryReadProductHTTPMatchesPythonUnicodeSeparatorBudget(t *testing.T)
 	}
 }
 
+func TestHistoryProductStoreCleanupTerminatesBeforeReset(t *testing.T) {
+	var pb *pocketbase.PocketBase
+	terminated := false
+	bootstrappedAtTermination := false
+	t.Run("fixture", func(t *testing.T) {
+		pb = historyProductStore(t, t.TempDir())
+		pb.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
+			terminated = true
+			bootstrappedAtTermination = event.App.IsBootstrapped()
+			return event.Next()
+		})
+	})
+	if !terminated {
+		t.Error("history fixture cleanup did not invoke OnTerminate")
+	}
+	if !bootstrappedAtTermination {
+		t.Error("OnTerminate must run before bootstrap state is reset")
+	}
+	if pb == nil || pb.IsBootstrapped() {
+		t.Error("history fixture cleanup did not reset bootstrap state")
+	}
+}
+
+func historyProductStore(t *testing.T, dataDir string) *pocketbase.PocketBase {
+	t.Helper()
+	pb := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: dataDir, HideStartBanner: true})
+	migrations.Register(pb)
+	if err := pb.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		event := &core.TerminateEvent{App: pb}
+		if err := pb.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
+			return event.App.ResetBootstrapState()
+		}); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := pb.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	return pb
+}
+
 func historyReadProductFixture(
 	t *testing.T,
 ) (*workspacev2.Runtime, *auditledger.Ledger, http.Handler, string, string) {
@@ -213,15 +257,7 @@ func historyReadProductFixture(
 		t.Fatal(err)
 	}
 	dataDir := filepath.Join(metadata, "data")
-	pb := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: dataDir, HideStartBanner: true})
-	migrations.Register(pb)
-	if err := pb.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	if err := pb.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = pb.ResetBootstrapState() })
+	pb := historyProductStore(t, dataDir)
 	lifecycle, err := schemacore.NewTableLifecycle(pb)
 	if err != nil {
 		t.Fatal(err)

@@ -131,12 +131,18 @@ public partial class App : Application
             }
         }
         var window = new MainWindow(updateActivation);
+        if (options.TestMode)
+            Services.TestModeReadinessWriter.Trace(options.ReadinessDir, "App: MainWindow constructed");
         MainWindow = window;
         // Show before Hide: with the default ShutdownMode=OnLastWindowClose,
         // hiding a window that was never shown can let WPF tear down the app
         // before it starts. Showing once registers the HWND, then Hide parks
         // it in the tray for a silent auto-start launch.
+        if (options.TestMode)
+            Services.TestModeReadinessWriter.Trace(options.ReadinessDir, "App: showing MainWindow");
         window.Show();
+        if (options.TestMode)
+            Services.TestModeReadinessWriter.Trace(options.ReadinessDir, "App: MainWindow Show returned");
         if (window.StartHidden)
         {
             window.Hide();

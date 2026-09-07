@@ -43,12 +43,16 @@ public sealed class TestModeReadinessWriter
     /// <c>vibetable-trace.log</c> in the readiness directory. Used to diagnose where
     /// startup stalls; harmless in production (writer is null there).
     /// </summary>
-    public void Trace(string message)
+    public void Trace(string message) => Trace(_directory, message);
+
+    internal static void Trace(string? directory, string message)
     {
         try
         {
             var line = $"[{DateTimeOffset.UtcNow:O}] {message}{Environment.NewLine}";
-            File.AppendAllText(Path.Combine(_directory, "vibetable-trace.log"), line);
+            string traceDirectory = string.IsNullOrWhiteSpace(directory)
+                ? Path.GetTempPath() : directory;
+            File.AppendAllText(Path.Combine(traceDirectory, "vibetable-trace.log"), line);
         }
         catch
         {
