@@ -65,3 +65,14 @@ Tj 的括号/反斜线转义、TJ 数组连接和八进制转义；不涉及版�
 indexed、53 code points、无错误码或 token 差距。完整 25 项仍有原 9 项不匹配，exit 1；这只补齐
 该成对对照，不关闭其他 remainingCoverage 或 A6。原始本地证据分别为
 `build/qa/pdf-qualification/text-operators-poppler.jsonl` 与 `build/qa/pdf-qualification/current-go-25.json`。
+
+## 输入精确预算边界
+
+`input-exact-64m.pdf` 预注册为 MUST：自有图片页以合法注释填充，重新生成对象偏移和 xref，文件精确为
+67,108,864 字节。填充不引入额外解码流，预期仍为 `noTextLayer / extract.pdf_no_text`、零正文，
+与已有超过预算后 `resourceLimited / extract.input_limit` 的样本形成边界对照。
+
+独立 Poppler 确认一页、一个图片、空正文；当前 Go 报告同样匹配，单次本机耗时 7001ms，不作为性能承诺。
+完整 26 项仍有原 9 项不匹配并 exit 1。该项只补充输入精确边界，输出精确值、deadline/取消、外部生产者
+及其他 `remainingCoverage` 继续待完成。证据为 `build/qa/pdf-qualification/input-exact-poppler.jsonl`
+和 `build/qa/pdf-qualification/current-go-26.json`，未改变生产提取器、预算或 ADR 提议状态。

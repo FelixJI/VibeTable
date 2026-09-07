@@ -327,6 +327,19 @@
       "forbiddenTokens": [],
       "emptyTextOnRejection": true,
       "reason": "同一正文的普通/Flate 成对样本；Tj、TJ 数组及括号、反斜线、八进制转义必须得到相同 token。"
+    },
+    {
+      "file": "input-exact-64m.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "noTextLayer"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "expectedCodePoints": 0,
+      "expectedErrorCode": "extract.pdf_no_text",
+      "reason": "合法图片页以注释填充至精确64 MiB并重建xref；输入预算边界允许读取，不引入额外解码流或正文。"
     }
   ],
   "remainingCoverage": [
