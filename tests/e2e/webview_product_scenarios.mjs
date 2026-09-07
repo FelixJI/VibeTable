@@ -1420,9 +1420,12 @@ async function waitForQueryPage(page, payload, predicate, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let response = null;
   while (Date.now() < deadline) {
-    response = await rawBridgeRequest(page, "query.page", payload);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    response = await rawBridgeRequest(page, "query.page", payload, Math.min(20_000, remainingMs));
+    if (Date.now() >= deadline) break;
     if (response.type === "query.page" && predicate(response.payload)) return response;
-    await page.waitForTimeout(50);
+    await page.waitForTimeout(Math.min(50, Math.max(0, deadline - Date.now())));
   }
   throw new Error(`query.page did not reach the expected state: ${JSON.stringify(response)}`);
 }
@@ -3128,6 +3131,20 @@ async function waitForTableRecovery(
           }
           const recoveredCount = await page.locator(".tabulator-row").count();
           if (recoveredCount === expectedRows) {
+            // Go page reads can recover before the Python-owned attachment gateway.
+            // Keep this read under the same deadline and terminal ownership window.
+            if (Date.now() >= deadline) {
+              throw new SidecarRecoveryContractError("sidecar recovery deadline expired");
+            }
+            const fieldRequestId = await beginRawBridgeRequest(
+              page, "field.settings.describe", { tableId },
+            );
+            recoveryReads.own(fieldRequestId, "field.settings.describe");
+            const fields = await recoveryReads.observe(fieldRequestId);
+            if (fields?.type !== "field.settings.describe") {
+              lastError = new Error("Python field description did not recover");
+              continue;
+            }
             await recoveryReads.settle();
             if (recoveryFailureOwnerToken !== null) {
               const failureWindow = await page.evaluate(
@@ -5364,14 +5381,28 @@ async function scenario18(page, recorder, _network, runtime) {
   const contentInputs = contentPanel.locator(".content-main .n-input input, .content-main .n-input textarea");
   await contentInputs.nth(0).fill("E2E content record edited");
   await contentInputs.nth(1).fill("Durable violet body saved through the content reading layout.");
+  const contentSaveDeadline = Date.now() + 30_000;
   await page.getByTestId("content-record-save").click();
+  // Persisted rows can become readable before the save receipt leaves edit mode.
+  await page.getByTestId("content-record-save").waitFor({
+    state: "hidden",
+    timeout: Math.max(1, contentSaveDeadline - Date.now()),
+  });
+  const contentSaveRemainingMs = contentSaveDeadline - Date.now();
+  if (contentSaveRemainingMs <= 0) {
+    throw new Error("content record save did not complete within 30 seconds");
+  }
   const contentSaved = await waitForQueryPage(page, {
     tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 10 },
   }, (payload) => payload?.rows?.[0]?.[titleField.physicalName]
       === "E2E content record edited"
     && payload.rows[0]?.[bodyField.physicalName]
-      === "Durable violet body saved through the content reading layout.");
+      === "Durable violet body saved through the content reading layout.",
+  contentSaveRemainingMs);
+  if (Date.now() >= contentSaveDeadline) {
+    throw new Error("content record save did not complete within 30 seconds");
+  }
   recorder.check("ContentProfile and record edits flow through the packaged content UI",
     (await contentPanel.innerText()).includes("E2E content record edited")
       && (await contentPanel.innerText()).includes("Durable violet body"),
