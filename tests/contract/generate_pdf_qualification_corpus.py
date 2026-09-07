@@ -12,8 +12,9 @@ def generated_documents() -> dict[str, bytes]:
         filter_value = f" /Filter /{filter_name}" if filter_name else ""
         return f"<< /Length {len(data)}{filter_value} >>\nstream\n".encode() + data + b"\nendstream"
 
-    def document(objects: list[bytes]) -> bytes:
+    def document(objects: list[bytes], header_padding: bytes = b"") -> bytes:
         data = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        data.extend(header_padding)
         offsets = []
         for number, value in enumerate(objects, 1):
             offsets.append(len(data))
@@ -162,6 +163,21 @@ def generated_documents() -> dict[str, bytes]:
         ),
     ]
     samples["image-only-rgb.pdf"] = document(image_objects)
+    input_limit = 64 * 1024 * 1024
+    padding_size = input_limit - len(samples["image-only-rgb.pdf"])
+    # Recompute xref offsets; decimal startxref growth changes the final size.
+    for _ in range(3):
+        comment = b"% padding\n"
+        padding = comment * (padding_size // len(comment)) + b" " * (padding_size % len(comment))
+        exact_input = document(image_objects, padding)
+        difference = input_limit - len(exact_input)
+        if difference == 0:
+            break
+        padding_size += difference
+    else:
+        raise ValueError("Exact PDF input boundary did not converge")
+    samples["input-exact-64m.pdf"] = exact_input
+
     oversized_input = list(image_objects)
     oversized_input.append(stream(b" " * (64 * 1024 * 1024)))
     samples["input-over-64m.pdf"] = document(oversized_input)
