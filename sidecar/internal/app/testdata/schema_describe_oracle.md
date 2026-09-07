@@ -15,4 +15,4 @@ temporal Lookup 的 Go outputStorage `datetime` 已由兼容修复纳入现有 r
 
 本片仅完成 L3A 中 `schema.describe` 的 owner 切换；其余 query/schema 方法各按独立意图推进。Product HTTP 回归覆盖闭合参数、错误分层、任意精度整数回显、路径拒绝、缺表以及实际 catalog 查询后取消；纯投影回归覆盖非法 snapshot 与缺 lookup 元数据。宿主 route selector 与握手测试同步验证生成 policy；打包后的产品验收对应 `02-all-field-schema`、`03-schema-errors`、`06-relation-fanout`，执行结果记录在 PR，不能用本 corpus 替代。
 
-`lookup.list` 的 L3B 单独纵切复用此冻结 `lookupList`，不重新生成 oracle。执行 `go test ./internal/app -run '^TestLookupList' -count=1`，覆盖四组完整定义与 revision、当前权威表的实际 Product HTTP、Python 闭合参数与 1 MiB 语义预算、原 Lookup REST 的公开错误以及过期 scope 的前置拒绝。宿主把这一方法移入已有 Product 注册表，复用 Go 转发和 epoch lease；其余 Relation/Lookup 路由继续由 Python 提供。打包产品验收仍需场景 `06-relation-fanout`，不能用投影测试代替。
+`lookup.list` 的 L3B 单独纵切复用此冻结 `lookupList`，不重新生成 oracle。执行 `go test ./internal/app -run '^TestLookupList' -count=1`，覆盖四组完整定义与 revision、当前权威表的实际 Product HTTP、Python 闭合参数与 1 MiB 语义预算、原 Lookup REST 的公开错误以及过期 scope 的前置拒绝。宿主把这一方法移入已有 Product 注册表，复用 Go 转发和 epoch lease；其余 Relation/Lookup 路由继续由 Python 提供。打包产品验收仍需场景 `26-lookup-definition-read`，不能用投影测试代替。
