@@ -11,14 +11,6 @@ from backend.contracts.query import QueryViewResult, ViewQuery
 from contracts.v2 import generate_query_view_oracle as oracle
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", oracle.cases(), ids=lambda case: case.name)
-async def test_view_python_wire_matches_frozen_producer(case: oracle.Case) -> None:
-    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    expected = next(item for item in frozen["cases"] if item["name"] == case.name)
-    assert oracle.render(await oracle.capture_case(case)) == oracle.render(expected)
-
-
 def test_frozen_view_inventory_and_projection_boundaries() -> None:
     frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
     cases = {item["name"]: item for item in frozen["cases"]}
@@ -107,8 +99,9 @@ def test_view_capture_cannot_overwrite_evidence(
     target.write_text("retained", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
-    with pytest.raises(FileExistsError):
+    with pytest.raises(SystemExit) as error:
         oracle.main()
+    assert error.value.code == 2
     assert target.read_text(encoding="utf-8") == "retained"
 
 
@@ -126,3 +119,7 @@ def test_view_check_reports_difference_without_rewriting(
         oracle.main()
     assert error.value.code == 2
     assert target.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_retired_view_generator_only_validates_historical_inputs() -> None:
+    oracle.validate_frozen_inputs()

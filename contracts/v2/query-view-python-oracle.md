@@ -1,7 +1,7 @@
 # query.view 原始 Python 契约语料
 
 固定生产者：`a6840f3ad983a0e6722d623737d4de668c905660`。
-本片只冻结 L3A 下一只读纵切的迁移前证据；不改 owner、生产 handler、catalog 或 router。
+以下捕获说明记录 L3A query.view 迁移前的固定生产者；原始33例不改写。
 
 专用生成器独立定义 33 个 request 与 authority 输入，经真实 `RpcDispatcher` →
 `ProductParams` → `PocketBaseProductRpc` → `ProductQuerySchemaRpc` → `PocketBaseClient`
@@ -49,3 +49,11 @@ uv run --frozen --no-sync python -m pytest --no-cov tests/contract/test_query_vi
 差异时报错而不写文件。测试不重写仓库语料。以后 owner 切换需有意退役当前 Python replay，
 保留固定生产者和原件；不能用迁移后的行为重生成旧 expected。此片没有执行 Go、桌面、
 打包 E2E 或发布 smoke，也不宣称 L3A 迁移验收完成。
+
+## owner 迁移后的保留方式
+
+当前 query.view 已退出 Python runtime，Go Product adapter 调用既有 ExecuteViewQuery。
+当前生成器已退役 transport/capture，--write 无条件拒绝；默认及 --check 仅核验原producer、
+案例清单、请求与authority输入，不冒充仍执行旧Python handler。原33例JSON保持不变，
+冻结输出的边界测试保留。重现原捕获需使用 a6840f3 的生产源码与冻结提交中的原生成器。
+Go HTTP测试逐例完整比较可表达样本，其他样本明确分类；真实Port及产品UI资格另行验证。

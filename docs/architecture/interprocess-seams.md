@@ -36,6 +36,9 @@ schema.list，保持健康错误码与严格响应解析。它们不依赖 rende
 现行 Product owner 中 `events.reconcile`、`file.list`、`schema.getTable` 与 `schema.list` 已迁到 Go；
 `file.token`、`schema.describe`、Python SSE/gap 恢复以及 Python 本地 task producer 仍由后续切片负责，
 其他方法保持 Python。
+`query.view` 另以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
+参数边界、分组投影与公开错误；Python 不再注册或转发该方法。默认 Host composition 验证
+Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证

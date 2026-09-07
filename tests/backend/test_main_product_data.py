@@ -41,6 +41,8 @@ class FakeProductService:
             },
         ),
         ("schema.list", {}),
+        ("query.view", {"tableId": "orders", "view": {}}),
+        ("query.view", {"extra": True}),
         ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
@@ -112,6 +114,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
         "lookup.list",
+        "query.view",
         "schema.describe",
         "file.list",
         "history.read",
@@ -128,6 +131,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "file.list",
             "history.read",
             "lookup.list",
+            "query.view",
             "schema.describe",
             "schema.getTable",
             "schema.list",
