@@ -112,7 +112,7 @@ func TestQuerySelectionProductHTTPReadsAtomicSchemaAndCursorProjection(t *testin
 }
 
 type selectionOracleCase struct {
-	Name string `json:"name"`
+	Name    string `json:"name"`
 	Request struct {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
@@ -131,7 +131,9 @@ func readSelectionOracle(t *testing.T, name string, count int) []selectionOracle
 	if err != nil {
 		t.Fatal(err)
 	}
-	var corpus struct{ Cases []selectionOracleCase `json:"cases"` }
+	var corpus struct {
+		Cases []selectionOracleCase `json:"cases"`
+	}
 	if err := json.Unmarshal(raw, &corpus); err != nil || len(corpus.Cases) != count {
 		t.Fatalf("selection oracle: %d %v", len(corpus.Cases), err)
 	}
@@ -173,26 +175,26 @@ func TestQuerySelectionProductHTTPReplaysExpressiblePythonOracle(t *testing.T) {
 	mux := selectionProductHTTPMux(t, schemaProductStore(t), probe)
 	excluded := map[string]string{
 		"complete-schema-defaults-unicode-falsy": "authority schema has non-canonical capability list",
-		"terminal-window": "authority schema has non-canonical capability list",
-		"empty-records": "authority schema has non-canonical capability list",
-		"empty-query-forwarded": "authority schema has non-canonical capability list",
-		"transport-error": "HTTP transport exception is absent from typed in-process SelectionPort",
-		"missing-schema": "typed SelectionProjection always contains SchemaSnapshot",
-		"schema-table-mismatch": "covered by canonical baseline mutation test",
-		"cursor-table-mismatch": "covered by canonical baseline mutation test",
-		"schema-revision-mismatch": "covered by canonical baseline mutation test",
-		"data-revision-mismatch": "covered by canonical baseline mutation test",
-		"boolean-data-revision": "DataRevision is typed int64",
-		"incomplete-schema": "covered by canonical baseline mutation test",
-		"unknown-schema-field": "unknown JSON fields cannot cross typed SchemaSnapshot",
-		"incomplete-query-snapshot": "typed QuerySnapshot always emits its non-omitempty fields",
-		"unknown-query-snapshot-field": "unknown JSON fields cannot cross typed QuerySnapshot",
-		"more-without-cursor": "covered by canonical baseline mutation test",
-		"terminal-with-cursor": "covered by canonical baseline mutation test",
-		"non-string-cursor": "NextCursor is typed *string",
-		"non-boolean-has-more": "HasMore is typed bool",
-		"malformed-row": "Rows element is typed map[string]any",
-		"negative-row-count": "covered by canonical baseline mutation test",
+		"terminal-window":                        "authority schema has non-canonical capability list",
+		"empty-records":                          "authority schema has non-canonical capability list",
+		"empty-query-forwarded":                  "authority schema has non-canonical capability list",
+		"transport-error":                        "HTTP transport exception is absent from typed in-process SelectionPort",
+		"missing-schema":                         "typed SelectionProjection always contains SchemaSnapshot",
+		"schema-table-mismatch":                  "covered by canonical baseline mutation test",
+		"cursor-table-mismatch":                  "covered by canonical baseline mutation test",
+		"schema-revision-mismatch":               "covered by canonical baseline mutation test",
+		"data-revision-mismatch":                 "covered by canonical baseline mutation test",
+		"boolean-data-revision":                  "DataRevision is typed int64",
+		"incomplete-schema":                      "covered by canonical baseline mutation test",
+		"unknown-schema-field":                   "unknown JSON fields cannot cross typed SchemaSnapshot",
+		"incomplete-query-snapshot":              "typed QuerySnapshot always emits its non-omitempty fields",
+		"unknown-query-snapshot-field":           "unknown JSON fields cannot cross typed QuerySnapshot",
+		"more-without-cursor":                    "covered by canonical baseline mutation test",
+		"terminal-with-cursor":                   "covered by canonical baseline mutation test",
+		"non-string-cursor":                      "NextCursor is typed *string",
+		"non-boolean-has-more":                   "HasMore is typed bool",
+		"malformed-row":                          "Rows element is typed map[string]any",
+		"negative-row-count":                     "covered by canonical baseline mutation test",
 	}
 	for _, sample := range readSelectionOracle(t, "query-selection-python-oracle.json", 28) {
 		if reason, skipped := excluded[sample.Name]; skipped {
@@ -267,14 +269,19 @@ func TestQuerySelectionProductHTTPReplaysTypedPythonOracle(t *testing.T) {
 func TestQuerySelectionProductRejectsCanonicalBaselineMutations(t *testing.T) {
 	sample := readSelectionOracle(t, "query-selection-typed-python-oracle.json", 4)[0]
 	for name, mutate := range map[string]func(*query.SelectionProjection){
-		"incomplete-schema": func(value *query.SelectionProjection) { value.SchemaSnapshot.Fields[0] = v2.FieldDefinition{} },
-		"schema-table-mismatch": func(value *query.SelectionProjection) { value.SchemaSnapshot.TableID = "other" },
-		"cursor-table-mismatch": func(value *query.SelectionProjection) { value.CursorWindow.Snapshot.Table = "other" },
+		"incomplete-schema":        func(value *query.SelectionProjection) { value.SchemaSnapshot.Fields[0] = v2.FieldDefinition{} },
+		"schema-table-mismatch":    func(value *query.SelectionProjection) { value.SchemaSnapshot.TableID = "other" },
+		"cursor-table-mismatch":    func(value *query.SelectionProjection) { value.CursorWindow.Snapshot.Table = "other" },
 		"schema-revision-mismatch": func(value *query.SelectionProjection) { value.CursorWindow.Snapshot.SchemaRevision = "other" },
-		"data-revision-mismatch": func(value *query.SelectionProjection) { value.CursorWindow.Snapshot.DataRevision++ },
-		"negative-row-count": func(value *query.SelectionProjection) { value.CursorWindow.TotalRows = -1 },
-		"more-without-cursor": func(value *query.SelectionProjection) { value.CursorWindow.HasMore, value.CursorWindow.NextCursor = true, nil },
-		"terminal-with-cursor": func(value *query.SelectionProjection) { next := "next"; value.CursorWindow.HasMore, value.CursorWindow.NextCursor = false, &next },
+		"data-revision-mismatch":   func(value *query.SelectionProjection) { value.CursorWindow.Snapshot.DataRevision++ },
+		"negative-row-count":       func(value *query.SelectionProjection) { value.CursorWindow.TotalRows = -1 },
+		"more-without-cursor": func(value *query.SelectionProjection) {
+			value.CursorWindow.HasMore, value.CursorWindow.NextCursor = true, nil
+		},
+		"terminal-with-cursor": func(value *query.SelectionProjection) {
+			next := "next"
+			value.CursorWindow.HasMore, value.CursorWindow.NextCursor = false, &next
+		},
 		"nil-row": func(value *query.SelectionProjection) { value.CursorWindow.Rows = []map[string]any{nil} },
 	} {
 		t.Run(name, func(t *testing.T) {
