@@ -107,9 +107,12 @@ public partial class MainWindow : Window
     internal MainWindow(IUpdateActivationSettlement? updateActivation)
     {
         _updateActivation = updateActivation;
-        InitializeComponent();
-
         HostStartupOptions startup = HostStartupOptions.Current();
+        if (startup.TestMode)
+            TestModeReadinessWriter.Trace(startup.ReadinessDir, "MainWindow: initializing XAML");
+        InitializeComponent();
+        if (startup.TestMode)
+            TestModeReadinessWriter.Trace(startup.ReadinessDir, "MainWindow: XAML initialized");
         _e2eControlsDir = startup.TestMode
             && !string.IsNullOrWhiteSpace(startup.E2eControlsDir)
                 ? Path.GetFullPath(startup.E2eControlsDir)
