@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/productcapabilities"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
@@ -18,6 +20,9 @@ func decodeLookupListParams(raw json.RawMessage) (string, error) {
 	var collection *string
 	if err := json.Unmarshal(object["collection"], &collection); err != nil || collection == nil || *collection == "" {
 		return "", errors.New("lookup.list collection must be a non-empty string")
+	}
+	if !lookupStringHasUnicodeScalars(object["collection"]) {
+		return "", errors.New("lookup.list collection must contain Unicode scalar values")
 	}
 	// Match ProductParams' compact UTF-8 JSON budget, independent of wire escaping.
 	size := len(`{"collection":""}`) + len(*collection)
@@ -35,6 +40,40 @@ func decodeLookupListParams(raw json.RawMessage) (string, error) {
 		return "", errors.New("lookup.list parameters exceed the safe size limit")
 	}
 	return *collection, nil
+}
+
+// The value has already passed JSON string decoding. Check its original wire
+// form because encoding/json replaces invalid UTF-8 and unpaired surrogates.
+func lookupStringHasUnicodeScalars(value json.RawMessage) bool {
+	if !utf8.Valid(value) {
+		return false
+	}
+	for index := 1; index < len(value)-1; index++ {
+		if value[index] != '\\' {
+			continue
+		}
+		index++
+		if value[index] != 'u' {
+			continue
+		}
+		code, err := strconv.ParseUint(string(value[index+1:index+5]), 16, 16)
+		if err != nil {
+			return false
+		}
+		index += 4
+		if code < 0xd800 || code > 0xdfff {
+			continue
+		}
+		if code >= 0xdc00 || index+7 >= len(value) || value[index+1] != '\\' || value[index+2] != 'u' {
+			return false
+		}
+		low, err := strconv.ParseUint(string(value[index+3:index+7]), 16, 16)
+		if err != nil || low < 0xdc00 || low > 0xdfff {
+			return false
+		}
+		index += 6
+	}
+	return true
 }
 
 func lookupListRegistration(service *relation.Service) productrpc.Registration {
