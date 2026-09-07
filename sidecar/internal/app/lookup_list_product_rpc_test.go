@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"net/http"
 	"net/http/httptest"
@@ -215,6 +216,84 @@ func TestLookupListProjectionRejectsBrokenDefinitions(t *testing.T) {
 			sample.breakDefinition(&catalog.Lookups[0])
 			if result, err := projectLookupList(catalog); err == nil || result != nil {
 				t.Fatalf("broken definition accepted: result=%v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestLookupListProductHTTPReadsPersistedRelationDefinitions(t *testing.T) {
+	for _, cardinality := range []string{"one", "many"} {
+		t.Run(cardinality, func(t *testing.T) {
+			pb := schemaProductStore(t)
+			lifecycle, err := schemacore.NewTableLifecycle(pb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{DisplayName: "Lookup 订单", OperationID: "lookup-nonempty-" + cardinality, Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			label := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "客户 é", "lookup-target")
+			defaults, err := v2.RecommendedDefaults(v2.LogicalRelation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			related := applySchemaProductField(t, pb, v2.FieldChangeIntent{
+				Action: v2.ActionCreate, TableID: table.TableID,
+				Draft: &v2.FieldDraft{DisplayName: "关联客户", LogicalType: v2.LogicalRelation,
+					Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+					Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: cardinality, DeletePolicy: "setNull", DisplayField: label.FieldID}},
+				RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "关联来源", ReciprocalCardinality: "many", SourceDisplayFieldID: label.FieldID},
+			}, "lookup-relation")
+			defaults, err = v2.RecommendedDefaults(v2.LogicalLookup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lookup := applySchemaProductField(t, pb, v2.FieldChangeIntent{
+				Action: v2.ActionCreate, TableID: table.TableID,
+				Draft: &v2.FieldDraft{DisplayName: "客户名称", LogicalType: v2.LogicalLookup,
+					Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+					Lookup: &v2.LookupSpec{Path: []v2.LookupPathStep{{RelationFieldID: related.FieldID}}, TargetFieldID: label.FieldID}},
+			}, "lookup-definition")
+			mux := schemaProductMux(t, pb)
+			response := schemaProductRequestForMethod(t, mux, context.Background(), "lookup.list", fmt.Sprintf(`{"collection":%q}`, table.TableID), schemaListWire)
+			if response.Error != nil {
+				t.Fatalf("lookup.list: %#v", response.Error)
+			}
+			var result struct {
+				Collection  string           `json:"collection"`
+				Definitions []map[string]any `json:"definitions"`
+				Revision    string           `json:"lookupRevision"`
+			}
+			if err := json.Unmarshal(response.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			relationID := table.TableID + "." + related.FieldID
+			want := map[string]any{
+				"lookupId": table.TableID + "." + lookup.FieldID, "collection": table.TableID,
+				"fieldKey": lookup.Definition.Identity.PhysicalName, "displayName": "客户名称",
+				"path":       []any{map[string]any{"relationId": relationID}},
+				"source":     map[string]any{"kind": "target_field", "fieldRef": label.FieldID},
+				"outputType": "text", "outputScale": nil, "revision": float64(1),
+				"state": "valid", "diagnostics": []any{}, "dependencies": []any{relationID},
+			}
+			if result.Collection != table.TableID || len(result.Definitions) != 1 || !reflect.DeepEqual(result.Definitions[0], want) {
+				t.Fatalf("persisted Lookup projection: %s", response.Result)
+			}
+			described := schemaProductRequestForMethod(t, mux, context.Background(), "schema.describe", fmt.Sprintf(`{"collection":%q,"requestGeneration":1,"accepts":["vibetable.relation-capabilities.v1","vibetable.lookup-query.v1"]}`, table.TableID), schemaListWire)
+			if described.Error != nil {
+				t.Fatalf("schema.describe: %#v", described.Error)
+			}
+			var schema struct {
+				Schema struct {
+					Revision string `json:"lookupRevision"`
+				} `json:"schema"`
+			}
+			if err := json.Unmarshal(described.Result, &schema); err != nil {
+				t.Fatal(err)
+			}
+			if result.Revision == "" || result.Revision != schema.Schema.Revision {
+				t.Fatalf("Lookup/schema revision disagreement: %q / %q", result.Revision, schema.Schema.Revision)
 			}
 		})
 	}

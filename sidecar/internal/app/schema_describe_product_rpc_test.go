@@ -137,41 +137,48 @@ func TestSchemaDescribeFilterFamiliesRetainQueryOperators(t *testing.T) {
 	}
 }
 
-func TestSchemaDescribeProductHTTPCancelsAfterCatalogRead(t *testing.T) {
-	pb := schemaProductStore(t)
-	lifecycle, err := schemacore.NewTableLifecycle(pb)
-	if err != nil {
-		t.Fatal(err)
-	}
-	table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
-		DisplayName: "取消读取", OperationID: "describe-cancel-table",
-		Actor: v2.Actor{ID: "local-user", Kind: "user"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := schemaProductMux(t, pb)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	db := pb.ConcurrentDB().(*dbx.DB)
-	original := db.QueryLogFunc
-	defer func() { db.QueryLogFunc = original }()
-	cancelledAfterRead := false
-	db.QueryLogFunc = func(queryCtx context.Context, elapsed time.Duration, query string, rows *sql.Rows, queryErr error) {
-		if original != nil {
-			original(queryCtx, elapsed, query, rows, queryErr)
-		}
-		if queryErr == nil && strings.Contains(query, "FROM `vibetable_lookups`") {
-			cancelledAfterRead = true
-			cancel()
-		}
-	}
-	params := fmt.Sprintf(`{"collection":%q,"requestGeneration":1,"accepts":["vibetable.relation-capabilities.v1","vibetable.lookup-query.v1"]}`, table.TableID)
-	response := schemaProductRequestForMethod(t, mux, ctx, "schema.describe", params, schemaListWire)
-	if !cancelledAfterRead {
-		t.Fatal("catalog read cancellation seam was not reached")
-	}
-	if response.Error == nil || response.Error.Code != productrpc.CodeInternalError || len(response.Result) != 0 {
-		t.Fatalf("cancelled catalog read: error=%#v result bytes=%d", response.Error, len(response.Result))
+func TestSchemaDescribeAndLookupListProductHTTPCancelAfterCatalogRead(t *testing.T) {
+	for _, method := range []string{"schema.describe", "lookup.list"} {
+		t.Run(method, func(t *testing.T) {
+			pb := schemaProductStore(t)
+			lifecycle, err := schemacore.NewTableLifecycle(pb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{
+				DisplayName: "取消读取", OperationID: "describe-cancel-table",
+				Actor: v2.Actor{ID: "local-user", Kind: "user"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux := schemaProductMux(t, pb)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			db := pb.ConcurrentDB().(*dbx.DB)
+			original := db.QueryLogFunc
+			defer func() { db.QueryLogFunc = original }()
+			cancelledAfterRead := false
+			db.QueryLogFunc = func(queryCtx context.Context, elapsed time.Duration, query string, rows *sql.Rows, queryErr error) {
+				if original != nil {
+					original(queryCtx, elapsed, query, rows, queryErr)
+				}
+				if queryErr == nil && strings.Contains(query, "FROM `vibetable_lookups`") {
+					cancelledAfterRead = true
+					cancel()
+				}
+			}
+			params := fmt.Sprintf(`{"collection":%q,"requestGeneration":1,"accepts":["vibetable.relation-capabilities.v1","vibetable.lookup-query.v1"]}`, table.TableID)
+			if method == "lookup.list" {
+				params = fmt.Sprintf(`{"collection":%q}`, table.TableID)
+			}
+			response := schemaProductRequestForMethod(t, mux, ctx, method, params, schemaListWire)
+			if !cancelledAfterRead {
+				t.Fatal("catalog read cancellation seam was not reached")
+			}
+			if response.Error == nil || response.Error.Code != productrpc.CodeInternalError || len(response.Result) != 0 {
+				t.Fatalf("cancelled catalog read: error=%#v result bytes=%d", response.Error, len(response.Result))
+			}
+		})
 	}
 }
