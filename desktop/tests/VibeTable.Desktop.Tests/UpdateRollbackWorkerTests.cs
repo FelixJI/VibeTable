@@ -18,6 +18,40 @@ public sealed class UpdateRollbackWorkerTests
     }
 
     [TestMethod]
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(false, true, false)]
+    [DataRow(false, false, true)]
+    public void WorkerFailureRetainsOnlyExceptionMetadataWithoutChangingFailure(
+        bool blocked, bool existing, bool unauthorized)
+    {
+        RollbackFixture fixture = Prepare("failure-evidence", '8');
+        string evidencePath = fixture.Plan.StagingRoot + ".rollback-worker-error.json";
+        if (blocked) Directory.CreateDirectory(evidencePath);
+        if (existing) File.WriteAllText(evidencePath, "retained evidence");
+        Exception failure = unauthorized
+            ? new UnauthorizedAccessException("private fixture payload")
+            : new IOException("private fixture payload", unchecked((int)0x80070020));
+        Exception observed = Assert.Throws<Exception>(() =>
+            PendingUpdateActivationJournal.RunRollbackWorker(
+                fixture.Plan.TargetRoot, fixture.WorkerNonce, fixture.Worker,
+                checkpoint => { if (checkpoint == "resources:restorePlanned") throw failure; }));
+        Assert.AreSame(failure, observed);
+        using JsonDocument pending = JsonDocument.Parse(File.ReadAllText(
+            PendingUpdateActivationJournal.GetPointerPath(fixture.Plan.TargetRoot)));
+        Assert.AreEqual("rollbackFailed", pending.RootElement.GetProperty("state").GetString());
+        Assert.AreEqual("UPDATE_ROLLBACK_IO_FAILED",
+            pending.RootElement.GetProperty("rollbackErrorCode").GetString());
+        Assert.AreEqual("unknown", File.ReadAllText(Path.Combine(fixture.Plan.TargetRoot, "user-data.db")));
+        if (blocked) { Assert.IsTrue(Directory.Exists(evidencePath)); return; }
+        if (existing) { Assert.AreEqual("retained evidence", File.ReadAllText(evidencePath)); return; }
+        using JsonDocument evidence = JsonDocument.Parse(File.ReadAllText(evidencePath));
+        CollectionAssert.AreEquivalent(new[] { "exceptionType", "hResult" },
+            evidence.RootElement.EnumerateObject().Select(property => property.Name).ToArray());
+        Assert.AreEqual(failure.GetType().FullName, evidence.RootElement.GetProperty("exceptionType").GetString());
+        Assert.AreEqual(failure.HResult, evidence.RootElement.GetProperty("hResult").GetInt32());
+    }
+    [TestMethod]
     public void OwnedEntryAuthorityKeepsExecutableLast()
     {
         CollectionAssert.AreEqual(

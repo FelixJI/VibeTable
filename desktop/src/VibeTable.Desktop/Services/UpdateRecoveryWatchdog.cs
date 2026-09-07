@@ -138,8 +138,10 @@ internal sealed class UpdateRecoveryWatchdog(
                 {
                     state = PendingUpdateActivationJournal.ReadRecoveryState(plan, watchdog);
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
+                    UpdateRecoveryFailureEvidence.WriteOnce(
+                        plan.StagingRoot, ".recovery-read-error.json", exception);
                     ownershipTransferred = await TerminateAndRecordFailureAsync(
                         plan,
                         watchdog,
@@ -696,4 +698,5 @@ internal sealed class UpdateRecoveryWatchdog(
 
     private static string Nonce() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
         .ToLowerInvariant();
+
 }
