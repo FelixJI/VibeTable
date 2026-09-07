@@ -19,6 +19,9 @@ Python HTTP transport failure 不属于直达 Go Port 的领域结果，在测�
 4 MiB；新 Product HTTP 和 WPF gateway 继续使用公共 4 MiB 上限。不同 envelope 的边缘
 开销并非逐字节相等，不将下游 16 MiB 误记为旧产品可传输的最终响应大小。
 
-既有 packaged 场景 `04-json-round-trip` 增加直接 `query.readRows` 请求，断言导入后的
-两行 JSON 与 authority 一致并保持请求顺序。代码和源码测试不代替该场景的实际执行；
-完整 fresh CI、严格同步 main、双轴审查和合并后验收完成前，本片仍不能记为交付完成。
+既有 packaged 场景 `04-json-round-trip` 通过工具栏插入和 JSON 编辑，调用宿主
+`PocketBaseTableGateway` 的 `ReadRowsInternalAsync`，在新 policy 下走 Go owner。
+宿主组合测试单独验证 `ReadRowsAsync` 选择真实 Product HTTP gateway 并保持返回值。
+`query.readRows` 不是网页 `ProductDataRpcRegistry` 的命令，本片不新增网页调用入口。
+代码和源码测试不代替该场景实际执行；完整 fresh CI、严格同步 main、双轴审查和合并后
+验收完成前，本片仍不能记为交付完成。
