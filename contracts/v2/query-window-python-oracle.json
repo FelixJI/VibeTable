@@ -1,0 +1,1441 @@
+{
+  "producerCommit": "c97c83336e4aa1bdf993fc46a7de57040219fb03",
+  "boundary": "Python Product dispatcher + adapter; scripted authority transport",
+  "cases": [
+    {
+      "name": "page-unicode-falsy-offset-limit",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-unicode-falsy-offset-limit",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "offset": 3,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-unicode-falsy-offset-limit",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "offset": 3,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "page-empty-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-empty-query",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {}
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [],
+          "offset": 0,
+          "limit": 0,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "中文/表",
+            "query": {}
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-empty-query",
+        "result": {
+          "rows": [],
+          "offset": 0,
+          "limit": 0,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "page-nested-query-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-nested-query-forwarded",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "filters": [
+              {
+                "value": false
+              }
+            ],
+            "sorts": [],
+            "offset": -1,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "offset": 3,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "中文/表",
+            "query": {
+              "filters": [
+                {
+                  "value": false
+                }
+              ],
+              "sorts": [],
+              "offset": -1,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-nested-query-forwarded",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "offset": 3,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "snapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "page-missing-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-missing-query",
+        "method": "query.page",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-missing-query",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "page-null-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-null-query",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": null
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-null-query",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "page-unknown-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-unknown-field",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          },
+          "extra": 0
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-unknown-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "page-malformed-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-malformed-rows",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            null
+          ],
+          "offset": 3,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-malformed-rows",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "page-malformed-offset",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-malformed-offset",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "offset": false,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-malformed-offset",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "page-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-product-error",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "page-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-transport-error",
+        "method": "query.page",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "open-unicode-falsy",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-unicode-falsy",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-unicode-falsy",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "open-terminal-window",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-terminal-window",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-terminal-window",
+        "result": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "open-empty-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-empty-table",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-empty-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "open-unknown-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-unknown-field",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          },
+          "cursor": "x"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-unknown-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "open-malformed-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-malformed-snapshot",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": null,
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-malformed-snapshot",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "open-inconsistent-null-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-inconsistent-null-cursor",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": null,
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-inconsistent-null-cursor",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "open-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-product-error",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "open-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-transport-error",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "中文/表",
+          "query": {
+            "offset": 0,
+            "limit": 0
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "中文/表",
+            "query": {
+              "offset": 0,
+              "limit": 0
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-unicode-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-unicode-cursor",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "游标 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "游标 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-unicode-cursor",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-terminal-window",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-terminal-window",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "游标 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "游标 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-terminal-window",
+        "result": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-empty-next-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-empty-next-cursor",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "游标 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "游标 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-empty-next-cursor",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-empty-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-empty-cursor",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": ""
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-empty-cursor",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "fetch-null-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-null-cursor",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": null
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-null-cursor",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "fetch-unknown-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-unknown-field",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "游标 /+",
+          "limit": 1
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-unknown-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "fetch-malformed-next-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-malformed-next-cursor",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "游标 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": 0,
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "schemaRevision": "schema_1",
+            "dataRevision": 0
+          },
+          "ignored": "not projected"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "游标 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-malformed-next-cursor",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "fetch-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-product-error",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "游标 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "游标 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-transport-error",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "游标 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "游标 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    }
+  ]
+}
