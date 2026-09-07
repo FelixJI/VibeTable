@@ -674,6 +674,89 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.IsFalse(sink.Replies.Any(item => item.RequestId is null));
     }
 
+    [TestMethod]
+    [DataRow(null, true)]
+    [DataRow("selection-retired", true)]
+    [DataRow("selection-active", false)]
+    public async Task TableSelectionRetirementDoesNotEscapeAsWorkspaceError(string? requestId, bool retire)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" }, Array.Empty<string>(), TestDisplayNames.For("records"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var read = new TaskCompletionSource<TableSelectionProjection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        gateway.SelectionOpenOverride = async (_, _, _) =>
+        {
+            Assert.IsTrue(filter.TryCaptureHost(
+                opened.WorkspaceId!.Value, opened.SessionEpoch, Guid.NewGuid(), out var lease));
+            using (lease)
+            {
+                started.TrySetResult();
+                return await read.Task.WaitAsync(lease!.CancellationToken);
+            }
+        };
+        var workspace = new TableWorkspaceService(gateway);
+        await workspace.OpenDatabaseAsync("db");
+        var notifications = new List<TableNotification>();
+        workspace.Notification += notifications.Add;
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("local://configured"), sink,
+            NoDatabaseOpenRoute.Instance, sessionEnvelopeFilter: filter);
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+        Task dispatch = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "table.selected", requestId, document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            if (!retire)
+            {
+                read.TrySetCanceled();
+                await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => dispatch);
+                Assert.AreEqual(WorkspaceSessionState.OpenedWritable, fixture.Manager.Current.State);
+                return;
+            }
+            Task switching = fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+            await switching.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.AreEqual(0, notifications.Count);
+            Assert.AreEqual(0, sink.Replies.Count);
+        }
+        finally
+        {
+            read.TrySetCanceled();
+        }
+    }
+    [TestMethod]
+    public async Task TableSelectionRejectsRetiredScopeBeforeResolvingTable()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        await fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+        var sink = new FakeWebReplySink();
+        using var dispatcher = CreateDispatcher(sink, filter);
+        using var document = JsonDocument.Parse("""{"table":"not-in-current-workspace"}""");
+        await dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "table.selected", "selection-stale", document.RootElement.Clone(),
+            string.Empty, ScopeFor(opened, 1)));
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("selection-stale", reply.RequestId);
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", payload.GetProperty("code").GetString());
+    }
     private static WorkspaceRequestDispatcher CreateDispatcher(
         FakeWebReplySink sink,
         WorkspaceSessionEnvelopeFilter filter)

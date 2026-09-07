@@ -137,7 +137,8 @@ public sealed class WorkspaceRequestDispatcher :
                 ResolveSchemaLifecycleTimeout(schemaLifecycleTimeout),
                 () => _workspaceSessionToken,
                 timeProvider,
-                _pluginBindings)
+                _pluginBindings,
+                sessionEnvelopeFilter)
             : new WorkspaceTableRequestController(
                 workspace,
                 picker,
@@ -148,7 +149,8 @@ public sealed class WorkspaceRequestDispatcher :
                 ResolveSchemaLifecycleTimeout(schemaLifecycleTimeout),
                 () => _workspaceSessionToken,
                 timeProvider,
-                _pluginBindings);
+                _pluginBindings,
+                sessionEnvelopeFilter);
         _gridController = new GridRequestController(coordinator, _reply);
         _dashboardController = new DashboardRequestController(
             _reply,
