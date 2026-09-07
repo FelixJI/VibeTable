@@ -9,9 +9,11 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductDataSidecarRoutingTests
 {
     [TestMethod]
-    [DataRow(true)]
-    [DataRow(false)]
-    public async Task SchemaDescribeUsesGeneratedGoOwnerWithoutPythonFallback(bool bound)
+    [DataRow("schema.describe", true)]
+    [DataRow("schema.describe", false)]
+    [DataRow("lookup.list", true)]
+    [DataRow("lookup.list", false)]
+    public async Task CatalogReadUsesGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
     {
         var sink = new FakeWebReplySink();
         var sidecar = SuccessForwarder();
@@ -23,8 +25,10 @@ public sealed class ProductDataSidecarRoutingTests
         if (bound) controller.SetProductSidecarForwarder(sidecar);
         RoutedWebRequest request = QueryRequest("describe-go") with
         {
-            Type = "schema.describe",
-            Payload = JsonSerializer.SerializeToElement(new
+            Type = method,
+            Payload = method == "lookup.list"
+                ? JsonSerializer.SerializeToElement(new { collection = "tbl_records" })
+                : JsonSerializer.SerializeToElement(new
             {
                 collection = "tbl_records", requestGeneration = 1,
                 accepts = new[] { "vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1" },
@@ -34,7 +38,7 @@ public sealed class ProductDataSidecarRoutingTests
         await controller.DispatchAsync(request);
 
         FakeWebReplySink.Reply? reply = bound
-            ? await sink.WaitForAsync("schema.describe")
+            ? await sink.WaitForAsync(method)
             : await sink.WaitForFailedAsync();
         Assert.IsNotNull(reply);
         Assert.AreEqual(bound ? 1 : 0, sidecar.CallCount);
@@ -42,7 +46,7 @@ public sealed class ProductDataSidecarRoutingTests
         if (bound)
         {
             ProductSidecarForwardCall call = sidecar.Calls.Single();
-            Assert.AreEqual("schema.describe", call.Method);
+            Assert.AreEqual(method, call.Method);
             Assert.IsTrue(JsonElement.DeepEquals(request.Wire, call.Wire));
             Assert.IsTrue(JsonElement.DeepEquals(request.Payload, call.Parameters));
         }

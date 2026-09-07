@@ -326,6 +326,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
 		productrpc.ReconcileRegistration(schemaapi.New(app)),
+		lookupListRegistration(relation.New(app, nil, nil)),
 		schemaDescribeRegistration(app, relation.New(app, nil, nil)),
 		schemaGetTableRegistration(app),
 		schemaListRegistration(schemaapi.New(app)),

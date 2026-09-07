@@ -111,6 +111,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
+        "lookup.list",
         "schema.describe",
         "file.list",
         "events.reconcile",
@@ -121,7 +122,14 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(dispatcher.registered_methods) >= WORKSPACE_CATALOG_METHODS
     assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
         WORKSPACE_CATALOG_METHODS
-        | {"events.reconcile", "file.list", "schema.describe", "schema.getTable", "schema.list"}
+        | {
+            "events.reconcile",
+            "file.list",
+            "lookup.list",
+            "schema.describe",
+            "schema.getTable",
+            "schema.list",
+        }
     )
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods

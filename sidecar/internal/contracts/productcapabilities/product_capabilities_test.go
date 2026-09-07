@@ -3,7 +3,7 @@ package productcapabilities
 import "testing"
 
 func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
-	for _, method := range []string{"file.list", "schema.describe"} {
+	for _, method := range []string{"file.list", "lookup.list", "schema.describe"} {
 		if HasCurrentOwnerRPCMethod(PythonBff, method) {
 			t.Fatalf("%s must not remain on pythonBff after its Go migration", method)
 		}
@@ -63,9 +63,10 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 5 ||
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 6 ||
 		got[0].Method != "events.reconcile" || got[1].Method != "file.list" ||
-		got[2].Method != "schema.describe" || got[3].Method != "schema.getTable" || got[4].Method != "schema.list" {
+		got[2].Method != "lookup.list" || got[3].Method != "schema.describe" ||
+		got[4].Method != "schema.getTable" || got[5].Method != "schema.list" {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||

@@ -13,7 +13,8 @@ public sealed class RelationLookupRpcRegistryTests
     {
         var types = RelationLookupRpcRegistry.RequestTypes;
 
-        Assert.HasCount(8, types);
+        Assert.HasCount(7, types);
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.list"));
         Assert.IsFalse(RelationLookupRpcRegistry.Contains("schema.describe"));
         Assert.AreEqual(
             types.Count,

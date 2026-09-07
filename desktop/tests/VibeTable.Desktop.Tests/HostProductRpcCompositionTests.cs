@@ -489,13 +489,14 @@ public sealed class HostProductRpcCompositionTests
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
                     rpcMethods = UseTestPolicy
                         ? new[] { "schema.list" }
-                        : new[] { "events.reconcile", "file.list", "schema.describe", "schema.getTable", "schema.list" },
+                        : new[] { "events.reconcile", "file.list", "lookup.list", "schema.describe", "schema.getTable", "schema.list" },
                     registrations = UseTestPolicy
                         ? new[] { new { method = "schema.list", scope = "workspace" } }
                         : new[]
                         {
                             new { method = "events.reconcile", scope = "workspace" },
                             new { method = "file.list", scope = "workspace" },
+                            new { method = "lookup.list", scope = "workspace" },
                             new { method = "schema.describe", scope = "workspace" },
                             new { method = "schema.getTable", scope = "workspace" },
                             new { method = "schema.list", scope = "workspace" },

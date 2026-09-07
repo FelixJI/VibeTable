@@ -620,6 +620,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
 		productrpc.ReconcileRegistration(catalog),
+		lookupListRegistration(relation.New(pb, nil, nil)),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
@@ -633,6 +634,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	})
 	registerFieldRoutes(r, pb, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
+	registerRelationRoutes(r, relation.New(pb, nil, nil))
 	registerRealtimeRoutes(r, nil, catalog)
 	registerProductRoutes(r, dispatcher)
 	mux, err := r.BuildMux()

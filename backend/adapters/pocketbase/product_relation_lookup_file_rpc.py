@@ -39,7 +39,6 @@ class ProductRelationLookupFileRpc:
             "relation.updateSingle": self._update_single_relation,
             "relation.previewDelta": self._preview_relation_delta,
             "relation.applyDelta": self._apply_relation_delta,
-            "lookup.list": self._list_lookups,
             "lookup.query": self._query_lookups,
             "lookup.valuePage": self._lookup_value_page,
             "history.read": self._read_history,
@@ -307,27 +306,6 @@ class ProductRelationLookupFileRpc:
                 "receipt": result.get("receipt"),
             }
         )
-
-    async def _list_lookups(self, params: ProductParams) -> JsonObject:
-        table_id = _text(params.root, "collection")
-        result = _result_object(
-            await self._context.transport.request(
-                "GET",
-                "/api/vibetable/v1/lookups/describe",
-                query={"tableId": table_id},
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
-        )
-        lookups = result.get("lookups")
-        if not isinstance(lookups, list):
-            raise ValueError("PocketBase returned an invalid lookup catalog")
-        schema_revision = _text(result, "schemaRevision")
-        return {
-            "collection": table_id,
-            "definitions": [_renderer_lookup(item) for item in lookups if isinstance(item, dict)],
-            "lookupRevision": _lookup_revision(schema_revision, lookups),
-        }
 
     async def _query_lookups(self, params: ProductParams) -> JsonObject:
         raw = params.root
