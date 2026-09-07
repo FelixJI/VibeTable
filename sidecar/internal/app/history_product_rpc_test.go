@@ -21,6 +21,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -315,6 +316,7 @@ func historyReadProductFixture(
 		schemaListRegistration(schemaapi.New(pb)),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(runtime),
+		queryReadRowsRegistration(query.NewPort(pb, nil)),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 	)
 	if err != nil {
