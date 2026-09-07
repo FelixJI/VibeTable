@@ -65,6 +65,20 @@ func TestLookupListParamsRejectEmptyCollection(t *testing.T) {
 	}
 }
 
+func TestLookupListParamsPreserveUnicodeScalarValues(t *testing.T) {
+	registration := lookupListRegistration(nil)
+	for _, raw := range []string{`{"collection":"\ud800"}`, `{"collection":"\udc00"}`, `{"collection":"\ud800x"}`, `{"collection":"\ud800\ud800"}`, "{\"collection\":\"\xff\"}"} {
+		if registration.ValidateParams(json.RawMessage(raw)) == nil {
+			t.Errorf("accepted malformed Unicode: %q", raw)
+		}
+	}
+	for _, raw := range []string{`{"collection":"\ud83d\ude00"}`, `{"collection":"\ufffd"}`, `{"collection":"\\ud800"}`, `{"collection":"正常"}`} {
+		if err := registration.ValidateParams(json.RawMessage(raw)); err != nil {
+			t.Errorf("rejected Unicode scalar or literal escape: %q: %v", raw, err)
+		}
+	}
+}
+
 func TestLookupListHandlerReadsCurrentAuthority(t *testing.T) {
 	pb := schemaProductStore(t)
 	lifecycle, err := schemacore.NewTableLifecycle(pb)
