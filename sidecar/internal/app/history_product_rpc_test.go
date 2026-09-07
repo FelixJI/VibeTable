@@ -315,6 +315,7 @@ func historyReadProductFixture(
 		schemaListRegistration(schemaapi.New(pb)),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(runtime),
+		lookupListRegistration(relation.New(pb, nil, nil)),
 	)
 	if err != nil {
 		t.Fatal(err)
