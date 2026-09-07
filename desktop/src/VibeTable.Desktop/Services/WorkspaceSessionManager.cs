@@ -23,6 +23,8 @@ public interface IWorkspaceRuntimeFactory
 {
     ulong InitialSessionEpoch => 0;
 
+    ulong ReadLastSessionEpoch(WorkspaceRegistryEntryV2 workspace) => 0;
+
     IWorkspaceRuntime Create(
         WorkspaceRegistryEntryV2 workspace,
         ulong sessionEpoch);
@@ -543,6 +545,18 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
         IWorkspaceRuntime runtime;
         try
         {
+            // A newly registered workspace may have advanced on another host
+            // since this shell started. Read its floor only after acquiring
+            // the writer lease; keep Reserve's strict stale-epoch rejection.
+            ulong persistedEpoch = _runtimeFactory.ReadLastSessionEpoch(entry);
+            if (persistedEpoch >= epoch)
+            {
+                if (persistedEpoch >= long.MaxValue)
+                    throw new WorkspaceRegistryException("workspace.session_epoch_invalid",
+                        "Workspace session epoch cannot advance further.");
+                _nextEpoch = Math.Max(_nextEpoch, persistedEpoch);
+                epoch = NextEpoch();
+            }
             runtime = _runtimeFactory.Create(entry, epoch);
         }
         catch
