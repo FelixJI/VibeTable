@@ -336,7 +336,7 @@
       "stateLifetime": "workspace",
       "cancellation": "cooperative",
       "timeout": "perHopBounded",
-      "productScenarios": ["06-relation-fanout"],
+      "productScenarios": ["26-lookup-definition-read"],
       "targetSlice": "L3B",
       "targetPr": null,
       "deleteWhen": "The Python lookup.list route is removed; preserve the lookup query and value-page revision consumers.",
