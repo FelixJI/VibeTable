@@ -2347,3 +2347,41 @@ def test_self_update_rollback_reports_os_error_without_path(
     assert "PermissionError errno=13" in message
     assert str(tmp_path) not in message
     assert "private-test-error" not in message
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("schemaVersion", 2.0, "schemaVersion"),
+        ("state", "restoredLaunchPending", "state"),
+        ("token", "private-token-not-for-logs", "token"),
+        ("targetRoot", "private-path-not-for-logs", "targetRoot"),
+        ("workerProcessId", 0, "processIds"),
+        ("createdAtUtc", "2026-08-28T03:59:59+00:00", "timestampOrder"),
+        ("ownedEntryLedger", [], "ownedEntryLedger"),
+    ],
+)
+def test_rollback_receipt_rejection_reports_only_scenario_and_check(
+    tmp_path: Path, field: str, value: object, reason: str
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={"ready": False, "error": "expected health failure"},
+    )
+    fixture.receipt[field] = value
+    fixture.receipt_path.write_text(json.dumps(fixture.receipt), encoding="utf-8")
+    with pytest.raises(build_next.BuildError) as captured:
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+    assert str(captured.value) == (
+        f"desktop self-update smoke rollback receipt identity is invalid: health-failure/{reason}"
+    )
