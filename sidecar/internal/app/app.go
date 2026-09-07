@@ -440,6 +440,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				schemaGetTableRegistration(pb),
 				schemaListRegistration(schemaCatalog),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
+				historyReadRegistration(workspaceRuntime),
 			)
 			if err != nil {
 				_ = rawListener.Close()

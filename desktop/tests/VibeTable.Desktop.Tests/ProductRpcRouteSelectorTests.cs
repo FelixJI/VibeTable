@@ -6,7 +6,7 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRpcRouteSelectorTests
 {
     [TestMethod]
-    public void GeneratedPolicyMovesQueryPageFileAndSchemaReadsToGo()
+    public void GeneratedPolicySelectsCurrentOwners()
     {
         var selector = new ProductRpcRouteSelector(
             ProductRpcCapabilityManifest.Default);
@@ -20,7 +20,7 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "events.reconcile" or "file.list" or "lookup.list" or "query.page" or "schema.describe" or "schema.getTable" or "schema.list"
+            Assert.AreEqual(method is "events.reconcile" or "file.list" or "history.read" or "lookup.list" or "query.page" or "schema.describe" or "schema.getTable" or "schema.list"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
                 route, method);
         }

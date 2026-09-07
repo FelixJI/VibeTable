@@ -34,10 +34,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_VALUES = {
     "nfc": "Caf\u00e9 \U0001f469\U0001f3fd\u200d\U0001f4bb",
     "nfd": "Cafe\u0301 \U0001f469\U0001f3fd\u200d\U0001f4bb",
+    "cjk": "\u4e2d\u6587 \U00020000",
+    "rtl": "\u200f\u0639\u0631\u0628\u064a 123",
+    "locale_case": "I i \u0130 \u0131 \u00df SS",
 }
 EXPECTED_CODE_POINTS = {
     "nfc": (0x43, 0x61, 0x66, 0xE9, 0x20, 0x1F469, 0x1F3FD, 0x200D, 0x1F4BB),
     "nfd": (0x43, 0x61, 0x66, 0x65, 0x301, 0x20, 0x1F469, 0x1F3FD, 0x200D, 0x1F4BB),
+    "cjk": (0x4E2D, 0x6587, 0x20, 0x20000),
+    "rtl": (0x200F, 0x639, 0x631, 0x628, 0x64A, 0x20, 0x31, 0x32, 0x33),
+    "locale_case": (0x49, 0x20, 0x69, 0x20, 0x130, 0x20, 0x131, 0x20, 0xDF, 0x20, 0x53, 0x53),
 }
 
 
@@ -257,8 +263,8 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 mode="create_only",
             )
         )
-        assert plan.summary.total_rows == 2
-        assert plan.summary.valid_rows == 2
+        assert plan.summary.total_rows == len(EXPECTED_VALUES)
+        assert plan.summary.valid_rows == len(EXPECTED_VALUES)
         assert plan.summary.error_count == 0
         assert plan.unmatched_columns == []
         _assert_unicode_values(
@@ -277,7 +283,7 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 idempotency_prefix="unicode-data-io-roundtrip",
             )
         )
-        assert applied.created_count == 2
+        assert applied.created_count == len(EXPECTED_VALUES)
         assert applied.failed_rows == []
 
         query = {"filters": [], "sorts": [], "offset": 0, "limit": 100}
@@ -302,7 +308,7 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 format="csv",
             )
         )
-        assert csv_result.rows_written == 2
+        assert csv_result.rows_written == len(EXPECTED_VALUES)
         with csv_target.open("r", encoding="utf-8-sig", newline="") as stream:
             csv_values = _labeled_values(
                 csv.DictReader(stream),
@@ -323,7 +329,7 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 format="xlsx",
             )
         )
-        assert xlsx_result.rows_written == 2
+        assert xlsx_result.rows_written == len(EXPECTED_VALUES)
         workbook = load_workbook(xlsx_target, read_only=True, data_only=True)
         try:
             worksheet = workbook.active

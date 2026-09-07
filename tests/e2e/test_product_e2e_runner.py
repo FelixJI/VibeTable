@@ -2448,7 +2448,8 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert '"history.read"' not in source
     assert '"history.query"' in source
     assert "rawWorkspaceV2Request(" in source
-    assert '"history.queryRequested"' not in source
+    assert 'rawBridgeRequest(\n    page,\n    "history.queryRequested"' in source
+    assert '"history.pageLoaded"' in source
     assert "externalRequests.length === 0" in source
     assert 'url.hostname === "app.vibetable.local"' in source
     assert '["127.0.0.1", "::1", "localhost"]' in source
@@ -2467,7 +2468,9 @@ def test_node_runner_waits_for_bridge_quiescence_instead_of_a_fixed_delay() -> N
             "async function acknowledgeExpectedBridgeFailure"
         )
     ]
-    completion_start = source.index("const implementation = scenarios[args.scenario]")
+    completion_start = source.index(
+        "result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page)"
+    )
     completion = source[
         completion_start : source.index("assertCleanRendererDiagnostics(recorder", completion_start)
     ]
@@ -2481,6 +2484,20 @@ def test_node_runner_waits_for_bridge_quiescence_instead_of_a_fixed_delay() -> N
     assert "await page.waitForTimeout(250)" not in completion
     assert "JSON.stringify(details)" in source
     assert "serialized.slice(0, 4_000)" in source
+
+
+def test_natural_aging_seed_closes_the_field_drawer_before_snapshot_navigation() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    seed = source[
+        source.index("async function seedNaturalRetentionAging") : source.index(
+            "async function resumeNaturalRetentionAging"
+        )
+    ]
+
+    assert seed.count('await createEmptyTable(page, "A1 ') == 2
+    assert seed.count("await closeFieldSettingsDrawer(page);") == 2
+    assert "await closeFieldSettingsDrawer(page);\n  const beforeOlder" in seed
+    assert "await closeFieldSettingsDrawer(page);\n  const beforeNewer" in seed
 
 
 def test_expected_bridge_rejection_is_acknowledged_only_after_the_scenario_asserts_it() -> None:

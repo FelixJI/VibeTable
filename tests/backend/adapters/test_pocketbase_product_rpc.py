@@ -379,28 +379,14 @@ async def test_reconcile_has_no_python_transport_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_routes_use_closed_product_routes() -> None:
+async def test_history_restore_uses_closed_product_routes() -> None:
     service, transport = _service(
         [
-            {"changeSets": [], "total": 0},
             {"token": "restore-token", "canApply": True},
             {"restoredToRevision": "rev-1"},
         ]
     )
 
-    await service.invoke(
-        "history.read",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "itemId": "order-1",
-                "scope": "row",
-                "limit": 20,
-                "offset": 0,
-                "actions": ["update", "restore"],
-            }
-        ),
-    )
     await service.invoke(
         "history.previewRestore",
         ProductParams.model_validate(
@@ -418,10 +404,8 @@ async def test_history_routes_use_closed_product_routes() -> None:
             {"collection": "orders", "itemId": "order-1", "token": "restore-token"}
         ),
     )
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/history/change-sets"
-    assert transport.requests[0]["query"]["action"] == ["update", "restore"]
-    assert transport.requests[1]["path"] == "/api/vibetable/v1/history/restore-preview"
-    assert transport.requests[2]["path"] == "/api/vibetable/v1/history/restore-apply"
+    assert transport.requests[0]["path"] == "/api/vibetable/v1/history/restore-preview"
+    assert transport.requests[1]["path"] == "/api/vibetable/v1/history/restore-apply"
 
 
 @pytest.mark.asyncio
