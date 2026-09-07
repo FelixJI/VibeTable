@@ -124,7 +124,6 @@ public sealed class WorkspaceRequestDispatcher :
             dashboardRequestTimeout ?? TimeSpan.FromSeconds(60);
         _productController = new ProductDataRequestController(
             _reply,
-            readRecoveryTimeout,
             sessionEnvelopeFilter);
         _tableController = databaseOpenEnabled
             ? new WorkspaceTableRequestController(

@@ -21,6 +21,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -327,6 +328,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 	},
 		productrpc.ReconcileRegistration(schemaapi.New(app)),
 		lookupListRegistration(relation.New(app, nil, nil)),
+		queryPageRegistration(query.NewPort(app, nil)),
 		schemaDescribeRegistration(app, relation.New(app, nil, nil)),
 		schemaGetTableRegistration(app),
 		schemaListRegistration(schemaapi.New(app)),

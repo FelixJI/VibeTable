@@ -26,6 +26,14 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
+type unrelatedQueryPageMustNotRun struct{ t *testing.T }
+
+func (port unrelatedQueryPageMustNotRun) QueryPage(context.Context, string, query.TableQuery) (query.Page, error) {
+	port.t.Helper()
+	port.t.Fatal("unrelated Product fixture unexpectedly invoked query.page")
+	return query.Page{}, errors.New("unexpected query.page invocation")
+}
+
 func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 	OpenSelectionProjection(context.Context, string, query.TableQuery) (query.SelectionProjection, error)
 }) http.Handler {
@@ -35,7 +43,7 @@ func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port inter
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	}, productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
-		querySelectionOpenRegistration(port), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
+		querySelectionOpenRegistration(port), queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))

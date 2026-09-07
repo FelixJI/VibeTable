@@ -34,7 +34,8 @@ gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 wor
 至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
 schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
 现行 Product owner 以生成 capability manifest 与 runtime inventory 为准；已迁移的方法直接使用
-Go Product gateway，`file.token`、Python SSE/gap 恢复和本地 task producer 按后续切片处理。
+Go Product gateway；`query.page` 通过 Product HTTP gateway 保持原返回值，Python 不再注册它。
+`file.token`、Python SSE/gap 恢复和本地 task producer 按后续切片处理。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证

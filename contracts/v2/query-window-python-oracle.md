@@ -18,13 +18,16 @@ PocketBaseClient，仅下游 transport 返回预设响应或异常。原件记�
 冻结结果不能由后续实现重算替代；owner 迁移时应明确退役对应 Python replay，并独立
 消费原件验证新 owner。没有新增依赖、摘要或通用生成框架。
 
-生成一次，后续只读比较（复用锁定环境）：
+`query.page` 已迁移到 Go：其 10 个原始案例保留供新 owner 独立消费，Python replay
+仅运行 `query.cursorOpen`、`query.cursorFetch` 的 17 个案例。捕获器拒绝 page replay，
+`--write` 无论文件是否存在均拒绝，避免后续实现冒充原始生产者。
+
+后续只读比较（复用锁定环境）：
 
 ```text
-uv run --frozen --no-sync python -m contracts.v2.generate_query_window_oracle --write
 uv run --frozen --no-sync python -m contracts.v2.generate_query_window_oracle --check
 uv run --frozen --no-sync python -m pytest --no-cov tests/contract/test_query_window_python_oracle.py -q
 ```
 
-`--write` 排他创建，不能覆盖已有原件；默认与 `--check` 均只读，偏差时报错。
+默认与 `--check` 均只读比较剩余 Python cursor 契约，偏差时报错；27 个冻结原件不变。
 聚焦测试的 `--no-cov` 不替代完整 CI 的覆盖率与发布门禁。

@@ -9,18 +9,14 @@ namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Owns the closed product-data and relation/Lookup request lifecycle. It
-/// hides registry validation, workspace epoch protection, recovery reads, and
+/// hides registry validation, workspace epoch protection, and
 /// stable renderer error mapping behind one dispatch interface.
 /// </summary>
 public sealed class ProductDataRequestController
 {
-    private static readonly TimeSpan RecoveryReadPollInterval =
-        TimeSpan.FromMilliseconds(25);
-
     private readonly IWebReplySink _reply;
     private readonly ProductRpcRouteSelector _routeSelector;
     private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
-    private readonly TimeSpan _readRecoveryTimeout;
     private readonly object _gatewayGate = new();
     private readonly FieldChangeProtectionPlanLedger _fieldChangePlans = new();
     private IProductDataRpcGateway? _gateway;
@@ -28,12 +24,10 @@ public sealed class ProductDataRequestController
 
     public ProductDataRequestController(
         IWebReplySink reply,
-        TimeSpan? readRecoveryTimeout = null,
         WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
         : this(
             reply,
             ProductRpcRouteSelector.Default,
-            readRecoveryTimeout,
             sessionEnvelopeFilter)
     {
     }
@@ -41,13 +35,11 @@ public sealed class ProductDataRequestController
     internal ProductDataRequestController(
         IWebReplySink reply,
         ProductRpcRouteSelector routeSelector,
-        TimeSpan? readRecoveryTimeout = null,
         WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _routeSelector = routeSelector
             ?? throw new ArgumentNullException(nameof(routeSelector));
-        _readRecoveryTimeout = readRecoveryTimeout ?? TimeSpan.FromSeconds(3);
         _sessionEnvelopeFilter = sessionEnvelopeFilter;
     }
 
@@ -304,23 +296,14 @@ public sealed class ProductDataRequestController
             }
             else
             {
-                result = string.Equals(
-                    request.Type,
-                    "query.page",
-                    StringComparison.Ordinal)
-                        ? await InvokeRecoverableReadAsync(
-                            endpoint,
-                            request.Payload,
-                            gateway,
-                            epochLease).ConfigureAwait(false)
-                        : gateway is null
-                            ? throw new BackendUnavailableException(
-                                "The local data service is not ready.")
-                            : await endpoint.InvokeAsync(
-                                gateway,
-                                forwardedPayload,
-                                epochLease?.CancellationToken
-                                    ?? CancellationToken.None).ConfigureAwait(false);
+                result = gateway is null
+                    ? throw new BackendUnavailableException(
+                        "The local data service is not ready.")
+                    : await endpoint.InvokeAsync(
+                        gateway,
+                        forwardedPayload,
+                        epochLease?.CancellationToken
+                            ?? CancellationToken.None).ConfigureAwait(false);
             }
             if (!CanCompleteRequest(request, epochLease))
                 return;
@@ -449,69 +432,6 @@ public sealed class ProductDataRequestController
             request.RequestId,
             "Product data operation failed.",
             "PRODUCT_DATA_FAILED");
-    }
-
-    private async Task<JsonElement> InvokeRecoverableReadAsync(
-        ProductDataRpcEndpoint endpoint,
-        JsonElement payload,
-        IProductDataRpcGateway? initialGateway,
-        WorkspaceRequestEpochLease? epochLease)
-    {
-        IProductDataRpcGateway? attemptedGateway = initialGateway;
-        Exception? lastFailure = null;
-        long deadline = Stopwatch.GetTimestamp()
-            + (long)(_readRecoveryTimeout.TotalSeconds * Stopwatch.Frequency);
-        while (true)
-        {
-            epochLease?.CancellationToken.ThrowIfCancellationRequested();
-            if (!IsRequestCurrent(epochLease))
-            {
-                throw new OperationCanceledException(
-                    epochLease?.CancellationToken ?? CancellationToken.None);
-            }
-            if (attemptedGateway is not null)
-            {
-                try
-                {
-                    JsonElement result = await endpoint.InvokeAsync(
-                        attemptedGateway,
-                        payload,
-                        epochLease?.CancellationToken
-                            ?? CancellationToken.None).ConfigureAwait(false);
-                    if (!IsRequestCurrent(epochLease))
-                    {
-                        throw new OperationCanceledException(
-                            epochLease?.CancellationToken
-                                ?? CancellationToken.None);
-                    }
-                    return result;
-                }
-                catch (Exception exception)
-                    when (exception is BackendUnavailableException
-                        or ObjectDisposedException)
-                {
-                    lastFailure = exception;
-                }
-            }
-            IProductDataRpcGateway? replacement = CurrentGateway;
-            if (replacement is not null
-                && !ReferenceEquals(replacement, attemptedGateway))
-            {
-                attemptedGateway = replacement;
-                continue;
-            }
-            if (Stopwatch.GetTimestamp() >= deadline)
-            {
-                throw new BackendUnavailableException(
-                    "The local data service did not recover before the read deadline.",
-                    lastFailure ?? new InvalidOperationException(
-                        "No product data gateway is currently available."));
-            }
-            await Task.Delay(
-                RecoveryReadPollInterval,
-                epochLease?.CancellationToken
-                    ?? CancellationToken.None).ConfigureAwait(false);
-        }
     }
 
     private bool CanCompleteRequest(

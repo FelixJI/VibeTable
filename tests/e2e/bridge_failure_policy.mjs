@@ -111,7 +111,7 @@ export function releaseSidecarRecoveryNotificationFailureWindowInPage({ ownerTok
 }
 
 const recoveryObservationMs = 5_000;
-const recoveryRequestType = "query.page";
+const recoveryRequestTypes = new Set(["query.page", "field.settings.describe"]);
 
 export class SidecarRecoveryContractError extends Error {
   constructor(message, options) {
@@ -121,7 +121,7 @@ export class SidecarRecoveryContractError extends Error {
 }
 
 /**
- * Owns every correlated query.page probe issued during one deliberate sidecar
+ * Owns correlated page and field-description reads during one deliberate sidecar
  * recovery window. The five-second observation is not a terminal timeout:
  * requests remain owned until settle() observes their real terminal within the
  * caller's absolute recovery deadline.
@@ -159,7 +159,7 @@ export class SidecarRecoveryReadWindow {
     });
   }
 
-  own(requestId) {
+  own(requestId, requestType = "query.page") {
     if (this.#closed) throw this.#closedError;
     if (this.#settlePromise !== null) {
       throw new SidecarRecoveryContractError(
@@ -171,6 +171,11 @@ export class SidecarRecoveryReadWindow {
         "sidecar recovery requests require a correlated requestId",
       );
     }
+    if (!recoveryRequestTypes.has(requestType)) {
+      throw new SidecarRecoveryContractError(
+        `unsupported recovery request type: ${requestType}`,
+      );
+    }
     if (this.#owned.has(requestId)) {
       throw new SidecarRecoveryContractError(
         `sidecar recovery request is already owned: ${requestId}`,
@@ -178,7 +183,7 @@ export class SidecarRecoveryReadWindow {
     }
     this.#owned.set(requestId, {
       requestId,
-      requestType: recoveryRequestType,
+      requestType,
       terminal: null,
       released: false,
       releasePromise: null,
@@ -344,8 +349,7 @@ export class SidecarRecoveryReadWindow {
       );
     }
     const succeeded = terminal.type === owned.requestType;
-    const expectedFailure = owned.requestType === recoveryRequestType
-      && isExpectedSidecarRecoveryFailure(terminal);
+    const expectedFailure = isExpectedSidecarRecoveryFailure(terminal);
     if (!succeeded && !expectedFailure) {
       throw new SidecarRecoveryContractError(
         `unexpected recovery terminal: ${owned.requestId}`,
