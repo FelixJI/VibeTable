@@ -1,6 +1,7 @@
 package app
 
 import (
+	"io"
 	"net/http"
 	"strings"
 
@@ -8,6 +9,8 @@ import (
 	"github.com/pocketbase/pocketbase/tools/hook"
 	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 )
+
+const maxRejectedWriteBodyBytes = 1 << 20
 
 const workspaceV2FieldCancelPrefix = "/api/vibetable/v2/field-change/cancel/"
 
@@ -47,6 +50,15 @@ func bindWorkspaceV2WriteBoundary(event *core.ServeEvent) {
 				request.Request.URL.Path,
 			) {
 				return request.Next()
+			}
+			// Connection: close skips net/http's automatic pre-response drain.
+			// Consume small rejected bodies so a close cannot reset away the 423.
+			// Reads retain PocketBase's server deadline; rejected handlers never run.
+			if request.Request.Body != nil {
+				count, err := io.Copy(io.Discard, io.LimitReader(request.Request.Body, maxRejectedWriteBodyBytes))
+				if err != nil || count == maxRejectedWriteBodyBytes {
+					request.Response.Header().Set("Connection", "close")
+				}
 			}
 			return request.JSON(http.StatusLocked, map[string]any{
 				"code":      "workspace.v1_write_disabled",

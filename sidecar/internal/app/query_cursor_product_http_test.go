@@ -94,7 +94,8 @@ func cursorProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interfac
 	}, productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
 		queryCursorOpenRegistration(port), queryCursorFetchRegistration(port),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
-		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)))
+		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {
 		t.Fatal(err)
 	}

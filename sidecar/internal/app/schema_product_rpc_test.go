@@ -17,6 +17,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
@@ -41,6 +42,17 @@ func (port unrelatedQueryCursorMustNotRun) FetchCursor(context.Context, string) 
 	port.t.Helper()
 	port.t.Fatal("unrelated Product fixture unexpectedly invoked query.cursorFetch")
 	return query.CursorWindow{}, errors.New("unexpected query.cursorFetch invocation")
+}
+
+type unrelatedHistoryReadMustNotRun struct{ t *testing.T }
+
+func (reader unrelatedHistoryReadMustNotRun) ReadBusinessHistory(
+	context.Context,
+	audit.ReadParams,
+) (audit.Page, error) {
+	reader.t.Helper()
+	reader.t.Fatal("unrelated Product fixture unexpectedly invoked history.read")
+	return audit.Page{}, errors.New("unexpected history.read invocation")
 }
 
 func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
@@ -675,6 +687,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)

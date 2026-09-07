@@ -399,13 +399,17 @@ public sealed class HostProductRpcCompositionTests
         internal PythonBackendSupervisor Backend { get; private set; } = null!;
         internal BackendLaunchOptions BackendOptions { get; private set; } = null!;
         internal PocketBaseSupervisor Sidecar { get; private set; } = null!;
-        internal HttpPeer Http { get; } = new();
+        internal HttpPeer Http { get; }
         internal Action? BeforeSidecarReady { get; set; }
         internal WorkspaceSessionV2 Session => _sessions.Current;
 
         private Fixture(bool useTestPolicy)
         {
-            Http.UseTestPolicy = useTestPolicy;
+            ProductRpcCapabilityManifest productPolicy = useTestPolicy
+                ? ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
+                    "schema.list", "workspace", "hostOnly", "schema.read", "goSidecar", "read"))
+                : ProductRpcCapabilityManifest.Default;
+            Http = new HttpPeer(productPolicy.GetProductSidecarRegistrations());
             DirectoryInfo directory = new(AppContext.BaseDirectory);
             while (!File.Exists(Path.Combine(directory.FullName, "pyproject.toml")))
                 directory = directory.Parent ?? throw new InvalidOperationException("Repository not found.");
@@ -438,8 +442,7 @@ public sealed class HostProductRpcCompositionTests
                     Backend = new PythonBackendSupervisor(backendOptions);
                     return new(Sidecar, Backend, new WorkspaceV2HttpGateway(Sidecar, Http));
                 },
-                useTestPolicy ? ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
-                    "schema.list", "workspace", "hostOnly", "schema.read", "goSidecar", "read")) : null);
+                productPolicy);
             _sessions = new WorkspaceSessionManager(new WorkspaceRegistry(_root), Factory);
             Leases = new WorkspaceSessionEnvelopeFilter(_sessions);
             _sessions.SetRequestDrainHook(Leases);
@@ -486,7 +489,8 @@ public sealed class HostProductRpcCompositionTests
         }
     }
 
-    private sealed class HttpPeer : HttpMessageHandler
+    private sealed class HttpPeer(
+        IReadOnlyList<ProductSidecarRegistration> registrations) : HttpMessageHandler
     {
         internal IDictionary<string, string> Environment { get; set; } = null!;
         internal int ProductCalls { get; private set; }
@@ -494,7 +498,6 @@ public sealed class HostProductRpcCompositionTests
         internal TaskCompletionSource RpcEntered { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? ReplyGate { get; set; }
         internal bool Error { get; set; }
-        internal bool UseTestPolicy { get; set; }
         internal JsonElement Result { get; set; } = Json("""{"tables":["orders"]}""");
         internal JsonElement LastWire { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -509,22 +512,12 @@ public sealed class HostProductRpcCompositionTests
                     sessionEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_SESSION_EPOCH"]),
                     fenceEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_FENCE_EPOCH"]),
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
-                    rpcMethods = UseTestPolicy
-                        ? new[] { "schema.list" }
-                        : new[] { "events.reconcile", "file.list", "lookup.list", "query.cursorFetch", "query.cursorOpen", "schema.describe", "schema.getTable", "schema.list" },
-                    registrations = UseTestPolicy
-                        ? new[] { new { method = "schema.list", scope = "workspace" } }
-                        : new[]
-                        {
-                            new { method = "events.reconcile", scope = "workspace" },
-                            new { method = "file.list", scope = "workspace" },
-                            new { method = "lookup.list", scope = "workspace" },
-                            new { method = "query.cursorFetch", scope = "workspace" },
-                            new { method = "query.cursorOpen", scope = "workspace" },
-                            new { method = "schema.describe", scope = "workspace" },
-                            new { method = "schema.getTable", scope = "workspace" },
-                            new { method = "schema.list", scope = "workspace" },
-                        },
+                    rpcMethods = registrations.Select(registration => registration.Method).ToArray(),
+                    registrations = registrations.Select(registration => new
+                    {
+                        method = registration.Method,
+                        scope = registration.Scope,
+                    }).ToArray(),
                 }));
             }
             if (request.RequestUri!.AbsolutePath.EndsWith("/drain", StringComparison.Ordinal))

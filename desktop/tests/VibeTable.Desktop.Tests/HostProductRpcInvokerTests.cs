@@ -252,7 +252,7 @@ public sealed class HostProductRpcInvokerTests
             {"collection":"orders","itemId":null,"changeSets":[],"total":0,
              "capabilityHash":"test-capability","schemaRevision":"schema_1"}
             """);
-        using JsonRpcProductDataGateway gateway = fixture.Gateway();
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
 
         HistoryPage result = await gateway.ReadHistoryAsync(
             new ReadChangeSetsParams("orders", null, 25, 0), CancellationToken.None);
@@ -321,18 +321,20 @@ public sealed class HostProductRpcInvokerTests
             return fixture;
         }
 
-        internal JsonRpcProductDataGateway Gateway() => new(
+        internal JsonRpcProductDataGateway Gateway(bool useGeneratedPolicy = false) => new(
             new HostProductRpcInvoker(_client, _snapshot, _leases,
                 action => Current && action(),
-                new ProductRpcRouteSelector(ProductRpcCapabilityManifest.CreateForTests(
-                    new ProductRpcCapability("history.read", "workspace", "hostOnly",
-                        "history.read", "goSidecar", "read"),
-                    new ProductRpcCapability("file.list", "workspace", "hostOnly",
-                        "file.attachment", "goSidecar", "read"),
-                    new ProductRpcCapability("schema.getTable", "workspace", "hostOnly",
-                        "schema.read", "goSidecar", "read"),
-                    new ProductRpcCapability("schema.list", "workspace", "hostOnly",
-                        "schema.read", "goSidecar", "read"))), Http));
+                useGeneratedPolicy
+                    ? ProductRpcRouteSelector.Default
+                    : new ProductRpcRouteSelector(ProductRpcCapabilityManifest.CreateForTests(
+                        new ProductRpcCapability("history.read", "workspace", "hostOnly",
+                            "history.read", "goSidecar", "read"),
+                        new ProductRpcCapability("file.list", "workspace", "hostOnly",
+                            "file.attachment", "goSidecar", "read"),
+                        new ProductRpcCapability("schema.getTable", "workspace", "hostOnly",
+                            "schema.read", "goSidecar", "read"),
+                        new ProductRpcCapability("schema.list", "workspace", "hostOnly",
+                            "schema.read", "goSidecar", "read"))), Http));
 
         public async ValueTask DisposeAsync()
         {

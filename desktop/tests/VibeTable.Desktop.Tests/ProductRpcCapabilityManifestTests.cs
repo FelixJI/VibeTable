@@ -31,7 +31,7 @@ public sealed class ProductRpcCapabilityManifestTests
     }
 
     [TestMethod]
-    public void GeneratedManifestProvidesClosedRouteLookupWithReconcileFileAndSchemaReadsOnGo()
+    public void GeneratedManifestProvidesClosedRouteLookupForCurrentOwners()
     {
         ProductRpcCapabilityManifest manifest = ProductRpcCapabilityManifest.Default;
 
@@ -50,6 +50,7 @@ public sealed class ProductRpcCapabilityManifestTests
             {
                 "events.reconcile:workspace",
                 "file.list:workspace",
+                "history.read:workspace",
                 "lookup.list:workspace",
                 "query.cursorFetch:workspace",
                 "query.cursorOpen:workspace",
@@ -59,6 +60,8 @@ public sealed class ProductRpcCapabilityManifestTests
             },
             manifest.GetProductSidecarRegistrations()
                 .Select(item => $"{item.Method}:{item.Scope}").ToArray());
+        Assert.IsTrue(manifest.TryGet("history.read", out ProductRpcCapability historyRead));
+        Assert.AreEqual("goSidecar", historyRead.Owner);
     }
 
     [TestMethod]

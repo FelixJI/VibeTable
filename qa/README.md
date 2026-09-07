@@ -87,6 +87,29 @@ empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第
 
 `--component-only` 只适用于开发诊断，发布 CI 不得使用。
 
+## A1 自然老化验收
+
+这是一项人工、跨 24 小时的真实 WPF/WebView2 验收，不进入默认 CI。对同一已构建候选先运行：
+
+```powershell
+uv run --frozen --no-sync python qa/retention_natural_aging.py seed --package-root dist\VibeTable.Next
+```
+
+seed 通过真实 UI 创建内容不同的两个快照、公开核实其状态，并把状态仅写到
+`build/qa/natural-retention-aging/state.json`。正常退出后等待至少 24 小时，再对同一候选运行：
+
+```powershell
+uv run --frozen --no-sync python qa/retention_natural_aging.py resume --package-root dist\VibeTable.Next
+```
+
+不要复制或移动该目录的工作区/`local-data`，不要修改数据库或系统时钟。resume 会在启动 Host
+前拒绝过早、候选不一致、状态路径越界或 workspace UUID 不一致的 checkpoint；失败状态不会重写
+checkpoint。证据在 `build/qa/natural-retention-aging/evidence/`，成功后保留其供 PR 人工复核。
+
+失败的 seed 保留原目录与证据；可在同一 QA 根创建独立重试，例如
+`--state build/qa/natural-retention-aging/attempt-3/state.json`。随后 resume 必须传入同一 `--state`，
+不得迁移其工作区或 `local-data`。
+
 ## 发布包检查
 
 `qa/package_check.py` 无参数时检查源码与提交的发布布局。传入发布目录时还会
