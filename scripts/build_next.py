@@ -1509,7 +1509,7 @@ def _is_lower_hex(value: object, *, length: int) -> bool:
     )
 
 
-def _is_valid_self_update_rollback_receipt(
+def _self_update_rollback_receipt_error(
     receipt: object,
     *,
     receipt_name: str,
@@ -1519,27 +1519,27 @@ def _is_valid_self_update_rollback_receipt(
     expected_updater_process_id: int,
     updated_process_id: int,
     expected_failure_code: str,
-) -> bool:
+) -> str | None:
     if not isinstance(receipt, dict) or set(receipt) != _SELF_UPDATE_ACTIVATION_POINTER_V2_FIELDS:
-        return False
+        return "fields"
     receipt_updater_process_id = receipt.get("updaterProcessId")
     watchdog_process_id = receipt.get("watchdogProcessId")
     receipt_updated_process_id = receipt.get("updatedProcessId")
     worker_process_id = receipt.get("workerProcessId")
     process_ids = (receipt_updater_process_id, watchdog_process_id, worker_process_id)
     if any(type(process_id) is not int or process_id <= 0 for process_id in process_ids):
-        return False
+        return "processIds"
     if type(expected_updater_process_id) is not int or expected_updater_process_id <= 0:
-        return False
+        return "expectedUpdaterProcessId"
     if receipt_updater_process_id != expected_updater_process_id:
-        return False
+        return "updaterProcessId"
     if type(updated_process_id) is not int or updated_process_id <= 0:
-        return False
+        return "expectedUpdatedProcessId"
     if (
         type(receipt_updated_process_id) is not int
         or receipt_updated_process_id != updated_process_id
     ):
-        return False
+        return "updatedProcessId"
 
     timestamp_fields = (
         "updaterStartedAtUtc",
@@ -1553,7 +1553,7 @@ def _is_valid_self_update_rollback_receipt(
     )
     timestamps = {field: _offset_datetime(receipt.get(field)) for field in timestamp_fields}
     if any(timestamp is None for timestamp in timestamps.values()):
-        return False
+        return "timestamps"
     updater_started = cast(datetime, timestamps["updaterStartedAtUtc"])
     created_at = cast(datetime, timestamps["createdAtUtc"])
     watchdog_started = cast(datetime, timestamps["watchdogStartedAtUtc"])
@@ -1571,16 +1571,16 @@ def _is_valid_self_update_rollback_receipt(
         <= worker_started
         <= rolled_back
     ):
-        return False
+        return "timestampOrder"
     if watchdog_process_id != receipt_updater_process_id or watchdog_started != updater_started:
-        return False
+        return "watchdogIdentity"
     process_identities = {
         (receipt_updater_process_id, updater_started),
         (updated_process_id, updated_started),
         (worker_process_id, worker_started),
     }
     if len(process_identities) != 3:
-        return False
+        return "distinctProcessIdentities"
 
     rollback_attempt = receipt.get("rollbackAttempt")
     ledger = receipt.get("ownedEntryLedger")
@@ -1590,7 +1590,7 @@ def _is_valid_self_update_rollback_receipt(
         (HOST_EXE_NAME, "restored"),
     }
     if not isinstance(ledger, list) or len(ledger) != len(expected_ledger):
-        return False
+        return "ownedEntryLedger"
     if any(
         not isinstance(entry, dict)
         or set(entry) != {"name", "phase"}
@@ -1598,33 +1598,52 @@ def _is_valid_self_update_rollback_receipt(
         or type(entry["phase"]) is not str
         for entry in ledger
     ):
-        return False
+        return "ownedEntryLedger"
     actual_ledger = {(entry["name"], entry["phase"]) for entry in ledger}
     worker_replacement_count = receipt.get("workerReplacementCount")
-    return (
-        type(receipt.get("schemaVersion")) is int
-        and receipt.get("schemaVersion") == 2
-        and receipt.get("state") == "rollbackComplete"
-        and type(receipt.get("targetRoot")) is str
+    if not (type(receipt.get("schemaVersion")) is int and receipt.get("schemaVersion") == 2):
+        return "schemaVersion"
+    if receipt.get("state") != "rollbackComplete":
+        return "state"
+    if not (
+        type(receipt.get("targetRoot")) is str
         and Path(receipt["targetRoot"]).resolve() == target.resolve()
-        and type(receipt.get("stagingRoot")) is str
+    ):
+        return "targetRoot"
+    if not (
+        type(receipt.get("stagingRoot")) is str
         and Path(receipt["stagingRoot"]).resolve() == stage.resolve()
-        and receipt.get("currentVersion") == "1.0.0"
-        and receipt.get("targetVersion") == "1.0.1"
-        and receipt.get("token") == token
-        and receipt.get("smokeTest") is True
-        and receipt.get("confirmedAt") is None
-        and _is_lower_hex(receipt.get("ownedGroupId"), length=32)
-        and receipt.get("launchNonce") is None
-        and receipt.get("failureCode") == expected_failure_code
-        and receipt.get("workerLaunchNonce") is None
-        and type(worker_replacement_count) is int
-        and worker_replacement_count in (0, 1)
-        and actual_ledger == expected_ledger
-        and _is_lower_hex(rollback_attempt, length=32)
-        and receipt_name == f".VibeTable.Next.update-rollback-{rollback_attempt}.json"
-        and receipt.get("rollbackErrorCode") is None
-    )
+    ):
+        return "stagingRoot"
+    if receipt.get("currentVersion") != "1.0.0":
+        return "currentVersion"
+    if receipt.get("targetVersion") != "1.0.1":
+        return "targetVersion"
+    if receipt.get("token") != token:
+        return "token"
+    if receipt.get("smokeTest") is not True:
+        return "smokeTest"
+    if receipt.get("confirmedAt") is not None:
+        return "confirmedAt"
+    if not (_is_lower_hex(receipt.get("ownedGroupId"), length=32)):
+        return "ownedGroupId"
+    if receipt.get("launchNonce") is not None:
+        return "launchNonce"
+    if receipt.get("failureCode") != expected_failure_code:
+        return "failureCode"
+    if receipt.get("workerLaunchNonce") is not None:
+        return "workerLaunchNonce"
+    if not (type(worker_replacement_count) is int and worker_replacement_count in (0, 1)):
+        return "workerReplacementCount"
+    if actual_ledger != expected_ledger:
+        return "ownedEntryLedger"
+    if not (_is_lower_hex(rollback_attempt, length=32)):
+        return "rollbackAttempt"
+    if receipt_name != f".VibeTable.Next.update-rollback-{rollback_attempt}.json":
+        return "receiptName"
+    if receipt.get("rollbackErrorCode") is not None:
+        return "rollbackErrorCode"
+    return None
 
 
 @dataclass(frozen=True)
@@ -1696,7 +1715,7 @@ def _wait_for_self_update_rollback(
             or not failed["error"]
         ):
             raise BuildError("desktop self-update smoke did not observe a health failure")
-        if not _is_valid_self_update_rollback_receipt(
+        receipt_error = _self_update_rollback_receipt_error(
             receipt,
             receipt_name=receipts[0].name,
             target=target,
@@ -1705,8 +1724,12 @@ def _wait_for_self_update_rollback(
             expected_updater_process_id=updater_process_id,
             updated_process_id=updated_process_id,
             expected_failure_code=expected_failure_code,
-        ):
-            raise BuildError("desktop self-update smoke rollback receipt identity is invalid")
+        )
+        if receipt_error is not None:
+            raise BuildError(
+                "desktop self-update smoke rollback receipt identity is invalid: "
+                f"{scenario_slug}/{receipt_error}"
+            )
         if consumed_request is not None and consumed_request.path.exists():
             raise BuildError(
                 f"desktop self-update smoke did not consume {consumed_request.description}"
