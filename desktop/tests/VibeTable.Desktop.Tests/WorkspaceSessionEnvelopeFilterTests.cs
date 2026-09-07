@@ -758,7 +758,10 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual("BAD_WORKSPACE_SCOPE", payload.GetProperty("code").GetString());
     }
     [TestMethod]
-    [DataRow("lookup.list", "{\"collection\":\"records\"}")]
+    [DataRow("lookup.valuePage",
+        "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
+        + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
+        + "\"offset\":0,\"limit\":10}")]
     [DataRow("relation.searchTargets", "{\"relationId\":\"records.owner\"}")]
     public async Task RelationReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
     {
@@ -801,7 +804,10 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    [DataRow("lookup.list", "{\"collection\":\"records\"}")]
+    [DataRow("lookup.valuePage",
+        "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
+        + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
+        + "\"offset\":0,\"limit\":10}")]
     [DataRow("relation.searchTargets", "{\"relationId\":\"records.owner\"}")]
     public async Task RelationReadRejectsRetiredScopeBeforeGateway(string type, string payload)
     {
