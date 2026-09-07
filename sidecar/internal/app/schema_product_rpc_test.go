@@ -442,6 +442,29 @@ func TestSchemaListProductHTTPPreservesPublicStorageErrorAndCancellation(t *test
 	}
 }
 
+func TestSchemaProductStoreCleanupTerminatesBeforeReset(t *testing.T) {
+	var pb *pocketbase.PocketBase
+	terminated := false
+	bootstrappedAtTermination := false
+	t.Run("fixture", func(t *testing.T) {
+		pb = schemaProductStore(t)
+		pb.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
+			terminated = true
+			bootstrappedAtTermination = event.App.IsBootstrapped()
+			return event.Next()
+		})
+	})
+	if !terminated {
+		t.Error("fixture cleanup did not invoke OnTerminate")
+	}
+	if !bootstrappedAtTermination {
+		t.Error("OnTerminate must run before bootstrap state is reset")
+	}
+	if pb == nil || pb.IsBootstrapped() {
+		t.Error("fixture cleanup did not reset bootstrap state")
+	}
+}
+
 func schemaProductStore(t *testing.T) *pocketbase.PocketBase {
 	t.Helper()
 	pb := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir(), HideStartBanner: true})
@@ -450,7 +473,10 @@ func schemaProductStore(t *testing.T) *pocketbase.PocketBase {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := pb.ResetBootstrapState(); err != nil {
+		event := &core.TerminateEvent{App: pb}
+		if err := pb.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
+			return event.App.ResetBootstrapState()
+		}); err != nil {
 			t.Error(err)
 		}
 	})
