@@ -260,6 +260,10 @@ VibeTable 不需要全面重写。长期 ownership 定义为：
 
 ### A1：Retention 非零逻辑清理与物理 Sweep 分层证据
 
+2026-09-07 验收增量：冻结候选已完成真实 24 小时自然老化后的非零逻辑清理，
+8 项产品断言和退出清理均通过，见[自然老化验收记录](../quality/retention-natural-aging-evidence.md)。
+这是指定候选的逻辑清理证据；下述物理 Sweep 资格仍独立验收，不能据此把 A1 全项标为完成。
+
 当前开放 PR #129 负责：
 
 - 新增独立 packaged 场景，不改写已经可信的零删除场景；
@@ -474,7 +478,7 @@ flowchart LR
 可与 L3A 分支并行开发，但按最新 main 串行合并和重生成 catalog：
 
 - Relation/Lookup 描述与分页；
-- history list/preview；
+- history read；preview/apply 作为共享 token owner 的完整恢复能力组留在 L5；
 - attachment/file metadata 读取；
 - Formula/Field capability 描述；
 - 共享 schema projection。
@@ -495,7 +499,7 @@ flowchart LR
 
 - FieldChange、Mutation、Formula；
 - Relation/Lookup 写入；
-- row/history restore；
+- row/history restore（包括 history preview/apply 的同片迁移）；
 - Dashboard、Preset、Version、Surface、ContentProfile、RecordDocumentLink 等共享 workspace metadata。
 
 规则：

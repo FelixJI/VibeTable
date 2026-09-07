@@ -154,8 +154,10 @@ def test_sidecar_transport_failure_preserves_safe_process_evidence_after_stop(
     assert process.stderr.closed
 
 
+@pytest.mark.parametrize("stop_code", [0, 23])
 def test_transport_error_renders_evidence_finalized_after_raise(
     tmp_path: Path,
+    stop_code: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ready = json.dumps(
@@ -178,6 +180,11 @@ def test_transport_error_renders_evidence_finalized_after_raise(
         calls += 1
         if calls == 1:
             return _FakeResponse({"status": "ok"})
+        if calls == 3:
+            process.returncode = stop_code
+            response = _FakeResponse({})
+            response.status = 202
+            return response
         raise ConnectionResetError("reset before process exit")
 
     monkeypatch.setattr(matrix.urllib.request, "urlopen", fake_urlopen)
@@ -189,14 +196,15 @@ def test_transport_error_renders_evidence_finalized_after_raise(
     with pytest.raises(AssertionError) as caught:
         sidecar.request("POST", "/api/vibetable/v1/history/restore-apply")
     assert process.returncode is None
-
-    process.returncode = 23
     sidecar.stop()
 
     message = str(caught.value)
     assert "POST /api/vibetable/v1/history/restore-apply" in message
     assert "transport=ConnectionResetError" in message
-    assert "exit=23" in message
+    assert "atFailure={exit=None;" in message
+    assert f"afterStop={{exit={stop_code};" in message
+    assert calls == 3
+    assert process.kill_calls == 0
     assert "sidecar.late_exit" in message
 
 

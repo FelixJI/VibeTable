@@ -62,30 +62,42 @@ func (runtime *Runtime) queryHistory(
 	if err != nil {
 		return nil, errors.New("history.request_invalid")
 	}
-	if err := runtime.drainBusinessHistory(ctx); err != nil {
-		return nil, errors.New("history.storage_failed")
-	}
-	page, err := runtime.historyRestore.ReadChangeSets(
-		ctx,
-		audit.ReadParams{
-			TableID:  params.Collection,
-			ItemID:   params.ItemID,
-			Field:    params.Field,
-			Search:   params.Search,
-			ActorID:  params.ActorID,
-			Actions:  params.Actions,
-			DateFrom: params.DateFrom,
-			DateTo:   params.DateTo,
-			Limit:    params.Limit,
-			Offset:   params.Offset,
-			Scope:    params.Scope,
-			RecordID: params.RecordID,
-		},
-	)
+	page, err := runtime.ReadBusinessHistory(ctx, audit.ReadParams{
+		TableID:  params.Collection,
+		ItemID:   params.ItemID,
+		Field:    params.Field,
+		Search:   params.Search,
+		ActorID:  params.ActorID,
+		Actions:  params.Actions,
+		DateFrom: params.DateFrom,
+		DateTo:   params.DateTo,
+		Limit:    params.Limit,
+		Offset:   params.Offset,
+		Scope:    params.Scope,
+		RecordID: params.RecordID,
+	})
 	if err != nil {
 		return nil, publicHistoryRestoreError(err)
 	}
 	return page, nil
+}
+
+// ReadBusinessHistory keeps the business-audit freshness boundary with the
+// authoritative history projection for every transport that exposes it.
+func (runtime *Runtime) ReadBusinessHistory(
+	ctx context.Context,
+	params audit.ReadParams,
+) (audit.Page, error) {
+	if err := runtime.drainBusinessHistory(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return audit.Page{}, err
+		}
+		return audit.Page{}, &audit.Error{
+			Code: "history.storage_failed", Message: "history could not be read",
+			Details: map[string]any{}, Retryable: true,
+		}
+	}
+	return runtime.historyRestore.ReadChangeSets(ctx, params)
 }
 
 type previewHistoryRestoreParams struct {

@@ -504,10 +504,6 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                 }
             ),
         )
-    with pytest.raises(ValueError, match="actions"):
-        await service.invoke(
-            "history.read", ProductParams.model_validate({"collection": "orders", "actions": [""]})
-        )
     with pytest.raises(ValueError, match="field"):
         await service.invoke(
             "history.previewRestore",

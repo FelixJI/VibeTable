@@ -310,6 +310,40 @@ public sealed class ProductSidecarHttpGatewayTests
     }
 
     [TestMethod]
+    public async Task LegalHistoryParamsOverOneMiBReachTheProductPeer()
+    {
+        byte[]? body = null;
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/capabilities"))
+            {
+                return Json(Capabilities(
+                    rpcMethods: "[\"history.read\"]",
+                    registrations: "[{\"method\":\"history.read\",\"scope\":\"workspace\"}]"));
+            }
+            body = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            return Json(SuccessResponse());
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new("history.read", "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        using JsonDocument empty = JsonDocument.Parse("{}");
+        using JsonDocument parameters = JsonDocument.Parse(
+            JsonSerializer.Serialize(new
+            {
+                collection = "orders", itemId = "row-1", limit = 20, offset = 0, scope = "row",
+                search = new string('x', 1024 * 1024 - 128), actions = Array.Empty<string>(),
+            }));
+
+        await gateway.ForwardAsync(
+            "request-1", "history.read", empty.RootElement,
+            parameters.RootElement, CancellationToken.None);
+
+        Assert.IsNotNull(body);
+        Assert.IsGreaterThan(1024 * 1024, body.Length);
+        Assert.AreEqual(2, handler.SendCount);
+    }
+
+    [TestMethod]
     public async Task RequestOverFourMiBIsRejectedWithoutPost()
     {
         var handler = ProductHandler(_ =>
@@ -321,11 +355,8 @@ public sealed class ProductSidecarHttpGatewayTests
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.ForwardAsync(
-                "request-1",
-                "query.page",
-                empty.RootElement,
-                parameters.RootElement,
-                CancellationToken.None));
+                "request-1", "query.page", empty.RootElement,
+                parameters.RootElement, CancellationToken.None));
 
         Assert.AreEqual(1, handler.SendCount);
     }
