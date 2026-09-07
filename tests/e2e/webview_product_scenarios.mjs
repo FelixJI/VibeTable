@@ -3258,7 +3258,13 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       && lastResponse.payload?.rows?.length === expectedRows
       && lastResponse.payload?.snapshot?.schemaRevision
     ) {
-      return lastResponse.payload;
+      const recoveredPage = lastResponse.payload;
+      // query.page is Go-owned and can recover before the Python write gateway.
+      // Probe that gateway through its read-only contract within the same deadline.
+      lastResponse = await rawBridgeRequest(page, "field.settings.describe", { tableId });
+      if (lastResponse.type === "field.settings.describe") {
+        return recoveredPage;
+      }
     }
     await acknowledgeExpectedSidecarRecoveryFailure(
       lastResponse,
