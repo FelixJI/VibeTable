@@ -194,6 +194,20 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    public async Task QueryPageUsesDefaultGoOwnerAndPreservesProductProjection()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        fixture.Http.Result = Json("""{"rows":[{"id":"r1","value":false}],"offset":0,"limit":5,"filteredRows":1,"totalRows":1,"snapshot":{"schemaRevision":"schema_1","dataRevision":0}}""");
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!.CreateGateway(fixture.Leases, fixture.Http);
+        JsonElement result = await gateway.QueryPageAsync(Json("""{"tableId":"orders","query":{"offset":0,"limit":5}}"""), CancellationToken.None);
+        Assert.IsFalse(result.GetProperty("rows")[0].GetProperty("value").GetBoolean());
+        Assert.AreEqual("schema_1", result.GetProperty("snapshot").GetProperty("schemaRevision").GetString());
+        Assert.IsFalse(result.TryGetProperty("querySnapshot", out _));
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
     public async Task ReadyFactoryCapturesPairedClientAndUsesTypedSelectedRoute()
     {
         await using var fixture = await Fixture.OpenAsync();

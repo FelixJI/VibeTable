@@ -58,6 +58,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "file.list",
         "history.read",
         "lookup.list",
+        "query.page",
         "query.view",
         "schema.describe",
         "schema.getTable",
@@ -74,6 +75,20 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "owner": "goSidecar",
         "effect": "read",
     }
+    query_page = next(item for item in manifest["rpcMethods"] if item["method"] == "query.page")
+    assert query_page == {
+        "method": "query.page",
+        "scope": "workspace",
+        "audience": "rendererPublic",
+        "capabilityId": "schema.query",
+        "owner": "goSidecar",
+        "effect": "read",
+    }
+    for method in ("query.readRows", "query.cursorOpen", "query.cursorFetch"):
+        assert (
+            next(item for item in manifest["rpcMethods"] if item["method"] == method)["owner"]
+            == "pythonBff"
+        )
     assert {item["owner"] for item in manifest["eventTopics"]} == {"pythonBff"}
     events = {item["topic"]: item for item in manifest["eventTopics"]}
     assert events["plugin.interaction.requested"]["audience"] == "rendererPublic"
@@ -138,13 +153,14 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 92
+    assert len(methods) == 91
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "events.reconcile",
         "file.list",
         "history.read",
         "lookup.list",
+        "query.page",
         "query.view",
         "schema.describe",
         "schema.getTable",

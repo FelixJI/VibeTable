@@ -52,6 +52,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "file.list:workspace",
                 "history.read:workspace",
                 "lookup.list:workspace",
+                "query.page:workspace",
                 "query.view:workspace",
                 "schema.describe:workspace",
                 "schema.getTable:workspace",

@@ -32,7 +32,7 @@ func queryViewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	}, productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
-		queryViewRegistration(port), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
+		queryViewRegistration(port), queryPageRegistration(unrelatedPageForViewMustNotRun{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {
@@ -265,4 +265,11 @@ func TestQueryViewProductHTTPRealGroupingAndRevision(t *testing.T) {
 	if _, err := queryViewRegistration(port).Handler(ctx, json.RawMessage(`{"tableId":"`+table.TableID+`","view":{}}`)); err != context.Canceled {
 		t.Fatalf("real Port cancelled request: %v", err)
 	}
+}
+
+type unrelatedPageForViewMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedPageForViewMustNotRun) QueryPage(context.Context, string, query.TableQuery) (query.Page, error) {
+	probe.t.Fatal("view fixture must not execute query.page")
+	return query.Page{}, nil
 }
