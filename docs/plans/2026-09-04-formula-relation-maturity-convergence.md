@@ -111,4 +111,4 @@ PR 7 按回滚边界拆为 RR1（pair 原子更新）和 RR2（完整性 inspect
 
 既有DisplayField的Grid消费已在独立查询展示意图中实现并完成本地质量、真实S28/S02验证，见[标签资格](../quality/relation-display-labels.md)。这补齐此前“配置保存但单元格仍显示ID”的缺口；保持Picker主显示字段和原始关系ID，不切换owner。多窗口批量刷新与编辑队列已通过回归，整体Relation、RR2完整性修复和跨表计算链仍Partial；fresh CI和合并闭环尚待完成。
 
-RR2 只读诊断已形成独立实现意图：Go 原始双端分页检查、revision 冻结、零写入拒绝和字段设置检查面板；真实产品 S31 已声明101条来源分页及冲突后重启，但尚未运行。聚焦测试和当前本地完整矩阵失败分别记录于[关系检查资格](../quality/relation-pair-inspection.md)。当前不宣称 RR2 inspect/repair 完成，repair 写入继续独立；优先收尾 #305/#306 的 fresh CI 和实际 main，再验收依赖表头入口的 S31。
+RR2 只读诊断已形成独立实现意图：Go 原始双端分页检查、revision 冻结、零写入拒绝和字段设置检查面板；真实产品 S31 已在含 #305 本地候选的构建上通过101条来源分页、检查零写入及冲突后重启。聚焦测试和当前本地完整矩阵失败分别记录于[关系检查资格](../quality/relation-pair-inspection.md)。当前不宣称 RR2 inspect/repair 完成，repair 写入继续独立；优先收尾 #305/#306 的 fresh CI 和实际 main，再完成诊断 PR 的实际端点同步与 fresh CI；本地组合验证不代表依赖已经合并。
