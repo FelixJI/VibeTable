@@ -20,8 +20,8 @@ internal interface IProductSidecarRpcForwarder
 
 /// <summary>
 /// Resolves the single transport owner for a typed Product RPC. Workspace
-/// catalog entries keep their existing Python route; Relation remains on
-/// Python until its own lifecycle migration is complete.
+/// catalog entries keep their existing Python route; closed Product and
+/// Relation entries use their generated transport owner.
 /// </summary>
 internal sealed class ProductRpcRouteSelector
 {
@@ -54,7 +54,6 @@ internal sealed class ProductRpcRouteSelector
     {
         route = default;
         return _manifest.TryGet(method, out ProductRpcCapability capability)
-            && capability.Owner == "pythonBff"
             && TryMapOwner(capability.Owner, out route);
     }
 

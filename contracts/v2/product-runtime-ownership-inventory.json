@@ -568,13 +568,13 @@
     {
       "id": "rpc.relation-lookup-history-read",
       "kind": "rpc",
-      "names": ["history.previewRestore", "lookup.query", "lookup.valuePage", "relation.previewDelta", "relation.searchTargets"],
+      "names": ["history.previewRestore", "lookup.query", "lookup.valuePage", "relation.searchTargets"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["history.previewRestore", "lookup.query", "lookup.valuePage", "relation.previewDelta", "relation.searchTargets"], "write": [], "notification": [], "state": []},
+      "effects": {"read": ["history.previewRestore", "lookup.query", "lookup.valuePage", "relation.searchTargets"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
@@ -584,6 +584,48 @@
       "targetPr": null,
       "deleteWhen": "The Go Product Adapter returns the public relation, Lookup, and history projections and the Python projection module is deleted.",
       "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/audit_routes.go", "sidecar/internal/app/relation_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.relation-preview",
+      "kind": "rpc",
+      "names": [
+        "relation.previewDelta"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "relation.previewDelta"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "28-relation-delta-preview"
+      ],
+      "targetSlice": "L3B",
+      "targetPr": null,
+      "deleteWhen": "The Python preview route is removed; preserve original delta echo and read-only authority preview.",
+      "evidence": [
+        "sidecar/internal/app/relation_preview_product_rpc.go",
+        "sidecar/internal/relation/service.go",
+        "contracts/v2/relation-preview-python-oracle.json"
+      ]
     },
     {
       "id": "rpc.schema-describe",

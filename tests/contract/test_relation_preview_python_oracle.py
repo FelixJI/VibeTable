@@ -6,29 +6,16 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, JsonValue
 from contracts.v2 import generate_relation_preview_oracle as oracle
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", oracle.cases(), ids=lambda case: case.name)
-async def test_original_preview_matches_frozen_wire(case: oracle.Case) -> None:
+def test_preview_metadata_and_inputs_are_frozen() -> None:
+    oracle.validate_frozen_inputs()
     frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    expected = next(entry for entry in frozen["cases"] if entry["name"] == case.name)
-    assert oracle.render(await oracle.capture_case(case)) == oracle.render(expected)
-
-
-@pytest.mark.asyncio
-async def test_preview_metadata_and_complete_capture_are_frozen() -> None:
-    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    assert oracle.render(await oracle.capture()) == oracle.render(frozen)
     assert frozen["producerCommit"] == "6ed36810f3753caed5e2e8ca27a4d4ad2117d41d"
-    names = [entry["name"] for entry in frozen["cases"]]
-    assert len(names) == len(set(names)) == 37
-    assert set(frozen["typedGoBoundaries"]) <= set(names)
-    assert set(names) == {case.name for case in oracle.cases()}
+    assert len(frozen["cases"]) == 37
+    assert len({entry["name"] for entry in frozen["cases"]}) == 37
 
 
 def test_preview_echo_translation_and_output_projection_are_distinct() -> None:
@@ -134,77 +121,6 @@ def test_preview_product_and_handler_errors_do_not_collapse() -> None:
     assert entries["transport-error"]["response"]["error"]["data"]["code"] == "sidecar.unavailable"
 
 
-def compact_size(value: JsonValue) -> int:
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
-
-
-@pytest.mark.asyncio
-async def test_preview_has_independent_product_and_translated_rest_budgets() -> None:
-    # The scripted authority deliberately does not enforce the Go REST budget.
-    # Observe actual translated bytes; this is not evidence of domain acceptance.
-    target: JsonObject = {"collection": "authors", "itemId": "a2", "label": ""}
-    params: JsonObject = {**oracle.base_params(), "adds": [target]}
-    target["label"] = "x" * ((1 << 20) - compact_size(params))
-    model = PRODUCT_RPC_REGISTRY[oracle.METHODS[0]]
-    model.model_validate(params)
-    entry = await oracle.capture_case(
-        oracle.Case(
-            "product-at-limit", oracle.METHODS[0], params, {"current": [], "canApply": True}
-        )
-    )
-    requests = entry["authorityRequests"]
-    assert isinstance(requests, list)
-    assert len(requests) == 1
-    request = requests[0]
-    assert isinstance(request, dict)
-    assert compact_size(params) == 1 << 20
-    assert compact_size(request["body"]) > 1 << 20
-    label = target["label"]
-    assert isinstance(label, str)
-    target["label"] = label + "x"
-    rejected = await oracle.capture_case(oracle.Case("over", oracle.METHODS[0], params))
-    assert rejected["authorityRequests"] == []
-    response = rejected["response"]
-    assert isinstance(response, dict)
-    assert response["error"] == {"code": -32602, "message": "Invalid params"}
-    dropped: JsonObject = {**oracle.base_params(), "expectedDateUpdated": ""}
-    dropped["expectedDateUpdated"] = "x" * ((1 << 20) - compact_size(dropped))
-    model.model_validate(dropped)
-    observed = await oracle.capture_case(
-        oracle.Case(
-            "large-echo-only", oracle.METHODS[0], dropped, {"current": [], "canApply": True}
-        )
-    )
-    requests = observed["authorityRequests"]
-    assert isinstance(requests, list)
-    assert len(requests) == 1
-    request = requests[0]
-    assert isinstance(request, dict)
-    assert compact_size(request["body"]) < 1024
-
-
-@pytest.mark.asyncio
-async def test_preview_unicode_and_depth_guard_apply_to_echo_only_values() -> None:
-    model = PRODUCT_RPC_REGISTRY[oracle.METHODS[0]]
-    nested: JsonValue = 0
-    for _ in range(31):
-        nested = [nested]
-    model.model_validate({**oracle.base_params(), "expectedDateUpdated": nested})
-    with pytest.raises(ValidationError, match="too deeply nested"):
-        model.model_validate({**oracle.base_params(), "expectedDateUpdated": [nested]})
-    entry = await oracle.capture_case(
-        oracle.Case(
-            "surrogate",
-            oracle.METHODS[0],
-            {**oracle.base_params(), "expectedDateUpdated": "\ud800"},
-        )
-    )
-    assert entry["authorityRequests"] == []
-    response = entry["response"]
-    assert isinstance(response, dict)
-    assert response["error"] == {"code": -32602, "message": "Invalid params"}
-
-
 def test_preview_write_never_overwrites_existing_oracle(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -212,18 +128,18 @@ def test_preview_write_never_overwrites_existing_oracle(
     target.write_text("retained", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
-    with pytest.raises(FileExistsError):
+    with pytest.raises(SystemExit) as failure:
         oracle.main()
+    assert failure.value.code == 2
     assert target.read_text(encoding="utf-8") == "retained"
 
 
 @pytest.mark.asyncio
-async def test_preview_capture_rejects_backend_from_another_checkout(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(oracle, "CAPTURE_ROOT", tmp_path)
-    with pytest.raises(RuntimeError, match="this checkout's backend"):
+async def test_preview_capture_is_retired() -> None:
+    with pytest.raises(RuntimeError, match="capture is retired"):
         await oracle.capture_case(oracle.cases()[0])
+    with pytest.raises(RuntimeError, match="capture is retired"):
+        await oracle.capture()
 
 
 @pytest.mark.parametrize("arguments", [[], ["--check"]])
@@ -238,19 +154,3 @@ def test_preview_check_never_rewrites_changed_baseline(
         oracle.main()
     assert failure.value.code == 2
     assert target.read_text(encoding="utf-8") == "{}\n"
-
-
-@pytest.mark.asyncio
-async def test_preview_capture_checks_the_specialized_handler_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    original = oracle.inspect.getfile
-
-    def source_file(symbol: type[object]) -> str:
-        if symbol is oracle.ProductRelationLookupFileRpc:
-            return str(tmp_path / "foreign-handler.py")
-        return original(symbol)
-
-    monkeypatch.setattr(oracle.inspect, "getfile", source_file)
-    with pytest.raises(RuntimeError, match="this checkout's backend"):
-        await oracle.capture_case(oracle.cases()[0])

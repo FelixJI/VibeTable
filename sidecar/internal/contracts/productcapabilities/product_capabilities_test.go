@@ -63,13 +63,13 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 9 ||
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 10 ||
 		got[0].Method != "events.reconcile" || got[1].Method != "file.list" ||
 		got[2] != (RPCDescriptor{
 			Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
 			CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
-		}) || got[3].Method != "lookup.list" || got[4].Method != "query.page" || got[5].Method != "query.view" || got[6].Method != "schema.describe" || got[7].Method != "schema.getTable" ||
-		got[8].Method != "schema.list" {
+		}) || got[3].Method != "lookup.list" || got[4].Method != "query.page" || got[5].Method != "query.view" || got[6].Method != "relation.previewDelta" || got[7].Method != "schema.describe" || got[8].Method != "schema.getTable" ||
+		got[9].Method != "schema.list" {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||

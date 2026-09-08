@@ -72,6 +72,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "lookup.list",
         "query.page",
         "query.view",
+        "relation.previewDelta",
         "schema.describe",
         "schema.getTable",
         "schema.list",

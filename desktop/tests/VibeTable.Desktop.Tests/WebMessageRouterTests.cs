@@ -629,6 +629,11 @@ public sealed class WebMessageRouterTests
                 type,
                 requestId = $"request-{type}",
                 payload = new { },
+                scope = new
+                {
+                    scope = "workspace", workspaceId = Guid.NewGuid(), sessionEpoch = 1,
+                    operationId = Guid.NewGuid(), sequence = 1,
+                },
             }));
             Assert.IsNull(reply, type);
             Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
@@ -941,15 +946,15 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void RelationRouteFailsClosedWhenTestPolicyAssignsGoSidecar()
+    public void RelationGoRouteRequiresScopeAndPreservesItsWire()
     {
         var dispatched = new List<RoutedWebRequest>();
         ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
             new ProductRpcCapability(
-                "relation.searchTargets",
+                "relation.previewDelta",
                 "workspace",
                 "rendererPublic",
-                "product.relation.search_targets",
+                "relation.lookup",
                 "goSidecar",
                 "read"));
         var router = new WebMessageRouter(
@@ -961,10 +966,17 @@ public sealed class WebMessageRouterTests
         };
 
         HostReplyMessage? reply = router.Route(
-            """{"type":"relation.searchTargets","requestId":"relation-go","payload":{"relationId":"customer"}}""");
+            """{"type":"relation.previewDelta","requestId":"relation-go","payload":{"relationId":"customer"}}""");
 
-        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", reply?.Payload?.Code);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
         Assert.HasCount(0, dispatched);
+        const string scoped = """
+            {"type":"relation.previewDelta","requestId":"relation-go","payload":{"relationId":"customer"},"scope":{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"22222222-2222-4222-8222-222222222222","sequence":1}}
+            """;
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            document.RootElement.GetProperty("scope"), dispatched.Single().Wire));
     }
 
     [TestMethod]
@@ -994,7 +1006,8 @@ public sealed class WebMessageRouterTests
         {
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual("pythonBff", capability.Owner, route);
+            Assert.AreEqual(route == "relation.previewDelta" ? "goSidecar" : "pythonBff",
+                capability.Owner, route);
         }
     }
 }
