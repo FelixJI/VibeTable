@@ -11,7 +11,7 @@
 - 当前 manifest gap：4（`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`）。
 - 当前 manifest surplus：无。
 
-场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview" 与 "29-lookup-source-pagination" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这些新增场景。
+场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview" 和 "29-lookup-source-pagination" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这四项新增场景，也不证明新的关系与来源分页资格。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
