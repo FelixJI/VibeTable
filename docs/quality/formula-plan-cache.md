@@ -1,6 +1,6 @@
 # Formula 编译计划缓存资格
 
-状态：独立缓存候选的相关 Go race、vet 和作者集成回归已通过；全量 Go 因既有临时目录清理失败未通过，真实打包与 fresh CI 尚未执行。本文不声明 Formula、统一 ComputationPlan 或 ADR 0013 整体验收完成。
+状态：独立缓存候选的相关 Go race、vet 和作者集成回归已通过；全量 Go 因既有临时目录清理失败未通过，真实打包场景已通过，fresh CI 尚未执行。本文不声明 Formula、统一 ComputationPlan 或 ADR 0013 整体验收完成。
 
 ## 来源与独立边界
 
@@ -47,7 +47,7 @@ go test ./internal/formula -run 'TestCELV1|TestCalculatorSharesCompilerPlan' -co
 
 ## 尚未执行
 
-独立缓存候选尚未执行其他语言完整质量入口、真实打包及产品场景、最新远端 main 同步后的 fresh PR CI。当前结果没有修复或取代其他候选中已保留的 Windows/SQLite 清理失败证据；不得据此放宽清理断言或发布门禁。
+独立缓存候选尚未执行其他语言完整质量入口及最新远端 main 同步后的 fresh PR CI；真实打包场景见下节。当前结果没有修复或取代其他候选中已保留的 Windows/SQLite 清理失败证据；不得据此放宽清理断言或发布门禁。
 
 ## 完整 Go 结果
 
@@ -61,3 +61,12 @@ go test ./internal/formula -run 'TestCELV1|TestCalculatorSharesCompilerPlan' -co
 - `TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness/missing-previous`：coordination。
 
 同次 cmd/vibetable-pb、app、formula、fieldchange、schemaapi、integration 均通过，分别11.250s、21.924s、4.736s、6.083s、3.185s、37.713s。失败用例日志未记录其他业务断言失败，但这不足以判断目录持有者或晚写来源，也不能将完整 Go 记为通过。保留原始失败，不修改清理策略或降低门禁。
+## 独立缓存候选的真实产品证据
+
+源码提交 `81b477a6be1d`（产品实现 `56e74b7a`）执行 `uv run --frozen --no-sync python scripts/build_next.py` 完整构建 PASS，无 skip、无重试，复用 lock 一致的既有环境。日志 `build/qa/formula-semantic-cache/product-build.log`，sidecar 版本0.5.1、源码81b477a6be1d。
+
+`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 05-formula-lifecycle --scenario 12-backup-consistency`：run `20260908T235510Z`，2/2 PASS、0 skip；S05 6.028s/7断言，S12 15.562s/22断言。真实桌面验证公式生命周期及当前格式快照恢复的消费者回归；它不替代缓存容量/并发/回滚的 Go 契约测试，也不证明完整 Formula 产品纵切。
+
+四组件 fresh，直接连接实际 WebView2，未另启浏览器。Node/Host退出0，pageErrors、未确认 bridge failures和pending均0；S12有1条已确认预期失败。两场景进程成员/后代为空，端口释放、owner lease和最终清理全部通过。原始报告 `build/qa/product-e2e/20260908T235510Z/product-e2e-report.json`，入口日志 `build/qa/formula-semantic-cache/product-e2e.log`。
+
+上述不改变完整 Go 测试的清理失败结论，也不替代 fresh required CI 或合并后 CI/CD。
