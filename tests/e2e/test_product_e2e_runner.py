@@ -3012,6 +3012,58 @@ def test_process_network_report_rejects_listener_and_remote_non_loopback() -> No
     ]
 
 
+def test_relation_pair_scenario_keeps_public_policy_and_existing_search_contract() -> None:
+    scenario = next(item for item in runner.load_scenarios() if item.id == "06-relation-fanout")
+    assert "setNull/restrict" in scenario.requirement
+    assert "many→one" in scenario.requirement
+    assert "内部迁移 cascade 能力保留" in scenario.requirement
+    assert set(scenario.capabilities) == {"schema.v2", "relation.pair-edit", "contract.diagnostics"}
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    shared = source[
+        source.index("async function runRelationScenario") : source.index(
+            "async function scenario28"
+        )
+    ]
+    assert "await editRelationPairScenario(" in shared
+    assert "await rejectPublicRelationCascade(" in shared
+    assert 'draft.relation.deletePolicy = "cascade"' not in shared
+    assert "relation search next page preserves all targets without duplicates" in shared
+    assert "relation search preserves the matching Unicode label" in shared
+
+
+def test_relation_pair_scenario_edits_visible_controls_and_reads_both_authorities() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function readRelationPairAuthority") : source.index(
+            "async function runRelationScenario"
+        )
+    ]
+    assert "useFieldSettingsStore" not in scenario
+    assert 'await header.click({ button: "right" })' in scenario
+    for control in (
+        "field-display-name",
+        "relation-reciprocal-name",
+        "relation-source-cardinality",
+        "relation-reciprocal-cardinality",
+        "relation-target-display-field",
+        "relation-source-display-field",
+        "relation-delete-policy",
+        "field-plan-source-change",
+        "field-plan-reciprocal-change",
+    ):
+        assert f'"{control}"' in scenario
+    assert 'getByTestId("field-plan-button").click()' in scenario
+    assert 'getByTestId("field-apply-button").click()' in scenario
+    assert "definition.relation.reciprocalFieldId" in scenario
+    assert '"query.page"' in scenario
+    assert "relationPairIdentitiesAndLinks(committed)" in scenario
+    assert "relationPairIdentitiesAndLinks(clearedPolicy)" in scenario
+    assert 'error.code === "relation.cardinality.conflict"' in scenario
+    assert 'relationPairPatch: { deletePolicy: "cascade" }' in scenario
+    assert 'rejected.payload?.error?.code === "field.contract.invalid"' in scenario
+    assert "canonicalJsonText(conflictBefore)" in scenario
+
+
 def test_schema_scenario_uses_authoritative_capabilities_and_stable_identities() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
