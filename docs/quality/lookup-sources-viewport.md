@@ -18,7 +18,7 @@ UI 来源提交的生产变更仅增加 `align-self: stretch` 和解释注释，
 
 `tests/e2e/lookup_sources_viewport.test.mjs` 从实际 SFC 读取来源面板的完整 NModal 模板、编译其 scoped CSS，并载入真实 Vue、Naive UI 与项目 design tokens；只用夹具提供来源数据及 dispatch。它在真实 Edge 中验证初始 100 条来源、正常点击追加至 200 条、缩小到 800×600 后滚动到最后一条、再次加载和关闭。页面异常会令测试失败。
 
-这是一项生产模板的浏览器夹具回归，截图不是 WPF/WebView2 完整包运行截图。完整包 S29 复验仍 pending，不能据此宣称包资格或发布门禁通过。
+这是一项生产模板的浏览器夹具回归，截图不是 WPF/WebView2 完整包运行截图。该夹具本身不代表完整包资格；后续产品 S29 结果单独记录于末段，发布门禁仍须验证。
 
 为使真实产品包也能复验同一故障，本修复精确承接 `3b477257` 的 `scenario29`、场景映射项及完整 manifest 对象：建立 101 条 Unicode 关联来源，正常打开面板并点击加载更多，确认无重复、分页耗尽与两表记录及 revision 不变。UI 来源提交的该部分只增加产品回归；`lookup.valuePage` 仍由现有 Python 实现处理，未修改 owner、inventory 或 Go 生产代码。能力索引由仓库脚本重新生成，历史 main 报告的 source/run 保持原值，gap 如实补为 S26、S28、S29 三项。
 
@@ -61,5 +61,17 @@ UI 来源提交的生产变更仅增加 `align-self: stretch` 和解释注释，
 `0bb31ba14d9c68f4e3e05609a6113d2d5fdfa4b7` 作为产品复验依赖；两个 PR 的源码
 分别审查，组合未修改既有 UI 或边界实现。该依赖没有改变 Python owner 或开放一般写路由。
 
-组合后的实际 S29、最终 fresh CI 与合并后 main CI/CD 尚待完成；独立来源 CI 不替代
-新端点验收。
+最终 fresh CI 与合并后 main CI/CD 尚待完成；独立来源 CI 不替代新端点验收。
+
+## 依赖组合的真实产品验证
+
+组合来源 `7092f0d35e221c94e00cb0878e82ed7f47a00f8d` 执行
+`uv run --frozen --no-sync python scripts/build_next.py`，全部组件构建成功，复用锁定环境和缓存。
+随后执行 `uv run --frozen --no-sync python -m tests.e2e.product_e2e_runner --scenario 29-lookup-source-pagination`，
+报告 `20260908T065613Z` 为1/1 passed、0 failed/skip，进程退出码0。
+
+实际普通点击完成100→101条来源，核对唯一Unicode来源、分页耗尽、无错误提示，
+源/目标表记录与schema/data revision不变；bridge无意外失败或pending，renderer无错误或外部HTTP。
+包审计及四组件新鲜度通过；Host正常退出0，成员/后代为空，端口释放、owner lease及最终清理通过。
+这是该组合来源的单场景产品证据，不等同于完整多栈CI或其他owner端点的通过结果。
+上文两次失败保持可追溯，当前main历史23场景报告及其gap未改写。
