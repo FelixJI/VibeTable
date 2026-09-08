@@ -8,7 +8,7 @@
 
 Web 从真实表头菜单进入字段设置，装载对端、呈现双方冻结摘要、确认后原子应用，并可重开检查。混合 pair 与其他通用属性修改要求分次保存，不产生半份 pair 计划。目标表发生变化后，相同 patch 重新计划绑定最新 revision；同一 revision 下仍复用有效计划。
 
-本改动不切换 RPC owner，不实现 inspect/repair、完整 picker 冲突恢复或计算依赖统一。DisplayField 在本场景中证明的是配置保存；当前 Grid 仍将原始记录 ID 渲染为 token，尚未证明配置影响单元格标签。ADR 0009 的 picker 按目标表主显示字段展示契约保持不变。显示消费缺口必须后续闭合，不能由本报告推断 Relation 已 Closed。
+本改动不切换 RPC owner，不实现 inspect/repair、完整 picker 冲突恢复或计算依赖统一。最初源码34835708只证明DisplayField配置保存；下述e7ab2b13集成资格已补充双方真实Grid标签消费。ADR 0009 的 picker 按目标表主显示字段展示契约保持不变。不能由定向显示消费证据推断 Relation 已 Closed。
 
 ## 本地证据
 
@@ -38,8 +38,24 @@ Web 从真实表头菜单进入字段设置，装载对端、呈现双方冻结�
 - 四组件 fresh；Node/Host exit 0；pageErrors、异常 bridge、pending 均为 0；进程、端口、lease 与最终清理全部通过。
 - S27 在较早生产源码 28900284712adfffbbea3df7ecc2609aba15047a 上通过；未在 34835708 重跑，不混用源码归属。
 
-首轮真实执行揭示 reciprocal presence 缺失，已拆为独立 PR #301；后续执行揭示测试与生产同时使用错误的表头 data-field 属性，修复为真实 tabulator-field。失败报告均保留，没有弱化断言或通过 RPC 旁路模拟表头操作。[最终真实截图](../assets/screenshots/vibetable-relation-pair-update.png)仍显示原始 ID，故展示消费资格继续保持 Open。
+首轮真实执行揭示 reciprocal presence 缺失，已拆为独立 PR #301；后续执行揭示测试与生产同时使用错误的表头 data-field 属性，修复为真实 tabulator-field。失败报告均保留，没有弱化断言或通过 RPC 旁路模拟表头操作。当时截图仍显示原始 ID；现已替换为下述集成运行的真实标签截图，原截图保留在原运行目录。
 
 ## 尚未完成
 
-先等待字段设置前置修复（#299，由 #302 集成）与 reciprocal presence（#301）进入 main，再依据实际主线差异完成最终 PR 审查、fresh required CI、squash 与 main CI/CD。当前报告不声明前置 PR 已合并，也不声明全部关系四种基数、完整生命周期、10k/100k 或恢复资格已完成。
+reciprocal presence #301 已完成 main CI/CD 闭环；字段设置修复 #299 由 #302 集成、标签消费 #303 仍待合并。本分支还须同步最新实际 main、保留独立pair意图并完成最终审查、fresh required CI、squash 与 main CI/CD。不声明全部关系四种基数、完整生命周期、10k/100k 或恢复资格已完成。
+
+## 双端展示消费集成资格
+
+源码e7ab2b1387b2ca27a7c3c29b09ce74bef2a92177，正常集成独立标签PR #303的4051553后，新增18行S06断言；此前配置/原子性/身份/链接/歧义/公开cascade拒绝均保留。新增断言Standards/Spec无遗留问题，正常hooks通过。
+
+- `npm run test:coverage`：174文件1452 PASS、54.15秒，全部既有门禁通过，日志build/relation-pair-labels-web-coverage.log。
+- `uv run --frozen --no-sync python scripts/build_next.py`：完整构建退出0，复用现有环境与缓存，日志build/relation-pair-labels-product-build.log。
+- `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 06-relation-fanout --scenario 27-relation-target-search --scenario 28-relation-delta-preview`：run20260908T201209Z，3/3 PASS、0 skip。
+- S06：21.566秒、17断言，双端配置应用后源Grid显示A-01、对端Grid显示P-01；原重开及拒绝契约通过。
+- S27：6.206秒、11断言，Picker主显示字段搜索/分页契约通过。
+- S28：5.545秒、10断言，配置标签与目标变更刷新、preview取消零写入通过。
+- 三场景Node和生命周期Host退出码均0，pageErrors、bridge failures/acknowledgedFailures/pending均0；成员/后代为空，端口、lease和最终清理通过。
+
+报告build/qa/product-e2e/20260908T201209Z/product-e2e-report.json，执行日志build/relation-pair-labels-product-e2e-corrected.log。首次S27参数误写被配置校验拒绝、未启动产品，原日志保留，不计场景运行。下图是该运行S06结束后的真实Grid；后续前置合并与新main资格仍待完成，不把集成包视作已发布版本。
+
+![双端配置消费后的真实Grid](../assets/screenshots/vibetable-relation-pair-update.png)
