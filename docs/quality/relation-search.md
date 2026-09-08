@@ -41,8 +41,13 @@ Go 保留省略 query/offset/limit 的默认值、显式空字符串拒绝、原
 无匹配空态，以及清空搜索恢复首屏。只搜索候选，不点击候选或创建目标来混入写 owner。
 宿主取消与迟到响应另由工作区租约测试验证。
 
-当前新构建物和真实 S06 运行 pending；最终 PR CI、squash 后 main CI/CD 也 pending。
-这些状态在取得实际结果后更新。0.5.0/N-1兼容不属于当前开发验收；现有发布与格式拒绝契约保留。
+最新源码 `1ca00c0e4341d1d2abb4886f4c12a6c8f3d4f92d` 的全组件构建成功。
+真实 S06 最终1/1 passed（QA `20260908T032325Z`），四组件新鲜度与 package audit通过，
+宿主退出码0、members/descendants为空、portsReleased=true、lease及final cleanup通过。
+脚本首跑 `20260908T031801Z` 重复关闭已关闭的字段面板超时；删除多余调用后，
+`20260908T032015Z` 的trace证明选择器命中列头，补 `.tabulator-cell` 限定后通过。
+两次均为脚本定位修正，保留失败报告，使用同一个产品包，未重建、未增加超时。
+最终 PR CI 与 squash 后 main CI/CD仍pending。0.5.0/N-1兼容不属于当前开发验收；现有发布与格式拒绝契约保留。
 
 ## 同步 main 的增量验证
 
@@ -53,4 +58,4 @@ HTTP fixture 使用交叉不可调用 guard，S02 分组和 S06 搜索场景均�
 同步增量：相关 Python 60 passed（首次59 passed/1旧数量断言失败，修正后通过）；
 Host 定向87 passed；Go app/productrpc/productcapabilities race 分别32.452/1.686/1.260s
 passed；既有进程测试1.717s passed。策略生成检查、相关 Ruff 和 Go vet passed。
-独立 Standards 与 Spec 增量均0 findings。本节仍不代替尚待运行的新构建 S06 与 fresh CI。
+独立 Standards 与 Spec 增量均0 findings。实际 S06结果见上节；fresh CI仍为合并门禁。

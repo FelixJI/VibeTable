@@ -2617,11 +2617,10 @@ async function scenario06(page, recorder) {
   if (targets.payload?.status !== "applied" || source.payload?.status !== "applied") {
     throw new Error(`relation search fixture did not commit: ${JSON.stringify({ targets, source })}`);
   }
-  await closeFieldSettingsDrawer(page);
   await selectTable(page, "E2E Articles V2");
   await waitForVisibleRowCount(page, 1);
   await page.locator(
-    `.grid-wrapper[aria-busy="false"] .vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`,
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell.vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`,
   ).first().dblclick();
   const panel = page.locator(".relation-editor:visible");
   await panel.waitFor();
