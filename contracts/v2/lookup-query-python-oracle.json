@@ -1,0 +1,4959 @@
+{
+  "producerCommit": "6e25fd033697c57a4ca113caf98c90293b892548",
+  "boundary": "Original Python Product dispatcher + adapter + client; scripted authority HTTP",
+  "typedGoBoundaries": {
+    "catalog-nonobject": "CatalogResult cannot encode an array root",
+    "catalog-lookups-null": "Malformed null catalog lookup list; typed nil slice is representable but must not be silently normalized",
+    "catalog-unselected-malformed": "Typed LookupDescriptor emits fields omitted by the malformed descriptor",
+    "view-nonobject": "LookupQueryResult cannot encode an array root",
+    "view-missing-rows": "Typed Page always emits rows",
+    "view-boolean-count": "Typed page integer cannot encode bool",
+    "view-missing-groupRows": "Typed result always emits groupRows",
+    "view-nonboolean-window": "Typed HasMoreGroups cannot encode integer",
+    "group-missing-summaries": "Typed GroupRow always emits summaries",
+    "group-boolean-count": "Typed GroupRow.Count cannot encode bool",
+    "snapshot-open-object": "Typed QuerySnapshot cannot preserve unknown members or missing defined fields",
+    "catalog-product-error": "First-hop public domain error, expressible via mutation.ProductError to PublicError; replay required",
+    "page-product-error": "Second-hop public domain error, expressible via mutation.ProductError to PublicError; replay required",
+    "catalog-transport-error": "Scripted first-hop transport outage",
+    "page-transport-error": "Scripted second-hop transport outage"
+  },
+  "cases": [
+    {
+      "name": "dynamic-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "dynamic-rows",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "dynamic-rows",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "empty-selection-and-negative-generation",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-selection-and-negative-generation",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [],
+          "query": {},
+          "requestGeneration": -1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-selection-and-negative-generation",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": -1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "contract-and-whitespace-are-not-normalized",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "contract-and-whitespace-are-not-normalized",
+        "method": "lookup.query",
+        "params": {
+          "contract": "other",
+          "collection": " 中文 ",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": " 中文 "
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": " 中文 ",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "contract-and-whitespace-are-not-normalized",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": " 中文 ",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "group-translation-and-parent-first-occurrence",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-translation-and-parent-first-occurrence",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "offset": 2,
+            "limit": 1,
+            "groups": [
+              {
+                "fieldRef": "region",
+                "direction": "desc"
+              },
+              {
+                "fieldRef": "customer_name"
+              }
+            ]
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [
+            {
+              "key": [
+                "EU",
+                null
+              ],
+              "count": 2,
+              "summaries": [
+                99
+              ],
+              "parentCount": 3,
+              "parentSummaries": [
+                123
+              ]
+            },
+            {
+              "key": [
+                "US",
+                false
+              ],
+              "count": 1,
+              "summaries": [],
+              "parentCount": 1,
+              "parentSummaries": []
+            },
+            {
+              "key": [
+                "EU",
+                ""
+              ],
+              "count": 1,
+              "summaries": [],
+              "parentCount": 999,
+              "parentSummaries": []
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {
+              "offset": 2,
+              "limit": 1
+            },
+            "groups": [
+              {
+                "field": "region",
+                "direction": "desc"
+              },
+              {
+                "field": "customer_name",
+                "direction": "asc"
+              }
+            ],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-translation-and-parent-first-occurrence",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [
+            {
+              "path": [],
+              "key": "EU",
+              "count": 3,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [
+                "EU"
+              ],
+              "key": null,
+              "count": 2,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [],
+              "key": "US",
+              "count": 1,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [
+                "US"
+              ],
+              "key": false,
+              "count": 1,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [
+                "EU"
+              ],
+              "key": "",
+              "count": 1,
+              "aggregates": {},
+              "childCursor": null
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "single-group-null-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "single-group-null-key",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [
+            {
+              "key": [
+                null
+              ],
+              "count": -2,
+              "summaries": []
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "single-group-null-key",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [
+            {
+              "path": [],
+              "key": null,
+              "count": -2,
+              "aggregates": {},
+              "childCursor": null
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "duplicate-physical-last-wins",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-physical-last-wins",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:8b091a46a081f8f8fee1505ae525a1346780ed2cd2d14acf0d7287ea9847ac56"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            },
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "后者",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "number",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-physical-last-wins",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:8b091a46a081f8f8fee1505ae525a1346780ed2cd2d14acf0d7287ea9847ac56",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "后者",
+              "outputType": "decimal",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "duplicate-fieldrefs-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-fieldrefs-preserved",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name",
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-fieldrefs-preserved",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            },
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "groups-type-before-catalog-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "groups-type-before-catalog-error",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "groups": null
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": "catalog-product"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "groups-type-before-catalog-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "stale-before-group-direction",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "stale-before-group-direction",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "groups": [
+              {
+                "fieldRef": "x",
+                "direction": "bad"
+              }
+            ]
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "stale",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "stale-before-group-direction",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "stale-permission",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "stale-permission",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "stale",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "stale-permission",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "stale-lookup",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "stale-lookup",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "stale"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "stale-lookup",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "group-direction-before-query-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-direction-before-query-error",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "groups": [
+              {
+                "fieldRef": "x",
+                "direction": "bad"
+              }
+            ]
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": "page-product"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-direction-before-query-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "group-nonobject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-nonobject",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "groups": [
+              null
+            ]
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-nonobject",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "group-empty-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-empty-field",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "groups": [
+              {
+                "fieldRef": ""
+              }
+            ]
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-empty-field",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "unknown-field-after-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-field-after-query",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "unknown"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-field-after-query",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "query-error-before-unknown-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "query-error-before-unknown-field",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "unknown"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": "page-product"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "query-error-before-unknown-field",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "page revision conflict",
+            "code": "lookup.schema_revision_conflict",
+            "path": "schemaRevision",
+            "details": {
+              "phase": "page"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "window-before-column-projection",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "window-before-column-projection",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:1c3ca1ef90ed36c49b514bf933b7b671e899d2a628b0c1f35f3c3b844b5fcee6"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            },
+            {
+              "physicalName": "unselected"
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "window-before-column-projection",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-unselected-malformed",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-unselected-malformed",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:1c3ca1ef90ed36c49b514bf933b7b671e899d2a628b0c1f35f3c3b844b5fcee6"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            },
+            {
+              "physicalName": "unselected"
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-unselected-malformed",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-nonobject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-nonobject",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": [],
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-nonobject",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-lookups-null",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-lookups-null",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": null
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-lookups-null",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "view-nonobject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "view-nonobject",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "view-nonobject",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "view-missing-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "view-missing-rows",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "view-missing-rows",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "view-boolean-count",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "view-boolean-count",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": true,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "view-boolean-count",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "view-missing-groupRows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "view-missing-groupRows",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "view-missing-groupRows",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "view-nonboolean-window",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "view-nonboolean-window",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": 0
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "view-nonboolean-window",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "group-missing-summaries",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-missing-summaries",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [
+            {
+              "key": [
+                "x"
+              ],
+              "count": 1
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-missing-summaries",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "group-boolean-count",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-boolean-count",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [
+            {
+              "key": [
+                "x"
+              ],
+              "count": true,
+              "summaries": []
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-boolean-count",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "group-empty-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-empty-key",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [
+            {
+              "key": [],
+              "count": 1,
+              "summaries": []
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-empty-key",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "group-missing-parent",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "group-missing-parent",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [
+            {
+              "key": [
+                "x",
+                "y"
+              ],
+              "count": 1,
+              "summaries": []
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "group-missing-parent",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "snapshot-open-object",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "snapshot-open-object",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "custom": [
+              null,
+              false,
+              0
+            ]
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "snapshot-open-object",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "custom": [
+              null,
+              false,
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "negative-authority-counts",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "negative-authority-counts",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": -1,
+          "limit": 0,
+          "filteredRows": -2,
+          "totalRows": -3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "negative-authority-counts",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": -1,
+          "limit": 0,
+          "filteredRows": -2,
+          "totalRows": -3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          }
+        }
+      }
+    },
+    {
+      "name": "boolean-generation",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-generation",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": true,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-generation",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103",
+          "unknown": null
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "catalog-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-product-error",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": "catalog-product"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "catalog revision conflict",
+            "code": "lookup.schema_revision_conflict",
+            "path": "schemaRevision",
+            "details": {
+              "phase": "catalog"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "page-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-product-error",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": "page-product"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "page revision conflict",
+            "code": "lookup.schema_revision_conflict",
+            "path": "schemaRevision",
+            "details": {
+              "phase": "page"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "catalog-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-transport-error",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": "catalog-transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "catalog unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "page-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-transport-error",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {},
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:43888c95853c4057d88c3a00acbd65df31c87fcee77aa84fe5277c512276b103"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": "page-transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {},
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "page unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "typed-shape-dynamic-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "typed-shape-dynamic-rows",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "offset": 0,
+            "limit": 50
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:f4927e14169bc2709d7fcadf8c65b920e0c37bd76ce2a9becc989e6e3f1e6c15"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1,
+              "path": [
+                {
+                  "relationId": "orders.customer"
+                }
+              ]
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {
+              "offset": 0,
+              "limit": 50
+            },
+            "groups": [],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "typed-shape-dynamic-rows",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:f4927e14169bc2709d7fcadf8c65b920e0c37bd76ce2a9becc989e6e3f1e6c15",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_name": "Café 👩🏽‍💻",
+              "nil": null,
+              "dynamic": {
+                "values": [
+                  false,
+                  0,
+                  ""
+                ],
+                "state": "valid"
+              }
+            }
+          ],
+          "groups": [],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 1,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "typed-shape-grouped-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "typed-shape-grouped-rows",
+        "method": "lookup.query",
+        "params": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "fieldRefs": [
+            "customer_name"
+          ],
+          "query": {
+            "offset": 0,
+            "limit": 50,
+            "groups": [
+              {
+                "fieldRef": "region",
+                "direction": "desc"
+              },
+              {
+                "fieldRef": "customer_name",
+                "direction": "asc"
+              }
+            ]
+          },
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:f4927e14169bc2709d7fcadf8c65b920e0c37bd76ce2a9becc989e6e3f1e6c15"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.customer_name",
+              "tableId": "orders",
+              "fieldId": "customer_name",
+              "physicalName": "customer_name",
+              "displayName": "客户姓名",
+              "relationFieldId": "customer",
+              "targetFieldId": "name",
+              "resultCardinality": "one",
+              "outputStorage": "text",
+              "revision": 1,
+              "path": [
+                {
+                  "relationId": "orders.customer"
+                }
+              ]
+            }
+          ]
+        },
+        "page": {
+          "rows": [
+            {
+              "id": "o-1",
+              "region": "EU",
+              "customer_name": "Café 👩🏽‍💻"
+            },
+            {
+              "id": "o-2",
+              "region": "US",
+              "customer_name": null
+            },
+            {
+              "id": "o-3",
+              "region": "EU",
+              "customer_name": ""
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 3,
+          "totalRows": 3,
+          "querySnapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "EU",
+                "Café 👩🏽‍💻"
+              ],
+              "count": 1,
+              "summaries": [
+                1
+              ],
+              "parentCount": 2,
+              "parentSummaries": [
+                2
+              ]
+            },
+            {
+              "key": [
+                "US",
+                null
+              ],
+              "count": 1,
+              "summaries": [
+                1
+              ],
+              "parentCount": 1,
+              "parentSummaries": [
+                1
+              ]
+            },
+            {
+              "key": [
+                "EU",
+                ""
+              ],
+              "count": 1,
+              "summaries": [
+                1
+              ],
+              "parentCount": 2,
+              "parentSummaries": [
+                2
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 5000,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/query",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "query": {
+              "offset": 0,
+              "limit": 50
+            },
+            "groups": [
+              {
+                "field": "region",
+                "direction": "desc"
+              },
+              {
+                "field": "customer_name",
+                "direction": "asc"
+              }
+            ],
+            "groupLimit": 5000
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "typed-shape-grouped-rows",
+        "result": {
+          "contract": "vibetable.lookup-query.v1",
+          "collection": "orders",
+          "requestGeneration": 7,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:f4927e14169bc2709d7fcadf8c65b920e0c37bd76ce2a9becc989e6e3f1e6c15",
+          "columns": [
+            {
+              "fieldRef": "customer_name",
+              "title": "客户姓名",
+              "outputType": "text",
+              "nullable": true,
+              "scale": null,
+              "state": "valid"
+            }
+          ],
+          "rows": [
+            {
+              "id": "o-1",
+              "region": "EU",
+              "customer_name": "Café 👩🏽‍💻"
+            },
+            {
+              "id": "o-2",
+              "region": "US",
+              "customer_name": null
+            },
+            {
+              "id": "o-3",
+              "region": "EU",
+              "customer_name": ""
+            }
+          ],
+          "groups": [
+            {
+              "path": [],
+              "key": "EU",
+              "count": 2,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [
+                "EU"
+              ],
+              "key": "Café 👩🏽‍💻",
+              "count": 1,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [],
+              "key": "US",
+              "count": 1,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [
+                "US"
+              ],
+              "key": null,
+              "count": 1,
+              "aggregates": {},
+              "childCursor": null
+            },
+            {
+              "path": [
+                "EU"
+              ],
+              "key": "",
+              "count": 1,
+              "aggregates": {},
+              "childCursor": null
+            }
+          ],
+          "offset": 0,
+          "limit": 50,
+          "filteredRows": 3,
+          "totalRows": 3,
+          "snapshot": {
+            "snapshotId": "snap-1",
+            "digest": "digest-1",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 2,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      }
+    }
+  ]
+}

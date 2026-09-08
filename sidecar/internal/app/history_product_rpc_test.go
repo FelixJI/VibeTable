@@ -350,6 +350,7 @@ func historyReadProductFixture(
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(schemaapi.New(pb)),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),

@@ -209,6 +209,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [DataRow("lookup.valuePage")]
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
+    [DataRow("lookup.query")]
     public async Task GoRouteSettlesEpochCancellationWithoutSuccess(string method)
     {
         using var fixture = new SessionFixture();
@@ -259,6 +260,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [DataRow("lookup.valuePage")]
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
+    [DataRow("lookup.query")]
     public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation(string method)
     {
         using var fixture = new SessionFixture();
@@ -777,8 +779,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual("BAD_WORKSPACE_SCOPE", payload.GetProperty("code").GetString());
     }
     [TestMethod]
-    [DataRow("lookup.query", "{\"contract\":\"vibetable.lookup-query.v1\",\"collection\":\"records\",\"fieldRefs\":[\"owner.name\"],\"query\":{},\"requestGeneration\":0,\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\"}") ]
-    public async Task RelationReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
+    [DataRow("field.settings.describe", "{\"tableId\":\"tbl_records\"}")]
+    public async Task PythonReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -819,8 +821,12 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    [DataRow("lookup.query", "{\"contract\":\"vibetable.lookup-query.v1\",\"collection\":\"records\",\"fieldRefs\":[\"owner.name\"],\"query\":{},\"requestGeneration\":0,\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\"}") ]
+    [DataRow("lookup.valuePage",
+        "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
+        + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
+        + "\"offset\":0,\"limit\":10}")]
     [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\",\"sourceItemId\":\"record-1\",\"expectedSchemaRevision\":\"schema-1\",\"adds\":[],\"removes\":[],\"idempotencyKey\":\"preview-test\"}")]
+    [DataRow("lookup.query", ProductDataSidecarRoutingTests.LookupQueryPayload)]
     public async Task RelationReadRejectsRetiredScopeBeforeGateway(string type, string payload)
     {
         using var fixture = new SessionFixture();
@@ -836,6 +842,10 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
         controller.SetGateway(gateway);
+        var sidecar = new ControlledProductSidecarForwarder((call, _) =>
+            Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                call.Wire.Clone(), JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() }))));
+        controller.SetProductSidecarForwarder(sidecar);
         using var document = JsonDocument.Parse(payload);
         Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
             type, "relation-stale", document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
@@ -849,6 +859,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         }
 
         Assert.AreEqual(0, transport.WriteCount);
+        Assert.AreEqual(0, sidecar.CallCount);
         FakeWebReplySink.Reply reply = sink.Replies.Single();
         Assert.AreEqual("relation-stale", reply.RequestId);
         Assert.AreEqual("operation.failed", reply.Type);
@@ -997,7 +1008,13 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         string method, string requestId, WorkspaceWireScope scope)
     {
         RoutedWebRequest request = GoQueryRequest(requestId, scope);
-        return method == "lookup.valuePage"
+        return method == "lookup.query"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.Deserialize<JsonElement>(ProductDataSidecarRoutingTests.LookupQueryPayload),
+            }
+            : method == "lookup.valuePage"
             ? request with
             {
                 Type = method,
