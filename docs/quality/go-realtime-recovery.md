@@ -48,3 +48,11 @@ L4 最终完成还需：整合已存在的 Host/Web 半成品，保持最新 mai
 先测量仅合并事务的版本，定向 race PASS 181.193s，改善有限，未采用。最终将前10,000条真实事件序列化后通过单条绑定参数 SQL 有序准备，每行仍执行原生产 retention trigger；最后五条边界写入保留 PocketBase Save。原来的10,000窗口、9,999续读、四类cursor、活动恢复和水位一致性断言全部保留。
 
 `go test -race ./tests/integration -run '^TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors$' -count=1 -timeout=5m`：PASS 160.178s，日志 `build/realtime-retention-bulk-race.log`。事务实验日志 `build/realtime-retention-transaction-race.log` 保留。独立 Standards / Spec 增量各0；生产代码未变。此本地改善不替代修复提交上的 fresh CI，远端是否消除超时仍待确认。
+
+## 第二次 fresh CI 超时后的窗口准备修正
+
+`2f78dfd8` 的 fresh CI `34248584461` 仍失败：race-a 的 `TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors` 在 5 分钟超时，栈停于 bulk SQL Execute。原生产 AFTER INSERT trigger 每行通过 OFFSET 10000 扫描窗口，10k seed 即使单语句仍累计约五千万 rowid 遍历；前次仅减少了 PocketBase Save 开销。
+
+本次仅改测试 fixture：读取已安装 trigger 的精确 SQL，在同一事务内暂移除、准备历史窗口并原样恢复；任何步骤失败回滚。之后原五条 PocketBase Save 仍执行真实保留逻辑，全部 cursor/恢复断言保留；新增底层 COUNT(*)=10000，避免 Hub 自身 limit 掩盖裁剪失效。生产 migration、窗口大小和 CI timeout 均未改。
+
+原 race 命令 `go test -race ./tests/integration -run '^TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors$' -count=1 -timeout=5m` PASS15.303s，日志 `build/realtime-retention-preloaded-window-race.log`。这不是完整 CI 通过，更新后的 fresh required 仍需验收。
