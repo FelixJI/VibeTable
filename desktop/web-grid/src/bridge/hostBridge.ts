@@ -234,6 +234,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "table.rowsDeleted",
   "data.changed",
   "task.changed",
+  "realtime.recovered",
   "data.importSourceRequested",
   "data.exportTargetRequested",
   "data.previewImport",

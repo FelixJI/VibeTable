@@ -13,7 +13,6 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
 {
-    event Action<DataChangedEvent>? DataChanged;
     event Action<JsonElement>? TaskChanged;
 
     Task<JsonElement> DescribeFieldSettingsAsync(JsonElement parameters, CancellationToken token);

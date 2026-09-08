@@ -120,15 +120,16 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
 
 PRODUCT_EVENT_TOPICS_BY_CURRENT_OWNER = {
     "pythonBff": (
-        "data.changed",
         "plugin.catalog.changed",
         "plugin.file.requested",
         "plugin.interaction.requested",
         "plugin.task.changed",
-        "task.changed",
     ),
-    "goSidecar": (),
-    "wpfHost": (),
+    "goSidecar": (
+        "data.changed",
+        "realtime.recovered",
+    ),
+    "wpfHost": ("task.changed",),
     "pythonWorker": (),
 }
 

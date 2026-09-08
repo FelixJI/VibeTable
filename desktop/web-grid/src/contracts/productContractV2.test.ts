@@ -7,6 +7,7 @@ import type {
   ExportResult,
   MutationReceipt,
   PluginSnapshot,
+  RealtimeRecoverySnapshot,
   SchemaSnapshotV2,
 } from "./index";
 
@@ -57,6 +58,10 @@ export type PluginSnapshotGoldenCoreKeys = Assert<
     ? true
     : false
 >;
+export type RealtimeRecoverySnapshotGoldenKeys = Assert<HasExactKeys<
+  RealtimeRecoverySnapshot,
+  "contractVersion" | "topic" | "activeFormulaTasks" | "terminalNotifications"
+>>;
 
 const fixtureNames = [
   "data-changed-event.json",
@@ -66,6 +71,7 @@ const fixtureNames = [
   "mutation-request.json",
   "product-error.json",
   "product-rpc-catalog.json",
+  "realtime-recovery-event.json",
   "table-definition.json",
   "task-changed-event.json",
 ] as const;
@@ -138,6 +144,7 @@ describe("product contract v2 golden fixtures", () => {
   it("pins event topics and the mutation receipt's required fields", () => {
     expect(readFixture("data-changed-event.json").topic).toBe("data.changed");
     expect(readFixture("task-changed-event.json").topic).toBe("task.changed");
+    expect(readFixture("realtime-recovery-event.json").topic).toBe("realtime.recovered");
 
     const receipt = readFixture("mutation-receipt.json");
     expect(receipt).toEqual(expect.objectContaining({

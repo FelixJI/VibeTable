@@ -742,13 +742,14 @@ describe("tableStore mutation extensions", () => {
       snapshot: lookupSnapshot(1),
     };
 
-    s.applyLookupQueryResult({ ...base, rows: [{ "records.lookup": "bad" }] });
+    expect(s.applyLookupQueryResult({ ...base, rows: [{ "records.lookup": "bad" }] }))
+      .toBe(false);
     expect(s.error).toBe("Lookup query returned a row without a stable key.");
 
-    s.applyLookupQueryResult({
+    expect(s.applyLookupQueryResult({
       ...base,
       rows: [{ id: "r1", "records.lookup": "recovered" }],
-    });
+    })).toBe(true);
     expect(s.error).toBeNull();
     expect(s.allRows[0]?.lookupValue).toBe("recovered");
   });

@@ -96,6 +96,78 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
+    public async Task CorrelatedQuerySupersededBeforeDebounceCompletesWithoutStartingARead()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1);
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
+
+        Task<TablePage> old = coordinator.RequestQueryAsync("contracts", Query(), CancellationToken.None);
+        coordinator.RequestQuery("contracts", Query());
+        await Assert.ThrowsAsync<OperationCanceledException>(() => old.WaitAsync(TimeSpan.FromSeconds(2)));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
+        Assert.AreEqual("table.datasetReady", notifications.Single().Type);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CorrelatedQuerySupersededDuringReadCannotBroadcastLateCompletion(bool fails)
+    {
+        // Synchronous completion makes the ignored gateway continuation part of this observation.
+        var pending = new TaskCompletionSource<TablePage>();
+        var current = SamplePage("contracts", 2);
+        int reads = 0;
+        var gateway = new FakeTableRpcGateway
+        {
+            CursorOpenOverride = (_, _, _) => ++reads == 1 ? pending.Task : Task.FromResult(current),
+        };
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
+        Task<TablePage> old = coordinator.RequestQueryAsync("contracts", Query(), CancellationToken.None);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        Assert.AreEqual(1, reads);
+        Task<TablePage> next = coordinator.RequestQueryAsync("contracts", Query(), CancellationToken.None);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => old.WaitAsync(TimeSpan.FromSeconds(2)));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        Assert.AreSame(current, await next.WaitAsync(TimeSpan.FromSeconds(2)));
+
+        if (fails) pending.SetException(new InvalidOperationException("retired read failed"));
+        else pending.SetResult(SamplePage("contracts", 1));
+
+        Assert.AreEqual(2, reads);
+        Assert.AreEqual(0, notifications.Count);
+    }
+
+    [TestMethod]
+    public async Task CorrelatedGroupedQueryRejectsInconsistentRevisionsWithoutBroadcasting()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1) with
+        {
+            QuerySnapshot = new QuerySnapshot("cursor", "digest", "db-identity", "contracts", "schema-1", 7, new Dictionary<string, object?>()),
+        };
+        gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 1) with
+        {
+            QuerySnapshot = new QuerySnapshot("groups", "digest", "db-identity", "contracts", "schema-1", 8, new Dictionary<string, object?>()),
+        };
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
+        using var query = JsonDocument.Parse("""{"groups":[{"field":"status"}],"limit":100}""");
+        Task<TablePage> result = coordinator.RequestQueryAsync("contracts", query.RootElement, CancellationToken.None);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => result.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.AreEqual(0, notifications.Count);
+    }
+
+    [TestMethod]
     public async Task RequestQuery_EmitsAuthoritativeDatasetReplacement()
     {
         var gateway = new FakeTableRpcGateway();

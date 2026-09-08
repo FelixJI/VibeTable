@@ -155,9 +155,9 @@ var rpcMethods = map[CurrentOwner]map[string]struct{}{
 }
 
 var eventTopics = map[CurrentOwner]map[string]struct{}{
-	PythonBff:    set("data.changed", "plugin.catalog.changed", "plugin.file.requested", "plugin.interaction.requested", "plugin.task.changed", "task.changed"),
-	GoSidecar:    set(),
-	WpfHost:      set(),
+	PythonBff:    set("plugin.catalog.changed", "plugin.file.requested", "plugin.interaction.requested", "plugin.task.changed"),
+	GoSidecar:    set("data.changed", "realtime.recovered"),
+	WpfHost:      set("task.changed"),
 	PythonWorker: set(),
 }
 

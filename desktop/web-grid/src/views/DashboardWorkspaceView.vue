@@ -110,7 +110,7 @@ async function exportPng(panel?: DashboardPanel): Promise<void> {
   catch (error) { message.error(error instanceof Error ? error.message : String(error)); }
 }
 function discard(): void {
-  if (!draft.dirty || window.confirm(t("dashboard.confirm.discard"))) draft.stop();
+  if (!draft.dirty || window.confirm(t("dashboard.confirm.discard"))) service.discardEdit();
 }
 function emptyData() { return { state: "idle" as const, rows: [], truncated: false, maxPoints: 1, updatedAt: null, error: null }; }
 function refreshPanel(panelId: string): void {

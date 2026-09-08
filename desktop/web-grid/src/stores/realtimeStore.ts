@@ -1,11 +1,16 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { ReconcileAction } from "@/services/realtimeReconciler";
-import type { TaskChangedEvent } from "@/contracts";
+import type { FormulaTaskState, TaskChangedEvent } from "@/contracts";
+
+interface FormulaTaskProjection extends FormulaTaskState {
+  readonly taskType: "formulaBackfill";
+}
 
 export const useRealtimeStore = defineStore("realtime", () => {
   const latestTask = ref<TaskChangedEvent | null>(null);
   const tasksById = ref<Record<string, TaskChangedEvent>>({});
+  const formulaTaskProjectionById = ref<Record<string, FormulaTaskProjection>>({});
   const receiptOrderByTask = ref<Record<string, number>>({});
   let nextReceiptOrder = 0;
   const reconcileError = ref<string | null>(null);
@@ -15,7 +20,10 @@ export const useRealtimeStore = defineStore("realtime", () => {
   } | null>(null);
 
   const activeTasks = computed(() =>
-    Object.values(tasksById.value)
+    [
+      ...Object.values(tasksById.value).filter((task) => task.taskType !== "formulaBackfill"),
+      ...Object.values(formulaTaskProjectionById.value),
+    ]
       .filter((task) => task.state === "pending" || task.state === "running")
       .sort((a, b) =>
         (receiptOrderByTask.value[a.taskId] ?? 0)
@@ -23,9 +31,7 @@ export const useRealtimeStore = defineStore("realtime", () => {
   );
   const activeTask = computed(() => activeTasks.value.at(-1) ?? null);
   const activeFormulaBackfill = computed(() =>
-    activeTasks.value
-      .filter((task) => task.taskType === "formulaBackfill")
-      .at(-1) ?? null,
+    Object.values(formulaTaskProjectionById.value).at(-1) ?? null,
   );
 
   function applyTask(task: TaskChangedEvent): void {
@@ -35,6 +41,8 @@ export const useRealtimeStore = defineStore("realtime", () => {
       && task.sequence <= previous.sequence
       && task.occurredAt <= previous.occurredAt
     ) return;
+
+    updateFormulaTaskProjection(task);
 
     nextReceiptOrder += 1;
     latestTask.value = task;
@@ -46,6 +54,68 @@ export const useRealtimeStore = defineStore("realtime", () => {
       ...receiptOrderByTask.value,
       [task.taskId]: nextReceiptOrder,
     };
+  }
+
+  /**
+   * Recovery terminal notifications are historical UI receipts. They must not
+   * erase a same-id formula task restored as current activity by a later frame.
+   */
+  function applyRecoveredTerminal(task: TaskChangedEvent): boolean {
+    const previous = tasksById.value[task.taskId];
+    if (
+      previous
+      && task.sequence <= previous.sequence
+      && task.occurredAt <= previous.occurredAt
+    ) return false;
+
+    // Do not use applyTask here: its normal terminal path removes the active
+    // formula projection. A recovery terminal is a retained notification, not
+    // an assertion that the current same-id projection has finished.
+    nextReceiptOrder += 1;
+    latestTask.value = task;
+    tasksById.value = {
+      ...tasksById.value,
+      [task.taskId]: task,
+    };
+    receiptOrderByTask.value = {
+      ...receiptOrderByTask.value,
+      [task.taskId]: nextReceiptOrder,
+    };
+    return true;
+  }
+
+  /** Replaces only current Go formula work after recovery-frame validation. */
+  function replaceFormulaTaskProjection(tasks: readonly FormulaTaskState[]): void {
+    tasksById.value = Object.fromEntries(
+      Object.entries(tasksById.value).filter(([, task]) => task.taskType !== "formulaBackfill"),
+    );
+    // Receipt order is local presentation state, never recovered event metadata.
+    receiptOrderByTask.value = Object.fromEntries([
+      ...Object.keys(tasksById.value).map((id) => [id, receiptOrderByTask.value[id]]),
+      ...tasks.map((task) => [task.taskId, ++nextReceiptOrder]),
+    ]);
+    formulaTaskProjectionById.value = Object.fromEntries(
+      tasks.map((task) => [task.taskId, { ...task, taskType: "formulaBackfill" }]),
+    );
+  }
+
+  function updateFormulaTaskProjection(task: TaskChangedEvent): void {
+    if (task.taskType !== "formulaBackfill") return;
+    const next = { ...formulaTaskProjectionById.value };
+    if (task.state === "pending" || task.state === "running") {
+      delete next[task.taskId];
+      next[task.taskId] = {
+        taskId: task.taskId,
+        taskType: "formulaBackfill",
+        state: task.state,
+        progress: task.progress,
+        cursor: task.cursor,
+        error: task.error,
+      };
+    } else {
+      delete next[task.taskId];
+    }
+    formulaTaskProjectionById.value = next;
   }
 
   function markInvalidated(action: Exclude<ReconcileAction, "none">): void {
@@ -67,6 +137,7 @@ export const useRealtimeStore = defineStore("realtime", () => {
   function reset(): void {
     latestTask.value = null;
     tasksById.value = {};
+    formulaTaskProjectionById.value = {};
     receiptOrderByTask.value = {};
     nextReceiptOrder = 0;
     reconcileError.value = null;
@@ -76,11 +147,14 @@ export const useRealtimeStore = defineStore("realtime", () => {
   return {
     latestTask,
     tasksById,
+    formulaTaskProjectionById,
     activeTask,
     activeFormulaBackfill,
     reconcileError,
     lastInvalidation,
     applyTask,
+    applyRecoveredTerminal,
+    replaceFormulaTaskProjection,
     markInvalidated,
     failReconcile,
     clearReconcileError,

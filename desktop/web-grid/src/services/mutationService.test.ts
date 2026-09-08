@@ -930,6 +930,9 @@ describe("mutationService", () => {
     vi.spyOn(bridge, "notify").mockImplementation((type) => {
       if (type === "table.updateCellRequested") {
         setTimeout(() => {
+          emit("operation.failed", {
+            operation: "realtime.stream", code: "realtime.stopped", message: "Realtime stopped.",
+          });
           emit("table.editCommitted", {
             rowKey: 1,
             column: "name",
@@ -950,6 +953,7 @@ describe("mutationService", () => {
     // At this instant, suppressHistory is STILL up (not cleared by await).
     // The redo stack already has the entry (history.undo moved it there).
     expect(history.canRedo).toBe(true);
+    expect(history.lastError).toBeNull();
 
     // Flush the setTimeout(0) so the host's async confirmation arrives now.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));

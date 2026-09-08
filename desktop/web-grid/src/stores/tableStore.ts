@@ -417,10 +417,10 @@ export const useTableStore = defineStore("table", () => {
    * Existing scalar values are retained only when the query projection omits
    * them; Lookup values are never derived from the visible page.
    */
-  function applyLookupQueryResult(result: LookupQueryResult, options: { labelsOnly?: boolean } = {}): void {
+  function applyLookupQueryResult(result: LookupQueryResult, options: { labelsOnly?: boolean } = {}): boolean {
     const currentPage = pages.value[0];
     const currentSchema = schema.value;
-    if (!currentPage || !currentSchema) return;
+    if (!currentPage || !currentSchema) return false;
     const lookupDataRevision = result.snapshot?.dataRevision;
     const currentDataRevision = revision.value?.dataRevision;
     if (
@@ -432,14 +432,20 @@ export const useTableStore = defineStore("table", () => {
       // still current, but its QueryPort snapshot predates the committed
       // mutation. Ignore it so stale scalar columns cannot make the UI appear
       // to have reverted before undo/update confirmation actually arrives.
-      return;
+      return false;
     }
     const previous = new Map(allRows.value.map((row) => [String(row.rowKey), row]));
     if (options.labelsOnly) {
-      const labelsByRow = new Map(result.rows.flatMap((row) => {
+      const labelsByRow = new Map<string, Record<string, unknown>>();
+      for (const row of result.rows) {
         const key = row.rowKey ?? row.id;
-        return typeof key === "string" || typeof key === "number" ? [[String(key), row] as const] : [];
-      }));
+        if (typeof key !== "string" && typeof key !== "number") {
+          error.value = LOOKUP_STABLE_KEY_ERROR;
+          return false;
+        }
+        labelsByRow.set(String(key), row);
+      }
+      if (error.value === LOOKUP_STABLE_KEY_ERROR) error.value = null;
       // New row/page references notify the Grid's shallow watcher. Keep every
       // page boundary, cursor and business value, including optimistic edits.
       pages.value = pages.value.map(page => ({
@@ -455,7 +461,7 @@ export const useTableStore = defineStore("table", () => {
           return updated;
         }),
       }));
-      return;
+      return true;
     }
     const fieldNames = new Map(currentSchema.flatMap((column) => [
       [column.fieldId ?? column.name, column.name] as const,
@@ -472,7 +478,7 @@ export const useTableStore = defineStore("table", () => {
       const rowKey = wireRow.rowKey ?? wireRow.id;
       if (typeof rowKey !== "string" && typeof rowKey !== "number") {
         error.value = LOOKUP_STABLE_KEY_ERROR;
-        return;
+        return false;
       }
       const row: Record<string, unknown> = {
         ...(previous.get(String(rowKey)) ?? {}),
@@ -513,6 +519,7 @@ export const useTableStore = defineStore("table", () => {
     }];
     rowCount.value = result.totalRows;
     lookupGroups.value = result.groups;
+    return true;
   }
 
   return {

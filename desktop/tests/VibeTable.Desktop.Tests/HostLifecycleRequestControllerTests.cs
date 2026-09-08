@@ -7,6 +7,24 @@ namespace VibeTable.Desktop.Tests;
 public sealed class HostLifecycleRequestControllerTests
 {
     [TestMethod]
+    [DataRow("null")]
+    [DataRow("[]")]
+    [DataRow("{\"phase\":\"future\"}")]
+    [DataRow("{\"phase\":1}")]
+    [DataRow("{\"phase\":\"business\",\"extra\":true}")]
+    [DataRow("{\"phase\":\"shell\",\"phase\":\"business\"}")]
+    public void InvalidReadyPhaseCannotEnableAnyHostLifecycleAction(string payload)
+    {
+        var reply = new FakeWebReplySink();
+        var host = new FakeHost();
+        var controller = new HostLifecycleRequestController(reply, host);
+        controller.Dispatch(Request("app.ready", JsonSerializer.Deserialize<JsonElement>(payload)));
+        Assert.AreEqual(0, host.ReadyCalls);
+        Assert.AreEqual("APP_READY_BAD_PAYLOAD", JsonSerializer.SerializeToElement(
+            reply.Replies.Single().Payload).GetProperty("code").GetString());
+    }
+
+    [TestMethod]
     public void DiagnosticsPayloadValidationStaysInsideHostController()
     {
         var reply = new FakeWebReplySink();
@@ -57,7 +75,7 @@ public sealed class HostLifecycleRequestControllerTests
         public int RetryCalls { get; private set; }
         public int DiagnosticsCalls { get; private set; }
 
-        public void RendererReady() => ReadyCalls++;
+        public void RendererReady(RendererReadyPhase phase) => ReadyCalls++;
         public void RequestExit() => ExitCalls++;
         public void RetryStartup() => RetryCalls++;
         public bool OpenAdmin() => false;

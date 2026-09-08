@@ -143,7 +143,9 @@ const pasteService = usePasteService();
 const dataIoService = useDataIoService();
 const mutationService = useMutationService();
 const tableAdminService = useTableAdminService();
-const errorRouter = useErrorRouter();
+const errorRouter = useErrorRouter({
+  onRealtimeFailure: () => message.error(t("workspace.notification.realtimeStopped")),
+});
 const pluginService = usePluginService();
 const revisionHistoryService = useRevisionHistoryService();
 const dashboardService = useDashboardService();
@@ -410,6 +412,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
   datasetReady: () => tableStore.datasetReady,
   schemaRevision: () => tableStore.revision?.schemaRevision ?? null,
   dataRevision: () => tableStore.revision?.dataRevision ?? null,
+  contextGeneration: () => relationLookup.generation,
   relationSchema: () => relationLookup.schema,
   capabilities: () => relationLookup.capabilities,
   lookups: () => relationLookup.lookups,
@@ -418,8 +421,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
   queryLookups: request => relationLookupService.queryLookups(request),
   acceptResult: (result, currentDataRevision) => {
     if (!relationLookup.acceptLookup(result, currentDataRevision)) return false;
-    tableStore.applyLookupQueryResult(result, { labelsOnly: relationLookup.lookups.length === 0 });
-    return true;
+    return tableStore.applyLookupQueryResult(result, { labelsOnly: relationLookup.lookups.length === 0 });
   },
   clearEditRejection: () => { editRejection.value = null; },
   reportError: content => message.error(content),
@@ -618,6 +620,55 @@ function openCurrentHistory(): void {
 let viewMounted = false;
 let businessConsumersInitialized = false;
 let startupWorkspaceDecisionMade = false;
+let recoveryGeneration = 0;
+let recoveryTableLookupDirty = false;
+let stopRecoveryDataInvalidation: (() => void) | null = null;
+
+function retireRendererRecovery(): void {
+  recoveryGeneration += 1;
+}
+
+function onRealtimeRecovered(): void {
+  const ticket = ++recoveryGeneration;
+  recoveryTableLookupDirty = true;
+  // Each consumer starts independently. The host never waits for these local
+  // reads before continuing its realtime stream, and no combined "recovered"
+  // acknowledgement is reported back across the bridge.
+  void dashboardService.recoverAuthoritative();
+  void recoverCurrentTableAndLookups(ticket);
+}
+
+async function recoverCurrentTableAndLookups(ticket: number): Promise<void> {
+  const collection = workspace.currentTable;
+  if (!collection) {
+    // There is no rendered table page to reconcile. A later selection follows
+    // the normal authoritative table/Relation/Lookup load path.
+    if (ticket === recoveryGeneration) recoveryTableLookupDirty = false;
+    return;
+  }
+  const reloaded = await tableService.reloadCurrentQuery();
+  if (ticket !== recoveryGeneration || !recoveryTableLookupDirty || reloaded !== "applied") return;
+  // beginContext intentionally clears a relation edit draft. Recovery must
+  // preserve the user's work and leave this local segment dirty instead.
+  if (relationLookup.draft) return;
+  const contextAccepted = await relationLookupService.loadContext(collection);
+  if (
+    ticket !== recoveryGeneration
+    || !recoveryTableLookupDirty
+    || !contextAccepted
+    || relationLookup.draft
+  ) return;
+  const lookupApplied = await authoritativeLookups.refresh();
+  if (ticket !== recoveryGeneration || !recoveryTableLookupDirty || !lookupApplied) return;
+  recoveryTableLookupDirty = false;
+}
+
+function resumeDirtyTableLookupRecovery(): boolean {
+  if (!recoveryTableLookupDirty || relationLookup.draft || !workspace.currentTable) return false;
+  const ticket = ++recoveryGeneration;
+  void recoverCurrentTableAndLookups(ticket);
+  return true;
+}
 
 function applyWorkspaceStartupPolicy(): void {
   if (!viewMounted || startupWorkspaceDecisionMade) return;
@@ -650,7 +701,10 @@ function initializeBusinessConsumers(): void {
   // strict-mode double-mount in dev because each bridge.on replaces prior
   // handlers for the same key (see hostBridge).
   workspaceService.init();
-  tableService.init();
+  tableService.init(onRealtimeRecovered);
+  // This listener retires only a local in-flight recovery receipt. The table
+  // and Dashboard services still process normal data.changed immediately.
+  stopRecoveryDataInvalidation = hostBridge.on("data.changed", retireRendererRecovery);
   // Source writes reconcile through tableService/mutationService. Target-only
   // writes refresh Relation display metadata in place; a full table reload
   // would discard cursor windows and interfere with edits awaiting receipts.
@@ -673,16 +727,38 @@ function initializeBusinessConsumers(): void {
   errorRouter.init();
   pluginService.init();
   dashboardService.init();
+  dashboardService.setRecoverySurfaceVisible(ui.activeView === "dashboard");
   void pluginService.list().catch(() => undefined);
   // App.vue gates this workspace until the host runtime is ready. Re-announce
-  // app.ready only after all business subscriptions are installed so the host
-  // replays database.opened that may have completed while StartupGate was shown.
-  hostBridge.notify("app.ready", {});
+  // business readiness means subscriptions are installed, not that any query
+  // or recovery has completed. The host can now replay database state and start SSE.
+  hostBridge.notify("app.ready", { phase: "business" });
 }
 
 watch(
   () => [workspaceSession.enabled, workspaceSession.hasOpenWorkspace] as const,
   initializeBusinessConsumers,
+);
+watch(
+  () => ui.activeView,
+  (activeView) => dashboardService.setRecoverySurfaceVisible(activeView === "dashboard"),
+  { flush: "post" },
+);
+// `reloadCurrentQuery` validates its own response, but a post-flush table
+// selection can still happen after it resolves and before the root recovery
+// coroutine resumes. Retire that coroutine synchronously at the ownership
+// boundary so it cannot beginContext for the table it no longer owns.
+watch(
+  () => workspace.currentTable,
+  retireRendererRecovery,
+  { flush: "sync" },
+);
+watch(
+  () => relationLookup.draft,
+  (draft, previousDraft) => {
+    if (!draft && previousDraft) resumeDirtyTableLookupRecovery();
+  },
+  { flush: "sync" },
 );
 watch(
   () => [
@@ -703,6 +779,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   viewMounted = false;
+  retireRendererRecovery();
+  stopRecoveryDataInvalidation?.();
+  stopRecoveryDataInvalidation = null;
   unregisterWorkspaceEpochReset();
   tableService.dispose();
   relationLookupService.dispose();
@@ -790,6 +869,9 @@ const workspaceSearchNavigation = createWorkspaceSearchNavigation({
 
 function refreshTable(): void {
   editRejection.value = null;
+  // The retained recovery path already issues one correlated reload and then
+  // negotiates Relation/Lookup. Do not race it with the legacy notify refresh.
+  if (resumeDirtyTableLookupRecovery()) return;
   tableService.refresh();
   if (workspace.currentTable) void relationLookupService.loadContext(workspace.currentTable);
 }
@@ -829,6 +911,8 @@ const showWorkspaceCenterScreen = computed(() =>
 const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
   "workspace-view-v1-consumers",
   ({ nextWorkspaceId }) => {
+    retireRendererRecovery();
+    dashboardService.retireRecovery();
     void structuredCellDialogs.dispatch({ type: "attachment.close" });
     void structuredCellDialogs.dispatch({ type: "json.close" });
     void lookupProvenance.dispatch({ type: "scope.retire" });

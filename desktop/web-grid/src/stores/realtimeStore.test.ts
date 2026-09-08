@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import recoveryFixtureJson from "../../../../contracts/v2/fixtures/realtime-recovery-event.json";
 import { useRealtimeStore } from "./realtimeStore";
-import type { TaskChangedEvent } from "@/contracts";
+import type { FormulaTaskState, TaskChangedEvent } from "@/contracts";
+import { RealtimeTaskTracker } from "@/services/realtimeReconciler";
 
 describe("realtimeStore", () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -16,6 +18,18 @@ describe("realtimeStore", () => {
     expect(store.activeTask).toBeNull();
     expect(store.activeFormulaBackfill).toBeNull();
     expect(store.latestTask?.state).toBe("succeeded");
+  });
+
+  it.each([false, true])("updates the general active-task view after recovery (empty: %s)", (empty) => {
+    const store = useRealtimeStore();
+    store.applyTask(task("running", 0.1));
+    const frame = recoveryFixture();
+    if (empty) frame.activeFormulaTasks = [];
+    const delivery = new RealtimeTaskTracker().acceptRecovery(frame);
+    store.replaceFormulaTaskProjection(delivery.activeFormulaTasks);
+
+    expect(store.activeTask?.taskId ?? null).toBe(empty ? null : "formula-resumed");
+    expect(store.tasksById["formula-orders"]).toBeUndefined();
   });
 
   it("keeps a formula backfill visible while another task starts and finishes", () => {
@@ -106,8 +120,93 @@ describe("realtimeStore", () => {
       0.2,
     ));
     expect(store.activeFormulaBackfill?.taskId).toBe("formula-old");
-    expect(store.activeFormulaBackfill?.sequence).toBe(40);
     expect(store.activeFormulaBackfill?.progress).toBe(0.4);
+    expect(store.activeFormulaBackfill).not.toHaveProperty("sequence");
+  });
+
+  it("projects a resumed Go formula set without letting its retained cancellation replace current work", () => {
+    const store = useRealtimeStore();
+    store.applyTask({
+      ...task("running", 0.2),
+      eventId: "evt-python-import",
+      taskId: "python-import",
+      taskType: "import",
+    });
+
+    const recovery = new RealtimeTaskTracker().acceptRecovery(recoveryFixture());
+    store.replaceFormulaTaskProjection(recovery.activeFormulaTasks);
+
+    expect(store.activeFormulaBackfill).toMatchObject({
+      taskId: "formula-resumed",
+      state: "running",
+      progress: 0.5,
+    });
+    expect(store.tasksById["python-import"]?.state).toBe("running");
+    expect(recovery.terminalNotifications.map((event) => event.eventId)).toEqual([
+      "evt_formula_cancelled_before_resume",
+      "evt_formula_succeeded",
+    ]);
+    expect(store.latestTask?.eventId).toBe("evt-python-import");
+  });
+
+  it("accepts a repeated recovery frame without replacing its current formula projection", () => {
+    const store = useRealtimeStore();
+    const frame = recoveryFixture();
+    const tracker = new RealtimeTaskTracker();
+
+    store.replaceFormulaTaskProjection(tracker.acceptRecovery(frame).activeFormulaTasks);
+    const repeated = tracker.acceptRecovery(frame);
+    store.replaceFormulaTaskProjection(repeated.activeFormulaTasks);
+
+    expect(store.activeFormulaBackfill).toMatchObject({
+      taskId: "formula-resumed",
+      state: "running",
+    });
+    expect(repeated.terminalNotifications).toEqual([]);
+  });
+
+  it("clears only Go formula activity when the recovered active set is empty", () => {
+    const store = useRealtimeStore();
+    store.applyTask(formulaTask("formula-before-recovery", "running", 1, "2026-09-03T08:00:00Z", 0.2));
+    store.applyTask({
+      ...task("running", 0.3),
+      eventId: "evt-python-export",
+      taskId: "python-export",
+      taskType: "export",
+    });
+    const frame = recoveryFixture();
+    frame.activeFormulaTasks = [];
+
+    store.replaceFormulaTaskProjection(new RealtimeTaskTracker().acceptRecovery(frame).activeFormulaTasks);
+
+    expect(store.activeFormulaBackfill).toBeNull();
+    expect(store.tasksById["python-export"]?.state).toBe("running");
+    expect(store.activeTask?.taskId).toBe("python-export");
+  });
+
+  it("updates and retires recovered formula activity when a live task snapshot arrives", () => {
+    const store = useRealtimeStore();
+    store.applyTask(formulaTask("formula-resumed", "running", 90, "2026-09-03T08:31:00Z", 0.2));
+    store.replaceFormulaTaskProjection(
+      new RealtimeTaskTracker().acceptRecovery(recoveryFixture()).activeFormulaTasks,
+    );
+    store.applyTask(formulaTask("formula-resumed", "running", 41, "2026-09-03T08:31:00Z", 0.75));
+    expect(store.activeFormulaBackfill).toMatchObject({ progress: 0.75, cursor: "0.75" });
+    expect(store.activeTask).toMatchObject({ progress: 0.75, cursor: "0.75" });
+
+    store.applyTask(formulaTask("formula-resumed", "succeeded", 42, "2026-09-03T08:32:00Z", 1));
+    expect(store.activeFormulaBackfill).toBeNull();
+  });
+
+  it("retires recovered formula activity on reset", () => {
+    const store = useRealtimeStore();
+    store.replaceFormulaTaskProjection(
+      new RealtimeTaskTracker().acceptRecovery(recoveryFixture()).activeFormulaTasks,
+    );
+
+    store.reset();
+
+    expect(store.activeFormulaBackfill).toBeNull();
   });
 
   it("records invalidation and clears an earlier reconcile failure", () => {
@@ -152,4 +251,15 @@ function formulaTask(
     sequence,
     occurredAt,
   };
+}
+
+interface MutableRecoverySnapshot {
+  contractVersion: "2.0";
+  topic: "realtime.recovered";
+  activeFormulaTasks: FormulaTaskState[];
+  terminalNotifications: TaskChangedEvent[];
+}
+
+function recoveryFixture(): MutableRecoverySnapshot {
+  return structuredClone(recoveryFixtureJson) as MutableRecoverySnapshot;
 }

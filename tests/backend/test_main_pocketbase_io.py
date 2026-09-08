@@ -262,7 +262,6 @@ async def test_build_server_dispatches_import_task_without_internal_error(
         "_product_runtime",
         lambda: (product_service, client, config),
     )
-    monkeypatch.setattr(backend_main, "_start_realtime", lambda *_args: None)
     output = io.BytesIO()
     monkeypatch.setattr(
         backend_main.sys,
@@ -276,7 +275,7 @@ async def test_build_server_dispatches_import_task_without_internal_error(
     )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
     monkeypatch.setenv("VIBETABLE_STATE_DIR", str(tmp_path / "state"))
-    server, plugin_service, realtime = await backend_main._build_server()
+    server, plugin_service = await backend_main._build_server()
     try:
         dispatcher = server._dispatcher
         registered = await dispatcher.dispatch(
@@ -349,7 +348,6 @@ async def test_build_server_dispatches_import_task_without_internal_error(
         assert status is not None
         assert status["result"]["state"] == "succeeded"
         assert status["result"]["result"]["createdCount"] == 1
-        assert realtime is None
     finally:
         if plugin_service is not None:
             await plugin_service.close()
