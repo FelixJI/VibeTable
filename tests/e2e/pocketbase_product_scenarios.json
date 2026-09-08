@@ -142,5 +142,11 @@
     "title": "Lookup 持久定义读取",
     "requirement": "通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。",
     "capabilities": ["lookup.definition-read"]
+  },
+  {
+    "id": "28-relation-delta-preview",
+    "title": "多值关系预览与取消",
+    "requirement": "真实多值关系编辑器经预览加载权威已关联目标；增加本地草稿选择后取消，源与目标表记录及schema/data revision保持不变。",
+    "capabilities": ["relation.preview"]
   }
 ]

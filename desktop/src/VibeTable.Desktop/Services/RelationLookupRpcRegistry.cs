@@ -47,7 +47,7 @@ internal static class RelationLookupRpcRegistry
             (gateway, payload, token) => gateway.UpdateSingleRelationAsync(payload, token)),
         new(
             "relation.previewDelta",
-            IsValidRelationDelta,
+            IsValidRelationPreview,
             (gateway, payload, token) => gateway.PreviewRelationDeltaAsync(payload, token)),
         new(
             "relation.applyDelta",
@@ -76,6 +76,9 @@ internal static class RelationLookupRpcRegistry
         => ByType.TryGetValue(type, out endpoint!);
 
     private static bool IsValidRelationDelta(JsonElement payload)
+        => IsValidRelationPreview(payload) && HasArray(payload, "updates");
+
+    private static bool IsValidRelationPreview(JsonElement payload)
         => HasStrings(
                 payload,
                 "relationId",
@@ -83,7 +86,6 @@ internal static class RelationLookupRpcRegistry
                 "expectedSchemaRevision",
                 "idempotencyKey")
             && HasArray(payload, "adds")
-            && HasArray(payload, "updates")
             && HasArray(payload, "removes");
 
     private static bool IsRelationChangeAction(JsonElement payload)
