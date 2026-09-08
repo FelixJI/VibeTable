@@ -1560,6 +1560,91 @@ describe("WorkspaceView", () => {
     expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(2);
   });
 
+  it.each(["accepted", "rejected", "draft opened"] as const)(
+    "keeps recovery state consistent when the Relation context is %s after page reload",
+    async (outcome) => {
+      const { bridge, emit, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+      useUiStore().navigate("tables");
+      const wrapper = mountView();
+      await flushPromises();
+      const relations = useRelationLookupStore();
+      // Match the page revision so the ordinary schema watcher cannot stand
+      // in for the correlated recovery consumer under test.
+      const schema = {
+        collection: "orders", primaryKey: "id", schemaRevision: "schema_7",
+        permissionRevision: "permission_7", capabilityHash: "cap_7", lookupRevision: "lookup_7",
+        normalizedRelations: [], columns: [],
+      };
+      const capabilities = {
+        contract: "vibetable.relation-capabilities.v1" as const,
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+      };
+      relations.collection = "orders";
+      relations.schema = schema;
+      relations.capabilities = capabilities;
+      await flushPromises();
+      posted.length = 0;
+
+      emit({ type: "realtime.recovered", payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [], terminalNotifications: [],
+      } });
+      await flushPromises();
+      const reload = posted.find((message) => message.type === "table.queryRequested")!;
+      emit({ type: "table.pageLoaded", requestId: reload.requestId, payload: {
+        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+      } });
+      await flushPromises();
+      const contexts = posted.filter((message) => message.type === "schema.describe");
+      expect(contexts).toHaveLength(1);
+      const described = contexts[0]!;
+      const listed = posted.find((message) => message.type === "lookup.list")!;
+      expect(relations.loading).toBe(true);
+      if (outcome === "draft opened") {
+        relations.openDraft("orders.customer", "order-1", []);
+        relations.toggleDraftTarget({ collection: "customers", itemId: "customer-2", label: "Unsaved" });
+      }
+      if (outcome === "rejected") {
+        emit({ type: "operation.failed", requestId: described.requestId, payload: {
+          operation: "schema.describe", message: "context unavailable",
+        } });
+      } else {
+        emit({ type: "schema.describe", requestId: described.requestId, payload: {
+          contract: "vibetable.schema-describe.v1", collection: "orders",
+          requestGeneration: (described.payload as { requestGeneration: number }).requestGeneration,
+          schema, capabilities,
+        } });
+      }
+      emit({ type: "lookup.list", requestId: listed.requestId, payload: {
+        collection: "orders", definitions: [], lookupRevision: "lookup_7",
+      } });
+      await flushPromises();
+      expect(relations.loading).toBe(false);
+      expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(1);
+
+      if (outcome === "draft opened") {
+        expect(relations.draft?.selected).toEqual([
+          { collection: "customers", itemId: "customer-2", label: "Unsaved" },
+        ]);
+        relations.closeDraft();
+      } else {
+        expect(relations.error).toBe(outcome === "rejected" ? "context unavailable" : null);
+        wrapper.findComponent(AppToolbar).vm.$emit("refresh");
+      }
+      await flushPromises();
+      // Successful reconciliation retires the recovery obligation. A failed
+      // context or preserved draft needs exactly one explicit correlated retry.
+      expect(posted.filter((message) => message.type === "table.queryRequested"))
+        .toHaveLength(outcome === "accepted" ? 1 : 2);
+      expect(posted.filter((message) => message.type === "table.selected"))
+        .toHaveLength(outcome === "accepted" ? 1 : 0);
+    },
+  );
   it("does not label unrelated background tasks as formula backfills", async () => {
     const { bridge, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
