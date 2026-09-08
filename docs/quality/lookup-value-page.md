@@ -20,7 +20,7 @@ Product和旧REST两个1 MiB预算，以及大整数到旧REST int边界的错�
 与revision helper保留；capture/write入口退役，只读检查保留producer、输入和typed边界。
 
 Host复用已有Go forwarder与epoch lease，保留完整八字段payload、scope、取消、迟到成功/错误
-与无Python fallback。所有14项注册和HTTP交叉guard保持fail closed。真实authority测试建立
+与无Python fallback。来源分支14项注册和HTTP交叉guard保持fail closed。真实authority测试建立
 101条来源，验证前100/末1两页及total/hasMore；成功、过期revision、非法paging和缺失来源拒绝
 后逐次比较记录、metadata、audit/outbox/receipt，未发生写入。
 
@@ -49,6 +49,28 @@ Host复用已有Go forwarder与epoch lease，保留完整八字段payload、scop
 比较两表记录及schema/data revision不变。打开面板本身不调用valuePage，不能据此宣称分页通过。
 历史S06/S26元数据及main 23/23来源报告保持原义，新场景缺口由现有证据契约记录。
 
-实际S29包、最新main增量、最终fresh CI及合并后main CI/CD尚未完成，不提前声明资格通过。
+实际S29包、最终fresh CI及合并后main CI/CD尚未完成，不提前声明资格通过。
 
 交叉注册增量：sidecar目录执行 `go test -race ./internal/app -run 'TestQuery.*ProductHTTP|TestSchemaListProductHTTPMatchesRealCatalogREST|TestFileListProductHTTPMatchesAttachmentRESTAndConsumesCapabilities|TestHistoryReadProductHTTPReturnsFreshAuditedPage' -count=1`，passed61.705s。此项只覆盖本次受影响的既有HTTP夹具，未重复已通过的Lookup测试。
+
+## 整合 main 3f665 的增量
+
+来源提交 `f32290357d55dd5fd66b0378b197262e02e1b28f` 承接 main
+`3f665176e16e00d168edba98b40ac2ae26174c24` 的 preview 迁移。当前为15 Go /85 Python /2 native，
+lookup.valuePage 与 relation.previewDelta 都归 Go，relation.searchTargets 仍归 Python。
+两方法生产 adapter 与原始39/37案例保持来源一致；15项严格注册完整，两类真实HTTP fixture
+互加不可调用guard。Host保留 lookup 八字段与 preview 六字段，以及两个方法各自的错误、
+epoch取消/迟到结果断言；仍属Python的search及field.settings.describe入口保持合法。
+S26/S28/S29并存，原main23场景报告的source/run不变，历史manifest gap明确为三项。
+
+本次以下命令使用既有锁定环境及缓存，全部日志前缀为 `lookup-value-page-main-sync-`：
+
+- `uv run --frozen --no-sync python -m pytest tests/backend/test_main_product_data.py tests/backend/adapters/test_pocketbase_product_rpc.py tests/backend/adapters/test_pocketbase_client.py tests/backend/adapters/test_pocketbase_product_rpc_coverage.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_lookup_value_page_python_oracle.py tests/contract/test_relation_preview_python_oracle.py tests/contract/test_product_e2e_capability_index.py tests/e2e/test_product_e2e_runner.py -q --no-cov`：248 passed，7.26s。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~ProductDataSidecarRoutingTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~RelationLookupRpcRegistryTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceSessionEnvelopeFilterTests|FullyQualifiedName~HostProductRpcCompositionTests|FullyQualifiedName~QueryCursorOwnerCompositionTests'`：141 passed，0 failed/skip，14s。未重复来源完整.NET矩阵。
+- sidecar目录：`go test -race ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities -run 'TestLookupValuePageProductHTTP|TestRelationPreviewProductHTTP|TestQuery.*ProductHTTP|TestSchemaListProductHTTPMatchesRealCatalogREST|TestFileListProductHTTPMatchesAttachmentRESTAndConsumesCapabilities|TestHistoryReadProductHTTPReturnsFreshAuditedPage|TestNewRequiresRegistrations|TestGenerated' -count=1`：app77.513s、dispatcher1.668s、capabilities1.260s，全部passed。
+- `uv run --frozen --no-sync pyright backend contracts/v2/generate_lookup_value_page_oracle.py contracts/v2/generate_relation_preview_oracle.py tests/contract/test_lookup_value_page_python_oracle.py tests/contract/test_relation_preview_python_oracle.py`：0 errors/warnings。
+- sidecar目录：`go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1`：passed10.201s；`go vet ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities ./cmd/vibetable-pb`：exit0。
+- 相关九个Python文件Ruff check/format check通过；policy与E2E索引生成一致性检查通过，Go测试文件gofmt、Git diff空白检查通过。
+
+本轮生成器首次误传不支持的 `--write`，仅usage拒绝，未运行生成；按实际默认写入模式生成成功。
+尚待更新后产品构建/S29与最终fresh CI，来源包和旧完整矩阵不充当新端点通过证据。

@@ -1,0 +1,2458 @@
+{
+  "producerCommit": "6ed36810f3753caed5e2e8ca27a4d4ad2117d41d",
+  "boundary": "Python Product dispatcher + adapter; scripted authority transport",
+  "typedGoBoundaries": {
+    "non-object-result": "DeltaPreview is a struct, not an array.",
+    "non-object-current-members-filtered": "[]TargetRef cannot contain non-object members.",
+    "non-array-current": "Current is []TargetRef, not an object.",
+    "current-nontext-label": "TargetRef.Label is string, not bool.",
+    "secondary-label-falsy-becomes-null": "TargetRef.SecondaryLabel is string, not arbitrary JSON.",
+    "secondary-label-truthy-nontext-preserved": "TargetRef.SecondaryLabel cannot carry truthy non-text JSON.",
+    "can-apply-missing-is-false": "DeltaPreview always emits CanApply.",
+    "can-apply-one-is-false": "CanApply is bool, not integer.",
+    "can-apply-string-is-false": "CanApply is bool, not string.",
+    "can-apply-null-is-false": "CanApply is bool, not null.",
+    "transport-error": "An in-process PreviewDelta call has no Python HTTP transport boundary."
+  },
+  "cases": [
+    {
+      "name": "empty-delta-hydrates-current",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-delta-hydrates-current",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-delta-hydrates-current",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "empty-current",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-current",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-current",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "nested-target-translation-and-original-echo",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "nested-target-translation-and-original-echo",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "target": {
+                "collection": "authors",
+                "itemId": "a2",
+                "label": "新增 👩🏽‍💻"
+              },
+              "note": [
+                0,
+                false
+              ]
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "author-1"
+            }
+          ],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a2",
+                "label": "新增 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "author-1",
+                "label": "author-1"
+              }
+            ],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "nested-target-translation-and-original-echo",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [
+              {
+                "target": {
+                  "collection": "authors",
+                  "itemId": "a2",
+                  "label": "新增 👩🏽‍💻"
+                },
+                "note": [
+                  0,
+                  false
+                ]
+              }
+            ],
+            "removes": [
+              {
+                "collection": "authors",
+                "itemId": "author-1"
+              }
+            ],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "target-alias-priority-and-fallback",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "target-alias-priority-and-fallback",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "tableId": "preferred",
+              "collection": "ignored",
+              "recordId": "preferred-id",
+              "itemId": "ignored",
+              "label": ""
+            },
+            {
+              "tableId": false,
+              "collection": "authors",
+              "recordId": "",
+              "itemId": "fallback-id"
+            }
+          ],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "preferred",
+                "recordId": "preferred-id",
+                "label": "preferred-id"
+              },
+              {
+                "tableId": "authors",
+                "recordId": "fallback-id",
+                "label": "fallback-id"
+              }
+            ],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "target-alias-priority-and-fallback",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "preferred",
+                "collection": "ignored",
+                "recordId": "preferred-id",
+                "itemId": "ignored",
+                "label": ""
+              },
+              {
+                "tableId": false,
+                "collection": "authors",
+                "recordId": "",
+                "itemId": "fallback-id"
+              }
+            ],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "non-object-nested-target-uses-outer",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-nested-target-uses-outer",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "target": false,
+              "collection": "authors",
+              "itemId": "a2"
+            }
+          ],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a2",
+                "label": "a2"
+              }
+            ],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-nested-target-uses-outer",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [
+              {
+                "target": false,
+                "collection": "authors",
+                "itemId": "a2"
+              }
+            ],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "empty-nested-object-does-not-fall-back",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-nested-object-does-not-fall-back",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "target": {},
+              "collection": "authors",
+              "itemId": "a2"
+            }
+          ],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-nested-object-does-not-fall-back",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "whitespace-identifiers-and-label-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "whitespace-identifiers-and-label-preserved",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": " ",
+          "sourceItemId": "\t",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "collection": " ",
+              "itemId": " ",
+              "label": "\t"
+            }
+          ],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": " ",
+            "sourceRecordId": "\t",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": " ",
+                "recordId": " ",
+                "label": "\t"
+              }
+            ],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "whitespace-identifiers-and-label-preserved",
+        "result": {
+          "delta": {
+            "relationId": " ",
+            "sourceItemId": "\t",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [
+              {
+                "collection": " ",
+                "itemId": " ",
+                "label": "\t"
+              }
+            ],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "expected-date-null-echoed-not-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "expected-date-null-echoed-not-forwarded",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1",
+          "expectedDateUpdated": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "expected-date-null-echoed-not-forwarded",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1",
+            "expectedDateUpdated": null
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "expected-date-object-echoed-not-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "expected-date-object-echoed-not-forwarded",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1",
+          "expectedDateUpdated": {
+            "nested": [
+              false,
+              0,
+              "中文"
+            ]
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "expected-date-object-echoed-not-forwarded",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1",
+            "expectedDateUpdated": {
+              "nested": [
+                false,
+                0,
+                "中文"
+              ]
+            }
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "secondary-label-falsy-becomes-null",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "secondary-label-falsy-becomes-null",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": null
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": ""
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": false
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": 0
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": []
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": {}
+            }
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "secondary-label-falsy-becomes-null",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": null
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": null
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": null
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": null
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": null
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": null
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "secondary-label-truthy-nontext-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "secondary-label-truthy-nontext-preserved",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": true
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": 1
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": [
+                "detail"
+              ]
+            },
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": {
+                "detail": false
+              }
+            }
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "secondary-label-truthy-nontext-preserved",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": true
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": 1
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": [
+                "detail"
+              ]
+            },
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": {
+                "detail": false
+              }
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "non-object-current-members-filtered",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-current-members-filtered",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            null,
+            false,
+            0,
+            "",
+            [],
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-current-members-filtered",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "can-apply-missing-is-false",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-missing-is-false",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-missing-is-false",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [],
+          "diagnostics": [],
+          "canApply": false
+        }
+      }
+    },
+    {
+      "name": "can-apply-false",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-false",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [],
+          "canApply": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-false",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [],
+          "diagnostics": [],
+          "canApply": false
+        }
+      }
+    },
+    {
+      "name": "can-apply-one-is-false",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-one-is-false",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [],
+          "canApply": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-one-is-false",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [],
+          "diagnostics": [],
+          "canApply": false
+        }
+      }
+    },
+    {
+      "name": "can-apply-string-is-false",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-string-is-false",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [],
+          "canApply": "true"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-string-is-false",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [],
+          "diagnostics": [],
+          "canApply": false
+        }
+      }
+    },
+    {
+      "name": "can-apply-null-is-false",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-null-is-false",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [],
+          "canApply": null
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "can-apply-null-is-false",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [],
+          "diagnostics": [],
+          "canApply": false
+        }
+      }
+    },
+    {
+      "name": "non-object-result",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-result",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-result",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "missing-current",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-current",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-current",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "null-current",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-current",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": null,
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-current",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "non-array-current",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-array-current",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": {},
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-array-current",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "current-missing-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "current-missing-label",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a1"
+            }
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "current-missing-label",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "current-empty-record-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "current-empty-record-id",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "current-empty-record-id",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "current-nontext-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "current-nontext-label",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": false,
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "current-nontext-label",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "missing-required-adds",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-required-adds",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-required-adds",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "unknown-top-level-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-top-level-field",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1",
+          "extra": true
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-top-level-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "empty-relation-is-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-relation-is-handler-error",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-relation-is-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "wrong-relation-type-is-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-relation-type-is-handler-error",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": false,
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-relation-type-is-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "null-adds-is-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-adds-is-handler-error",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": null,
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-adds-is-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "non-object-add-is-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-add-is-handler-error",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            false
+          ],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-add-is-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "null-target-label-is-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-target-label-is-handler-error",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a2",
+              "label": null
+            }
+          ],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-target-label-is-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "top-level-authority-alias-rejected",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "top-level-authority-alias-rejected",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1",
+          "sourceRecordId": "other"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "top-level-authority-alias-rejected",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "nested-credential-rejected-before-handler",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "nested-credential-rejected-before-handler",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1",
+          "expectedDateUpdated": {
+            "password": "oracle-only"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "nested-credential-rejected-before-handler",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "public-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "public-error",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "public-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "remove target is not linked",
+            "code": "relation.target_not_linked",
+            "path": "removes[0]",
+            "details": {
+              "recordId": "author-1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "duplicate-adds-forwarded-to-authority",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-adds-forwarded-to-authority",
+        "method": "relation.previewDelta",
+        "params": {
+          "relationId": "orders.related",
+          "sourceItemId": "source-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a2"
+            },
+            {
+              "collection": "authors",
+              "itemId": "a2"
+            }
+          ],
+          "removes": [],
+          "idempotencyKey": "preview-1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "result": [],
+          "adds": 99,
+          "removes": 99,
+          "diagnostics": [
+            "authority-only"
+          ],
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/preview-delta",
+          "query": null,
+          "body": {
+            "relationId": "orders.related",
+            "sourceRecordId": "source-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a2",
+                "label": "a2"
+              },
+              {
+                "tableId": "authors",
+                "recordId": "a2",
+                "label": "a2"
+              }
+            ],
+            "removes": [],
+            "requestId": "preview-1",
+            "idempotencyKey": "preview-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-adds-forwarded-to-authority",
+        "result": {
+          "delta": {
+            "relationId": "orders.related",
+            "sourceItemId": "source-1",
+            "expectedSchemaRevision": "schema-1",
+            "adds": [
+              {
+                "collection": "authors",
+                "itemId": "a2"
+              },
+              {
+                "collection": "authors",
+                "itemId": "a2"
+              }
+            ],
+            "removes": [],
+            "idempotencyKey": "preview-1"
+          },
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "author-1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "副标题"
+            }
+          ],
+          "diagnostics": [],
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "non-object-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-params",
+        "method": "relation.previewDelta",
+        "params": []
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    }
+  ]
+}

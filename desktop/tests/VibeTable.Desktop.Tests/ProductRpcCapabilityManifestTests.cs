@@ -59,6 +59,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "query.readRows:workspace",
                 "query.selectionOpen:workspace",
                 "query.view:workspace",
+                "relation.previewDelta:workspace",
                 "schema.describe:workspace",
                 "schema.getTable:workspace",
                 "schema.list:workspace",

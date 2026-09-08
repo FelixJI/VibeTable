@@ -336,6 +336,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		schemaListRegistration(schemaapi.New(app)),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
+		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(app, manager),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
