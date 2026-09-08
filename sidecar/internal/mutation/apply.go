@@ -19,6 +19,7 @@ import (
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
+	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
@@ -842,8 +843,9 @@ func (kernel *Kernel) syncReciprocalRelations(
 					productValue = next[0]
 				}
 			}
-			storageValue, encodeErr := encodeFieldStorageValue(
-				targetRecord, reciprocal, productValue,
+			normalized, encodeErr := fieldvalue.New().NormalizeWrite(
+				ctx, reciprocal, fieldvalue.Update,
+				fieldvalue.Input{Supplied: true, Value: productValue},
 			)
 			if encodeErr != nil {
 				return nil, mutationError(
@@ -852,7 +854,9 @@ func (kernel *Kernel) syncReciprocalRelations(
 					map[string]any{"fieldId": reciprocal.Identity.FieldID}, false,
 				)
 			}
-			targetRecord.Set(reciprocal.Identity.PhysicalName, storageValue)
+			for name, value := range normalized.PhysicalValues {
+				targetRecord.Set(name, value)
+			}
 			if err := kernel.calculateRelatedFormulas(
 				ctx, app, targetDefinition, targetRecord,
 			); err != nil {
