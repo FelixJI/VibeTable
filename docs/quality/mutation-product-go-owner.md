@@ -70,3 +70,7 @@ Standards 未发现确定违例，指出严格 fixture 装配多处重复的维�
 ## 实际 main 端点同步
 
 #304 的 required CI 全部成功，2026-09-08 21:43 UTC squash 合并为 `3bf03bc6f47399bacbdb1305a9b110c8d3b11ae5`。本分支通过正常 merge 同步为 `2eb6b2f76ed3f292c2ce7be59b7ad81077fe5362`，与此前 `ba3c8871` Git tree 完全一致；复用上述 `e7eb3362` 构建、定向 race 与五场景资格，无需重复生成可执行文件。#304 合并后的 main CI/CD 仍在跟踪，本 owner PR 的 fresh CI、squash 和合并后闭环仍待完成。
+
+## 首轮 fresh CI 的进程清单修正
+
+CI run `34282769151` 的 core 与 race-b 同在 `TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart` 失败：实际 Go 注册21项，进程测试仍冻结迁移前19项。仅向 RPCMethods 与 Registrations 的精确排序清单加入 `mutation.apply`、`mutation.preview` 和各自 workspace scope，保留全部旧方法与身份/失败关闭/跨重启断言。定向旧测试 FAIL1.349s；`go test ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1` PASS1.708s，同命令加 `-race` PASS10.148s。日志位于 `build/qa/mutation-process-capabilities/`。产品源码未变；更新后的 fresh CI 与合并闭环仍待完成。
