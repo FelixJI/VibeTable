@@ -102,6 +102,56 @@ describe("field settings service", () => {
     expect(JSON.stringify(request.mock.calls)).not.toMatch(/schema\.(apply|validate|delete)/);
   });
 
+  it.each(["success", "failure"] as const)("ignores late plan %s after closing A and opening B", async (outcome) => {
+    let settle!: () => void;
+    const delayed = new Promise<unknown>((resolve, reject) => {
+      settle = () => outcome === "success"
+        ? resolve(plan())
+        : reject(new Error("old A planning failed"));
+    });
+    request.mockResolvedValueOnce(describeResult(true)).mockReturnValueOnce(delayed);
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+    store.patchDraft({ displayName: "A edited" });
+    const pending = service.plan();
+    expect(store.phase).toBe("planning");
+    vi.stubGlobal("confirm", () => true);
+    expect(service.requestClose()).toBe(true);
+
+    request.mockResolvedValueOnce({ ...describeResult(true), tableId: "tbl_b" });
+    await service.openEdit("tbl_b", definition().identity.fieldId);
+    store.patchDraft({ displayName: "B edited" });
+    const currentDraft = store.draft;
+    settle();
+    await pending;
+
+    expect(store.open).toBe(true);
+    expect(store.result?.tableId).toBe("tbl_b");
+    expect(store.draft).toBe(currentDraft);
+    expect(store.phase).toBe("editing");
+    expect(store.plan).toBeNull();
+    expect(store.error).toBeNull();
+    expect(store.errorCode).toBeNull();
+  });
+
+  it("accepts a delayed plan while its editor session remains current", async () => {
+    let finish!: (value: unknown) => void;
+    const delayed = new Promise<unknown>((resolve) => { finish = resolve; });
+    request.mockResolvedValueOnce(describeResult(true)).mockReturnValueOnce(delayed);
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+    store.patchDraft({ displayName: "Current edit" });
+    const pending = service.plan();
+    expect(store.phase).toBe("planning");
+    finish(plan());
+    await pending;
+    expect(store.phase).toBe("planned");
+    expect(store.plan?.planId).toBe("plan_01JABCDEFGH");
+    expect(store.draft?.displayName).toBe("Current edit");
+    expect(store.error).toBeNull();
+  });
   it("closes after a successful purge without describing the deleted field", async () => {
     request
       .mockResolvedValueOnce(describeResult(true))
@@ -317,6 +367,29 @@ describe("field settings service", () => {
     expect(request.mock.calls.slice(1).map(([name]) => name)).toEqual([
       "schema.describe", "schema.describe",
     ]);
+    store.patchDraft({ displayName: "客户" });
+    store.patchRelationPair({ reciprocalDisplayName: "客户订单", reciprocalCardinality: "one" });
+    const pair = { ...store.relationPair! };
+    const sourceSchema = store.relationSourceSchema;
+    const targetSchema = store.relationTargetSchema;
+    request.mockRejectedValueOnce(new Error("plan temporarily unavailable"));
+    expect(store.canPlan).toBe(true);
+    await service.plan();
+    expect(request.mock.calls.at(-1)).toMatchObject([
+      "field.change.plan", { relationPair: pair },
+    ]);
+    expect(store.phase).toBe("failed");
+    expect(store.relationPair).toEqual(pair);
+    expect(store.relationSourceSchema).toBe(sourceSchema);
+    expect(store.relationTargetSchema).toBe(targetSchema);
+    expect(store.relationTables.map(item => item.displayName)).toEqual(["订单", "客户"]);
+    expect(store.canPlan).toBe(true);
+
+    request.mockResolvedValueOnce(plan());
+    await service.plan();
+    expect(store.phase).toBe("planned");
+    expect(request.mock.calls.at(-1)).toEqual(request.mock.calls.at(-2));
+    expect(store.relationPair).toEqual(pair);
   });
 
   it("resolves an eight-hop-capable Lookup catalog by display metadata without mutating the draft", async () => {
