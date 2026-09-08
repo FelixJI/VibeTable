@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：26
-- 唯一能力：44
-- 场景—能力关联：57
+- 场景：27
+- 唯一能力：45
+- 场景—能力关联：58
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -39,6 +39,7 @@
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
 | `kanban.lifecycle` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化） |
 | `lookup.definition-read` | <code>26-lookup-definition-read</code>（Lookup 持久定义读取） |
+| `lookup.source-pagination` | <code>29-lookup-source-pagination</code>（Lookup 来源分页读取） |
 | `mutation.authority` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化）、<code>21-calendar-date-move</code>（Calendar 日期拖动持久化）、<code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
@@ -91,3 +92,4 @@
 | <code>26-lookup-definition-read</code> | Lookup 持久定义读取 | 通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。 | `lookup.definition-read` |
 | <code>27-relation-target-search</code> | 关系目标搜索 | 真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复；不提交关联写入。 | `relation.search` |
 | <code>28-relation-delta-preview</code> | 多值关系预览与取消 | 真实多值关系编辑器经预览加载权威已关联目标；增加本地草稿选择后取消，源与目标表记录及schema/data revision保持不变。 | `relation.preview` |
+| <code>29-lookup-source-pagination</code> | Lookup 来源分页读取 | 通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。 | `lookup.source-pagination` |
