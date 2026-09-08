@@ -2759,6 +2759,24 @@ async function editRelationPairScenario(page, recorder, authors, articleTableId,
       && canonicalJsonText(relationPairIdentitiesAndLinks(committed)) === canonicalJsonText(identitiesAndLinks),
     { committed });
   await closeFieldSettingsDrawer(page);
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: relation.physicalName, label: "A-01" });
+  recorder.check("pair source Grid consumes the newly selected target display field",
+    await page.locator(`.tabulator-cell[tabulator-field="${relation.physicalName}"] .vt-relation-token`)
+      .innerText() === "A-01");
+  await selectTable(page, "E2E Authors V2");
+  const reciprocalPhysicalName = committed[1].definition.identity.physicalName;
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: reciprocalPhysicalName, label: "P-01" });
+  recorder.check("pair reciprocal Grid consumes the newly selected source display field",
+    await page.locator(`.tabulator-cell[tabulator-field="${reciprocalPhysicalName}"] .vt-relation-token`)
+      .innerText() === "P-01");
+  await selectTable(page, "E2E Articles V2");
+  await waitForVisibleRowCount(page, 1);
   await openRelationPairEditor(page, relation.physicalName, "作者文章");
   recorder.check("reopened relation editor reads the committed names and cardinalities",
     await page.getByTestId("field-display-name").locator("input").inputValue() === "文章作者"
