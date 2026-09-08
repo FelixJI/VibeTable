@@ -483,6 +483,49 @@
       "evidence": ["sidecar/internal/app/query_page_product_rpc.go", "contracts/v2/query-window-python-oracle.json", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
+      "id": "rpc.query-view",
+      "kind": "rpc",
+      "names": [
+        "query.view"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "query.view"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "02-all-field-schema"
+      ],
+      "targetSlice": "L3A",
+      "targetPr": null,
+      "deleteWhen": "The query.view Python route is removed; preserve the original view projection and real grouping/summary product path.",
+      "evidence": [
+        "sidecar/internal/app/query_view_product_rpc.go",
+        "sidecar/internal/query/port.go",
+        "contracts/v2/query-view-python-oracle.json",
+        "tests/e2e/webview_product_scenarios.mjs"
+      ]
+    },
+    {
       "id": "rpc.realtime-reconcile",
       "kind": "rpc",
       "names": ["events.reconcile"],
@@ -625,13 +668,13 @@
     {
       "id": "rpc.schema-query-read",
       "kind": "rpc",
-	  "names": ["query.cursorFetch", "query.cursorOpen", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view"],
+	  "names": ["query.cursorFetch", "query.cursorOpen", "query.readRows", "query.selectionOpen", "query.validateSnapshot"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-	  "effects": {"read": ["query.cursorFetch", "query.cursorOpen", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view"], "write": [], "notification": [], "state": []},
+	  "effects": {"read": ["query.cursorFetch", "query.cursorOpen", "query.readRows", "query.selectionOpen", "query.validateSnapshot"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",

@@ -236,41 +236,6 @@ class PocketBaseClient:
         )
         return _query_cursor_window(payload)
 
-    async def execute_view(
-        self,
-        *,
-        table_id: str,
-        view: Mapping[str, JsonValue],
-    ) -> ViewQueryResult:
-        payload = _object(
-            await self._post(
-                QUERY_PATH,
-                {
-                    "operation": "view",
-                    "tableId": table_id,
-                    "view": view,
-                },
-            ),
-            "view query result",
-        )
-        page = payload.get("page")
-        group_rows = payload.get("groupRows")
-        has_more_groups = payload.get("hasMoreGroups")
-        if (
-            not isinstance(page, dict)
-            or not isinstance(group_rows, list)
-            or not all(_valid_group_row(row) for row in group_rows)
-            or not isinstance(has_more_groups, bool)
-        ):
-            raise ValueError("PocketBase returned an invalid view query result")
-        return ViewQueryResult(
-            page=_query_page(page),
-            group_rows=[_object(row, "view group row") for row in group_rows],
-            group_offset=_integer(payload.get("groupOffset"), "groupOffset"),
-            group_limit=_integer(payload.get("groupLimit"), "groupLimit"),
-            has_more_groups=has_more_groups,
-        )
-
     async def read_rows(self, *, table_id: str, row_ids: list[str]) -> list[JsonObject]:
         payload = _object(
             await self._post(
