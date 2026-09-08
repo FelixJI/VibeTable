@@ -900,6 +900,29 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    [DataRow("rendererInternal")]
+    [DataRow("hostOnly")]
+    [DataRow("missing")]
+    public void FieldSettingsDescriptionRejectsUnavailablePublicPolicy(string audience)
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = audience == "missing"
+            ? ProductRpcCapabilityManifest.CreateForTests()
+            : ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
+                "field.settings.describe", "workspace", audience,
+                "schema.query", "pythonBff", "read"));
+        var router = new WebMessageRouter(dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default, policy) { IsReady = true };
+        HostReplyMessage? rejected = router.Route(
+            """{"type":"field.settings.describe","requestId":"describe","payload":{"tableId":"tbl_orders"}}""");
+        HostReplyMessage? unknown = router.Route(
+            """{"type":"field.settings.unknown","requestId":"unknown","payload":{"tableId":"tbl_orders"}}""");
+        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", rejected?.Payload?.Code);
+        Assert.AreEqual("UNKNOWN_TYPE", unknown?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+    }
+
+    [TestMethod]
     public void GoProductRouteRequiresWorkspaceScopeAndPreservesRawWireObject()
     {
         Guid workspaceId = Guid.NewGuid();

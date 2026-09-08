@@ -16,6 +16,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "data.export",
         "data.generateTemplate",
         "data.previewImport",
+        "field.settings.describe",
         "file.applyHostChange",
         "file.saveHostFile",
         "file.token",

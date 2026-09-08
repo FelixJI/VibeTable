@@ -484,6 +484,12 @@ flowchart LR
 - 共享 schema projection。
 
 复杂投影必须进入 Go Product Adapter 深模块，不把 renderer DTO 泄漏到 query/restore 核心包。
+`field.settings.describe` 先独立纳入 Product catalog、显式 owner/audience policy 和 Host 准入，
+保持 Python owner；随后以另一个单方法 PR 迁移 Go 执行。历史 `WORKSPACE_CATALOG_METHODS`
+只是 Field typed 入口的排除集合，不代表实际 Workspace manifest 成员。此准入只处理 describe，
+声明 `workspace`、`rendererPublic`、`schema.query` 和只读 effect，不连带改变另外五个 Field 方法。
+准入本身完成封闭策略覆盖，可独立回滚；其验收不能替代后续 Go producer 和真实产品资格。
+详见 [字段描述 Product 准入资格](../quality/field-settings-product-catalog.md)。
 
 ### L4：Realtime 改为 Go→WPF
 

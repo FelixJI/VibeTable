@@ -33,6 +33,19 @@ public sealed class ProductRpcRouteSelectorTests
     }
 
     [TestMethod]
+    public void FieldSettingsDescriptionUsesItsDeclaredPythonOwner()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet(
+            "field.settings.describe", out ProductDataRpcEndpoint endpoint));
+        Assert.AreEqual(ProductRpcCapabilityCatalog.Product, endpoint.CapabilityCatalog);
+        Assert.IsTrue(ProductRpcRouteSelector.Default.TrySelectProduct(
+            endpoint.Type, endpoint.CapabilityCatalog, out ProductRpcRoute route));
+        Assert.AreEqual(ProductRpcRoute.PythonBff, route);
+        Assert.IsFalse(new ProductRpcRouteSelector(Policy()).TrySelectProduct(
+            endpoint.Type, endpoint.CapabilityCatalog, out _));
+    }
+
+    [TestMethod]
     public void ProductPolicyCanSelectGoForOneClosedProductMethod()
     {
         ProductRpcCapabilityManifest policy = Policy(
@@ -80,7 +93,7 @@ public sealed class ProductRpcRouteSelectorTests
         var selector = new ProductRpcRouteSelector(Policy());
 
         Assert.IsTrue(selector.TrySelectProduct(
-            "field.settings.describe",
+            "field.change.status",
             ProductRpcCapabilityCatalog.Workspace,
             out ProductRpcRoute route));
         Assert.AreEqual(ProductRpcRoute.PythonBff, route);

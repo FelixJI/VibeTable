@@ -38,12 +38,25 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 102 {
-		t.Fatalf("RPCDescriptors length = %d, want 102", len(descriptors))
+	if len(descriptors) != 103 {
+		t.Fatalf("RPCDescriptors length = %d, want 103", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
 		t.Fatalf("RPCDescriptors are not in canonical order: %#v", descriptors)
+	}
+
+	var settings RPCDescriptor
+	for _, descriptor := range descriptors {
+		if descriptor.Method == "field.settings.describe" {
+			settings = descriptor
+		}
+	}
+	if settings != (RPCDescriptor{
+		Method: "field.settings.describe", Scope: WorkspaceScope, Audience: RendererPublic,
+		CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect,
+	}) {
+		t.Fatalf("field.settings.describe descriptor = %#v", settings)
 	}
 
 	var schema RPCDescriptor

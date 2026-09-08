@@ -411,7 +411,6 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
         "field.change.plan",
         "field.change.status",
         "field.recycleBin.list",
-        "field.settings.describe",
     }
     assert catalog["rpcMethods"] == sorted(registered - workspace_catalog_methods)
     assert catalog["eventTopics"] == [

@@ -35,8 +35,7 @@ internal static class ProductDataRpcRegistry
             && HasOnlyProperties(p, "tableId", "fieldId")
             && HasString(p, "tableId")
             && HasOptionalString(p, "fieldId"),
-            (g, p, t) => g.DescribeFieldSettingsAsync(p, t),
-            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+            (g, p, t) => g.DescribeFieldSettingsAsync(p, t)),
         new("field.change.plan", p => Safe(p)
             && FieldChangePayloadContract.IsValidPlanRequest(p),
             (g, p, t) => g.PlanFieldChangeAsync(p, t),
