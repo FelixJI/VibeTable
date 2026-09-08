@@ -523,6 +523,50 @@
       "evidence": ["sidecar/internal/app/query_read_rows_product_rpc.go", "sidecar/internal/app/query_read_rows_product_rpc_test.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
+      "id": "rpc.query-selection-open",
+      "kind": "rpc",
+      "names": [
+        "query.selectionOpen"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "query.selectionOpen"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "02-all-field-schema",
+        "17-interface-lifecycle"
+      ],
+      "targetSlice": "L3A",
+      "targetPr": null,
+      "deleteWhen": "Python runtime route is removed; retain the atomic schema and cursor projection, revision pairing, and frozen Python wire contract without fallback.",
+      "evidence": [
+        "sidecar/internal/app/query_selection_product_rpc.go",
+        "sidecar/internal/query/port.go",
+        "contracts/v2/query-selection-python-oracle.json",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
       "id": "rpc.realtime-reconcile",
       "kind": "rpc",
       "names": ["events.reconcile"],
@@ -665,13 +709,13 @@
     {
       "id": "rpc.schema-query-read",
       "kind": "rpc",
-	  "names": ["query.selectionOpen", "query.validateSnapshot", "query.view"],
+	  "names": ["query.validateSnapshot", "query.view"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-	  "effects": {"read": ["query.selectionOpen", "query.validateSnapshot", "query.view"], "write": [], "notification": [], "state": []},
+	  "effects": {"read": ["query.validateSnapshot", "query.view"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",

@@ -173,7 +173,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task PythonCursorResponseSettlesAsStaleAfterWorkspaceSwitch()
+    public async Task PythonViewResponseSettlesAsStaleAfterWorkspaceSwitch()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -189,7 +189,11 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var dispatcher = CreateDispatcher(sink, filter);
         dispatcher.SetProductDataGateway(gateway);
 
-        dispatcher.Dispatch(PythonCursorRequest("old-response", ScopeFor(opened, 1)));
+        using var viewParams = JsonDocument.Parse(
+            """{"tableId":"tbl_records","view":{"query":{"filters":[],"sorts":[],"offset":0,"limit":100},"groups":[],"summaries":[],"groupOffset":0,"groupLimit":100}}""");
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "query.view", "old-response", viewParams.RootElement.Clone(), string.Empty,
+            ScopeFor(opened, 1)));
         await transport.WaitForWriteAsync();
         await fixture.Manager.SwitchAsync(
             second.WorkspaceId,
@@ -974,14 +978,14 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             await Task.Delay(10, timeout.Token);
     }
 
-    private static RoutedWebRequest PythonCursorRequest(
+    private static RoutedWebRequest QueryPageRequest(
         string requestId,
         WorkspaceWireScope scope)
     {
         using var document = JsonDocument.Parse(
             """{"tableId":"tbl_records","query":{"filters":[],"sorts":[],"offset":0,"limit":100}}""");
         return new RoutedWebRequest(
-            "query.cursorOpen",
+            "query.page",
             requestId,
             document.RootElement.Clone(),
             string.Empty,
@@ -992,7 +996,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         string requestId,
         WorkspaceWireScope scope)
     {
-        RoutedWebRequest request = PythonCursorRequest(requestId, scope) with { Type = "query.page" };
+        RoutedWebRequest request = QueryPageRequest(requestId, scope);
         JsonElement wire = JsonSerializer.SerializeToElement(new
         {
             scope = scope.Scope,

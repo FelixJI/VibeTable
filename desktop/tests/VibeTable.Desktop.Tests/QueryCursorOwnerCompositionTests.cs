@@ -17,7 +17,7 @@ public sealed class QueryCursorOwnerCompositionTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task DefaultHostOwnerContinuesPythonSelectionOnGoWithoutFallback(bool fetchFails)
+    public async Task DefaultHostOwnerContinuesGoSelectionOnGoWithoutFallback(bool fetchFails)
     {
         // Script only the transport peers: the typed gateway, default policy,
         // Host invoker and Product HTTP envelope handling are production code.
@@ -28,7 +28,7 @@ public sealed class QueryCursorOwnerCompositionTests
             new ProductSidecarIdentity("11111111-1111-4111-8111-111111111111", 7, 3,
                 "22222222-2222-4222-8222-222222222222"),
             ProductRpcCapabilityManifest.Default.GetProductSidecarRegistrations());
-        var python = new SelectionTransport();
+        var python = new NoProductCallsTransport();
         await using var client = new JsonRpcClient(python);
         using var http = new CursorHttpPeer(snapshot, fetchFails);
         using var gateway = new JsonRpcProductDataGateway(
@@ -39,10 +39,15 @@ public sealed class QueryCursorOwnerCompositionTests
         string cursor = selection.GetProperty("cursorWindow").GetProperty("nextCursor").GetString()!;
 
         Assert.AreEqual(Cursor, cursor);
-        Assert.AreEqual("query.selectionOpen", python.Calls.Single().GetProperty("method").GetString());
-        Assert.IsTrue(JsonElement.DeepEquals(parameters, python.Calls.Single().GetProperty("params")));
-        Assert.AreEqual(0, http.Handshakes);
-        Assert.AreEqual(0, http.Calls.Count);
+        Assert.AreEqual(0, python.Calls.Count);
+        JsonElement selectionCall = http.Calls.Single();
+        Assert.AreEqual("query.selectionOpen", selectionCall.GetProperty("method").GetString());
+        Assert.IsTrue(JsonElement.DeepEquals(parameters, selectionCall.GetProperty("params")));
+        Assert.AreEqual(1, http.Handshakes);
+        JsonElement selectionWire = selectionCall.GetProperty("wire");
+        Assert.AreEqual(snapshot.Identity.WorkspaceId, selectionWire.GetProperty("workspaceId").GetString());
+        Assert.AreEqual(snapshot.Identity.SessionEpoch, selectionWire.GetProperty("sessionEpoch").GetUInt64());
+        Assert.AreEqual(1UL, selectionWire.GetProperty("sequence").GetUInt64());
 
         JsonElement fetch = JsonSerializer.SerializeToElement(new { cursor });
         if (fetchFails)
@@ -62,15 +67,16 @@ public sealed class QueryCursorOwnerCompositionTests
             Assert.IsTrue(window.TryGetProperty("querySnapshot", out _));
         }
 
-        Assert.AreEqual(1, python.Calls.Count, "Go success or failure must never invoke Python cursorFetch.");
+        Assert.AreEqual(0, python.Calls.Count, "Go selection and fetch must never fall back to Python.");
         Assert.AreEqual(1, http.Handshakes);
-        JsonElement call = http.Calls.Single();
+        Assert.AreEqual(2, http.Calls.Count);
+        JsonElement call = http.Calls[1];
         Assert.AreEqual("query.cursorFetch", call.GetProperty("method").GetString());
         Assert.IsTrue(JsonElement.DeepEquals(fetch, call.GetProperty("params")));
         JsonElement wire = call.GetProperty("wire");
         Assert.AreEqual(snapshot.Identity.WorkspaceId, wire.GetProperty("workspaceId").GetString());
         Assert.AreEqual(snapshot.Identity.SessionEpoch, wire.GetProperty("sessionEpoch").GetUInt64());
-        Assert.AreEqual(2UL, wire.GetProperty("sequence").GetUInt64());
+        Assert.AreEqual(3UL, wire.GetProperty("sequence").GetUInt64());
         Assert.IsTrue(Guid.TryParse(wire.GetProperty("operationId").GetString(), out _));
         Assert.AreEqual(3, leases.Captured, "Selection, fetch and the HTTP handshake each own a lease.");
         Assert.AreEqual(leases.Captured, leases.Completed);
@@ -97,7 +103,7 @@ public sealed class QueryCursorOwnerCompositionTests
         },
     });
 
-    private sealed class SelectionTransport : IJsonLineTransport
+    private sealed class NoProductCallsTransport : IJsonLineTransport
     {
         private readonly Channel<JsonElement?> _responses = Channel.CreateUnbounded<JsonElement?>();
         internal List<JsonElement> Calls { get; } = [];
@@ -110,13 +116,7 @@ public sealed class QueryCursorOwnerCompositionTests
             cancellationToken.ThrowIfCancellationRequested();
             JsonElement call = Json(line);
             Calls.Add(call);
-            Assert.AreEqual("query.selectionOpen", call.GetProperty("method").GetString(),
-                "Only selectionOpen remains on the Python transport.");
-            _responses.Writer.TryWrite(JsonSerializer.SerializeToElement(new
-            {
-                jsonrpc = "2.0", id = call.GetProperty("id"),
-                result = new { schemaSnapshot = new { tableId = "orders" }, cursorWindow = Window(false) },
-            }));
+            Assert.Fail("Go-owned query methods must not invoke the Python transport.");
             return Task.CompletedTask;
         }
 
@@ -153,6 +153,15 @@ public sealed class QueryCursorOwnerCompositionTests
             Assert.AreEqual("/api/vibetable/v2/product/rpc", request.RequestUri!.AbsolutePath);
             JsonElement call = Json(await request.Content!.ReadAsStringAsync(cancellationToken));
             Calls.Add(call);
+            if (call.GetProperty("method").GetString() == "query.selectionOpen")
+            {
+                return Reply(JsonSerializer.SerializeToElement(new
+                {
+                    jsonrpc = "2.0", id = call.GetProperty("id"), wire = call.GetProperty("wire"),
+                    result = new { schemaSnapshot = new { tableId = "orders" }, cursorWindow = Window(false) },
+                }));
+            }
+            Assert.AreEqual("query.cursorFetch", call.GetProperty("method").GetString());
             if (fetchFails)
             {
                 return Reply(JsonSerializer.SerializeToElement(new

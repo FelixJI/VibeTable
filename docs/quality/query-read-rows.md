@@ -2,8 +2,8 @@
 
 来源 PR278 只切换 `query.readRows`：WPF 依据生成 policy 发送到 Go Product gateway，直接调用
 既有 Query Port。Python 对应 handler 与注册已移除；`query.page`、cursor、selection、view
-和 `validateSnapshot` 的 owner 在该来源中不变。本次整合另纳入独立通过 CI 的 PR280，
-最终同时迁移 readRows、cursorOpen、cursorFetch；其余 owner 遵循最新 main。
+和 `validateSnapshot` 的 owner 在该来源中不变。本次整合另纳入独立通过 CI 的 PR280 和 PR284，
+最终同时迁移 readRows、cursorOpen、cursorFetch、selectionOpen；其余 owner 遵循最新 main。
 
 参数形状、递归凭据键、深度、Unicode scalar 和紧凑 UTF-8 JSON 的 1 MiB 参数预算仍在
 Product 校验层拒绝；非字符串/空 row ID 保留原 handler 错误。空数组、重复和空白 ID

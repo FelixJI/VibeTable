@@ -117,6 +117,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
+        "query.selectionOpen",
         "lookup.list",
         "query.cursorFetch",
         "query.cursorOpen",
@@ -142,6 +143,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "query.cursorOpen",
             "query.page",
             "query.readRows",
+            "query.selectionOpen",
             "schema.describe",
             "schema.getTable",
             "schema.list",
@@ -161,14 +163,14 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
         {
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "query.selectionOpen",
-            "params": {"tableId": "orders", "query": {}},
+            "method": "query.view",
+            "params": {"tableId": "orders", "view": {}},
         }
     )
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "query.selectionOpen"
+    assert method == "query.view"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -176,10 +178,10 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("query.selectionOpen", {"tableId": "orders", "query": {}, "extra": True}),
-        ("query.selectionOpen", {}),
-        ("query.selectionOpen", {"tableId": 7, "query": {}}),
-        ("query.selectionOpen", {"tableId": "orders", "query": {}, "collection": "orders"}),
+        ("query.view", {"tableId": "orders", "view": {}, "extra": True}),
+        ("query.view", {}),
+        ("query.view", {"tableId": 7, "view": {}}),
+        ("query.view", {"tableId": "orders", "view": {}, "collection": "orders"}),
     ],
 )
 async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
@@ -232,8 +234,8 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "query.selectionOpen",
-            "params": {"tableId": "orders", "query": {}},
+            "method": "query.view",
+            "params": {"tableId": "orders", "view": {}},
         }
     )
     assert response is not None

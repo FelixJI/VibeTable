@@ -442,6 +442,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				queryCursorFetchRegistration(queryPort),
 				schemaGetTableRegistration(pb),
 				schemaListRegistration(schemaCatalog),
+				querySelectionOpenRegistration(queryPort),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
 				historyReadRegistration(workspaceRuntime),
 			)

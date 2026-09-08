@@ -74,6 +74,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "query.cursorOpen",
         "query.page",
         "query.readRows",
+        "query.selectionOpen",
         "schema.describe",
         "schema.getTable",
         "schema.list",
@@ -84,7 +85,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert query_page.classification == "GO_AUTHORITY"
     assert query_page.cancellation == "cooperative"
     assert query_page.product_scenarios == ("04-json-round-trip",)
-    for method in ("query.selectionOpen", "query.view", "query.validateSnapshot"):
+    for method in ("query.view", "query.validateSnapshot"):
         assert inventory.require("rpc", method).current_route == "pythonBff"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"

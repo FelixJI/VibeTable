@@ -337,6 +337,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		schemaListRegistration(schemaapi.New(app)),
 		productrpc.AttachmentListRegistration(app, manager),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)
