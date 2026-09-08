@@ -11,6 +11,39 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PocketBaseTableGatewayTests
 {
     [TestMethod]
+    public async Task InsertCopiedRowOmitsRelationLabelsAndPreservesRelationIds()
+    {
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", RelationalSchema("orders"));
+        transport.Respond("mutation.apply", """
+            {"contractVersion":"2.0","status":"applied","changeSetId":"change-1",
+             "affectedRows":[{"recordId":"copiedrow000001","operation":"insert","revision":"row_0002",
+             "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+             "computedFields":{},"newRevision":"data_0002","emittedEvents":[],"warnings":[]}
+            """);
+        transport.Respond("query.readRows", """
+            {"rows":[{"id":"copiedrow000001","f_customer":"customer0000001",
+            "__vibetableRelationLabels":{"f_customer":{"customer0000001":"Acme"}}}]}
+            """);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client), new JsonRpcWorkspaceSupportGateway(client));
+        var result = await gateway.InsertRowAsync("orders", new Dictionary<string, object?>
+        {
+            ["id"] = "copiedrow000001",
+            ["f_customer"] = "customer0000001",
+            ["__vibetableRelationLabels"] = JsonSerializer.SerializeToElement(new
+            {
+                f_customer = new Dictionary<string, string> { ["customer0000001"] = "Acme" },
+            }),
+        }, "schema_0001", CancellationToken.None);
+
+        Assert.AreEqual("customer0000001", result.Row["f_customer"]);
+        Assert.IsTrue(result.Row.ContainsKey("__vibetableRelationLabels"));
+        Assert.IsFalse(transport.Serialized.Contains("__vibetableRelationLabels", StringComparison.Ordinal));
+        StringAssert.Contains(transport.Serialized, "\"f_customer\":\"customer0000001\"");
+    }
+    [TestMethod]
     public async Task CatalogAndQueryViewUseOnlyClosedProductMethods()
     {
         var transport = new ProductTransport();

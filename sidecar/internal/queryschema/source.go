@@ -251,7 +251,18 @@ func (source *Source) describeField(
 		}
 		targetFields[targetField.Identity.PhysicalName] = targetDescriptor
 	}
+	displayField := ""
+	presenceFields := make(map[string]string)
+	for _, targetField := range target.Snapshot.Fields {
+		if targetField.Identity.FieldID == field.Relation.DisplayField {
+			displayField = targetField.Identity.PhysicalName
+		}
+		if targetField.Value.Presence.Mode == v2.PresenceCompanion {
+			presenceFields[targetField.Identity.PhysicalName] = targetField.Value.Presence.PhysicalName
+		}
+	}
 	result.Relation = &query.RelationDescriptor{
+		DisplayField: displayField, PresenceFields: presenceFields,
 		TableName: target.PhysicalName, PrimaryKey: "id",
 		RowRevisionName: relatedcomputation.RowRevisionField,
 		Fields:          targetFields,
