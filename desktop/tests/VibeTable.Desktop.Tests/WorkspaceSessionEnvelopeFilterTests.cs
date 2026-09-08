@@ -206,6 +206,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
     [TestMethod]
     [DataRow("query.page")]
+    [DataRow("lookup.valuePage")]
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     [DataRow("lookup.query")]
@@ -256,6 +257,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
     [TestMethod]
     [DataRow("query.page")]
+    [DataRow("lookup.valuePage")]
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     [DataRow("lookup.query")]
@@ -1011,6 +1013,12 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             {
                 Type = method,
                 Payload = JsonSerializer.Deserialize<JsonElement>(ProductDataSidecarRoutingTests.LookupQueryPayload),
+            }
+            : method == "lookup.valuePage"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 }),
             }
             : method == "relation.searchTargets"
             ? request with

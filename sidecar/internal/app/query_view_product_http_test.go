@@ -39,7 +39,7 @@ func queryViewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
-		queryViewRegistration(port), queryPageRegistration(unrelatedPageForViewMustNotRun{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
+		queryViewRegistration(port), lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}), queryPageRegistration(unrelatedPageForViewMustNotRun{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {

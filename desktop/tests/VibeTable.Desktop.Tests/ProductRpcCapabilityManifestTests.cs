@@ -53,6 +53,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "history.read:workspace",
                 "lookup.list:workspace",
                 "lookup.query:workspace",
+                "lookup.valuePage:workspace",
                 "query.cursorFetch:workspace",
                 "query.cursorOpen:workspace",
                 "query.page:workspace",

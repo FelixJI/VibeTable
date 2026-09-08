@@ -9,8 +9,6 @@ from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
     _array,
-    _integer,
-    _lookup_revision,
     _optional_text,
     _result_object,
     _text,
@@ -33,7 +31,6 @@ class ProductRelationLookupFileRpc:
             "relation.createTarget": self._create_relation_target,
             "relation.updateSingle": self._update_single_relation,
             "relation.applyDelta": self._apply_relation_delta,
-            "lookup.valuePage": self._lookup_value_page,
             "history.previewRestore": self._preview_history_restore,
             "history.applyRestore": self._apply_history_restore,
         }
@@ -255,44 +252,6 @@ class ProductRelationLookupFileRpc:
                 "requestId": request_id,
                 "receipt": result.get("receipt"),
             }
-        )
-
-    async def _lookup_value_page(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        table_id = _text(raw, "collection")
-        catalog = await self._context.client.describe_relations(table_id)
-        lookups = catalog.get("lookups")
-        if not isinstance(lookups, list):
-            raise ValueError("PocketBase returned an invalid lookup catalog")
-        schema_revision = _text(catalog, "schemaRevision")
-        if (
-            _text(raw, "schemaRevision") != schema_revision
-            or _text(raw, "permissionRevision") != schema_revision
-            or _text(raw, "lookupRevision") != _lookup_revision(schema_revision, lookups)
-        ):
-            raise ValueError("Lookup value page revisions are stale")
-        field_ref = _text(raw, "fieldRef")
-        lookup = next(
-            (
-                item
-                for item in lookups
-                if isinstance(item, dict) and item.get("physicalName") == field_ref
-            ),
-            None,
-        )
-        if not isinstance(lookup, dict):
-            raise ValueError("fieldRef does not identify a Lookup")
-        offset = _integer(raw, "offset")
-        limit = _integer(raw, "limit")
-        if offset < 0 or limit < 1 or limit > 500:
-            raise ValueError("Lookup value page paging is invalid")
-        return await self._context.client.lookup_value_page(
-            table_id=table_id,
-            schema_revision=schema_revision,
-            source_record_id=_text(raw, "sourceRecordId"),
-            field_id=_text(lookup, "fieldId"),
-            offset=offset,
-            limit=limit,
         )
 
     async def _preview_history_restore(self, params: ProductParams) -> JsonObject:

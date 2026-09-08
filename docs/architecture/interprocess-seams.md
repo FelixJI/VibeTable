@@ -36,6 +36,8 @@ schema.list，保持健康错误码与严格响应解析。它们不依赖 rende
 现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch`、`query.selectionOpen` 与 `query.view` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
 `query.view` 以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
 参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
+`lookup.valuePage` 经同一policy直达既有Go relation服务，以目录revision和稳定fieldId绑定来源分页；
+Python专属分页转译已删除；lookup.query也已迁移，供冻结独立输入和其他路径使用的revision helper保留。完整原件与资格状态见[分页资格](../quality/lookup-value-page.md)。
 `file.token`、Python SSE/gap 恢复和本地 task producer 按后续切片处理。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。

@@ -1,6 +1,6 @@
 # lookup.query Go owner 迁移资格
 
-本切片只把 `lookup.query` 从 Python 迁到已有 Go/PocketBase authority；公开方法、八字段参数、workspace/epoch scope 和单一 owner 保持闭集。Python 专属 handler、grouped-view client/result 与注册同时退役。共享 `query_lookups` 仍被 relation export 消费，必须保留；`lookup.valuePage` 独立迁移，不在本切片扩大 owner。当前工作树为 16 Go / 84 Python / 2 Host，最终以生成清单为准。
+本切片只把 `lookup.query` 从 Python 迁到已有 Go/PocketBase authority；公开方法、八字段参数、workspace/epoch scope 和单一 owner 保持闭集。Python 专属 handler、grouped-view client/result 与注册同时退役。共享 `query_lookups` 仍被 relation export 消费，必须保留；`lookup.valuePage` 独立迁移，不在本切片扩大 owner。单独 query 实施端点 a74fcf9f 为 16 Go / 84 Python / 2 Host；现本地承接独立 valuePage 依赖 303e0869 后为 17 Go / 83 Python / 2 Host，最终以生成清单为准。
 
 依赖 PR #291 的 Lookup 面板及精确只读 POST 边界已正常合入本地，用于真实 S29；它们须先独立进入 main，最终本 PR 不重复包含依赖意图。owner 迁移保持单独可回滚。此处未修改 CI、0.5.0/N-1 验收政策或不支持格式零写入拒绝契约。
 
@@ -51,3 +51,9 @@ uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py 
 最终 S29 诊断窗口修正已获独立双轴复核：按旧 requests/roundTrips/pending 的 requestId 排除既有请求，不依赖满200条后会滚动的长度切片。首次字符串替换因CRLF只替换定义，消费端遗漏由复审发现后完整纠正；另执行实际源码窗口片段，确认满队列接受新请求、拒绝旧在途完成，日志 build/lookup-query-window-check.log。此局部检查与实际产品报告分别保留。
 
 正常提交的 Ruff format/check、version consistency、package contract hooks 均 passed。
+
+## 串行 owner 依赖整合（进行中）
+
+已在 query 分支本地合入 valuePage 独立候选 303e08695b84973f018b22eef34bdf9aaf58a050，远端仍按分页 PR291 → valuePage → query 单独意图依次交付。冲突保留两个 Go registration 与双方完整八字段请求；生成能力和严格 process/dispatcher 顺序共17项。Python 两个专属路径同时移除，共享 relation export 的 query_lookups 与输入 revision helper 保留。两份39例原 JSON及两套Go生产投影均无改动；HTTP夹具仅补齐互补 registration。
+
+整合 Python 注册/两原件/共享 export 契约142 passed（1.36s），日志 build/lookup-owners-python-integration.log；同八类 Host 测试160 passed、0 failed/skipped（17s），使用 --no-restore 和既有 build/dotnet，日志 build/lookup-owners-host.log、TRX build/host-tests/lookup-owners-host.trx。Go整合 race 单次全通过：HTTP156.449s、注册1.721/1.298s、真实sidecar进程12.197s，日志 build/lookup-query-value-page-merge-{http,registration,process}.log；Pyright 0 errors，Ruff及生成policy/index/双原件 --check 均通过。双轴审查及17-owner真实构建物S29 pending；前述16-owner S29成功不替代本整合端点。
