@@ -34,6 +34,7 @@ func queryReadRowsHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration 
 		registration, queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),

@@ -95,6 +95,7 @@ func cursorProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interfac
 		queryCursorOpenRegistration(port), queryCursorFetchRegistration(port),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
