@@ -63,7 +63,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "preset.delete",
         "preset.list",
         "preset.save",
-        "query.validateSnapshot",
         "recordDocumentLink.commit",
         "recordDocumentLink.delete",
         "recordDocumentLink.list",
@@ -93,6 +92,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
     ),
     "goSidecar": (
         "events.reconcile",
+        "field.settings.describe",
         "file.list",
         "history.read",
         "lookup.list",
@@ -103,6 +103,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "query.page",
         "query.readRows",
         "query.selectionOpen",
+        "query.validateSnapshot",
         "query.view",
         "relation.previewDelta",
         "relation.searchTargets",

@@ -1,0 +1,1675 @@
+{
+  "producerCommit": "2c211088a682163bfdd126eda4528b69cd8419f8",
+  "boundary": "Original Workspace catalog method through Python Product DTO/adapter; scripted authority HTTP",
+  "cases": [
+    {
+      "name": "table-defaults",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-defaults",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-defaults",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "selected-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "selected-field",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": "title"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "title",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {
+            "fieldId": "title"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "selected-field",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "title",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "field-whitespace-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field-whitespace-preserved",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": " \t "
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": " \t ",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {
+            "fieldId": " \t "
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field-whitespace-preserved",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": " \t ",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "field-unicode-path-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field-unicode-path-preserved",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": "../Café/中文 👩🏽‍💻?x=1"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "../Café/中文 👩🏽‍💻?x=1",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {
+            "fieldId": "../Café/中文 👩🏽‍💻?x=1"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field-unicode-path-preserved",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "../Café/中文 👩🏽‍💻?x=1",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-128-characters",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-128-characters",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-128-characters",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-ascii-hyphen-underscore",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-ascii-hyphen-underscore",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "A_1-z"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "A_1-z",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/A_1-z",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-ascii-hyphen-underscore",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "A_1-z",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "missing-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-table",
+        "method": "field.settings.describe",
+        "params": {}
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "empty-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-table",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": ""
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "null-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-table",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "nonobject-params",
+        "method": "field.settings.describe",
+        "params": []
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "empty-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-field",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": ""
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "null-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-field",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "numeric-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "numeric-field",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": 7
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "numeric-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "extra": false
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-whitespace",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-whitespace",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": " orders "
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-whitespace",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-unicode",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-unicode",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "订单"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-unicode",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-path-separator",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-path-separator",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "../orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-path-separator",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-percent-escape",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-percent-escape",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders%2Ftitle"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-percent-escape",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-leading-underscore",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-leading-underscore",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "_orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-leading-underscore",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-129-characters",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-129-characters",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-129-characters",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "field-type-before-table-path",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field-type-before-table-path",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "../orders",
+          "fieldId": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field-type-before-table-path",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "table-path-before-authority-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-path-before-authority-error",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "../orders",
+          "fieldId": "title"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-path-before-authority-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "empty-response-object",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-response-object",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {},
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-response-object",
+        "result": {}
+      },
+      "typedGoBoundary": "FieldSettingsDescribeResult always emits its eight fields; an empty object is not representable"
+    },
+    {
+      "name": "dynamic-response-pass-through",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "dynamic-response-pass-through",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": "title"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "title",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": {
+            "custom": [
+              null,
+              false,
+              0,
+              "",
+              "Café 👩🏽‍💻"
+            ]
+          },
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1,
+          "extension": {
+            "nested": [
+              1,
+              "1"
+            ]
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {
+            "fieldId": "title"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "dynamic-response-pass-through",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "title",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": {
+            "custom": [
+              null,
+              false,
+              0,
+              "",
+              "Café 👩🏽‍💻"
+            ]
+          },
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1,
+          "extension": {
+            "nested": [
+              1,
+              "1"
+            ]
+          }
+        }
+      },
+      "typedGoBoundary": "Typed FieldDefinition and fixed result cannot preserve arbitrary definition/extra root members; dynamic JSON itself is not a blanket exemption"
+    },
+    {
+      "name": "wrong-shaped-response-object",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-shaped-response-object",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": false,
+          "dataRevision": "seven",
+          "capabilities": {
+            "custom": true
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-shaped-response-object",
+        "result": {
+          "contract": false,
+          "dataRevision": "seven",
+          "capabilities": {
+            "custom": true
+          }
+        }
+      },
+      "typedGoBoundary": "Typed result cannot express wrong scalar/container types and omitted required wire fields; original Python passes the object through"
+    },
+    {
+      "name": "null-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-response",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": "Typed response struct cannot be a null root"
+    },
+    {
+      "name": "array-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "array-response",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "array-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": "Typed response struct cannot be an array root"
+    },
+    {
+      "name": "public-domain-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "public-domain-error",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": "missing"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {
+            "fieldId": "missing"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "public-domain-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "field was not found",
+            "code": "field.not_found",
+            "path": "fieldId",
+            "details": {
+              "fieldId": "missing"
+            },
+            "retryable": false
+          }
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": null,
+          "capabilities": [],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {},
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "field settings unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      },
+      "typedGoBoundary": "Direct in-process service has no Python HTTP transport outage; public domain errors remain replayable"
+    },
+    {
+      "name": "populated-valid-definition-and-capability",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "populated-valid-definition-and-capability",
+        "method": "field.settings.describe",
+        "params": {
+          "tableId": "orders",
+          "fieldId": "fld_01JABCDE"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "fld_01JABCDE",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额 Café 👩🏽‍💻",
+            "help": "保留空值、默认值与精度；不改写 Unicode。",
+            "logicalType": "number",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "companion",
+                "providerFieldId": "pb_01JPRESEN",
+                "physicalName": "__vt_has_f_01jabcde"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "pocketbase-number",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "number",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            }
+          },
+          "capabilities": [
+            {
+              "logicalType": "number",
+              "generalSettings": [
+                "displayName",
+                "help",
+                "required",
+                "default",
+                "unique"
+              ],
+              "advancedSettings": [
+                "range",
+                "onlyInt",
+                "displayScale"
+              ],
+              "dangerSettings": [
+                "retire",
+                "purge"
+              ],
+              "recommended": {
+                "defaultsVersion": 1,
+                "value": {
+                  "required": false,
+                  "default": {
+                    "enabled": false,
+                    "value": null,
+                    "source": "recommended",
+                    "defaultsVersion": 1
+                  },
+                  "presence": {
+                    "mode": "companion"
+                  }
+                },
+                "constraints": {
+                  "unique": {
+                    "enabled": false,
+                    "blankPolicy": "ignoreMissing"
+                  },
+                  "range": {
+                    "min": null,
+                    "max": null
+                  },
+                  "length": {
+                    "min": null,
+                    "max": null
+                  },
+                  "pattern": {
+                    "enabled": false,
+                    "value": ""
+                  },
+                  "domains": {
+                    "only": [],
+                    "except": []
+                  },
+                  "selection": {
+                    "min": 0,
+                    "max": null
+                  }
+                },
+                "storage": {
+                  "kind": "pocketbase-number",
+                  "options": {
+                    "onlyInt": false,
+                    "maxSize": 0,
+                    "convertURLs": false,
+                    "presentable": false
+                  }
+                },
+                "display": {
+                  "kind": "number",
+                  "preset": "number",
+                  "displayScale": 2,
+                  "scaleMode": "max",
+                  "trimTrailingZeros": true,
+                  "useGrouping": true,
+                  "currency": "CNY",
+                  "percentStorage": "ratio",
+                  "unit": null,
+                  "precision": "minute",
+                  "timezone": "system",
+                  "mode": "default",
+                  "indent": 0,
+                  "trueLabel": "是",
+                  "falseLabel": "否"
+                }
+              },
+              "supportsRequired": true,
+              "supportsDefault": true,
+              "supportsUnique": true,
+              "needsPresence": true,
+              "displayPresets": [
+                "number",
+                "integer",
+                "currency",
+                "percent",
+                "unit"
+              ],
+              "conversionTargets": [
+                "text"
+              ],
+              "conversionRules": [
+                "round",
+                "floor",
+                "ceil",
+                "truncate",
+                "block"
+              ],
+              "compileStrategy": "pocketbase-number",
+              "userCreatable": true,
+              "filterOperators": [
+                "eq",
+                "ne",
+                "isEmpty",
+                "isNotEmpty",
+                "gt",
+                "gte",
+                "lt",
+                "lte"
+              ],
+              "groupable": true,
+              "summaryOperations": [
+                "count",
+                "countDistinct",
+                "sum",
+                "avg",
+                "min",
+                "max"
+              ],
+              "relationCardinalities": [],
+              "relationDeletePolicies": [],
+              "lookupMaxDepth": 0,
+              "formulaResultTypeInferred": false,
+              "formulaRelationAggregates": []
+            }
+          ],
+          "recommendedDefaultsVersion": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-settings/orders",
+          "query": {
+            "fieldId": "fld_01JABCDE"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "populated-valid-definition-and-capability",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "tableId": "orders",
+          "fieldId": "fld_01JABCDE",
+          "schemaRevision": "schema-1",
+          "dataRevision": 7,
+          "definition": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额 Café 👩🏽‍💻",
+            "help": "保留空值、默认值与精度；不改写 Unicode。",
+            "logicalType": "number",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "companion",
+                "providerFieldId": "pb_01JPRESEN",
+                "physicalName": "__vt_has_f_01jabcde"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "pocketbase-number",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "number",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            }
+          },
+          "capabilities": [
+            {
+              "logicalType": "number",
+              "generalSettings": [
+                "displayName",
+                "help",
+                "required",
+                "default",
+                "unique"
+              ],
+              "advancedSettings": [
+                "range",
+                "onlyInt",
+                "displayScale"
+              ],
+              "dangerSettings": [
+                "retire",
+                "purge"
+              ],
+              "recommended": {
+                "defaultsVersion": 1,
+                "value": {
+                  "required": false,
+                  "default": {
+                    "enabled": false,
+                    "value": null,
+                    "source": "recommended",
+                    "defaultsVersion": 1
+                  },
+                  "presence": {
+                    "mode": "companion"
+                  }
+                },
+                "constraints": {
+                  "unique": {
+                    "enabled": false,
+                    "blankPolicy": "ignoreMissing"
+                  },
+                  "range": {
+                    "min": null,
+                    "max": null
+                  },
+                  "length": {
+                    "min": null,
+                    "max": null
+                  },
+                  "pattern": {
+                    "enabled": false,
+                    "value": ""
+                  },
+                  "domains": {
+                    "only": [],
+                    "except": []
+                  },
+                  "selection": {
+                    "min": 0,
+                    "max": null
+                  }
+                },
+                "storage": {
+                  "kind": "pocketbase-number",
+                  "options": {
+                    "onlyInt": false,
+                    "maxSize": 0,
+                    "convertURLs": false,
+                    "presentable": false
+                  }
+                },
+                "display": {
+                  "kind": "number",
+                  "preset": "number",
+                  "displayScale": 2,
+                  "scaleMode": "max",
+                  "trimTrailingZeros": true,
+                  "useGrouping": true,
+                  "currency": "CNY",
+                  "percentStorage": "ratio",
+                  "unit": null,
+                  "precision": "minute",
+                  "timezone": "system",
+                  "mode": "default",
+                  "indent": 0,
+                  "trueLabel": "是",
+                  "falseLabel": "否"
+                }
+              },
+              "supportsRequired": true,
+              "supportsDefault": true,
+              "supportsUnique": true,
+              "needsPresence": true,
+              "displayPresets": [
+                "number",
+                "integer",
+                "currency",
+                "percent",
+                "unit"
+              ],
+              "conversionTargets": [
+                "text"
+              ],
+              "conversionRules": [
+                "round",
+                "floor",
+                "ceil",
+                "truncate",
+                "block"
+              ],
+              "compileStrategy": "pocketbase-number",
+              "userCreatable": true,
+              "filterOperators": [
+                "eq",
+                "ne",
+                "isEmpty",
+                "isNotEmpty",
+                "gt",
+                "gte",
+                "lt",
+                "lte"
+              ],
+              "groupable": true,
+              "summaryOperations": [
+                "count",
+                "countDistinct",
+                "sum",
+                "avg",
+                "min",
+                "max"
+              ],
+              "relationCardinalities": [],
+              "relationDeletePolicies": [],
+              "lookupMaxDepth": 0,
+              "formulaResultTypeInferred": false,
+              "formulaRelationAggregates": []
+            }
+          ],
+          "recommendedDefaultsVersion": 1
+        }
+      },
+      "typedGoBoundary": null
+    }
+  ]
+}

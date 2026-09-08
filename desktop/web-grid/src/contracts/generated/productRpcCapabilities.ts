@@ -11,6 +11,7 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
   "data.generateTemplate",
   "data.previewImport",
   "events.reconcile",
+  "field.settings.describe",
   "file.list",
   "file.token",
   "formula.draft.validate",

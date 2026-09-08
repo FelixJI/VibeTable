@@ -5,7 +5,6 @@ from __future__ import annotations
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
-    _object,
     _path_segment,
     _result_object,
     _text,
@@ -23,7 +22,6 @@ class ProductQuerySchemaRpc:
     def __init__(self, context: PocketBaseProductContext) -> None:
         self._context = context
         self._handlers: dict[str, ProductRpcHandler] = {
-            "field.settings.describe": self._describe_field_settings,
             "field.change.plan": self._plan_field_change,
             "field.change.apply": self._apply_field_change,
             "field.change.status": self._field_change_status,
@@ -31,7 +29,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "query.validateSnapshot": self._validate_snapshot,
             "mutation.preview": self._preview_mutation,
             "mutation.apply": self._apply_mutation,
             "formula.validate": self._validate_formula,
@@ -52,21 +49,6 @@ class ProductQuerySchemaRpc:
 
     async def _delete_schema(self, params: ProductParams) -> JsonObject:
         return await self._context.post("/api/vibetable/v1/schema/delete", params.root)
-
-    async def _describe_field_settings(self, params: ProductParams) -> JsonObject:
-        table_id = _path_segment(_text(params.root, "tableId"))
-        query: dict[str, str] = {}
-        if "fieldId" in params.root:
-            query["fieldId"] = _text(params.root, "fieldId")
-        return _result_object(
-            await self._context.transport.request(
-                "GET",
-                f"/api/vibetable/v2/field-settings/{table_id}",
-                query=query,
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
-        )
 
     async def _plan_field_change(self, params: ProductParams) -> JsonObject:
         return await self._context.post("/api/vibetable/v2/field-change/plan", params.root)
@@ -102,13 +84,6 @@ class ProductQuerySchemaRpc:
                 expected_status=(200,),
             )
         )
-
-    async def _validate_snapshot(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        body: JsonObject = {"snapshot": _object(raw, "snapshot")}
-        if "currentQuery" in raw:
-            body["currentQuery"] = _object(raw, "currentQuery")
-        return await self._context.post("/api/vibetable/v1/query/validate-snapshot", body)
 
     async def _preview_mutation(self, params: ProductParams) -> JsonObject:
         return await self._context.client.preview_mutation(params.root)
