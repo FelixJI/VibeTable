@@ -1,0 +1,4198 @@
+{
+  "producerCommit": "a19ccd5366d62be6338f628d06b6c5a37484f20f",
+  "boundary": "Original Python Product dispatcher + adapter + client; scripted authority HTTP",
+  "typedGoBoundaries": {
+    "empty-object-result": "CellValue emits mandatory fields; it cannot encode an empty object.",
+    "extra-result-fields": "CellValue cannot retain undeclared top-level fields.",
+    "non-object-result": "CellValue is a struct; Python rejects an array root.",
+    "wrong-result-field-types": "CellValue state/count/provenance have fixed Go types.",
+    "catalog-non-object": "CatalogResult is a struct, not an array.",
+    "catalog-missing-lookups": "CatalogResult emits lookups; absence differs from null.",
+    "catalog-wrong-lookups": "CatalogResult.Lookups is a slice, not an object.",
+    "catalog-missing-schema": "CatalogResult emits schemaRevision; absence differs from empty text.",
+    "catalog-nontext-schema": "CatalogResult.SchemaRevision is string, not bool.",
+    "catalog-mixed-members": "[]LookupDescriptor cannot contain non-object members.",
+    "first-matching-field-missing-id": "LookupDescriptor emits fieldId; absence is a historical shape.",
+    "catalog-transport-error": "An in-process catalog call has no Python HTTP transport boundary.",
+    "page-transport-error": "An in-process value page call has no Python HTTP transport boundary."
+  },
+  "cases": [
+    {
+      "name": "baseline-first-page",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "baseline-first-page",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "baseline-first-page",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "null-value-and-provenance",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-value-and-provenance",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": null,
+          "provenance": null,
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-value-and-provenance",
+        "result": {
+          "state": "ok",
+          "value": null,
+          "provenance": null,
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "empty-provenance-terminal",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-provenance-terminal",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [],
+          "provenance": [],
+          "provenanceTotal": 0,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-provenance-terminal",
+        "result": {
+          "state": "ok",
+          "value": [],
+          "provenance": [],
+          "provenanceTotal": 0,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": false
+        }
+      }
+    },
+    {
+      "name": "diagnostic-state",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "diagnostic-state",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "error",
+          "value": null,
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true,
+          "diagnostic": {
+            "code": "lookup.target_missing",
+            "message": "目标不存在",
+            "pathIndex": 0
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "diagnostic-state",
+        "result": {
+          "state": "error",
+          "value": null,
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true,
+          "diagnostic": {
+            "code": "lookup.target_missing",
+            "message": "目标不存在",
+            "pathIndex": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "maximum-limit-500",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "maximum-limit-500",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 500,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 500,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 500
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "maximum-limit-500",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 500,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "offset-one",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "offset-one",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 1,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 1,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 1,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "offset-one",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 1,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "negative-result-counters-pass-through",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "negative-result-counters-pass-through",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": -1,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": -1,
+          "provenanceLimit": 0,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "negative-result-counters-pass-through",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": -1,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": -1,
+          "provenanceLimit": 0,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "empty-object-result",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-object-result",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {},
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-object-result",
+        "result": {}
+      }
+    },
+    {
+      "name": "extra-result-fields",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "extra-result-fields",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true,
+          "future": {
+            "unchanged": false
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "extra-result-fields",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true,
+          "future": {
+            "unchanged": false
+          }
+        }
+      }
+    },
+    {
+      "name": "non-object-result",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-result",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-result",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "wrong-result-field-types",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-result-field-types",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": null,
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": {},
+          "provenanceTotal": true,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-result-field-types",
+        "result": {
+          "state": null,
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": {},
+          "provenanceTotal": true,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "catalog-non-object",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-non-object",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": [],
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-non-object",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-missing-lookups",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-missing-lookups",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "schemaRevision": "schema-1"
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-missing-lookups",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-wrong-lookups",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-wrong-lookups",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": {}
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-wrong-lookups",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-missing-schema",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-missing-schema",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-missing-schema",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-nontext-schema",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-nontext-schema",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": false,
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-nontext-schema",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "catalog-mixed-members",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-mixed-members",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:6c86cd1fa7c92640a570791f8c1c2ec7800661c55844fda7a2da129f48da269e"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            null,
+            7,
+            "ignored",
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-mixed-members",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "first-matching-physical-name-wins",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "first-matching-physical-name-wins",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:fd9c25438be89af6acff5a835cf7b5e247ef51160f3224102a002d5c3f28d49d"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            },
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "later-field",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "first-matching-physical-name-wins",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "first-matching-field-missing-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "first-matching-field-missing-id",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:c5623dae5a7138202f6505ad4ea4741f11c3380f19dc79b4a633dd1d1dd25ae6"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            },
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "first-matching-field-missing-id",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "unknown-physical-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-physical-field",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "unknown",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-physical-field",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "stable-field-id-is-not-physical-name",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "stable-field-id-is-not-physical-name",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "lookup_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "stable-field-id-is-not-physical-name",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "stale-schema-revision",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "stale-schema-revision",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "stale",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "stale-schema-revision",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "stale-permission-revision",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "stale-permission-revision",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "stale",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "stale-permission-revision",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "stale-lookup-revision",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "stale-lookup-revision",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "stale"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "stale-lookup-revision",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "negative-offset",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "negative-offset",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": -1,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "negative-offset",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "zero-limit",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "zero-limit",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 0,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "zero-limit",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "limit-501",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "limit-501",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 501,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "limit-501",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "missing-offset",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-offset",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-offset",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "boolean-limit",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-limit",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": true,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-limit",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "float-offset",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "float-offset",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0.0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "float-offset",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "empty-collection",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-collection",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-collection",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "wrong-source-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-source-type",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": [],
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-source-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b",
+          "extra": true
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "non-object-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-params",
+        "method": "lookup.valuePage",
+        "params": []
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "unicode-and-whitespace-not-trimmed",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unicode-and-whitespace-not-trimmed",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": " 中文 ",
+          "fieldRef": "line_skus",
+          "sourceRecordId": " Café 👩🏽‍💻 ",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": " 中文 "
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": " 中文 ",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": " Café 👩🏽‍💻 ",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unicode-and-whitespace-not-trimmed",
+        "result": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        }
+      }
+    },
+    {
+      "name": "catalog-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-product-error",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": "catalog-product"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "catalog revision conflict",
+            "code": "lookup.schema_revision_conflict",
+            "path": "schemaRevision",
+            "details": {
+              "phase": "catalog"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "page-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-product-error",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": "page-product"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "page revision conflict",
+            "code": "lookup.schema_revision_conflict",
+            "path": "schemaRevision",
+            "details": {
+              "phase": "page"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "catalog-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "catalog-transport-error",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": "catalog-transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "catalog-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "catalog unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "page-transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-transport-error",
+        "method": "lookup.valuePage",
+        "params": {
+          "collection": "orders",
+          "fieldRef": "line_skus",
+          "sourceRecordId": "order-1",
+          "offset": 0,
+          "limit": 1,
+          "schemaRevision": "schema-1",
+          "permissionRevision": "schema-1",
+          "lookupRevision": "sha256:70e19fc25d4571f1f5071e1a479494832f4fe5d5d3bf5ff63085d5f218d0024b"
+        }
+      },
+      "authorityFixture": {
+        "catalog": {
+          "tableId": "orders",
+          "schemaRevision": "schema-1",
+          "lookupMaxDepth": 8,
+          "relations": [],
+          "lookups": [
+            {
+              "lookupId": "orders.lookup_skus",
+              "tableId": "orders",
+              "fieldId": "lookup_skus",
+              "physicalName": "line_skus",
+              "displayName": "商品",
+              "relationFieldId": "lines",
+              "path": [
+                {
+                  "relationId": "orders.lines"
+                }
+              ],
+              "targetFieldId": "sku",
+              "resultCardinality": "many",
+              "outputStorage": "json",
+              "revision": 1
+            }
+          ]
+        },
+        "page": {
+          "state": "ok",
+          "value": [
+            false,
+            0,
+            "",
+            null,
+            [],
+            {},
+            "中文 Café 👩🏽‍💻"
+          ],
+          "provenance": [
+            {
+              "collection": "lines",
+              "collectionLabel": "明细",
+              "itemId": "line-1",
+              "recordLabel": "记录",
+              "fieldId": "sku",
+              "fieldLabel": "商品",
+              "value": {
+                "text": "中文",
+                "zero": 0,
+                "false": false
+              }
+            }
+          ],
+          "provenanceTotal": 3,
+          "provenanceTotalKnown": true,
+          "provenanceOffset": 0,
+          "provenanceLimit": 1,
+          "provenanceHasMore": true
+        },
+        "failure": "page-transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null,
+          "expectedStatus": [
+            200
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/lookups/value-page",
+          "query": null,
+          "body": {
+            "tableId": "orders",
+            "schemaRevision": "schema-1",
+            "sourceRecordId": "order-1",
+            "fieldId": "lookup_skus",
+            "offset": 0,
+            "limit": 1
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "page unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    }
+  ]
+}
