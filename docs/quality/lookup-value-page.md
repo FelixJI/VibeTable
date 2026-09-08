@@ -51,7 +51,7 @@ Host复用已有Go forwarder与epoch lease，保留完整八字段payload、scop
 比较两表记录及schema/data revision不变。打开面板本身不调用valuePage，不能据此宣称分页通过。
 历史S06/S26元数据及main 23/23来源报告保持原义，新场景缺口由现有证据契约记录。
 
-当前 Go owner 组合的成功 S29 包资格、最终fresh CI及合并后main CI/CD尚未完成，不提前声明通过。
+当前 Go owner 组合的成功 S29 包资格见末节；最终fresh CI及合并后main CI/CD尚未完成，不提前声明通过。
 
 交叉注册增量：sidecar目录执行 `go test -race ./internal/app -run 'TestQuery.*ProductHTTP|TestSchemaListProductHTTPMatchesRealCatalogREST|TestFileListProductHTTPMatchesAttachmentRESTAndConsumesCapabilities|TestHistoryReadProductHTTPReturnsFreshAuditedPage' -count=1`，passed61.705s。此项只覆盖本次受影响的既有HTTP夹具，未重复已通过的Lookup测试。
 
@@ -118,6 +118,20 @@ field.settings.describe迟到Web入口不变。S26/S27/S28/S29并存，历史23�
 - sidecar目录：`go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1`：passed11.938s；`go vet ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities ./cmd/vibetable-pb`：exit0。
 - 六个本次改动Python文件Ruff check/format check、policy与E2E索引生成一致性、Go测试格式和Git diff空白检查通过。
 
-原包失败和Python owner S29通过的来源不变。当前16Go组合的新包、Go owner实际S29与
-fresh CI仍待验证，未重跑完整.NET或构建产品包。
+原包失败和Python owner S29通过的来源不变。该增量验证结束时，尚未构建新包或执行Go owner
+实际S29；后续产品资格见末节，fresh CI仍待验证。未重跑完整.NET。
 本轮HTTP清理失败保留，当前本地结果不能写成全部通过。
+## 最终 Go owner 产品资格
+
+固定源码 `bfdb0ced8006b17c076442d4053c293ce2edf6e0` 完成一次全组件构建：
+`uv run --frozen --no-sync python scripts/build_next.py`，exit0；复用现有锁定环境及缓存，
+未用跳过组件参数。随后执行
+`uv run --frozen --no-sync python -m tests.e2e.product_e2e_runner --scenario 29-lookup-source-pagination`，
+实际 WPF/WebView2 报告 `20260908T072502Z` 为1/1 passed，0 failed/skipped，场景7492ms。
+
+本源码的lookup.valuePage归Go，普通点击完成100→101条唯一Unicode来源、分页耗尽及两表记录/
+schema/data revision不变；bridge失败与pending为空，renderer错误及外部HTTP为空。
+包审计和四组件新鲜度通过；Host退出0、成员/后代为空、端口释放、owner lease关闭及最终清理通过。
+本次日志为 `lookup-final-go-package-build.log` 与 `lookup-final-go-s29-package.log`。
+此前两次产品失败及本轮HTTP组cleanup失败仍保留，S29通过不将其他失败改写为通过。
+最终PR的fresh CI、严格同步main及合并后CI/CD仍待完成。
