@@ -94,6 +94,36 @@ describe("field settings store", () => {
     expect(store.originalRelationPair).toBeNull();
   });
 
+  it("keeps editor state when planning while clearing only the previous plan outcome", () => {
+    const store = useFieldSettingsStore();
+    store.load(described());
+    store.patchDraft({ displayName: "Amount revised" });
+    store.setRelationTables([{ tableId: "tbl_target", displayName: "Target" }]);
+    store.setLookupMaxDepth(3);
+    store.beginLookupCatalog();
+    store.setFormulaPreview("preview value");
+    store.setPlan(plan(["confirm"]));
+    store.confirmations = ["confirm"];
+    store.fail(new Error("earlier planning failed"));
+
+    store.beginPlan();
+
+    expect(store.phase).toBe("planning");
+    expect(store.plan).toBeNull();
+    expect(store.confirmations).toEqual([]);
+    expect(store.error).toBeNull();
+    expect(store.relationTables).toEqual([{ tableId: "tbl_target", displayName: "Target" }]);
+    expect(store.lookupMaxDepth).toBe(3);
+    expect(store.lookupCatalogLoading).toBe(true);
+    expect(store.formulaPreviewValue).toBe("preview value");
+    expect(store.formulaPreviewReady).toBe(true);
+
+    store.beginOpen();
+    expect(store.relationTables).toEqual([]);
+    expect(store.lookupMaxDepth).toBe(8);
+    expect(store.lookupCatalogLoading).toBe(false);
+    expect(store.formulaPreviewReady).toBe(false);
+  });
   it("moves through open, edit, plan and confirmation-gated apply states", () => {
     const store = useFieldSettingsStore();
     store.beginOpen();
