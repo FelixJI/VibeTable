@@ -15,7 +15,7 @@ Go producer 已独立提交 PR #297；本分支目前包含相同 producer 及�
 - `.NET test desktop/VibeTable.Desktop.sln --configuration Release --no-restore`：六项目 1296 PASS、1 skipped，零失败。TRX `build/realtime-merged-dotnet/`。`uv run --frozen --no-sync python qa/next.py --stage dotnet` 通过配置声明的全部覆盖率门禁；Desktop line 70.86%、branch 61.37%。日志 `build/realtime-current-dotnet-coverage.log`。
 - Go task 版 `TestRealtimeCatchupDoesNotSkipPendingPublicationForExistingSubscriber` race PASS 4.595s。首次筛选没有命中 capability/dispatcher，不算其测试通过；随后两包全量暴露旧 L1 data.changed owner 断言，修正为 Go data.changed/realtime.recovered 与 Host task.changed 后，两包全量 race PASS。原 RED 与 corrected GREEN 日志分别为 `build/realtime-merged-go-capabilities-dispatcher.log`、`build/realtime-merged-go-capabilities-dispatcher-corrected.log`。
 - producer 的 43 项 race、真实生产接口 RED/GREEN 见 #297 资格。完整 Go 仍留有既有 TempDir RemoveAll 目录非空失败；不宣称全 Go/完整多栈 quality PASS，Go coverage 未完成。
-- 冻结实现独立双轴 Standards 0 / Spec 0；Go owner 测试与此文档为随后的一致性增量，需补复核。
+- 冻结实现独立双轴 Standards 0 / Spec 0；Go owner 测试与此文档的一致性增量也已完成两轴复核，各 0 未解决项。
 
 ## 最新实际产品证据
 
@@ -49,3 +49,16 @@ S10 单独不证明 cursor-gap、重复注入或 ABA；这些由对应 Go/Host/W
 ## 未完成交付
 
 最终消费者 PR 的最新 main 同步、fresh required、review conversation、squash、合并后 CI/CD 仍须完成。此页记录本地资格，不声明 PR140 全部完成，也不替代尚未实施的 L5–L10。
+## PR293 合入后的组合复验
+
+PR293 squash `38098da214a0fb33bb6df1fd0707b1ba0b4ac754` 后，本分支正常合入并冻结为 `4be03fbeb64f7e3a089cb1b513fd78331fb76729`。唯一测试冲突保留 103 RPC 与 7 events 两项真实计数；policy/catalog 生成一致性通过，19 Go / 82 Python / 2 Host owner 保持。恢复生产相对原资格未改，schema.query 生产组合已改变，因此使用缓存环境完整重建一次，不复用旧构建冒充新来源。
+
+- 完整 Python quality：1772 PASS、1 skipped，coverage 91.38%；日志 `build/realtime-schema-main-python-quality-formatted.log`。首次冲突行 CRLF 导致 Ruff check 失败已正常格式化，原日志保留。
+- Web 全量：174 文件、1488 tests PASS，55.09s；日志 `build/realtime-schema-main-web-tests.log`。
+- `qa/next.py --stage dotnet`：1331 PASS、1 skipped，六个项目覆盖率门禁均通过，Desktop line 70.96% / branch 61.47%；日志 `build/realtime-schema-main-dotnet-coverage.log`。
+- Go capability/dispatcher 两包完整 race PASS；日志 `build/realtime-schema-main-go-capabilities.log`。不将其代替完整 Go coverage。
+- `scripts/build_next.py` EXIT0，包 build-info commit `4be03fbeb64f`；新 report `build/qa/p/20260908T150503Z/product-e2e-report.json`，四组件 fresh。
+- 新组合实际 S02/S10/S30 3/3 PASS、0 fail、0 skip：17641/10221/5141ms，各18断言。pageErrors、异常bridge failures/pending为空；Host exit0、无成员/后代残留、端口释放与所有cleanup通过。S10在最新schema owner组合下仍实际收到Go recovered帧，S30验证真实查询快照语义。
+- 合并及此页新增资格的独立 Standards / Spec 最终增量复核各 0 新问题，原完整两轴结论保留。
+
+之前 e8b 上六场景证据保留为其真实来源的证明；此节三场景专门覆盖新主线交互，不把旧六场景全部写成4be重跑。消费者 PR 仍等待 #297 基础合入后同步最终 main、fresh CI 与 squash/post验证，当前不扩大完成声明。
