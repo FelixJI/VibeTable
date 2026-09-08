@@ -619,6 +619,20 @@
         "sourceDisplayFieldId": {"type": "string", "minLength": 1}
       }
     },
+    "RelationPairPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "sourceDisplayName": {"type": "string", "minLength": 1},
+        "reciprocalDisplayName": {"type": "string", "minLength": 1},
+        "sourceCardinality": {"type": "string", "enum": ["one", "many"]},
+        "reciprocalCardinality": {"type": "string", "enum": ["one", "many"]},
+        "sourceDisplayFieldId": {"type": "string", "minLength": 1},
+        "reciprocalDisplayFieldId": {"type": "string", "minLength": 1},
+        "deletePolicy": {"type": "string", "enum": ["setNull", "restrict"]}
+      }
+    },
     "FieldChangeIntent": {
       "type": "object",
       "additionalProperties": false,
@@ -643,7 +657,8 @@
         "conversionRule": {"type": "string"},
         "confirmation": {"type": "string"},
         "backupReceipt": {"type": "string"},
-        "relationPair": {"$ref": "#/$defs/RelationPairDraft"}
+        "relationPair": {"$ref": "#/$defs/RelationPairDraft"},
+        "relationPairPatch": {"$ref": "#/$defs/RelationPairPatch"}
       }
     },
     "Diagnostic": {
@@ -706,7 +721,8 @@
         "fieldId": {"type": "string", "minLength": 1},
         "before": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
         "after": {"anyOf": [{"$ref": "#/$defs/FieldDefinition"}, {"type": "null"}]},
-        "expectedSchemaRevision": {"type": "string", "minLength": 1}
+        "expectedSchemaRevision": {"type": "string", "minLength": 1},
+        "expectedDataRevision": {"type": "integer", "minimum": 0}
       }
     },
     "FieldChangePlan": {

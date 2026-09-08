@@ -59,6 +59,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const error = ref<string | null>(null);
   const errorCode = ref<string | null>(null);
   const relationPair = ref<RelationPairDraft | null>(null);
+  const originalRelationPair = ref<RelationPairDraft | null>(null);
   const relationTables = ref<readonly RelationTableOption[]>([]);
   const relationSourceSchema = ref<SchemaSnapshot | null>(null);
   const relationTargetSchema = ref<SchemaSnapshot | null>(null);
@@ -93,7 +94,10 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     const sourceType = result.value?.definition?.logicalType ?? draft.value?.logicalType;
     return capabilities.value.find((item) => item.logicalType === sourceType) ?? null;
   });
-  const dirty = computed(() => !draftsEqual(original.value, draft.value));
+  const isPairedRelation = computed(() => !!result.value?.definition?.relation?.pairId);
+  const dirty = computed(() => !draftsEqual(original.value, draft.value)
+    || isPairedRelation.value
+      && JSON.stringify(originalRelationPair.value) !== JSON.stringify(relationPair.value));
   const isExisting = computed(() => result.value?.definition !== null);
   const canPlan = computed(() =>
     !!result.value
@@ -113,6 +117,10 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && (action.value !== "create" || draft.value?.logicalType !== "relation"
       || !!relationPair.value?.reciprocalDisplayName.trim()
       && !!relationPair.value?.sourceDisplayFieldId)
+    && (!isPairedRelation.value || action.value !== "update"
+      || !relationCatalogLoading.value && !relationCatalogError.value
+      && !!relationPair.value?.reciprocalDisplayName.trim()
+      && !!relationPair.value?.sourceDisplayFieldId)
     && (action.value !== "convert"
       || sourceCapability.value?.conversionRules.length === 0
       || conversionRule.value.length > 0),
@@ -123,6 +131,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
 
   function resetCatalogState(): void {
     relationPair.value = null;
+    originalRelationPair.value = null;
     relationTables.value = [];
     relationSourceSchema.value = null;
     relationTargetSchema.value = null;
@@ -208,6 +217,11 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
       }
       : null;
     invalidatePlan();
+  }
+
+  function loadRelationPair(value: RelationPairDraft): void {
+    originalRelationPair.value = { ...value };
+    relationPair.value = { ...value };
   }
 
   function patchRelationPair(value: Partial<RelationPairDraft>): void {
@@ -442,6 +456,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   function close(): void {
     inspectionTarget.value = null;
     open.value = false;
+    resetCatalogState();
     phase.value = "idle";
     result.value = null;
     original.value = null;
@@ -461,7 +476,8 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   return {
     open, phase, result, original, draft, action, conversionRule, confirmation, inspectionTarget,
     backupReceipt, plan, receipt, migration, recycled, confirmations, error,
-    errorCode, relationPair, relationTables, relationSourceSchema, relationTargetSchema,
+    errorCode, relationPair, originalRelationPair, isPairedRelation, loadRelationPair,
+    relationTables, relationSourceSchema, relationTargetSchema,
     relationCatalogLoading, relationCatalogError, lookupSchemas,
     lookupCatalogLoading, lookupCatalogError, lookupMaxDepth,
     formulaSourceSchema, formulaTargetSchemas, formulaCatalogLoading,

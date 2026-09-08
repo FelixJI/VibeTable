@@ -267,8 +267,8 @@ function onContextMenu(event: MouseEvent): void {
   const target = event.target;
   if (!(target instanceof Node)) return;
   const element = target instanceof Element ? target : target.parentElement;
-  const header = element?.closest<HTMLElement>(".tabulator-col[data-field]");
-  const headerField = header?.dataset.field;
+  const header = element?.closest<HTMLElement>(".tabulator-col[tabulator-field]");
+  const headerField = header?.getAttribute("tabulator-field");
   if (headerField && headerField !== ROW_NUMBER_FIELD) {
     event.preventDefault();
     emit("columnContext", { field: headerField, x: event.clientX, y: event.clientY });

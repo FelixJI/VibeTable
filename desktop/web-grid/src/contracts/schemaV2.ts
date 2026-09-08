@@ -294,12 +294,17 @@ export function parseFieldChangePlanV2(value: unknown): FieldChangePlanV2 {
     expectArray(plan.relatedChanges, "$.relatedChanges").forEach((item, index) => {
       const path = `$.relatedChanges[${index}]`;
       const related = exactObject(item, path, [
+        "tableId", "fieldId", "before", "after", "expectedSchemaRevision", "expectedDataRevision",
+      ], [
         "tableId", "fieldId", "before", "after", "expectedSchemaRevision",
       ]);
       ["tableId", "fieldId", "expectedSchemaRevision"].forEach(key =>
         expectString(related[key], `${path}.${key}`));
       if (related.before !== null) parseFieldDefinitionV2(related.before);
       if (related.after !== null) parseFieldDefinitionV2(related.after);
+      if (related.expectedDataRevision !== undefined) {
+        expectSafeInteger(related.expectedDataRevision, `${path}.expectedDataRevision`);
+      }
     });
   }
   return plan as unknown as FieldChangePlanV2;
@@ -517,7 +522,7 @@ function parseCapabilityV2(value: unknown, index: number): void {
 function parseIntent(value: unknown, path: string): void {
   const intent = exactObject(value, path, [
     "action", "tableId", "fieldId", "expectedSchemaRevision", "expectedDataRevision",
-    "draft", "actor", "conversionRule", "confirmation", "backupReceipt", "relationPair",
+    "draft", "actor", "conversionRule", "confirmation", "backupReceipt", "relationPair", "relationPairPatch",
   ], [
     "action", "tableId", "fieldId", "expectedSchemaRevision", "expectedDataRevision",
     "draft", "actor", "conversionRule", "confirmation", "backupReceipt",
@@ -541,6 +546,22 @@ function parseIntent(value: unknown, path: string): void {
       "one", "many",
     ]);
     expectString(pair.sourceDisplayFieldId, `${path}.relationPair.sourceDisplayFieldId`);
+  }
+  if (intent.relationPairPatch !== undefined) {
+    const patchPath = `${path}.relationPairPatch`;
+    const patch = exactObject(intent.relationPairPatch, patchPath, [
+      "sourceDisplayName", "reciprocalDisplayName", "sourceCardinality", "reciprocalCardinality",
+      "sourceDisplayFieldId", "reciprocalDisplayFieldId", "deletePolicy",
+    ], []);
+    for (const key of Object.keys(patch)) {
+      if (key === "sourceCardinality" || key === "reciprocalCardinality") {
+        expectEnum(patch[key], `${patchPath}.${key}`, ["one", "many"]);
+      } else if (key === "deletePolicy") {
+        expectEnum(patch[key], `${patchPath}.${key}`, ["setNull", "restrict"]);
+      } else {
+        expectString(patch[key], `${patchPath}.${key}`);
+      }
+    }
   }
   if (intent.draft !== null) {
     const draft = exactObject(

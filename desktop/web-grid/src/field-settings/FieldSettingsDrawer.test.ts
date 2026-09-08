@@ -7,6 +7,7 @@ import FieldSettingsDrawer from "./FieldSettingsDrawer.vue";
 import { useFieldSettingsStore } from "./store";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
+import { NSelect } from "naive-ui";
 import type {
   CapabilityV2,
   FieldChangePlanV2,
@@ -155,6 +156,98 @@ describe("FieldSettingsDrawer", () => {
     await flushPromises();
     expect(wrapper.get('[data-testid="field-settings-error"]').text()).toContain("field.conflict.stale_revision");
     expect(wrapper.text()).toContain("revision 已过期");
+  });
+
+  it("允许编辑已有双向关联的另一端并保留不可变目标", async () => {
+    const store = useFieldSettingsStore();
+    const describedPair = described("relation");
+    store.beginOpen();
+    store.load({
+      ...describedPair, definition: {
+        ...describedPair.definition!, relation: {
+          ...describedPair.definition!.relation!, deletePolicy: "restrict",
+          pairId: "pair_1", reciprocalFieldId: "fld_orders",
+        },
+      },
+    });
+    store.loadRelationPair({
+      reciprocalDisplayName: "订单", reciprocalCardinality: "many", sourceDisplayFieldId: "fld_number",
+    });
+    const wrapper = mountDrawer();
+    await flushPromises();
+    expect(store.dirty).toBe(false);
+    await wrapper.get('[data-testid="relation-reciprocal-name"]').find("input").setValue("客户订单");
+    const select = (id: string) => wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === id)!;
+    expect(select("relation-target-table").props("disabled")).toBe(true);
+    select("relation-reciprocal-cardinality").vm.$emit("update:value", "one");
+    select("relation-source-display-field").vm.$emit("update:value", "fld_title");
+    select("relation-source-cardinality").vm.$emit("update:value", "one");
+    select("relation-target-display-field").vm.$emit("update:value", "fld_alias");
+    select("relation-delete-policy").vm.$emit("update:value", "setNull");
+    await flushPromises();
+    expect(store.relationPair).toEqual({
+      reciprocalDisplayName: "客户订单", reciprocalCardinality: "one", sourceDisplayFieldId: "fld_title",
+    });
+    expect(store.draft?.relation).toMatchObject({
+      targetTableId: "tbl_customers", pairId: "pair_1", reciprocalFieldId: "fld_orders",
+      cardinality: "one", displayFieldId: "fld_alias", deletePolicy: "setNull",
+    });
+    expect(store.canPlan).toBe(true);
+    expect(select("relation-delete-policy").props("options")).toEqual([
+      { label: "置空", value: "setNull" }, { label: "阻止删除", value: "restrict" },
+    ]);
+    await openTab(wrapper, "高级");
+    expect(wrapper.text()).not.toContain("目标删除时级联删除本表记录");
+  });
+
+  it("展示冻结计划的两端名称、基数、显示字段和共享删除策略", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("relation"));
+    for (const [kind, collection, fieldId, title] of [
+      ["source", "tbl_orders", "fld_number", "订单编号"],
+      ["target", "tbl_customers", "fld_name", "客户名称"],
+    ] as const) {
+      store.setRelationSchema(kind, {
+        collection, primaryKey: "id", primaryDisplayFieldId: fieldId,
+        columns: [{ name: `f_${fieldId}`, fieldId, title, kind: "scalar", dataType: "text", editable: true, nullable: false }],
+        normalizedRelations: [], schemaRevision: "schema_7", permissionRevision: "schema_7",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      });
+    }
+    const before: FieldDefinitionV2 = {
+      ...definition("relation"), displayName: "客户",
+      relation: { ...definition("relation").relation!, deletePolicy: "setNull", pairId: "pair_1", reciprocalFieldId: "fld_orders" },
+    };
+    const reciprocalBefore: FieldDefinitionV2 = {
+      ...before, displayName: "订单",
+      relation: { ...before.relation!, targetTableId: "tbl_orders", displayFieldId: "fld_number" },
+    };
+    const frozen = plan();
+    store.setPlan({
+      ...frozen, intent: { ...frozen.intent, action: "update", relationPairPatch: { sourceCardinality: "one" } },
+      before, after: { ...before, displayName: "所属客户", relation: { ...before.relation!, cardinality: "one", deletePolicy: "restrict" } },
+      confirmations: ["relationPair"],
+      relatedChanges: [{
+        tableId: "tbl_customers", fieldId: "fld_orders", expectedSchemaRevision: "schema_7",
+        before: reciprocalBefore,
+        after: { ...reciprocalBefore, displayName: "客户订单", relation: { ...reciprocalBefore.relation!, deletePolicy: "restrict" } },
+      }],
+    });
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const source = wrapper.get('[data-testid="field-plan-source-change"]').text();
+    const reciprocal = wrapper.get('[data-testid="field-plan-reciprocal-change"]').text();
+    expect(source).toContain("变更前：客户 · 多条");
+    expect(source).toContain("变更后：所属客户 · 单条");
+    expect(source).toContain("显示字段：客户名称");
+    expect(source).toContain("共享删除策略：阻止删除");
+    expect(reciprocal).toContain("变更后：客户订单 · 多条");
+    expect(reciprocal).toContain("显示字段：订单编号");
+    expect(source + reciprocal).not.toMatch(/fld_|tbl_|pair_1/);
+    expect(wrapper.text()).toContain("同时应用预览中的两端关联设置与共享删除策略");
+    expect(wrapper.text()).not.toContain("同时停用或删除");
   });
 
   it("通过真实控件更新字段名、默认值，并按能力切换类型", async () => {

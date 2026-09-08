@@ -131,6 +131,7 @@ export function buildFieldChangeIntent(input: {
   readonly conversionRule?: string;
   readonly confirmation?: string;
   readonly backupReceipt?: string;
+  readonly relationPairPatch?: FieldChangeIntentV2["relationPairPatch"] | null;
   readonly relationPair?: FieldChangeIntentV2["relationPair"] | null;
 }): FieldChangeIntentV2 {
   return {
@@ -145,5 +146,39 @@ export function buildFieldChangeIntent(input: {
     confirmation: input.confirmation ?? "",
     backupReceipt: input.backupReceipt ?? "",
     ...(input.relationPair ? { relationPair: clone(input.relationPair) } : {}),
+    ...(input.relationPairPatch ? { relationPairPatch: clone(input.relationPairPatch) } : {}),
   };
+}
+
+export function relationPairPatchFromDrafts(
+  original: FieldDraftV2,
+  draft: FieldDraftV2,
+  originalPair: NonNullable<FieldChangeIntentV2["relationPair"]>,
+  pair: NonNullable<FieldChangeIntentV2["relationPair"]>,
+): FieldChangeIntentV2["relationPairPatch"] {
+  const before = original.relation;
+  const after = draft.relation;
+  if (!before || !after) return undefined;
+  const patch = {
+    ...(original.displayName !== draft.displayName ? { sourceDisplayName: draft.displayName } : {}),
+    ...(before.cardinality !== after.cardinality ? { sourceCardinality: after.cardinality } : {}),
+    ...(before.displayFieldId !== after.displayFieldId
+      ? { sourceDisplayFieldId: after.displayFieldId } : {}),
+    ...(originalPair.reciprocalDisplayName !== pair.reciprocalDisplayName
+      ? { reciprocalDisplayName: pair.reciprocalDisplayName } : {}),
+    ...(originalPair.reciprocalCardinality !== pair.reciprocalCardinality
+      ? { reciprocalCardinality: pair.reciprocalCardinality } : {}),
+    ...(originalPair.sourceDisplayFieldId !== pair.sourceDisplayFieldId
+      ? { reciprocalDisplayFieldId: pair.sourceDisplayFieldId } : {}),
+    ...(before.deletePolicy !== after.deletePolicy && after.deletePolicy !== "cascade"
+      ? { deletePolicy: after.deletePolicy } : {}),
+  };
+  if (before.deletePolicy !== after.deletePolicy && after.deletePolicy === "cascade") {
+    throw new Error("双向关联仅允许置空或阻止删除");
+  }
+  if (Object.keys(patch).length === 0) return undefined;
+  if (!draftsEqual(original, { ...draft, displayName: original.displayName, relation: before })) {
+    throw new Error("请分别保存双向关联设置与其他字段设置");
+  }
+  return patch;
 }

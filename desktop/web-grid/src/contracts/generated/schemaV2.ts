@@ -323,6 +323,16 @@ export interface RelationPairDraft {
   readonly sourceDisplayFieldId: string;
 }
 
+export interface RelationPairPatch {
+  readonly sourceDisplayName?: string;
+  readonly reciprocalDisplayName?: string;
+  readonly sourceCardinality?: "one" | "many";
+  readonly reciprocalCardinality?: "one" | "many";
+  readonly sourceDisplayFieldId?: string;
+  readonly reciprocalDisplayFieldId?: string;
+  readonly deletePolicy?: "setNull" | "restrict";
+}
+
 export interface FieldChangeIntent {
   readonly action: "create" | "update" | "retire" | "restore" | "purge" | "convert" | "backfill";
   readonly tableId: string;
@@ -335,6 +345,7 @@ export interface FieldChangeIntent {
   readonly confirmation: string;
   readonly backupReceipt: string;
   readonly relationPair?: RelationPairDraft;
+  readonly relationPairPatch?: RelationPairPatch;
 }
 
 export interface Diagnostic {
@@ -374,6 +385,7 @@ export interface RelatedFieldChange {
   readonly before: FieldDefinition | null;
   readonly after: FieldDefinition | null;
   readonly expectedSchemaRevision: string;
+  readonly expectedDataRevision?: number;
 }
 
 export interface FieldChangePlan {

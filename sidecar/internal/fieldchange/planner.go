@@ -184,26 +184,65 @@ func (planner *Planner) plan(
 			map[string]any{"expected": *intent.ExpectedDataRevision, "actual": revisions.Data},
 		)
 	}
-	intentHash, err := canonicalHash(intent)
+	now := planner.clock()
+	var before, after *v2.FieldDefinition
+	var relatedChanges []v2.RelatedFieldChange
+	var intentHash string
+	if intent.RelationPairPatch != nil {
+		before, after, err = planner.normalize(ctx, intent, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
+		relatedChanges, err = planner.normalizeRelated(ctx, intent, before, after, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
+		// The same pair patch must get a fresh plan after either frozen table
+		// changes. Use these revisions for both cache lookup and persistence.
+		relatedRevisions := make(map[string]Revisions, len(relatedChanges))
+		for _, related := range relatedChanges {
+			relatedRevisions[related.TableID] = Revisions{
+				Schema: related.ExpectedSchemaRevision, Data: *related.ExpectedDataRevision,
+			}
+		}
+		intentHash, err = canonicalHash(struct {
+			Intent           v2.FieldChangeIntent
+			SourceRevision   Revisions
+			RelatedRevisions map[string]Revisions
+		}{intent, revisions, relatedRevisions})
+	} else {
+		intentHash, err = canonicalHash(intent)
+	}
 	if err != nil {
 		return v2.FieldChangePlan{}, err
 	}
-	now := planner.clock()
 	if existing, err := planner.store.FindActive(ctx, intentHash, now); err != nil {
 		return v2.FieldChangePlan{}, err
 	} else if existing != nil {
 		return *existing, nil
 	}
 
-	before, after, err := planner.normalize(ctx, intent, now)
-	if err != nil {
-		return v2.FieldChangePlan{}, err
+	if intent.RelationPairPatch == nil {
+		before, after, err = planner.normalize(ctx, intent, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
+		relatedChanges, err = planner.normalizeRelated(ctx, intent, before, after, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
 	}
-	relatedChanges, err := planner.normalizeRelated(ctx, intent, before, after, now)
-	if err != nil {
-		return v2.FieldChangePlan{}, err
+	classes := classifyIntent(intent, before, after)
+	for _, related := range relatedChanges {
+		for _, class := range classifyIntent(intent, related.Before, related.After) {
+			if !containsClass(classes, class) {
+				classes = append(classes, class)
+			}
+		}
 	}
-	classes := classify(intent.Action, before, after, intent.ConversionRule)
+	sort.Slice(classes, func(left, right int) bool {
+		return classRank(classes[left]) < classRank(classes[right])
+	})
 	if len(classes) == 0 {
 		return v2.FieldChangePlan{}, productError(
 			"field.change.noop", "draft",
@@ -211,7 +250,7 @@ func (planner *Planner) plan(
 		)
 	}
 	impact, warnings, diagnostics, err := planner.preflight.Check(
-		ctx, intent, before, after, classes,
+		ctx, intent, before, after, classifyIntent(intent, before, after),
 	)
 	if err != nil {
 		return v2.FieldChangePlan{}, err
@@ -223,7 +262,8 @@ func (planner *Planner) plan(
 		relatedIntent.RelationPair = nil
 		relatedImpact, relatedWarnings, relatedDiagnostics, relatedErr :=
 			planner.preflight.Check(
-				ctx, relatedIntent, related.Before, related.After, classes,
+				ctx, relatedIntent, related.Before, related.After,
+				classifyIntent(intent, related.Before, related.After),
 			)
 		if relatedErr != nil {
 			return v2.FieldChangePlan{}, relatedErr
@@ -265,7 +305,8 @@ func (planner *Planner) plan(
 		after = frozen
 	}
 	expectedDataRevision := intent.ExpectedDataRevision
-	if expectedDataRevision == nil && dataSensitivePlan(intent.Action, classes) {
+	if expectedDataRevision == nil &&
+		(dataSensitivePlan(intent.Action, classes) || intent.RelationPairPatch != nil) {
 		frozen := revisions.Data
 		expectedDataRevision = &frozen
 		intent.ExpectedDataRevision = &frozen
@@ -399,8 +440,12 @@ func (planner *Planner) normalizeRelated(
 		return nil, nil
 	}
 	if intent.Action != v2.ActionRetire && intent.Action != v2.ActionRestore &&
-		intent.Action != v2.ActionPurge {
+		intent.Action != v2.ActionPurge && intent.RelationPairPatch == nil {
 		return nil, nil
+	}
+	revisions, err := planner.source.Revisions(ctx, before.Relation.TargetTableID)
+	if err != nil {
+		return nil, err
 	}
 	reverse, err := planner.source.Field(
 		ctx, before.Relation.TargetTableID, before.Relation.ReciprocalFieldID,
@@ -411,23 +456,28 @@ func (planner *Planner) normalizeRelated(
 			"reciprocal relation field is missing", nil,
 		)
 	}
-	if reverse.LogicalType != v2.LogicalRelation || reverse.Relation == nil ||
+	if reverse == nil || reverse.LogicalType != v2.LogicalRelation || reverse.Relation == nil ||
 		reverse.Relation.PairID != before.Relation.PairID ||
 		reverse.Relation.ReciprocalFieldID != before.Identity.FieldID ||
-		reverse.Relation.TargetTableID != intent.TableID {
+		reverse.Relation.TargetTableID != intent.TableID ||
+		reverse.Identity.FieldID == before.Identity.FieldID ||
+		reverse.Lifecycle.State != before.Lifecycle.State ||
+		reverse.Relation.DeletePolicy != before.Relation.DeletePolicy {
 		return nil, productError(
 			"relation.pair.conflict", "fieldId",
 			"reciprocal relation metadata is inconsistent", nil,
 		)
 	}
-	revisions, err := planner.source.Revisions(ctx, before.Relation.TargetTableID)
-	if err != nil {
-		return nil, err
-	}
 	var relatedAfter *v2.FieldDefinition
+	var expectedDataRevision *int64
 	if intent.Action != v2.ActionPurge {
 		relatedAfter = cloneDefinition(reverse)
-		if intent.Action == v2.ActionRetire {
+		if intent.RelationPairPatch != nil {
+			if err := applyRelationEndpointPatch(relatedAfter, intent.RelationPairPatch, true); err != nil {
+				return nil, err
+			}
+			expectedDataRevision = &revisions.Data
+		} else if intent.Action == v2.ActionRetire {
 			retiredAt := now.UTC().Format(time.RFC3339Nano)
 			relatedAfter.Lifecycle = v2.Lifecycle{
 				State: v2.LifecycleRetired, RetiredAt: &retiredAt,
@@ -442,6 +492,7 @@ func (planner *Planner) normalizeRelated(
 		Before:                 reverse,
 		After:                  relatedAfter,
 		ExpectedSchemaRevision: revisions.Schema,
+		ExpectedDataRevision:   expectedDataRevision,
 	}}, nil
 }
 
@@ -476,6 +527,31 @@ func (planner *Planner) normalize(
 	case v2.ActionUpdate:
 		if before == nil {
 			return nil, nil, ErrFieldNotFound
+		}
+		if intent.RelationPairPatch != nil {
+			if before.LogicalType != v2.LogicalRelation || before.Relation == nil ||
+				before.Relation.PairID == "" || before.Relation.ReciprocalFieldID == "" {
+				return nil, nil, productError("field.relation.pair_required", "relationPairPatch",
+					"pair patch requires an existing reciprocal relation", nil)
+			}
+			after := cloneDefinition(before)
+			if err := applyRelationEndpointPatch(after, intent.RelationPairPatch, false); err != nil {
+				return nil, nil, err
+			}
+			return before, after, nil
+		}
+		if before.Relation != nil {
+			relation := intent.Draft.Relation
+			if relation == nil || relation.TargetTableID != before.Relation.TargetTableID ||
+				relation.PairID != before.Relation.PairID ||
+				relation.ReciprocalFieldID != before.Relation.ReciprocalFieldID {
+				return nil, nil, productError("field.contract.invalid", "draft.relation",
+					"relation targets and pair identities are immutable", nil)
+			}
+			if before.Relation.PairID != "" && !reflect.DeepEqual(before.Relation, relation) {
+				return nil, nil, productError("field.contract.invalid", "draft.relation",
+					"paired relation settings require relationPairPatch", nil)
+			}
 		}
 		if before.LogicalType != intent.Draft.LogicalType {
 			return nil, nil, productError(
@@ -756,6 +832,12 @@ func conversionRuleRequired(source v2.LogicalType, target v2.LogicalType) bool {
 }
 
 func validateIntentShape(intent v2.FieldChangeIntent) error {
+	if intent.RelationPairPatch != nil &&
+		(intent.Action != v2.ActionUpdate || intent.Draft != nil ||
+			intent.RelationPair != nil || intent.ConversionRule != "") {
+		return productError("field.contract.invalid", "relationPairPatch",
+			"relationPairPatch requires update without draft, relationPair or conversionRule", nil)
+	}
 	if intent.TableID == "" {
 		return productError("field.contract.invalid", "tableId", "tableId is required", nil)
 	}
@@ -781,7 +863,7 @@ func validateIntentShape(intent v2.FieldChangeIntent) error {
 		return productError("field.contract.invalid", "fieldId", "fieldId is required", nil)
 	}
 	if (intent.Action == v2.ActionUpdate || intent.Action == v2.ActionConvert) &&
-		intent.Draft == nil {
+		intent.Draft == nil && intent.RelationPairPatch == nil {
 		return productError("field.contract.invalid", "draft", "draft is required", nil)
 	}
 	return nil

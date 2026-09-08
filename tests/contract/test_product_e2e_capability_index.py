@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,7 @@ def _evidence_documents() -> dict[Path, str]:
 - 结果：2/2 passed、0 failed、0 skipped。
 - 当前 manifest gap：无。
 - 当前 manifest surplus：无。
+- 当前 manifest changed：无。
 - 场景：`01-first`、`02-second`。
 """,
         Path("docs/quality/capability-matrix.md"): (
@@ -441,6 +443,75 @@ def test_evidence_document_contract_rejects_same_id_semantic_rewrite() -> None:
     )
 
     assert any("same-id scenario semantics" in error for error in errors)
+
+
+@pytest.mark.parametrize("attribute", ["title", "requirement", "capabilities"])
+def test_evidence_document_contract_accepts_exact_pending_semantic_changes(attribute: str) -> None:
+    verified = _evidence_scenarios()
+    value = ("example.changed",) if attribute == "capabilities" else "新验收语义"
+    scenarios = [verified[0], replace(verified[1], **{attribute: value})]
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "- 当前 manifest changed：无。", "- 当前 manifest changed：1（`02-second`）。"
+    )
+    assert (
+        capability_index.check_product_e2e_evidence_documents(
+            documents, scenarios, report_contract_version="2.0", verified_scenarios=verified
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "",
+        "- 当前 manifest changed：无。",
+        "- 当前 manifest changed：1（`01-first`）。",
+        "- 当前 manifest changed：1（`03-unknown`）。",
+        "- 当前 manifest changed：2（`01-first`、`02-second`）。",
+        "- 当前 manifest changed：2（`02-second`、`02-second`）。",
+        "- 当前 manifest changed：2（`02-second`）。",
+        "- 当前 manifest changed：1（`02-second`）。\n- 当前 manifest changed：无。",
+    ],
+)
+def test_evidence_document_contract_rejects_inexact_pending_semantic_changes(
+    declaration: str,
+) -> None:
+    verified = _evidence_scenarios()
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = documents[canonical_path].replace(
+        "- 当前 manifest changed：无。", declaration
+    )
+    errors = capability_index.check_product_e2e_evidence_documents(
+        documents,
+        [verified[0], replace(verified[1], requirement="新验收语义")],
+        report_contract_version="2.0",
+        verified_scenarios=verified,
+    )
+    assert any("manifest changed" in error for error in errors)
+
+
+def test_local_success_cannot_close_pending_semantic_change_evidence() -> None:
+    verified = _evidence_scenarios()
+    documents = _evidence_documents()
+    canonical_path = Path("docs/e2e-performance.md")
+    documents[canonical_path] = (
+        documents[canonical_path].replace(
+            "- 当前 manifest changed：无。", "- 当前 manifest changed：1（`02-second`）。"
+        )
+        + "\n本机局部真实产品验证全部通过；正式 source/run 尚未更新。\n"
+    )
+    errors = capability_index.check_product_e2e_evidence_documents(
+        documents,
+        [verified[0], replace(verified[1], requirement="新验收语义")],
+        report_contract_version="2.0",
+        verified_scenarios=verified,
+        require_closed=True,
+    )
+    assert any("release evidence reconciliation must be closed" in error for error in errors)
 
 
 def test_evidence_document_contract_accepts_explicit_manifest_surplus() -> None:
