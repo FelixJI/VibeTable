@@ -1,40 +1,18 @@
-"""Freeze lookup.query through its original Python Product and authority boundaries."""
+"""Validate retained lookup.query inputs after the original Python owner retired."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import inspect
 import json
-import subprocess
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
-from backend.adapters.pocketbase.client import (
-    LookupViewQueryCommand,
-    PocketBaseClient,
-    PocketBaseProductError,
-    ViewQueryResult,
-    _flat_view_query_result,
-)
-from backend.adapters.pocketbase.product_relation_lookup_file_rpc import (
-    ProductRelationLookupFileRpc,
-)
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.product_rpc_support import _lookup_revision
-from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, JsonValue
-from backend.rpc.dispatcher import RpcDispatcher
-from backend.rpc.error_registry import RpcErrorRegistry
-from backend.rpc.messages import RpcRequest
-from backend.rpc.product_errors import register_product_rpc_errors
+from backend.contracts.product_rpc import JsonObject, JsonValue
 
 PRODUCER_COMMIT = "6e25fd033697c57a4ca113caf98c90293b892548"
 OUTPUT = Path(__file__).with_name("lookup-query-python-oracle.json")
 METHOD = "lookup.query"
-CAPTURE_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -381,204 +359,50 @@ def typed_shape_cases() -> tuple[Case, ...]:
     )
 
 
-class RecordingTransport:
-    """Execute only the two actual authority endpoints, with ordered scripted responses."""
-
-    def __init__(self, case: Case) -> None:
-        self.case = case
-        self.requests: list[JsonObject] = []
-        self.violations: list[str] = []
-
-    async def request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue] | None = None,
-        json_body: JsonValue = None,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        index = len(self.requests)
-        self.requests.append(
-            {
-                "method": method,
-                "path": path,
-                "query": dict(query) if query is not None else None,
-                "body": json_body,
-                "expectedStatus": list(expected_status),
-            }
-        )
-        try:
-            assert headers == {"X-VibeTable-Session": "oracle-only"}
-            assert tuple(expected_status) == (200,)
-            if index == 0:
-                assert method == "GET"
-                assert path == "/api/vibetable/v1/relations/describe"
-                assert query is not None
-                assert set(query) == {"tableId"}
-                assert json_body is None
-                phase = "catalog"
-            else:
-                assert index == 1, "Lookup query must make at most two authority requests"
-                assert method == "POST"
-                assert path == "/api/vibetable/v1/lookups/query"
-                assert query is None
-                phase = "page"
-        except AssertionError:
-            self.violations.append(f"attempt {index + 1}: {method} {path}")
-            raise
-        if self.case.failure == phase + "-product":
-            raise PocketBaseProductError(
-                status=409,
-                payload={
-                    "code": "lookup.schema_revision_conflict",
-                    "message": phase + " revision conflict",
-                    "path": "schemaRevision",
-                    "details": {"phase": phase},
-                    "retryable": False,
-                },
-            )
-        if self.case.failure == phase + "-transport":
-            raise PocketBaseTransportError(phase + " unavailable")
-        return self.case.catalog if index == 0 else self.case.page
-
-    async def request_multipart(
-        self,
-        path: str,
-        *,
-        json_body: Mapping[str, JsonValue],
-        uploads: Sequence[tuple[str, str]],
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        self.requests.append({"method": "MULTIPART", "path": path})
-        self.violations.append("Lookup query must not upload files")
-        raise AssertionError(self.violations[-1])
-
-    async def download_to_file(
-        self,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue],
-        target_path: str,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-        maximum_bytes: int = 2 * 1024 * 1024 * 1024,
-    ) -> int:
-        self.requests.append({"method": "DOWNLOAD", "path": path})
-        self.violations.append("Lookup query must not download files")
-        raise AssertionError(self.violations[-1])
-
-
-def require_producer_source() -> None:
-    source_paths: set[str] = set()
-    for symbol in (
-        PocketBaseProductRpc,
-        ProductRelationLookupFileRpc,
-        PocketBaseClient,
-        RpcDispatcher,
-        PRODUCT_RPC_REGISTRY[METHOD],
-        _lookup_revision,
-        LookupViewQueryCommand,
-        ViewQueryResult,
-        _flat_view_query_result,
-        PocketBaseProductError,
-        PocketBaseTransportError,
-        register_product_rpc_errors,
-        RpcErrorRegistry,
-        RpcRequest,
-    ):
-        source = Path(inspect.getfile(symbol)).resolve()
-        if not source.is_relative_to(CAPTURE_ROOT / "backend"):
-            raise RuntimeError(
-                "Capture requires this checkout's backend; set PYTHONPATH to its root "
-                "and run python -m contracts.v2.generate_lookup_query_oracle"
-            )
-        source_paths.add(source.relative_to(CAPTURE_ROOT).as_posix())
-    try:
-        difference = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(CAPTURE_ROOT),
-                "diff",
-                "--quiet",
-                "--no-ext-diff",
-                "--no-textconv",
-                PRODUCER_COMMIT,
-                "--",
-                *sorted(source_paths),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError("Cannot verify fixed producer source") from error
-    if difference.returncode != 0:
-        raise RuntimeError("Capture source differs from fixed producer or Git verification failed")
-
-
-async def capture_case(case: Case) -> JsonObject:
-    require_producer_source()
-    transport = RecordingTransport(case)
-    service = PocketBaseProductRpc(
-        client=PocketBaseClient(transport=transport, session_secret="oracle-only"),
-        transport=transport,
-        session_secret="oracle-only",
-    )
-    dispatcher = RpcDispatcher()
-    register_product_rpc_errors()
-    dispatcher.register(METHOD, partial(service.invoke, METHOD), PRODUCT_RPC_REGISTRY[METHOD])
-    request: JsonObject = {
-        "jsonrpc": "2.0",
-        "id": case.name,
-        "method": METHOD,
-        "params": case.params,
-    }
-    response = await dispatcher.dispatch(request)
-    if transport.violations:
-        raise RuntimeError(
-            "Capture authority protocol violation: " + "; ".join(transport.violations)
-        )
-    return {
-        "name": case.name,
-        "request": request,
-        "authorityFixture": {"catalog": case.catalog, "page": case.page, "failure": case.failure},
-        "authorityRequests": list(transport.requests),
-        "response": response,
-    }
-
-
-async def capture() -> JsonObject:
-    return {
-        "producerCommit": PRODUCER_COMMIT,
-        "boundary": "Original Python Product dispatcher + adapter + client; scripted authority HTTP",
-        "typedGoBoundaries": TYPED_GO_BOUNDARIES,
-        "cases": [await capture_case(case) for case in cases()],
-    }
-
-
 def render(value: JsonObject) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
 
 
+async def capture_case(case: Case) -> JsonObject:
+    raise RuntimeError("The original Python lookup.query owner is retired; retain its wire corpus")
+
+
+async def capture() -> JsonObject:
+    raise RuntimeError("The original Python lookup.query owner is retired; retain its wire corpus")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--write", action="store_true", help="Create once; reject existing output")
-    parser.add_argument("--check", action="store_true", help="Compare complete capture (default)")
+    parser.add_argument("--write", action="store_true")
+    parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    if args.write and args.check:
-        parser.error("Choose either --write or --check")
     if args.write:
-        generated = render(asyncio.run(capture()))
-        with OUTPUT.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(generated)
-        return 0
-    if OUTPUT.read_text(encoding="utf-8") != render(asyncio.run(capture())):
-        parser.error("Original lookup query differs; inspect the change, do not regenerate")
+        parser.error("The Python owner is retired; the original lookup query cannot be regenerated")
+    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    if frozen.get("producerCommit") != PRODUCER_COMMIT:
+        parser.error("The original lookup query producer differs")
+    actual = [
+        {
+            "name": case.name,
+            "request": {"jsonrpc": "2.0", "id": case.name, "method": METHOD, "params": case.params},
+            "authorityFixture": {
+                "catalog": case.catalog,
+                "page": case.page,
+                "failure": case.failure,
+            },
+        }
+        for case in cases()
+    ]
+    retained = [
+        {
+            "name": entry["name"],
+            "request": entry["request"],
+            "authorityFixture": entry["authorityFixture"],
+        }
+        for entry in frozen["cases"]
+    ]
+    if actual != retained or frozen.get("typedGoBoundaries") != TYPED_GO_BOUNDARIES:
+        parser.error("Retained lookup query inputs or typed boundaries differ; do not regenerate")
     return 0
 
 

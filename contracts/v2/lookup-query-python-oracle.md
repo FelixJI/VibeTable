@@ -24,7 +24,7 @@
 
 两级组例仅说明 Go DTO 可表达此脚本形状，不声称当前领域服务会产生它。独立待核候选：relation.Service.QueryLookups 当前没有向 ViewQuery 传 summaries；query.GroupRow.ParentSummaries 的 omitempty 会省略空数组，而 Python _valid_group_row 要求 parentCount/parentSummaries 同时存在。这是可做针对性复现的既有双级分组边界，不在本冻结变更或未来 owner 迁移中悄悄修复，尚无真实领域或 UI 资格结论。
 
-## 捕获与验证
+## 冻结提交的捕获与验证（历史）
 
 在本工作树根显式设置共享 uv 环境的 `UV_PROJECT_ENVIRONMENT`、`UV_NO_SYNC=1`、`PYTHONPATH` 为当前工作树绝对根、`PYTHONUTF8=1` 后执行：
 
@@ -49,3 +49,7 @@ uv run --frozen --no-sync pyright contracts/v2/generate_lookup_query_oracle.py t
 uv run --frozen --no-sync python -m pytest tests/contract/test_lookup_query_python_oracle.py -q --no-cov -k producer_source_drift
 uv run --frozen --no-sync python -m pytest tests/contract/test_lookup_query_python_oracle.py -q --no-cov -k outside_dispatcher
 ```
+
+## owner 迁移后的保留方式
+
+冻结提交 `78f48855c3b7fbf73a545abd53494317ae895763` 保留上述真实 Python 捕获器及 58 例验证证据。当前迁移移除专属 Python handler/client 后，捕获入口已退役：`capture`、`capture_case` 和 `--write` 一律拒绝，包括目标不存在时；默认及 `--check` 只验证固定 producer、39 例独立输入、authority fixture 和 typedGoBoundaries，不重新产生期望响应。原 JSON 无改动，原捕获历史与当前保留检查不能混称。Go 回放与实际产品资格见 `docs/quality/lookup-query.md`。

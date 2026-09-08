@@ -73,3 +73,5 @@ Host 捕获当前 workspace/epoch lease，在写入、同目录原子替换及�
 schema/cursor 投影并保留请求 tableId 与三项 revision 配对。Python 专属 handler/client
 已删除，宿主仅按生成 policy 路由，无 Python fallback。游标签发与续读的数据权威仍为
 同一 PocketBase QueryPort；`cursorFetch` 的 Product 路由 owner 不构成新的游标 authority。
+
+`lookup.query` 经 `lookupQueryRegistration` 直达既有 relation catalog/query 端口；专属 Python handler 和 grouped-view client 已退役，共享 relation export 的 lookup client 保留。八字段 Product 与 workspace/epoch 准入不变，Go 失败不回落 Python。原 Python 冻结回放、typed 表达边界及 S29 的当前验收状态见 [lookup.query 资格](../quality/lookup-query.md)。

@@ -98,6 +98,19 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
             },
         ),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
+        (
+            "lookup.query",
+            {
+                "contract": "vibetable.lookup-query.v1",
+                "collection": "orders",
+                "fieldRefs": ["customer_name"],
+                "query": {},
+                "requestGeneration": 7,
+                "schemaRevision": "schema-1",
+                "permissionRevision": "schema-1",
+                "lookupRevision": "lookup-1",
+            },
+        ),
         ("relation.searchTargets", {"relationId": "orders.customer"}),
         (
             "relation.previewDelta",

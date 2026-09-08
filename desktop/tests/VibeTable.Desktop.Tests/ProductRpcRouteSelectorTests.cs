@@ -27,7 +27,7 @@ public sealed class ProductRpcRouteSelectorTests
         foreach (string method in RelationLookupRpcRegistry.RequestTypes)
         {
             Assert.IsTrue(selector.TrySelectRelation(method, out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "relation.searchTargets" or "relation.previewDelta"
+            Assert.AreEqual(method is "relation.searchTargets" or "relation.previewDelta" or "lookup.query"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff, route, method);
         }
     }
@@ -89,6 +89,7 @@ public sealed class ProductRpcRouteSelectorTests
     [TestMethod]
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
+    [DataRow("lookup.query")]
     public void RelationPolicySelectsItsDeclaredTransportOwner(string method)
     {
         var selector = new ProductRpcRouteSelector(Policy(
