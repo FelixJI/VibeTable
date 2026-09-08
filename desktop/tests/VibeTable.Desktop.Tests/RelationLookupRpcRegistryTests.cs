@@ -49,6 +49,17 @@ public sealed class RelationLookupRpcRegistryTests
     }
 
     [TestMethod]
+    public void PreviewAcceptsTheCurrentSixFieldRendererContract()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """{"relationId":"orders.customer","sourceItemId":"order-1","expectedSchemaRevision":"schema-1","adds":[],"removes":[],"idempotencyKey":"preview-1"}""");
+        Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.previewDelta", out var preview));
+        Assert.IsTrue(preview.IsValidPayload(document.RootElement));
+        Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.applyDelta", out var apply));
+        Assert.IsFalse(apply.IsValidPayload(document.RootElement));
+    }
+
+    [TestMethod]
     public void EveryRegisteredPayloadValidatorRejectsANonObjectPayload()
     {
         JsonElement nonObject = JsonDocument.Parse("[]").RootElement.Clone();

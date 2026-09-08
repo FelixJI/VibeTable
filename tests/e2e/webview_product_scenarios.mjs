@@ -2607,6 +2607,73 @@ async function scenario06(page, recorder) {
   return;
 }
 
+async function scenario28(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const authors = await createSimpleTable(page, "Preview Authors", "Name");
+  const articleTableId = await createEmptyTable(page, "Preview Articles");
+  await closeFieldSettingsDrawer(page);
+  const title = await createV2Field(page, articleTableId, "Title", "text");
+  const relation = await createV2Field(page, articleTableId, "Authors", "relation", (draft) => {
+    draft.relation.targetTableId = authors.tableId;
+    draft.relation.displayFieldId = authors.field.fieldId;
+    draft.relation.cardinality = "many";
+    return draft;
+  });
+  const targetId = "previewtarget01";
+  const extraId = "previewtarget02";
+  const sourceId = "previewsource01";
+  const targets = await applyProductMutation(page, authors.tableId, [
+    { kind: "insert", recordId: targetId, values: { [authors.field.physicalName]: "已有作者" } },
+    { kind: "insert", recordId: extraId, values: { [authors.field.physicalName]: "候选作者" } },
+  ], "preview-targets");
+  const source = await applyProductMutation(page, articleTableId, [{
+    kind: "insert", recordId: sourceId,
+    values: { [title.physicalName]: "Preview only", [relation.physicalName]: [targetId] },
+  }], "preview-source");
+  if (targets.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`relation preview fixture did not commit: ${JSON.stringify({ targets, source })}`);
+  }
+  const read = async (tableId) => {
+    const response = await rawBridgeRequest(page, "query.page", {
+      tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    });
+    if (response.type !== "query.page" || !response.payload?.snapshot) {
+      throw new Error(`preview authority read failed: ${JSON.stringify(response)}`);
+    }
+    return {
+      rows: response.payload.rows,
+      schemaRevision: response.payload.snapshot.schemaRevision,
+      dataRevision: response.payload.snapshot.dataRevision,
+    };
+  };
+  const beforeSource = await read(articleTableId);
+  const beforeTargets = await read(authors.tableId);
+  await selectTable(page, "Preview Articles");
+  await waitForVisibleRowCount(page, 1);
+  await page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell.vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`,
+  ).first().dblclick();
+  const panel = page.locator(".relation-editor:visible");
+  await panel.waitFor();
+  const selected = panel.locator(".relation-editor__token");
+  await selected.filter({ hasText: targetId }).waitFor();
+  recorder.check("many relation preview hydrates the authority's existing target",
+    await selected.count() === 1 && (await selected.first().innerText()).trim() === targetId);
+  await panel.locator(".relation-editor__candidate").filter({ hasText: "候选作者" }).click();
+  await panel.locator(".relation-editor__token").filter({ hasText: "候选作者" }).waitFor();
+  recorder.check("many relation editor holds a second selection as an uncommitted draft",
+    await selected.count() === 2 && await panel.locator(".relation-editor__error").count() === 0);
+  await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const afterSource = await read(articleTableId);
+  const afterTargets = await read(authors.tableId);
+  recorder.check("preview and cancelled draft preserve both authority tables and revisions",
+    JSON.stringify(afterSource) === JSON.stringify(beforeSource)
+      && JSON.stringify(afterTargets) === JSON.stringify(beforeTargets),
+    { beforeSource, afterSource, beforeTargets, afterTargets });
+}
+
 async function scenario26(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -6896,6 +6963,7 @@ const scenarios = {
   "22-timeline-date-move": scenario22,
   "23-directory-replica-recovery": scenario23,
   "26-lookup-definition-read": scenario26,
+  "28-relation-delta-preview": scenario28,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

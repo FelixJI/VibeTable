@@ -37,7 +37,6 @@ class ProductRelationLookupFileRpc:
             "relation.searchTargets": self._search_relation_targets,
             "relation.createTarget": self._create_relation_target,
             "relation.updateSingle": self._update_single_relation,
-            "relation.previewDelta": self._preview_relation_delta,
             "relation.applyDelta": self._apply_relation_delta,
             "lookup.query": self._query_lookups,
             "lookup.valuePage": self._lookup_value_page,
@@ -205,21 +204,6 @@ class ProductRelationLookupFileRpc:
             "outcome": "committed",
             "target": _renderer_target(target),
             "requestId": request_id,
-        }
-
-    async def _preview_relation_delta(self, params: ProductParams) -> JsonObject:
-        result = await self._context.post(
-            "/api/vibetable/v1/relations/preview-delta",
-            _translate_delta(params.root),
-        )
-        current = result.get("current")
-        if not isinstance(current, list):
-            raise ValueError("PocketBase returned invalid relation preview")
-        return {
-            "delta": params.root,
-            "current": [_renderer_target(item) for item in current if isinstance(item, dict)],
-            "diagnostics": [],
-            "canApply": result.get("canApply") is True,
         }
 
     async def _apply_relation_delta(self, params: ProductParams) -> JsonObject:
