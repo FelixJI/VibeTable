@@ -148,5 +148,13 @@
     "title": "多值关系预览与取消",
     "requirement": "真实多值关系编辑器经预览加载权威已关联目标；增加本地草稿选择后取消，源与目标表记录及schema/data revision保持不变。",
     "capabilities": ["relation.preview"]
+  },
+  {
+    "id": "29-lookup-source-pagination",
+    "title": "Lookup 来源分页读取",
+    "requirement": "通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。",
+    "capabilities": [
+      "lookup.source-pagination"
+    ]
   }
 ]
