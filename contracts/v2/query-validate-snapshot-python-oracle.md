@@ -1,11 +1,17 @@
 # query.validateSnapshot 原 Python 执行契约
 
-## 当前检查模式（同步 main 后）
+## 当前 owner 与原件保留
+
+`query.validateSnapshot` 已声明由 Go Product gateway 处理，Python 专属 handler 与运行时注册已移除。
+30 例 JSON 和 producer `2f02bfcb` 保持不变；采集及写入入口继续关闭，默认/check 仍只核验历史原件。
+当前 owner 断言已更新，原件检查不代表 Go HTTP、实际产品包或远端 CI 资格。
+
+## 历史检查模式（同步 main 时）
 
 原始捕获提交为 `6e0dab1850c9f4f53cbae7595c01d599f95ee361`，绑定 producer `2f02bfcb`。
 本分支正常同步 `main@f1fb4a2a906fc1e2d0e3518cea7dde062d18946e` 后，历史捕获依赖的 backend
 整文件已变化，不能继续把当前代码输出标为旧 producer。现在 `capture`、`capture_case` 与 `--write`
-均显式拒绝；这不是 query owner 退休，`query.validateSnapshot` 当前仍属于 Python。
+均显式拒绝；当时尚未迁移 query owner，`query.validateSnapshot` 仍属于 Python。
 没有删除来源 guard 后继续捕获、复制历史 backend 或新增依赖。原有可重放捕获实现及来源/协议负向测试
 保存在提交 `6e0dab18`，历史捕获需配合固定 producer 源码，仍受其 source guard 约束。
 
@@ -19,7 +25,7 @@ typedGoBoundary、0/1 次精确 POST 路径/body/expectedStatus，以及完整�
 当前源码/test首次验证：24 PASS / 0.25s，日志 `build/query-snapshot-historical-pytest.log`。
 下文41例测试、追加3例定向测试与 capture 命令均为历史捕获阶段记录，不代表当前仍重跑 Python。
 
-固定 producer：`2f02bfcb8afdda46fa003d6c546d2ff2a8910aae`。本变更仅冻结契约，不切换 owner，不改变生产代码，不替换旧 `query-read-python-oracle.json` 中的历史十例。
+固定 producer：`2f02bfcb8afdda46fa003d6c546d2ff2a8910aae`。原冻结变更仅记录契约，没有切换 owner、改变生产代码或替换旧 `query-read-python-oracle.json` 中的历史十例。
 
 初始 29 例及审查后追加 1 例（合计 30 个独立输入）经真实 `RpcDispatcher` → `PRODUCT_RPC_REGISTRY` 的 `QueryValidateSnapshotParams` → `PocketBaseProductRpc` → `ProductQuerySchemaRpc._validate_snapshot` → `PocketBaseProductContext.post` → recording transport 捕获。记录公开 request/response、脚本 authority 输入及每一次实际 authority 请求；expected 来自执行结果，没有从 Go 输出反推。
 

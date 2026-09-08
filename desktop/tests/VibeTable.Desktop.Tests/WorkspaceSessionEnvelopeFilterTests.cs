@@ -210,6 +210,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     [DataRow("lookup.query")]
+    [DataRow("query.validateSnapshot")]
     public async Task GoRouteSettlesEpochCancellationWithoutSuccess(string method)
     {
         using var fixture = new SessionFixture();
@@ -261,6 +262,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     [DataRow("lookup.query")]
+    [DataRow("query.validateSnapshot")]
     public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation(string method)
     {
         using var fixture = new SessionFixture();
@@ -308,6 +310,24 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
         Assert.AreEqual(1, sidecar.CallCount);
         AssertRetiredReply(sink, "go-late");
+        if (method == "query.validateSnapshot")
+        {
+            WorkspaceSessionV2 current = await switching;
+            var replacement = new ControlledProductSidecarForwarder((call, _) =>
+                Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                    call.Wire.Clone(), JsonSerializer.SerializeToElement(new
+                    {
+                        valid = true, currentDataRevision = 7, currentSchemaRevision = "schema-1",
+                    }))));
+            controller.SetProductSidecarForwarder(replacement);
+            await controller.DispatchAsync(GoReadRequest(method, "snapshot-current", ScopeFor(current, 1)));
+            Assert.AreEqual(1, replacement.CallCount);
+            Assert.AreEqual(1, sidecar.CallCount);
+            FakeWebReplySink.Reply currentReply = sink.Replies.Single(reply => reply.RequestId == "snapshot-current");
+            Assert.AreEqual(method, currentReply.Type);
+            Assert.IsTrue(JsonSerializer.SerializeToElement(currentReply.Payload).GetProperty("valid").GetBoolean());
+            AssertRetiredReply(sink, "go-late");
+        }
     }
 
     [TestMethod]
@@ -827,6 +847,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         + "\"offset\":0,\"limit\":10}")]
     [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\",\"sourceItemId\":\"record-1\",\"expectedSchemaRevision\":\"schema-1\",\"adds\":[],\"removes\":[],\"idempotencyKey\":\"preview-test\"}")]
     [DataRow("lookup.query", ProductDataSidecarRoutingTests.LookupQueryPayload)]
+    [DataRow("query.validateSnapshot", ProductDataSidecarRoutingTests.SnapshotPayload)]
     public async Task RelationReadRejectsRetiredScopeBeforeGateway(string type, string payload)
     {
         using var fixture = new SessionFixture();
@@ -1008,7 +1029,13 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         string method, string requestId, WorkspaceWireScope scope)
     {
         RoutedWebRequest request = GoQueryRequest(requestId, scope);
-        return method == "lookup.query"
+        return method == "query.validateSnapshot"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.Deserialize<JsonElement>(ProductDataSidecarRoutingTests.SnapshotPayload),
+            }
+            : method == "lookup.query"
             ? request with
             {
                 Type = method,

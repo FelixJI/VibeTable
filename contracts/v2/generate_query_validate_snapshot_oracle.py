@@ -1,4 +1,4 @@
-"""Check historical snapshot inputs and wire; query.validateSnapshot is still Python-owned."""
+"""Check historical snapshot inputs and wire after migration to the Go owner."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ type JsonObject = dict[str, JsonValue]
 PRODUCER_COMMIT = "2f02bfcb8afdda46fa003d6c546d2ff2a8910aae"
 METHOD = "query.validateSnapshot"
 OUTPUT = Path(__file__).with_name("query-validate-snapshot-python-oracle.json")
-CAPTURE_CLOSED = "Historical capture is closed; replay commit 6e0dab18 at its fixed producer; query owner is still Python"
+CAPTURE_CLOSED = "Historical capture is closed; replay commit 6e0dab18 at its fixed producer; query owner is now Go"
 
 
 @dataclass(frozen=True)

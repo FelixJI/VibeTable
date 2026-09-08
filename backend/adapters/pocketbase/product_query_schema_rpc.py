@@ -5,7 +5,6 @@ from __future__ import annotations
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
-    _object,
     _path_segment,
     _result_object,
     _text,
@@ -31,7 +30,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "query.validateSnapshot": self._validate_snapshot,
             "mutation.preview": self._preview_mutation,
             "mutation.apply": self._apply_mutation,
             "formula.validate": self._validate_formula,
@@ -102,13 +100,6 @@ class ProductQuerySchemaRpc:
                 expected_status=(200,),
             )
         )
-
-    async def _validate_snapshot(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        body: JsonObject = {"snapshot": _object(raw, "snapshot")}
-        if "currentQuery" in raw:
-            body["currentQuery"] = _object(raw, "currentQuery")
-        return await self._context.post("/api/vibetable/v1/query/validate-snapshot", body)
 
     async def _preview_mutation(self, params: ProductParams) -> JsonObject:
         return await self._context.client.preview_mutation(params.root)

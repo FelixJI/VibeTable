@@ -16,7 +16,8 @@ def test_retained_capture_and_forwarding_contract() -> None:
     frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
     assert frozen["producerCommit"] == "2f02bfcb8afdda46fa003d6c546d2ff2a8910aae"
     assert len(frozen["cases"]) == len({entry["name"] for entry in frozen["cases"]}) == 30
-    assert oracle.METHOD in current_owner_methods("pythonBff")
+    assert oracle.METHOD in current_owner_methods("goSidecar")
+    assert oracle.METHOD not in current_owner_methods("pythonBff")
     for entry in frozen["cases"]:
         if "result" in entry["response"]:
             assert entry["response"]["result"] == entry["authorityFixture"]["response"]
@@ -64,7 +65,7 @@ def test_retained_capture_and_forwarding_contract() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entrypoint", ["capture", "capture_case"])
-async def test_historical_capture_is_closed_even_while_owner_remains_python(
+async def test_historical_capture_stays_closed_after_owner_migration(
     entrypoint: str,
 ) -> None:
     pending = (

@@ -2823,6 +2823,69 @@ async function scenario29(page, recorder) {
     JSON.stringify(after) === JSON.stringify(before), { before, after });
 }
 
+async function scenario30(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const { tableId, field } = await createSimpleTable(page, "Snapshot validation", "Name");
+  const recordId = "snapshotrow0001";
+  const inserted = await applyProductMutation(page, tableId, [{
+    kind: "insert", recordId, values: { [field.physicalName]: "快照 雪" },
+  }], "snapshot-seed");
+  if (inserted.payload?.status !== "applied") {
+    throw new Error(`snapshot fixture did not commit: ${JSON.stringify(inserted)}`);
+  }
+  const query = { filters: [], sorts: [], offset: 0, limit: 100 };
+  const read = async () => {
+    const response = await rawBridgeRequest(page, "query.page", { tableId, query });
+    if (response.type !== "query.page" || !response.payload?.snapshot) {
+      throw new Error(`snapshot authority read failed: ${JSON.stringify(response)}`);
+    }
+    return response.payload;
+  };
+  const validate = async (snapshot, currentQuery, reason, expected) => {
+    const before = await read();
+    const response = await rawBridgeRequest(page, "query.validateSnapshot", {
+      snapshot, ...(currentQuery === undefined ? {} : { currentQuery }),
+    });
+    const after = await read();
+    recorder.check(`snapshot validation returns ${reason ?? "valid"} with authoritative revisions`,
+      response.type === "query.validateSnapshot"
+        && typeof response.requestId === "string"
+        && response.payload?.valid === (reason === undefined)
+        && (reason === undefined ? !Object.hasOwn(response.payload, "reason")
+          : response.payload.reason === reason)
+        && response.payload.currentDataRevision === expected.snapshot.dataRevision
+        && response.payload.currentSchemaRevision === expected.snapshot.schemaRevision,
+      { response });
+    const state = (result) => ({ rows: result.rows,
+      dataRevision: result.snapshot.dataRevision, schemaRevision: result.snapshot.schemaRevision });
+    recorder.check("snapshot validation preserves authority rows and revisions",
+      JSON.stringify(state(before)) === JSON.stringify(state(after)), { before: state(before), after: state(after) });
+  };
+  const initial = await read();
+  recorder.check("snapshot fixture contains the committed Unicode row",
+    initial.rows.length === 1 && initial.rows[0][field.physicalName] === "快照 雪", { rows: initial.rows });
+  await validate(initial.snapshot, undefined, undefined, initial);
+  await validate(initial.snapshot, query, undefined, initial);
+  await validate(initial.snapshot, { ...query, limit: 1 }, "query_changed", initial);
+  const updated = await applyProductMutation(page, tableId, [{
+    kind: "update", recordId, values: { [field.physicalName]: "已更新 雪" },
+  }], "snapshot-update");
+  if (updated.payload?.status !== "applied") {
+    throw new Error(`snapshot update did not commit: ${JSON.stringify(updated)}`);
+  }
+  const afterWrite = await read();
+  recorder.check("the product mutation advances the snapshot data revision",
+    afterWrite.snapshot.dataRevision > initial.snapshot.dataRevision
+      && afterWrite.rows[0][field.physicalName] === "已更新 雪");
+  await validate(initial.snapshot, undefined, "application_write", afterWrite);
+  await createV2Field(page, tableId, "Extra", "text");
+  const afterSchema = await read();
+  recorder.check("field creation advances the snapshot schema revision",
+    afterSchema.snapshot.schemaRevision !== afterWrite.snapshot.schemaRevision);
+  await validate(afterWrite.snapshot, undefined, "schema_changed", afterSchema);
+}
+
 async function scenario26(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -7115,6 +7178,7 @@ const scenarios = {
   "27-relation-target-search": scenario27,
   "28-relation-delta-preview": scenario28,
   "29-lookup-source-pagination": scenario29,
+  "30-query-snapshot-validation": scenario30,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

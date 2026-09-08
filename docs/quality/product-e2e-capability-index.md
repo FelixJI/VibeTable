@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：27
-- 唯一能力：45
-- 场景—能力关联：58
+- 场景：28
+- 唯一能力：46
+- 场景—能力关联：59
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -53,6 +53,7 @@
 | `relation.search` | <code>27-relation-target-search</code>（关系目标搜索） |
 | `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `replica.recovery` | <code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复） |
+| `schema.query` | <code>30-query-snapshot-validation</code>（查询快照只读校验） |
 | `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
 | `snapshot.package` | <code>15-workspace-snapshot-package</code>（工作区切换与快照包） |
 | `snapshot.restore` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
@@ -93,3 +94,4 @@
 | <code>27-relation-target-search</code> | 关系目标搜索 | 真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复；不提交关联写入。 | `relation.search` |
 | <code>28-relation-delta-preview</code> | 多值关系预览与取消 | 真实多值关系编辑器经预览加载权威已关联目标；增加本地草稿选择后取消，源与目标表记录及schema/data revision保持不变。 | `relation.preview` |
 | <code>29-lookup-source-pagination</code> | Lookup 来源分页读取 | 通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。 | `lookup.source-pagination` |
+| <code>30-query-snapshot-validation</code> | 查询快照只读校验 | 真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。 | `schema.query` |

@@ -542,7 +542,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "schema.query",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {

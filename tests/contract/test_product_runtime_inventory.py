@@ -77,6 +77,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "query.page",
         "query.readRows",
         "query.selectionOpen",
+        "query.validateSnapshot",
         "query.view",
         "relation.previewDelta",
         "relation.searchTargets",
@@ -90,7 +91,11 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert query_page.classification == "GO_AUTHORITY"
     assert query_page.cancellation == "cooperative"
     assert query_page.product_scenarios == ("04-json-round-trip",)
-    assert inventory.require("rpc", "query.validateSnapshot").current_route == "pythonBff"
+    snapshot = inventory.require("rpc", "query.validateSnapshot")
+    assert snapshot.current_route == "goSidecar"
+    assert snapshot.current_path == ("wpfHost", "goSidecar", "pocketBase")
+    assert snapshot.classification == "GO_AUTHORITY"
+    assert snapshot.cancellation == "cooperative"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"
     } == {"settings.readDevice", "settings.saveDevice"}

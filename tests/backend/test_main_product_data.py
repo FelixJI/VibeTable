@@ -49,6 +49,8 @@ class FakeProductService:
         ("query.cursorFetch", {"extra": True}),
         ("query.view", {"tableId": "orders", "view": {}}),
         ("query.view", {"extra": True}),
+        ("query.validateSnapshot", {"snapshot": {}}),
+        ("query.validateSnapshot", {"snapshot": {}, "extra": True}),
         ("lookup.valuePage", {"extra": True}),
         ("relation.previewDelta", {"extra": True}),
         ("lookup.query", {"extra": True}),
@@ -132,6 +134,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "query.page",
         "query.readRows",
         "query.view",
+        "query.validateSnapshot",
         "relation.previewDelta",
         "schema.describe",
         "file.list",
@@ -156,6 +159,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "query.page",
             "query.readRows",
             "query.selectionOpen",
+            "query.validateSnapshot",
             "query.view",
             "relation.previewDelta",
             "relation.searchTargets",
@@ -178,14 +182,14 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
         {
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "query.validateSnapshot",
-            "params": {"snapshot": {}},
+            "method": "field.recycleBin.list",
+            "params": {"tableId": "orders"},
         }
     )
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "query.validateSnapshot"
+    assert method == "field.recycleBin.list"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -193,10 +197,10 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("query.validateSnapshot", {"snapshot": {}, "extra": True}),
-        ("query.validateSnapshot", {}),
-        ("query.validateSnapshot", {"snapshot": 7}),
-        ("query.validateSnapshot", {"snapshot": {}, "collection": "orders"}),
+        ("field.recycleBin.list", {"tableId": "orders", "extra": True}),
+        ("field.recycleBin.list", {}),
+        ("field.recycleBin.list", {"tableId": 7}),
+        ("field.recycleBin.list", {"tableId": "orders", "collection": "orders"}),
     ],
 )
 async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
@@ -249,8 +253,8 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "query.validateSnapshot",
-            "params": {"snapshot": {}},
+            "method": "field.recycleBin.list",
+            "params": {"tableId": "orders"},
         }
     )
     assert response is not None

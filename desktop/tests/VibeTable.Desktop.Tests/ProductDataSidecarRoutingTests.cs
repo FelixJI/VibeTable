@@ -8,6 +8,11 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class ProductDataSidecarRoutingTests
 {
+    // Transport fixture only: domain qualification uses snapshots signed by the real QueryPort.
+    internal const string SnapshotPayload = """
+        {"snapshot":{"snapshotId":"fixture","digest":"fixture-signature","databaseId":"db-1","table":"records","schemaRevision":"schema-1","dataRevision":7,"normalizedQuery":{"keyword":"名称","filters":[{"field":"名称","operator":"contains","value":"值"}],"sorts":[{"field":"名称","direction":"asc"}],"offset":0,"limit":20}},"currentQuery":{"keyword":"名称","filters":[{"field":"名称","operator":"contains","value":"值"}],"sorts":[{"field":"名称","direction":"asc"}],"offset":0,"limit":20}}
+        """;
+
     internal const string LookupQueryPayload = """
         {"contract":"vibetable.lookup-query.v1","collection":"orders","fieldRefs":["customer_name"],"query":{"offset":0,"limit":50},"requestGeneration":7,"schemaRevision":"schema-1","permissionRevision":"schema-1","lookupRevision":"lookup-1"}
         """;
@@ -78,6 +83,69 @@ public sealed class ProductDataSidecarRoutingTests
         }
     }
 
+    [TestMethod]
+    [DataRow(true, 0)]
+    [DataRow(false, 0)]
+    [DataRow(true, -32602)]
+    [DataRow(true, -32150)]
+    public async Task SnapshotGoTransportPreservesPayloadResultAndPublicError(bool withCurrentQuery, int errorCode)
+    {
+        JsonElement complete = JsonSerializer.Deserialize<JsonElement>(SnapshotPayload);
+        JsonElement payload = withCurrentQuery ? complete : JsonSerializer.SerializeToElement(new
+        {
+            snapshot = complete.GetProperty("snapshot"),
+        });
+        JsonElement result = JsonSerializer.SerializeToElement(new
+        {
+            valid = false, reason = "application_write", currentDataRevision = 8,
+            currentSchemaRevision = "schema-1",
+        });
+        JsonElement errorData = JsonSerializer.SerializeToElement(new
+        {
+            kind = "product_data_error", code = "query.invalid_snapshot", message = "快照无效。",
+            path = "snapshot.digest", details = new { reason = "签名失效" }, retryable = false,
+        });
+        var sidecar = new ControlledProductSidecarForwarder((call, _) =>
+            Task.FromResult<ProductSidecarForwardResult>(errorCode == 0
+                ? new ProductSidecarSuccess(call.Wire.Clone(), result)
+                : new ProductSidecarFailure(call.Wire.Clone(), new ProductSidecarRpcError(
+                    errorCode, "failure", errorCode == -32150 ? errorData : null))));
+        var pythonTransport = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(pythonTransport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(gateway);
+        controller.SetProductSidecarForwarder(sidecar);
+        RoutedWebRequest request = QueryRequest("snapshot-go") with
+        {
+            Type = "query.validateSnapshot", Payload = payload,
+        };
+        await controller.DispatchAsync(request);
+        Assert.AreEqual(0, pythonTransport.WriteCount);
+        ProductSidecarForwardCall call = sidecar.Calls.Single();
+        Assert.AreEqual(request.Type, call.Method);
+        Assert.AreEqual(request.RequestId, call.RequestId);
+        Assert.IsTrue(JsonElement.DeepEquals(payload, call.Parameters));
+        Assert.IsTrue(JsonElement.DeepEquals(request.Wire, call.Wire));
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual(request.RequestId, reply.RequestId);
+        Assert.AreEqual(errorCode == -32602 ? "operation.failed" : request.Type, reply.Type);
+        JsonElement response = JsonSerializer.SerializeToElement(reply.Payload);
+        if (errorCode == 0)
+            Assert.IsTrue(JsonElement.DeepEquals(result, response));
+        else if (errorCode == -32602)
+            Assert.AreEqual("BAD_PAYLOAD", response.GetProperty("code").GetString());
+        else
+        {
+            JsonElement error = response.GetProperty("error");
+            Assert.AreEqual("query.invalid_snapshot", error.GetProperty("code").GetString());
+            Assert.AreEqual("快照无效。", error.GetProperty("message").GetString());
+            Assert.AreEqual("snapshot.digest", error.GetProperty("path").GetString());
+            Assert.IsTrue(JsonElement.DeepEquals(errorData.GetProperty("details"), error.GetProperty("details")));
+            Assert.IsFalse(error.GetProperty("retryable").GetBoolean());
+        }
+    }
     [TestMethod]
     public async Task GoQueryUsesOneSidecarSendAndNeverCallsPythonGateway()
     {

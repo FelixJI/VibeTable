@@ -461,12 +461,12 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 17 ||
+	if methods := dispatcher.Methods(); len(methods) != 18 ||
 		methods[0].Method != "events.reconcile" || methods[1].Method != "file.list" ||
 		methods[2] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
 		methods[3].Method != "lookup.list" || methods[4] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[5] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[6].Method != "query.cursorFetch" || methods[7].Method != "query.cursorOpen" || methods[8].Method != "query.page" || methods[9].Method != "query.readRows" ||
-		methods[10].Method != "query.selectionOpen" || methods[11].Method != "query.view" || methods[12].Method != "relation.previewDelta" || methods[13] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[14].Method != "schema.describe" ||
-		methods[15].Method != "schema.getTable" || methods[16].Method != "schema.list" {
+		methods[10].Method != "query.selectionOpen" || methods[11] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[12].Method != "query.view" || methods[13].Method != "relation.previewDelta" || methods[14] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[15].Method != "schema.describe" ||
+		methods[16].Method != "schema.getTable" || methods[17].Method != "schema.list" {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -544,6 +544,10 @@ func generatedGoSidecarRegistrations() []Registration {
 		},
 		{
 			Method: "query.selectionOpen", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{
