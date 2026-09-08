@@ -63,14 +63,14 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 15 ||
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 17 ||
 		got[0].Method != "events.reconcile" || got[1].Method != "file.list" ||
 		got[2] != (RPCDescriptor{
 			Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
 			CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
-		}) || got[3].Method != "lookup.list" || got[4].Method != "query.cursorFetch" || got[5].Method != "query.cursorOpen" || got[6].Method != "query.page" || got[7].Method != "query.readRows" ||
-		got[8].Method != "query.selectionOpen" || got[9].Method != "query.view" || got[10].Method != "relation.previewDelta" || got[11] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[12].Method != "schema.describe" ||
-		got[13].Method != "schema.getTable" || got[14].Method != "schema.list" {
+		}) || got[3].Method != "lookup.list" || got[4] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[5] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[6].Method != "query.cursorFetch" || got[7].Method != "query.cursorOpen" || got[8].Method != "query.page" || got[9].Method != "query.readRows" ||
+		got[10].Method != "query.selectionOpen" || got[11].Method != "query.view" || got[12].Method != "relation.previewDelta" || got[13] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[14].Method != "schema.describe" ||
+		got[15].Method != "schema.getTable" || got[16].Method != "schema.list" {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||

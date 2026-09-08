@@ -363,6 +363,90 @@
       "evidence": ["sidecar/internal/app/lookup_list_product_rpc.go", "sidecar/internal/app/lookup_list_product_rpc_test.go", "sidecar/internal/app/testdata/schema_describe_oracle.json", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
+      "id": "rpc.lookup-query",
+      "kind": "rpc",
+      "names": [
+        "lookup.query"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "lookup.query"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "29-lookup-source-pagination"
+      ],
+      "targetSlice": "L3B",
+      "targetPr": null,
+      "deleteWhen": "The Python lookup.query handler and dedicated grouped-view client are removed; preserve the shared lookup export and value-page consumers.",
+      "evidence": [
+        "sidecar/internal/app/lookup_query_product_rpc.go",
+        "contracts/v2/lookup-query-python-oracle.json",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
+      "id": "rpc.lookup-value-page",
+      "kind": "rpc",
+      "names": [
+        "lookup.valuePage"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "lookup.valuePage"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "29-lookup-source-pagination"
+      ],
+      "targetSlice": "L3B",
+      "targetPr": null,
+      "deleteWhen": "The Python source-page route is removed; preserve revision-bound read-only provenance paging.",
+      "evidence": [
+        "sidecar/internal/app/lookup_value_page_product_rpc.go",
+        "sidecar/internal/relation/service.go",
+        "contracts/v2/lookup-value-page-python-oracle.json"
+      ]
+    },
+    {
       "id": "rpc.path-grants",
       "kind": "rpc",
       "names": ["path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant"],
@@ -652,13 +736,13 @@
     {
       "id": "rpc.relation-lookup-history-read",
       "kind": "rpc",
-      "names": ["history.previewRestore", "lookup.query", "lookup.valuePage"],
+      "names": ["history.previewRestore"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["history.previewRestore", "lookup.query", "lookup.valuePage"], "write": [], "notification": [], "state": []},
+      "effects": {"read": ["history.previewRestore"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",

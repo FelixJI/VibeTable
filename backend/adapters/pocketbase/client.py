@@ -20,7 +20,6 @@ IMPORT_PREVIEW_PATH = "/api/vibetable/v2/import-preview"
 QUERY_PATH = "/api/vibetable/v1/query"
 LOOKUP_DESCRIBE_PATH = "/api/vibetable/v1/lookups/describe"
 LOOKUP_QUERY_PATH = "/api/vibetable/v1/lookups/query"
-LOOKUP_VALUE_PAGE_PATH = "/api/vibetable/v1/lookups/value-page"
 RELATION_DESCRIBE_PATH = "/api/vibetable/v1/relations/describe"
 SCHEMA_TABLE_PATH = "/api/vibetable/v2/schema/tables"
 REALTIME_RECONCILE_PATH = "/api/vibetable/v1/events/reconcile"
@@ -120,24 +119,6 @@ class QueryCursorWindowResult:
 class QueryCursorOpenCommand:
     table_id: str
     query: JsonObject
-
-
-@dataclass(frozen=True)
-class LookupViewQueryCommand:
-    table_id: str
-    schema_revision: str
-    query: JsonObject
-    groups: list[JsonObject]
-    group_limit: int
-
-
-@dataclass(frozen=True)
-class ViewQueryResult:
-    page: QueryPageResult
-    group_rows: list[dict[str, JsonValue]]
-    group_offset: int
-    group_limit: int
-    has_more_groups: bool
 
 
 class PocketBaseClient:
@@ -371,50 +352,6 @@ class PocketBaseClient:
         )
         return _query_page(payload)
 
-    async def query_lookup_view(
-        self,
-        command: LookupViewQueryCommand,
-    ) -> ViewQueryResult:
-        payload = _object(
-            await self._post(
-                LOOKUP_QUERY_PATH,
-                {
-                    "tableId": command.table_id,
-                    "schemaRevision": command.schema_revision,
-                    "query": command.query,
-                    "groups": command.groups,
-                    "groupLimit": command.group_limit,
-                },
-            ),
-            "lookup view query result",
-        )
-        return _flat_view_query_result(payload)
-
-    async def lookup_value_page(
-        self,
-        *,
-        table_id: str,
-        schema_revision: str,
-        source_record_id: str,
-        field_id: str,
-        offset: int,
-        limit: int,
-    ) -> JsonObject:
-        return _object(
-            await self._post(
-                LOOKUP_VALUE_PAGE_PATH,
-                {
-                    "tableId": table_id,
-                    "schemaRevision": schema_revision,
-                    "sourceRecordId": source_record_id,
-                    "fieldId": field_id,
-                    "offset": offset,
-                    "limit": limit,
-                },
-            ),
-            "lookup value page",
-        )
-
     async def reconcile_realtime(
         self,
         *,
@@ -592,53 +529,6 @@ def _query_cursor_window(payload: Mapping[str, JsonValue]) -> QueryCursorWindowR
     )
 
 
-def _flat_view_query_result(payload: Mapping[str, JsonValue]) -> ViewQueryResult:
-    group_rows = payload.get("groupRows")
-    has_more_groups = payload.get("hasMoreGroups")
-    if (
-        not isinstance(group_rows, list)
-        or not all(_valid_group_row(row) for row in group_rows)
-        or not isinstance(has_more_groups, bool)
-    ):
-        raise ValueError("PocketBase returned an invalid lookup view query result")
-    return ViewQueryResult(
-        page=_query_page(payload),
-        group_rows=[_object(row, "lookup group row") for row in group_rows],
-        group_offset=_integer(payload.get("groupOffset"), "groupOffset"),
-        group_limit=_integer(payload.get("groupLimit"), "groupLimit"),
-        has_more_groups=has_more_groups,
-    )
-
-
-def _valid_group_row(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    key = value.get("key")
-    summaries = value.get("summaries")
-    count = value.get("count")
-    if (
-        not isinstance(key, list)
-        or not isinstance(summaries, list)
-        or not isinstance(count, int)
-        or isinstance(count, bool)
-    ):
-        return False
-    has_parent_count = "parentCount" in value
-    has_parent_summaries = "parentSummaries" in value
-    if has_parent_count != has_parent_summaries:
-        return False
-    parent_count = value.get("parentCount")
-    parent_summaries = value.get("parentSummaries")
-    return (
-        (
-            parent_count is None
-            or (isinstance(parent_count, int) and not isinstance(parent_count, bool))
-        )
-        and (parent_summaries is None or isinstance(parent_summaries, list))
-        and (not has_parent_count or len(key) == 2)
-    )
-
-
 def _integer(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"PocketBase returned an invalid {name}")
@@ -658,7 +548,6 @@ def _text(value: object, fallback: str) -> str:
 __all__ = [
     "LOOKUP_DESCRIBE_PATH",
     "LOOKUP_QUERY_PATH",
-    "LOOKUP_VALUE_PAGE_PATH",
     "METADATA_PATH",
     "MUTATION_APPLY_PATH",
     "MUTATION_PREVIEW_PATH",
@@ -667,11 +556,9 @@ __all__ = [
     "RELATION_DESCRIBE_PATH",
     "SCHEMA_TABLE_PATH",
     "SESSION_HEADER",
-    "LookupViewQueryCommand",
     "PocketBaseClient",
     "PocketBaseProductError",
     "PocketBaseTransport",
     "QueryCursorOpenCommand",
     "QueryPageResult",
-    "ViewQueryResult",
 ]

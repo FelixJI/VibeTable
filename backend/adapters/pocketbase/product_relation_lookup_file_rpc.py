@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import re
 import uuid
 
-from backend.adapters.pocketbase.client import LookupViewQueryCommand
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
     _array,
-    _integer,
-    _lookup_revision,
-    _object,
     _optional_text,
-    _renderer_data_type,
     _result_object,
     _text,
     _text_any,
@@ -37,8 +31,6 @@ class ProductRelationLookupFileRpc:
             "relation.createTarget": self._create_relation_target,
             "relation.updateSingle": self._update_single_relation,
             "relation.applyDelta": self._apply_relation_delta,
-            "lookup.query": self._query_lookups,
-            "lookup.valuePage": self._lookup_value_page,
             "history.previewRestore": self._preview_history_restore,
             "history.applyRestore": self._apply_history_restore,
         }
@@ -262,122 +254,6 @@ class ProductRelationLookupFileRpc:
             }
         )
 
-    async def _query_lookups(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        query = dict(_object(raw, "query"))
-        groups = query.pop("groups", [])
-        if not isinstance(groups, list):
-            raise ValueError("query.groups must be an array")
-        table_id = _text(raw, "collection")
-        catalog = await self._context.client.describe_relations(table_id)
-        lookups = catalog.get("lookups")
-        if not isinstance(lookups, list):
-            raise ValueError("PocketBase returned an invalid lookup catalog")
-        current_schema_revision = _text(catalog, "schemaRevision")
-        current_lookup_revision = _lookup_revision(current_schema_revision, lookups)
-        if (
-            _text(raw, "schemaRevision") != current_schema_revision
-            or _text(raw, "permissionRevision") != current_schema_revision
-            or _text(raw, "lookupRevision") != current_lookup_revision
-        ):
-            raise ValueError("Lookup query revisions are stale")
-        group_specs: list[JsonObject] = []
-        for group in groups:
-            if not isinstance(group, dict):
-                raise ValueError("Lookup groups must contain objects")
-            direction = group.get("direction", "asc")
-            if direction not in {"asc", "desc"}:
-                raise ValueError("Lookup group direction is invalid")
-            group_specs.append({"field": _text(group, "fieldRef"), "direction": direction})
-        view = await self._context.client.query_lookup_view(
-            LookupViewQueryCommand(
-                table_id=table_id,
-                schema_revision=current_schema_revision,
-                query=query,
-                groups=group_specs,
-                group_limit=5000,
-            )
-        )
-        if view.has_more_groups:
-            raise ValueError("Lookup group result exceeds the bounded window")
-        definitions = {
-            item.get("physicalName"): _renderer_lookup(item)
-            for item in lookups
-            if isinstance(item, dict) and isinstance(item.get("physicalName"), str)
-        }
-        columns: list[JsonObject] = []
-        for field_ref in _array(raw, "fieldRefs"):
-            if not isinstance(field_ref, str) or field_ref not in definitions:
-                raise ValueError("fieldRefs contains an unknown Lookup")
-            definition = definitions[field_ref]
-            columns.append(
-                {
-                    "fieldRef": field_ref,
-                    "title": definition["displayName"],
-                    "outputType": definition["outputType"],
-                    "nullable": True,
-                    "scale": definition["outputScale"],
-                    "state": definition["state"],
-                }
-            )
-        page = view.page
-        return _result_object(
-            {
-                "contract": "vibetable.lookup-query.v1",
-                "collection": table_id,
-                "requestGeneration": _integer(raw, "requestGeneration"),
-                "schemaRevision": current_schema_revision,
-                "permissionRevision": current_schema_revision,
-                "lookupRevision": current_lookup_revision,
-                "columns": columns,
-                "rows": page.rows,
-                "groups": _lookup_group_nodes(view.group_rows),
-                "offset": page.offset,
-                "limit": page.limit,
-                "filteredRows": page.filtered_rows,
-                "totalRows": page.total_rows,
-                "snapshot": page.snapshot,
-            }
-        )
-
-    async def _lookup_value_page(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        table_id = _text(raw, "collection")
-        catalog = await self._context.client.describe_relations(table_id)
-        lookups = catalog.get("lookups")
-        if not isinstance(lookups, list):
-            raise ValueError("PocketBase returned an invalid lookup catalog")
-        schema_revision = _text(catalog, "schemaRevision")
-        if (
-            _text(raw, "schemaRevision") != schema_revision
-            or _text(raw, "permissionRevision") != schema_revision
-            or _text(raw, "lookupRevision") != _lookup_revision(schema_revision, lookups)
-        ):
-            raise ValueError("Lookup value page revisions are stale")
-        field_ref = _text(raw, "fieldRef")
-        lookup = next(
-            (
-                item
-                for item in lookups
-                if isinstance(item, dict) and item.get("physicalName") == field_ref
-            ),
-            None,
-        )
-        if not isinstance(lookup, dict):
-            raise ValueError("fieldRef does not identify a Lookup")
-        offset = _integer(raw, "offset")
-        limit = _integer(raw, "limit")
-        if offset < 0 or limit < 1 or limit > 500:
-            raise ValueError("Lookup value page paging is invalid")
-        return await self._context.client.lookup_value_page(
-            table_id=table_id,
-            schema_revision=schema_revision,
-            source_record_id=_text(raw, "sourceRecordId"),
-            field_id=_text(lookup, "fieldId"),
-            offset=offset,
-            limit=limit,
-        )
-
     async def _preview_history_restore(self, params: ProductParams) -> JsonObject:
         raw = params.root
         body: JsonObject = {
@@ -443,98 +319,6 @@ def _renderer_target(value: JsonObject) -> JsonObject:
         "label": _text(value, "label"),
         "secondaryLabel": value.get("secondaryLabel") or None,
     }
-
-
-def _lookup_group_nodes(group_rows: list[JsonObject]) -> list[JsonObject]:
-    result: list[JsonObject] = []
-    parents: set[str] = set()
-    for row in group_rows:
-        key = row.get("key")
-        count = row.get("count")
-        if not isinstance(key, list) or len(key) not in {1, 2} or not isinstance(count, int):
-            raise ValueError("Lookup group rows are invalid")
-        if len(key) == 2:
-            parent_count = row.get("parentCount")
-            if not isinstance(parent_count, int):
-                raise ValueError("Lookup parent group row is invalid")
-            parent_identity = json.dumps(
-                key[0],
-                ensure_ascii=False,
-                allow_nan=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            if parent_identity not in parents:
-                parents.add(parent_identity)
-                result.append(
-                    {
-                        "path": [],
-                        "key": key[0],
-                        "count": parent_count,
-                        "aggregates": {},
-                        "childCursor": None,
-                    }
-                )
-        result.append(
-            {
-                "path": key[:-1],
-                "key": key[-1],
-                "count": count,
-                "aggregates": {},
-                "childCursor": None,
-            }
-        )
-    return result
-
-
-def _renderer_lookup(value: JsonObject) -> JsonObject:
-    result_cardinality = _text(value, "resultCardinality")
-    if result_cardinality not in {"one", "many"}:
-        raise ValueError("PocketBase returned an invalid Lookup result cardinality")
-    output_type = _renderer_data_type(_text(value, "outputStorage"))
-    if output_type not in {
-        "text",
-        "integer",
-        "decimal",
-        "boolean",
-        "date",
-        "datetime",
-        "time",
-        "json",
-    }:
-        raise ValueError("PocketBase returned an invalid Lookup output type")
-    table_id = _text(value, "tableId")
-    relation_field_id = _text(value, "relationFieldId")
-    raw_path = value.get("path")
-    if raw_path is None:
-        renderer_path = [{"relationId": f"{table_id}.{relation_field_id}"}]
-    elif not isinstance(raw_path, list) or not raw_path:
-        raise ValueError("PocketBase returned an invalid Lookup path")
-    else:
-        renderer_path = []
-        for step in raw_path:
-            if not isinstance(step, dict):
-                raise ValueError("PocketBase returned an invalid Lookup path")
-            relation_id = step.get("relationId")
-            if not isinstance(relation_id, str) or not relation_id:
-                raise ValueError("PocketBase returned an invalid Lookup path")
-            renderer_path.append({"relationId": relation_id})
-    return _result_object(
-        {
-            "lookupId": _text(value, "lookupId"),
-            "collection": table_id,
-            "fieldKey": _text(value, "physicalName"),
-            "displayName": _text(value, "displayName"),
-            "path": renderer_path,
-            "source": {"kind": "target_field", "fieldRef": _text(value, "targetFieldId")},
-            "outputType": output_type,
-            "outputScale": None,
-            "revision": _integer(value, "revision"),
-            "state": "valid",
-            "diagnostics": [],
-            "dependencies": [step["relationId"] for step in renderer_path],
-        }
-    )
 
 
 def _relation_ids(value: JsonValue) -> list[str]:

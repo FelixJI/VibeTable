@@ -8,15 +8,23 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class ProductDataSidecarRoutingTests
 {
+    internal const string LookupQueryPayload = """
+        {"contract":"vibetable.lookup-query.v1","collection":"orders","fieldRefs":["customer_name"],"query":{"offset":0,"limit":50},"requestGeneration":7,"schemaRevision":"schema-1","permissionRevision":"schema-1","lookupRevision":"lookup-1"}
+        """;
+
     [TestMethod]
     [DataRow("schema.describe", true)]
     [DataRow("schema.describe", false)]
     [DataRow("lookup.list", true)]
     [DataRow("lookup.list", false)]
+    [DataRow("lookup.valuePage", true)]
+    [DataRow("lookup.valuePage", false)]
     [DataRow("relation.searchTargets", true)]
     [DataRow("relation.searchTargets", false)]
     [DataRow("relation.previewDelta", true)]
     [DataRow("relation.previewDelta", false)]
+    [DataRow("lookup.query", true)]
+    [DataRow("lookup.query", false)]
     public async Task CatalogReadUsesGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
     {
         var sink = new FakeWebReplySink();
@@ -30,7 +38,11 @@ public sealed class ProductDataSidecarRoutingTests
         RoutedWebRequest request = QueryRequest("describe-go") with
         {
             Type = method,
-            Payload = method == "relation.searchTargets"
+            Payload = method == "lookup.query"
+                ? JsonSerializer.Deserialize<JsonElement>(LookupQueryPayload)
+                : method == "lookup.valuePage"
+                ? JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 })
+                : method == "relation.searchTargets"
                 ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
                 : method == "relation.previewDelta"
                 ? JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
@@ -196,12 +208,18 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
-    [DataRow("relation.searchTargets", -32602, "BAD_PAYLOAD")]
+    [DataRow("lookup.valuePage", -32602, "BAD_PAYLOAD")]
     [DataRow("relation.previewDelta", -32602, "BAD_PAYLOAD")]
-    [DataRow("relation.searchTargets", -32030, "BACKEND_UNAVAILABLE")]
+    [DataRow("lookup.valuePage", -32030, "BACKEND_UNAVAILABLE")]
     [DataRow("relation.previewDelta", -32030, "BACKEND_UNAVAILABLE")]
+    [DataRow("lookup.valuePage", -32150, "RELATION_LOOKUP_FAILED")]
+    [DataRow("relation.searchTargets", -32602, "BAD_PAYLOAD")]
+    [DataRow("relation.searchTargets", -32030, "BACKEND_UNAVAILABLE")]
     [DataRow("relation.searchTargets", -32150, "RELATION_LOOKUP_FAILED")]
     [DataRow("relation.previewDelta", -32150, "RELATION_LOOKUP_FAILED")]
+    [DataRow("lookup.query", -32602, "BAD_PAYLOAD")]
+    [DataRow("lookup.query", -32030, "BACKEND_UNAVAILABLE")]
+    [DataRow("lookup.query", -32150, "RELATION_LOOKUP_FAILED")]
     public async Task RelationGoErrorPreservesExistingRendererMapping(string method, int code, string expected)
     {
         var sink = new FakeWebReplySink();
@@ -215,7 +233,10 @@ public sealed class ProductDataSidecarRoutingTests
         RoutedWebRequest request = QueryRequest("relation-failure") with
         {
             Type = method,
-            Payload = method == "relation.searchTargets" ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
+            Payload = method == "lookup.query"
+                ? JsonSerializer.Deserialize<JsonElement>(LookupQueryPayload)
+                : method == "lookup.valuePage" ? JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 })
+                : method == "relation.searchTargets" ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
                 : JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
                     expectedSchemaRevision = "schema-1", adds = Array.Empty<object>(),
                     removes = Array.Empty<object>(), idempotencyKey = "preview-test" }),
