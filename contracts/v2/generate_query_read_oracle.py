@@ -1,4 +1,4 @@
-"""Capture the current Python query read contract without running a Sidecar."""
+"""Replay the unmigrated Python query contract against its frozen producer."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from backend.rpc.product_errors import register_product_rpc_errors
 PRODUCER_COMMIT = "b55f878641bf74c0b49b04222a217c48abf544a7"
 OUTPUT = Path(__file__).with_name("query-read-python-oracle.json")
 METHODS = ("query.readRows", "query.validateSnapshot")
+REPLAY_METHODS = ("query.validateSnapshot",)
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,8 @@ class RecordingTransport:
 
 
 async def capture_case(case: Case) -> JsonObject:
+    if case.method not in REPLAY_METHODS:
+        raise ValueError("Migrated query methods must consume the frozen oracle in Go")
     transport = RecordingTransport(case)
     service = PocketBaseProductRpc(
         client=PocketBaseClient(transport=transport, session_secret="oracle-only"),
@@ -186,10 +189,9 @@ async def capture_case(case: Case) -> JsonObject:
     )
     dispatcher = RpcDispatcher()
     register_product_rpc_errors()
-    for method in METHODS:
-        dispatcher.register(
-            method, partial(service.invoke, method), PYTHON_PRODUCT_RPC_REGISTRY[method]
-        )
+    dispatcher.register(
+        case.method, partial(service.invoke, case.method), PYTHON_PRODUCT_RPC_REGISTRY[case.method]
+    )
     request: JsonObject = {
         "jsonrpc": "2.0",
         "id": case.name,
@@ -210,7 +212,7 @@ async def capture() -> JsonObject:
     return {
         "producerCommit": PRODUCER_COMMIT,
         "boundary": "Python Product dispatcher + adapter; scripted authority transport",
-        "cases": [await capture_case(case) for case in cases()],
+        "cases": [await capture_case(case) for case in cases() if case.method in REPLAY_METHODS],
     }
 
 
@@ -221,7 +223,7 @@ def render(value: JsonObject) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--write", action="store_true", help="Create the oracle once; never overwrite"
+        "--write", action="store_true", help="Retired after owner migration; always rejected"
     )
     parser.add_argument(
         "--check", action="store_true", help="Compare without changing the frozen oracle (default)"
@@ -229,12 +231,17 @@ def main() -> int:
     args = parser.parse_args()
     if args.write and args.check:
         parser.error("Choose either --write or --check")
-    generated = render(asyncio.run(capture()))
     if args.write:
-        with OUTPUT.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(generated)
-        return 0
-    if OUTPUT.read_text(encoding="utf-8") != generated:
+        parser.error("Oracle creation is retired after owner migration; preserve the frozen file")
+    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    expected = {
+        "producerCommit": frozen.get("producerCommit"),
+        "boundary": frozen.get("boundary"),
+        "cases": [
+            case for case in frozen.get("cases", []) if case["request"]["method"] in REPLAY_METHODS
+        ],
+    }
+    if render(expected) != render(asyncio.run(capture())):
         parser.error(
             "Python query read contract differs from the frozen producer; inspect the change, do not regenerate"
         )

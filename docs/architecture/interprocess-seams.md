@@ -33,19 +33,18 @@ binding 只提供配对 client、完整代际比较与 typed gateway 构造；�
 gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
 至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
 schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
-现行 Product owner 中 `events.reconcile`、`file.list`、`schema.getTable` 与 `schema.list` 已迁到 Go；
-现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page` 按该 policy 直达 Go，Python 不再注册此方法。
-`query.view` 另以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
-参数边界、分组投影与公开错误；Python 不再注册或转发该方法。默认 Host composition 验证
-Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
+现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch`、`query.selectionOpen` 与 `query.view` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
+`query.view` 以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
+参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
+`file.token`、Python SSE/gap 恢复和本地 task producer 按后续切片处理。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
 非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认
-生成 policy 按方法选择 Go 或 Python，并验证 `query.page` 通过 Product HTTP gateway 保持返回值。
+生成 policy 按方法选择当前唯一 owner，并验证 `query.page` 与 `query.readRows` 通过 Product HTTP gateway 保持返回值。游标组合测试验证 Go open/fetch 的 cursor 传递，selection 组合测试验证默认 Go owner 的代际租约、取消及公开失败零 fallback。
 Go Product 与 REST 的 `events.reconcile` 共用 revision authority，`file.list` 共用 attachment manager，
 `schema.getTable` 共用 `schemaexecution.Describe` 投影与 field 错误分类，`schema.list` 共用
-Catalog 投影。Python 保留全量参数模型，但不再注册或转发已迁移方法。独立 Workspace catalog 的六个
+Catalog 投影。Python 保留共享参数模型，但不再注册或转发已迁移的方法。独立 Workspace catalog 的六个
 既有方法名单由参数 contract 与 golden generator 共享，不作为未知方法的默认 Python fallback。
 同一真实 composition fixture 还覆盖 Lazy 同 Client 新 snapshot 轮换而不提前结束旧在途请求，
 以及 health reader 的期望 epoch lease、严格 schema.list、远端错误和 close 取消。
@@ -68,3 +67,9 @@ Host 捕获当前 workspace/epoch lease，在写入、同目录原子替换及�
 - session/epoch 轮换、取消与错误 envelope 属于 wire 行为；行为保持型重构不得顺手改变。
 - Document Diff 继续复用 sidecar authority、Host path grant 和 epoch seam；不得建立 Web 到 repository 的旁路，
   也不得把本机绝对路径放进 bridge payload。
+
+
+`query.selectionOpen` 的 Product owner 为 Go；它直接调用既有 SelectionPort 的原子
+schema/cursor 投影并保留请求 tableId 与三项 revision 配对。Python 专属 handler/client
+已删除，宿主仅按生成 policy 路由，无 Python fallback。游标签发与续读的数据权威仍为
+同一 PocketBase QueryPort；`cursorFetch` 的 Product 路由 owner 不构成新的游标 authority。

@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
-from backend.adapters.pocketbase.client import (
-    QueryCursorOpenCommand,
-    QueryCursorWindowResult,
-    SelectionProjectionResult,
-)
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
-    _array,
     _object,
     _path_segment,
     _result_object,
     _text,
 )
 from backend.contracts.product_rpc import JsonObject, ProductParams
-from backend.contracts.query import QuerySelectionProjectionResult
 from backend.contracts.schema_v2 import (
     FormulaPreviewRequestV2,
     FormulaValidateRequestV2,
@@ -38,10 +31,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "query.cursorOpen": self._open_query_cursor,
-            "query.selectionOpen": self._open_selection_projection,
-            "query.cursorFetch": self._fetch_query_cursor,
-            "query.readRows": self._read_rows,
             "query.validateSnapshot": self._validate_snapshot,
             "mutation.preview": self._preview_mutation,
             "mutation.apply": self._apply_mutation,
@@ -114,44 +103,6 @@ class ProductQuerySchemaRpc:
             )
         )
 
-    async def _open_query_cursor(self, params: ProductParams) -> JsonObject:
-        window = await self._context.client.open_query_cursor(
-            QueryCursorOpenCommand(
-                table_id=_text(params.root, "tableId"),
-                query=_object(params.root, "query"),
-            )
-        )
-        return _cursor_window_result(window)
-
-    async def _open_selection_projection(self, params: ProductParams) -> JsonObject:
-        projection = await self._context.client.open_selection_projection(
-            QueryCursorOpenCommand(
-                table_id=_text(params.root, "tableId"),
-                query=_object(params.root, "query"),
-            )
-        )
-        return _selection_projection_result(projection)
-
-    async def _fetch_query_cursor(self, params: ProductParams) -> JsonObject:
-        window = await self._context.client.fetch_query_cursor(
-            cursor=_text(params.root, "cursor"),
-        )
-        return _cursor_window_result(window)
-
-    async def _read_rows(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        row_ids = _array(raw, "rowIds")
-        if not all(isinstance(item, str) and item for item in row_ids):
-            raise ValueError("rowIds must contain non-empty strings")
-        return _result_object(
-            {
-                "rows": await self._context.client.read_rows(
-                    table_id=_text(raw, "tableId"),
-                    row_ids=[item for item in row_ids if isinstance(item, str)],
-                )
-            }
-        )
-
     async def _validate_snapshot(self, params: ProductParams) -> JsonObject:
         raw = params.root
         body: JsonObject = {"snapshot": _object(raw, "snapshot")}
@@ -175,29 +126,6 @@ class ProductQuerySchemaRpc:
     async def _preview_formula(self, params: ProductParams) -> JsonObject:
         FormulaPreviewRequestV2.model_validate(params.root)
         return await self._context.post("/api/vibetable/v1/formulas/preview", params.root)
-
-
-def _cursor_window_result(window: QueryCursorWindowResult) -> JsonObject:
-    return _result_object(
-        {
-            "rows": window.rows,
-            "nextCursor": window.next_cursor,
-            "hasMore": window.has_more,
-            "filteredRows": window.filtered_rows,
-            "totalRows": window.total_rows,
-            "querySnapshot": window.snapshot,
-        }
-    )
-
-
-def _selection_projection_result(projection: SelectionProjectionResult) -> JsonObject:
-    validated = QuerySelectionProjectionResult.model_validate(
-        {
-            "schemaSnapshot": projection.schema_snapshot,
-            "cursorWindow": _cursor_window_result(projection.cursor_window),
-        }
-    )
-    return _result_object(validated.model_dump(mode="json", by_alias=True))
 
 
 _JSON_FILTER_OPERATORS = ("contains",)

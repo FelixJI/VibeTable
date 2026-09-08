@@ -21,7 +21,6 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
-	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -353,8 +352,12 @@ func historyReadProductFixture(
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}), relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(runtime),
+		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
-		queryPageRegistration(query.NewPort(pb, nil)),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)

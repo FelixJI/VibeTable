@@ -3,7 +3,7 @@ package productcapabilities
 import "testing"
 
 func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
-	for _, method := range []string{"file.list", "history.read", "lookup.list", "schema.describe"} {
+	for _, method := range []string{"file.list", "history.read", "lookup.list", "query.readRows", "schema.describe"} {
 		if HasCurrentOwnerRPCMethod(PythonBff, method) {
 			t.Fatalf("%s must not remain on pythonBff after its Go migration", method)
 		}
@@ -63,13 +63,14 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 10 ||
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 14 ||
 		got[0].Method != "events.reconcile" || got[1].Method != "file.list" ||
 		got[2] != (RPCDescriptor{
 			Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
 			CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
-		}) || got[3].Method != "lookup.list" || got[4].Method != "query.page" || got[5].Method != "query.view" || got[6].Method != "relation.previewDelta" || got[7].Method != "schema.describe" || got[8].Method != "schema.getTable" ||
-		got[9].Method != "schema.list" {
+		}) || got[3].Method != "lookup.list" || got[4].Method != "query.cursorFetch" || got[5].Method != "query.cursorOpen" || got[6].Method != "query.page" || got[7].Method != "query.readRows" ||
+		got[8].Method != "query.selectionOpen" || got[9].Method != "query.view" || got[10].Method != "relation.previewDelta" || got[11].Method != "schema.describe" ||
+		got[12].Method != "schema.getTable" || got[13].Method != "schema.list" {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||

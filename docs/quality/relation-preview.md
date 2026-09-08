@@ -1,7 +1,7 @@
 # relation.previewDelta 迁移资格
 
-当前从main `6ed36810f3753caed5e2e8ca27a4d4ad2117d41d` 迁移单一只读方法，
-闭集10 Go /90 Python /2 native。沿用唯一PocketBase authority与既有relation.Service/
+当前已整合main `a19ccd5366d62be6338f628d06b6c5a37484f20f`，相对main只迁移preview，
+闭集14 Go /86 Python /2 native，relation.searchTargets仍属Python。沿用唯一PocketBase authority与既有relation.Service/
 Kernel.Preview；不改变apply、owner生命周期、数据格式或写入协调器。Python专属preview
 handler/注册退役，共享_translate_delta/_renderer_target仍供其他方法使用。
 
@@ -21,7 +21,9 @@ Host使用已存在Go forwarder及workspace lease，不回退Python，保留Rela
 本地选择并取消，比较源/目标双方记录及schema/data revision。S06历史语义不变；历史main
 23/23样本不覆盖新S28，manifest gap保留S26并新增S28。
 
-## 本地证据
+## 整合前来源提交的本地证据
+以下测试和S28包来自 `28261a12f694003864b26264a46f9145dcf6b4a8`，当时基线为main6ed、
+闭集10 Go /90 Python /2 native；不能替代整合a19后的新端点验证。
 
 - Go聚焦race：app25.920s、dispatcher1.696s、capabilities1.257s passed。
   `go test -race ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities -run 'TestRelationPreviewProduct|TestQueryViewProductHTTP|TestQueryPageProductHTTP|TestNewRequiresRegistrations|TestGenerated' -count=1`。
@@ -32,7 +34,7 @@ Host使用已存在Go forwarder及workspace lease，不回退Python，保留Rela
 - Ruff、Pyright0、Go vet、policy生成检查及冻结输入检查通过。原Go gcc/uv沙箱启动失败与Python/.NET失败日志保留；获准使用缓存后执行的测试与未启动尝试区分。
 
 复用uv环境、npm junction、锁定Go/CGO与.NET/NuGet缓存，不更改lock、依赖来源或CI。
-代码/metadata独立Standards0、Spec0；文档增量两处命令/覆盖范围问题已修正，待复核。
+来源代码/metadata及最终文档独立Standards0、Spec0；process命令与S28覆盖范围问题已修复并复核。
 全组件本地包构建通过；真实S28于QA `20260908T042431Z` 1/1 passed。加载权威旧目标、
 本地选择与取消后双方rows/schema/data revision保持、bridge/renderer诊断全部通过；package audit
 及四组件新鲜度通过，正常Host退出0、成员/后代为空、端口释放及lease/final cleanup通过。
@@ -45,3 +47,15 @@ Python首轮精确命令：
 修正后仅运行 `uv run --frozen --no-sync python -m pytest tests/backend/adapters/test_pocketbase_product_rpc.py -q --no-cov`。
 真实包：`uv run --frozen --no-sync python scripts/build_next.py`；产品：
 `uv run --frozen --no-sync python -m tests.e2e.product_e2e_runner --scenario 28-relation-delta-preview`。
+## 整合 main a19 的增量
+
+双方生产adapter与全部原件/typed JSON保持来源一致；14个严格HTTP注册完整，preview与
+新查询fixture互加不可调用guard。Host六字段preview、main的field.settings.describe迟到
+响应入口，以及S02/S17/S28均保留。代码整合Standards0、Spec无代码发现；Spec指出本文
+仍将旧基线写成当前，已改为当前14/86并将来源282证据单独标识。
+
+本次增量首轮全部通过：Python123 passed1.35s，8类Host133 passed13s，
+Go race app71.912s/dispatcher1.653s/capabilities1.258s，process race10.311s。
+相关Go vet、backend Pyright0、Ruff及policy生成检查通过；7处冲突已resolved。
+来源S28产品包证据不改标为新端点全量验收，最终完整release build/smoke/E2E由fresh CI验证。
+本次文档基线修正已通过最终Spec/Standards复核，均0 findings；fresh CI及同SHA main CI/CD尚未完成。
