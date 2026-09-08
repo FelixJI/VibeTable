@@ -65,7 +65,7 @@ ProductDataRequestControllerTests。旧白名单样例缺scope，另两例错误
 
 ## Lookup 组合验证
 
-本地组合保留三个 owner 的独立意图与冻结原件；远端仍分别交付。组合增量 Host 原八类 169 passed/0 failed/skipped，645ms；Python 九文件首轮144 passed/1 failed（1.73s），旧测试两处owner集合遗漏describe。修正时一次文本替换误触events参数行导致收集错误，已移除误行；补describe有效/非法形状均无Python注册的两例后，仅该文件27 passed（0.44s），不声称全组重跑。Go三方法 `go test -race ./internal/app -run '^Test(FieldSettingsDescribe|LookupQuery|LookupValuePage)Product' -count=1` 通过44.525s；注册两包通过1.276s/1.669s，实际sidecar子进程通过11.887s。四包vet通过。runner/index150 passed（8.84s），backend及三保留器Pyright 0 errors。日志为build/field-lookup-combined-*。组合增量 Standards 与 Spec 的发现已修正，最终未解决0/0；完整构建及 S02/S03待完成。
+本地组合保留三个 owner 的独立意图与冻结原件；远端仍分别交付。组合增量 Host 原八类 169 passed/0 failed/skipped，645ms；Python 九文件首轮144 passed/1 failed（1.73s），旧测试两处owner集合遗漏describe。修正时一次文本替换误触events参数行导致收集错误，已移除误行；补describe有效/非法形状均无Python注册的两例后，仅该文件27 passed（0.44s），不声称全组重跑。Go三方法 `go test -race ./internal/app -run '^Test(FieldSettingsDescribe|LookupQuery|LookupValuePage)Product' -count=1` 通过44.525s；注册两包通过1.276s/1.669s，实际sidecar子进程通过11.887s。四包vet通过。runner/index150 passed（8.84s），backend及三保留器Pyright 0 errors。日志为build/field-lookup-combined-*。组合增量 Standards 与 Spec 的发现已修正，最终未解决0/0；完整构建及 S02/S03已执行，见下节。
 
 ## 审查与剩余资格
 
@@ -75,7 +75,25 @@ Standards指出取消声明需同步，Spec指出历史捕获文档需更新，�
 
 初始16-owner阶段，Host作者不复核自己六个测试文件；主代理独立检查并要求保留当时仍Python的 Lookup Relation drain 测试，新增 Python Field drain 独立存在。当时两方法定向复验 2 passed/0 failed/skipped，125ms（filter 为 RelationReadSettlesBeforeRetiredRuntimeDrains|PythonFieldReadSettlesBeforeRetiredRuntimeDrains）。18-owner组合中 Lookup 已退役 Python，原等待样例改为仍Python的 field.change.status/jobId，另一条 recycleBin 样例独立保留；旧125ms不作为新方法证据。其余源码由独立Spec代理审查，Standards代理独立检查全部。
 S02增加与本次实际requestId对应的成功描述回程、完整已恢复字段及非空能力断言；S03仍验证字段错误。
-完整新构建和真实S02/S03产品运行尚未执行；旧Python包或其他方法的S29不是此owner资格。
+真实S02/S03资格来自下述18-owner新构建；旧Python包或其他方法的S29不是此owner资格。
 
 fresh CI、严格最新main、squash及合并后CI/CD仍待完成；不修改CI、覆盖率、SLO、发布流程或不支持格式零写拒绝契约。
 本地日志在build/field-settings-describe-*、field-settings-owner-*，不提交构建包或缓存。
+
+## 18-owner 实际产品资格
+
+精确源码 `5077d6af212d7ae10676383fb7b93e9022d7f9e8` 的完整
+`uv run --frozen --no-sync python scripts/build_next.py` EXIT0；全部组件构建，无skip，沿用同一工具及依赖缓存。
+日志 build/field-lookup-product-build.log。
+
+`uv run --frozen --no-sync python -m tests.e2e.product_e2e_runner --scenario 02-all-field-schema --scenario 03-schema-errors`
+在真实WPF/WebView2完成2/2 passed、0 failed/skipped：S02 14630ms、18断言；S03 8138ms、11断言，全部通过。
+报告 build/qa/product-e2e/20260908T112936Z/product-e2e-report.json。
+
+S02保存与恢复后字段相同的requestId `e2e-77739410-b51d-41bb-a1fe-2b1314c761d3`，描述回程2.9ms，
+完整字段定义与非空能力断言成功。诊断中S02的31次、S03的15次describe均请求/响应方法匹配且code=null；
+bridge failures/pending和pageErrors均空。S03的字段约束错误场景通过；公开describe错误仍由前述原件和HTTP契约覆盖。
+
+包审计无错误、desktop-host/web-grid/python-backend/pocketbase-sidecar四组件freshness全部通过。
+两场景Host退出0，membersAfterExit/descendantsAfterExit和remainingPids均空，端口释放、owner lease关闭和final cleanup全部通过。
+本报告证明本地组合产品资格，独立owner PR的最新main/fresh CI/squash及合并后CI/CD仍未完成。
