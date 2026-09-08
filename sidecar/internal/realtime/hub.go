@@ -62,7 +62,8 @@ func (subscription *Subscription) Close() {
 }
 
 type subscriber struct {
-	events chan Event
+	events          chan Event
+	replayedThrough int64
 }
 
 type Hub struct {
@@ -221,11 +222,14 @@ func (hub *Hub) PersistTaskChanged(
 func (hub *Hub) publish(event Event) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	hub.publishLocked(event)
+	hub.publishLocked(event, 0)
 }
 
-func (hub *Hub) publishLocked(event Event) {
+func (hub *Hub) publishLocked(event Event, rowID int64) {
 	for id, subscription := range hub.subscribers {
+		if rowID > 0 && rowID <= subscription.replayedThrough {
+			continue
+		}
 		select {
 		case subscription.events <- event:
 		default:
@@ -238,7 +242,7 @@ func (hub *Hub) publishLocked(event Event) {
 func (hub *Hub) drainDurable() error {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	rows, err := hub.readRows(
+	rows, err := readRows(hub.app.DB(),
 		"WHERE rowid > {:highWater} ORDER BY rowid ASC",
 		dbx.Params{"highWater": hub.highWater},
 	)
@@ -250,7 +254,7 @@ func (hub *Hub) drainDurable() error {
 		if decodeErr != nil {
 			return decodeErr
 		}
-		hub.publishLocked(event)
+		hub.publishLocked(event, row.RowID)
 		hub.highWater = row.RowID
 	}
 	return nil
@@ -259,6 +263,15 @@ func (hub *Hub) drainDurable() error {
 func (hub *Hub) Subscribe(
 	ctx context.Context,
 	afterEventID string,
+) (*Subscription, error) {
+	return hub.subscribe(ctx, func() ([]Event, int64, error) {
+		return hub.catchup(afterEventID)
+	})
+}
+
+func (hub *Hub) subscribe(
+	ctx context.Context,
+	readBacklog func() ([]Event, int64, error),
 ) (*Subscription, error) {
 	hub.mu.Lock()
 	if len(hub.subscribers) >= maxSubscribers {
@@ -284,16 +297,14 @@ func (hub *Hub) Subscribe(
 			hub.mu.Unlock()
 		})
 	}
-	backlog, retainedHighWater, err := hub.catchup(afterEventID)
+	backlog, retainedHighWater, err := readBacklog()
 	if err != nil {
 		delete(hub.subscribers, id)
 		close(entry.events)
 		hub.mu.Unlock()
 		return nil, err
 	}
-	if retainedHighWater > hub.highWater {
-		hub.highWater = retainedHighWater
-	}
+	entry.replayedThrough = retainedHighWater
 	hub.mu.Unlock()
 	go func() {
 		<-ctx.Done()
@@ -312,7 +323,7 @@ func (hub *Hub) catchup(afterEventID string) ([]Event, int64, error) {
 			Retryable: true,
 		}
 	}
-	rows, err := hub.readRows(
+	rows, err := readRows(hub.app.DB(),
 		`WHERE rowid IN (
 			SELECT rowid FROM vibetable_outbox
 			ORDER BY rowid DESC LIMIT {:limit}
@@ -393,11 +404,11 @@ type outboxRow struct {
 	PayloadJSON string `db:"payload_json"`
 }
 
-func (hub *Hub) readRows(where string, params dbx.Params) ([]outboxRow, error) {
+func readRows(db dbx.Builder, where string, params dbx.Params) ([]outboxRow, error) {
 	var rows []outboxRow
 	query := `SELECT rowid AS row_id, event_id, topic, payload_json
 		FROM vibetable_outbox ` + where
-	if err := hub.app.DB().NewQuery(query).Bind(params).All(&rows); err != nil {
+	if err := db.NewQuery(query).Bind(params).All(&rows); err != nil {
 		return nil, &Error{
 			Code: "realtime.storage_failed", Message: "realtime outbox could not be read",
 			Retryable: true,
@@ -420,8 +431,16 @@ func decodeOutboxRow(row outboxRow) (Event, error) {
 		if decodeStrict(raw, &event) != nil ||
 			event.ContractVersion != mutation.ContractVersion ||
 			event.Topic != "task.changed" || event.EventID != row.EventID ||
-			event.TaskID == "" || event.TaskType == "" || event.Sequence < 1 ||
+			event.TaskID == "" || event.TaskType != "formulaBackfill" || event.Sequence < 1 ||
 			event.Progress < 0 || event.Progress > 1 {
+			return Event{}, corruptOutbox()
+		}
+		if _, err := time.Parse(time.RFC3339, event.OccurredAt); err != nil {
+			return Event{}, corruptOutbox()
+		}
+		switch event.State {
+		case "pending", "running", "succeeded", "failed", "cancelled":
+		default:
 			return Event{}, corruptOutbox()
 		}
 	default:

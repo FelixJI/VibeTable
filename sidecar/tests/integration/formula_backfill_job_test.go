@@ -1123,6 +1123,24 @@ func TestTerminalTaskEventsCommitAtomicallyBeforeLivePublish(t *testing.T) {
 			t.Fatalf("restart task states = %#v, missing %q", states, state)
 		}
 	}
+	recovered, err := restartedHub.SubscribeRecoverable(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	snapshot := recoveredProjection(t, recovered)
+	if len(snapshot.ActiveFormulaTasks) != 0 || len(snapshot.TerminalNotifications) != 3 {
+		t.Fatalf("terminal recovery = %+v", snapshot)
+	}
+	for _, task := range snapshot.TerminalNotifications {
+		if !states[task.State] || task.EventID == "" {
+			t.Fatalf("recovery changed the terminal notice: %+v", task)
+		}
+		delete(states, task.State)
+	}
+	if len(states) != 0 {
+		t.Fatalf("recovery omitted terminal states: %+v", states)
+	}
 }
 
 func TestResumePendingDrainsJobsBeyondConcurrencyWindow(t *testing.T) {
