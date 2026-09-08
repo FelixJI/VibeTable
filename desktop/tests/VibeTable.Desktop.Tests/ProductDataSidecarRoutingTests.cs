@@ -13,6 +13,8 @@ public sealed class ProductDataSidecarRoutingTests
     [DataRow("schema.describe", false)]
     [DataRow("lookup.list", true)]
     [DataRow("lookup.list", false)]
+    [DataRow("relation.searchTargets", true)]
+    [DataRow("relation.searchTargets", false)]
     [DataRow("relation.previewDelta", true)]
     [DataRow("relation.previewDelta", false)]
     public async Task CatalogReadUsesGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
@@ -28,7 +30,9 @@ public sealed class ProductDataSidecarRoutingTests
         RoutedWebRequest request = QueryRequest("describe-go") with
         {
             Type = method,
-            Payload = method == "relation.previewDelta"
+            Payload = method == "relation.searchTargets"
+                ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
+                : method == "relation.previewDelta"
                 ? JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
                     expectedSchemaRevision = "schema-1", adds = Array.Empty<object>(),
                     removes = Array.Empty<object>(), idempotencyKey = "preview-test" })
@@ -192,10 +196,13 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
-    [DataRow(-32602, "BAD_PAYLOAD")]
-    [DataRow(-32030, "BACKEND_UNAVAILABLE")]
-    [DataRow(-32150, "RELATION_LOOKUP_FAILED")]
-    public async Task RelationGoErrorPreservesExistingRendererMapping(int code, string expected)
+    [DataRow("relation.searchTargets", -32602, "BAD_PAYLOAD")]
+    [DataRow("relation.previewDelta", -32602, "BAD_PAYLOAD")]
+    [DataRow("relation.searchTargets", -32030, "BACKEND_UNAVAILABLE")]
+    [DataRow("relation.previewDelta", -32030, "BACKEND_UNAVAILABLE")]
+    [DataRow("relation.searchTargets", -32150, "RELATION_LOOKUP_FAILED")]
+    [DataRow("relation.previewDelta", -32150, "RELATION_LOOKUP_FAILED")]
+    public async Task RelationGoErrorPreservesExistingRendererMapping(string method, int code, string expected)
     {
         var sink = new FakeWebReplySink();
         var pythonTransport = new CountingQueryTransport();
@@ -207,8 +214,9 @@ public sealed class ProductDataSidecarRoutingTests
         controller.SetProductSidecarForwarder(sidecar);
         RoutedWebRequest request = QueryRequest("relation-failure") with
         {
-            Type = "relation.previewDelta",
-            Payload = JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
+            Type = method,
+            Payload = method == "relation.searchTargets" ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
+                : JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
                     expectedSchemaRevision = "schema-1", adds = Array.Empty<object>(),
                     removes = Array.Empty<object>(), idempotencyKey = "preview-test" }),
         };

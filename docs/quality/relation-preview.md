@@ -1,7 +1,10 @@
 # relation.previewDelta 迁移资格
 
-当前已整合main `a19ccd5366d62be6338f628d06b6c5a37484f20f`，相对main只迁移preview，
-闭集14 Go /86 Python /2 native，relation.searchTargets仍属Python。沿用唯一PocketBase authority与既有relation.Service/
+本文保留 preview 来源分支整合 main `a19ccd5366d62be6338f628d06b6c5a37484f20f` 时的资格，
+当时闭集14 Go /86 Python /2 native。当前 search 切片承接含 preview 的 main
+`3f665176e16e00d168edba98b40ac2ae26174c24`，最终闭集15 Go /85 Python /2 native，
+relation.searchTargets与preview均归Go，lookup.valuePage仍归Python；本次增量证据见
+[关系目标搜索资格](relation-search.md)。沿用唯一PocketBase authority与既有relation.Service/
 Kernel.Preview；不改变apply、owner生命周期、数据格式或写入协调器。Python专属preview
 handler/注册退役，共享_translate_delta/_renderer_target仍供其他方法使用。
 
