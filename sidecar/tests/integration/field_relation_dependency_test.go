@@ -3,16 +3,30 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 
+	"github.com/pocketbase/dbx"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T) {
+	for _, cardinality := range []string{"many", "one"} {
+		t.Run(cardinality, func(t *testing.T) {
+			testRelationDisplayFieldBlocksTargetLifecycleChange(t, cardinality)
+		})
+	}
+}
+
+func testRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T, reciprocalCardinality string) {
+	t.Helper()
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
 	ctx := context.Background()
@@ -73,7 +87,7 @@ func TestRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T) {
 		ExpectedSchemaRev: sourceTitleReceipt.SchemaRevision,
 		Draft:             &relationDraft, Actor: actor,
 		RelationPair: &v2.RelationPairDraft{
-			ReciprocalDisplayName: "Orders", ReciprocalCardinality: "many",
+			ReciprocalDisplayName: "Orders", ReciprocalCardinality: reciprocalCardinality,
 			SourceDisplayFieldID: sourceTitleReceipt.FieldID,
 		},
 	})
@@ -117,7 +131,7 @@ func TestRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := kernel.Apply(ctx, mutationRequest(
+	inserted, err := kernel.Apply(ctx, mutationRequest(
 		source.TableID,
 		relationReceipt.SchemaRevision,
 		"create-related-source",
@@ -130,7 +144,8 @@ func TestRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T) {
 				relationReceipt.FieldID:    targetRecordID,
 			},
 		},
-	)); err != nil {
+	))
+	if err != nil {
 		t.Fatal(err)
 	}
 	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)
@@ -142,10 +157,87 @@ func TestRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	reciprocalPhysicalName := relationReceipt.Related[0].Definition.Identity.PhysicalName
+	assertReciprocalProjection := func(receipt mutation.Receipt, want any) {
+		t.Helper()
+		definition, err := schemaexecution.Describe(ctx, app, target.TableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := app.FindRecordById(targetCollection, targetRecordID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		querySource, err := queryschema.New(app.DataDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := query.NewPort(app, querySource).QueryPage(ctx, target.TableID, query.TableQuery{Limit: 10})
+		if err != nil || len(page.Rows) != 1 {
+			t.Fatalf("query reciprocal row: %#v / %v", page, err)
+		}
+		wantJSON, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt.ChangeSetID == nil {
+			t.Fatalf("receipt omitted change set: %#v", receipt)
+		}
+		audit, err := app.FindFirstRecordByFilter("vibetable_audit_events",
+			"change_set_id={:change} && table_id={:table} && record_id={:record}",
+			dbx.Params{"change": *receipt.ChangeSetID, "table": target.TableID, "record": targetRecordID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		auditJSON, err := json.Marshal(audit.GetRaw("after_json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var audited map[string]any
+		if err := json.Unmarshal(auditJSON, &audited); err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]any{
+			"product":            mutation.ProductRow(app, definition, record)[reciprocalPhysicalName],
+			"query":              page.Rows[0][reciprocalPhysicalName],
+			"receipt change set": audited[reciprocalPhysicalName],
+		} {
+			got, err := json.Marshal(value)
+			if err != nil || string(got) != string(wantJSON) {
+				t.Errorf("%s reciprocal projection = %s, want %s (err=%v)", name, got, wantJSON, err)
+			}
+		}
+		foundTargetEvent := false
+		for _, eventID := range receipt.EmittedEvents {
+			outbox, err := app.FindFirstRecordByFilter("vibetable_outbox", "event_id={:event}", dbx.Params{"event": eventID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(outbox.GetRaw("payload_json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var event mutation.DataChangedEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.TableID == target.TableID && len(event.RecordIDs) == 1 && event.RecordIDs[0] == targetRecordID {
+				foundTargetEvent = true
+			}
+		}
+		if receipt.Status != mutation.StatusApplied || !foundTargetEvent {
+			t.Fatalf("receipt omitted reciprocal change: %#v", receipt)
+		}
+	}
+	var linked any = []string{sourceRecordID}
+	var cleared any = []string{}
+	if reciprocalCardinality == "one" {
+		linked, cleared = sourceRecordID, nil
+	}
+	assertReciprocalProjection(inserted, linked)
 	if got := targetRecord.GetStringSlice(reciprocalPhysicalName); len(got) != 1 || got[0] != sourceRecordID {
 		t.Fatalf("reciprocal relation after insert = %#v", got)
 	}
-	if _, err := kernel.Apply(ctx, mutationRequest(
+	updated, err := kernel.Apply(ctx, mutationRequest(
 		source.TableID,
 		relationReceipt.SchemaRevision,
 		"clear-related-source",
@@ -156,9 +248,11 @@ func TestRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T) {
 				relationReceipt.Definition.Identity.PhysicalName: nil,
 			},
 		},
-	)); err != nil {
+	))
+	if err != nil {
 		t.Fatal(err)
 	}
+	assertReciprocalProjection(updated, cleared)
 	targetRecord, err = app.FindRecordById(targetCollection, targetRecordID)
 	if err != nil {
 		t.Fatal(err)
