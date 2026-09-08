@@ -31,8 +31,13 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 			t.Fatalf("L6 must route %s through wpfHost", method)
 		}
 	}
-	if !HasCurrentOwnerEventTopic(PythonBff, "data.changed") {
-		t.Fatal("data.changed must remain on pythonBff during L1")
+	for _, topic := range []string{"data.changed", "realtime.recovered"} {
+		if !HasCurrentOwnerEventTopic(GoSidecar, topic) || HasCurrentOwnerEventTopic(PythonBff, topic) {
+			t.Fatalf("%s must route through goSidecar after L4", topic)
+		}
+	}
+	if !HasCurrentOwnerEventTopic(WpfHost, "task.changed") || HasCurrentOwnerEventTopic(PythonBff, "task.changed") {
+		t.Fatal("task.changed renderer envelope must belong to wpfHost after L4")
 	}
 }
 
