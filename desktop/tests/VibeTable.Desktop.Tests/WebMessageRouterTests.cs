@@ -951,10 +951,44 @@ public sealed class WebMessageRouterTests
         var dispatched = new List<RoutedWebRequest>();
         ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
             new ProductRpcCapability(
+                "relation.previewDelta",
+                "workspace",
+                "rendererPublic",
+                "relation.lookup",
+                "goSidecar",
+                "read"));
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            policy)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? reply = router.Route(
+            """{"type":"relation.previewDelta","requestId":"relation-go","payload":{"relationId":"records.owner","sourceItemId":"record-1","expectedSchemaRevision":"schema-1","adds":[],"removes":[],"idempotencyKey":"preview-test"}}""");
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        const string scoped = """
+            {"type":"relation.previewDelta","requestId":"relation-go","payload":{"relationId":"records.owner","sourceItemId":"record-1","expectedSchemaRevision":"schema-1","adds":[],"removes":[],"idempotencyKey":"preview-test"},"scope":{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"22222222-2222-4222-8222-222222222222","sequence":1}}
+            """;
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            document.RootElement.GetProperty("scope"), dispatched.Single().Wire));
+    }
+
+    [TestMethod]
+    public void SearchGoRouteRequiresScopeAndPreservesItsWire()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability(
                 "relation.searchTargets",
                 "workspace",
                 "rendererPublic",
-                "product.relation.search_targets",
+                "relation.lookup",
                 "goSidecar",
                 "read"));
         var router = new WebMessageRouter(
@@ -1006,7 +1040,7 @@ public sealed class WebMessageRouterTests
         {
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual(route == "relation.searchTargets" ? "goSidecar" : "pythonBff",
+            Assert.AreEqual(route is "relation.searchTargets" or "relation.previewDelta" ? "goSidecar" : "pythonBff",
                 capability.Owner, route);
         }
     }

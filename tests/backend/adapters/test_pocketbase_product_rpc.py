@@ -98,6 +98,18 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
             },
         ),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
+        ("relation.searchTargets", {"relationId": "orders.customer"}),
+        (
+            "relation.previewDelta",
+            {
+                "relationId": "orders.related",
+                "sourceItemId": "source-1",
+                "expectedSchemaRevision": "schema-1",
+                "adds": [],
+                "removes": [],
+                "idempotencyKey": "preview-1",
+            },
+        ),
         ("schema.getTable", {"tableId": "orders"}),
         ("schema.list", {}),
         ("query.page", {"tableId": "orders", "query": {}}),
@@ -322,49 +334,6 @@ async def test_schema_delete_uses_fixed_route_and_revision_guard() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relation_delta_translates_legacy_target_names() -> None:
-    service, transport = _service(
-        [
-            {
-                "relationId": "orders.customer",
-                "sourceRecordId": "order-1",
-                "current": [],
-                "result": [],
-                "adds": 1,
-                "removes": 0,
-                "canApply": True,
-            }
-        ]
-    )
-    params = ProductParams.model_validate(
-        {
-            "relationId": "orders.customer",
-            "sourceItemId": "order-1",
-            "expectedSchemaRevision": "schema_0001",
-            "adds": [
-                {
-                    "target": {
-                        "collection": "customers",
-                        "itemId": "customer-1",
-                        "label": "Ada",
-                    }
-                }
-            ],
-            "updates": [],
-            "removes": [],
-            "idempotencyKey": "relation-1",
-        }
-    )
-
-    await service.invoke("relation.previewDelta", params)
-
-    assert transport.requests[0]["json_body"]["adds"] == [
-        {"tableId": "customers", "recordId": "customer-1", "label": "Ada"}
-    ]
-    assert transport.requests[0]["json_body"]["actor"]["id"] == "local-user"
-
-
-@pytest.mark.asyncio
 async def test_reconcile_has_no_python_transport_fallback() -> None:
     service, transport = _service([])
     params = ProductParams.model_validate(
@@ -532,67 +501,6 @@ async def test_snapshot_uses_fixed_route() -> None:
 
     assert [request["path"] for request in transport.requests] == [
         "/api/vibetable/v1/query/validate-snapshot",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> None:
-    service, transport = _service(
-        [
-            {
-                "relationId": "orders.customer",
-                "sourceRecordId": "order-1",
-                "current": [
-                    {
-                        "tableId": "customers",
-                        "recordId": "customer-1",
-                        "label": "Ada",
-                    }
-                ],
-                "result": [],
-                "adds": 0,
-                "removes": 0,
-                "canApply": True,
-            },
-        ]
-    )
-
-    preview = await service.invoke(
-        "relation.previewDelta",
-        ProductParams.model_validate(
-            {
-                "relationId": "orders.customer",
-                "sourceItemId": "order-1",
-                "expectedSchemaRevision": "schema_4",
-                "adds": [],
-                "removes": [],
-                "idempotencyKey": "rel-1",
-            }
-        ),
-    )
-
-    assert preview == {
-        "delta": {
-            "relationId": "orders.customer",
-            "sourceItemId": "order-1",
-            "expectedSchemaRevision": "schema_4",
-            "adds": [],
-            "removes": [],
-            "idempotencyKey": "rel-1",
-        },
-        "current": [
-            {
-                "collection": "customers",
-                "itemId": "customer-1",
-                "label": "Ada",
-                "secondaryLabel": None,
-            }
-        ],
-        "diagnostics": [],
-        "canApply": True,
-    }
-    assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/relations/preview-delta",
     ]
 
 

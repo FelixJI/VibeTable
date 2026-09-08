@@ -148,5 +148,11 @@
     "title": "关系目标搜索",
     "requirement": "真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复；不提交关联写入。",
     "capabilities": ["relation.search"]
+  },
+  {
+    "id": "28-relation-delta-preview",
+    "title": "多值关系预览与取消",
+    "requirement": "真实多值关系编辑器经预览加载权威已关联目标；增加本地草稿选择后取消，源与目标表记录及schema/data revision保持不变。",
+    "capabilities": ["relation.preview"]
   }
 ]

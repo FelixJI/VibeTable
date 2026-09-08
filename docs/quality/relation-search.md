@@ -6,9 +6,10 @@
 其他 relation 写方法和 lookup 方法不随本次切换。没有更改 CI、发布门禁或不支持格式的
 零写入拒绝契约。
 
-当前已正常合入 main `a19ccd5366d62be6338f628d06b6c5a37484f20f`，闭集为
-14 Go /86 Python /2 native：main 的13项加本次 search；`relation.previewDelta` 仍由 Python
-负责。下列早期数量、失败和产品包结果均保留其原来源，不能替代本次合并端点资格。
+当前已正常合入 main `3f665176e16e00d168edba98b40ac2ae26174c24`，闭集为
+15 Go /85 Python /2 native：main 的14项加本次 search；`relation.previewDelta` 已由 Go
+负责，`lookup.valuePage` 仍由 Python 负责。下列早期数量、失败和产品包结果均保留其原来源，
+不能替代本次合并端点资格。
 
 ## 原行为与删除范围
 
@@ -105,3 +106,23 @@ S02、S17 和独立 S27 全部保留，场景索引只读检查通过。
 本次未重新构建产品包或执行 S27；上述实际 S27仍对应 `1ca00c0e` 产品包及当时场景脚本，
 没有将其称为 main a19 合并后的包资格。最终组合独立双轴、精确 head fresh CI及 squash 后
 main CI/CD仍待完成；所有既有失败记录保留，不降低门禁。
+
+## 同步 main 3f665 的增量
+
+此前 PR #287 的 CI `34189283548` 已 SUCCESS，此处单独记录承接 preview 的最新main增量。
+search/preview生产adapter和30/37原案例保持原样；严格15注册及交叉HTTP guard完整。
+Host保留search读取与preview六字段、双方错误/epoch/迟到结果断言；Python读取生命周期测试
+使用仍存在的lookup.valuePage完整八字段，field.settings.describe迟到Web入口保持不变。
+S26/S27/S28与旧S02/S17并存，历史23场景source/run未改写，manifest gap为三项。
+
+本次日志前缀 `pr287-preview-main-sync-`，复用现有锁定环境和缓存：
+
+- `uv run --frozen --no-sync python -m pytest tests/backend/test_main_product_data.py tests/backend/adapters/test_pocketbase_product_rpc.py tests/backend/adapters/test_pocketbase_client.py tests/backend/adapters/test_pocketbase_product_rpc_coverage.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_relation_search_python_oracle.py tests/contract/test_relation_preview_python_oracle.py tests/contract/test_product_e2e_capability_index.py tests/e2e/test_product_e2e_runner.py -q --no-cov`：248 passed，6.39s。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~ProductDataSidecarRoutingTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~RelationLookupRpcRegistryTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceSessionEnvelopeFilterTests|FullyQualifiedName~HostProductRpcCompositionTests|FullyQualifiedName~QueryCursorOwnerCompositionTests'`：141 passed、0 failed/skip，14s。
+- sidecar目录：`go test -race ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities -run 'TestRelationSearchProductHTTP|TestRelationPreviewProductHTTP|TestQuery.*ProductHTTP|TestSchemaListProductHTTPMatchesRealCatalogREST|TestFileListProductHTTPMatchesAttachmentRESTAndConsumesCapabilities|TestHistoryReadProductHTTPReturnsFreshAuditedPage|TestNewRequiresRegistrations|TestGenerated' -count=1`：**exit1，app77.342s失败**；`TestQueryReadRowsProductHTTPConsumesFrozenPythonOracle` 在 `TempDir RemoveAll cleanup` 报 `directory is not empty`。日志无业务断言失败，但不能据此将app组称为通过；没有重跑取绿或混入清理修复。dispatcher1.675s、capabilities1.266s通过。
+- `uv run --frozen --no-sync pyright backend contracts/v2/generate_relation_search_oracle.py contracts/v2/generate_relation_preview_oracle.py tests/contract/test_relation_search_python_oracle.py tests/contract/test_relation_preview_python_oracle.py`：0 errors/warnings。
+- sidecar目录：`go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1`：passed10.329s；`go vet ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities ./cmd/vibetable-pb`：exit0。
+- 九个相关Python文件Ruff check/format check、policy与E2E索引生成一致性检查通过；本次Go测试文件gofmt及Git diff空白检查通过。
+
+本次更新后的产品包未重建，S27历史包证据不充当新端点验收；最终fresh CI与合并后的main
+CI/CD仍须验证。上述清理失败保留待独立判断，不能写成本地全组通过。
