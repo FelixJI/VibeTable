@@ -184,24 +184,53 @@ func (planner *Planner) plan(
 			map[string]any{"expected": *intent.ExpectedDataRevision, "actual": revisions.Data},
 		)
 	}
-	intentHash, err := canonicalHash(intent)
+	now := planner.clock()
+	var before, after *v2.FieldDefinition
+	var relatedChanges []v2.RelatedFieldChange
+	var intentHash string
+	if intent.RelationPairPatch != nil {
+		before, after, err = planner.normalize(ctx, intent, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
+		relatedChanges, err = planner.normalizeRelated(ctx, intent, before, after, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
+		// The same pair patch must get a fresh plan after either frozen table
+		// changes. Use these revisions for both cache lookup and persistence.
+		relatedRevisions := make(map[string]Revisions, len(relatedChanges))
+		for _, related := range relatedChanges {
+			relatedRevisions[related.TableID] = Revisions{
+				Schema: related.ExpectedSchemaRevision, Data: *related.ExpectedDataRevision,
+			}
+		}
+		intentHash, err = canonicalHash(struct {
+			Intent           v2.FieldChangeIntent
+			SourceRevision   Revisions
+			RelatedRevisions map[string]Revisions
+		}{intent, revisions, relatedRevisions})
+	} else {
+		intentHash, err = canonicalHash(intent)
+	}
 	if err != nil {
 		return v2.FieldChangePlan{}, err
 	}
-	now := planner.clock()
 	if existing, err := planner.store.FindActive(ctx, intentHash, now); err != nil {
 		return v2.FieldChangePlan{}, err
 	} else if existing != nil {
 		return *existing, nil
 	}
 
-	before, after, err := planner.normalize(ctx, intent, now)
-	if err != nil {
-		return v2.FieldChangePlan{}, err
-	}
-	relatedChanges, err := planner.normalizeRelated(ctx, intent, before, after, now)
-	if err != nil {
-		return v2.FieldChangePlan{}, err
+	if intent.RelationPairPatch == nil {
+		before, after, err = planner.normalize(ctx, intent, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
+		relatedChanges, err = planner.normalizeRelated(ctx, intent, before, after, now)
+		if err != nil {
+			return v2.FieldChangePlan{}, err
+		}
 	}
 	classes := classifyIntent(intent, before, after)
 	for _, related := range relatedChanges {

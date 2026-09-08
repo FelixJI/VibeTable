@@ -146,6 +146,9 @@ func TestRelationPairPatchRejectsReciprocalDataChange(t *testing.T) {
 	f := newPairUpdateFixture(t, false)
 	one := "one"
 	plan := f.plan(t, v2.RelationPairPatch{ReciprocalCardinality: &one})
+	if repeated := f.plan(t, v2.RelationPairPatch{ReciprocalCardinality: &one}); repeated.PlanID != plan.PlanID {
+		t.Fatal("unchanged pair data did not reuse the frozen plan")
+	}
 	if !plan.CanApply || plan.RelatedChanges[0].ExpectedDataRevision == nil {
 		t.Fatalf("invalid frozen patch: %#v", plan)
 	}
@@ -163,6 +166,25 @@ func TestRelationPairPatchRejectsReciprocalDataChange(t *testing.T) {
 		if field.Relation.Cardinality != "many" {
 			t.Fatal("stale pair plan changed one side")
 		}
+	}
+	replanned := f.plan(t, v2.RelationPairPatch{ReciprocalCardinality: &one})
+	targetRevision, err := f.catalog.Revisions(context.Background(), f.target.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replanned.PlanID == plan.PlanID || replanned.RelatedChanges[0].ExpectedDataRevision == nil ||
+		*replanned.RelatedChanges[0].ExpectedDataRevision != targetRevision.Data {
+		t.Fatal("replanning reused stale target data revision")
+	}
+	if repeated := f.plan(t, v2.RelationPairPatch{ReciprocalCardinality: &one}); repeated.PlanID != replanned.PlanID {
+		t.Fatal("unchanged target data did not reuse the replacement plan")
+	}
+	receipt, err := f.executor.Apply(context.Background(), v2.ApplyRequest{PlanID: replanned.PlanID, PlanHash: replanned.PlanHash, OperationID: "pair_replanned_data", Actor: f.actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Related[0].Definition.Relation.Cardinality != one {
+		t.Fatal("replanned reciprocal cardinality was not applied")
 	}
 }
 
@@ -205,6 +227,9 @@ func TestRelationPairPatchRejectsTargetSchemaChange(t *testing.T) {
 	f := newPairUpdateFixture(t, false)
 	name := "Renamed reverse"
 	plan := f.plan(t, v2.RelationPairPatch{ReciprocalDisplayName: &name})
+	if repeated := f.plan(t, v2.RelationPairPatch{ReciprocalDisplayName: &name}); repeated.PlanID != plan.PlanID {
+		t.Fatal("unchanged pair schema did not reuse the frozen plan")
+	}
 	applyCreatedField(t, context.Background(), f.catalog, f.planner, f.executor, f.target.TableID,
 		fieldDraftForIntegration(t, v2.LogicalText, "Concurrent"), f.actor, "pair_concurrent_field")
 	_, err := f.executor.Apply(context.Background(), v2.ApplyRequest{PlanID: plan.PlanID, PlanHash: plan.PlanHash, OperationID: "pair_stale_schema", Actor: f.actor})
@@ -218,6 +243,24 @@ func TestRelationPairPatchRejectsTargetSchemaChange(t *testing.T) {
 	}
 	if field.DisplayName != f.pair.Related[0].Definition.DisplayName {
 		t.Fatal("stale plan changed reciprocal field")
+	}
+	replanned := f.plan(t, v2.RelationPairPatch{ReciprocalDisplayName: &name})
+	targetRevision, err := f.catalog.Revisions(context.Background(), f.target.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replanned.PlanID == plan.PlanID || replanned.RelatedChanges[0].ExpectedSchemaRevision != targetRevision.Schema {
+		t.Fatal("replanning reused stale target schema revision")
+	}
+	if repeated := f.plan(t, v2.RelationPairPatch{ReciprocalDisplayName: &name}); repeated.PlanID != replanned.PlanID {
+		t.Fatal("unchanged target schema did not reuse the replacement plan")
+	}
+	receipt, err := f.executor.Apply(context.Background(), v2.ApplyRequest{PlanID: replanned.PlanID, PlanHash: replanned.PlanHash, OperationID: "pair_replanned_schema", Actor: f.actor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Related[0].Definition.DisplayName != name {
+		t.Fatal("replanned reciprocal name was not applied")
 	}
 }
 
