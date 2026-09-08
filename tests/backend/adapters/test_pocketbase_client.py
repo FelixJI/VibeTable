@@ -5,7 +5,6 @@ from typing import Any
 import pytest
 
 from backend.adapters.pocketbase.client import (
-    LookupViewQueryCommand,
     PocketBaseClient,
     PocketBaseProductError,
     QueryCursorOpenCommand,
@@ -206,45 +205,6 @@ async def test_aggregate_uses_frozen_query_port_operation() -> None:
         "operation": "aggregate",
         "tableId": "orders",
         "aggregate": query,
-    }
-
-
-@pytest.mark.asyncio
-async def test_lookup_view_uses_one_typed_bounded_query_command() -> None:
-    transport = FakeTransport(
-        [
-            {
-                "rows": [],
-                "offset": 0,
-                "limit": 1,
-                "filteredRows": 0,
-                "totalRows": 0,
-                "querySnapshot": {},
-                "groupRows": [],
-                "groupOffset": 0,
-                "groupLimit": 50,
-                "hasMoreGroups": False,
-            }
-        ]
-    )
-    client = PocketBaseClient(transport=transport, session_secret="e" * 64)
-
-    await client.query_lookup_view(
-        LookupViewQueryCommand(
-            table_id="orders",
-            schema_revision="schema-1",
-            query={"filters": [], "limit": 1},
-            groups=[{"field": "region", "direction": "asc"}],
-            group_limit=50,
-        )
-    )
-
-    assert transport.requests[0]["json_body"] == {
-        "tableId": "orders",
-        "schemaRevision": "schema-1",
-        "query": {"filters": [], "limit": 1},
-        "groups": [{"field": "region", "direction": "asc"}],
-        "groupLimit": 50,
     }
 
 

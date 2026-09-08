@@ -75,3 +75,53 @@ catalog 首次生成存在旧派生 owner 集合与新排除集合的自举依�
 
 本地日志保存在 `build/admit-*` 与 `build/field-settings-catalog-*`；不提交缓存或构建物。
 本项未重建或运行完整产品包，完整构建/E2E 门禁由最终 PR fresh CI 执行，仍为待完成。
+## 同步已合并 Lookup 主线后的增量验证
+
+本段基于原准入提交 `67414ddda53f63ea5b2298a2b5d0379eff60e8e9` 正常合入
+`main@f1fb4a2a906fc1e2d0e3518cea7dde062d18946e`。前述 15 Go 历史结果保持为来源证据；
+当前闭集由正式 policy 生成器确认为 **17 Go / 84 Python / 2 WPF Host，总数 103**。
+新增的两个 Go owner 是 main 已交付的 `lookup.query`、`lookup.valuePage`；
+`field.settings.describe` 仍为 Python/read/workspace/rendererPublic/schema.query。
+与该 main 比较，`sidecar/internal/app` 没有差异，未引入字段描述 Go adapter，也未修改其他五个遗留 typed 入口。
+
+仅出现两个冲突：Go 派生 owner map 由正式生成器重建；Python owner 数量断言从两侧历史数字合成为84。
+Host 自动合并保留 Field Product policy 准入及两类 Lookup Go 路由覆盖。没有重新构建环境或完整产品包。
+
+本次命令与结果（复用既有 UV、Go、.NET cache 和已完成 locked restore）：
+
+```text
+uv run --frozen --no-sync pytest tests/contract/test_product_contracts.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_workspace_rpc_capability_manifest.py tests/backend/adapters/test_pocketbase_product_rpc.py -q --no-cov
+# 69 passed，1.96s
+uv run --frozen --no-sync python -m contracts.v2.product_rpc_capability_policy
+uv run --frozen --no-sync python -m contracts.v2.product_rpc_capability_policy --check
+uv run --frozen --no-sync python -m contracts.v2.generate_product_rpc_catalog --check
+uv run --frozen --no-sync python -m contracts.v2.generate_workspace_rpc_capability_manifest --check
+# 全部 EXIT 0
+uv run --frozen --no-sync pyright --venvpath <共享环境父目录> backend
+# 0 errors
+uv run --frozen --no-sync ruff check tests/contract/test_product_rpc_capability_policy.py
+uv run --frozen --no-sync ruff format --check tests/contract/test_product_rpc_capability_policy.py
+# 通过
+```
+
+Host 使用：
+
+```text
+dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --artifacts-path build/dotnet --filter "FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~HostProductRpcInvokerTests|FullyQualifiedName~ProductRpcCapabilityManifestTests"
+# 67 passed / 0 failed / 0 skipped，223ms
+```
+
+Go 在 sidecar 目录使用：
+
+```text
+go test ./internal/contracts/productcapabilities ./internal/productrpc
+# capability 0.202s PASS；dispatcher 0.697s PASS
+go vet ./internal/contracts/productcapabilities ./internal/productrpc
+# EXIT 0
+```
+
+两份相关 Go capability 文件的 gofmt 检查和 git diff --check 通过。
+精确日志为 `build/catalog-main-sync-{generate,python,host,go,vet,pyright}.log`。
+本次定向检查没有失败；不替代历史首次 Host/Go/Pyright 失败记录。
+原 PR293 CI `34214690110` 的 core 在外层30秒 Node契约 wrapper 超时失败，也保持失败证据；
+本次同步没有修改 Node timeout 或下载/更新逻辑，最终 fresh CI、合并和合并后状态仍待完成。
