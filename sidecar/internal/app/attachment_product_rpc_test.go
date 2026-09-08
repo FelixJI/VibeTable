@@ -333,6 +333,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		schemaDescribeRegistration(app, relation.New(app, nil, nil)),
 		schemaGetTableRegistration(app),
 		schemaListRegistration(schemaapi.New(app)),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(app, manager),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 	)

@@ -35,6 +35,9 @@ gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 wor
 schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
 现行 Product owner 中 `events.reconcile`、`file.list`、`schema.getTable` 与 `schema.list` 已迁到 Go；
 现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page` 按该 policy 直达 Go，Python 不再注册此方法。
+`query.view` 另以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
+参数边界、分组投影与公开错误；Python 不再注册或转发该方法。默认 Host composition 验证
+Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证

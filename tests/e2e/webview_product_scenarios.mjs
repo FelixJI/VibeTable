@@ -1141,7 +1141,115 @@ async function scenario02(page, recorder, _network, runtime) {
     { legacyWrite },
   );
   await acknowledgeExpectedBridgeFailure(page, legacyWrite);
+  await verifyQueryViewGroupingUI(page, recorder);
   return;
+}
+
+async function verifyQueryViewGroupingUI(page, recorder) {
+  const displayName = "E2E Query View Groups";
+  const grouped = await createSimpleTable(page, displayName, "Group");
+  const amount = await createV2Field(page, grouped.tableId, "Amount", "number");
+  const values = [["中文组", 0], ["中文组", 7], ["Cafe\u0301", 3]];
+  const seeded = await applyProductMutation(page, grouped.tableId, values.map(([group, value]) => ({
+    kind: "insert",
+    recordId: null,
+    values: { [grouped.field.physicalName]: group, [amount.physicalName]: value },
+  })), "e2e-query-view-groups");
+  if (seeded.payload?.status !== "applied") {
+    throw new Error(`query.view grouping seed was not committed: ${JSON.stringify(seeded)}`);
+  }
+  await selectTable(page, displayName);
+  await waitForVisibleRowCount(page, 3);
+  await page.evaluate((tableId) => {
+    const capture = { message: null };
+    const listener = (event) => {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      if (message?.type === "table.datasetReady" && message.payload?.table === tableId) {
+        capture.message = message;
+      }
+    };
+    capture.release = () => window.chrome.webview.removeEventListener("message", listener);
+    window.__vibetableE2EQueryViewGroups = capture;
+    window.chrome.webview.addEventListener("message", listener);
+  }, grouped.tableId);
+  let primaryError = null;
+  try {
+    await page.getByTestId("view-group-trigger").click();
+    const groupCard = page.locator(".control-card:visible")
+      .filter({ has: page.getByTestId("view-group-apply") });
+    await groupCard.getByRole("button", { name: "＋ 分组字段", exact: true }).click();
+    await selectVisibleNOption(page, "view-group-field-0", "Group");
+    await page.getByTestId("view-group-apply").click();
+    await page.getByTestId("view-group-results").waitFor({ state: "visible", timeout: 30_000 });
+    await page.getByTestId("toolbar-table-title").click();
+    await page.getByTestId("view-summary-trigger").click();
+    const summaryCard = page.locator(".control-card:visible")
+      .filter({ has: page.getByTestId("view-summary-apply") });
+    await summaryCard.getByRole("button", { name: "＋ 汇总字段", exact: true }).click();
+    const summarySelects = summaryCard.locator(".config-row--summary .n-base-selection");
+    for (const [index, label] of [[0, "Amount"], [1, "求和"]]) {
+      await summarySelects.nth(index).click();
+      const option = page.locator(".n-base-select-option:visible").filter({ hasText: label }).first();
+      await option.click();
+      await option.waitFor({ state: "hidden", timeout: 10_000 });
+    }
+    await page.getByTestId("view-summary-apply").click();
+    await page.getByTestId("toolbar-table-title").click();
+    await page.waitForFunction((tableId) => {
+      const payload = window.__vibetableE2EQueryViewGroups?.message?.payload;
+      if (payload?.table !== tableId || payload.groupRows?.length !== 2) return false;
+      const expected = new Map([["中文组", [2, 7]], ["Cafe\u0301", [1, 3]]]);
+      const groupsMatch = new Set(payload.groupRows.map((row) => row.key?.[0])).size === expected.size
+        && payload.groupRows.every((row) => {
+          const match = expected.get(row.key?.[0]);
+          return row.key?.length === 1 && match && row.count === match[0]
+            && row.summaries?.length === 1 && row.summaries[0] === match[1];
+        });
+      const entries = [...document.querySelectorAll('[data-testid="view-group-results"] > ol > li')];
+      return groupsMatch && entries.length === 2
+        && new Set(entries.map((entry) => entry.querySelector(".group-key")?.textContent?.trim())).size === 2
+        && entries.every((entry) => {
+          const label = entry.querySelector(".group-key")?.textContent?.trim();
+          const name = [...expected.keys()].find((key) => label === `Group: ${key}`);
+          if (!name) return false;
+          const [count, sum] = expected.get(name);
+          return entry.querySelector("b")?.textContent?.trim() === String(count)
+            && entry.querySelector(".group-summary")?.textContent?.trim() === `Amount 合计: ${sum}`;
+        });
+    }, grouped.tableId, { timeout: 30_000 });
+    const dataset = await page.evaluate(() => window.__vibetableE2EQueryViewGroups.message.payload);
+    recorder.check("query.view group controls render authoritative counts and sums including zero and Unicode",
+      dataset.rows?.length === 3 && dataset.groupRows?.length === 2 && dataset.hasMoreGroups === false
+        && dataset.rows.some((row) => row[grouped.field.physicalName] === "中文组"
+          && row[amount.physicalName] === 0),
+      { tableId: grouped.tableId, seededValues: values, groupRows: dataset.groupRows,
+        rendered: await page.getByTestId("view-group-results").innerText() });
+    recorder.check("group datasetReady retains the selection window schema and data revision",
+      dataset.querySnapshot?.table === grouped.tableId
+        && typeof dataset.revision?.schemaRevision === "string"
+        && dataset.revision.schemaRevision.length > 0
+        && Number.isInteger(dataset.revision?.dataRevision)
+        && dataset.querySnapshot.schemaRevision === dataset.revision.schemaRevision
+        && dataset.querySnapshot.dataRevision === dataset.revision.dataRevision,
+      { tableId: grouped.tableId, revision: dataset.revision, querySnapshot: dataset.querySnapshot });
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(() => {
+        window.__vibetableE2EQueryViewGroups?.release();
+        delete window.__vibetableE2EQueryViewGroups;
+      });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(primaryError, cleanupError, "query.view notification capture cleanup failed")) {
+        throw cleanupError;
+      }
+    }
+  }
 }
 
 async function rawBridgeRequest(

@@ -672,6 +672,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 	)
@@ -691,4 +692,11 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		t.Fatal(err)
 	}
 	return mux
+}
+
+type unrelatedViewMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedViewMustNotRun) ExecuteViewQuery(context.Context, string, query.ViewQuery) (query.ViewResult, error) {
+	probe.t.Fatal("unrelated view query must not run")
+	return query.ViewResult{}, nil
 }

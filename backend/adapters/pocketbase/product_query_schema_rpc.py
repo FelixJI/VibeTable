@@ -41,7 +41,6 @@ class ProductQuerySchemaRpc:
             "query.cursorOpen": self._open_query_cursor,
             "query.selectionOpen": self._open_selection_projection,
             "query.cursorFetch": self._fetch_query_cursor,
-            "query.view": self._query_view,
             "query.readRows": self._read_rows,
             "query.validateSnapshot": self._validate_snapshot,
             "mutation.preview": self._preview_mutation,
@@ -138,29 +137,6 @@ class ProductQuerySchemaRpc:
             cursor=_text(params.root, "cursor"),
         )
         return _cursor_window_result(window)
-
-    async def _query_view(self, params: ProductParams) -> JsonObject:
-        result = await self._context.client.execute_view(
-            table_id=_text(params.root, "tableId"),
-            view=_object(params.root, "view"),
-        )
-        page = result.page
-        return _result_object(
-            {
-                "page": {
-                    "rows": page.rows,
-                    "offset": page.offset,
-                    "limit": page.limit,
-                    "filteredRows": page.filtered_rows,
-                    "totalRows": page.total_rows,
-                    "snapshot": page.snapshot,
-                },
-                "groupRows": result.group_rows,
-                "groupOffset": result.group_offset,
-                "groupLimit": result.group_limit,
-                "hasMoreGroups": result.has_more_groups,
-            }
-        )
 
     async def _read_rows(self, params: ProductParams) -> JsonObject:
         raw = params.root
