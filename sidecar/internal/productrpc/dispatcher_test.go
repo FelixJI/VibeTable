@@ -461,12 +461,12 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 19 ||
+	if methods := dispatcher.Methods(); len(methods) != 21 ||
 		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
 		methods[3] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[4].Method != "lookup.list" || methods[5] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[6] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[7].Method != "query.cursorFetch" || methods[8].Method != "query.cursorOpen" || methods[9].Method != "query.page" || methods[10].Method != "query.readRows" ||
-		methods[11].Method != "query.selectionOpen" || methods[12] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[13].Method != "query.view" || methods[14].Method != "relation.previewDelta" || methods[15] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[16].Method != "schema.describe" ||
-		methods[17].Method != "schema.getTable" || methods[18].Method != "schema.list" {
+		methods[4].Method != "lookup.list" || methods[5] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[6] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[7] != (Method{Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope}) || methods[8] != (Method{Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope}) || methods[9].Method != "query.cursorFetch" || methods[10].Method != "query.cursorOpen" || methods[11].Method != "query.page" || methods[12].Method != "query.readRows" ||
+		methods[13].Method != "query.selectionOpen" || methods[14] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[15].Method != "query.view" || methods[16].Method != "relation.previewDelta" || methods[17] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[18].Method != "schema.describe" ||
+		methods[19].Method != "schema.getTable" || methods[20].Method != "schema.list" {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -528,6 +528,14 @@ func generatedGoSidecarRegistrations() []Registration {
 		},
 		{
 			Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{

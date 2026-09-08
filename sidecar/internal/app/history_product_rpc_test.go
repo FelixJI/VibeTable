@@ -345,6 +345,8 @@ func historyReadProductFixture(
 		WorkspaceID: capabilities.WorkspaceID, SessionEpoch: capabilities.SessionEpoch,
 		FenceEpoch: capabilities.FenceEpoch, ClaimID: capabilities.ClaimID,
 	},
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		productrpc.ReconcileRegistration(schemaapi.New(pb)),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),

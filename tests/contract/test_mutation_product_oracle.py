@@ -1,10 +1,8 @@
-"""Exercise the fixed Python mutation boundary without creating the retained artifact."""
+"""Check retained mutation wire without invoking the historical Python owner."""
 
 from __future__ import annotations
 
-import asyncio
-import subprocess
-from dataclasses import replace
+import json
 from pathlib import Path
 
 import pytest
@@ -14,7 +12,7 @@ from contracts.v2 import generate_mutation_product_oracle as oracle
 
 @pytest.fixture(scope="module")
 def captured() -> dict:
-    return asyncio.run(oracle.capture())
+    return json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
 
 
 def test_capture_records_both_real_dispatcher_routes(captured: dict) -> None:
@@ -60,7 +58,11 @@ def test_capture_records_both_real_dispatcher_routes(captured: dict) -> None:
                 "retryable": False,
             }
         elif name == "transport-error":
-            assert entry["response"]["error"]["data"]["code"] == "sidecar.unavailable"
+            assert entry["response"]["error"]["data"] == {
+                "kind": "product_data_unavailable",
+                "message": "mutation unavailable",
+                "code": "sidecar.unavailable",
+            }
         else:
             assert entry["response"]["result"] == entry["authorityFixture"]["response"]
 
@@ -87,58 +89,75 @@ def test_optional_presence_and_nested_json_are_not_normalized(captured: dict) ->
 
 
 @pytest.mark.asyncio
-async def test_transport_protocol_violation_cannot_be_frozen(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original = oracle.RecordingTransport.request
-
-    async def wrong_path(self, method, path, **kwargs):
-        return await original(self, method, "/wrong", **kwargs)
-
-    monkeypatch.setattr(oracle.RecordingTransport, "request", wrong_path)
-    with pytest.raises(RuntimeError, match="protocol violation"):
+async def test_capture_is_retired() -> None:
+    with pytest.raises(RuntimeError, match="capture is retired"):
         await oracle.capture_case(oracle.cases()[0])
+    with pytest.raises(RuntimeError, match="capture is retired"):
+        await oracle.capture()
 
 
-@pytest.mark.parametrize("returncode", [1, 128])
-def test_changed_or_unverifiable_producer_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, returncode: int
+@pytest.mark.parametrize("exists", [False, True])
+def test_write_is_retired_without_creating_or_replacing_original(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exists: bool
 ) -> None:
-    monkeypatch.setattr(
-        oracle.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], returncode),
-    )
-    with pytest.raises(RuntimeError, match="fixed producer"):
-        oracle.require_producer_source()
-
-
-def test_write_once_and_check_never_rewrites(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    target = tmp_path / "oracle.json"
+    target = tmp_path / "original.json"
+    if exists:
+        target.write_text("retained", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
-    assert oracle.main() == 0
-    retained = target.read_bytes()
-    with pytest.raises(FileExistsError):
-        oracle.main()
-    assert target.read_bytes() == retained
-    monkeypatch.setattr("sys.argv", ["oracle", "--check"])
-    assert oracle.main() == 0
-    assert target.read_bytes() == retained
-    original = oracle.cases
-    monkeypatch.setattr(
-        oracle, "cases", lambda: (replace(original()[0], response={"changed": True}),)
-    )
     with pytest.raises(SystemExit) as failure:
         oracle.main()
     assert failure.value.code == 2
-    assert target.read_bytes() == retained
+    assert target.exists() is exists
+    if exists:
+        assert target.read_text(encoding="utf-8") == "retained"
 
 
-def test_committed_oracle_matches_fixed_producer_replay(captured: dict) -> None:
-    assert oracle.OUTPUT.read_text(encoding="utf-8") == oracle.render(captured)
+@pytest.mark.parametrize("arguments", [[], ["--check"]])
+def test_history_check_reads_real_original_without_capture(
+    monkeypatch: pytest.MonkeyPatch, arguments: list[str]
+) -> None:
+    def forbidden_capture(*args, **kwargs):
+        pytest.fail("historical check must not execute Python capture")
+
+    retained = oracle.OUTPUT.read_text(encoding="utf-8")
+    monkeypatch.setattr(oracle, "capture", forbidden_capture)
+    monkeypatch.setattr(oracle, "capture_case", forbidden_capture)
+    monkeypatch.setattr("sys.argv", ["oracle", *arguments])
+    assert oracle.main() == 0
+    assert oracle.OUTPUT.read_text(encoding="utf-8") == retained
+
+
+@pytest.mark.parametrize(
+    "damage", ["producer", "boundary", "inventory", "params", "fixture", "attempt", "response"]
+)
+def test_history_check_rejects_changed_original_without_rewriting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, damage: str
+) -> None:
+    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
+    if damage == "producer":
+        frozen["producerCommit"] = "changed"
+    elif damage == "boundary":
+        frozen["boundary"] = "Go domain qualification"
+    elif damage == "inventory":
+        frozen["cases"].pop()
+    elif damage == "params":
+        frozen["cases"][0]["request"]["params"]["tableId"] = "changed"
+    elif damage == "fixture":
+        frozen["cases"][0]["authorityFixture"]["response"] = {"changed": True}
+    elif damage == "attempt":
+        frozen["cases"][0]["authorityRequests"][0]["path"] = "/wrong"
+    else:
+        frozen["cases"][0]["response"]["id"] = "changed"
+    retained = json.dumps(frozen, ensure_ascii=False)
+    target = tmp_path / "changed.json"
+    target.write_text(retained, encoding="utf-8")
+    monkeypatch.setattr(oracle, "OUTPUT", target)
+    monkeypatch.setattr("sys.argv", ["oracle", "--check"])
+    with pytest.raises(SystemExit) as failure:
+        oracle.main()
+    assert failure.value.code == 2
+    assert target.read_text(encoding="utf-8") == retained
 
 
 def test_complete_typed_shapes_are_recorded_without_projection(captured: dict) -> None:
@@ -153,3 +172,40 @@ def test_complete_typed_shapes_are_recorded_without_projection(captured: dict) -
     assert set(preview["response"]["result"]) == {"Definition", "Operations"}
     assert applied["response"]["result"]["status"] == "applied"
     assert applied["response"]["result"]["affectedRows"][0]["revision"] == "row_0004"
+
+
+@pytest.mark.parametrize(
+    ("variant", "field", "changed"),
+    [
+        ("transport-error", "kind", "product_data_error"),
+        ("transport-error", "message", "changed"),
+        ("transport-error", "code", "changed"),
+        ("transport-error", "extra", False),
+        ("transport-error", "remove-message", None),
+        ("public-domain-error", "kind", "product_data_unavailable"),
+        ("public-domain-error", "message", "changed"),
+        ("public-domain-error", "code", "changed"),
+        ("public-domain-error", "path", None),
+        ("public-domain-error", "details", {"reason": "changed"}),
+        ("public-domain-error", "retryable", 0),
+    ],
+)
+def test_history_check_rejects_changed_public_error_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variant: str, field: str, changed: object
+) -> None:
+    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
+    entry = next(item for item in frozen["cases"] if item["name"] == f"mutation.apply:{variant}")
+    data = entry["response"]["error"]["data"]
+    if field == "remove-message":
+        del data["message"]
+    else:
+        data[field] = changed
+    retained = json.dumps(frozen, ensure_ascii=False)
+    target = tmp_path / "changed-error.json"
+    target.write_text(retained, encoding="utf-8")
+    monkeypatch.setattr(oracle, "OUTPUT", target)
+    monkeypatch.setattr("sys.argv", ["oracle", "--check"])
+    with pytest.raises(SystemExit) as failure:
+        oracle.main()
+    assert failure.value.code == 2
+    assert target.read_text(encoding="utf-8") == retained

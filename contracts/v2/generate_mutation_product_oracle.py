@@ -1,36 +1,30 @@
-"""Capture the fixed Python mutation Product wire using scripted authority HTTP."""
+"""Check retained mutation inputs and wire after closing historical Python capture."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import inspect
 import json
-import subprocess
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
-from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseProductError
-from backend.adapters.pocketbase.product_query_schema_rpc import ProductQuerySchemaRpc
-from backend.adapters.pocketbase.product_relation_lookup_file_rpc import (
-    ProductRelationLookupFileRpc,
-)
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.product_rpc_support import _object, _result_object
-from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, JsonValue
-from backend.rpc.dispatcher import RpcDispatcher
-from backend.rpc.error_registry import RpcErrorRegistry
-from backend.rpc.messages import RpcRequest
-from backend.rpc.product_errors import register_product_rpc_errors
+from backend.contracts.product_rpc import JsonObject, JsonValue
 
 PRODUCER_COMMIT = "38098da214a0fb33bb6df1fd0707b1ba0b4ac754"
 METHODS = ("mutation.preview", "mutation.apply")
 OUTPUT = Path(__file__).with_name("mutation-product-python-oracle.json")
 CAPTURE_ROOT = Path(__file__).resolve().parents[2]
+BOUNDARY = "Fixed Python dispatcher and adapter; scripted authority HTTP, not mutation domain or product qualification"
+CAPTURE_CLOSED = "Python mutation capture is retired; preserve the frozen producer"
+PARAM_REJECTIONS = frozenset(
+    {
+        "missing-required",
+        "null-operations",
+        "numeric-revision",
+        "empty-digest",
+        "unknown-param",
+        "nested-credential",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -204,198 +198,140 @@ def cases() -> tuple[Case, ...]:
     return tuple(entries)
 
 
-class RecordingTransport:
-    """Record every attempt and keep protocol failures outside the public RPC envelope."""
-
-    def __init__(self, case: Case) -> None:
-        self.case = case
-        self.requests: list[JsonObject] = []
-        self.violations: list[str] = []
-
-    async def request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue] | None = None,
-        json_body: JsonValue = None,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        self.requests.append(
-            {
-                "method": method,
-                "path": path,
-                "query": dict(query) if query is not None else None,
-                "body": json_body,
-                "expectedStatus": list(expected_status),
-            }
-        )
-        params = self.case.params
-        try:
-            assert isinstance(params, dict)
-            assert len(self.requests) == 1
-            assert method == "POST"
-            assert path == "/api/vibetable/v1/mutations/" + self.case.method.split(".")[1]
-            assert query is None
-            assert headers == {"X-VibeTable-Session": "oracle-only"}
-            assert tuple(expected_status) == (200,)
-            assert json_body == params
-        except AssertionError:
-            self.violations.append(f"attempt {len(self.requests)}: {method} {path}")
-            raise
-        if self.case.failure == "domain":
-            raise PocketBaseProductError(
-                status=409,
-                payload={
-                    "contract": "vibetable.schema.v2",
-                    "code": "mutation.revision_conflict",
-                    "path": "expectedRevision",
-                    "message": "mutation revision is stale",
-                    "details": {"reason": "stale_revision"},
-                    "retryable": False,
-                    "occurredAt": "2026-09-08T00:00:00Z",
-                },
-            )
-        if self.case.failure == "transport":
-            raise PocketBaseTransportError("mutation unavailable")
-        return self.case.response
-
-    async def request_multipart(
-        self,
-        path: str,
-        *,
-        json_body: Mapping[str, JsonValue],
-        uploads: Sequence[tuple[str, str]],
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        self.requests.append({"method": "MULTIPART", "path": path})
-        self.violations.append("mutation must not upload")
-        raise AssertionError(self.violations[-1])
-
-    async def download_to_file(
-        self,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue],
-        target_path: str,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-        maximum_bytes: int = 2 * 1024 * 1024 * 1024,
-    ) -> int:
-        self.requests.append({"method": "DOWNLOAD", "path": path})
-        self.violations.append("mutation must not download")
-        raise AssertionError(self.violations[-1])
-
-
-def require_producer_source() -> None:
-    for symbol in (
-        PocketBaseProductRpc,
-        ProductQuerySchemaRpc,
-        ProductRelationLookupFileRpc,
-        PocketBaseClient,
-        PocketBaseProductError,
-        PocketBaseTransportError,
-        *(PRODUCT_RPC_REGISTRY[method] for method in METHODS),
-        RpcDispatcher,
-        RpcRequest,
-        RpcErrorRegistry,
-        register_product_rpc_errors,
-        _object,
-        _result_object,
-        current_owner_methods,
-    ):
-        module = inspect.getmodule(symbol)
-        if module is None:
-            raise RuntimeError("Cannot locate fixed producer module")
-        source = Path(inspect.getfile(module)).resolve()
-        if not source.is_relative_to(CAPTURE_ROOT / "backend"):
-            raise RuntimeError(
-                "Capture requires this checkout's backend; set PYTHONPATH to its root"
-            )
-    try:
-        difference = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(CAPTURE_ROOT),
-                "diff",
-                "--quiet",
-                "--no-ext-diff",
-                "--no-textconv",
-                PRODUCER_COMMIT,
-                "--",
-                "backend",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError("Cannot verify fixed producer source") from error
-    if difference.returncode != 0:
-        raise RuntimeError("Capture source differs from fixed producer or Git verification failed")
-
-
 async def capture_case(case: Case) -> JsonObject:
-    require_producer_source()
-    transport = RecordingTransport(case)
-    service = PocketBaseProductRpc(
-        client=PocketBaseClient(transport=transport, session_secret="oracle-only"),
-        transport=transport,
-        session_secret="oracle-only",
-    )
-    dispatcher = RpcDispatcher()
-    register_product_rpc_errors()
-    dispatcher.register(
-        case.method, partial(service.invoke, case.method), PRODUCT_RPC_REGISTRY[case.method]
-    )
-    request: JsonObject = {
-        "jsonrpc": "2.0",
-        "id": case.name,
-        "method": case.method,
-        "params": case.params,
-    }
-    response = await dispatcher.dispatch(request)
-    if transport.violations:
-        raise RuntimeError(
-            "Capture authority protocol violation: " + "; ".join(transport.violations)
-        )
-    return {
-        "name": case.name,
-        "request": request,
-        "authorityFixture": {"response": case.response, "failure": case.failure},
-        "authorityRequests": list(transport.requests),
-        "response": response,
-    }
+    raise RuntimeError(CAPTURE_CLOSED)
 
 
 async def capture() -> JsonObject:
-    return {
-        "producerCommit": PRODUCER_COMMIT,
-        "boundary": "Fixed Python dispatcher and adapter; scripted authority HTTP, not mutation domain or product qualification",
-        "cases": [await capture_case(case) for case in cases()],
-    }
+    raise RuntimeError(CAPTURE_CLOSED)
 
 
-def render(value: JsonObject) -> str:
+def validate_frozen_inputs() -> None:
+    """Check historical inputs and wire invariants, not current Python or Go parity."""
+    frozen: JsonObject = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    if not isinstance(frozen, dict) or frozen.get("producerCommit") != PRODUCER_COMMIT:
+        raise ValueError("Frozen mutation producer changed")
+    if frozen.get("boundary") != BOUNDARY:
+        raise ValueError("Frozen mutation boundary changed")
+    if set(frozen) != {"producerCommit", "boundary", "cases"}:
+        raise ValueError("Frozen mutation metadata changed")
+    entries = frozen.get("cases")
+    inputs = cases()
+    if not isinstance(entries, list) or len(entries) != len(inputs) or len(inputs) != 32:
+        raise ValueError("Frozen mutation case inventory changed")
+    for entry, case in zip(entries, inputs, strict=True):
+        if not isinstance(entry, dict) or set(entry) != {
+            "name",
+            "request",
+            "authorityFixture",
+            "authorityRequests",
+            "response",
+        }:
+            raise ValueError("Invalid frozen mutation entry")
+        variant = case.name.split(":", 1)[1]
+        attempts: list[JsonValue] = []
+        if variant not in PARAM_REJECTIONS and variant != "nonobject-params":
+            attempts.append(
+                {
+                    "method": "POST",
+                    "path": "/api/vibetable/v1/mutations/" + case.method.split(".")[1],
+                    "query": None,
+                    "body": case.params,
+                    "expectedStatus": [200],
+                }
+            )
+        expected: JsonObject = {
+            "name": case.name,
+            "request": {
+                "jsonrpc": "2.0",
+                "id": case.name,
+                "method": case.method,
+                "params": case.params,
+            },
+            "authorityFixture": {"response": case.response, "failure": case.failure},
+            "authorityRequests": attempts,
+        }
+        actual = {key: entry[key] for key in expected}
+        if render(actual) != render(expected):
+            raise ValueError(f"Frozen mutation inputs or attempts changed: {case.name}")
+        response = entry["response"]
+        if (
+            not isinstance(response, dict)
+            or response.get("jsonrpc") != "2.0"
+            or response.get("id") != case.name
+        ):
+            raise ValueError(f"Frozen mutation response envelope changed: {case.name}")
+        # Assert retained outcomes without generating replacement expectations.
+        error_case = variant in PARAM_REJECTIONS or variant in {
+            "nonobject-params",
+            "null-response",
+            "array-response",
+            "public-domain-error",
+            "transport-error",
+        }
+        if not error_case:
+            if set(response) != {"jsonrpc", "id", "result"} or render(response["result"]) != render(
+                case.response
+            ):
+                raise ValueError(f"Frozen mutation result changed: {case.name}")
+            continue
+        error = response.get("error")
+        if set(response) != {"jsonrpc", "id", "error"} or not isinstance(error, dict):
+            raise ValueError(f"Frozen mutation error envelope changed: {case.name}")
+        code, message = (
+            (-32602, "Invalid params")
+            if variant in PARAM_REJECTIONS
+            else (-32600, "Invalid Request")
+            if variant == "nonobject-params"
+            else (-32603, "Internal error")
+            if variant in {"null-response", "array-response"}
+            else (-32150, "Product data error")
+            if variant == "public-domain-error"
+            else (-32150, "Product data unavailable")
+        )
+        keys = {"code", "message", "data"} if code == -32150 else {"code", "message"}
+        if set(error) != keys or error.get("code") != code or error.get("message") != message:
+            raise ValueError(f"Frozen mutation public error changed: {case.name}")
+        if code == -32150:
+            # Fixed assertions over the original capture, never regenerated output.
+            expected_data: JsonObject = (
+                {
+                    "kind": "product_data_error",
+                    "message": "mutation revision is stale",
+                    "code": "mutation.revision_conflict",
+                    "path": "expectedRevision",
+                    "details": {"reason": "stale_revision"},
+                    "retryable": False,
+                }
+                if variant == "public-domain-error"
+                else {
+                    "kind": "product_data_unavailable",
+                    "message": "mutation unavailable",
+                    "code": "sidecar.unavailable",
+                }
+            )
+            if render(error.get("data")) != render(expected_data):
+                raise ValueError(f"Frozen mutation public error data changed: {case.name}")
+
+
+def render(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--write", action="store_true", help="Create once; never replace original")
-    modes.add_argument("--check", action="store_true", help="Compare full capture (default)")
+    modes.add_argument("--write", action="store_true", help="Retired; always rejected")
+    modes.add_argument(
+        "--check", action="store_true", help="Validate retained inputs and wire (default)"
+    )
     args = parser.parse_args()
     if args.write:
-        result = render(asyncio.run(capture()))
-        with OUTPUT.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(result)
-    elif OUTPUT.read_text(encoding="utf-8") != render(asyncio.run(capture())):
-        parser.error("Original mutation differs; inspect, do not regenerate")
+        parser.error(CAPTURE_CLOSED)
+    try:
+        validate_frozen_inputs()
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
     return 0
 
 
