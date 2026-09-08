@@ -38,7 +38,7 @@ Web 从真实表头菜单进入字段设置，装载对端、呈现双方冻结�
 - 四组件 fresh；Node/Host exit 0；pageErrors、异常 bridge、pending 均为 0；进程、端口、lease 与最终清理全部通过。
 - S27 在较早生产源码 28900284712adfffbbea3df7ecc2609aba15047a 上通过；未在 34835708 重跑，不混用源码归属。
 
-首轮真实执行揭示 reciprocal presence 缺失，已拆为独立 PR #301；后续执行揭示测试与生产同时使用错误的表头 data-field 属性，修复为真实 tabulator-field。失败报告均保留，没有弱化断言或通过 RPC 旁路模拟表头操作。最终截图仍显示原始 ID，故展示消费资格继续保持 Open。
+首轮真实执行揭示 reciprocal presence 缺失，已拆为独立 PR #301；后续执行揭示测试与生产同时使用错误的表头 data-field 属性，修复为真实 tabulator-field。失败报告均保留，没有弱化断言或通过 RPC 旁路模拟表头操作。[最终真实截图](../assets/screenshots/vibetable-relation-pair-update.png)仍显示原始 ID，故展示消费资格继续保持 Open。
 
 ## 尚未完成
 
