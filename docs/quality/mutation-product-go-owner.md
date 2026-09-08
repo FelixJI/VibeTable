@@ -26,4 +26,14 @@ Go 保留闭集根 DTO、Unicode scalar、通用 JSON 深度/数值/secret 与�
 
 Standards 未发现确定违例，指出严格 fixture 装配多处重复的维护性建议；本意图保留现有装配，不混入独立重构。Spec 发现历史 error.data 漂移检查不足，已修复并独立增量复审为 0 新问题。新增 owner 集合与本文已完成两轴独立增量复审，均为 0 个确定问题。
 
-当前尚未完成最新端点的实际打包 WebView2 场景、完整 fresh CI、squash merge 及 main CI/CD。既有 Host 构建的场景证据不能直接冒充本 owner 端点的实际运行。实际产品资格至少需覆盖普通编辑、过期冲突，以及仍经 Python 工作流进入原 Kernel 的相邻路径。
+当前尚未完成完整 fresh CI、squash merge 及 main CI/CD；以下最新实际包验证已完成，旧 Host 构建证据不作为本 owner 端点的实际运行。
+## 最新实际产品证据
+
+冻结生产来源 `9d6af2efe0330cf2823bf0eb21e01b1181e8ce21`，`uv run --frozen --no-sync python scripts/build_next.py` 完整构建 EXIT0。构建包为 `dist/VibeTable.Next`，sidecar build-info commit 为 `9d6af2efe033`，四组件 freshness 全通过；没有复用旧 0.5.0 包。
+
+命令：`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 02-all-field-schema --scenario 04-json-round-trip --scenario 08-stale-conflict --scenario 11-plugin-mutation`。
+
+运行 `20260908T165809Z`：4/4 PASS、0 failed、0 skipped。S02 普通编辑与撤销 13,217ms/18断言；S04 JSON 编辑、粘贴、导入导出 9,968ms/20断言；S08 过期冲突 4,893ms/8断言；S11 插件授权/拒绝 8,013ms/14断言。全部 pageErrors、异常 bridge failures 与 pending 为空，node/Host exit0，无残留进程，端口释放、owner lease 与最终清理均 PASS。
+
+日志 `build/mutation-owner-product-build.log`、`build/mutation-owner-product-e2e.log`；完整报告 `build/qa/product-e2e/20260908T165809Z/product-e2e-report.json`。该证据覆盖当前产品编辑和保留的 Python 工作流，不扩大为所有取消/崩溃故障注入或完整发布资格。
+补充相邻装配验证：`go test -race ./internal/app -run Product -count=1` 完成于271.748秒，但整体 FAIL。唯一报告失败为 `TestLookupListProductHTTPKeepsSemanticBudgetAcrossWireEscaping` 的 `TempDir RemoveAll cleanup: directory is not empty`；未报告 Product 业务断言失败。日志 `build/mutation-owner-product-app-race.log` 保留，不重试、不删除清理检查，也不将该运行写为 PASS。该清理问题与此前本地 Go 阶段同类，完整远端门禁仍负责最终验收。

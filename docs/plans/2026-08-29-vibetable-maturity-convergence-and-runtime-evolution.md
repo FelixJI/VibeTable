@@ -490,7 +490,7 @@ flowchart LR
 字段描述声明 `workspace`、`rendererPublic`、`schema.query` 和只读 effect，另外五个 Field 方法保持原路由。
 本地准入与两个 owner 增量分别保留原件和验证记录，最终组合须完整移除相应 Python handler、
 维持无 fallback 的 Host 接线，并以同一构建完成 S02/S03/S30、fresh CI 和 squash 后验证。
-单独准入测试不能替代 Go producer 或产品资格；当前组合尚未远端验收完成。
+单独准入测试不能替代 Go producer 或产品资格。PR293 已 squash 合并为 `38098da2`，对应 main CI34241302594 与 CD34246280823 成功，未意外发布。
 详见 [字段描述准入历史](../quality/field-settings-product-catalog.md)、
 [字段描述 Go 资格](../quality/field-settings-describe.md) 与
 [快照校验资格](../quality/query-validate-snapshot.md)。
@@ -519,6 +519,9 @@ flowchart LR
 - 每次只迁一个可回滚能力组；
 - 旧 Python route 在切换 PR 内删除或明确标记为下一紧邻 PR 的删除项，不长期双轨。
 
+当前 Mutation preview/apply 已形成完整本地纵切：21 Go / 80 Python / 2 Host，历史 Python oracle 原件保留并停止重新捕获；根 DTO、领域错误和 workspace 写门禁继续分层。最新 `9d6af2ef` 构建的真实 S02/S04/S08/S11 4/4 通过，完整 Python quality 1800 passed、1 skipped、coverage91.36%。该记录不是 L5 全部完成声明。
+
+迁移验证发现现有 REST 同键重放会重复写 proof，已作为独立 runtime 修复 PR298 处理；Mutation 远端交付依赖该修复、PR297 Go 恢复 producer 和完整 Host 消费者的实际 main 合并结果。当前不提前宣称 fresh CI 或 squash 完成。详见 [Mutation Go owner 资格](../quality/mutation-product-go-owner.md) 与 [独立重放资格](../quality/workspace-mutation-replay.md)。
 ### L6：Host-native 能力归 C#
 
 从 Python composition root 中识别并迁移：
