@@ -42,7 +42,7 @@ Web 从真实表头菜单进入字段设置，装载对端、呈现双方冻结�
 
 ## 尚未完成
 
-reciprocal presence #301 已完成 main CI/CD 闭环；字段设置修复 #299 由 #302 集成、标签消费 #303 仍待合并。本分支还须同步最新实际 main、保留独立pair意图并完成最终审查、fresh required CI、squash 与 main CI/CD。不声明全部关系四种基数、完整生命周期、10k/100k 或恢复资格已完成。
+reciprocal presence #301 已完成 main CI/CD 闭环；字段设置修复与标签消费的原#302/#303均已各自通过CI，目前由统一端点#304接续fresh CI，仍待合并。本分支还须同步最新实际 main、保留独立pair意图并完成最终审查、fresh required CI、squash 与 main CI/CD。不声明全部关系四种基数、完整生命周期、10k/100k 或恢复资格已完成。
 
 ## 双端展示消费集成资格
 
@@ -59,3 +59,17 @@ reciprocal presence #301 已完成 main CI/CD 闭环；字段设置修复 #299 �
 报告build/qa/product-e2e/20260908T201209Z/product-e2e-report.json，执行日志build/relation-pair-labels-product-e2e-corrected.log。首次S27参数误写被配置校验拒绝、未启动产品，原日志保留，不计场景运行。下图是该运行S06结束后的真实Grid；后续前置合并与新main资格仍待完成，不把集成包视作已发布版本。
 
 ![双端配置消费后的真实Grid](../assets/screenshots/vibetable-relation-pair-update.png)
+
+## 同步 Host 与统一候选后的当前资格
+
+当前实际源码68dc17758a2093692170eeebf93afc0060a3ec72，正常同步#304候选5e978159及其中已合并的Host主线。没有改变pair计划/事务或S06双端显示断言；两轴合并交界审查无新增确定问题。本节是最新来源，上述运行保持各自历史源码归属。
+
+- `npm run test:coverage`：174文件1532 PASS、59.42秒，全部既有门禁通过，日志build/relation-pair-qualified-web-coverage.log。
+- `uv run --frozen --no-sync python scripts/build_next.py`：完整构建退出0，sidecar build-info为0.5.1/68dc17758a20，四组件fresh，日志build/relation-pair-qualified-product-build.log。
+- `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 06-relation-fanout --scenario 27-relation-target-search --scenario 28-relation-delta-preview`：run20260908T205721Z，3/3 PASS、0 skip。
+- S06为20.960秒/17断言；S27为5.930秒/11断言；S28为5.994秒/10断言。双端配置消费、Picker搜索、标签刷新与原子性/拒绝契约均通过。
+- 三场景Node/生命周期Host退出0，pageErrors、bridge failures/acknowledgedFailures/pending均0；成员/后代为空，端口、lease和最终清理通过。
+
+报告build/qa/product-e2e/20260908T205721Z/product-e2e-report.json，执行日志build/relation-pair-qualified-product-e2e.log。等待#304实际main后再完成独立pair PR的fresh CI与合并闭环；当前不将定向包验证提升为完整Relation/RR2资格。
+
+![当前源码双端标签消费后的真实Grid](../assets/screenshots/vibetable-relation-pair-current.png)
