@@ -52,8 +52,12 @@ uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py 
 
 正常提交的 Ruff format/check、version consistency、package contract hooks 均 passed。
 
-## 串行 owner 依赖整合（进行中）
+## 串行 owner 依赖整合
 
 已在 query 分支本地合入 valuePage 独立候选 303e08695b84973f018b22eef34bdf9aaf58a050，远端仍按分页 PR291 → valuePage → query 单独意图依次交付。冲突保留两个 Go registration 与双方完整八字段请求；生成能力和严格 process/dispatcher 顺序共17项。Python 两个专属路径同时移除，共享 relation export 的 query_lookups 与输入 revision helper 保留。两份39例原 JSON及两套Go生产投影均无改动；HTTP夹具仅补齐互补 registration。
 
-整合 Python 注册/两原件/共享 export 契约142 passed（1.36s），日志 build/lookup-owners-python-integration.log；同八类 Host 测试160 passed、0 failed/skipped（17s），使用 --no-restore 和既有 build/dotnet，日志 build/lookup-owners-host.log、TRX build/host-tests/lookup-owners-host.trx。Go整合 race 单次全通过：HTTP156.449s、注册1.721/1.298s、真实sidecar进程12.197s，日志 build/lookup-query-value-page-merge-{http,registration,process}.log；Pyright 0 errors，Ruff及生成policy/index/双原件 --check 均通过。双轴审查及17-owner真实构建物S29 pending；前述16-owner S29成功不替代本整合端点。
+整合 Python 注册/两原件/共享 export 契约142 passed（1.36s），日志 build/lookup-owners-python-integration.log；同八类 Host 测试160 passed、0 failed/skipped（17s），使用 --no-restore 和既有 build/dotnet，日志 build/lookup-owners-host.log、TRX build/host-tests/lookup-owners-host.trx。Go整合 race 单次全通过：HTTP156.449s、注册1.721/1.298s、真实sidecar进程12.197s，日志 build/lookup-query-value-page-merge-{http,registration,process}.log；Pyright 0 errors，Ruff及生成policy/index/双原件 --check 均通过。本整合已通过独立 Standards/Spec，五个 Host 作者文件由主代理单独 Spec 复核；无新增未解决问题，既有 P3 局部重复保持接受。前述16-owner S29成功不替代本整合端点，后续17-owner结果如下。
+
+整合提交 `247a227059398aace7af2ec99b34de6e064db482` 正常四项 hooks 通过。对此精确生产源码再次执行完整 `uv run --frozen --no-sync python scripts/build_next.py`（EXIT0）与同一真实 S29 入口，报告 build/qa/product-e2e/20260908T091246Z/product-e2e-report.json：1/1 passed、0 failed/skipped、7988ms，九项断言全部成功。两次 lookup.query 和一次 lookup.valuePage 均成功往返（code=null），现在两者均按生成policy走Go。包审计/四组件freshness通过；bridge failures/pending、pageErrors为空，Host退出0、成员/后代/剩余PID为空、端口释放、owner lease/final cleanup全通过。日志 build/lookup-owners-product-build.log 和 build/lookup-owners-product-s29.log。此前16-owner报告仍保留，未因文档变更重复构建。
+
+当前待完成的是依赖PR逐个合并、最终main同步及每个独立owner PR的fresh CI/squash/main CI/CD，不能把本地资格写成远端已验收。
