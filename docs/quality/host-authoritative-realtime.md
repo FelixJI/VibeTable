@@ -69,3 +69,16 @@ PR293 squash `38098da214a0fb33bb6df1fd0707b1ba0b4ac754` 后，本分支正常合
 下图来自该构建的实际 S10 运行 `20260908T150503Z`：sidecar 重连与 backend recovery 后的数据出现在同一表页，当前 selection 保留。图片仅展示运行结束界面，故障过程及去重结论以对应报告和契约测试为准。
 
 ![真实 WebView2 恢复后的表页](../assets/screenshots/vibetable-go-realtime-recovery.png)
+
+## PR #300 首轮 CI 筛选恢复修正
+
+CI 34260106715 的 release.smoke 为 3/4 PASS、S16 FAIL。诊断 trace 证明 North 已选中，随后恢复重载的 list/manifest/read 成功，但 receiveWorkspace 清空会话筛选，最终等待仅显示 North 超时。先前 DASHBOARD_CANCELLED 批次并非直接根因；入站恢复帧未记录，不对其具体触发原因作进一步断言。
+
+仅同 Dashboard 的自动恢复接收最新兼容会话筛选；保留响应到达时的值，等待期间改选/清空不会被旧值覆盖，移除/改型/改绑定的筛选丢弃旧值。普通加载与 epoch 重置仍清空。此修复不包含图表 selection 联动状态的全面保留，不延长 S16 超时或修改其断言。
+
+- North 保持及等待期间改选 South：旧实现两项 RED；最终 `node node_modules/vitest/vitest.mjs run src/services/dashboardService.test.ts` 36 PASS（2.49s）。
+- `node node_modules/vitest/vitest.mjs run`：174 文件、1497 PASS（53.24s）。
+- `node node_modules/vue-tsc/bin/vue-tsc.js --noEmit`、diff check：PASS。
+- Standards / Spec 独立增量各 0 个确定问题；真实最新包 S16 与新 fresh CI 待完成。
+
+原 CI 日志及完整 prepare 证据保留在主工作区 build/pr300-ci-34260106715-*；本地日志为本工作树 build/dashboard-recovery-filter-*.log。
