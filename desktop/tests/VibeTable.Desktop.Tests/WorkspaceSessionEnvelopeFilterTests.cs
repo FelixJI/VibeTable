@@ -207,6 +207,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [TestMethod]
     [DataRow("query.page")]
     [DataRow("lookup.valuePage")]
+    [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     public async Task GoRouteSettlesEpochCancellationWithoutSuccess(string method)
     {
@@ -256,6 +257,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [TestMethod]
     [DataRow("query.page")]
     [DataRow("lookup.valuePage")]
+    [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation(string method)
     {
@@ -775,7 +777,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual("BAD_WORKSPACE_SCOPE", payload.GetProperty("code").GetString());
     }
     [TestMethod]
-    [DataRow("relation.searchTargets", "{\"relationId\":\"records.owner\"}")]
+    [DataRow("lookup.query", "{\"contract\":\"vibetable.lookup-query.v1\",\"collection\":\"records\",\"fieldRefs\":[\"owner.name\"],\"query\":{},\"requestGeneration\":0,\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\"}") ]
     public async Task RelationReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
     {
         using var fixture = new SessionFixture();
@@ -817,11 +819,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    [DataRow("lookup.valuePage",
-        "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
-        + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
-        + "\"offset\":0,\"limit\":10}")]
-    [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\"}")]
+    [DataRow("lookup.query", "{\"contract\":\"vibetable.lookup-query.v1\",\"collection\":\"records\",\"fieldRefs\":[\"owner.name\"],\"query\":{},\"requestGeneration\":0,\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\"}") ]
+    [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\",\"sourceItemId\":\"record-1\",\"expectedSchemaRevision\":\"schema-1\",\"adds\":[],\"removes\":[],\"idempotencyKey\":\"preview-test\"}")]
     public async Task RelationReadRejectsRetiredScopeBeforeGateway(string type, string payload)
     {
         using var fixture = new SessionFixture();
@@ -1003,6 +1002,12 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             {
                 Type = method,
                 Payload = JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 }),
+            }
+            : method == "relation.searchTargets"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.SerializeToElement(new { relationId = "records.owner" }),
             }
             : method == "relation.previewDelta"
             ? request with

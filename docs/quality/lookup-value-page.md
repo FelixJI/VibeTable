@@ -1,6 +1,8 @@
 # Lookup 来源分页迁移资格
 
 本切片仅将 `lookup.valuePage` 从 Python BFF 转译迁至现有 Go relation authority。
+当前已整合 main `6e25fd033697c57a4ca113caf98c90293b892548`，闭集16 Go /84 Python /2 native；
+lookup.valuePage、relation.searchTargets、relation.previewDelta均归Go，lookup.query仍归Python。
 初始实施基线为 main `a19ccd5366d62be6338f628d06b6c5a37484f20f`，清单为14 Go /86 Python /2 native；
 在该基线的分支中 search/preview 仍归 Python。后续最新 main 同步与最终包资格单独记录，
 不能把本地来源结果当成另一端点的通过证据。
@@ -56,8 +58,8 @@ Host复用已有Go forwarder与epoch lease，保留完整八字段payload、scop
 ## 整合 main 3f665 的增量
 
 来源提交 `f32290357d55dd5fd66b0378b197262e02e1b28f` 承接 main
-`3f665176e16e00d168edba98b40ac2ae26174c24` 的 preview 迁移。当前为15 Go /85 Python /2 native，
-lookup.valuePage 与 relation.previewDelta 都归 Go，relation.searchTargets 仍归 Python。
+`3f665176e16e00d168edba98b40ac2ae26174c24` 的 preview 迁移。当时为15 Go /85 Python /2 native，
+lookup.valuePage 与 relation.previewDelta 都归 Go，relation.searchTargets 当时仍归 Python。
 两方法生产 adapter 与原始39/37案例保持来源一致；15项严格注册完整，两类真实HTTP fixture
 互加不可调用guard。Host保留 lookup 八字段与 preview 六字段，以及两个方法各自的错误、
 epoch取消/迟到结果断言；仍属Python的search及field.settings.describe入口保持合法。
@@ -87,10 +89,10 @@ UI与边界组合来源 `7092f0d35e221c94e00cb0878e82ed7f47a00f8d` 的实际S29
 两表记录/revision不变。包审计、四组件新鲜度、Host退出0、成员/后代为空、端口释放和清理通过。
 **该来源的lookup.valuePage仍归Python，不是本Go owner端点的产品资格。**
 
-当前在 `3b477257` 正常合入依赖 `1a4160193ae6db3ba19c8177340ec9986a2ee308`，
+依赖整合阶段在 `3b477257` 正常合入 `1a4160193ae6db3ba19c8177340ec9986a2ee308`，
 仅承接UI布局、精确只读POST边界、相关测试及资格文档/截图，共八个依赖文件，均与依赖来源一致。
-清单仍为15 Go /85 Python /2 native；lookup生产adapter、39原始案例、owner接线及S29脚本未改。
-当前组合新包/S29和fresh CI尚待执行，未复用Python owner的通过结论。
+当时清单为15 Go /85 Python /2 native；lookup生产adapter、39原始案例、owner接线及S29脚本未改。
+该组合新包/S29未执行，未复用Python owner的通过结论。
 
 本次组合聚焦验证：sidecar目录执行
 `go test -race ./internal/app -run '^TestWorkspaceV2(LookupValuePage|WriteBoundary|WriteRejection)' -count=1`，
@@ -98,3 +100,24 @@ passed7.750s（`lookup-dependency-boundary-race.log`）；
 `uv run --frozen --no-sync python -m pytest tests/contract/test_product_e2e_capability_index.py tests/e2e/test_product_e2e_runner.py -q --no-cov`，
 150 passed8.59s（`lookup-dependency-runner.log`）。policy与E2E索引生成一致性检查通过。
 未重复此前全部Go/.NET测试，未在本次检查中构建产品包。
+
+## 整合 main 6e25 的增量
+
+依赖组合保存为 `4f54033906c58b2b662b6ed22674191d815135ce` 后，正常承接 main6e25
+的search迁移，形成16项Go注册。lookup39、search30、preview37原案例与三方法生产adapter
+保持来源一致，全部HTTP夹具补齐交叉不可调用guard。Host保留三种真实payload、公开错误映射、
+epoch取消/迟到结果和Web scope；Python生命周期读取使用lookup.query完整八字段，
+field.settings.describe迟到Web入口不变。S26/S27/S28/S29并存，历史23场景source/run未改，gap为4。
+
+本次日志前缀 `lookup-search-main-sync-`，仅运行受影响增量：
+
+- `uv run --frozen --no-sync python -m pytest tests/backend/test_main_product_data.py tests/backend/adapters/test_pocketbase_product_rpc.py tests/backend/adapters/test_pocketbase_client.py tests/backend/adapters/test_pocketbase_product_rpc_coverage.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_lookup_value_page_python_oracle.py tests/contract/test_relation_search_python_oracle.py tests/contract/test_relation_preview_python_oracle.py tests/contract/test_product_e2e_capability_index.py tests/e2e/test_product_e2e_runner.py -q --no-cov`：256 passed10.89s。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~ProductDataSidecarRoutingTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~RelationLookupRpcRegistryTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceSessionEnvelopeFilterTests|FullyQualifiedName~HostProductRpcCompositionTests|FullyQualifiedName~QueryCursorOwnerCompositionTests'`：150 passed、0 failed/skip，17s。
+- `uv run --frozen --no-sync pyright backend contracts/v2/generate_lookup_value_page_oracle.py contracts/v2/generate_relation_search_oracle.py contracts/v2/generate_relation_preview_oracle.py tests/contract/test_lookup_value_page_python_oracle.py tests/contract/test_relation_search_python_oracle.py tests/contract/test_relation_preview_python_oracle.py`：0 errors/warnings。
+- sidecar目录：`go test -race ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities -run 'TestLookupValuePageProductHTTP|TestRelationSearchProductHTTP|TestRelationPreviewProductHTTP|TestQuery.*ProductHTTP|TestSchemaListProductHTTPMatchesRealCatalogREST|TestFileListProductHTTPMatchesAttachmentRESTAndConsumesCapabilities|TestHistoryReadProductHTTPReturnsFreshAuditedPage|TestNewRequiresRegistrations|TestGenerated' -count=1`：**exit1，app129.927s失败**；`TestRelationSearchProductHTTPReplaysFrozenPython` 的 `TempDir RemoveAll cleanup` 在 `001` 报 `directory is not empty`。未报告业务断言失败，但不能称HTTP组通过；没有重跑取绿或混入清理修复。dispatcher1.755s、capabilities1.302s通过。
+- sidecar目录：`go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1`：passed11.938s；`go vet ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities ./cmd/vibetable-pb`：exit0。
+- 六个本次改动Python文件Ruff check/format check、policy与E2E索引生成一致性、Go测试格式和Git diff空白检查通过。
+
+原包失败和Python owner S29通过的来源不变。当前16Go组合的新包、Go owner实际S29与
+fresh CI仍待验证，未重跑完整.NET或构建产品包。
+本轮HTTP清理失败保留，当前本地结果不能写成全部通过。

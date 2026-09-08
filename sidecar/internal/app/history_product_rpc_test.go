@@ -356,6 +356,7 @@ func historyReadProductFixture(
 		historyReadRegistration(runtime),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
+		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),

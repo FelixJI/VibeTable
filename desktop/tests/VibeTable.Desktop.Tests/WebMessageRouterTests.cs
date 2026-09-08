@@ -1014,6 +1014,40 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void SearchGoRouteRequiresScopeAndPreservesItsWire()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability(
+                "relation.searchTargets",
+                "workspace",
+                "rendererPublic",
+                "relation.lookup",
+                "goSidecar",
+                "read"));
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            policy)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? reply = router.Route(
+            """{"type":"relation.searchTargets","requestId":"relation-go","payload":{"relationId":"customer"}}""");
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        const string scoped = """
+            {"type":"relation.searchTargets","requestId":"relation-go","payload":{"relationId":"customer"},"scope":{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"22222222-2222-4222-8222-222222222222","sequence":1}}
+            """;
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            document.RootElement.GetProperty("scope"), dispatched.Single().Wire));
+    }
+
+    [TestMethod]
     public void GeneratedProductPolicyDoesNotHideExistingPublicTypedRoutes()
     {
         ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.Default;
@@ -1040,7 +1074,7 @@ public sealed class WebMessageRouterTests
         {
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual(route is "lookup.valuePage" or "relation.previewDelta" ? "goSidecar" : "pythonBff",
+            Assert.AreEqual(route is "lookup.valuePage" or "relation.searchTargets" or "relation.previewDelta" ? "goSidecar" : "pythonBff",
                 capability.Owner, route);
         }
     }

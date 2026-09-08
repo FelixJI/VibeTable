@@ -47,6 +47,7 @@ func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port inter
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
+		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),

@@ -15,6 +15,8 @@ public sealed class ProductDataSidecarRoutingTests
     [DataRow("lookup.list", false)]
     [DataRow("lookup.valuePage", true)]
     [DataRow("lookup.valuePage", false)]
+    [DataRow("relation.searchTargets", true)]
+    [DataRow("relation.searchTargets", false)]
     [DataRow("relation.previewDelta", true)]
     [DataRow("relation.previewDelta", false)]
     public async Task CatalogReadUsesGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
@@ -32,6 +34,8 @@ public sealed class ProductDataSidecarRoutingTests
             Type = method,
             Payload = method == "lookup.valuePage"
                 ? JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 })
+                : method == "relation.searchTargets"
+                ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
                 : method == "relation.previewDelta"
                 ? JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
                     expectedSchemaRevision = "schema-1", adds = Array.Empty<object>(),
@@ -201,6 +205,9 @@ public sealed class ProductDataSidecarRoutingTests
     [DataRow("lookup.valuePage", -32030, "BACKEND_UNAVAILABLE")]
     [DataRow("relation.previewDelta", -32030, "BACKEND_UNAVAILABLE")]
     [DataRow("lookup.valuePage", -32150, "RELATION_LOOKUP_FAILED")]
+    [DataRow("relation.searchTargets", -32602, "BAD_PAYLOAD")]
+    [DataRow("relation.searchTargets", -32030, "BACKEND_UNAVAILABLE")]
+    [DataRow("relation.searchTargets", -32150, "RELATION_LOOKUP_FAILED")]
     [DataRow("relation.previewDelta", -32150, "RELATION_LOOKUP_FAILED")]
     public async Task RelationGoErrorPreservesExistingRendererMapping(string method, int code, string expected)
     {
@@ -216,6 +223,7 @@ public sealed class ProductDataSidecarRoutingTests
         {
             Type = method,
             Payload = method == "lookup.valuePage" ? JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 })
+                : method == "relation.searchTargets" ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
                 : JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
                     expectedSchemaRevision = "schema-1", adds = Array.Empty<object>(),
                     removes = Array.Empty<object>(), idempotencyKey = "preview-test" }),

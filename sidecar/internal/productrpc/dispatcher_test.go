@@ -461,12 +461,12 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 15 ||
+	if methods := dispatcher.Methods(); len(methods) != 16 ||
 		methods[0].Method != "events.reconcile" || methods[1].Method != "file.list" ||
 		methods[2] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
 		methods[3].Method != "lookup.list" || methods[4].Method != "lookup.valuePage" || methods[5].Method != "query.cursorFetch" || methods[6].Method != "query.cursorOpen" || methods[7].Method != "query.page" || methods[8].Method != "query.readRows" ||
-		methods[9].Method != "query.selectionOpen" || methods[10].Method != "query.view" || methods[11].Method != "relation.previewDelta" || methods[12].Method != "schema.describe" ||
-		methods[13].Method != "schema.getTable" || methods[14].Method != "schema.list" {
+		methods[9].Method != "query.selectionOpen" || methods[10].Method != "query.view" || methods[11].Method != "relation.previewDelta" || methods[12] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[13].Method != "schema.describe" ||
+		methods[14].Method != "schema.getTable" || methods[15].Method != "schema.list" {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -548,6 +548,10 @@ func generatedGoSidecarRegistrations() []Registration {
 		},
 		{
 			Method: "relation.previewDelta", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{
