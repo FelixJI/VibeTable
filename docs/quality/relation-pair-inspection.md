@@ -18,7 +18,7 @@
 - Host 新路由6项回归先因缺少注册全部失败，补充后相关83项 PASS、0 skip；`ProductContractV2RoundTripTests` 10 PASS。日志 `host-routing-red.log`、`host-routing-final.log`、`host-contract-catalog.log`。
 - 既有 `{error: ...}` 领域返回的真实 resolved envelope 先2 FAIL，修复后模块53 PASS、vue-tsc通过；日志 `web-envelope-red.log`、`web-envelope-green.log`、`web-typecheck-envelope.log`。
 - 16项新 DTO 测试通过；新增场景/索引/目录及 Python owner 闭集契约192 PASS。catalog、capability、inventory由现有脚本生成/校验，没有手工改生成物。
-- Standards/Spec 双轴独立审查已覆盖实现；最新真实场景仍须在打包候选上验收。
+- Standards/Spec 双轴独立审查已覆盖实现；后续打包候选的真实场景证据见下节。
 
 ## 未通过与未完成
 
@@ -54,3 +54,12 @@
 同一源码 `1b7f14d5dfbbe2363853b533f151fb812332819e` 的现有候选由 `qa/release_candidate.py create` 归档后，执行 `uv run --frozen --no-sync python qa/next.py --lane core --package-root dist/VibeTable.Next --package-archive dist/VibeTable-v0.5.1-win-x64.zip --json-report build/qa/relation-inspect/core-report.json`，最终 FAIL。version、go-fmt、go-vet通过，go-test 275.120s 失败；之后的 go-coverage、Go build/smoke、Python、contracts、tooling、.NET、Web和最终smoke阶段未执行，不能记作完整 core 通过。
 
 失败都记录为 workspacev2 既有用例的 TempDir RemoveAll 目录非空，涉及 coordination、snapshots、audit 和 restore-rollback；日志没有其他业务断言失败。现有 QA 内置的相同命令最多三次处理仍未通过，本次未增加重试或修改清理策略。原始 `build/qa/relation-inspect/core.log` 和 `core-report.json` 完整保留，后者 `ok=false`、`releaseEligible=false`。该证据仍不足以确定 Windows/SQLite 根因，不能由关系检查场景通过或定向诊断未复现代替。
+
+## 组合候选的分阶段完整验证
+
+在上述 core 因 Go 清理失败停止后，保持产品源码不变，于文档提交 `bb233971` 上分别执行未到达的 Python 与 .NET 阶段，复用现有环境：
+
+- `uv run --frozen --no-sync python scripts/automation_project.py python-quality`：PASS；Ruff format/check、Pyright、mypy均通过，1805 PASS、1 skip，80.06s，覆盖率91.43%（原门禁85%）。日志 `build/qa/relation-inspect/qualified-python.log`。此前父句柄失败保留为历史观察，此次完整 Python 入口已通过。
+- `dotnet test desktop/VibeTable.Desktop.sln --configuration Release /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:RestoreLockedMode=true`，附加 `qa.next.dotnet_coverage_properties()` 从当前配置读取的全部原门禁参数：PASS，六个测试项目共1339 PASS、1 skip；Desktop为1102 PASS、1 skip、23s。Desktop覆盖率为Line71.17%、Branch61.71%、Method79.53%，原门禁全部通过。唯一跳过为既有 `ActivationPointerLinkIsRejectedAndRetained`，本机符号链接权限不足；未放宽其判断。日志 `build/qa/relation-inspect/qualified-dotnet.log`。
+
+以上是独立阶段通过，不改变 `core-report.json` 的失败状态，也不替代尚未执行的其他阶段、实际 main 同步和 fresh PR CI。
