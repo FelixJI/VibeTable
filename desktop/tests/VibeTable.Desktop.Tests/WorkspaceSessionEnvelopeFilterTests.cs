@@ -205,7 +205,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task GoRouteSettlesEpochCancellationWithoutSuccess()
+    [DataRow("query.page")]
+    [DataRow("lookup.valuePage")]
+    public async Task GoRouteSettlesEpochCancellationWithoutSuccess(string method)
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -232,11 +234,11 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(
             sink,
-            GoQuerySelector(),
+            ProductRpcRouteSelector.Default,
             sessionEnvelopeFilter: filter);
         controller.SetProductSidecarForwarder(sidecar);
         Task dispatch = controller.DispatchAsync(
-            GoQueryRequest("go-cancel", ScopeFor(opened, 1)));
+            GoReadRequest(method, "go-cancel", ScopeFor(opened, 1)));
         await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
@@ -251,7 +253,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation()
+    [DataRow("query.page")]
+    [DataRow("lookup.valuePage")]
+    public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation(string method)
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -277,11 +281,11 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(
             sink,
-            GoQuerySelector(),
+            ProductRpcRouteSelector.Default,
             sessionEnvelopeFilter: filter);
         controller.SetProductSidecarForwarder(sidecar);
-        RoutedWebRequest request = GoQueryRequest(
-            "go-late",
+        RoutedWebRequest request = GoReadRequest(
+            method, "go-late",
             ScopeFor(opened, 1));
         Task dispatch = controller.DispatchAsync(request);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -769,10 +773,6 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual("BAD_WORKSPACE_SCOPE", payload.GetProperty("code").GetString());
     }
     [TestMethod]
-    [DataRow("lookup.valuePage",
-        "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
-        + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
-        + "\"offset\":0,\"limit\":10}")]
     [DataRow("relation.searchTargets", "{\"relationId\":\"records.owner\"}")]
     public async Task RelationReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
     {
@@ -990,6 +990,19 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             document.RootElement.Clone(),
             string.Empty,
             scope);
+    }
+
+    private static RoutedWebRequest GoReadRequest(
+        string method, string requestId, WorkspaceWireScope scope)
+    {
+        RoutedWebRequest request = GoQueryRequest(requestId, scope);
+        return method == "lookup.valuePage"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 }),
+            }
+            : request;
     }
 
     private static RoutedWebRequest GoQueryRequest(

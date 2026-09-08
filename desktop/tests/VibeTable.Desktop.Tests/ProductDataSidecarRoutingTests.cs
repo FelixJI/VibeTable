@@ -13,6 +13,8 @@ public sealed class ProductDataSidecarRoutingTests
     [DataRow("schema.describe", false)]
     [DataRow("lookup.list", true)]
     [DataRow("lookup.list", false)]
+    [DataRow("lookup.valuePage", true)]
+    [DataRow("lookup.valuePage", false)]
     public async Task CatalogReadUsesGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
     {
         var sink = new FakeWebReplySink();
@@ -26,7 +28,9 @@ public sealed class ProductDataSidecarRoutingTests
         RoutedWebRequest request = QueryRequest("describe-go") with
         {
             Type = method,
-            Payload = method == "lookup.list"
+            Payload = method == "lookup.valuePage"
+                ? JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 })
+                : method == "lookup.list"
                 ? JsonSerializer.SerializeToElement(new { collection = "tbl_records" })
                 : JsonSerializer.SerializeToElement(new
             {
@@ -183,6 +187,34 @@ public sealed class ProductDataSidecarRoutingTests
             "名称",
             payload.GetProperty("error").GetProperty("details")
                 .GetProperty("field").GetString());
+    }
+
+    [TestMethod]
+    [DataRow(-32602, "BAD_PAYLOAD")]
+    [DataRow(-32030, "BACKEND_UNAVAILABLE")]
+    [DataRow(-32150, "RELATION_LOOKUP_FAILED")]
+    public async Task RelationGoErrorPreservesExistingRendererMapping(int code, string expected)
+    {
+        var sink = new FakeWebReplySink();
+        var pythonTransport = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(pythonTransport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(gateway);
+        var sidecar = FailureForwarder(new ProductSidecarRpcError(code, "failure", null));
+        controller.SetProductSidecarForwarder(sidecar);
+        RoutedWebRequest request = QueryRequest("relation-failure") with
+        {
+            Type = "lookup.valuePage",
+            Payload = JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 }),
+        };
+        await controller.DispatchAsync(request);
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("operation.failed", reply.Type);
+        Assert.AreEqual(expected, JsonSerializer.SerializeToElement(reply.Payload)
+            .GetProperty("code").GetString());
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.AreEqual(0, pythonTransport.WriteCount);
     }
 
     [TestMethod]

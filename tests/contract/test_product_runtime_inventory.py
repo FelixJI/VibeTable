@@ -70,6 +70,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "file.list",
         "history.read",
         "lookup.list",
+        "lookup.valuePage",
         "query.cursorFetch",
         "query.cursorOpen",
         "query.page",

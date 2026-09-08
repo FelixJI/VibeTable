@@ -49,6 +49,7 @@ class FakeProductService:
         ("query.cursorFetch", {"extra": True}),
         ("query.view", {"tableId": "orders", "view": {}}),
         ("query.view", {"extra": True}),
+        ("lookup.valuePage", {"extra": True}),
         ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
@@ -121,6 +122,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(dispatcher.registered_methods) == expected_methods - {
         "query.selectionOpen",
         "lookup.list",
+        "lookup.valuePage",
         "query.cursorFetch",
         "query.cursorOpen",
         "query.page",
@@ -142,6 +144,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "file.list",
             "history.read",
             "lookup.list",
+            "lookup.valuePage",
             "query.cursorFetch",
             "query.cursorOpen",
             "query.page",

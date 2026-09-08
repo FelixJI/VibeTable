@@ -2607,6 +2607,80 @@ async function scenario06(page, recorder) {
   return;
 }
 
+async function scenario29(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const targets = await createSimpleTable(page, "Paged Lookup Targets", "Name");
+  const tableId = await createEmptyTable(page, "Paged Lookup Sources");
+  await closeFieldSettingsDrawer(page);
+  const title = await createV2Field(page, tableId, "Title", "text");
+  const relation = await createV2Field(page, tableId, "Targets", "relation", (draft) => {
+    draft.relation.targetTableId = targets.tableId;
+    draft.relation.displayFieldId = targets.field.fieldId;
+    draft.relation.cardinality = "many";
+    return draft;
+  });
+  const lookup = await createV2Field(page, tableId, "Target names", "lookup", (draft) => {
+    draft.lookup = {
+      path: [{ relationFieldId: relation.fieldId }],
+      targetFieldId: targets.field.fieldId,
+    };
+    return draft;
+  });
+  const ids = Array.from({ length: 101 }, (_, index) => `lookuptarget${String(index).padStart(3, "0")}`);
+  const labels = ids.map((_, index) => `来源 ${String(index).padStart(3, "0")} 雪`);
+  const inserted = await applyProductMutation(page, targets.tableId, ids.map((recordId, index) => ({
+    kind: "insert", recordId, values: { [targets.field.physicalName]: labels[index] },
+  })), "lookup-page-targets");
+  const source = await applyProductMutation(page, tableId, [{
+    kind: "insert", recordId: "lookupsource001",
+    values: { [title.physicalName]: "Paged sources", [relation.physicalName]: ids },
+  }], "lookup-page-source");
+  if (inserted.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`lookup page fixture did not commit: ${JSON.stringify({ inserted, source })}`);
+  }
+  const read = async (collection) => {
+    const response = await rawBridgeRequest(page, "query.page", {
+      tableId: collection, query: { filters: [], sorts: [], offset: 0, limit: 500 },
+    });
+    if (response.type !== "query.page" || !response.payload?.snapshot) {
+      throw new Error(`lookup page authority read failed: ${JSON.stringify(response)}`);
+    }
+    return {
+      rows: response.payload.rows,
+      schemaRevision: response.payload.snapshot.schemaRevision,
+      dataRevision: response.payload.snapshot.dataRevision,
+    };
+  };
+  const before = [await read(tableId), await read(targets.tableId)];
+  await selectTable(page, "Paged Lookup Sources");
+  await waitForVisibleRowCount(page, 1);
+  await page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${lookup.physicalName}"] .vt-lookup-source-more`,
+  ).click();
+  const panel = page.getByTestId("lookup-sources-panel");
+  await panel.waitFor();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="lookup-sources-panel"] ol > li').length === 100);
+  recorder.check("lookup source dialog starts with the first 100 of 101 sources",
+    await panel.locator("ol > li").count() === 100
+      && (await panel.locator("header small").innerText()).trim() === "100 / 101");
+  await panel.locator("footer button").click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="lookup-sources-panel"] ol > li').length === 101);
+  const actual = await panel.locator("ol > li small").allTextContents();
+  recorder.check("loading more appends every Unicode source once and exhausts the page",
+    actual.length === 101 && new Set(actual).size === 101
+      && labels.every(label => actual.some(text => text.endsWith(` · ${label}`)))
+      && await panel.locator("footer").count() === 0
+      && await panel.locator('[role="alert"]').count() === 0
+      && (await panel.locator("header small").innerText()).trim() === "101 / 101",
+    { actual });
+  await panel.getByRole("button", { name: /^(关闭|Close)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const after = [await read(tableId), await read(targets.tableId)];
+  recorder.check("lookup source paging preserves authority rows and revisions",
+    JSON.stringify(after) === JSON.stringify(before), { before, after });
+}
+
 async function scenario26(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -6896,6 +6970,7 @@ const scenarios = {
   "22-timeline-date-move": scenario22,
   "23-directory-replica-recovery": scenario23,
   "26-lookup-definition-read": scenario26,
+  "29-lookup-source-pagination": scenario29,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

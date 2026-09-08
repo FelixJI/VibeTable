@@ -1,31 +1,18 @@
-"""Capture lookup.valuePage through the original Python dispatcher, adapter and client."""
+"""Validate retained lookup.valuePage inputs after the original Python owner retired."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import inspect
 import json
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
-from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseProductError
-from backend.adapters.pocketbase.product_relation_lookup_file_rpc import (
-    ProductRelationLookupFileRpc,
-)
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.product_rpc_support import _lookup_revision
-from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, JsonValue
-from backend.rpc.dispatcher import RpcDispatcher
-from backend.rpc.product_errors import register_product_rpc_errors
+from backend.contracts.product_rpc import JsonObject, JsonValue
 
 PRODUCER_COMMIT = "a19ccd5366d62be6338f628d06b6c5a37484f20f"
 OUTPUT = Path(__file__).with_name("lookup-value-page-python-oracle.json")
 METHOD = "lookup.valuePage"
-CAPTURE_ROOT = Path(__file__).resolve().parents[2]
 
 TYPED_GO_BOUNDARIES: JsonObject = {
     "empty-object-result": "CellValue emits mandatory fields; it cannot encode an empty object.",
@@ -227,133 +214,39 @@ def cases() -> tuple[Case, ...]:
     )
 
 
-class RecordingTransport:
-    """Execute only the two actual authority endpoints, with ordered scripted responses."""
-
-    def __init__(self, case: Case) -> None:
-        self.case = case
-        self.requests: list[JsonObject] = []
-
-    async def request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue] | None = None,
-        json_body: JsonValue = None,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        assert headers == {"X-VibeTable-Session": "oracle-only"}
-        assert tuple(expected_status) == (200,)
-        index = len(self.requests)
-        if index == 0:
-            assert method == "GET"
-            assert path == "/api/vibetable/v1/relations/describe"
-            assert query is not None
-            assert set(query) == {"tableId"}
-            assert json_body is None
-            phase = "catalog"
-        else:
-            assert index == 1, "Value page must make at most two authority requests"
-            assert method == "POST"
-            assert path == "/api/vibetable/v1/lookups/value-page"
-            assert query is None
-            phase = "page"
-        self.requests.append(
-            {
-                "method": method,
-                "path": path,
-                "query": dict(query) if query is not None else None,
-                "body": json_body,
-                "expectedStatus": list(expected_status),
-            }
-        )
-        if self.case.failure == phase + "-product":
-            raise PocketBaseProductError(
-                status=409,
-                payload={
-                    "code": "lookup.schema_revision_conflict",
-                    "message": phase + " revision conflict",
-                    "path": "schemaRevision",
-                    "details": {"phase": phase},
-                    "retryable": False,
-                },
-            )
-        if self.case.failure == phase + "-transport":
-            raise PocketBaseTransportError(phase + " unavailable")
-        return self.case.catalog if index == 0 else self.case.page
-
-    async def request_multipart(
-        self,
-        path: str,
-        *,
-        json_body: Mapping[str, JsonValue],
-        uploads: Sequence[tuple[str, str]],
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        raise AssertionError("Value page must not upload files")
-
-    async def download_to_file(
-        self,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue],
-        target_path: str,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-        maximum_bytes: int = 2 * 1024 * 1024 * 1024,
-    ) -> int:
-        raise AssertionError("Value page must not download files")
-
-
 async def capture_case(case: Case) -> JsonObject:
-    for symbol in (
-        PocketBaseProductRpc,
-        ProductRelationLookupFileRpc,
-        PocketBaseClient,
-        RpcDispatcher,
-        PRODUCT_RPC_REGISTRY[METHOD],
-        _lookup_revision,
-    ):
-        if not Path(inspect.getfile(symbol)).resolve().is_relative_to(CAPTURE_ROOT / "backend"):
-            raise RuntimeError(
-                "Capture requires this checkout's backend; set PYTHONPATH to its root "
-                "and run python -m contracts.v2.generate_lookup_value_page_oracle"
-            )
-    transport = RecordingTransport(case)
-    service = PocketBaseProductRpc(
-        client=PocketBaseClient(transport=transport, session_secret="oracle-only"),
-        transport=transport,
-        session_secret="oracle-only",
-    )
-    dispatcher = RpcDispatcher()
-    register_product_rpc_errors()
-    dispatcher.register(METHOD, partial(service.invoke, METHOD), PRODUCT_RPC_REGISTRY[METHOD])
-    request: JsonObject = {
-        "jsonrpc": "2.0",
-        "id": case.name,
-        "method": METHOD,
-        "params": case.params,
-    }
-    response = await dispatcher.dispatch(request)
-    return {
-        "name": case.name,
-        "request": request,
-        "authorityFixture": {"catalog": case.catalog, "page": case.page, "failure": case.failure},
-        "authorityRequests": list(transport.requests),
-        "response": response,
-    }
+    raise RuntimeError("Python lookup value page capture is retired; preserve the frozen producer")
 
 
 async def capture() -> JsonObject:
-    return {
-        "producerCommit": PRODUCER_COMMIT,
-        "boundary": "Original Python Product dispatcher + adapter + client; scripted authority HTTP",
-        "typedGoBoundaries": TYPED_GO_BOUNDARIES,
-        "cases": [await capture_case(case) for case in cases()],
-    }
+    raise RuntimeError("Python lookup value page capture is retired; preserve the frozen producer")
+
+
+def validate_frozen_inputs() -> None:
+    """Validate retained independent inputs without invoking the retired owner."""
+    frozen: JsonObject = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    if frozen.get("producerCommit") != PRODUCER_COMMIT:
+        raise ValueError("Frozen lookup value page producer changed")
+    if frozen.get("typedGoBoundaries") != TYPED_GO_BOUNDARIES:
+        raise ValueError("Frozen lookup value page typed boundaries changed")
+    entries = frozen.get("cases")
+    expected_cases = cases()
+    if not isinstance(entries, list) or len(entries) != len(expected_cases):
+        raise ValueError("Frozen lookup value page case inventory changed")
+    for entry, case in zip(entries, expected_cases, strict=True):
+        expected: JsonObject = {
+            "name": case.name,
+            "request": {"jsonrpc": "2.0", "id": case.name, "method": METHOD, "params": case.params},
+            "authorityFixture": {
+                "catalog": case.catalog,
+                "page": case.page,
+                "failure": case.failure,
+            },
+        }
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid frozen lookup value page entry")
+        if render({key: entry.get(key) for key in expected}) != render(expected):
+            raise ValueError(f"Frozen lookup value page inputs changed: {case.name}")
 
 
 def render(value: JsonObject) -> str:
@@ -362,18 +255,15 @@ def render(value: JsonObject) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--write", action="store_true", help="Create once; reject existing output")
-    parser.add_argument("--check", action="store_true", help="Compare complete capture (default)")
+    parser.add_argument("--write", action="store_true", help="Retired; always rejected")
+    parser.add_argument("--check", action="store_true", help="Validate retained inputs (default)")
     args = parser.parse_args()
-    if args.write and args.check:
-        parser.error("Choose either --write or --check")
     if args.write:
-        generated = render(asyncio.run(capture()))
-        with OUTPUT.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(generated)
-        return 0
-    if OUTPUT.read_text(encoding="utf-8") != render(asyncio.run(capture())):
-        parser.error("Original lookup value page differs; inspect the change, do not regenerate")
+        parser.error("Python capture is retired; preserve the original producer and frozen file")
+    try:
+        validate_frozen_inputs()
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
     return 0
 
 

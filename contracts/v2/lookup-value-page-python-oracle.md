@@ -8,7 +8,7 @@
 
 ## 捕获与原件保护
 
-从目标 producer 工作树根运行，显式设置 `PYTHONPATH` 为该根，再使用模块入口。
+以下为迁移前固定 producer 的历史捕获方式；当前分支捕获已退役。从该历史工作树根运行，显式设置 `PYTHONPATH` 为该根，再使用模块入口。
 可复用共享 uv 环境；source guard 检查根 adapter、专属 handler、client、dispatcher、
 Product DTO 和 revision helper 的实际模块来源，拒绝误导入共享 editable 环境的其他工作树。
 
@@ -19,8 +19,9 @@ uv run --frozen --no-sync python -m contracts.v2.generate_lookup_value_page_orac
 uv run --frozen --no-sync python -m pytest tests/contract/test_lookup_value_page_python_oracle.py -q --no-cov
 ```
 
-`--write` 仅首次 exclusive 创建，已有文件时拒绝覆盖；默认及 `--check` 重新执行全部捕获并
-比较原件，不写文件。当前只冻结行为，不改变 owner、生产 adapter、CI 或 Go 领域契约。
+固定 producer 的 `--write` 仅首次 exclusive 创建。当前迁移分支已删除专属 Python handler/client 路径，
+`capture`/`capture_case` 与 `--write` 无条件拒绝；默认与 `--check` 只验证保留的 producer、独立输入
+和 typed 边界，不重新捕获或覆盖原件。完整公开输出由 Go Product HTTP 回放消费；Go 领域与 CI 契约不变。
 
 ## 执行顺序与错误层次
 

@@ -142,5 +142,13 @@
     "title": "Lookup 持久定义读取",
     "requirement": "通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。",
     "capabilities": ["lookup.definition-read"]
+  },
+  {
+    "id": "29-lookup-source-pagination",
+    "title": "Lookup 来源分页读取",
+    "requirement": "通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。",
+    "capabilities": [
+      "lookup.source-pagination"
+    ]
   }
 ]

@@ -98,6 +98,19 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
             },
         ),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
+        (
+            "lookup.valuePage",
+            {
+                "collection": "records",
+                "fieldRef": "owner.name",
+                "sourceRecordId": "record-1",
+                "schemaRevision": "s1",
+                "permissionRevision": "p1",
+                "lookupRevision": "l1",
+                "offset": 0,
+                "limit": 10,
+            },
+        ),
         ("schema.getTable", {"tableId": "orders"}),
         ("schema.list", {}),
         ("query.page", {"tableId": "orders", "query": {}}),
@@ -594,72 +607,3 @@ async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> 
     assert [request["path"] for request in transport.requests] == [
         "/api/vibetable/v1/relations/preview-delta",
     ]
-
-
-@pytest.mark.asyncio
-async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() -> None:
-    lookup = {
-        "lookupId": "orders.line_skus_id",
-        "tableId": "orders",
-        "fieldId": "line_skus_id",
-        "physicalName": "line_skus",
-        "displayName": "Line SKUs",
-        "relationFieldId": "lines_id",
-        "targetFieldId": "sku_id",
-        "outputStorage": "json",
-        "revision": 1,
-    }
-    catalog = {
-        "tableId": "orders",
-        "schemaRevision": "schema_7",
-        "relations": [],
-        "lookups": [lookup],
-    }
-    page = {
-        "state": "ok",
-        "value": ["SKU-001"],
-        "provenance": [
-            {
-                "collection": "lines",
-                "collectionLabel": "明细",
-                "itemId": "line-1",
-                "recordLabel": "SKU-001",
-                "fieldId": "sku_id",
-                "fieldLabel": "SKU",
-                "value": "SKU-001",
-            }
-        ],
-        "provenanceTotal": 10_001,
-        "provenanceOffset": 100,
-        "provenanceLimit": 100,
-        "provenanceHasMore": True,
-    }
-    service, transport = _service([catalog, page])
-    lookup_revision = "sha256:6bd7460cb0333244b51b9ba40a0f4ce61198cdf9f6012ad812152671fdbb329e"
-
-    result = await service.invoke(
-        "lookup.valuePage",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "fieldRef": "line_skus",
-                "sourceRecordId": "order-1",
-                "offset": 100,
-                "limit": 100,
-                "schemaRevision": "schema_7",
-                "permissionRevision": "schema_7",
-                "lookupRevision": lookup_revision,
-            }
-        ),
-    )
-
-    assert result["provenanceTotal"] == 10_001
-    assert transport.requests[-1]["path"] == "/api/vibetable/v1/lookups/value-page"
-    assert transport.requests[-1]["json_body"] == {
-        "tableId": "orders",
-        "schemaRevision": "schema_7",
-        "sourceRecordId": "order-1",
-        "fieldId": "line_skus_id",
-        "offset": 100,
-        "limit": 100,
-    }
