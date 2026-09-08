@@ -158,6 +158,92 @@ describe("dashboardService", () => {
     service.dispose();
   });
 
+  it.each(["unchanged", "changed", "cleared", "removed", "retargeted", "retyped"] as const)(
+    "recovery preserves only the latest compatible session filter: %s", async (scenario) => {
+      const h = harness(); setHostBridgeForTesting(h.bridge);
+      const store = useDashboardStore();
+      const filter = {
+        key: "region", label: "Region", type: "enum",
+        allowedFields: ["region"], targetPanels: ["p1"], fieldBindings: { p1: "region" },
+      };
+      const workspace = {
+        dashboard: { id: "d1", name: "Ops", note: "", panels: [panel] },
+        config: { globalFilters: [filter] }, revision: "r1", queryLimits: {},
+      };
+      store.receiveWorkspace(workspace);
+      store.setFilterValue("region", ["North"]);
+      const service = useDashboardService();
+      const recovering = service.recoverAuthoritative();
+      await flushPromises();
+      replyManifest(h);
+      reply(h, "dashboard.listRequested", "dashboard.listLoaded", { dashboards: [workspace.dashboard] });
+      await flushPromises();
+      expect(h.posted.some(item => item.type === "dashboard.readRequested")).toBe(true);
+      if (scenario === "changed") store.setFilterValue("region", ["South"]);
+      if (scenario === "cleared") store.clearFilterValues();
+      const recoveredFilter = scenario === "retargeted"
+        ? { ...filter, allowedFields: ["status"], fieldBindings: { p1: "status" } }
+        : scenario === "retyped" ? { ...filter, type: "number-range" } : filter;
+      reply(h, "dashboard.readRequested", "dashboard.loaded", {
+        ...workspace, revision: "r2",
+        config: { globalFilters: scenario === "removed" ? [] : [recoveredFilter] },
+      });
+      await flushPromises();
+      replySchema(h);
+      await flushPromises();
+      const expected = scenario === "unchanged" ? ["North"] : scenario === "changed" ? ["South"] : null;
+      expect(store.sessionFilterValues).toEqual(expected ? { region: expected } : {});
+      const request = h.posted.filter(item => item.type === "dashboard.queryRequested").at(-1)!;
+      expect(request.payload).toMatchObject({ query: {
+        filters: expected ? [{ field: "region", operator: "in", value: expected }] : [],
+      } });
+      reply(h, "dashboard.queryRequested", "dashboard.queryLoaded", { rows: [], truncated: false, maxPoints: 100 });
+      await expect(recovering).resolves.toBe("applied");
+      service.dispose();
+    },
+  );
+
+  it("an epoch boundary resets filters and rejects the previous recovery read", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    const workspace = { dashboard: { id: "d1", name: "Old", note: "", panels: [] }, config: {}, revision: "r1" };
+    store.receiveWorkspace(workspace);
+    store.setFilterValue("region", ["North"]);
+    const service = useDashboardService();
+    const recovering = service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", { dashboards: [workspace.dashboard] });
+    await flushPromises();
+    service.retireRecovery();
+    store.reset();
+    store.receiveWorkspace({ ...workspace, dashboard: { ...workspace.dashboard, name: "New epoch" } });
+    reply(h, "dashboard.readRequested", "dashboard.loaded", workspace);
+    await expect(recovering).resolves.toBe("retired");
+    expect(store.current?.name).toBe("New epoch");
+    expect(store.sessionFilterValues).toEqual({});
+    service.dispose();
+  });
+
+  it.each(["d1", "d2"])("ordinary dashboard selection of %s clears session filters", async (dashboardId) => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    const config = { globalFilters: [{
+      key: "region", label: "Region", type: "enum", allowedFields: ["region"], targetPanels: [],
+    }] };
+    store.receiveWorkspace({ dashboard: { id: "d1", name: "Old", note: "", panels: [] }, config });
+    store.setFilterValue("region", ["North"]);
+    const service = useDashboardService();
+    const selecting = service.select(dashboardId);
+    reply(h, "dashboard.readRequested", "dashboard.loaded", {
+      dashboard: { id: dashboardId, name: "Other", note: "", panels: [] }, config,
+    });
+    await selecting;
+    expect(store.current?.id).toBe(dashboardId);
+    expect(store.sessionFilterValues).toEqual({});
+    service.dispose();
+  });
+
   it("does not let a retired recovery's slow catalog or manifest overwrite newer metadata", async () => {
     const h = harness(); setHostBridgeForTesting(h.bridge);
     const service = useDashboardService();

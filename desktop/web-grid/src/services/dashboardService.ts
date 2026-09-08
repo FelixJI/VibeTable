@@ -251,7 +251,7 @@ export function useDashboardService() {
         || selectedGeneration !== generation
         || draft.editing
       ) return false;
-      store.receiveWorkspace(result);
+      store.receiveWorkspace(result, { preserveSessionFilters: true });
       configureRefreshTimer();
       await queryAllPanels(selectedGeneration);
       const accepted = ticket === recoveryGeneration && selectedGeneration === generation && !draft.editing;
