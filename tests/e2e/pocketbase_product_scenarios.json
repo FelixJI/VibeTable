@@ -31,8 +31,8 @@
   },
   {
     "id": "06-relation-fanout",
-    "title": "关系目标搜索与 cascade 影响预览",
-    "requirement": "关系字段切换 cascade 前展示危险级别及影响；真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复。",
+    "title": "关系 cascade 方向与影响预览",
+    "requirement": "关系字段切换 cascade 前，冻结计划明确标记危险级别，并返回受影响记录与依赖信息。",
     "capabilities": ["relation.fanout"]
   },
   {
@@ -142,5 +142,11 @@
     "title": "Lookup 持久定义读取",
     "requirement": "通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。",
     "capabilities": ["lookup.definition-read"]
+  },
+  {
+    "id": "27-relation-target-search",
+    "title": "关系目标搜索",
+    "requirement": "真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复；不提交关联写入。",
+    "capabilities": ["relation.search"]
   }
 ]

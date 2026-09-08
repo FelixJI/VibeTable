@@ -36,7 +36,7 @@ Go 保留省略 query/offset/limit 的默认值、显式空字符串拒绝、原
 
 ## 真实产品场景
 
-既有 `06-relation-fanout` 保留 cascade 计划断言，并增加51个目标与一条未关联源记录。
+新增 `27-relation-target-search` 共用关系 fixture，保留 cascade 计划断言，并增加51个目标与一条未关联源记录。既有 S06 保持历史 cascade-only 语义。
 从真实 grid 关系单元格打开编辑器，验证首屏50/51、续页51个不重复候选、Unicode 搜索、
 无匹配空态，以及清空搜索恢复首屏。只搜索候选，不点击候选或创建目标来混入写 owner。
 宿主取消与迟到响应另由工作区租约测试验证。
@@ -59,3 +59,21 @@ HTTP fixture 使用交叉不可调用 guard，S02 分组和 S06 搜索场景均�
 Host 定向87 passed；Go app/productrpc/productcapabilities race 分别32.452/1.686/1.260s
 passed；既有进程测试1.717s passed。策略生成检查、相关 Ruff 和 Go vet passed。
 独立 Standards 与 Spec 增量均0 findings。实际 S06结果见上节；fresh CI仍为合并门禁。
+
+## 场景身份修正后的资格
+
+`5c5742fc` 的 CI34183631397 core job101930023911 失败：Python 1719 passed/1 failed，
+`test_repository_capability_index_and_evidence_are_current` 检出 S06 同 ID 语义被原地扩写。
+生成器和证据门禁保持不变。S06 恢复历史 title/requirement 与 cascade-only 路径；
+新增 S27 承载全部搜索断言，显式 wrapper 调用共享 fixture，历史23/23样本不覆盖 S27。
+`docs/e2e-performance.md` 的 manifest gap 仍开放 S26，并增加 S27。
+
+`uv run --frozen --no-sync python -m pytest tests/contract/test_product_e2e_capability_index.py tests/contract/test_product_runtime_inventory.py tests/e2e/test_product_e2e_runner.py -q --no-cov`：160 passed（5.59s）。首次159 passed/1 failed为 Node 场景清单顺序与manifest不同，修正顺序后通过；原失败保留。索引 `--write` 后 `--check` 通过。
+
+`uv run --frozen --no-sync python -m tests.e2e.product_e2e_runner --scenario 27-relation-target-search`：
+真实新 S27 1/1 passed，QA `20260908T040435Z`。使用原 `1ca00c0e` 全组件产品包和本次
+最终场景脚本；未重建环境或产品包，未将旧 S06 报告改名。五项搜索检查、cascade、
+bridge/renderer 诊断均通过，package audit及四组件新鲜度通过；正常Host退出0，成员和
+后代为空、端口释放、owner lease/final cleanup均通过。旧 S06 报告仅保留为历史记录。
+
+代码/metadata 与最终文档增量独立 Spec0、Standards0；新端点 fresh CI 尚待完成。

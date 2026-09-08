@@ -599,7 +599,7 @@
       "stateLifetime": "workspace",
       "cancellation": "cooperative",
       "timeout": "perHopBounded",
-      "productScenarios": ["06-relation-fanout"],
+      "productScenarios": ["27-relation-target-search"],
       "targetSlice": "L3B",
       "targetPr": null,
       "deleteWhen": "Python runtime route is removed; retain the public parameter contract and the frozen Python relation search oracle.",

@@ -2560,6 +2560,14 @@ async function scenario05(page, recorder, _network, runtime) {
 }
 
 async function scenario06(page, recorder) {
+  await runRelationScenario(page, recorder, false);
+}
+
+async function scenario27(page, recorder) {
+  await runRelationScenario(page, recorder, true);
+}
+
+async function runRelationScenario(page, recorder, searchTargets) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   const authors = await createSimpleTable(page, "E2E Authors V2", "Name");
@@ -2604,6 +2612,7 @@ async function scenario06(page, recorder) {
       ),
     { cascade: cascade.planned },
   );
+  if (!searchTargets) return;
   const unicodeLabel = "中文 Cafe\u0301 👩🏽‍💻";
   const labels = Array.from({ length: 51 }, (_, index) => (
     index === 0 ? unicodeLabel : `Search author ${String(index).padStart(2, "0")}`
@@ -6936,6 +6945,7 @@ const scenarios = {
   "22-timeline-date-move": scenario22,
   "23-directory-replica-recovery": scenario23,
   "26-lookup-definition-read": scenario26,
+  "27-relation-target-search": scenario27,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

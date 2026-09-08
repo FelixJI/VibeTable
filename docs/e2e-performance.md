@@ -8,10 +8,10 @@
 - GitHub run：[main CI 33975773081](https://github.com/FelixJI/VibeTable/actions/runs/33975773081)
 - 报告契约：`contractVersion=2.0`
 - 结果：23/23 passed、0 failed、0 skipped。
-- 当前 manifest gap：1（`26-lookup-definition-read`）。
+- 当前 manifest gap：2（`26-lookup-definition-read`、`27-relation-target-search`）。
 - 当前 manifest surplus：无。
 
-场景 "26-lookup-definition-read" 已进入 manifest，尚无覆盖它的正式 main 打包报告；上述 23/23 历史样本不包含该新增场景。
+场景 "26-lookup-definition-read" 和 "27-relation-target-search" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这两项新增场景，也不证明关系目标搜索资格。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
