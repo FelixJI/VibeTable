@@ -2,7 +2,7 @@
 
 此变更将同一 mutation 契约下的 preview/apply 成对迁入 Go，避免预览与应用形成中间 owner 状态。保留已有 mutation Kernel 和 workspace 写门禁，Python import/export/plugin 使用的内部 client 不随产品路由删除。产品目录仍为 103 RPC、7 事件，当前 owner 为 21 Go / 80 Python / 2 Host。
 
-前置交付为 Go 权威恢复流、Host 完整消费者和独立 workspace mutation 重放修复。该修复的独立 PR #298 已通过其 head CI，并按用户授权与 #299 集成到 #302 运行 fresh CI；后续迁移 PR 须同步实际 main 合并结果，不能把重放修复重复包装为 owner 切换。
+前置交付为 Go 权威恢复流、Host 完整消费者和独立 workspace mutation 重放修复。重放与字段计划修复的#302以及标签#303均已各自通过CI，现由#304统一端点接续fresh CI。Host #300已完成合并后main CI/CD闭环；后续迁移PR仍须同步#304实际main结果，不能把基础修复重复包装为owner切换。
 
 ## 契约
 
@@ -45,3 +45,24 @@ Standards 未发现确定违例，指出严格 fixture 装配多处重复的维�
 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 02-all-field-schema --scenario 08-stale-conflict --scenario 16-dashboard-lifecycle`：运行 20260908T185856Z，3/3 PASS、0 skip。S02 13.173 秒/18 断言；S08 4.751 秒/8 断言；S16 28.225 秒/17 断言。各场景 Node/Host exit 0，pageErrors、异常 bridge、pending 均为 0；members/descendants 为空，端口释放、owner lease 和最终清理通过。
 
 原始报告为 build/qa/product-e2e/20260908T185856Z/product-e2e-report.json；构建和运行日志为 build/mutation-owner-current-host-build.log、build/mutation-owner-current-host-e2e.log。S04/S11 仍归属于前述 9d6af2ef 运行，没有在本次源码重跑。前置 #300/#302 尚待完整合并闭环；本补充不替代最终 fresh CI。
+
+## 统一候选后的最新实际资格
+
+源码e7eb336274c636aaa839dfa66b0f137716b8838e，正常同步#304候选5e978159。相对候选仅保留mutation.preview/apply成对owner迁移、契约和oracle/测试/资格记录；不重复携带replay基础修复。两轴合并交界审查无新增确定问题；此处为最新运行，上述历史证据保留各自源码归属。
+
+- `go test -race ./internal/app -run '^(TestMutationProduct|TestMutationExistingREST)' -count=1 -timeout=5m`：PASS19.585秒，日志build/mutation-owner-qualified-candidate-race.log。
+- Web源码与已验证#304候选完全等价，复用其1523 PASS覆盖检查，不冒称在本分支重复运行。
+- `uv run --frozen --no-sync python scripts/build_next.py`：完整构建退出0，四组件fresh，sidecar build-info为0.5.1/e7eb336274c6，日志build/mutation-owner-qualified-product-build.log。
+- `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 02-all-field-schema --scenario 04-json-round-trip --scenario 08-stale-conflict --scenario 11-plugin-mutation --scenario 28-relation-delta-preview`：run20260908T210452Z，5/5 PASS、0 skip。
+
+| 场景 | 耗时 | 断言 | 已确认预期bridge失败 |
+|---|---:|---:|---:|
+| S02普通编辑 | 13.536秒 | 18 | 1 |
+| S04 JSON/Data IO | 9.929秒 | 20 | 0 |
+| S08过期冲突 | 4.409秒 | 8 | 0 |
+| S11插件写入 | 7.965秒 | 14 | 1 |
+| S28关系preview/标签 | 5.496秒 | 10 | 0 |
+
+五场景Node/生命周期Host退出0，pageErrors、未确认bridge failures、pending均0；成员/后代为空，端口、lease和最终清理通过。覆盖产品Go owner与保留Python Data IO/Plugin路径的相邻交界，不推断全部取消/崩溃或完整发布资格。
+
+报告build/qa/product-e2e/20260908T210452Z/product-e2e-report.json，日志build/mutation-owner-qualified-product-e2e.log。此源码未重跑S16，先前2204a406上的S16证据保持历史归属。等待#304实际main后完成独立Mutation PR的fresh CI、squash和main CI/CD。
