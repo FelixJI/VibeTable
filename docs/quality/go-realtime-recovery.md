@@ -35,6 +35,6 @@ go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAnd
 
 旧实现曾取得 43 项聚焦通过；完整 Go 留有 workspacev2 TempDir RemoveAll 目录非空失败，并曾在 code review 发现请求取消、持久事件校验和 JSON null 兼容问题。真实 RED 与修正记录保存在既有 `build/progress.md` 及历史提交，没有把失败删掉或以此宣称全套通过。
 
-当前未重跑完整多栈质量或完整 Go 矩阵，也未运行 Go coverage；不得将上方相关验证写成完整 quality PASS。最终 fresh PR `required`、squash 与合并后 CI/CD 仍待完成。既有旧 Host 分支的 S10 报告不能替代最新源码消费者的产品验收。
+当前完整 Go 入口 `uv run --frozen --no-sync python qa/next.py --stage go-test` 已在冻结提交 ffc39038 上运行并失败：既有 workspacev2/history 场景在 TempDir RemoveAll 清理时报目录非空；记录见 `build/realtime-full-go-test.log`。脚本原有有限重试未使其通过，没有修改重试或门禁。相关恢复 integration 通过，失败不能当作完整质量通过，也不据此断言外部杀软或文件占用根因。Go format 检查通过。完整多栈质量与 Go coverage 尚未运行；不得将相关验证写成完整 quality PASS。最终 fresh PR `required`、squash 与合并后 CI/CD 仍待完成。既有旧 Host 分支的 S10 报告不能替代最新源码消费者的产品验收。
 
 L4 最终完成还需：整合已存在的 Host/Web 半成品，保持最新 main 的 owner 与共享绑定；以完整事务切换到 Go→WPF，删除 Python SSE supervisor、latest revision cache 和二次包装，保留本地任务 producer；新构建上的 S10、旧 epoch/ABA、duplicate/gap、正常关闭和端口清理均须有适用证据。
