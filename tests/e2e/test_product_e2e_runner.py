@@ -3083,22 +3083,66 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
     ]
-    completed = subprocess.run(
-        [
-            str(ensure_node(runner.ROOT)),
-            "--test",
-            "--test-concurrency=1",
-            *(str(path) for path in test_files),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                str(ensure_node(runner.ROOT)),
+                "--test",
+                "--test-concurrency=1",
+                *(str(path) for path in test_files),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as error:
+        for label, output in (("stdout", error.stdout), ("stderr", error.stderr)):
+            text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
+            error.add_note(f"Node contract {label}:\n{text or '<no captured output>'}")
+        raise
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected_stdout", "expected_stderr"),
+    [
+        (
+            b"last test passed\xff",
+            b"pending Edge phase\xfe",
+            "last test passed\ufffd",
+            "pending Edge phase\ufffd",
+        ),
+        ("last test passed", "pending Edge phase", "last test passed", "pending Edge phase"),
+    ],
+)
+def test_node_contract_timeout_preserves_output_and_original_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: bytes | str,
+    stderr: bytes | str,
+    expected_stdout: str,
+    expected_stderr: str,
+) -> None:
+    failure = subprocess.TimeoutExpired(["locked-node", "--test"], 30, output=stdout, stderr=stderr)
+
+    def timeout(*args: object, **kwargs: object) -> None:
+        assert kwargs["timeout"] == 30
+        raise failure
+
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
+
+    assert caught.value is failure
+    rendered = str(caught.getrepr())
+    assert f"Node contract stdout:\n{expected_stdout}" in "\n".join(caught.value.__notes__)
+    assert f"Node contract stderr:\n{expected_stderr}" in "\n".join(caught.value.__notes__)
+    assert expected_stdout in rendered
+    assert expected_stderr in rendered
 
 
 def test_realtime_scenario_recovers_a_packaged_backend_with_a_fresh_safe_session() -> None:
