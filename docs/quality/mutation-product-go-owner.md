@@ -74,3 +74,9 @@ Standards 未发现确定违例，指出严格 fixture 装配多处重复的维�
 ## 首轮 fresh CI 的进程清单修正
 
 CI run `34282769151` 的 core 与 race-b 同在 `TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart` 失败：实际 Go 注册21项，进程测试仍冻结迁移前19项。仅向 RPCMethods 与 Registrations 的精确排序清单加入 `mutation.apply`、`mutation.preview` 和各自 workspace scope，保留全部旧方法与身份/失败关闭/跨重启断言。定向旧测试 FAIL1.349s；`go test ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1` PASS1.708s，同命令加 `-race` PASS10.148s。日志位于 `build/qa/mutation-process-capabilities/`。产品源码未变；更新后的 fresh CI 与合并闭环仍待完成。
+
+## Host owner 清单与不可重试写入回归
+
+新一轮 CI `34285984850` 的 core 已推进到 .NET，暴露4处 Host 精确 owner/scope 期望未同步及1处旧 Python 写入夹具仍使用已迁移的 mutation 方法。仅更新4个测试文件：两 mutation 方法精确加入 Go/workspace 闭集；原 disposed Python 写回归改用仍属 Python 的合法 `field.change.apply`，并验证零传输写入；新增 Go mutation 在首 forwarder disposed 后即使替代端已安装也只调用原端一次、替代端零次、Python零次，并发出唯一 BACKEND_UNAVAILABLE。
+
+聚焦4类测试旧5 FAIL/93 PASS（480ms），修复后99 PASS（482ms）；命令为 `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceRequestDispatcherQueryTests'`。去掉filter运行整个Desktop.Tests：1099 PASS、1 skip（27s），skip为原有符号链接权限相关用例，未改其行为。日志 `build/qa/mutation-host-owners/{red,green,desktop-full}.log`；双轴增量审查0问题。生产代码与已有打包资格不变；后续 fresh CI 仍待完成。
