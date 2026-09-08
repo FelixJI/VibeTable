@@ -463,6 +463,26 @@
       "evidence": ["backend/__main__.py", "backend/application/plugin_execution_runtime.py", "backend/application/plugin_platform_service.py", "backend/infrastructure/plugin_package_lifecycle.py", "backend/infrastructure/plugin_worker.py", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
+      "id": "rpc.query-cursor-window",
+      "kind": "rpc",
+      "names": ["query.cursorFetch", "query.cursorOpen"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": ["query.cursorFetch", "query.cursorOpen"], "write": [], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": ["17-interface-lifecycle"],
+      "targetSlice": "L3A",
+      "targetPr": null,
+      "deleteWhen": "Python cursor routes are removed; retain the public parameter contract and frozen Python query window oracle.",
+      "evidence": ["sidecar/internal/app/query_cursor_product_rpc.go", "contracts/v2/query-window-python-oracle.json", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
       "id": "rpc.query-page",
       "kind": "rpc",
       "names": ["query.page"],
@@ -481,6 +501,70 @@
       "targetPr": null,
       "deleteWhen": "Python runtime route is removed; retain the public parameter contract and the frozen Python query window oracle.",
       "evidence": ["sidecar/internal/app/query_page_product_rpc.go", "contracts/v2/query-window-python-oracle.json", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.query-read-rows",
+      "kind": "rpc",
+      "names": ["query.readRows"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": ["query.readRows"], "write": [], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": ["04-json-round-trip"],
+      "targetSlice": "L3A",
+      "targetPr": null,
+      "deleteWhen": "Python query.readRows route is removed; retain the public contract and Go authoritative row ordering.",
+      "evidence": ["sidecar/internal/app/query_read_rows_product_rpc.go", "sidecar/internal/app/query_read_rows_product_rpc_test.go", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.query-selection-open",
+      "kind": "rpc",
+      "names": [
+        "query.selectionOpen"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "query.selectionOpen"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "02-all-field-schema",
+        "17-interface-lifecycle"
+      ],
+      "targetSlice": "L3A",
+      "targetPr": null,
+      "deleteWhen": "Python runtime route is removed; retain the atomic schema and cursor projection, revision pairing, and frozen Python wire contract without fallback.",
+      "evidence": [
+        "sidecar/internal/app/query_selection_product_rpc.go",
+        "sidecar/internal/query/port.go",
+        "contracts/v2/query-selection-python-oracle.json",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
     },
     {
       "id": "rpc.query-view",
@@ -665,7 +749,7 @@
 	  "deleteWhen": "Python runtime route is removed; retain the public SchemaSnapshotV2 model_dump shape and the Go authoritative schema projection.",
 	  "evidence": ["sidecar/internal/app/schema_product_rpc.go", "sidecar/internal/app/field_routes.go", "sidecar/internal/schemaexecution/table.go", "tests/e2e/pocketbase_product_scenarios.json"]
 	},
-	{
+    {
 	  "id": "rpc.schema-list",
       "kind": "rpc",
       "names": ["schema.list"],
@@ -688,13 +772,13 @@
     {
       "id": "rpc.schema-query-read",
       "kind": "rpc",
-	  "names": ["query.cursorFetch", "query.cursorOpen", "query.readRows", "query.selectionOpen", "query.validateSnapshot"],
+	  "names": ["query.validateSnapshot"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-	  "effects": {"read": ["query.cursorFetch", "query.cursorOpen", "query.readRows", "query.selectionOpen", "query.validateSnapshot"], "write": [], "notification": [], "state": []},
+	  "effects": {"read": ["query.validateSnapshot"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",

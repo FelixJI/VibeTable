@@ -6,6 +6,10 @@
 其他 relation 写方法和 lookup 方法不随本次切换。没有更改 CI、发布门禁或不支持格式的
 零写入拒绝契约。
 
+当前已正常合入 main `a19ccd5366d62be6338f628d06b6c5a37484f20f`，闭集为
+14 Go /86 Python /2 native：main 的13项加本次 search；`relation.previewDelta` 仍由 Python
+负责。下列早期数量、失败和产品包结果均保留其原来源，不能替代本次合并端点资格。
+
 ## 原行为与删除范围
 
 原始生产者为 `8cf989c5873830d28d61067a9afb82ddb06db124`，冻结原件为
@@ -49,11 +53,11 @@ Go 保留省略 query/offset/limit 的默认值、显式空字符串拒绝、原
 两次均为脚本定位修正，保留失败报告，使用同一个产品包，未重建、未增加超时。
 最终 PR CI 与 squash 后 main CI/CD仍pending。0.5.0/N-1兼容不属于当前开发验收；现有发布与格式拒绝契约保留。
 
-## 同步 main 的增量验证
+## 同步 main6ed 的历史增量验证
 
 已正常合入 `6ed36810f3753caed5e2e8ca27a4d4ad2117d41d`（已合并的 query.view），
-最终清单为10 Go /90 Python /2 native。双方生产 adapter 和原始语料保持与来源一致，
-HTTP fixture 使用交叉不可调用 guard，S02 分组和 S06 搜索场景均保留。
+当时清单为10 Go /90 Python /2 native。双方生产 adapter 和原始语料保持与来源一致，
+HTTP fixture 使用交叉不可调用 guard，S02 分组和当时尚未拆分的 S06 搜索脚本均保留。
 
 同步增量：相关 Python 60 passed（首次59 passed/1旧数量断言失败，修正后通过）；
 Host 定向87 passed；Go app/productrpc/productcapabilities race 分别32.452/1.686/1.260s
@@ -76,4 +80,28 @@ passed；既有进程测试1.717s passed。策略生成检查、相关 Ruff 和 
 bridge/renderer 诊断均通过，package audit及四组件新鲜度通过；正常Host退出0，成员和
 后代为空、端口释放、owner lease/final cleanup均通过。旧 S06 报告仅保留为历史记录。
 
-代码/metadata 与最终文档增量独立 Spec0、Standards0；新端点 fresh CI 尚待完成。
+代码/metadata 与当时最终文档增量独立 Spec0、Standards0。随后 `951ab3b7` 的
+CI `34185966199`、required job `101941917672` 已 SUCCESS；这是同步 main a19 之前的端点。
+
+## 同步 main a19 的最终增量
+
+正常 merge 保留 page/view/readRows/cursorOpen/cursorFetch/selectionOpen 全部 Go 生产
+adapter 与原始/typed oracle；search 生产 adapter、unit 和原30例 JSON 与 `951ab3b7` 不变。
+仅组合注册、派生名单和交叉 HTTP fixture 按14项闭集更新，所有无关查询/search调用使用
+fail-fast guard。Host 保留真实 `field.settings.describe` Python Web 迟到响应入口及 search
+的 epoch/取消/无 fallback；Python通用 Product 测试使用仍归 Python 的 `query.validateSnapshot`。
+S02、S17 和独立 S27 全部保留，场景索引只读检查通过。
+
+本次增量均首轮通过，无追加重跑取绿：
+
+- Python123 passed1.42s；精确命令：
+  `uv run --frozen --no-sync python -m pytest tests/backend/test_main_product_data.py tests/backend/adapters/test_pocketbase_product_rpc.py tests/backend/adapters/test_pocketbase_client.py tests/backend/adapters/test_pocketbase_product_rpc_coverage.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_relation_search_python_oracle.py tests/contract/test_query_view_python_oracle.py tests/contract/test_query_window_python_oracle.py tests/contract/test_query_selection_python_oracle.py tests/contract/test_query_read_python_oracle.py -q --no-cov`。
+- Host8类131 passed14s；精确命令：
+  `dotnet test desktop/VibeTable.Desktop.sln --configuration Release --no-restore --filter 'FullyQualifiedName~ProductDataSidecarRoutingTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~RelationLookupRpcRegistryTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceSessionEnvelopeFilterTests|FullyQualifiedName~HostProductRpcCompositionTests|FullyQualifiedName~QueryCursorOwnerCompositionTests'`。
+- sidecar目录执行 `go test -race ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities -run 'TestRelationSearchProduct|TestQuery.*ProductHTTP|TestNewRequiresRegistrations|TestGenerated|TestSchemaListProductHTTPMatchesRealCatalogREST|TestFileListProductHTTPMatchesAttachmentRESTAndConsumesCapabilities|TestHistoryReadProductHTTPReturnsFreshAuditedPage' -count=1`：app73.337s、dispatcher1.690s、capabilities1.252s passed。
+- sidecar目录执行 `go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1`：passed10.372s。
+- 四个相关Go包 vet、Go format、相关Ruff check/format、backend Pyright0、policy生成一致性和 E2E capability index 检查通过。
+
+本次未重新构建产品包或执行 S27；上述实际 S27仍对应 `1ca00c0e` 产品包及当时场景脚本，
+没有将其称为 main a19 合并后的包资格。最终组合独立双轴、精确 head fresh CI及 squash 后
+main CI/CD仍待完成；所有既有失败记录保留，不降低门禁。

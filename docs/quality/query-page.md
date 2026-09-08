@@ -6,7 +6,7 @@ Product 参数层继续检查闭合字段、Unicode scalar、凭据键、深度�
 
 实际产品路径为既有网页 `query.page` 命令，已在 ProductDataRpcRegistry 注册。packaged S04 的 JSON 编辑、粘贴、原生导入后通过该命令核对权威值；本片不新增网页入口或改写历史场景声明。宿主组合测试验证默认 policy 通过真实 Product HTTP gateway 并保留 false 与 snapshot。
 
-PR275 的原 27 案例保持不变，其中 page 输入的 limit=0 和部分 snapshot 形状只证明 Python DTO/下游 transport 边界，不能被当作可达 Go Port 成功结果。Go 测试完整消费三个可表达的原参数拒绝，其他七个 page 样本明确标记不适用；Python replay 仅保留两个仍属 Python 的 cursor 方法。
+PR275 的原 27 案例保持不变，其中 page 输入的 limit=0 和部分 snapshot 形状只证明 Python DTO/下游 transport 边界，不能被当作可达 Go Port 成功结果。Go 测试完整消费三个可表达的原参数拒绝，其他七个 page 样本明确标记不适用；本来源合并时保留两个 Python cursor replay；同步 cursor 迁移后的整合端点已退役全部 Python window replay，只读检查仅核验原生产者和输入，原件不变。
 
 另新增 `contracts/v2/query-page-typed-python-oracle.json` 三个补充样本，从生产代码仍等于 c97c83336e4aa1bdf993fc46a7de57040219fb03 的 Python producer 捕获，未覆盖旧原件。输入为合法 offset/limit，返回具有完整 typed QuerySnapshot 形状，覆盖 Unicode/falsy、空页及公开错误；Go 对比完整结果、错误和 typed 调用参数。样本中的 snapshotId/digest 是明确的脚本化不透明值，不代表有效领域签名。
 

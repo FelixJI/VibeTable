@@ -43,6 +43,10 @@ class FakeProductService:
         ("schema.list", {}),
         ("query.page", {"tableId": "orders", "query": {}}),
         ("query.page", {"extra": True}),
+        ("query.cursorOpen", {"tableId": "orders", "query": {}}),
+        ("query.cursorFetch", {"cursor": "opaque"}),
+        ("query.cursorOpen", {"extra": True}),
+        ("query.cursorFetch", {"extra": True}),
         ("query.view", {"tableId": "orders", "view": {}}),
         ("query.view", {"extra": True}),
         ("schema.list", {"extra": True}),
@@ -116,8 +120,12 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
         "relation.searchTargets",
+        "query.selectionOpen",
         "lookup.list",
+        "query.cursorFetch",
+        "query.cursorOpen",
         "query.page",
+        "query.readRows",
         "query.view",
         "schema.describe",
         "file.list",
@@ -135,7 +143,11 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "file.list",
             "history.read",
             "lookup.list",
+            "query.cursorFetch",
+            "query.cursorOpen",
             "query.page",
+            "query.readRows",
+            "query.selectionOpen",
             "query.view",
             "relation.searchTargets",
             "schema.describe",
@@ -157,14 +169,14 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
         {
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "query.cursorOpen",
-            "params": {"tableId": "orders", "query": {}},
+            "method": "query.validateSnapshot",
+            "params": {"snapshot": {}},
         }
     )
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "query.cursorOpen"
+    assert method == "query.validateSnapshot"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -172,10 +184,10 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("query.cursorOpen", {"tableId": "orders", "query": {}, "extra": True}),
-        ("query.cursorOpen", {}),
-        ("query.cursorOpen", {"tableId": 7, "query": {}}),
-        ("query.cursorOpen", {"tableId": "orders", "query": {}, "collection": "orders"}),
+        ("query.validateSnapshot", {"snapshot": {}, "extra": True}),
+        ("query.validateSnapshot", {}),
+        ("query.validateSnapshot", {"snapshot": 7}),
+        ("query.validateSnapshot", {"snapshot": {}, "collection": "orders"}),
     ],
 )
 async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
@@ -228,8 +240,8 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "query.cursorOpen",
-            "params": {"tableId": "orders", "query": {}},
+            "method": "query.validateSnapshot",
+            "params": {"snapshot": {}},
         }
     )
     assert response is not None

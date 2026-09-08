@@ -668,13 +668,17 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		productrpc.ReconcileRegistration(catalog),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
-		queryPageRegistration(query.NewPort(pb, nil)),
+		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -692,6 +696,20 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		t.Fatal(err)
 	}
 	return mux
+}
+
+type unrelatedQueryReadRowsMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedQueryReadRowsMustNotRun) ReadRows(context.Context, string, []string) ([]map[string]any, error) {
+	probe.t.Fatal("unrelated row read must not run")
+	return nil, nil
+}
+
+type unrelatedSelectionMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedSelectionMustNotRun) OpenSelectionProjection(context.Context, string, query.TableQuery) (query.SelectionProjection, error) {
+	probe.t.Fatal("unrelated query.selectionOpen must not execute")
+	return query.SelectionProjection{}, nil
 }
 
 type unrelatedViewMustNotRun struct{ t *testing.T }

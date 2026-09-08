@@ -10,13 +10,8 @@ import pytest
 from contracts.v2 import generate_query_window_oracle as oracle
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", oracle.replay_cases(), ids=lambda case: case.name)
-async def test_python_query_window_matches_frozen_wire(case: oracle.Case) -> None:
-    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    expected = next(item for item in frozen["cases"] if item["name"] == case.name)
-    # Serialized comparison distinguishes false/0 and preserves -0.0 as well as Unicode.
-    assert oracle.render(await oracle.capture_case(case)) == oracle.render(expected)
+def test_retired_query_window_inputs_match_frozen_producer() -> None:
+    oracle.validate_frozen_inputs()
 
 
 def test_oracle_covers_methods_and_distinct_rejection_boundaries() -> None:
@@ -99,17 +94,20 @@ def test_check_detects_changed_output_without_rewriting(
 
 
 @pytest.mark.asyncio
-async def test_query_page_replay_is_retired_while_cursor_replay_remains_python() -> None:
+async def test_all_query_window_python_replay_is_retired() -> None:
     from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
     from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 
-    assert "query.page" in current_owner_methods("goSidecar")
-    assert "query.page" not in PYTHON_PRODUCT_RPC_REGISTRY
-    assert oracle.PYTHON_REPLAY_METHODS == ("query.cursorOpen", "query.cursorFetch")
+    retired = {"query.page", "query.cursorOpen", "query.cursorFetch"}
+    assert retired <= set(current_owner_methods("goSidecar"))
+    assert retired.isdisjoint(PYTHON_PRODUCT_RPC_REGISTRY)
+    assert oracle.PYTHON_REPLAY_METHODS == ()
     assert set(oracle.PYTHON_REPLAY_METHODS) <= set(PYTHON_PRODUCT_RPC_REGISTRY)
-    assert len(oracle.replay_cases()) == 17
-    with pytest.raises(ValueError, match=r"Python oracle replay is retired for query\.page"):
-        await oracle.capture_case(oracle.cases()[0])
+    assert oracle.replay_cases() == ()
+    for method in retired:
+        case = next(case for case in oracle.cases() if case.method == method)
+        with pytest.raises(ValueError, match="Python oracle replay is retired"):
+            await oracle.capture_case(case)
 
 
 def test_write_cannot_recreate_missing_frozen_output(

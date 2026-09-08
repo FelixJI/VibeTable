@@ -1,0 +1,930 @@
+{
+  "producerCommit": "c97c83336e4aa1bdf993fc46a7de57040219fb03",
+  "boundary": "Python Product dispatcher + adapter; typed-shape scripted authority response, not signed-domain snapshots or cursors",
+  "cases": [
+    {
+      "name": "open-typed-unicode-falsy",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-unicode-falsy",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-unicode-falsy",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "open-typed-terminal",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-terminal",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-terminal",
+        "result": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "open-typed-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-product-error",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "open-typed-null-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-null-rows",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": null,
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-null-rows",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "open-typed-null-row",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-null-row",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            null
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-null-row",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "open-typed-inconsistent-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-inconsistent-cursor",
+        "method": "query.cursorOpen",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": null,
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.open",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "open-typed-inconsistent-cursor",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "fetch-typed-unicode-falsy",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-unicode-falsy",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "opaque-producer-cursor 中文 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "opaque-producer-cursor 中文 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-unicode-falsy",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-typed-terminal",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-terminal",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "opaque-producer-cursor 中文 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "opaque-producer-cursor 中文 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-terminal",
+        "result": {
+          "rows": [],
+          "nextCursor": null,
+          "hasMore": false,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-typed-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-product-error",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "opaque-producer-cursor 中文 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "opaque-producer-cursor 中文 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "fetch-typed-null-rows",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-null-rows",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "opaque-producer-cursor 中文 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": null,
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "opaque-producer-cursor 中文 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-null-rows",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "fetch-typed-null-row",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-null-row",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "opaque-producer-cursor 中文 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            null
+          ],
+          "nextCursor": "游标 /+",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "opaque-producer-cursor 中文 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-null-row",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "fetch-typed-inconsistent-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-inconsistent-cursor",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "opaque-producer-cursor 中文 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": null,
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "opaque-producer-cursor 中文 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-inconsistent-cursor",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "fetch-typed-empty-next-cursor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-empty-next-cursor",
+        "method": "query.cursorFetch",
+        "params": {
+          "cursor": "opaque-producer-cursor 中文 /+"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "cursor.fetch",
+            "cursor": "opaque-producer-cursor 中文 /+"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "fetch-typed-empty-next-cursor",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "nextCursor": "",
+          "hasMore": true,
+          "filteredRows": 1,
+          "totalRows": 7,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 2
+            }
+          }
+        }
+      }
+    }
+  ]
+}

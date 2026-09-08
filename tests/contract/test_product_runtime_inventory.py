@@ -70,7 +70,11 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "file.list",
         "history.read",
         "lookup.list",
+        "query.cursorFetch",
+        "query.cursorOpen",
         "query.page",
+        "query.readRows",
+        "query.selectionOpen",
         "query.view",
         "relation.searchTargets",
         "schema.describe",
@@ -83,8 +87,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert query_page.classification == "GO_AUTHORITY"
     assert query_page.cancellation == "cooperative"
     assert query_page.product_scenarios == ("04-json-round-trip",)
-    for method in ("query.readRows", "query.cursorOpen", "query.cursorFetch"):
-        assert inventory.require("rpc", method).current_route == "pythonBff"
+    assert inventory.require("rpc", "query.validateSnapshot").current_route == "pythonBff"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"
     } == {"settings.readDevice", "settings.saveDevice"}
@@ -134,8 +137,9 @@ def test_inventory_requires_exact_product_rpc_coverage(tmp_path: Path) -> None:
     groups = source["groups"]
     assert isinstance(groups, list)
     group = next(item for item in groups if item["id"] == "rpc.schema-query-read")
-    removed = group["names"].pop()
-    group["effects"]["read"].remove(removed)
+    assert group["names"] == ["query.validateSnapshot"]
+    removed = group["names"][0]
+    groups.remove(group)
 
     error = _assert_error(
         "coverageMismatch",

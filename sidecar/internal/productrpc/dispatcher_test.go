@@ -461,13 +461,12 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 10 ||
+	if methods := dispatcher.Methods(); len(methods) != 14 ||
 		methods[0].Method != "events.reconcile" || methods[1].Method != "file.list" ||
 		methods[2] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[3].Method != "lookup.list" || methods[4].Method != "query.page" ||
-		methods[5].Method != "query.view" ||
-		methods[6] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[7].Method != "schema.describe" || methods[8].Method != "schema.getTable" || methods[9].Method != "schema.list" {
+		methods[3].Method != "lookup.list" || methods[4].Method != "query.cursorFetch" || methods[5].Method != "query.cursorOpen" || methods[6].Method != "query.page" || methods[7].Method != "query.readRows" ||
+		methods[8].Method != "query.selectionOpen" || methods[9].Method != "query.view" || methods[10] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[11].Method != "schema.describe" ||
+		methods[12].Method != "schema.getTable" || methods[13].Method != "schema.list" {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -520,7 +519,23 @@ func generatedGoSidecarRegistrations() []Registration {
 			ValidateParams: validator, Handler: handler,
 		},
 		{
+			Method: "query.cursorFetch", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.cursorOpen", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
 			Method: "query.page", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.readRows", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.selectionOpen", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{

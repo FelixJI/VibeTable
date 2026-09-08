@@ -33,3 +33,39 @@ table/schemaRevision/dataRevision 不匹配，以及 cursor 存在性和类型�
 PocketBase 查询原子性、真实 cursor 编解码、过滤/排序、并发 revision 行为或持久化。
 Go 迁移需保留真实领域及产品测试，并另行重放该冻结语料；此处未运行真实 Go、
 桌面、发布 build/smoke 或全量 QA，也没有修改或迁移 owner。
+
+## owner 迁移后的保留方式
+
+query.selectionOpen 已退出当前 Python runtime；上述生产者说明仅适用于固定的
+ccfbce59a811fcfb9b27baa11fb83bca25f5a8fc 基线。原始 28 例 JSON 不改写。
+当前生成器已删除 Python transport/capture 实现，--write 无条件拒绝；默认及 --check
+仅验证保留的 producer、案例清单、请求和 authority 输入，不声称重放原 Python handler。
+Python 契约测试继续校验冻结输出的 typed shape、错误分类和 Unicode/falsy 事实，
+Go dispatcher 消费冻结输入/输出，并另用真实 PocketBase 验证领域行为。
+需要重现原始捕获时使用上述 producer 的源代码，不能将当前 Go 结果反写为旧 oracle。
+
+## Go typed authority 的补充成功语料
+
+`query-selection-typed-python-oracle.json` 保留四个成功窗口（完整字段、末页、空记录、
+空查询）的原 Python 公开响应。原始 28 例仍逐字保留；其中成功样本只有一个 capability，
+不满足真实 Go SchemaSnapshot 的完整 canonical capability 契约，不能直接充当 Go Port 输出。
+
+补充语料的 Python 生产者固定为提交 `c6115d27312a8abad176d0223aae1f060bf3d155`
+中的 `contracts.v2.generate_query_selection_oracle.capture_case`，authority 类型与
+capability 生产者固定为 `b8294c2deff6890c80ac1c0c809309f64b997c86`。捕获步骤为：
+
+1. 从原 28 例取上述四个成功案例的 request 与 authorityFixture.response，使用
+   `json.Decoder.UseNumber` 解码为 `query.SelectionProjection`。
+2. 按 `v2.LogicalTypes` 顺序用 `v2.CapabilityFor` 填入全部 18 个 canonical
+   capabilities，通过 `v2.ValidateSnapshot`，再用 `json.Marshal` 输出 Go authority。
+   `TableQuery` 的 omitempty 规则在此生效，不人工补 keyword、filters 或 sorts。
+3. 在固定 Python 生产者的独立 checkout 中，构造同一 method/params 的 `Case`，
+   name 加 `typed-` 前缀，authority response 使用上一步 JSON；运行原始
+   `capture_case`，经真实 Python dispatcher、adapter 与 typed projection 捕获 response。
+   只替换其已有 scripted transport，未用新 Go handler 输出生成 expected response。
+4. 使用 exclusive create 保存四例及两个 producer commit。当前 Go HTTP dispatcher
+   精确比较这些冻结 Python response，并独立运行真实 PocketBase 原子查询与 cursor 延续测试。
+
+原始 malformed JSON 中无法由 typed Port 表达的缺字段/类型错误在 Go 测试中逐例说明，
+可表达的 schema、表与 revision 配对、计数、cursor 和 row 异常用 canonical 基线单项变异验证。
+这些变异是当前 authority 拒绝契约测试，不冒充原始 Python corpus 的逐字重放。

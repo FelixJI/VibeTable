@@ -1,9 +1,8 @@
-"""Replay the remaining Python cursor contract against the immutable query window oracle."""
+"""Validate historical inputs after the Python query window owners have migrated."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -20,7 +19,7 @@ from backend.rpc.product_errors import register_product_rpc_errors
 PRODUCER_COMMIT = "c97c83336e4aa1bdf993fc46a7de57040219fb03"
 OUTPUT = Path(__file__).with_name("query-window-python-oracle.json")
 METHODS = ("query.page", "query.cursorOpen", "query.cursorFetch")
-PYTHON_REPLAY_METHODS = ("query.cursorOpen", "query.cursorFetch")
+PYTHON_REPLAY_METHODS: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -226,6 +225,31 @@ def render(value: JsonObject) -> str:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
 
 
+def validate_frozen_inputs() -> None:
+    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    if frozen.get("producerCommit") != PRODUCER_COMMIT:
+        raise ValueError("Frozen query window producer changed")
+    entries = frozen.get("cases")
+    expected_cases = cases()
+    if not isinstance(entries, list) or len(entries) != len(expected_cases):
+        raise ValueError("Frozen query window case inventory changed")
+    for entry, case in zip(entries, expected_cases, strict=True):
+        expected: JsonObject = {
+            "name": case.name,
+            "request": {
+                "jsonrpc": "2.0",
+                "id": case.name,
+                "method": case.method,
+                "params": case.params,
+            },
+            "authorityFixture": {"response": case.response, "failure": case.failure},
+        }
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid frozen query window entry")
+        if render({key: entry.get(key) for key in expected}) != render(expected):
+            raise ValueError(f"Frozen query window inputs changed: {case.name}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -239,14 +263,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.write:
         parser.error("The frozen producer oracle cannot be regenerated after owner migration")
-    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
-    frozen["cases"] = [
-        case for case in frozen["cases"] if case["request"]["method"] in PYTHON_REPLAY_METHODS
-    ]
-    if render(frozen) != render(asyncio.run(capture())):
-        parser.error(
-            "Python cursor contract differs from the frozen producer; inspect the change, do not regenerate"
-        )
+    try:
+        validate_frozen_inputs()
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
     return 0
 
 
