@@ -304,8 +304,6 @@ func (hub *Hub) subscribe(
 		hub.mu.Unlock()
 		return nil, err
 	}
-	// Catchup advances only this subscriber; existing subscribers still need
-	// committed events whose publisher has not yet drained the durable outbox.
 	entry.replayedThrough = retainedHighWater
 	hub.mu.Unlock()
 	go func() {
