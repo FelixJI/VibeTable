@@ -73,3 +73,7 @@ reciprocal presence #301 已完成 main CI/CD 闭环；字段设置修复与标�
 报告build/qa/product-e2e/20260908T205721Z/product-e2e-report.json，执行日志build/relation-pair-qualified-product-e2e.log。等待#304实际main后再完成独立pair PR的fresh CI与合并闭环；当前不将定向包验证提升为完整Relation/RR2资格。
 
 ![当前源码双端标签消费后的真实Grid](../assets/screenshots/vibetable-relation-pair-current.png)
+
+## 实际 main 端点同步
+
+PR #304 已于 2026-09-08 21:43 UTC squash 合并为 `3bf03bc6f47399bacbdb1305a9b110c8d3b11ae5`，其 PR required CI 全部成功。当前分支以正常 merge 同步该实际 main，提交 `60a9ffe99d1678824ff89612ebe3f6eea1c103b4` 与同步前 `040a6ced` 的 Git tree 完全一致；保留 pair 专属测试和计划，两处 squash 历史冲突未改变产品代码。因此复用上述 `68dc1775` 产品构建与三场景资格，不重复构建同一代码。#304 合并后 main CI/CD 尚在跟踪，本 pair PR 的 fresh CI 与合并闭环仍待完成。
