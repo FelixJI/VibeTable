@@ -27,3 +27,14 @@ Standards 与 Spec 独立审查源码及原三份测试均为 0 个确定缺陷�
 真实 abort 失败在 coordinator 层注入，Runtime 层以组合错误验证不吞掉失败；未声称覆盖 REST 到真实 abort 失败再重启 Runtime 的完整链路。旧 token 排队语义未在新增用例直接重演，原 gate 实现未改变。
 
 并发用例使用 httptest handler，并未覆盖网络传输；共同 start 只保证并发发起，不强制 gate 内重叠，不作为排队后旧 token、关闭或取消竞争的证明。
+
+## PR #298 覆盖率反馈与取消边界
+
+首轮 CI `34252645126` 在 authority diff 覆盖率以 6/7（85.71%）失败，门禁要求 90%，未调整阈值。新增回归在现有 WithClock seam 的已存回执过期检查中取消请求，同时断言 Kernel/Runtime 均返回取消、receipt 为空、权威状态不变且随后 REST 重放可继续。
+
+- `go test -race ./internal/app -run '^TestWorkspaceMutationReplayCancellationDuringReceiptRead$' -count=1 -timeout=5m`：PASS，7.286 秒。
+- Go overlay 仅移除生产 post-replay 取消 guard，同一测试预期 FAIL，6.349 秒：Kernel 暴露原回执与 replay signal，虽 Runtime 返回取消仍被断言捕获。生产文件未改。
+- `uv run --frozen --no-sync python qa/go_coverage.py`：FAIL；core 覆盖率通过，authority 测试中三个 Windows TempDir RemoveAll 报 directory-not-empty（新增取消测试、RuntimeComposition 与 SnapshotRestore/trailing_dot），未出现业务断言失败。本轮不计为完整门禁通过，也未重跑掩盖清理失败。
+- 对本轮已产生的 authority profile 使用原报告工具、原阈值作诊断：line 76.23%（4386/5754），branch 63.37%（2242/3538），diff 100%（7/7）。这仅确认缺失分支已覆盖，不替代失败的测试入口。
+
+增量 Standards 与 Spec 独立审查各 0 个确定问题。日志：`build/mutation-replay-mid-read-cancel-race.log`、`build/mutation-replay-mid-read-cancel-red.log`、`build/mutation-replay-cancel-full-go-coverage.log`、`build/mutation-replay-cancel-coverage-diagnostic.log`。新的完整 fresh CI 仍需通过。

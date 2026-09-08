@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
@@ -292,5 +294,35 @@ func TestWorkspaceMutationReplaySerializesConcurrentSameKey(t *testing.T) {
 	workspaceMutationReplayReceipt(t, f.call(t, context.Background(), f.request))
 	if !reflect.DeepEqual(committed, f.state(t)) {
 		t.Fatal("subsequent replay changed committed authority")
+	}
+}
+func TestWorkspaceMutationReplayCancellationDuringReceiptRead(t *testing.T) {
+	f := newWorkspaceMutationReplayFixture(t)
+	workspaceMutationReplayReceipt(t, f.call(t, context.Background(), f.request))
+	before := f.state(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The existing clock seam runs while checking the stored receipt expiry.
+	// Cancel at that read boundary, after admission but before replay returns.
+	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{}, mutation.WithClock(func() time.Time {
+		cancel()
+		return time.Now()
+	}))
+	var receipt mutation.Receipt
+	var kernelErr error
+	err := f.runtime.CoordinateBusinessWrite(ctx, "mutation.apply", f.request.IdempotencyKey, func(writeCtx context.Context) error {
+		receipt, kernelErr = kernel.Apply(writeCtx, f.request)
+		return kernelErr
+	})
+	if !errors.Is(kernelErr, context.Canceled) || !errors.Is(err, context.Canceled) ||
+		!reflect.DeepEqual(receipt, mutation.Receipt{}) {
+		t.Fatalf("canceled receipt read exposed replay: receipt=%#v kernel=%v runtime=%v", receipt, kernelErr, err)
+	}
+	if !reflect.DeepEqual(before, f.state(t)) {
+		t.Fatal("canceled receipt read changed authority")
+	}
+	replayed := workspaceMutationReplayReceipt(t, f.call(t, context.Background(), f.request))
+	if replayed.Status != mutation.StatusReplayed || !reflect.DeepEqual(before, f.state(t)) {
+		t.Fatal("canceled receipt read left a pending gate or changed the later replay")
 	}
 }
