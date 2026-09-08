@@ -206,6 +206,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
     [TestMethod]
     [DataRow("query.page")]
+    [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     public async Task GoRouteSettlesEpochCancellationWithoutSuccess(string method)
     {
@@ -254,6 +255,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
     [TestMethod]
     [DataRow("query.page")]
+    [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
     public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation(string method)
     {
@@ -777,7 +779,6 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
         + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
         + "\"offset\":0,\"limit\":10}")]
-    [DataRow("relation.searchTargets", "{\"relationId\":\"records.owner\"}")]
     public async Task RelationReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
     {
         using var fixture = new SessionFixture();
@@ -823,7 +824,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
         + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
         + "\"offset\":0,\"limit\":10}")]
-    [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\"}")]
+    [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\",\"sourceItemId\":\"record-1\",\"expectedSchemaRevision\":\"schema-1\",\"adds\":[],\"removes\":[],\"idempotencyKey\":\"preview-test\"}")]
     public async Task RelationReadRejectsRetiredScopeBeforeGateway(string type, string payload)
     {
         using var fixture = new SessionFixture();
@@ -1000,7 +1001,13 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         string method, string requestId, WorkspaceWireScope scope)
     {
         RoutedWebRequest request = GoQueryRequest(requestId, scope);
-        return method == "relation.previewDelta"
+        return method == "relation.searchTargets"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.SerializeToElement(new { relationId = "records.owner" }),
+            }
+            : method == "relation.previewDelta"
             ? request with
             {
                 Type = method,

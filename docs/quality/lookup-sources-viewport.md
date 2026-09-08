@@ -75,3 +75,20 @@ UI 来源提交的生产变更仅增加 `align-self: stretch` 和解释注释，
 包审计及四组件新鲜度通过；Host正常退出0，成员/后代为空，端口释放、owner lease及最终清理通过。
 这是该组合来源的单场景产品证据，不等同于完整多栈CI或其他owner端点的通过结果。
 上文两次失败保持可追溯，当前main历史23场景报告及其gap未改写。
+
+## 两来源通过 CI 后的最终整合
+
+边界来源 `0bb31ba14d9c68f4e3e05609a6113d2d5fdfa4b7` 的CI `34196244479` 与
+UI来源 `1a4160193ae6db3ba19c8177340ec9986a2ee308` 的CI `34197436577` 均已成功；
+分别的required为 `101975812391` 与 `101980270529`。
+按已授权合批流程，正常合入main `6e25fd033697c57a4ca113caf98c90293b892548`，
+以完整来源分页修复为单一意图；UI、边界及其聚焦测试均与已通过的来源一致。
+清单保持main的15 Go /85 Python /2 native，lookup.valuePage仍由Python处理。
+S26/S27/S28/S29并存，旧23场景报告source/run不变，gap为4。
+
+整合后复用环境执行：
+- `uv run --frozen --no-sync python -m pytest tests/contract/test_product_e2e_capability_index.py tests/e2e/test_product_e2e_runner.py -q --no-cov`：150 passed10.74s。
+- sidecar目录 `go test -race ./internal/app -run '^TestWorkspaceV2(LookupValuePage|WriteBoundary|WriteRejection)' -count=1`：passed7.587s。
+
+索引由仓库生成器更新。未为本轮main整合重复构建产品包，7092的S29仍是精确来源证据；
+最终端点完整fresh CI及合并后main CI/CD仍待完成，不能直接沿用旧来源绿灯。

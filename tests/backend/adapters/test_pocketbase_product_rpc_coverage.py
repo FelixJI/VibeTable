@@ -244,7 +244,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             {"valid": True, "diagnostics": []},
             {"downloadCapability": "opaque", "contractVersion": "2.0"},
             {"status": "applied"},
-            {"items": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}], "total": 1},
             {
                 "target": {
                     "tableId": "customers",
@@ -308,18 +307,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
     )
     assert removed["status"] == "applied"
 
-    searched = await service.invoke(
-        "relation.searchTargets",
-        ProductParams.model_validate(
-            {
-                "relationId": "orders.customer",
-                "query": "ad",
-                "offset": 0,
-                "limit": 10,
-            }
-        ),
-    )
-    assert searched["items"][0]["collection"] == "customers"
     created = await service.invoke(
         "relation.createTarget",
         PRODUCT_RPC_REGISTRY["relation.createTarget"].model_validate(
