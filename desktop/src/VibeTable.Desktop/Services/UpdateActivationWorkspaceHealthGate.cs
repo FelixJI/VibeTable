@@ -51,6 +51,7 @@ internal sealed class UpdateActivationWorkspaceHealthGate
     private readonly Action<UpdateWorkspaceHealthProbeReceipt>? _reportReady;
     private readonly Action<Exception>? _reportFailure;
     private readonly HostStartupOptions _startupOptions;
+    private readonly Action? _crashAction;
 
     public UpdateActivationWorkspaceHealthGate(
         WorkspaceRegistry registry,
@@ -59,7 +60,8 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         TimeSpan? schemaTimeout = null,
         Action<UpdateWorkspaceHealthProbeReceipt>? reportReady = null,
         Action<Exception>? reportFailure = null,
-        HostStartupOptions? startupOptions = null)
+        HostStartupOptions? startupOptions = null,
+        Action? crashAction = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -72,6 +74,7 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         _reportReady = reportReady;
         _reportFailure = reportFailure;
         _startupOptions = startupOptions ?? HostStartupOptions.Current();
+        _crashAction = crashAction;
     }
 
     public async Task<UpdateWorkspaceHealthProbeReceipt> ConfirmAsync(
@@ -79,6 +82,7 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(settlement);
+        _startupOptions.CrashSelfUpdateIfRequested(_crashAction);
         if (_startupOptions.TryConsumeSelfUpdateHealthTimeoutHold())
         {
             await HoldHealthSettlementUntilHostTerminationAsync(
@@ -162,14 +166,16 @@ internal sealed class UpdateActivationWorkspaceHealthGate
         return receipt!;
     }
 
-    private static async Task HoldHealthSettlementUntilHostTerminationAsync(
+    private async Task HoldHealthSettlementUntilHostTerminationAsync(
         CancellationToken cancellationToken)
     {
-        var pending = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        using CancellationTokenRegistration cancellation = cancellationToken.Register(
-            () => pending.TrySetCanceled(cancellationToken));
-        await pending.Task.ConfigureAwait(false);
+        while (true)
+        {
+            // The crash observer opens its exact process handle after the hold
+            // is consumed, then supplies the same protected one-shot request.
+            _startupOptions.CrashSelfUpdateIfRequested(_crashAction);
+            await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task ReportFailureAndSettleAsync(

@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+from openpyxl import Workbook
+from openpyxl.utils.datetime import CALENDAR_MAC_1904
 
+from backend.adapters.pocketbase.client import PocketBaseClient
+from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.import_service import (
     MAX_ATOMIC_IMPORT_ROWS,
     ImportFlowError,
@@ -270,6 +276,120 @@ def test_source_file_rejects_csv_beyond_atomic_limit_and_other_formats(tmp_path:
     with pytest.raises(ImportFlowError) as error:
         SourceFile(str(unsupported)).read_header_and_rows()
     assert error.value.code == "import_unsupported_format"
+
+
+@pytest.mark.asyncio
+async def test_xlsx_native_dates_reach_import_http_as_json_scalars(tmp_path: Path) -> None:
+    path = tmp_path / "native-dates.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(["signed_on", "recorded_at", "title", "amount", "enabled", "blank"])
+    sheet.append([date(2026, 8, 29), datetime(2026, 8, 29, 14, 5, 6, 123000), "日期", 0, False])
+    workbook.save(path)
+    workbook.close()
+    header, rows, _ = SourceFile(str(path)).read_header_and_rows()
+    received: list[dict[str, Any]] = []
+
+    def receive(request: httpx.Request) -> httpx.Response:
+        received.append(json.loads(request.content))
+        return httpx.Response(200, json={"contract": "vibetable.import-preview.v1", "rows": []})
+
+    transport = StdlibPocketBaseTransport(
+        PocketBaseConfig(base_url="http://127.0.0.1:1", session_secret="0" * 64),
+        http_transport=httpx.MockTransport(receive),
+    )
+    client = PocketBaseClient(transport=transport, session_secret="0" * 64)
+    await client.preview_import(
+        {
+            "contract": "vibetable.import-preview.v1",
+            "tableId": "native-dates",
+            "schemaRevision": "1",
+            "rows": [{"values": dict(zip(header, rows[0], strict=True)), "mode": "insert"}],
+        }
+    )
+    assert received[0]["rows"][0]["values"] == {
+        "signed_on": "2026-08-29",
+        "recorded_at": "2026-08-29 14:05:06.123000",
+        "title": "日期",
+        "amount": 0,
+        "enabled": False,
+        "blank": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "number_format", "code"),
+    [
+        (59, "yyyy-mm-dd", "import_ambiguous_excel_date"),
+        (60, "yyyy-mm-dd", "import_ambiguous_excel_date"),
+        (time(12, 30), "hh:mm:ss", "import_unsupported_excel_time"),
+        (timedelta(days=1, hours=2), "[h]:mm:ss", "import_unsupported_excel_time"),
+    ],
+)
+def test_xlsx_unrepresentable_native_dates_have_explicit_errors(
+    tmp_path: Path, value: object, number_format: str, code: str
+) -> None:
+    path = tmp_path / "unsupported-native-date.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(["value"])
+    sheet.append([value])
+    sheet["A2"].number_format = number_format
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ImportFlowError) as error:
+        SourceFile(str(path)).read_header_and_rows()
+    assert error.value.code == code
+    assert error.value.data == {"sheet": "Sheet", "row": 2, "column": 1}
+    assert "ISO" in str(error.value)
+
+
+def test_xlsx_dates_preserve_hidden_time_and_formula_cache_semantics(tmp_path: Path) -> None:
+    path = tmp_path / "date-formats.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(["value"])
+    sheet.append([datetime(2026, 8, 29)])
+    sheet["A2"].number_format = "yyyy-mm-dd hh:mm:ss"
+    sheet.append([datetime(2026, 8, 29, 12, 30)])
+    sheet["A3"].number_format = "yyyy-mm-dd"
+    sheet.append([date(2026, 8, 29)])
+    sheet["A4"].number_format = "YYYY-MM-DD"
+    sheet.append(["1900-02-28"])
+    sheet.append(["2026-08-29T00:00:00+08:00"])
+    sheet.append(["=1+1"])
+    sheet.append(["=1+1"])
+    sheet["A8"].data_type = "s"
+    workbook.save(path)
+    workbook.close()
+    _, rows, _ = SourceFile(str(path)).read_header_and_rows()
+    assert rows == [
+        ["2026-08-29 00:00:00"],
+        ["2026-08-29 12:30:00"],
+        ["2026-08-29"],
+        ["1900-02-28"],
+        ["2026-08-29T00:00:00+08:00"],
+        [None],
+        ["=1+1"],
+    ]
+
+
+def test_xlsx_1904_epoch_does_not_reject_unambiguous_native_date(tmp_path: Path) -> None:
+    path = tmp_path / "1904.xlsx"
+    workbook = Workbook()
+    workbook.epoch = CALENDAR_MAC_1904
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(["value"])
+    sheet.append([date(1900, 2, 28)])
+    workbook.save(path)
+    workbook.close()
+    _, rows, _ = SourceFile(str(path)).read_header_and_rows()
+    assert rows == [["1900-02-28"]]
 
 
 def test_source_file_reads_named_xlsx_sheet_and_empty_workbook(tmp_path: Path) -> None:

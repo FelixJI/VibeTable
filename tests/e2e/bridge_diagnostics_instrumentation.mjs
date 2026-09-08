@@ -87,6 +87,8 @@ export function installBridgeDiagnosticsInPage() {
     "CANCELLED",
     "CAPABILITY_NOT_PUBLIC",
     "DASHBOARD_CANCELLED",
+    "DOCUMENT_LIST_FAILED",
+    "DOCUMENT_LIST_INVALID",
     "PRODUCT_DATA_FAILED",
     "SCHEMA_LIFECYCLE_CANCELLED",
     "SCHEMA_LIFECYCLE_TIMEOUT",
@@ -98,7 +100,12 @@ export function installBridgeDiagnosticsInPage() {
     "preset_edit_conflict",
     "retention.policy_revision_stale",
     "snapshot.package_invalid",
+    "workspace.internal_failed",
+    "workspace.operation_conflict",
     "workspace.operation_failed",
+    "workspace.scope_required",
+    "workspace.sequence_stale",
+    "workspace.session_epoch_stale",
     "workspace.session_stale",
   ]);
   const stableCode = (value) => diagnosticCodes.has(value) ? value : null;
@@ -213,6 +220,7 @@ export function installBridgeDiagnosticsInPage() {
       ? diagnostics.pending[rawRequestId]
       : null;
     const isFailure = message?.type === "operation.failed"
+      || message?.type === "document.operationFailed"
       || message?.ok === false
       || message?.payload?.ok === false;
     if (!request) {

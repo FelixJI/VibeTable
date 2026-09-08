@@ -194,6 +194,20 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    public async Task QueryPageUsesDefaultGoOwnerAndPreservesProductProjection()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        fixture.Http.Result = Json("""{"rows":[{"id":"r1","value":false}],"offset":0,"limit":5,"filteredRows":1,"totalRows":1,"snapshot":{"schemaRevision":"schema_1","dataRevision":0}}""");
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!.CreateGateway(fixture.Leases, fixture.Http);
+        JsonElement result = await gateway.QueryPageAsync(Json("""{"tableId":"orders","query":{"offset":0,"limit":5}}"""), CancellationToken.None);
+        Assert.IsFalse(result.GetProperty("rows")[0].GetProperty("value").GetBoolean());
+        Assert.AreEqual("schema_1", result.GetProperty("snapshot").GetProperty("schemaRevision").GetString());
+        Assert.IsFalse(result.TryGetProperty("querySnapshot", out _));
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
     public async Task ReadyFactoryCapturesPairedClientAndUsesTypedSelectedRoute()
     {
         await using var fixture = await Fixture.OpenAsync();
@@ -341,7 +355,7 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
-    public async Task DefaultPolicySelectsGoForFileAndSchemaReadsAndKeepsOtherReadsOnPython()
+    public async Task DefaultPolicySelectsGoForFileSchemaAndRowReads()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
         using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
@@ -353,10 +367,118 @@ public sealed class HostProductRpcCompositionTests
             Json("""{"tableId":"orders","recordId":"record-1","fieldId":"files"}"""),
             CancellationToken.None);
         Assert.AreEqual(0, files.GetProperty("attachments").GetArrayLength());
+        fixture.Http.Result = Json("""{"rows":[{"id":"record-1","value":false}]}""");
+        JsonElement rows = await gateway.ReadRowsAsync(
+            Json("""{"tableId":"orders","rowIds":["record-1"]}"""),
+            CancellationToken.None);
+        Assert.AreEqual("record-1", rows.GetProperty("rows")[0].GetProperty("id").GetString());
+        Assert.IsFalse(rows.GetProperty("rows")[0].GetProperty("value").GetBoolean());
         fixture.Http.Error = true;
         RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
             gateway.GetTableSchemaAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
         Assert.AreEqual(-32602, error.Code);
+        Assert.AreEqual(4, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
+    public async Task CursorWindowUsesDefaultGoOwnerForOpenAndFetch()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
+            .CreateGateway(fixture.Leases, fixture.Http);
+        fixture.Http.Result = Json("""{"rows":[{"id":"row-1","value":false}],"nextCursor":"opaque-next","hasMore":true,"filteredRows":2,"totalRows":2,"querySnapshot":{"table":"orders"}}""");
+        JsonElement first = await gateway.OpenQueryCursorAsync(
+            Json("""{"tableId":"orders","query":{"limit":1}}"""), CancellationToken.None);
+        Assert.IsFalse(first.GetProperty("rows")[0].GetProperty("value").GetBoolean());
+        Assert.IsTrue(first.GetProperty("hasMore").GetBoolean());
+        fixture.Http.Result = Json("""{"rows":[{"id":"row-2","value":"中文"}],"nextCursor":null,"hasMore":false,"filteredRows":2,"totalRows":2,"querySnapshot":{"table":"orders"}}""");
+        JsonElement second = await gateway.FetchQueryCursorAsync(
+            JsonSerializer.SerializeToElement(new { cursor = first.GetProperty("nextCursor").GetString() }),
+            CancellationToken.None);
+        Assert.AreEqual("中文", second.GetProperty("rows")[0].GetProperty("value").GetString());
+        Assert.IsFalse(second.GetProperty("hasMore").GetBoolean());
+        Assert.IsTrue(second.TryGetProperty("querySnapshot", out _));
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
+    public async Task DefaultSelectionOwnerUsesGoEpochAndDoesNotFallbackOnErrorOrClose()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
+            .CreateGateway(fixture.Leases, fixture.Http);
+        DirectoryInfo directory = new(AppContext.BaseDirectory);
+        while (!File.Exists(Path.Combine(directory.FullName, "pyproject.toml")))
+            directory = directory.Parent ?? throw new InvalidOperationException("Repository not found.");
+        using JsonDocument oracle = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            directory.FullName, "contracts", "v2", "query-selection-python-oracle.json")));
+        JsonElement selection = oracle.RootElement.GetProperty("cases")[0];
+        JsonElement parameters = selection.GetProperty("request").GetProperty("params");
+        fixture.Http.Result = selection.GetProperty("response").GetProperty("result").Clone();
+        JsonElement result = await gateway.OpenSelectionProjectionAsync(parameters, CancellationToken.None);
+        Assert.IsTrue(JsonElement.DeepEquals(fixture.Http.Result, result));
+        Assert.AreEqual(fixture.Session.WorkspaceId, fixture.Http.LastWire.GetProperty("workspaceId").GetGuid());
+        Assert.AreEqual(fixture.Session.SessionEpoch, fixture.Http.LastWire.GetProperty("sessionEpoch").GetUInt64());
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        fixture.Http.Error = true;
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+            gateway.OpenSelectionProjectionAsync(parameters, CancellationToken.None));
+        Assert.AreEqual(-32602, error.Code);
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        fixture.Http.Error = false;
+        fixture.Http.RpcEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Http.ReplyGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<JsonElement> pending = gateway.OpenSelectionProjectionAsync(parameters, CancellationToken.None);
+        try
+        {
+            await fixture.Http.RpcEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Task close = fixture.CloseAsync();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+            await close.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally { fixture.Http.ReplyGate.TrySetResult(); }
+        Assert.AreEqual(3, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
+    public async Task DefaultViewOwnerUsesGoEpochAndDoesNotFallbackOnErrorOrClose()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!
+            .CreateGateway(fixture.Leases, fixture.Http);
+        DirectoryInfo directory = new(AppContext.BaseDirectory);
+        while (!File.Exists(Path.Combine(directory.FullName, "pyproject.toml")))
+            directory = directory.Parent ?? throw new InvalidOperationException("Repository not found.");
+        using JsonDocument oracle = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            directory.FullName, "contracts", "v2", "query-view-python-oracle.json")));
+        JsonElement view = oracle.RootElement.GetProperty("cases")[0];
+        JsonElement parameters = view.GetProperty("request").GetProperty("params");
+        fixture.Http.Result = view.GetProperty("response").GetProperty("result").Clone();
+        JsonElement result = await gateway.QueryViewAsync(parameters, CancellationToken.None);
+        Assert.IsTrue(JsonElement.DeepEquals(fixture.Http.Result, result));
+        Assert.AreEqual(fixture.Session.WorkspaceId, fixture.Http.LastWire.GetProperty("workspaceId").GetGuid());
+        Assert.AreEqual(fixture.Session.SessionEpoch, fixture.Http.LastWire.GetProperty("sessionEpoch").GetUInt64());
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        fixture.Http.Error = true;
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+            gateway.QueryViewAsync(parameters, CancellationToken.None));
+        Assert.AreEqual(-32602, error.Code);
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        fixture.Http.Error = false;
+        fixture.Http.RpcEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Http.ReplyGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<JsonElement> pending = gateway.QueryViewAsync(parameters, CancellationToken.None);
+        try
+        {
+            await fixture.Http.RpcEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Task close = fixture.CloseAsync();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(5)));
+            await close.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally { fixture.Http.ReplyGate.TrySetResult(); }
         Assert.AreEqual(3, fixture.Http.ProductCalls);
         Assert.AreEqual(1, fixture.Http.ProductHandshakes);
     }
@@ -377,13 +499,17 @@ public sealed class HostProductRpcCompositionTests
         internal PythonBackendSupervisor Backend { get; private set; } = null!;
         internal BackendLaunchOptions BackendOptions { get; private set; } = null!;
         internal PocketBaseSupervisor Sidecar { get; private set; } = null!;
-        internal HttpPeer Http { get; } = new();
+        internal HttpPeer Http { get; }
         internal Action? BeforeSidecarReady { get; set; }
         internal WorkspaceSessionV2 Session => _sessions.Current;
 
         private Fixture(bool useTestPolicy)
         {
-            Http.UseTestPolicy = useTestPolicy;
+            ProductRpcCapabilityManifest productPolicy = useTestPolicy
+                ? ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
+                    "schema.list", "workspace", "hostOnly", "schema.read", "goSidecar", "read"))
+                : ProductRpcCapabilityManifest.Default;
+            Http = new HttpPeer(productPolicy.GetProductSidecarRegistrations());
             DirectoryInfo directory = new(AppContext.BaseDirectory);
             while (!File.Exists(Path.Combine(directory.FullName, "pyproject.toml")))
                 directory = directory.Parent ?? throw new InvalidOperationException("Repository not found.");
@@ -416,8 +542,7 @@ public sealed class HostProductRpcCompositionTests
                     Backend = new PythonBackendSupervisor(backendOptions);
                     return new(Sidecar, Backend, new WorkspaceV2HttpGateway(Sidecar, Http));
                 },
-                useTestPolicy ? ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
-                    "schema.list", "workspace", "hostOnly", "schema.read", "goSidecar", "read")) : null);
+                productPolicy);
             _sessions = new WorkspaceSessionManager(new WorkspaceRegistry(_root), Factory);
             Leases = new WorkspaceSessionEnvelopeFilter(_sessions);
             _sessions.SetRequestDrainHook(Leases);
@@ -464,7 +589,8 @@ public sealed class HostProductRpcCompositionTests
         }
     }
 
-    private sealed class HttpPeer : HttpMessageHandler
+    private sealed class HttpPeer(
+        IReadOnlyList<ProductSidecarRegistration> registrations) : HttpMessageHandler
     {
         internal IDictionary<string, string> Environment { get; set; } = null!;
         internal int ProductCalls { get; private set; }
@@ -472,7 +598,6 @@ public sealed class HostProductRpcCompositionTests
         internal TaskCompletionSource RpcEntered { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? ReplyGate { get; set; }
         internal bool Error { get; set; }
-        internal bool UseTestPolicy { get; set; }
         internal JsonElement Result { get; set; } = Json("""{"tables":["orders"]}""");
         internal JsonElement LastWire { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -487,17 +612,12 @@ public sealed class HostProductRpcCompositionTests
                     sessionEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_SESSION_EPOCH"]),
                     fenceEpoch = ulong.Parse(Environment["VIBETABLE_WORKSPACE_FENCE_EPOCH"]),
                     claimId = Environment["VIBETABLE_WORKSPACE_CLAIM_ID"],
-                    rpcMethods = UseTestPolicy
-                        ? new[] { "schema.list" }
-                        : new[] { "file.list", "schema.getTable", "schema.list" },
-                    registrations = UseTestPolicy
-                        ? new[] { new { method = "schema.list", scope = "workspace" } }
-                        : new[]
-                        {
-                            new { method = "file.list", scope = "workspace" },
-                            new { method = "schema.getTable", scope = "workspace" },
-                            new { method = "schema.list", scope = "workspace" },
-                        },
+                    rpcMethods = registrations.Select(registration => registration.Method).ToArray(),
+                    registrations = registrations.Select(registration => new
+                    {
+                        method = registration.Method,
+                        scope = registration.Scope,
+                    }).ToArray(),
                 }));
             }
             if (request.RequestUri!.AbsolutePath.EndsWith("/drain", StringComparison.Ordinal))

@@ -1,0 +1,3188 @@
+{
+  "producerCommit": "a6840f3ad983a0e6722d623737d4de668c905660",
+  "boundary": "Python Product dispatcher + adapter; scripted authority transport",
+  "cases": [
+    {
+      "name": "ungrouped-unicode-falsy",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "ungrouped-unicode-falsy",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "ungrouped-unicode-falsy",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "grouped-first-page",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "grouped-first-page",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [
+              {
+                "field": "region",
+                "direction": "asc",
+                "bucket": "value"
+              }
+            ],
+            "summaries": [
+              {
+                "field": "amount",
+                "function": "sum"
+              },
+              {
+                "field": "amount",
+                "function": "avg"
+              }
+            ],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": 2,
+              "summaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [
+                {
+                  "field": "region",
+                  "direction": "asc",
+                  "bucket": "value"
+                }
+              ],
+              "summaries": [
+                {
+                  "field": "amount",
+                  "function": "sum"
+                },
+                {
+                  "field": "amount",
+                  "function": "avg"
+                }
+              ],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "grouped-first-page",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": 2,
+              "summaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": true
+        }
+      }
+    },
+    {
+      "name": "grouped-terminal-page",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "grouped-terminal-page",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [
+              {
+                "field": "region",
+                "direction": "asc",
+                "bucket": "value"
+              }
+            ],
+            "summaries": [
+              {
+                "field": "amount",
+                "function": "sum"
+              },
+              {
+                "field": "amount",
+                "function": "avg"
+              }
+            ],
+            "groupOffset": 2,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                null
+              ],
+              "count": 1,
+              "summaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 2,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [
+                {
+                  "field": "region",
+                  "direction": "asc",
+                  "bucket": "value"
+                }
+              ],
+              "summaries": [
+                {
+                  "field": "amount",
+                  "function": "sum"
+                },
+                {
+                  "field": "amount",
+                  "function": "avg"
+                }
+              ],
+              "groupOffset": 2,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "grouped-terminal-page",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                null
+              ],
+              "count": 1,
+              "summaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 2,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "two-level-parent-summary",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "two-level-parent-summary",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [
+              {
+                "field": "region"
+              },
+              {
+                "field": "city"
+              }
+            ],
+            "summaries": [
+              {
+                "field": "amount",
+                "function": "sum"
+              },
+              {
+                "field": "amount",
+                "function": "avg"
+              }
+            ],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文",
+                "Café"
+              ],
+              "count": 1,
+              "summaries": [
+                -0.0,
+                null
+              ],
+              "parentCount": 2,
+              "parentSummaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [
+                {
+                  "field": "region"
+                },
+                {
+                  "field": "city"
+                }
+              ],
+              "summaries": [
+                {
+                  "field": "amount",
+                  "function": "sum"
+                },
+                {
+                  "field": "amount",
+                  "function": "avg"
+                }
+              ],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "two-level-parent-summary",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文",
+                "Café"
+              ],
+              "count": 1,
+              "summaries": [
+                -0.0,
+                null
+              ],
+              "parentCount": 2,
+              "parentSummaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "empty-page-and-groups",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-page-and-groups",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 0,
+            "totalRows": 0,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-page-and-groups",
+        "result": {
+          "page": {
+            "rows": [],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 0,
+            "totalRows": 0,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "empty-view-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-view-forwarded",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {}
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {}
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-view-forwarded",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "table-non-path-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "table-non-path-forwarded",
+        "method": "query.view",
+        "params": {
+          "tableId": "中文/表",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "中文/表",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "table-non-path-forwarded",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "unknown-view-members-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-view-members-forwarded",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "extra": false,
+            "query": {
+              "limit": 0
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "extra": false,
+              "query": {
+                "limit": 0
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-view-members-forwarded",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "paired-null-parent-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "paired-null-parent-preserved",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [
+              {
+                "field": "region"
+              },
+              {
+                "field": "city"
+              }
+            ],
+            "summaries": [
+              {
+                "field": "amount",
+                "function": "sum"
+              },
+              {
+                "field": "amount",
+                "function": "avg"
+              }
+            ],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文",
+                "Café"
+              ],
+              "count": 1,
+              "summaries": [
+                -0.0,
+                null
+              ],
+              "parentCount": null,
+              "parentSummaries": null
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [
+                {
+                  "field": "region"
+                },
+                {
+                  "field": "city"
+                }
+              ],
+              "summaries": [
+                {
+                  "field": "amount",
+                  "function": "sum"
+                },
+                {
+                  "field": "amount",
+                  "function": "avg"
+                }
+              ],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "paired-null-parent-preserved",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文",
+                "Café"
+              ],
+              "count": 1,
+              "summaries": [
+                -0.0,
+                null
+              ],
+              "parentCount": null,
+              "parentSummaries": null
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "extra-group-member-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "extra-group-member-preserved",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": 2,
+              "summaries": [
+                0,
+                null
+              ],
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "extra-group-member-preserved",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": 2,
+              "summaries": [
+                0,
+                null
+              ],
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "empty-snapshot-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-snapshot-preserved",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-snapshot-preserved",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "snapshot": {}
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "negative-counters-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "negative-counters-preserved",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": -1,
+            "limit": 0,
+            "filteredRows": -1,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": -1,
+              "summaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": -1,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "negative-counters-preserved",
+        "result": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": -1,
+            "limit": 0,
+            "filteredRows": -1,
+            "totalRows": 4,
+            "snapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": -1,
+              "summaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": -1,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        }
+      }
+    },
+    {
+      "name": "missing-view",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-view",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-view",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "null-view",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-view",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": null
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-view",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "array-view",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "array-view",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": []
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "array-view",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          },
+          "extra": true
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "empty-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-table",
+        "method": "query.view",
+        "params": {
+          "tableId": "",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "null-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-table",
+        "method": "query.view",
+        "params": {
+          "tableId": null,
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "credential-in-view",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "credential-in-view",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "password": "test-only"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "credential-in-view",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "missing-page",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-page",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "groupRows": [],
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-page",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "malformed-row",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "malformed-row",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              null
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "malformed-row",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "wrong-snapshot-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-snapshot-type",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": []
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-snapshot-type",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "boolean-page-count",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-page-count",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": false,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-page-count",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "malformed-group-row",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "malformed-group-row",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            null
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "malformed-group-row",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "boolean-group-count",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-group-count",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": false,
+              "summaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-group-count",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "non-array-group-summaries",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-array-group-summaries",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": 2,
+              "summaries": null
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-array-group-summaries",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "unpaired-parent",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unpaired-parent",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": 2,
+              "summaries": [
+                0,
+                null
+              ],
+              "parentCount": 2
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unpaired-parent",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "parent-on-single-level",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "parent-on-single-level",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文"
+              ],
+              "count": 1,
+              "summaries": [
+                -0.0,
+                null
+              ],
+              "parentCount": 2,
+              "parentSummaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "parent-on-single-level",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "boolean-parent-count",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-parent-count",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [
+            {
+              "key": [
+                "中文",
+                "Café"
+              ],
+              "count": 1,
+              "summaries": [
+                -0.0,
+                null
+              ],
+              "parentCount": false,
+              "parentSummaries": [
+                0,
+                null
+              ]
+            }
+          ],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-parent-count",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "boolean-group-offset",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-group-offset",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": false,
+          "groupLimit": 2,
+          "hasMoreGroups": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-group-offset",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "non-boolean-has-more",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-boolean-has-more",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "page": {
+            "rows": [
+              {
+                "id": "r1",
+                "text": "中文 Café 👩🏽‍💻 ‏عربي",
+                "blank": "",
+                "zero": 0,
+                "negativeZero": -0.0,
+                "false": false,
+                "null": null,
+                "array": [],
+                "object": {}
+              }
+            ],
+            "offset": 0,
+            "limit": 100,
+            "filteredRows": 3,
+            "totalRows": 4,
+            "querySnapshot": {
+              "snapshotId": "view-oracle-snapshot",
+              "digest": "opaque-authority-digest",
+              "databaseId": "workspace",
+              "table": "orders",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 100
+              }
+            }
+          },
+          "groupRows": [],
+          "groupOffset": 0,
+          "groupLimit": 2,
+          "hasMoreGroups": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-boolean-has-more",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "product-error",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "method": "query.view",
+        "params": {
+          "tableId": "orders",
+          "view": {
+            "query": {
+              "offset": 0,
+              "limit": 100
+            },
+            "groups": [],
+            "summaries": [],
+            "groupOffset": 0,
+            "groupLimit": 2
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "view",
+            "tableId": "orders",
+            "view": {
+              "query": {
+                "offset": 0,
+                "limit": 100
+              },
+              "groups": [],
+              "summaries": [],
+              "groupOffset": 0,
+              "groupLimit": 2
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -35,8 +35,7 @@ internal static class ProductDataRpcRegistry
             && HasOnlyProperties(p, "tableId", "fieldId")
             && HasString(p, "tableId")
             && HasOptionalString(p, "fieldId"),
-            (g, p, t) => g.DescribeFieldSettingsAsync(p, t),
-            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+            (g, p, t) => g.DescribeFieldSettingsAsync(p, t)),
         new("field.change.plan", p => Safe(p)
             && FieldChangePayloadContract.IsValidPlanRequest(p),
             (g, p, t) => g.PlanFieldChangeAsync(p, t),
@@ -65,6 +64,13 @@ internal static class ProductDataRpcRegistry
             && HasString(p, "tableId"),
             (g, p, t) => g.ListRecycledFieldsAsync(p, t),
             CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+        new("lookup.list", p => Safe(p)
+            && HasExactProperties(p, "collection") && HasString(p, "collection"),
+            (g, p, t) => g.ListLookupsAsync(p, t)),
+        new("schema.describe", p => Safe(p)
+            && HasExactProperties(p, "collection", "requestGeneration", "accepts")
+            && HasString(p, "collection") && HasNumber(p, "requestGeneration") && HasArray(p, "accepts"),
+            (g, p, t) => g.DescribeSchemaAsync(p, t)),
         new("schema.getTable", p => Safe(p) && HasExactProperties(p, "tableId") && HasString(p, "tableId"),
             (g, p, t) => g.GetTableSchemaAsync(p, t)),
         new("contentProfile.load", p => Safe(p)
@@ -116,6 +122,11 @@ internal static class ProductDataRpcRegistry
         new("query.cursorFetch", p => Safe(p) && HasExactProperties(p, "cursor")
             && HasString(p, "cursor"),
             (g, p, t) => g.FetchQueryCursorAsync(p, t)),
+        new("query.validateSnapshot", p => Safe(p)
+            && HasOnlyProperties(p, "snapshot", "currentQuery")
+            && HasObject(p, "snapshot")
+            && (!p.TryGetProperty("currentQuery", out _) || HasObject(p, "currentQuery")),
+            (g, p, t) => g.ValidateSnapshotAsync(p, t)),
         new("query.view", p => Safe(p) && HasExactProperties(p, "tableId", "view")
             && HasString(p, "tableId") && HasObject(p, "view"),
             (g, p, t) => g.QueryViewAsync(p, t)),

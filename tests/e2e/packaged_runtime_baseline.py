@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import time
 from collections.abc import Callable
@@ -76,12 +77,30 @@ class PackagedLifecycleReport(TypedDict):
     status: Literal["passed"]
 
 
+class RpcMethodMeasurements(TypedDict):
+    samplesMs: list[float]
+    count: int
+    firstMs: float
+    p50Ms: float
+    p95Ms: float
+    maxMs: float
+
+
+class RpcLatencyEvidence(TypedDict):
+    clock: Literal["webview-performance-now"]
+    boundary: Literal["post-message-to-first-correlated-reply"]
+    workload: Literal["first-empty-table-sequential-reads"]
+    firstSampleIncluded: Literal[True]
+    percentileMethod: Literal["nearest-rank"]
+    methods: dict[str, RpcMethodMeasurements]
+
+
 class PackagedRuntimeCoverage(TypedDict):
     phaseTimeline: Literal["measured"]
     processWorkingSet: Literal["quiet-window-endpoint"]
     packageFootprint: Literal["measured"]
     packagedRun: Literal["measured"]
-    rpcLatency: Literal["not-measured"]
+    rpcLatency: Literal["measured"]
     recovery: Literal["not-measured"]
 
 
@@ -103,6 +122,7 @@ class PackagedRuntimeBaselineReport(TypedDict):
     sampling: PackagedRuntimeSampling
     workspace: PackagedWorkspaceReport
     firstTable: FirstTableEvidence
+    rpcLatency: RpcLatencyEvidence
     measurements: FoundationMeasurements
     lifecycle: PackagedLifecycleReport
     errors: list[BaselineErrorEvidence]
@@ -110,6 +130,8 @@ class PackagedRuntimeBaselineReport(TypedDict):
 
 Probe = Callable[[str, Path], dict[str, object]]
 ProbeFactory = Callable[[], Probe]
+RpcProbe = Callable[[str, str, Path], dict[str, object]]
+RpcProbeFactory = Callable[[], RpcProbe]
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
@@ -338,6 +360,81 @@ def prepare_first_table_probe() -> Probe:
     return prepared
 
 
+def _rpc_latency_evidence(value: dict[str, object], table_id: str) -> RpcLatencyEvidence:
+    samples = value.get("samples")
+    if (
+        set(value) != {"status", "tableId", "samples"}
+        or value.get("status") != "passed"
+        or value.get("tableId") != table_id
+        or not isinstance(samples, dict)
+        or set(samples) != {"schema.getTable", "query.page"}
+    ):
+        raise BaselineMeasurementError("RPC_PROBE_REPORT_INVALID", "invalid RPC probe report")
+    methods: dict[str, RpcMethodMeasurements] = {}
+    for method in ("schema.getTable", "query.page"):
+        values = samples[method]
+        if (
+            not isinstance(values, list)
+            or len(values) != 30
+            or any(
+                type(item) not in (int, float) or not math.isfinite(item) or item < 0
+                for item in values
+            )
+        ):
+            raise BaselineMeasurementError("RPC_PROBE_REPORT_INVALID", "invalid RPC samples")
+        durations = [float(item) for item in values]
+        ordered = sorted(durations)
+        methods[method] = {
+            "samplesMs": durations,
+            "count": len(durations),
+            "firstMs": durations[0],
+            "p50Ms": ordered[math.ceil(len(ordered) * 0.50) - 1],
+            "p95Ms": ordered[math.ceil(len(ordered) * 0.95) - 1],
+            "maxMs": ordered[-1],
+        }
+    return {
+        "clock": "webview-performance-now",
+        "boundary": "post-message-to-first-correlated-reply",
+        "workload": "first-empty-table-sequential-reads",
+        "firstSampleIncluded": True,
+        "percentileMethod": "nearest-rank",
+        "methods": methods,
+    }
+
+
+def prepare_rpc_probe() -> RpcProbe:
+    node_executable = ensure_node(ROOT)
+
+    def prepared(cdp_url: str, table_id: str, report_path: Path) -> dict[str, object]:
+        try:
+            completed = subprocess.run(
+                [
+                    str(node_executable),
+                    str(NODE_PROBE.with_name("packaged_rpc_probe.mjs")),
+                    "--cdp-url",
+                    cdp_url,
+                    "--table-id",
+                    table_id,
+                    "--json-report",
+                    str(report_path),
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                timeout=180,
+            )
+            if completed.returncode != 0:
+                raise BaselineMeasurementError("RPC_PROBE_FAILED", "packaged RPC probe failed")
+            decoded = json.loads(report_path.read_text(encoding="utf-8"))
+        except (subprocess.TimeoutExpired, OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise BaselineMeasurementError("RPC_PROBE_FAILED", "packaged RPC probe failed") from exc
+        if not isinstance(decoded, dict) or not all(isinstance(key, str) for key in decoded):
+            raise BaselineMeasurementError("RPC_PROBE_REPORT_INVALID", "invalid RPC probe report")
+        return cast(dict[str, object], decoded)
+
+    return prepared
+
+
 def _workspace_report(value: WorkspaceOpenEvidence) -> PackagedWorkspaceReport:
     workspace_id = value["workspaceId"]
     session_epoch = value["sessionEpoch"]
@@ -396,6 +493,7 @@ def _passed_report(
     working_sets: ProcessWorkingSetSnapshot,
     workspace: WorkspaceOpenEvidence,
     first_table: FirstTableEvidence,
+    rpc_latency: RpcLatencyEvidence,
     lifecycle: WorkspaceLifecycleEvidence,
 ) -> PackagedRuntimeBaselineReport:
     foundation = build_runtime_measurement_foundation_report(
@@ -421,7 +519,7 @@ def _passed_report(
             "processWorkingSet": "quiet-window-endpoint",
             "packageFootprint": "measured",
             "packagedRun": "measured",
-            "rpcLatency": "not-measured",
+            "rpcLatency": "measured",
             "recovery": "not-measured",
         },
         "identity": identity,
@@ -435,6 +533,7 @@ def _passed_report(
         },
         "workspace": _workspace_report(workspace),
         "firstTable": first_table,
+        "rpcLatency": rpc_latency,
         "measurements": foundation["measurements"],
         "lifecycle": _lifecycle_report(lifecycle),
         "errors": [],
@@ -465,6 +564,7 @@ def _failed_report(code: str, message: str) -> dict[str, object]:
         },
         "workspace": None,
         "firstTable": None,
+        "rpcLatency": None,
         "measurements": None,
         "lifecycle": None,
         "errors": [{"code": code, "message": message}],
@@ -491,6 +591,7 @@ def run_packaged_runtime_baseline(
     monotonic_ns: Callable[[], int] = time.monotonic_ns,
     sleep: Callable[[float], None] = time.sleep,
     probe_factory: ProbeFactory = prepare_first_table_probe,
+    rpc_probe_factory: RpcProbeFactory = prepare_rpc_probe,
 ) -> dict[str, object]:
     """Own measurement freshness and persist passed only after normal cleanup."""
 
@@ -526,6 +627,7 @@ def run_packaged_runtime_baseline(
             evidence_root=evidence_root,
         )
         probe = probe_factory()
+        rpc_probe = rpc_probe_factory()
         _prepare_workspace(workspace_root)
         timeline = RuntimePhaseTimeline(monotonic_ns)
         with opened_packaged_workspace(
@@ -540,6 +642,12 @@ def run_packaged_runtime_baseline(
             timeline.first_table_stable()
             sleep(QUIET_WINDOW_SECONDS)
             working_sets = session.working_set_snapshot()
+            rpc_latency = _rpc_latency_evidence(
+                rpc_probe(
+                    session.cdp_url, first_table["tableId"], evidence_root / "rpc-probe.json"
+                ),
+                first_table["tableId"],
+            )
         phases = timeline.finish()
         passed = _passed_report(
             candidate=candidate,
@@ -547,6 +655,7 @@ def run_packaged_runtime_baseline(
             working_sets=working_sets,
             workspace=session.workspace_evidence,
             first_table=first_table,
+            rpc_latency=rpc_latency,
             lifecycle=session.lifecycle,
         )
         report: dict[str, object] = dict(passed)

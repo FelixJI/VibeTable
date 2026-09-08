@@ -681,7 +681,14 @@ func (store *Store) applyPlan(
 		if _, retained := retainedSnapshots[snapshot.SnapshotID]; retained {
 			continue
 		}
-		if _, tombstoned := tombstonedObjects[snapshot.Root]; !tombstoned {
+		snapshotBroken := false
+		for _, root := range snapshot.Roots {
+			if _, tombstoned := tombstonedObjects[root]; tombstoned {
+				snapshotBroken = true
+				break
+			}
+		}
+		if !snapshotBroken {
 			continue
 		}
 		_, err := transaction.ExecContext(ctx, `

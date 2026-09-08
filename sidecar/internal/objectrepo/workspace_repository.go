@@ -44,7 +44,7 @@ func OpenWorkspaceRepository(
 	ctx context.Context,
 	spec WorkspaceRepositorySpec,
 ) (WorkspaceRepository, error) {
-	configFile, _, err := workspaceRepositoryPaths(spec)
+	configFile, storageRoot, err := workspaceRepositoryPaths(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func OpenWorkspaceRepository(
 	} else if err != nil {
 		return nil, err
 	}
-	return OpenKopia(ctx, configFile, string(spec.Password))
+	return openWorkspaceKopia(ctx, configFile, storageRoot, string(spec.Password))
 }
 
 // OpenOrCreateWorkspaceRepository opens an existing repository or creates an
@@ -62,14 +62,15 @@ func OpenOrCreateWorkspaceRepository(
 	ctx context.Context,
 	spec WorkspaceRepositorySpec,
 ) (repository WorkspaceRepository, created bool, err error) {
-	configFile, _, err := workspaceRepositoryPaths(spec)
+	configFile, storageRoot, err := workspaceRepositoryPaths(spec)
 	if err != nil {
 		return nil, false, err
 	}
 	if _, statErr := os.Lstat(configFile); statErr == nil {
-		repository, err = OpenKopia(
+		repository, err = openWorkspaceKopia(
 			ctx,
 			configFile,
+			storageRoot,
 			string(spec.Password),
 		)
 		return repository, false, err

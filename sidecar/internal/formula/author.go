@@ -1,11 +1,11 @@
 package formula
 
 import (
-	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 
+	"github.com/google/cel-go/parser/gen"
+	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -33,83 +33,42 @@ func CanonicalizeExecutionDisplaySource(
 	targets map[string]schemaexecution.Table,
 	displaySource string,
 ) (string, *Error) {
-	tokens, err := scanDisplayTokens(displaySource)
+	v2Targets := make(map[string]V2Table, len(targets))
+	for name, target := range targets {
+		v2Targets[name] = V2Table{TableID: target.Snapshot.TableID, Fields: target.Snapshot.Fields}
+	}
+	result, err := AuthorV2Document(V2Table{TableID: definition.Snapshot.TableID, Fields: definition.Snapshot.Fields}, v2Targets, workbench.FormulaAuthorDocument{DisplaySource: displaySource, DocumentRevision: 1})
 	if err != nil {
 		return "", err
 	}
-	locals := fieldsByDisplayName(definition.Snapshot.Fields)
-	var builder strings.Builder
-	cursor := 0
-	for index := 0; index < len(tokens); index++ {
-		token := tokens[index]
-		builder.WriteString(displaySource[cursor:token.start])
-		local, resolveErr := uniqueDisplayField(locals, token.name, "local")
-		if resolveErr != nil {
-			return "", resolveErr
-		}
-		if index+1 < len(tokens) && displaySource[token.end:tokens[index+1].start] == "." {
-			next := tokens[index+1]
-			if local.LogicalType != v2.LogicalRelation || local.Relation == nil {
-				return "", formulaError(
-					"formula.dependency", "field path root is not a relation",
-					map[string]any{"displayName": token.name},
-				)
-			}
-			targetDefinition, exists := targets[local.Identity.PhysicalName]
-			if !exists {
-				return "", formulaError(
-					"formula.dependency", "relation target schema is unavailable",
-					map[string]any{"fieldId": local.Identity.FieldID},
-				)
-			}
-			target, targetErr := uniqueDisplayField(
-				fieldsByDisplayName(targetDefinition.Snapshot.Fields), next.name, "relation target",
-			)
-			if targetErr != nil {
-				return "", targetErr
-			}
-			function := precedingFunction(displaySource, token.start)
-			if canonical, aggregate := displayAggregateFunctions[function]; aggregate &&
-				canonical != "relationCount" {
-				builder.WriteString(local.Identity.PhysicalName)
-				builder.WriteString(", ")
-				builder.WriteString(fmt.Sprintf("%q", target.Identity.PhysicalName))
-			} else {
-				builder.WriteString(local.Identity.PhysicalName)
-				builder.WriteByte('.')
-				builder.WriteString(target.Identity.PhysicalName)
-			}
-			cursor = next.end
-			index++
-			continue
-		}
-		builder.WriteString(local.Identity.PhysicalName)
-		cursor = token.end
-	}
-	builder.WriteString(displaySource[cursor:])
-	canonical := replaceDisplayFunctionNames(builder.String())
-	return strings.TrimSpace(canonical), nil
+	return strings.TrimSpace(result.CanonicalSource), nil
 }
 
-func scanDisplayTokens(source string) ([]displayToken, *Error) {
+func scanDisplayTokens(source string, definition V2Table, targets map[string]V2Table, bindings map[SourceSpan]workbench.FormulaAuthorToken) ([]displayToken, *Error) {
 	tokens := []displayToken{}
-	inString := false
-	escaped := false
-	for index := 0; index < len(source); index++ {
-		switch source[index] {
-		case '\\':
-			if inString {
-				escaped = !escaped
-			}
-		case '"':
-			if !escaped {
-				inString = !inString
-			}
-			escaped = false
-		case '{':
-			if inString {
-				escaped = false
-				continue
+	cursor := 0
+	lexemes := authorSyntaxLexemes(source)
+	maps := mapLiteralStarts(source, lexemes)
+	for _, lexeme := range lexemes {
+		index := lexeme.start
+		if index < cursor {
+			continue
+		}
+		switch lexeme.kind {
+		case gen.CELLexerLBRACE:
+			if mapEnd := maps[index]; mapEnd > 0 {
+				containsBinding := false
+				for span := range bindings {
+					if span.Start > index && span.End < mapEnd {
+						containsBinding = true
+						break
+					}
+				}
+				// A map containing a stable reference cannot be a whole field label.
+				// Masked placeholders must never participate in display-name lookup.
+				if containsBinding || !isDisplayNameInsteadOfMap(source[index:mapEnd], definition, targets) {
+					continue
+				}
 			}
 			endOffset := strings.IndexByte(source[index+1:], '}')
 			if endOffset < 0 {
@@ -121,13 +80,13 @@ func scanDisplayTokens(source string) ([]displayToken, *Error) {
 				return nil, formulaError("formula.syntax", "field token is empty", nil)
 			}
 			tokens = append(tokens, displayToken{start: index, end: end + 1, name: name})
-			index = end
-		default:
-			escaped = false
+			cursor = end + 1
+		case gen.CELLexerIDENTIFIER:
+			if lexeme.text == "REF" && index > 0 && source[index-1] == '#' && lexeme.end < len(source) && source[lexeme.end] == '!' {
+				tokens = append(tokens, displayToken{start: index - 1, end: lexeme.end + 1, name: "#REF!"})
+				cursor = lexeme.end + 1
+			}
 		}
-	}
-	if inString {
-		return nil, formulaError("formula.syntax", "formula string is not closed", nil)
 	}
 	return tokens, nil
 }
@@ -166,69 +125,70 @@ func uniqueDisplayField(
 	)
 }
 
-func precedingFunction(source string, tokenStart int) string {
-	index := tokenStart - 1
-	for index >= 0 && unicode.IsSpace(rune(source[index])) {
-		index--
+// A colon at the brace's own delimiter depth, or an empty brace pair, belongs
+// to CEL map syntax. Nested author references remain independent lexical atoms.
+// Bound labels were already masked, so punctuation in their display names
+// cannot change this distinction.
+func mapLiteralStarts(source string, lexemes []authorLexeme) map[int]int {
+	result := map[int]int{}
+	var delimiters []authorLexeme
+	maps := map[int]bool{}
+	for index, lexeme := range lexemes {
+		switch lexeme.kind {
+		case gen.CELLexerLBRACE, gen.CELLexerLBRACKET, gen.CELLexerLPAREN:
+			delimiters = append(delimiters, lexeme)
+			if lexeme.kind == gen.CELLexerLBRACE && index+1 < len(lexemes) && lexemes[index+1].kind == gen.CELLexerRBRACE && emptyMapBody(source[lexeme.end:lexemes[index+1].start]) {
+				maps[lexeme.start] = true
+			}
+		case gen.CELLexerCOLON:
+			if len(delimiters) > 0 && delimiters[len(delimiters)-1].kind == gen.CELLexerLBRACE {
+				maps[delimiters[len(delimiters)-1].start] = true
+			}
+		case gen.CELLexerRBRACE, gen.CELLexerRPRACKET, gen.CELLexerRPAREN:
+			if len(delimiters) > 0 {
+				opening := delimiters[len(delimiters)-1]
+				if opening.kind == gen.CELLexerLBRACE && lexeme.kind == gen.CELLexerRBRACE && maps[opening.start] {
+					result[opening.start] = lexeme.end
+				}
+				delimiters = delimiters[:len(delimiters)-1]
+			}
+		}
 	}
-	if index < 0 || source[index] != '(' {
-		return ""
-	}
-	index--
-	for index >= 0 && unicode.IsSpace(rune(source[index])) {
-		index--
-	}
-	end := index + 1
-	for index >= 0 && (unicode.IsLetter(rune(source[index])) || source[index] == '_') {
-		index--
-	}
-	return strings.ToUpper(source[index+1 : end])
+	return result
 }
 
-func replaceDisplayFunctionNames(source string) string {
-	var builder strings.Builder
-	inString := false
-	escaped := false
-	for index := 0; index < len(source); {
-		character := source[index]
-		if character == '\\' && inString {
-			builder.WriteByte(character)
-			escaped = !escaped
-			index++
-			continue
+// Without a bound token, valid CEL syntax wins an exact label collision.
+// Otherwise punctuation remains part of a pasted display name. Use the existing
+// compiler only for such collisions; it remains the sole CEL semantics owner.
+func isDisplayNameInsteadOfMap(source string, definition V2Table, targets map[string]V2Table) bool {
+	name := strings.TrimSpace(source[1 : len(source)-1])
+	known := func(fields []v2.FieldDefinition) bool {
+		for _, field := range fields {
+			if field.DisplayName == name {
+				return true
+			}
 		}
-		if character == '"' {
-			if !escaped {
-				inString = !inString
-			}
-			escaped = false
-			builder.WriteByte(character)
-			index++
-			continue
-		}
-		escaped = false
-		if !inString && (unicode.IsLetter(rune(character)) || character == '_') {
-			end := index + 1
-			for end < len(source) &&
-				(unicode.IsLetter(rune(source[end])) || source[end] == '_') {
-				end++
-			}
-			identifier := source[index:end]
-			lookahead := end
-			for lookahead < len(source) && unicode.IsSpace(rune(source[lookahead])) {
-				lookahead++
-			}
-			if lookahead < len(source) && source[lookahead] == '(' {
-				if canonical := displayAggregateFunctions[strings.ToUpper(identifier)]; canonical != "" {
-					identifier = canonical
-				}
-			}
-			builder.WriteString(identifier)
-			index = end
-			continue
-		}
-		builder.WriteByte(character)
-		index++
+		return false
 	}
-	return builder.String()
+	found := known(definition.Fields)
+	for _, target := range targets {
+		found = found || known(target.Fields)
+	}
+	if !found {
+		return false
+	}
+	_, _, err := NewCompiler(DefaultLimits()).InferV2Source(definition, "size("+source+")")
+	return err != nil
+}
+func emptyMapBody(source string) bool {
+	covered := 0
+	for _, lexeme := range authorLexemes(source) {
+		if lexeme.kind != gen.CELLexerWHITESPACE && lexeme.kind != gen.CELLexerCOMMENT {
+			return false
+		}
+		covered += lexeme.end - lexeme.start
+	}
+	// CEL skips characters that are valid in display labels, such as Chinese.
+	// Unlexed bytes must not turn a nonempty field label into an empty map.
+	return covered == len(source)
 }

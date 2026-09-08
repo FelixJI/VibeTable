@@ -2,18 +2,34 @@ package productcapabilities
 
 import "testing"
 
-func TestGeneratedCurrentOwnerCatalogMovesFileListAndSchemaReadsToGo(t *testing.T) {
-	if HasCurrentOwnerRPCMethod(PythonBff, "file.list") {
-		t.Fatal("file.list must not remain on pythonBff after L3B")
+func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
+	for _, method := range []string{"file.list", "history.read", "lookup.list", "query.readRows", "schema.describe"} {
+		if HasCurrentOwnerRPCMethod(PythonBff, method) {
+			t.Fatalf("%s must not remain on pythonBff after its Go migration", method)
+		}
+		if !HasCurrentOwnerRPCMethod(GoSidecar, method) {
+			t.Fatalf("%s must route through goSidecar", method)
+		}
 	}
-	if !HasCurrentOwnerRPCMethod(GoSidecar, "file.list") {
-		t.Fatal("L3B must route file.list through goSidecar")
+	if HasCurrentOwnerRPCMethod(PythonBff, "events.reconcile") {
+		t.Fatal("events.reconcile must not remain on pythonBff after L4")
+	}
+	if !HasCurrentOwnerRPCMethod(GoSidecar, "events.reconcile") {
+		t.Fatal("L4 must route events.reconcile through goSidecar")
 	}
 	if HasCurrentOwnerRPCMethod(PythonBff, "schema.getTable") {
 		t.Fatal("schema.getTable must not remain on pythonBff after L3A")
 	}
 	if !HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
 		t.Fatal("L3A must route schema.getTable through goSidecar")
+	}
+	for _, method := range []string{"settings.readDevice", "settings.saveDevice"} {
+		if HasCurrentOwnerRPCMethod(PythonBff, method) {
+			t.Fatalf("%s must not remain on pythonBff after L6", method)
+		}
+		if !HasCurrentOwnerRPCMethod(WpfHost, method) {
+			t.Fatalf("L6 must route %s through wpfHost", method)
+		}
 	}
 	if !HasCurrentOwnerEventTopic(PythonBff, "data.changed") {
 		t.Fatal("data.changed must remain on pythonBff during L1")
@@ -22,12 +38,25 @@ func TestGeneratedCurrentOwnerCatalogMovesFileListAndSchemaReadsToGo(t *testing.
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 102 {
-		t.Fatalf("RPCDescriptors length = %d, want 102", len(descriptors))
+	if len(descriptors) != 103 {
+		t.Fatalf("RPCDescriptors length = %d, want 103", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
 		t.Fatalf("RPCDescriptors are not in canonical order: %#v", descriptors)
+	}
+
+	var settings RPCDescriptor
+	for _, descriptor := range descriptors {
+		if descriptor.Method == "field.settings.describe" {
+			settings = descriptor
+		}
+	}
+	if settings != (RPCDescriptor{
+		Method: "field.settings.describe", Scope: WorkspaceScope, Audience: RendererPublic,
+		CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect,
+	}) {
+		t.Fatalf("field.settings.describe descriptor = %#v", settings)
 	}
 
 	var schema RPCDescriptor
@@ -47,9 +76,19 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 3 ||
-		got[0].Method != "file.list" || got[1].Method != "schema.getTable" || got[2].Method != "schema.list" {
-		t.Fatalf("goSidecar descriptors = %#v, want file.list and schema reads", got)
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 19 ||
+		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
+		got[3] != (RPCDescriptor{
+			Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
+			CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
+		}) || got[4].Method != "lookup.list" || got[5] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[6] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[7].Method != "query.cursorFetch" || got[8].Method != "query.cursorOpen" || got[9].Method != "query.page" || got[10].Method != "query.readRows" ||
+		got[11].Method != "query.selectionOpen" || got[12] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[13].Method != "query.view" || got[14].Method != "relation.previewDelta" || got[15] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[16].Method != "schema.describe" ||
+		got[17].Method != "schema.getTable" || got[18].Method != "schema.list" {
+		t.Fatalf("goSidecar descriptors = %#v", got)
+	}
+	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||
+		got[0].Method != "settings.readDevice" || got[1].Method != "settings.saveDevice" {
+		t.Fatalf("wpfHost descriptors = %#v, want settings.readDevice and settings.saveDevice", got)
 	}
 
 	descriptors[0].Method = "mutated"

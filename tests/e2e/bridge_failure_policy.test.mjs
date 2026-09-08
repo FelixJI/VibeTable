@@ -374,6 +374,94 @@ test("owns a late recovery failure after the first observation expires", async (
   ]);
 });
 
+test("settles page and Python readiness reads in the same recovery window", async () => {
+  let now = 0;
+  const observations = [];
+  const acknowledged = [];
+  const released = [];
+  const window = new SidecarRecoveryReadWindow({
+    deadlineAt: 6_000,
+    now: () => now,
+    observeTerminal: async (requestId, timeoutMs) => {
+      observations.push({ requestId, timeoutMs });
+      if (requestId === "page") return { type: "query.page", requestId };
+      if (requestId === "fields-ready") {
+        return { type: "field.recycleBin.list", requestId };
+      }
+      if (now === 0) {
+        now = 5_000;
+        return null;
+      }
+      return { type: "operation.failed", requestId, payload: { code: "BACKEND_UNAVAILABLE" } };
+    },
+    releaseRequest: async requestId => released.push(requestId),
+    acknowledge: async response => acknowledged.push(response.requestId),
+  });
+  window.own("page");
+  assert.equal((await window.observe("page")).type, "query.page");
+  window.own("fields-retired", "field.recycleBin.list");
+  assert.equal(await window.observe("fields-retired"), null);
+  assert.deepEqual(released, ["page"]);
+  window.own("fields-ready", "field.recycleBin.list");
+  assert.equal((await window.observe("fields-ready")).type, "field.recycleBin.list");
+  await window.settle();
+  await window.close();
+  assert.deepEqual(acknowledged, ["fields-retired"]);
+  assert.deepEqual(released, ["page", "fields-ready", "fields-retired"]);
+  assert.deepEqual(observations, [
+    { requestId: "page", timeoutMs: 5_000 },
+    { requestId: "fields-retired", timeoutMs: 5_000 },
+    { requestId: "fields-ready", timeoutMs: 1_000 },
+    { requestId: "fields-retired", timeoutMs: 1_000 },
+  ]);
+});
+
+test("Python readiness keeps exact request identity, terminal type and failure code", async () => {
+  const acknowledged = [];
+  for (const terminal of [
+    { type: "query.page", requestId: "fields" },
+    { type: "operation.failed", requestId: "other", payload: { code: "BACKEND_UNAVAILABLE" } },
+    { type: "operation.failed", requestId: "fields", payload: { code: "PRODUCT_DATA_FAILED" } },
+  ]) {
+    const released = [];
+    const window = new SidecarRecoveryReadWindow({
+      deadlineAt: 6_000,
+      now: () => 0,
+      observeTerminal: async () => terminal,
+      releaseRequest: async requestId => released.push(requestId),
+      acknowledge: async response => acknowledged.push(response),
+    });
+    assert.throws(() => window.own("preview", "file.previewRequested"), SidecarRecoveryContractError);
+    window.own("fields", "field.recycleBin.list");
+    await assert.rejects(window.observe("fields"), SidecarRecoveryContractError);
+    await window.close();
+    assert.deepEqual(released, ["fields"]);
+  }
+  assert.deepEqual(acknowledged, []);
+});
+
+test("Python readiness success at the recovery deadline cannot pass", async () => {
+  let now = 5_999;
+  const released = [];
+  const acknowledged = [];
+  const window = new SidecarRecoveryReadWindow({
+    deadlineAt: 6_000,
+    now: () => now,
+    observeTerminal: async (requestId, timeoutMs) => {
+      assert.equal(timeoutMs, 1);
+      now = 6_000;
+      return { type: "field.recycleBin.list", requestId };
+    },
+    releaseRequest: async requestId => released.push(requestId),
+    acknowledge: async response => acknowledged.push(response),
+  });
+  window.own("fields", "field.recycleBin.list");
+  await assert.rejects(window.observe("fields"), /recovery deadline expired/);
+  await window.close();
+  assert.deepEqual(released, ["fields"]);
+  assert.deepEqual(acknowledged, []);
+});
+
 test("fails closed outside the owned query.page terminal contract", async () => {
   const acknowledgements = [];
   const releases = [];

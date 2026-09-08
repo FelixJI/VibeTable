@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
@@ -146,6 +148,195 @@ public sealed class WorkspaceProductControllerInterfaceTests
         Assert.AreEqual(2, fixture.Bootstrap.PostCount);
     }
 
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task RetiredForwardSettlesCallerOnce(bool completedAfterRetirement, bool refreshAfterSuccess)
+    {
+        using var fixture = new Fixture();
+        using var retired = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace",
+            WorkspaceId = Guid.NewGuid(),
+            SessionEpoch = 7,
+            OperationId = Guid.NewGuid(),
+            Sequence = 1,
+        };
+        JsonElement wire = JsonSerializer.SerializeToElement(scope,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        string method = refreshAfterSuccess ? "replica.forceTakeover" : "snapshot.list";
+        fixture.ReplicaStatus.Refresh = (_, _, token) =>
+        {
+            fixture.Session.LeaseCurrent = false;
+            retired.Cancel();
+            return Task.FromCanceled(token);
+        };
+        int completedLeases = 0;
+        fixture.Session.Lease = new WorkspaceRequestEpochLease(
+            scope, retired.Token, () => completedLeases++);
+        fixture.Session.CurrentSession = OpenSession(scope.WorkspaceId, scope.SessionEpoch);
+        fixture.Session.Capabilities = new WorkspaceV2SidecarCapabilities(
+            "2.0", scope.WorkspaceId.ToString("D"), 7, 1, Guid.NewGuid().ToString("D"),
+            [method]);
+        using var handler = new ForwardHandler(async (_, token) =>
+        {
+            entered.TrySetResult();
+            if (completedAfterRetirement) await finish.Task;
+            else if (!refreshAfterSuccess) await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = "retired-forward",
+                    wire,
+                    result = new { snapshots = Array.Empty<object>() },
+                }), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var gateway = new WorkspaceV2HttpGateway(() => new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:8090/"), new Uri("http://127.0.0.1:8090/"),
+            "X-VibeTable-Session", "test-secret"), handler);
+        fixture.Session.Gateway = gateway;
+        RoutedWebRequest request = Request(method, "retired-forward") with
+        {
+            Scope = scope,
+            Wire = wire,
+        };
+        Task dispatch = fixture.Controller.DispatchAsync(request);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        if (!refreshAfterSuccess)
+        {
+            fixture.Session.LeaseCurrent = false;
+            if (!completedAfterRetirement) retired.Cancel();
+            finish.TrySetResult();
+        }
+        await dispatch;
+
+        Assert.AreEqual(1, completedLeases);
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.AreEqual(refreshAfterSuccess, response.GetProperty("ok").GetBoolean());
+        if (!refreshAfterSuccess)
+        {
+            Assert.AreEqual("workspace.session_stale", response.GetProperty("error").GetProperty("code").GetString());
+            Assert.AreEqual(JsonValueKind.Null, response.GetProperty("result").ValueKind);
+        }
+        Assert.IsTrue(JsonElement.DeepEquals(wire, response.GetProperty("wire")));
+        Assert.AreEqual("retired-forward", fixture.Reply.RequestIds.Single());
+        Assert.AreEqual(0, fixture.Reply.Notifications.Count);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PickerReentryCannotSendLaterWorkspaceSequenceBeforeExport(bool cancelPicker)
+    {
+        var picker = new NullPathPicker();
+        using var fixture = new Fixture(picker);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace", WorkspaceId = Guid.NewGuid(), SessionEpoch = 7,
+            OperationId = Guid.NewGuid(), Sequence = 100,
+        };
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        JsonElement wire = JsonSerializer.SerializeToElement(scope, options);
+        JsonElement laterWire = JsonSerializer.SerializeToElement(
+            scope with { OperationId = Guid.NewGuid(), Sequence = 101 }, options);
+        fixture.Session.Lease = new WorkspaceRequestEpochLease(scope, CancellationToken.None, () => { });
+        fixture.Session.CurrentSession = OpenSession(scope.WorkspaceId, scope.SessionEpoch);
+        fixture.Session.Capabilities = new WorkspaceV2SidecarCapabilities(
+            "2.0", scope.WorkspaceId.ToString("D"), 7, 1, Guid.NewGuid().ToString("D"), ["snapshot.export"]);
+        ulong watermark = 0;
+        var received = new List<ulong>();
+        using var handler = new ForwardHandler(async (request, token) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            JsonElement root = body.RootElement;
+            JsonElement requestWire = root.GetProperty("wire");
+            ulong sequence = requestWire.GetProperty("sequence").GetUInt64();
+            received.Add(sequence);
+            object payload = sequence <= watermark
+                ? new { jsonrpc = "2.0", id = root.GetProperty("id").GetString(), wire = requestWire,
+                    error = new { code = "workspace.sequence_stale", message = "stale", retryable = false } }
+                : new { jsonrpc = "2.0", id = root.GetProperty("id").GetString(), wire = requestWire, result = new { } };
+            watermark = Math.Max(watermark, sequence);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var gateway = new WorkspaceV2HttpGateway(() => new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:8090/"), new Uri("http://127.0.0.1:8090/"),
+            "X-VibeTable-Session", "test-secret"), handler);
+        fixture.Session.Gateway = gateway;
+        Task<WorkspaceV2ForwardResult>? later = null;
+        picker.SnapshotExport = () =>
+        {
+            later = gateway.ForwardAsync("host-query", "fileHistory.queryDocuments", laterWire,
+                JsonSerializer.SerializeToElement(new { }), null, CancellationToken.None);
+            return cancelPicker ? null : Path.Combine(Path.GetTempPath(), "ordered-export.vtsnapshot");
+        };
+        await fixture.Controller.DispatchAsync(Request("snapshot.export", "export",
+            new { pathGrant = WorkspacePathGrantStore.SnapshotExportSentinel }) with { Scope = scope, Wire = wire });
+        Assert.IsNotNull(later);
+        Assert.IsNull((await later.WaitAsync(TimeSpan.FromSeconds(5))).Error);
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.AreEqual(!cancelPicker, response.GetProperty("ok").GetBoolean(), response.GetRawText());
+        if (cancelPicker)
+            Assert.AreEqual("workspace.path_selection_cancelled",
+                response.GetProperty("error").GetProperty("code").GetString());
+        CollectionAssert.AreEqual(cancelPicker ? new ulong[] { 101 } : [100, 101], received);
+    }
+    [TestMethod]
+    public async Task StartedRpcCancellationWaitsForTheActualExchangeToExit()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new ForwardHandler(async (request, _) =>
+        {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            entered.TrySetResult();
+            // Deliberately delay transport teardown after cancellation is requested.
+            await release.Task;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0", id = "active", wire = body.RootElement.GetProperty("wire"), result = new { },
+                }), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var gateway = new WorkspaceV2HttpGateway(() => new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:8090/"), new Uri("http://127.0.0.1:8090/"),
+            "X-VibeTable-Session", "test-secret"), handler);
+        using var cancellation = new CancellationTokenSource();
+        JsonElement wire = JsonSerializer.SerializeToElement(new { scope = "workspace", sequence = 1 });
+        Task<WorkspaceV2ForwardResult> pending = gateway.ForwardAsync("active", "snapshot.list",
+            wire, JsonSerializer.SerializeToElement(new { }), null, cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        try
+        {
+            Assert.IsFalse(pending.IsCompleted,
+                "A started exchange must retain its caller's lease until transport teardown completes.");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await pending);
+    }
+    private sealed class ForwardHandler(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);
+    }
+
     private static RoutedWebRequest Request(
         string method,
         string requestId,
@@ -201,7 +392,7 @@ public sealed class WorkspaceProductControllerInterfaceTests
             "vibetable-workspace-product-" + Guid.NewGuid().ToString("N"));
         private readonly WorkspaceSessionManager _brokerSessions;
 
-        public Fixture()
+        public Fixture(IWorkspacePathPicker? picker = null)
         {
             Directory.CreateDirectory(_root);
             var registry = new WorkspaceRegistry(_root);
@@ -239,7 +430,7 @@ public sealed class WorkspaceProductControllerInterfaceTests
                 RegistryTopology,
                 ReplicaStatus,
                 Bootstrap,
-                new WorkspacePathGrantStore(new NullPathPicker()),
+                new WorkspacePathGrantStore(picker ?? new NullPathPicker()),
                 snapshots,
                 storage);
         }
@@ -264,18 +455,22 @@ public sealed class WorkspaceProductControllerInterfaceTests
     {
         public WorkspaceSessionV2 CurrentSession { get; set; } = ClosedSession();
         public WorkspaceRegistryEntryV2? CurrentWorkspace { get; set; }
-        public WorkspaceV2HttpGateway? CurrentGateway => null;
-        public WorkspaceV2SidecarCapabilities? CurrentCapabilities => null;
+        public WorkspaceV2HttpGateway? Gateway { get; set; }
+        public WorkspaceV2HttpGateway? CurrentGateway => Gateway;
+        public WorkspaceRequestEpochLease? Lease { get; set; }
+        public bool LeaseCurrent { get; set; } = true;
+        public WorkspaceV2SidecarCapabilities? Capabilities { get; set; }
+        public WorkspaceV2SidecarCapabilities? CurrentCapabilities => Capabilities;
         public bool TryCapture(
             WorkspaceWireScope? scope,
             out WorkspaceRequestEpochLease? lease)
         {
-            lease = null;
-            return false;
+            lease = Lease;
+            return lease is not null;
         }
 
         public bool TryAdmitLifecycleRequest(WorkspaceWireScope? scope) => false;
-        public bool IsCurrent(WorkspaceRequestEpochLease? lease) => true;
+        public bool IsCurrent(WorkspaceRequestEpochLease? lease) => LeaseCurrent;
         public ulong ReserveHostSequence(Guid workspaceId, ulong sessionEpoch) => 1;
 
         public Task<WorkspaceSessionV2> OpenAsync(
@@ -303,6 +498,7 @@ public sealed class WorkspaceProductControllerInterfaceTests
     private sealed class FakeReply : IWorkspaceProductReplySink
     {
         public List<JsonElement> Responses { get; } = [];
+        public List<string?> RequestIds { get; } = [];
         public List<(string Type, JsonElement Payload)> Notifications { get; } = [];
 
         public void PostNotification(string type, object? payload) =>
@@ -311,8 +507,11 @@ public sealed class WorkspaceProductControllerInterfaceTests
         public void PostWorkspaceV2Response(
             string? requestId,
             object payload,
-            JsonElement wire) =>
+            JsonElement wire)
+        {
+            RequestIds.Add(requestId);
             Responses.Add(JsonSerializer.SerializeToElement(payload));
+        }
 
         public void PostWorkspaceV2Event(object payload, JsonElement wire) =>
             Notifications.Add((
@@ -367,13 +566,15 @@ public sealed class WorkspaceProductControllerInterfaceTests
     private sealed class FakeReplicaStatus : IWorkspaceReplicaStatusController
     {
         public WorkspaceSessionV2? LastBound { get; private set; }
+        public Func<Guid, ulong, CancellationToken, Task> Refresh { get; set; } =
+            (_, _, _) => Task.CompletedTask;
 
         public void Bind(WorkspaceSessionV2 session) => LastBound = session;
 
         public Task RefreshNowAsync(
             Guid workspaceId,
             ulong sessionEpoch,
-            CancellationToken cancellationToken) => Task.CompletedTask;
+            CancellationToken cancellationToken) => Refresh(workspaceId, sessionEpoch, cancellationToken);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
@@ -388,7 +589,8 @@ public sealed class WorkspaceProductControllerInterfaceTests
     private sealed class NullPathPicker : IWorkspacePathPicker
     {
         public string? PickWorkspaceRoot() => null;
-        public string? PickSnapshotExportTarget() => null;
+        public Func<string?>? SnapshotExport { get; set; }
+        public string? PickSnapshotExportTarget() => SnapshotExport?.Invoke();
         public string? PickSnapshotImportSource() => null;
         public string? PickSnapshotExtractTarget() => null;
         public string? PickFileUpgradeSource() => null;

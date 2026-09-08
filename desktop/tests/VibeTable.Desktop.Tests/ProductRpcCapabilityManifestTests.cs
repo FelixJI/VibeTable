@@ -31,7 +31,7 @@ public sealed class ProductRpcCapabilityManifestTests
     }
 
     [TestMethod]
-    public void GeneratedManifestProvidesClosedRouteLookupWithFileAndSchemaReadsOnGo()
+    public void GeneratedManifestProvidesClosedRouteLookupForCurrentOwners()
     {
         ProductRpcCapabilityManifest manifest = ProductRpcCapabilityManifest.Default;
 
@@ -45,11 +45,33 @@ public sealed class ProductRpcCapabilityManifestTests
         Assert.AreEqual("notification", dataChanged.Effect);
         Assert.AreEqual("pythonBff", dataChanged.Owner);
         Assert.IsFalse(manifest.TryGetEvent("data.unknown", out _));
-        Assert.HasCount(3, manifest.GetProductSidecarRegistrations());
-        Assert.AreEqual("file.list", manifest.GetProductSidecarRegistrations()[0].Method);
-        Assert.AreEqual("workspace", manifest.GetProductSidecarRegistrations()[0].Scope);
-        Assert.AreEqual("schema.getTable", manifest.GetProductSidecarRegistrations()[1].Method);
-        Assert.AreEqual("schema.list", manifest.GetProductSidecarRegistrations()[2].Method);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "events.reconcile:workspace",
+                "field.settings.describe:workspace",
+                "file.list:workspace",
+                "history.read:workspace",
+                "lookup.list:workspace",
+                "lookup.query:workspace",
+                "lookup.valuePage:workspace",
+                "query.cursorFetch:workspace",
+                "query.cursorOpen:workspace",
+                "query.page:workspace",
+                "query.readRows:workspace",
+                "query.selectionOpen:workspace",
+                "query.validateSnapshot:workspace",
+                "query.view:workspace",
+                "relation.previewDelta:workspace",
+                "relation.searchTargets:workspace",
+                "schema.describe:workspace",
+                "schema.getTable:workspace",
+                "schema.list:workspace",
+            },
+            manifest.GetProductSidecarRegistrations()
+                .Select(item => $"{item.Method}:{item.Scope}").ToArray());
+        Assert.IsTrue(manifest.TryGet("history.read", out ProductRpcCapability historyRead));
+        Assert.AreEqual("goSidecar", historyRead.Owner);
     }
 
     [TestMethod]

@@ -29,6 +29,22 @@
 
 ## 1. 决策摘要
 
+### 2026-09-07 开发阶段范围调整
+
+项目仍在开发阶段，允许破坏性更新。按用户明确决定，0.5.0/N-1 兼容移出当前开发验收，
+不再是本轮 #140 实施完成或当前开发能力开放的条件。下文历史审计的事实与当时结论保留。
+
+- A3 剩余的旧版迁移 consumer 和 policy promotion 暂停，不阻塞 A1、A2、A4–A6 与 L0–L10。
+  已合并的历史 producer、anchor 和失败证据保留，不修改为通过。
+- 不支持的 workspace/SnapshotPackage 格式继续明确拒绝并保持原数据不变；允许破坏性更新不授权
+  自动删除旧工作区、用同名空目录替代或未经验证地写回。格式变更仍按实际版本契约独立实施。
+- 当前格式的创建、读写、snapshot 恢复、更新失败回退与进程清理仍须真实新版构建物验证。
+  已有静态兼容契约、完整 CI、覆盖率和发布门禁不变，未验证 target 保持 pending/unverified。
+- 将来若承诺稳定生产或重新支持旧版本，另行决定支持窗口并按 ADR 0011 取得证据；本轮不预先
+  承诺 N-1，也不要求为完成开发目标实施旧版迁移器。
+
+以下基线对账保留制定时的判断；后续执行顺序与完成定义以本节及 A3 的当前状态为准。
+
 2026-08-17 审计把 VibeTable 定位为工程化 Beta（M3），其中数据与恢复内核接近 M4，但因真实产品
 E2E 17/18、结构化弹窗焦点竞态和证据文档滞后，不具备 release-qualified 状态。该判断在当时是合理的。
 
@@ -47,7 +63,7 @@ E2E 17/18、结构化弹窗焦点竞态和证据文档滞后，不具备 release
 
 因此当前不再以“修复一个 P0 后恢复 M4 评估”为唯一主线。新的工作分为两条：
 
-1. **成熟度证据收敛**：完成仍待验证的 Retention、Mirrored/Replica、N-1、更新真实 crash、数据互操作和
+1. **成熟度证据收敛**：完成仍待验证的 Retention、Mirrored/Replica、更新真实 crash、数据互操作和
    Unicode/locale 等明确边界；
 2. **运行时职责演进**：保持技术栈总体不变，但让普通数据请求、共享工作区状态和实时事件逐步从
    `WPF → Python → Go` 收敛为 `WPF → Go`，Python 从常驻混合 BFF 退为按需 Worker。
@@ -244,6 +260,10 @@ VibeTable 不需要全面重写。长期 ownership 定义为：
 
 ### A1：Retention 非零逻辑清理与物理 Sweep 分层证据
 
+2026-09-07 验收增量：冻结候选已完成真实 24 小时自然老化后的非零逻辑清理，
+8 项产品断言和退出清理均通过，见[自然老化验收记录](../quality/retention-natural-aging-evidence.md)。
+这是指定候选的逻辑清理证据；下述物理 Sweep 资格仍独立验收，不能据此把 A1 全项标为完成。
+
 当前开放 PR #129 负责：
 
 - 新增独立 packaged 场景，不改写已经可信的零删除场景；
@@ -275,9 +295,13 @@ VibeTable 不需要全面重写。长期 ownership 定义为：
 - offline/reconnect、同步冲突和 exclusive-writer 资格是否属于下一公开范围；
 - mirrored capability 只按真实产品场景范围广告，不从内部 hook 推断用户能力。
 
-### A3：N-1 正式兼容证据
+### A3：N-1 正式兼容证据（开发阶段暂停）
 
-按 ADR 0011 分阶段实施：
+2026-09-07 起，旧版兼容不属于本轮开发完成条件。PR #246 的正式 producer 与已合并 anchor 保留，
+不继续仅为 v0.5.0 兼容建设迁移器或提升 policy。未合并的迁移副本 PR #252 与本地 Host 迁移实现
+退出当前交付队列，保留现场供未来重新评估；已有新版恢复测试不能据此整体删除。
+
+如果未来重新承诺旧版支持，按 ADR 0011 依次恢复以下流程；这是保留的后续方案，不是当前待办：
 
 1. **Producer PR**：从正式 v0.5.0 Release 产生代表性 workspace archive、SnapshotPackage 和拒绝输入；
 2. **Anchor PR**：producer 合并到正式 remote main 后，推进 append-only anchor 和冻结计数；
@@ -454,12 +478,22 @@ flowchart LR
 可与 L3A 分支并行开发，但按最新 main 串行合并和重生成 catalog：
 
 - Relation/Lookup 描述与分页；
-- history list/preview；
+- history read；preview/apply 作为共享 token owner 的完整恢复能力组留在 L5；
 - attachment/file metadata 读取；
 - Formula/Field capability 描述；
 - 共享 schema projection。
 
 复杂投影必须进入 Go Product Adapter 深模块，不把 renderer DTO 泄漏到 query/restore 核心包。
+`field.settings.describe` 的 Product catalog 准入与 Go owner 执行，以及相邻的
+`query.validateSnapshot` Go 读取路径，在现有 PR293 中合并为完整 `schema.query` 只读意图。
+历史 `WORKSPACE_CATALOG_METHODS` 是 Field typed 入口的排除集合，不代表 Workspace manifest 成员；
+字段描述声明 `workspace`、`rendererPublic`、`schema.query` 和只读 effect，另外五个 Field 方法保持原路由。
+本地准入与两个 owner 增量分别保留原件和验证记录，最终组合须完整移除相应 Python handler、
+维持无 fallback 的 Host 接线，并以同一构建完成 S02/S03/S30、fresh CI 和 squash 后验证。
+单独准入测试不能替代 Go producer 或产品资格；当前组合尚未远端验收完成。
+详见 [字段描述准入历史](../quality/field-settings-product-catalog.md)、
+[字段描述 Go 资格](../quality/field-settings-describe.md) 与
+[快照校验资格](../quality/query-validate-snapshot.md)。
 
 ### L4：Realtime 改为 Go→WPF
 
@@ -475,7 +509,7 @@ flowchart LR
 
 - FieldChange、Mutation、Formula；
 - Relation/Lookup 写入；
-- row/history restore；
+- row/history restore（包括 history preview/apply 的同片迁移）；
 - Dashboard、Preset、Version、Surface、ContentProfile、RecordDocumentLink 等共享 workspace metadata。
 
 规则：
@@ -567,7 +601,7 @@ Worker 协议必须：
 flowchart LR
     A1["A1 Retention"]
     A2["A2 Mirrored/Replica"]
-    A3["A3 N-1 evidence"]
+    A3["A3 N-1 deferred"]
     A4["A4 updater crash"]
     L0["L0 inventory/baseline"]
     L1["L1 Product policy"]
@@ -599,7 +633,7 @@ flowchart LR
     A4 --> L10
 ```
 
-A1、A2、A3、A4 与 L0/L1 的大部分设计和相邻实现可以并行，但共享生成物和进程拓扑的合并必须串行。
+A1、A2、A4 与 L0/L1 的大部分设计和相邻实现可以并行，但共享生成物和进程拓扑的合并必须串行。
 
 ### 11.2 当前即可并行的轨道
 
@@ -607,7 +641,7 @@ A1、A2、A3、A4 与 L0/L1 的大部分设计和相邻实现可以并行，但�
 |---|---|---|
 | Retention | PR #129 产品场景；物理 Sweep 的 Go 测试设计 | E2E manifest、生成能力索引和证据页需按最新 main 重生成后串行合并 |
 | Mirrored/Replica | PR #139 初始化、恢复、capability refresh | `ProductionWorkspaceRuntime`、workspace capability、场景 15/manifest 与其他进程拓扑 PR 串行合并 |
-| N-1 | 正式旧版 corpus 采集、producer interface、consumer harness 设计 | policy anchor/promotion 必须按 producer→anchor→consumer→promotion 顺序合并 |
+| N-1 | 开发阶段暂停；已冻结 producer/anchor 保留 | 若重新启用，仍按 producer→anchor→consumer→promotion 顺序合并 |
 | Updater crash | 独立 crash harness 与 receipt oracle | 与 L10 进程成员形状变化不能同时合并；L10 后必须重新跑 smoke |
 | Product migration groundwork | L0 inventory/measurement、L1 policy/schema/生成器 | Product catalog、WPF route registry 和生成物变更只允许一个权威分支依次合并 |
 | Data IO/Plugin | Worker 协议设计、corpus、任务状态梳理 | L7 前不得改变生产生命周期；两个 Worker 实现可在 L7 合并后并行 |
@@ -642,7 +676,7 @@ A1、A2、A3、A4 与 L0/L1 的大部分设计和相邻实现可以并行，但�
 
 ### 11.4 必须串行的事项
 
-- N-1 producer、anchor、consumer、promotion；
+- 若重新启用旧版支持，N-1 producer、anchor、consumer、promotion 必须串行；
 - 写 authority 的每个能力切换；
 - Python 内存状态迁出与 Worker lifecycle 启用；
 - 普通启动移除 Python与 updater/process membership 调整；
@@ -662,10 +696,10 @@ A1、A2、A3、A4 与 L0/L1 的大部分设计和相邻实现可以并行，但�
 2. Retention 物理 Sweep 领域证据。
 3. Mirrored/Replica 初始化与恢复（现 PR #139）。
 4. Mirrored 后续 offline/conflict 范围决策：公开、Hidden 或新纵切。
-5. N-1 正式 corpus producer。
-6. N-1 anchor 前移。
-7. N-1 当前 reader/import/零写入 consumer。
-8. N-1 policy promotion。
+5. N-1 正式 corpus producer（已冻结，保留历史证据）。
+6. N-1 anchor（已合并，保留冻结边界）。
+7. N-1 当前 reader/import consumer（开发阶段暂停）。
+8. N-1 policy promotion（开发阶段暂停，不伪造 verified）。
 9. updater 真实 crash packaged smoke。
 10. CSV/XLSX/Unicode 代表性 packaged corpus。
 11. PDF 支持范围与 adapter 评估 ADR。
@@ -757,7 +791,7 @@ PR 必须说明：
 - PR #129 的非零 Retention 产品证据进入可信 main；
 - 目录镜像 Workspace 的声明范围进入可信 main，或明确保持 Hidden/Internal；
 - updater 真实 crash 回退打包通过；
-- N-1 target 取得真实 reader/import/零写入证据并按 policy 显式 promotion；
+- A3 明确为开发阶段暂停，旧版 target 保持未验证状态；当前格式恢复与不支持格式零写入拒绝仍成立；
 - CSV/XLSX/Unicode 代表性 corpus 通过；
 - PDF 支持范围和继续自研/替换决策有可执行 ADR；
 - 当前能力矩阵、稳定化台账和 E2E 证据无漂移。
@@ -786,7 +820,7 @@ PR 必须说明：
 
 对 M5/1.0 稳定生产作承诺还需要：
 
-- N-1 兼容证据；
+- 先另行决定稳定生产的版本支持窗口，再为所承诺旧版本取得实际兼容证据；
 - 所有广告的存储模式和更新失败形态具备真实产品/打包证据；
 - 容量、Unicode/locale、长期恢复和数据升级边界有持续证据；
 - 运行时职责不会产生双 authority、隐式 fallback 或无法恢复的 Worker 状态。

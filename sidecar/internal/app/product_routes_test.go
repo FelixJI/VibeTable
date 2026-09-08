@@ -55,6 +55,44 @@ func TestProductRPCRouteEnforcesMediaTypeAndBodyBudgets(t *testing.T) {
 	}
 }
 
+// The transport budgets the encoded envelope; owners validate decoded params.
+func TestProductRPCRouteAllowsOneMiBSemanticParamsInsideEnvelope(t *testing.T) {
+	for _, sample := range []struct {
+		name, character   string
+		bytesPerCharacter int
+	}{
+		{"ascii", "x", 1}, {"escaped unicode", `\u00e9`, 2},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			available := (1 << 20) - len(`{"collection":""}`)
+			params := `{"collection":"` + strings.Repeat(sample.character, available/sample.bytesPerCharacter) + strings.Repeat("x", available%sample.bytesPerCharacter) + `"}`
+			body := `{"jsonrpc":"2.0","id":"request-1","method":"test.read","wire":{},"params":` + params + `}`
+			if len(body) <= 1<<20 || len(body) > 4<<20 {
+				t.Fatalf("fixture envelope size=%d", len(body))
+			}
+			fake := &fakeProductRPC{}
+			response := serveProductRequest(t, fake, http.MethodPost, productRPCPath, "application/json", body, context.Background())
+			if response.Code != http.StatusOK || fake.calls != 1 {
+				t.Fatalf("legal envelope status=%d calls=%d", response.Code, fake.calls)
+			}
+		})
+	}
+}
+
+func TestProductRPCRouteEnforcesFourMiBTransportCeiling(t *testing.T) {
+	for _, size := range []int{4 << 20, (4 << 20) + 1} {
+		fake := &fakeProductRPC{}
+		response := serveProductRequest(t, fake, http.MethodPost, productRPCPath, "application/json", strings.Repeat(" ", size), context.Background())
+		wantStatus, wantCalls := http.StatusOK, 1
+		if size > 4<<20 {
+			wantStatus, wantCalls = http.StatusBadRequest, 0
+		}
+		if response.Code != wantStatus || fake.calls != wantCalls {
+			t.Fatalf("bytes=%d status=%d calls=%d", size, response.Code, fake.calls)
+		}
+	}
+}
+
 func TestProductRPCRouteFailsClosedBeforeWritingOversizedResponse(t *testing.T) {
 	fake := &fakeProductRPC{response: productrpc.ResponseEnvelope{
 		JSONRPC: "2.0",

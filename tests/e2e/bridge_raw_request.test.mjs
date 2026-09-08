@@ -6,6 +6,7 @@ import {
   isAppliedMutationResponse,
   postRawBridgeNotificationInPage,
   readRawBridgeRequestTerminalInPage,
+  readRawBridgeRequestElapsedInPage,
   releaseRawBridgeRequestInPage,
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
@@ -300,4 +301,36 @@ test("degraded lifecycle requests reserve a formal scope and accept the host rep
   } finally {
     delete globalThis.window;
   }
+});
+
+
+test("RPC duration seals the first reply before delayed observation", (t) => {
+  let now = 10;
+  let listener;
+  let request;
+  t.mock.method(performance, "now", () => now);
+  t.after(() => { delete globalThis.window; });
+  globalThis.window = {
+    __vibetableE2EWorkspaceWirePort: { reserve: () => ({ sequence: 1 }) },
+    chrome: { webview: {
+      addEventListener(_type, callback) { listener = callback; },
+      removeEventListener() {},
+      postMessage(message) { request = message; },
+    } },
+  };
+  const requestId = beginRawBridgeRequestInPage({
+    requestType: "query.page", requestPayload: { tableId: "tbl_first" },
+  });
+  assert.equal(readRawBridgeRequestElapsedInPage({ requestId }), null);
+  now = 12;
+  listener({ data: { requestId: "unrelated", type: "query.page" } });
+  assert.equal(readRawBridgeRequestElapsedInPage({ requestId }), null);
+  now = 14;
+  listener({ data: { requestId: request.requestId, type: "operation.failed" } });
+  now = 100;
+  listener({ data: { requestId, type: "query.page" } });
+  assert.equal(readRawBridgeRequestElapsedInPage({ requestId }), 4);
+  assert.equal(readRawBridgeRequestTerminalInPage({ requestId }).type, "operation.failed");
+  releaseRawBridgeRequestInPage({ requestId });
+  assert.equal(readRawBridgeRequestElapsedInPage({ requestId }), null);
 });

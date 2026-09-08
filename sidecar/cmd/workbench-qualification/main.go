@@ -215,10 +215,17 @@ func run(ctx context.Context, config qualificationConfig) error {
 	rebuildDuration := indexRebuildDuration(extractionDuration, projectionDuration)
 	request := searchRequest("needle-000042")
 	started := time.Now()
-	if result, queryErr := engine.Query(ctx, request); queryErr != nil || len(result.Hits) != 1 {
+	stopSample := watchFirstScreen(maximumFirstScreen)
+	result, queryErr := engine.Query(ctx, request)
+	firstScreen := time.Since(started)
+	stack := stopSample()
+	if firstScreen > maximumFirstScreen {
+		fmt.Fprintf(os.Stderr, "first-screen diagnostic: elapsed=%s budget=%s stackBytes=%d\n%s\n",
+			firstScreen, maximumFirstScreen, len(stack), stack)
+	}
+	if queryErr != nil || len(result.Hits) != 1 {
 		return fmt.Errorf("first screen result invalid: hits=%d err=%w", len(result.Hits), queryErr)
 	}
-	firstScreen := time.Since(started)
 	warm := make([]time.Duration, 250)
 	for index := range warm {
 		request.Query = fmt.Sprintf("needle-%06d", index%(config.Records+config.Files))

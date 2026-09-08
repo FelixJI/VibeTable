@@ -87,12 +87,14 @@ from backend.contracts.relation_admin import (
     RelationSingleUpdateResult,
     SchemaDescribeResult,
 )
-from backend.contracts.schema_v2 import SchemaSnapshotV2
+from backend.contracts.schema_v2 import FieldSettingsDescribeResultV2, SchemaSnapshotV2
 from backend.contracts.settings_commands import (
     CommandResult,
     CommandsResult,
     DeviceSettings,
     LaunchActionResult,
+    ListCommandsParams,
+    SaveDeviceSettingsParams,
     SharedSettingsResult,
     ShortcutEntry,
     ShortcutsResult,
@@ -279,6 +281,14 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 call.args[2].id,
             )
     result.update(PRODUCT_PARAM_MODELS)
+    # Host-owned methods retain their full public parameter contract after
+    # their Python dispatcher registrations are removed.
+    result.update(
+        {
+            "settings.readDevice": ListCommandsParams,
+            "settings.saveDevice": SaveDeviceSettingsParams,
+        }
+    )
     return result
 
 
@@ -652,6 +662,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             "SchemaDeleteResult",
             {"deleted": True, "tableId": "orders"},
         ),
+        "field.settings.describe": _typed(FieldSettingsDescribeResultV2),
         "schema.describe": _typed(SchemaDescribeResult),
         "schema.getTable": _typed(SchemaSnapshotV2),
         "schema.list": _manual(

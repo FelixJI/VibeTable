@@ -11,6 +11,7 @@
     {"method":"data.generateTemplate","scope":"workspace","audience":"rendererPublic","capabilityId":"data.transfer"},
     {"method":"data.previewImport","scope":"workspace","audience":"rendererPublic","capabilityId":"data.transfer"},
     {"method":"events.reconcile","scope":"workspace","audience":"rendererPublic","capabilityId":"realtime"},
+    {"method":"field.settings.describe","scope":"workspace","audience":"rendererPublic","capabilityId":"schema.query"},
     {"method":"file.applyHostChange","scope":"workspace","audience":"hostOnly","capabilityId":"file.host"},
     {"method":"file.list","scope":"workspace","audience":"rendererPublic","capabilityId":"file.attachment"},
     {"method":"file.saveHostFile","scope":"workspace","audience":"hostOnly","capabilityId":"file.host"},

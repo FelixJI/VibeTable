@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	productRPCPath             = "/api/vibetable/v2/product/rpc"
-	productCapabilitiesPath    = "/api/vibetable/v2/product/capabilities"
-	maxProductRPCRequestBytes  = 1 << 20
+	productRPCPath          = "/api/vibetable/v2/product/rpc"
+	productCapabilitiesPath = "/api/vibetable/v2/product/capabilities"
+	// The encoded envelope needs room beyond each owner's decoded params budget.
+	maxProductRPCRequestBytes  = 4 << 20
 	maxProductRPCResponseBytes = 4 << 20
 	productJSONContentType     = "application/json; charset=utf-8"
 )

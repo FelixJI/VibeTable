@@ -1339,6 +1339,8 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
       "snapshotCount", "encrypted", "verified", "expiresAt",
     ], `${method} result`);
     const verified = bool(source.verified, "verified");
+    const encrypted = bool(source.encrypted, "encrypted");
+    const snapshotCount = integer(source.snapshotCount, "snapshotCount");
     const sourceSnapshotId = nullableText(
       source.sourceSnapshotId,
       "sourceSnapshotId",
@@ -1349,10 +1351,12 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
     parsed = {
       planId: text(source.planId, "planId"),
       trusted: bool(source.trusted, "trusted"),
-      workspaceId: text(source.workspaceId, "workspaceId"),
+      workspaceId: encrypted && !verified && snapshotCount === 0 && source.workspaceId === ""
+        ? ""
+        : text(source.workspaceId, "workspaceId"),
       sourceSnapshotId,
-      snapshotCount: integer(source.snapshotCount, "snapshotCount"),
-      encrypted: bool(source.encrypted, "encrypted"),
+      snapshotCount,
+      encrypted,
       verified,
       expiresAt: text(source.expiresAt, "expiresAt"),
     };

@@ -343,10 +343,7 @@ func extractPDF(ctx context.Context, payload []byte, limits ExtractionLimits) Ex
 		return extractionContextError(ctx)
 	}
 	text := pdfTextAccumulator{limit: limits.MaximumTextCodePoints}
-	if err := extractPDFText(ctx, payload, &text); err != nil {
-		if errors.Is(err, errPDFStop) {
-			return text.result()
-		}
+	if err := extractPDFText(ctx, payload, &text); err != nil && !errors.Is(err, errPDFStop) {
 		return extractionContextError(ctx)
 	}
 	var decodedTotal int64
@@ -367,13 +364,18 @@ func extractPDF(ctx context.Context, payload []byte, limits ExtractionLimits) Ex
 			failure = extractionError(ExtractionResourceLimited, "extract.pdf_total_limit")
 			return errPDFStop
 		}
-		return extractPDFText(ctx, decoded, &text)
+		// The output cap stops text collection, not stream validation. A later
+		// corrupt or oversized stream must not be admitted as partial text.
+		if text.runes > text.limit {
+			return nil
+		}
+		if err := extractPDFText(ctx, decoded, &text); !errors.Is(err, errPDFStop) {
+			return err
+		}
+		return nil
 	})
 	if failure.Status != "" {
 		return failure
-	}
-	if errors.Is(err, errPDFStop) {
-		return text.result()
 	}
 	if err != nil {
 		return extractionContextError(ctx)

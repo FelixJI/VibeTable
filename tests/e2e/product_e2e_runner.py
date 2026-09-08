@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -23,7 +24,8 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, Any, Protocol
 
@@ -39,6 +41,7 @@ if str(ROOT) not in sys.path:
 
 from qa.package_check import check_package  # noqa: E402
 from scripts.build_next import RepoPaths  # noqa: E402
+from scripts.node_toolchain import ensure_node  # noqa: E402
 from scripts.qa._windows_tcp_table import query_windows_tcp_table  # noqa: E402
 from scripts.qa.windows_process_scope import (  # noqa: E402
     ProcessLaunchSpec,
@@ -60,6 +63,24 @@ from tests.e2e.windows_tcp_listener_owner import (  # noqa: E402
 )
 
 DEFAULT_PACKAGE = RepoPaths.default(ROOT).publish_root
+
+
+@dataclass(frozen=True)
+class _NaturalAgingRun:
+    """Persistent data paths for the dedicated two-phase manual acceptance."""
+
+    phase: str
+    state_path: Path
+    scenario_dir: Path
+    readiness_dir: Path
+    workspace_root: Path
+
+
+_NATURAL_AGING_SCENARIO = Scenario(
+    id="a1-natural-retention",
+    title="A1 natural retention aging",
+    requirement="A1 two-phase 24-hour natural retention acceptance",
+)
 
 
 class _ScopeRoot(Protocol):
@@ -1104,6 +1125,14 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
     operation_samples: dict[str, list[dict[str, Any]]] = {}
     ui_samples: dict[str, list[float]] = {}
     pending_requests = 0
+    recovery_names = {
+        "recovery.sidecar.killToReadableTable",
+        "recovery.backend.killToWritableSession",
+        "recovery.workspace.closeAfterBackendExit",
+        "recovery.workspace.reopenAfterBackendExit",
+    }
+    recovery_runs: list[dict[str, object]] = []
+    unmeasured_recovery_runs = 0
     for result in results:
         duration = result.get("durationMs")
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
@@ -1114,12 +1143,25 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     "durationMs": round(float(duration), 2),
                 }
             )
+        recovery_timings: list[tuple[str, float | None]] = []
         ui_timings = result.get("uiTimings")
         if isinstance(ui_timings, list):
             for timing in ui_timings:
                 if not isinstance(timing, dict):
                     continue
                 name = timing.get("name")
+                if isinstance(name, str) and name.startswith("recovery."):
+                    value = timing.get("durationMs")
+                    duration = (
+                        float(value)
+                        if isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and math.isfinite(value)
+                        and value >= 0
+                        else None
+                    )
+                    recovery_timings.append((name, duration))
+                    continue
                 ui_duration = timing.get("durationMs")
                 if (
                     isinstance(name, str)
@@ -1127,6 +1169,23 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     and not isinstance(ui_duration, bool)
                 ):
                     ui_samples.setdefault(name, []).append(float(ui_duration))
+        if result.get("scenario") == "10-sse-reconnect":
+            lifecycle = result.get("lifecycle")
+            if (
+                result.get("status") == "passed"
+                and isinstance(lifecycle, dict)
+                and lifecycle.get("status") == "passed"
+                and len(recovery_timings) == len(recovery_names)
+                and {name for name, _ in recovery_timings} == recovery_names
+                and all(duration is not None for _, duration in recovery_timings)
+            ):
+                recovery_runs.append(
+                    {
+                        "durationsMs": dict(recovery_timings),
+                    }
+                )
+            else:
+                unmeasured_recovery_runs += 1
         diagnostics = result.get("bridgeDiagnostics")
         if not isinstance(diagnostics, dict):
             continue
@@ -1227,6 +1286,14 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "bridgeFailures": sum(operation["failures"] for operation in by_operation),
         },
         "scenarios": scenario_timings,
+        "recovery": {
+            "status": "measured"
+            if recovery_runs and not unmeasured_recovery_runs
+            else "not-measured",
+            "clock": "node-performance-now",
+            "runs": recovery_runs,
+            "unmeasuredRuns": unmeasured_recovery_runs,
+        },
         "byUiAction": by_ui_action,
         "byOperation": by_operation,
     }
@@ -1245,17 +1312,28 @@ def run_scenario(
     package_root: Path,
     evidence_root: Path,
     node: str,
+    natural_aging: _NaturalAgingRun | None = None,
 ) -> dict[str, Any]:
     # The packaged host runs with the package as its working directory. Keep
     # every test-mode file protocol absolute so WPF and the orchestrator refer
     # to the same isolated evidence/data tree.
-    scenario_dir = (evidence_root / scenario.id).resolve()
+    scenario_dir = (
+        natural_aging.scenario_dir.resolve()
+        if natural_aging is not None
+        else (evidence_root / scenario.id).resolve()
+    )
     scenario_dir.mkdir(parents=True, exist_ok=True)
-    runtime_dir = _scenario_runtime_directory(evidence_root, scenario)
-    readiness_dir = runtime_dir / "host"
-    readiness_dir.mkdir(parents=True)
+    runtime_dir = (
+        scenario_dir / "_runtime"
+        if natural_aging is not None
+        else _scenario_runtime_directory(evidence_root, scenario)
+    )
+    readiness_dir = (
+        natural_aging.readiness_dir if natural_aging is not None else runtime_dir / "host"
+    )
+    readiness_dir.mkdir(parents=True, exist_ok=natural_aging is not None)
     controls_dir = runtime_dir / "controls"
-    controls_dir.mkdir()
+    controls_dir.mkdir(parents=True)
     import_source = controls_dir / "import-source.csv"
     import_source.write_text(
         (
@@ -1322,8 +1400,13 @@ def run_scenario(
         + "\n",
         encoding="utf-8",
     )
-    workspace_root = controls_dir / "workspace-root"
-    workspace_root.mkdir()
+    workspace_root = (
+        natural_aging.workspace_root
+        if natural_aging is not None
+        else controls_dir / "workspace-root"
+    )
+    if natural_aging is None:
+        workspace_root.mkdir()
     snapshot_package = controls_dir / "workspace-snapshot.vtsnapshot"
     snapshot_extract = controls_dir / "snapshot-extract.bin"
     for control_name, target in (
@@ -1345,7 +1428,9 @@ def run_scenario(
         f"--remote-debugging-port={port} --disable-gpu"
     )
     environment["VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT"] = str(
-        (readiness_dir / "webview2-user-data").resolve()
+        (
+            (runtime_dir if natural_aging is not None else readiness_dir) / "webview2-user-data"
+        ).resolve()
     )
     if scenario.id == "05-formula-lifecycle":
         environment["VIBETABLE_E2E_MIGRATION_FAULT_FILE"] = str(
@@ -1445,6 +1530,15 @@ def run_scenario(
                 "--data-root",
                 str(readiness_dir / "local-data"),
             ]
+            if natural_aging is not None:
+                node_command.extend(
+                    [
+                        "--natural-aging-phase",
+                        natural_aging.phase,
+                        "--state",
+                        str(natural_aging.state_path),
+                    ]
+                )
             node_returncode, node_stdout, node_stderr = _run_node_runner(
                 node_command,
                 scenario_dir=scenario_dir,
@@ -1663,6 +1757,129 @@ def run_product_acceptance(
     ]
     report = write_aggregate(report_path, audit=audit, results=results)
     return (0 if report["status"] == "passed" else 1), report
+
+
+def run_natural_aging_phase(
+    *,
+    phase: str,
+    state_path: Path,
+    package_root: Path,
+    evidence_root: Path,
+    package_audit: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Run the dedicated cross-day retention acceptance phase."""
+    if phase not in {"seed", "resume"}:
+        raise ValueError("natural retention aging phase must be seed or resume")
+    if sys.platform != "win32":
+        raise ValueError("natural retention aging requires Windows WebView2")
+    state_path = state_path.resolve()
+    state_root = state_path.parent
+    if phase == "seed":
+        if state_path.exists():
+            raise ValueError("natural retention seed state already exists")
+        workspace_root = state_root / "workspace"
+        readiness_dir = state_root / "host"
+        local_data = readiness_dir / "local-data"
+        if workspace_root.exists() or local_data.exists():
+            raise ValueError("natural retention seed root must be fresh")
+    else:
+        seed = _read_json(state_path)
+        if seed is None:
+            raise ValueError("natural retention seed state is unavailable")
+        workspace_root = Path(str(seed["workspaceRoot"])).resolve()
+        local_data = Path(str(seed["localData"])).resolve()
+        readiness_dir = local_data.parent
+    run_dir = (
+        evidence_root.resolve()
+        / "natural-retention-aging"
+        / phase
+        / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    )
+    if phase == "seed":
+        state_root.mkdir(parents=True, exist_ok=True)
+        workspace_root.mkdir()
+    readiness_dir.mkdir(parents=True, exist_ok=True)
+    (readiness_dir / "vibetable-readiness.json").unlink(missing_ok=True)
+    result = run_scenario(
+        _NATURAL_AGING_SCENARIO,
+        package_root=package_root.resolve(),
+        evidence_root=evidence_root.resolve(),
+        node=str(ensure_node(ROOT)),
+        natural_aging=_NaturalAgingRun(
+            phase=phase,
+            state_path=state_path,
+            scenario_dir=run_dir,
+            readiness_dir=readiness_dir,
+            workspace_root=workspace_root,
+        ),
+    )
+
+    if phase == "seed" and result.get("status") == "passed":
+        required = ("workspaceId", "olderSnapshotId", "newerSnapshotId")
+        if not all(isinstance(result.get(name), str) and result[name] for name in required):
+            result["status"] = "failed"
+            result["error"] = {"code": "NATURAL_AGING_RESULT_INVALID"}
+        elif not _natural_aging_workspace_matches(
+            workspace_root, readiness_dir, result["workspaceId"]
+        ):
+            result["status"] = "failed"
+            result["error"] = {"code": "NATURAL_AGING_WORKSPACE_IDENTITY_INVALID"}
+
+    report_path = run_dir / "natural-retention-aging-report.json"
+    report = write_aggregate(report_path, audit=dict(package_audit), results=[result])
+    if report["status"] != "passed":
+        result["status"] = "failed"
+        return result
+    if phase == "seed":
+        completed_at = datetime.now(UTC)
+        try:
+            _write_json_atomic(
+                state_path,
+                {
+                    "formatVersion": 1,
+                    "phase": "seeded",
+                    "completedAt": completed_at.isoformat(),
+                    "notBefore": (completed_at + timedelta(hours=24)).isoformat(),
+                    "workspaceRoot": str(workspace_root.resolve()),
+                    "workspaceId": result["workspaceId"],
+                    "localData": str(local_data.resolve()),
+                    "packageFingerprint": package_audit["fingerprint"],
+                    "olderSnapshotId": result["olderSnapshotId"],
+                    "newerSnapshotId": result["newerSnapshotId"],
+                    "seedEvidence": str(run_dir),
+                },
+            )
+        except OSError as exc:
+            result["status"] = "failed"
+            result["error"] = {"code": "NATURAL_AGING_STATE_WRITE_FAILED", "message": str(exc)}
+            write_aggregate(report_path, audit=dict(package_audit), results=[result])
+            raise
+    return result
+
+
+def _natural_aging_workspace_matches(
+    workspace_root: Path,
+    readiness_dir: Path,
+    workspace_id: object,
+) -> bool:
+    if not isinstance(workspace_id, str):
+        return False
+    manifest = _read_json(workspace_root / ".vibetable" / "workspace.json")
+    registry = _read_json(
+        readiness_dir / "local-data" / "VibeTable" / "shell" / "workspace-registry-v2.json"
+    )
+    if manifest is None or registry is None or manifest.get("workspaceId") != workspace_id:
+        return False
+    workspaces = registry.get("workspaces")
+    if not isinstance(workspaces, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("workspaceId") == workspace_id
+        and isinstance(item.get("selectedRoot"), str)
+        and Path(item["selectedRoot"]).resolve() == workspace_root.resolve()
+        for item in workspaces
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

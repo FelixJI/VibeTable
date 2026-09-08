@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "migrations": [
     {
       "id": 2026072401,
@@ -55,6 +55,12 @@
       "name": "view_v2_metadata",
       "source": "2026081203_view_v2_metadata.go",
       "sha256": "ca3bc00025aa676417b4c0202ba8a4a942b85350f12c638277fe7983879795fc"
+    },
+    {
+      "id": 2026090601,
+      "name": "computation_dependencies",
+      "source": "2026090601_computation_dependencies.go",
+      "sha256": "5267878f998415a356890939a46cf4c3e750631ed064a12fa580588fd3abe400"
     }
   ]
 }

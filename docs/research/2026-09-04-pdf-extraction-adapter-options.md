@@ -17,7 +17,8 @@
    未给出 `context.Context`/硬资源上限契约；pdfcpu 为 Apache-2.0 纯 Go parser，却没有公开的成品纯文本提取
    API。其官方当前声明兼容所有 PDF 版本，但 PDF 2.0 validation 仍是 basic/持续改进，不能当作即插即用替代。
 4. 遵循 PR140 的停止条件：**只有 MUST corpus 以可复现证据证明当前实现无法满足已声明支持范围，才启动
-   替换/扩展 ADR**。本研究本身不触发 ADR，更不授权替换。
+   替换/扩展的 proposed ADR**。本研究不授权替换；支持子集与拒绝语义见
+   [资格策略](../plans/2026-09-05-pdf-support-qualification.md)。
 
 外部事实只引用 PDF 规范、项目官方文档、官方源码/发行页和许可证原文。工程判断均显式写成“判断”或
 “待验证”。许可证段落不是法律意见；真正分发前仍需基于锁定版本、精确构建配置和完整 NOTICE/SBOM 评审。
@@ -46,7 +47,7 @@ PDF 1.7 已足以证明“搜索 `Tj`/`TJ` 和单层 Flate”不是通用解析�
 权威代码为 `sidecar/internal/workspacesearch/extractor.go`：
 
 - 入口先把输入限制为 64 MiB，默认 30 秒 deadline；PDF 单个解码流 32 MiB、累计解码 256 MiB、输出
-  2,000,000 Unicode code points。状态已经区分 `indexed`、`failed`、`truncated`、
+  2,000,000 Unicode code points。状态已经区分 `indexed`、`unsupported`、`failed`、`truncated`、
   `passwordProtected`、`noTextLayer`、`resourceLimited` 与 `cancelled`。
 - PDF 路径以 regexp 找直接出现的 `Tj`/`TJ` 字符串，并只发现字典中出现 `/FlateDecode` 的流；zlib 解码
   有单流/累计上限，扫描与读取过程中检查 context，输出 accumulator 最多保留 `limit + 1` 个 rune。
@@ -55,7 +56,7 @@ PDF 1.7 已足以证明“搜索 `Tj`/`TJ` 和单层 Flate”不是通用解析�
 - `bytes.Contains(payload, "/Encrypt")` 是保守拒绝，不是 encryption dictionary 解析。类似地，找不到
   可解码 token 就返回 `noTextLayer`，当前证据无法区分“真正纯图像”与“存在文本但编码/对象/filter 不受支持”。
 
-判断：现实现适合声明为“生成器可控的简单 PDF 子集”，不应在没有 corpus 的情况下承诺一般用户 PDF。
+判断：现实现只能在 corpus 证明的原生文本 PDF 子集内作出承诺，不应把“生成器可控”误写成产品范围。
 它的最强资产是稳定失败语义和原生 `context` 检查；任何成熟 adapter 都必须保留这两项，不得只比较召回率。
 
 ## 4. 候选引擎矩阵
@@ -101,7 +102,7 @@ ExtractPDF(ctx, boundedInput, limits)
 
 1. 输入先由 VibeTable 限为 64 MiB；输出最多 2,000,000 code points；默认 30 秒。引擎的“能打开”不能
    越过产品上限。
-2. 当前 extractor 已有 `indexed`、`failed`、`truncated`、`passwordProtected`、`noTextLayer`、
+2. 当前 extractor 已有 `indexed`、`unsupported`、`failed`、`truncated`、`passwordProtected`、`noTextLayer`、
    `resourceLimited`、`cancelled` 状态和稳定错误码；达到输出上限为 `truncated`，deadline 为
    `resourceLimited`，用户取消为 `cancelled`。
 3. 当前产品没有 PDF 密码输入，现 parser 只要字节命中 `/Encrypt` 就返回 `passwordProtected`；adapter
@@ -112,8 +113,8 @@ ExtractPDF(ctx, boundedInput, limits)
 ### 5.2 支持范围 policy / ADR 待决
 
 - 加密 PDF 是否支持 user/owner password、是否执行 copy permission，以及空口令行为，尚未冻结。
-- 真正无文本、混合页、存在 text object 但 Unicode mapping 失败、局部页失败各自应映射为
-  `noTextLayer`、`failed`，是否新增 `unsupported`，或是否允许部分成功，须由 policy/ADR 预注册，不能由
+- 真正无文本、混合页、存在 text object 但 Unicode mapping 失败、局部页失败各自映射为
+  `noTextLayer`、既有 `unsupported` 或 `failed`；精确分类与是否允许部分成功须由 policy/ADR 预注册，不能由
   候选默认行为决定。
 - reading order、连字/空白/换行规范化和损坏 PDF 的容错边界同样待 corpus 与 ADR 决定。
 
@@ -135,8 +136,8 @@ ExtractPDF(ctx, boundedInput, limits)
 每个样本必须可再分发或由测试生成，记录构造来源、预期状态、最小必要 token/顺序断言和资源预算；普通
 源码/fixture 不新增重复 hash。外部跨系统样本仅在仓库已有 checksum 契约要求时沿用该契约。以下是
 **corpus 必须覆盖的能力轴，不表示每个轴都由本文宣布为产品 MUST**；支持范围 policy 必须在看到候选结果前，
-逐样本预注册 `MUST`、`MAY` 或 `OUT-OF-SCOPE`。A6 支持子集尚未冻结前，新增复杂样本只能作为
-`DISCOVERY`，不能反过来制造替换触发器。
+逐样本预注册 `MUST`、`MAY` 或 `OUT-OF-SCOPE`。新增复杂样本先作为 `DISCOVERY`，除非策略明确升级为 MUST，
+不得反过来制造替换触发器。
 
 **能力轴**：
 
@@ -156,19 +157,11 @@ ExtractPDF(ctx, boundedInput, limits)
 
 ### 6.2 触发 ADR 的充分证据
 
-只有同时满足以下条件，A6 才从研究进入 ADR：
+以下证据足以让 A6 从研究进入**决策**：当前实现对一个已预注册 MUST 样本稳定地失败、误分类或超预算，且根因落在声明范围；独立 oracle/生成器能够复现预期，排除 fixture 或阅读顺序歧义。若修复需要新增通用 xref/object/font/filter/security 子系统，决策输入必须说明其接口、测试和长期维护面，不能以“几行 patch”低估。
 
-1. 至少一个 MUST 样本在当前 HEAD、Windows x64 上稳定失败/误分类/超预算，且预期值由规范和独立生成器
-   或两个成熟引擎交叉确认；单次 flaky、损坏 fixture 或阅读顺序偏好差异不算。
-2. 根因落在已声明支持范围，且不是一个局部、可维护的 bug；若修复要求新增通用 xref/object/font/filter/
-   security 子系统，必须把预计接口、测试与长期维护面写入 ADR 输入，不能用“几行 patch”低估。
-3. 至少两个许可可行的候选用同一 corpus 跑出逐样本状态、Unicode token、wall/CPU/Peak RSS、取消延迟和
-   崩溃隔离结果；其中至少一个在召回/正确性上实质修复触发样本，同时不破坏现有失败码与资源预算。
-4. 对候选完成锁定版本许可/NOTICE/SBOM、Windows x64 source build、release ZIP 差值、冷启动、离线运行和
-   更新责任取证。商业候选还需明确可分发范围、offline key 生命周期和失效处理。
+这不是采用候选的门槛。候选的逐样本正确性、CPU/RSS/取消延迟、崩溃隔离、锁定版本许可/NOTICE/SBOM、Windows x64 构建、release ZIP 差值、冷启动、离线运行与更新责任，均是**采用及发布前**必须完成的资格门禁；商业候选另须说明可分发范围、offline key 生命周期和失效处理。不要求候选先完成全量 build 才能记录架构决定：当前实现已不满足声明范围时，可形成 proposed ADR，决定局部修复、保留有限 parser 或授权受控原型。
 
-达到上述门槛只表示“应写 ADR”，不表示“应替换”。ADR 仍可在缩窄公开支持范围、深化有限 parser、纯 Go
-商业库、native engine worker、JVM worker之间选择，并须包含删除旧实现与回滚条件。
+进入决策不表示“应替换”，更不表示任何候选已合格。proposed ADR 可在资格完成前记录架构取舍；只有通过全部资格门禁的方案才可被采用或随产品发布。改变既有“原生文本 PDF”承诺或缩窄产品范围须获单独用户批准，当前路线不采用该分支。
 
 ### 6.3 明确停止条件
 
@@ -187,8 +180,8 @@ ExtractPDF(ctx, boundedInput, limits)
    只挑最小、许可清晰样本；不能提交的真实 PDF 只记录
    生成配方或在受控外部资格集运行。
 3. 先跑当前实现生成逐项 gap ledger；没有稳定 MUST RED 就不构建任何候选。
-4. 若触发，再做两个**throwaway** worker 原型，优先覆盖一个 permissive 许可方案（PDFium 或 PDFBox）与
-   一个 Go 方案（UniPDF 仅在商业离线许可可评估时）；MuPDF/Poppler 只有许可先通过才投入打包实验。
+4. 若 proposed ADR 授权原型，按其待验证风险选择最少必要的 throwaway worker；原型不是采用前提，任何候选仍须
+   在采用/发布前通过本节所列资格门禁。
 5. ADR 输入齐全前，不修改 `go.mod`/lock/workflow/release assets，不把临时 binary 或 runtime 纳入产品包。
 
 ## 8. 本次核对记录

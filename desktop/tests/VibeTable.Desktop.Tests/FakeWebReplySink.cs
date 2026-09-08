@@ -57,18 +57,24 @@ internal sealed class FakeWebReplySink : IWebReplySink
     public async Task<Reply?> WaitForAsync(
         string type,
         int timeoutMs = 2000)
+        => (await WaitForCountAsync(type, 1, timeoutMs).ConfigureAwait(false)).FirstOrDefault();
+
+    public async Task<IReadOnlyList<Reply>> WaitForCountAsync(
+        string type,
+        int count,
+        int timeoutMs = 2000)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
         using var timeout = new CancellationTokenSource(timeoutMs);
         while (true)
         {
             Task replyAdded;
             lock (_gate)
             {
-                Reply? match = _replies.FirstOrDefault(
-                    reply => reply.Type == type);
-                if (match is not null)
+                List<Reply> matches = _replies.Where(reply => reply.Type == type).ToList();
+                if (matches.Count >= count)
                 {
-                    return match;
+                    return matches;
                 }
                 replyAdded = _replyAdded.Task;
             }
@@ -79,7 +85,7 @@ internal sealed class FakeWebReplySink : IWebReplySink
             }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
-                return null;
+                return [];
             }
         }
     }

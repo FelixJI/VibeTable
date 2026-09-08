@@ -851,13 +851,16 @@ function applyStoragePlan(): void {
       @update:show="show => { if (!show) closeImport() }"
     >
       <template v-if="protection.snapshotPackagePlan">
-        <NAlert
+        <NAlert tabindex="0"
           :type="protection.snapshotPackagePlan.trusted ? 'success' : 'warning'"
           :title="protection.snapshotPackagePlan.trusted ? t('workspaceV2.snapshot.packageTrusted') : t('workspaceV2.snapshot.packageUntrusted')"
         >
-          {{ t("workspaceV2.snapshot.packageCount", { count: protection.snapshotPackagePlan.snapshotCount }) }}
+          <template v-if="protection.snapshotPackagePlan.verified">
+            {{ t("workspaceV2.snapshot.packageCount", { count: protection.snapshotPackagePlan.snapshotCount }) }}
+          </template>
+          <template v-else>{{ t("workspaceV2.snapshot.packageCredential") }}</template>
         </NAlert>
-        <dl class="plan-summary">
+        <dl v-if="protection.snapshotPackagePlan.verified" class="plan-summary">
           <div>
             <dt>{{ t("workspaceV2.snapshot.packageWorkspace") }}</dt>
             <dd><code>{{ protection.snapshotPackagePlan.workspaceId }}</code></dd>

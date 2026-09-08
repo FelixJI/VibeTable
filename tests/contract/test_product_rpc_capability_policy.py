@@ -38,11 +38,11 @@ def _invalidate_first_rpc_scope(source: dict[str, object]) -> None:
     first["scope"] = "session"
 
 
-def test_policy_joins_catalog_and_inventory_with_file_and_schema_reads_migrated() -> None:
+def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> None:
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 102
+    assert len(manifest["rpcMethods"]) == 103
     assert len(manifest["eventTopics"]) == 6
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -54,9 +54,27 @@ def test_policy_joins_catalog_and_inventory_with_file_and_schema_reads_migrated(
         "effect": "read",
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
+        "events.reconcile",
+        "field.settings.describe",
         "file.list",
+        "history.read",
+        "lookup.list",
+        "lookup.query",
+        "lookup.valuePage",
+        "query.cursorFetch",
+        "query.cursorOpen",
+        "query.page",
+        "query.readRows",
+        "query.selectionOpen",
+        "query.validateSnapshot",
+        "query.view",
+        "relation.previewDelta",
+        "relation.searchTargets",
+        "schema.describe",
         "schema.getTable",
         "schema.list",
+        "settings.readDevice",
+        "settings.saveDevice",
     }
     schema_list = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.list")
     assert schema_list == {
@@ -67,6 +85,21 @@ def test_policy_joins_catalog_and_inventory_with_file_and_schema_reads_migrated(
         "owner": "goSidecar",
         "effect": "read",
     }
+    query_page = next(item for item in manifest["rpcMethods"] if item["method"] == "query.page")
+    assert query_page == {
+        "method": "query.page",
+        "scope": "workspace",
+        "audience": "rendererPublic",
+        "capabilityId": "schema.query",
+        "owner": "goSidecar",
+        "effect": "read",
+    }
+    assert (
+        next(item for item in manifest["rpcMethods"] if item["method"] == "query.validateSnapshot")[
+            "owner"
+        ]
+        == "goSidecar"
+    )
     assert {item["owner"] for item in manifest["eventTopics"]} == {"pythonBff"}
     events = {item["topic"]: item for item in manifest["eventTopics"]}
     assert events["plugin.interaction.requested"]["audience"] == "rendererPublic"
@@ -131,9 +164,33 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 99
+    assert len(methods) == 82
     assert methods[0] == "command.list"
-    assert current_owner_methods("goSidecar") == ("file.list", "schema.getTable", "schema.list")
+    assert current_owner_methods("goSidecar") == (
+        "events.reconcile",
+        "field.settings.describe",
+        "file.list",
+        "history.read",
+        "lookup.list",
+        "lookup.query",
+        "lookup.valuePage",
+        "query.cursorFetch",
+        "query.cursorOpen",
+        "query.page",
+        "query.readRows",
+        "query.selectionOpen",
+        "query.validateSnapshot",
+        "query.view",
+        "relation.previewDelta",
+        "relation.searchTargets",
+        "schema.describe",
+        "schema.getTable",
+        "schema.list",
+    )
+    assert current_owner_methods("wpfHost") == (
+        "settings.readDevice",
+        "settings.saveDevice",
+    )
     with pytest.raises(ValueError, match="unknown current owner"):
         current_owner_methods(cast(CurrentOwner, "retiredOwner"))
 
@@ -145,6 +202,10 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         '{Method: "schema.getTable", Scope: WorkspaceScope, Audience: RendererPublic, '
         'CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}' in go_adapter
     )
+    assert (
+        '{Method: "settings.saveDevice", Scope: GlobalScope, Audience: RendererPublic, '
+        'CapabilityID: "host.preferences", Owner: WpfHost, Effect: WriteEffect}' in go_adapter
+    )
 
 
 def test_generated_manifest_validates_against_its_closed_schema() -> None:
@@ -152,3 +213,30 @@ def test_generated_manifest_validates_against_its_closed_schema() -> None:
     schema = json.loads(MANIFEST_SCHEMA.read_text(encoding="utf-8"))
 
     _validate(manifest, schema, schema)
+
+
+def test_field_settings_go_owner_keeps_legacy_routes() -> None:
+    from backend.contracts.product_rpc import (
+        PYTHON_PRODUCT_RPC_REGISTRY,
+        WORKSPACE_CATALOG_METHODS,
+    )
+
+    method = "field.settings.describe"
+    entry = next(item for item in build_manifest()["rpcMethods"] if item["method"] == method)
+    assert entry == {
+        "method": method,
+        "scope": "workspace",
+        "audience": "rendererPublic",
+        "capabilityId": "schema.query",
+        "owner": "goSidecar",
+        "effect": "read",
+    }
+    assert method not in PYTHON_PRODUCT_RPC_REGISTRY
+    assert {
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
+    } == WORKSPACE_CATALOG_METHODS
+    assert PYTHON_PRODUCT_RPC_REGISTRY.keys() >= WORKSPACE_CATALOG_METHODS

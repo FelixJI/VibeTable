@@ -78,7 +78,7 @@ def test_current_writer_derives_app_version_while_n_minus_one_evidence_is_frozen
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
 
     _validate(policy, schema, schema)
-    assert validate_workspace_version_policy(policy, corpus) == []
+    assert validate_workspace_version_policy(policy, corpus, CORPUS.parent) == []
     assert policy["currentWriter"]["appVersion"] == app_version
     assert policy["currentWriter"] == {
         "appVersion": app_version,
@@ -114,10 +114,10 @@ def test_current_writer_derives_app_version_while_n_minus_one_evidence_is_frozen
     assert policy["compatibilityCorpus"] == {
         "mutationPolicy": "append-only",
         "immutablePrefix": {
-            "anchorCommit": "b28a0fc3f0829ed9fd7c9b974daf41d350eba560",
+            "anchorCommit": "9be3e4ce584709765322434fe9c9068ee6f84287",
             "path": "contracts/v2/compatibility-corpus.json",
             "baselineCount": 1,
-            "formalReleaseCount": 0,
+            "formalReleaseCount": 1,
         },
     }
 

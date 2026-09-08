@@ -389,27 +389,26 @@ public sealed class WorkspaceProductController : IAsyncDisposable
                             "workspace.capability_unavailable",
                             "This workspace v2 capability is not connected in this build.");
                     }
-                    JsonElement materialized =
-                        _workspacePathGrants.MaterializeSentinels(
-                            request.V2Method!,
-                            operationId,
-                            parameters);
-                    WorkspaceSidecarPathGrant? sidecarPathGrant =
-                        _workspacePathGrants.ConsumeForSidecar(
-                            materialized,
-                            request.V2Method!,
-                            operationId);
                     WorkspaceV2ForwardResult forwarded =
-                        await gateway.ForwardAsync(
+                        await gateway.ForwardPreparedAsync(
                             request.RequestId ?? operationId.ToString("D"),
                             request.V2Method!,
                             request.Wire,
-                            materialized,
-                            sidecarPathGrant,
+                            () =>
+                            {
+                                JsonElement materialized = _workspacePathGrants.MaterializeSentinels(
+                                    request.V2Method!, operationId, parameters);
+                                WorkspaceSidecarPathGrant? grant = _workspacePathGrants.ConsumeForSidecar(
+                                    materialized, request.V2Method!, operationId);
+                                return (materialized, grant);
+                            },
                             requestToken);
                     if (epochLease is not null &&
                         !_session.IsCurrent(epochLease))
+                    {
+                        PostRetiredRequest(request);
                         return;
+                    }
                     if (forwarded.Error is not null)
                     {
                         _reply.PostWorkspaceV2Response(
@@ -444,10 +443,18 @@ public sealed class WorkspaceProductController : IAsyncDisposable
                     if (request.V2Method == "replica.forceTakeover" &&
                         request.Scope is not null)
                     {
-                        await _replicaStatus.RefreshNowAsync(
-                            request.Scope.WorkspaceId,
-                            request.Scope.SessionEpoch,
-                            requestToken);
+                        try
+                        {
+                            await _replicaStatus.RefreshNowAsync(
+                                request.Scope.WorkspaceId,
+                                request.Scope.SessionEpoch,
+                                requestToken);
+                        }
+                        catch (OperationCanceledException)
+                            when (epochLease?.CancellationToken.IsCancellationRequested == true)
+                        {
+                            // Takeover already settled its caller before this refresh.
+                        }
                     }
                     if (request.V2Method == "snapshot.applyRestore"
                         && IsResultState(forwarded.Result, "prepared")
@@ -515,8 +522,7 @@ public sealed class WorkspaceProductController : IAsyncDisposable
         catch (OperationCanceledException)
             when (epochLease?.CancellationToken.IsCancellationRequested == true)
         {
-            // Draining invalidated this epoch. Never post a late response into
-            // a new workspace session.
+            PostRetiredRequest(request);
         }
         catch (Exception exception)
         {
@@ -549,6 +555,25 @@ public sealed class WorkspaceProductController : IAsyncDisposable
         {
             epochLease?.Dispose();
         }
+    }
+
+    private void PostRetiredRequest(RoutedWebRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.RequestId)) return;
+        // Settle only the original caller; never project an old epoch's result.
+        _reply.PostWorkspaceV2Response(request.RequestId, new
+        {
+            method = request.V2Method,
+            wire = request.Wire,
+            ok = false,
+            result = (object?)null,
+            error = new
+            {
+                code = "workspace.session_stale",
+                message = "The workspace request was cancelled because its session ended.",
+                retryable = false,
+            },
+        }, request.Wire);
     }
 
     public static bool Handles(string requestType) =>

@@ -1335,60 +1335,54 @@ public sealed class WorkspaceRequestDispatcherQueryTests
     }
 
     [TestMethod]
-    public async Task ProductQuery_WaitsForReplacementGatewayDuringBackendRecovery()
+    public async Task GoQueryWithoutForwarderDoesNotWaitForReplacementOrFallBackToPython()
     {
-        await using var staleClient = new JsonRpcClient(new QueryTransport());
-        using var staleGateway = new JsonRpcProductDataGateway(staleClient);
+        var python = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(python);
+        using var gateway = new JsonRpcProductDataGateway(client);
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(sink);
-        controller.SetGateway(staleGateway);
-        staleGateway.Dispose();
+        controller.SetGateway(gateway);
 
-        using var document = JsonDocument.Parse(
-            """{"tableId":"tbl_records","query":{"filters":[],"sorts":[],"offset":0,"limit":100}}""");
-        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
-            "query.page",
-            "recovering-query",
-            document.RootElement.Clone(),
-            string.Empty));
+        await controller.DispatchAsync(GoPageRequest("missing-go"));
+        var replacement = new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("Completed requests must not be replayed"));
+        controller.SetProductSidecarForwarder(replacement);
 
-        await Task.Delay(50);
-        await using var readyClient = new JsonRpcClient(new QueryTransport());
-        using var readyGateway = new JsonRpcProductDataGateway(readyClient);
-        controller.SetGateway(readyGateway);
-        await dispatch;
-
-        FakeWebReplySink.Reply? reply = await sink.WaitForAsync("query.page", 4_000);
-        Assert.IsNotNull(reply);
-        Assert.AreEqual("recovering-query", reply.RequestId);
-        Assert.IsFalse(sink.Replies.Any(item => item.Type == "operation.failed"));
+        FakeWebReplySink.Reply failure = sink.Replies.Single();
+        Assert.AreEqual("operation.failed", failure.Type);
+        Assert.AreEqual("missing-go", failure.RequestId);
+        Assert.AreEqual("BACKEND_UNAVAILABLE",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
+        Assert.AreEqual(0, python.WriteCount);
+        Assert.AreEqual(0, replacement.CallCount);
     }
 
     [TestMethod]
-    public async Task ProductQuery_ReportsStableUnavailableCodeWhenRecoveryDeadlineExpires()
+    public async Task GoQueryReportsStableUnavailableWithoutRetryOrPythonFallback()
     {
-        await using var staleClient = new JsonRpcClient(new QueryTransport());
-        using var staleGateway = new JsonRpcProductDataGateway(staleClient);
+        var python = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(python);
+        using var gateway = new JsonRpcProductDataGateway(client);
         var sink = new FakeWebReplySink();
-        var controller = new ProductDataRequestController(
-            sink,
-            readRecoveryTimeout: TimeSpan.FromMilliseconds(75));
-        controller.SetGateway(staleGateway);
-        staleGateway.Dispose();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(gateway);
+        var sidecar = new ControlledProductSidecarForwarder((_, _) =>
+            throw new BackendUnavailableException("Sidecar unavailable"));
+        controller.SetProductSidecarForwarder(sidecar);
+        RoutedWebRequest request = GoPageRequest("unavailable-go");
 
-        using var document = JsonDocument.Parse(
-            """{"tableId":"tbl_records","query":{"filters":[],"sorts":[],"offset":0,"limit":100}}""");
-        await controller.DispatchAsync(new RoutedWebRequest(
-            "query.page",
-            "unavailable-query",
-            document.RootElement.Clone(),
-            string.Empty));
+        await controller.DispatchAsync(request);
 
-        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
-        Assert.IsNotNull(failure);
-        string payload = JsonSerializer.Serialize(failure.Payload);
-        StringAssert.Contains(payload, @"""code"":""BACKEND_UNAVAILABLE""");
-        Assert.IsFalse(payload.Contains("PRODUCT_DATA_FAILED", StringComparison.Ordinal));
+        FakeWebReplySink.Reply failure = sink.Replies.Single();
+        Assert.AreEqual("operation.failed", failure.Type);
+        Assert.AreEqual("unavailable-go", failure.RequestId);
+        Assert.AreEqual("BACKEND_UNAVAILABLE",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.AreEqual("query.page", sidecar.Calls.Single().Method);
+        Assert.IsTrue(JsonElement.DeepEquals(request.Wire, sidecar.Calls.Single().Wire));
+        Assert.AreEqual(0, python.WriteCount);
     }
 
     [TestMethod]
@@ -1448,6 +1442,30 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         Assert.AreEqual("field.change.apply", terminalReplies[0].Type);
     }
 
+    private static RoutedWebRequest GoPageRequest(string requestId)
+    {
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace",
+            WorkspaceId = Guid.NewGuid(),
+            SessionEpoch = 1,
+            OperationId = Guid.NewGuid(),
+            Sequence = 1,
+        };
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = scope.Scope,
+            workspaceId = scope.WorkspaceId,
+            sessionEpoch = scope.SessionEpoch,
+            operationId = scope.OperationId,
+            sequence = scope.Sequence,
+        });
+        return new RoutedWebRequest(
+            "query.page", requestId,
+            JsonSerializer.SerializeToElement(new { tableId = "tbl_records", query = new { limit = 100 } }),
+            string.Empty, scope, wire);
+    }
+
     private sealed class QueryTransport : IJsonLineTransport
     {
         private readonly Channel<JsonElement?> _incoming =
@@ -1475,13 +1493,7 @@ public sealed class WorkspaceRequestDispatcherQueryTests
                     "migrationJobId": ""
                   }
                   """
-                : """
-                  {
-                    "rows": [],
-                    "total": 0,
-                    "snapshot": {"schemaRevision": "schema_0001"}
-                  }
-                  """;
+                : throw new InvalidOperationException($"Unexpected test RPC: {method}");
             using var response = JsonDocument.Parse(
                 $$"""
                 {

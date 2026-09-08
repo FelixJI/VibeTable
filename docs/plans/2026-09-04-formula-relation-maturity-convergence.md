@@ -48,7 +48,7 @@ workspace Relation 或 Decimal。条件能力只有在资格证据触发时立�
 | 10 | `perf(lookup): 批量执行路径投影` | 查询数不随 rows×fields 线性增长、分页/取消 | 2；可与 9 并行 |
 | 11 | `perf(computation): 精确 fan-out 与公开重算状态` | changed fields 裁剪、成本、状态、取消/恢复 | 9、10 |
 | 12 | `test(e2e): 覆盖 Relation Lookup Formula 产品闭环` | 三条真实打包场景及截图 | 4、6、8、11 |
-| 13 | `test(qualification): 收口规模恢复兼容与能力声明` | 10k/100k、snapshot、N-1、矩阵和旧 adapter 清理 | 12 |
+| 13 | `test(qualification): 收口规模恢复与能力声明` | 10k/100k、当前格式 snapshot、不支持格式零写入拒绝、矩阵和旧 adapter 清理；开发阶段不承诺 N-1 | 12 |
 
 PR 4 合并原建议的只读和变更 RPC owner，只在所有方法已共享相同 Host transport、parity tests 与回滚边界
 时采用；否则拆回两个 PR。其他相邻项只有同时满足以下条件才可放大：

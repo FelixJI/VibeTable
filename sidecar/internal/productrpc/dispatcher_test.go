@@ -415,21 +415,9 @@ func TestDispatchUsesStableMethodParamsAndCurrentIdentityErrors(t *testing.T) {
 func TestNewCapturesValidatedIdentitySnapshot(t *testing.T) {
 	identity := testIdentity()
 	if _, err := New(identity); err == nil {
-		t.Fatal("missing schema registrations must fail closed")
+		t.Fatal("missing generated registrations must fail closed")
 	}
-	dispatcher, err := New(identity, Registration{
-		Method: "file.list", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
-	}, Registration{
-		Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
-	}, Registration{
-		Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler:        func(context.Context, json.RawMessage) (any, error) { return nil, nil },
-	})
+	dispatcher, err := New(identity, generatedGoSidecarRegistrations()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,27 +456,20 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	identity := testIdentity()
 	validator := func(json.RawMessage) error { return nil }
 	handler := func(context.Context, json.RawMessage) (any, error) { return nil, nil }
-	fileList := Registration{
-		Method: "file.list", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: validator, Handler: handler,
-	}
-	schemaGetTable := Registration{
-		Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: validator, Handler: handler,
-	}
-	schemaList := Registration{
-		Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
-		ValidateParams: validator, Handler: handler,
-	}
-	dispatcher, err := New(identity, fileList, schemaGetTable, schemaList)
+	registrations := generatedGoSidecarRegistrations()
+	dispatcher, err := New(identity, registrations...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 3 ||
-		methods[0].Method != "file.list" || methods[1].Method != "schema.getTable" || methods[2].Method != "schema.list" {
-		t.Fatalf("production registrations = %#v, want file.list and schema reads", methods)
+	if methods := dispatcher.Methods(); len(methods) != 19 ||
+		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
+		methods[3] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[4].Method != "lookup.list" || methods[5] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[6] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[7].Method != "query.cursorFetch" || methods[8].Method != "query.cursorOpen" || methods[9].Method != "query.page" || methods[10].Method != "query.readRows" ||
+		methods[11].Method != "query.selectionOpen" || methods[12] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[13].Method != "query.view" || methods[14].Method != "relation.previewDelta" || methods[15] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[16].Method != "schema.describe" ||
+		methods[17].Method != "schema.getTable" || methods[18].Method != "schema.list" {
+		t.Fatalf("production registrations = %#v", methods)
 	}
-	_, err = New(identity, schemaGetTable)
+	_, err = New(identity, registrations[1:]...)
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
 		t.Fatalf("unexpected missing registry mismatch error: %v", err)
 	}
@@ -496,11 +477,11 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 		Method: "schema.unknown", Scope: productcapabilities.WorkspaceScope,
 		ValidateParams: validator, Handler: handler,
 	}
-	_, err = New(identity, fileList, schemaGetTable, schemaList, unknown)
+	_, err = New(identity, append(registrations, unknown)...)
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
 		t.Fatalf("unexpected unknown registry mismatch error: %v", err)
 	}
-	_, err = New(identity, fileList, schemaGetTable, schemaList, schemaGetTable)
+	_, err = New(identity, append(registrations, registrations[0])...)
 	if err == nil || !strings.Contains(err.Error(), "duplicate Product RPC registration") {
 		t.Fatalf("unexpected duplicate registry error: %v", err)
 	}
@@ -514,6 +495,89 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	}})
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
 		t.Fatalf("unexpected scope mismatch error: %v", err)
+	}
+}
+
+func generatedGoSidecarRegistrations() []Registration {
+	validator := func(json.RawMessage) error { return nil }
+	handler := func(context.Context, json.RawMessage) (any, error) { return nil, nil }
+	return []Registration{
+		{
+			Method: "events.reconcile", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "file.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "history.read", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "lookup.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "lookup.query", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.cursorFetch", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.cursorOpen", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.page", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.readRows", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.selectionOpen", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.view", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "relation.previewDelta", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "schema.describe", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "schema.getTable", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
 	}
 }
 

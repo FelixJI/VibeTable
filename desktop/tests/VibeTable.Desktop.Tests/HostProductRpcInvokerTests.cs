@@ -71,9 +71,11 @@ public sealed class HostProductRpcInvokerTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task RetiredGenerationCannotPublishALateReply(bool remoteError)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task RetiredGenerationCannotPublishALateReply(bool remoteError, bool fieldSettings)
     {
         await using var fixture = await HostFixture.OpenAsync();
         fixture.Http.BeforeReply = (_, _) =>
@@ -82,10 +84,13 @@ public sealed class HostProductRpcInvokerTests
             return Task.CompletedTask;
         };
         fixture.Http.Error = remoteError ? Json("""{"code":-32602,"message":"Invalid params"}""") : null;
-        using JsonRpcProductDataGateway gateway = fixture.Gateway();
+        if (fieldSettings) fixture.Http.Result = ProductDataSidecarRoutingTests.FieldSettingsResult();
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
 
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => gateway.ListTablesAsync(
-            Json("{}"), CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => fieldSettings
+            ? gateway.DescribeFieldSettingsAsync(
+                ProductDataSidecarRoutingTests.FieldSettingsParameters(), CancellationToken.None)
+            : gateway.ListTablesAsync(Json("{}"), CancellationToken.None));
 
         Assert.AreEqual(0, fixture.Python.WriteCount);
         Assert.AreEqual(1, fixture.Http.Calls.Count);
@@ -232,11 +237,16 @@ public sealed class HostProductRpcInvokerTests
     [TestMethod]
     public async Task WorkspaceCatalogKeepsPythonAndMissingProductOwnerFailsClosed()
     {
-        await using var fixture = await HostFixture.OpenAsync();
+        JsonElement expected = Json("""{"contract":"vibetable.schema.v2","fields":[]}""");
+        await using var fixture = await HostFixture.OpenAsync(id =>
+            JsonSerializer.SerializeToElement(new { jsonrpc = "2.0", id, result = expected }));
         using JsonRpcProductDataGateway gateway = fixture.Gateway();
+        JsonElement recycled = await gateway.ListRecycledFieldsAsync(
+            Json("""{"tableId":"orders"}"""), CancellationToken.None);
+        Assert.IsTrue(JsonElement.DeepEquals(expected, recycled));
+        Assert.AreEqual(1, fixture.Python.WriteCount);
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.DescribeFieldSettingsAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
-        Assert.AreEqual(1, fixture.Python.WriteCount);
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.QueryPageAsync(Json("{}"), CancellationToken.None));
 
@@ -252,7 +262,7 @@ public sealed class HostProductRpcInvokerTests
             {"collection":"orders","itemId":null,"changeSets":[],"total":0,
              "capabilityHash":"test-capability","schemaRevision":"schema_1"}
             """);
-        using JsonRpcProductDataGateway gateway = fixture.Gateway();
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
 
         HistoryPage result = await gateway.ReadHistoryAsync(
             new ReadChangeSetsParams("orders", null, 25, 0), CancellationToken.None);
@@ -265,6 +275,29 @@ public sealed class HostProductRpcInvokerTests
         Assert.AreEqual(0, fixture.Python.WriteCount);
     }
 
+    [TestMethod]
+    public async Task FieldSettingsDescriptionUsesGeneratedGoPolicyWithoutPython()
+    {
+        JsonElement expected = ProductDataSidecarRoutingTests.FieldSettingsResult();
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Result = expected;
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        JsonElement parameters = ProductDataSidecarRoutingTests.FieldSettingsParameters();
+        JsonElement result = await gateway.DescribeFieldSettingsAsync(
+            parameters, CancellationToken.None);
+        Assert.IsTrue(JsonElement.DeepEquals(expected, result));
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        Assert.AreEqual(1, fixture.Http.Handshakes);
+        JsonElement call = fixture.Http.Calls.Single();
+        Assert.AreEqual("field.settings.describe", call.GetProperty("method").GetString());
+        Assert.IsTrue(JsonElement.DeepEquals(parameters, call.GetProperty("params")));
+        JsonElement wire = call.GetProperty("wire");
+        Assert.AreEqual("workspace", wire.GetProperty("scope").GetString());
+        Assert.AreEqual(fixture.Session.WorkspaceId!.Value.ToString("D"),
+            wire.GetProperty("workspaceId").GetString());
+        Assert.AreEqual(fixture.Session.SessionEpoch, wire.GetProperty("sessionEpoch").GetUInt64());
+    }
+
     private sealed class HostFixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(),
@@ -274,23 +307,24 @@ public sealed class HostProductRpcInvokerTests
         private readonly JsonRpcClient _client;
         private ProductSidecarGenerationSnapshot _snapshot = null!;
 
-        private HostFixture()
+        private HostFixture(Func<string, JsonElement>? response)
         {
             _sessions = new WorkspaceSessionManager(new WorkspaceRegistry(_root), new RuntimeFactory());
             _leases = new WorkspaceSessionEnvelopeFilter(_sessions);
             _sessions.SetRequestDrainHook(_leases);
+            Python = new CountingQueryTransport(response);
             _client = new JsonRpcClient(Python);
         }
 
-        internal CountingQueryTransport Python { get; } = new();
+        internal CountingQueryTransport Python { get; }
         internal ProductHttpPeer Http { get; private set; } = null!;
         internal WorkspaceSessionV2 Session { get; private set; } = null!;
         internal bool Current { get; set; } = true;
         internal Task CloseAsync() => _sessions.CloseAsync("host-rpc-test");
 
-        internal static async Task<HostFixture> OpenAsync()
+        internal static async Task<HostFixture> OpenAsync(Func<string, JsonElement>? response = null)
         {
-            var fixture = new HostFixture();
+            var fixture = new HostFixture(response);
             WorkspaceLayoutResult layout = WorkspaceLayout.Create(Path.Combine(fixture._root, "workspace"),
                 "Host RPC", WorkspaceStorageMode.Direct, WorkspaceEncryptionMode.Convenient);
             var registry = new WorkspaceRegistry(fixture._root);
@@ -316,23 +350,25 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("file.list", "workspace"), new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }
 
-        internal JsonRpcProductDataGateway Gateway() => new(
+        internal JsonRpcProductDataGateway Gateway(bool useGeneratedPolicy = false) => new(
             new HostProductRpcInvoker(_client, _snapshot, _leases,
                 action => Current && action(),
-                new ProductRpcRouteSelector(ProductRpcCapabilityManifest.CreateForTests(
-                    new ProductRpcCapability("history.read", "workspace", "hostOnly",
-                        "history.read", "goSidecar", "read"),
-                    new ProductRpcCapability("file.list", "workspace", "hostOnly",
-                        "file.attachment", "goSidecar", "read"),
-                    new ProductRpcCapability("schema.getTable", "workspace", "hostOnly",
-                        "schema.read", "goSidecar", "read"),
-                    new ProductRpcCapability("schema.list", "workspace", "hostOnly",
-                        "schema.read", "goSidecar", "read"))), Http));
+                useGeneratedPolicy
+                    ? ProductRpcRouteSelector.Default
+                    : new ProductRpcRouteSelector(ProductRpcCapabilityManifest.CreateForTests(
+                        new ProductRpcCapability("history.read", "workspace", "hostOnly",
+                            "history.read", "goSidecar", "read"),
+                        new ProductRpcCapability("file.list", "workspace", "hostOnly",
+                            "file.attachment", "goSidecar", "read"),
+                        new ProductRpcCapability("schema.getTable", "workspace", "hostOnly",
+                            "schema.read", "goSidecar", "read"),
+                        new ProductRpcCapability("schema.list", "workspace", "hostOnly",
+                            "schema.read", "goSidecar", "read"))), Http));
 
         public async ValueTask DisposeAsync()
         {
