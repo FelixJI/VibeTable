@@ -100,3 +100,7 @@ CI/CD 状态监控只读，不重跑、触发、取消或批准 run。主线程�
 ```
 
 每次 merge 后重新基于 main 和在途 PR 检查路线，不让本计划中的旧文件清单覆盖当前仓库事实。
+
+## 2026-09-09 Relation 标签消费进度
+
+既有DisplayField的Grid消费已在独立查询展示意图中实现并完成本地质量、真实S28/S02验证，见[标签资格](../quality/relation-display-labels.md)。这补齐此前“配置保存但单元格仍显示ID”的缺口；保持Picker主显示字段和原始关系ID，不切换owner。多窗口批量刷新与编辑队列已通过回归，整体Relation、RR2完整性修复和跨表计算链仍Partial；fresh CI和合并闭环尚待完成。
