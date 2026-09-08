@@ -3039,7 +3039,7 @@ def test_relation_pair_scenario_edits_visible_controls_and_reads_both_authoritie
         )
     ]
     assert "useFieldSettingsStore" not in scenario
-    assert 'await header.click({ button: "right" })' in scenario
+    assert 'await header.locator(".tabulator-col-title").click({ button: "right" })' in scenario
     for control in (
         "field-display-name",
         "relation-reciprocal-name",

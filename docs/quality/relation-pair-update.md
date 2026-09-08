@@ -77,3 +77,7 @@ reciprocal presence #301 已完成 main CI/CD 闭环；字段设置修复与标�
 ## 实际 main 端点同步
 
 PR #304 已于 2026-09-08 21:43 UTC squash 合并为 `3bf03bc6f47399bacbdb1305a9b110c8d3b11ae5`，其 PR required CI 全部成功。当前分支以正常 merge 同步该实际 main，提交 `60a9ffe99d1678824ff89612ebe3f6eea1c103b4` 与同步前 `040a6ced` 的 Git tree 完全一致；保留 pair 专属测试和计划，两处 squash 历史冲突未改变产品代码。因此复用上述 `68dc1775` 产品构建与三场景资格，不重复构建同一代码。#304 合并后 main CI/CD 尚在跟踪，本 pair PR 的 fresh CI 与合并闭环仍待完成。
+
+## 首轮 fresh CI 的契约修正
+
+CI run `34282704336` 的 core lane 在 Python 场景结构契约失败：真实 S06 已点击可见的 `.tabulator-col-title`，静态测试仍要求旧 `header.click` 字符串。只同步该精确点击断言，保留可见控件、双端权威与冲突零写入的全部断言。原测试本地 1 FAIL（0.32s），修正后 `uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -q --no-cov` 为 111 PASS（8.60s），日志 `build/qa/relation-pair-static-red.log` 与 `relation-pair-static-green.log`。产品源码未变，复用上述实际构建与三场景证据；更新后的 fresh CI 仍待完成。
