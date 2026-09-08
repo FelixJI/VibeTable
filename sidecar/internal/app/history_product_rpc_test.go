@@ -353,8 +353,12 @@ func historyReadProductFixture(
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(runtime),
+		queryReadRowsRegistration(query.NewPort(pb, nil)),
 		lookupListRegistration(relation.New(pb, nil, nil)),
-		queryPageRegistration(query.NewPort(pb, nil)),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)

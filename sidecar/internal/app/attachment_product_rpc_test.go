@@ -328,13 +328,17 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 	},
 		productrpc.ReconcileRegistration(schemaapi.New(app)),
 		lookupListRegistration(relation.New(app, nil, nil)),
-		queryPageRegistration(query.NewPort(app, nil)),
+		queryReadRowsRegistration(query.NewPort(app, nil)),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaDescribeRegistration(app, relation.New(app, nil, nil)),
 		schemaGetTableRegistration(app),
 		schemaListRegistration(schemaapi.New(app)),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(app, manager),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)

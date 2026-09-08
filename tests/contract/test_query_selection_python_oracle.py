@@ -1,4 +1,4 @@
-"""Replay the Python-owned atomic selection boundary without a live authority."""
+"""Preserve the pre-migration selection evidence without a Python runtime route."""
 
 from __future__ import annotations
 
@@ -11,13 +11,8 @@ from backend.contracts.query import QuerySelectionProjectionResult, TableQuery
 from contracts.v2 import generate_query_selection_oracle as oracle
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", oracle.cases(), ids=lambda case: case.name)
-async def test_python_selection_matches_frozen_wire(case: oracle.Case) -> None:
-    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    expected = next(item for item in frozen["cases"] if item["name"] == case.name)
-    # Serialized equality distinguishes false/0 and retains negative zero and Unicode.
-    assert oracle.render(await oracle.capture_case(case)) == oracle.render(expected)
+def test_retained_selection_inputs_match_the_frozen_producer() -> None:
+    oracle.validate_frozen_inputs()
 
 
 def test_selection_contract_boundaries() -> None:
@@ -97,8 +92,9 @@ def test_capture_refuses_to_replace_frozen_output(
     target.write_text("retained evidence", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
-    with pytest.raises(FileExistsError):
+    with pytest.raises(SystemExit) as failure:
         oracle.main()
+    assert failure.value.code == 2
     assert target.read_text(encoding="utf-8") == "retained evidence"
 
 

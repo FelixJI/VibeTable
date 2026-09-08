@@ -482,16 +482,21 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 9 ||
+		len(productCapabilities.RPCMethods) != 13 ||
 		productCapabilities.RPCMethods[0] != "events.reconcile" ||
 		productCapabilities.RPCMethods[1] != "file.list" ||
 		productCapabilities.RPCMethods[2] != "history.read" ||
 		productCapabilities.RPCMethods[3] != "lookup.list" ||
-		productCapabilities.RPCMethods[4] != "query.page" || productCapabilities.RPCMethods[5] != "query.view" ||
-		productCapabilities.RPCMethods[6] != "schema.describe" ||
-		productCapabilities.RPCMethods[7] != "schema.getTable" ||
-		productCapabilities.RPCMethods[8] != "schema.list" ||
-		len(productCapabilities.Registrations) != 9 ||
+		productCapabilities.RPCMethods[4] != "query.cursorFetch" ||
+		productCapabilities.RPCMethods[5] != "query.cursorOpen" ||
+		productCapabilities.RPCMethods[6] != "query.page" ||
+		productCapabilities.RPCMethods[7] != "query.readRows" ||
+		productCapabilities.RPCMethods[8] != "query.selectionOpen" ||
+		productCapabilities.RPCMethods[9] != "query.view" ||
+		productCapabilities.RPCMethods[10] != "schema.describe" ||
+		productCapabilities.RPCMethods[11] != "schema.getTable" ||
+		productCapabilities.RPCMethods[12] != "schema.list" ||
+		len(productCapabilities.Registrations) != 13 ||
 		productCapabilities.Registrations[0].Method != "events.reconcile" ||
 		productCapabilities.Registrations[0].Scope != "workspace" ||
 		productCapabilities.Registrations[1].Method != "file.list" ||
@@ -500,15 +505,24 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.Registrations[2].Scope != "workspace" ||
 		productCapabilities.Registrations[3].Method != "lookup.list" ||
 		productCapabilities.Registrations[3].Scope != "workspace" ||
-		productCapabilities.Registrations[4].Method != "query.page" || productCapabilities.Registrations[5].Method != "query.view" ||
+		productCapabilities.Registrations[4].Method != "query.cursorFetch" ||
 		productCapabilities.Registrations[4].Scope != "workspace" ||
+		productCapabilities.Registrations[5].Method != "query.cursorOpen" ||
 		productCapabilities.Registrations[5].Scope != "workspace" ||
-		productCapabilities.Registrations[6].Method != "schema.describe" ||
+		productCapabilities.Registrations[6].Method != "query.page" ||
 		productCapabilities.Registrations[6].Scope != "workspace" ||
-		productCapabilities.Registrations[7].Method != "schema.getTable" ||
+		productCapabilities.Registrations[7].Method != "query.readRows" ||
 		productCapabilities.Registrations[7].Scope != "workspace" ||
-		productCapabilities.Registrations[8].Method != "schema.list" ||
-		productCapabilities.Registrations[8].Scope != "workspace" {
+		productCapabilities.Registrations[8].Method != "query.selectionOpen" ||
+		productCapabilities.Registrations[8].Scope != "workspace" ||
+		productCapabilities.Registrations[9].Method != "query.view" ||
+		productCapabilities.Registrations[9].Scope != "workspace" ||
+		productCapabilities.Registrations[10].Method != "schema.describe" ||
+		productCapabilities.Registrations[10].Scope != "workspace" ||
+		productCapabilities.Registrations[11].Method != "schema.getTable" ||
+		productCapabilities.Registrations[11].Scope != "workspace" ||
+		productCapabilities.Registrations[12].Method != "schema.list" ||
+		productCapabilities.Registrations[12].Scope != "workspace" {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
 
@@ -526,6 +540,22 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || string(catalogResponse.Result) != `{"tables":[]}` || len(catalogResponse.Error) != 0 {
 		t.Fatalf("schema.list production response = %d %+v", response.StatusCode, catalogResponse)
+	}
+
+	response = requestJSON(
+		t, client, http.MethodPost, baseURL+"/api/vibetable/v2/product/rpc", secret,
+		workspaceV2Request(0, 7, "query.readRows", `{"tableId":"orders","rowIds":[]}`),
+	)
+	var rowsResponse struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&rowsResponse); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(rowsResponse.Result) != `{"rows":[]}` || len(rowsResponse.Error) != 0 {
+		t.Fatalf("query.readRows production response = %d %+v", response.StatusCode, rowsResponse)
 	}
 
 	response = requestJSON(

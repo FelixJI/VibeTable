@@ -5360,7 +5360,8 @@ async function scenario17(page, recorder, _network, runtime) {
       bindingId: "requests",
       query: {
         contractVersion: "1.0", tableId: seeded.tableId,
-        fields: [seeded.field.physicalName], filters: [], sorts: [], cursor: null, pageSize: 100,
+        fields: [seeded.field.physicalName], filters: [],
+        sorts: [{ fieldId: seeded.field.physicalName, direction: "desc" }], cursor: null, pageSize: 1,
       },
       variables: [],
     }],
@@ -5410,7 +5411,20 @@ async function scenario17(page, recorder, _network, runtime) {
   await form.locator("input").fill("Created through Interface");
   await form.getByRole("button", { name: "提交" }).click();
   await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
+  const cursorPager = runtimeSurface.getByRole("navigation", { name: "requests 分页", exact: true });
+  await cursorPager.getByRole("button", { name: "下一页", exact: true }).click();
   await runtimeSurface.getByText("Created through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface cursor fetch renders the second record and terminates pagination",
+    (await cursorPager.innerText()).includes("2–2 / 2")
+      && await cursorPager.getByRole("button", { name: "下一页", exact: true }).isDisabled()
+      && !(await runtimeSurface.innerText()).includes("Updated through Interface"),
+    { pager: await cursorPager.innerText() });
+  await cursorPager.getByRole("button", { name: "上一页", exact: true }).click();
+  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface cursor reopens the first window when navigating back",
+    (await cursorPager.innerText()).includes("1–1 / 2")
+      && await cursorPager.getByRole("button", { name: "上一页", exact: true }).isDisabled(),
+    { pager: await cursorPager.innerText() });
 
   const pluginAction = page.getByTestId("interface-runtime-plugin-action").getByRole("button");
   page.once("dialog", (dialog) => dialog.accept());
