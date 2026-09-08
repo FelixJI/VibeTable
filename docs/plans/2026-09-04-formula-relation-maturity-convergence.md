@@ -40,7 +40,8 @@ workspace Relation 或 Decimal。条件能力只有在资格证据触发时立�
 | 2 | `feat(contract): 增加公式作者文档与统一计算状态` | closed schema、四语言生成物、UTF-16 range、状态闭集 | 1 |
 | 3 | `refactor(formula): 建立服务端作者 token 与 source map` | 同名/改名/粘贴/`#REF!`/往返测试 | 2 |
 | 4 | `refactor(rpc): 原子迁移公式与关系 Product RPC owner` | Go producer、Host allowlist、Python 注销、inventory | 2；避开在途 RPC PR |
-| 5 | `perf(formula): 冻结 CEL 语义与有界编译缓存` | golden、LRU/singleflight、失效、fuzz | 3 |
+| 5a | `fix(formula): 修正 CEL 数值边界与错误分类` | 独立 golden、数值错误、短路与预算；见[资格记录](../quality/formula-numeric-semantics.md) | 3 |
+| 5b | `perf(formula): 增加有界编译缓存` | LRU/singleflight、提交后失效、草稿与回滚、fuzz；与数值修复独立回滚 | 3 |
 | 6 | `feat(formula-ui): 引入结构化 Formula Workbench` | token、补全、诊断、键盘、stale preview | 3 |
 | 7 | `feat(relation): 完成 pair 更新与完整性模型` | patch、基数预检、immutable target、inspect/repair | 2 |
 | 8 | `feat(relation-ui): 完成分页选择与冲突恢复` | cursor、键盘、多选、canonical refs、显式重载 | 7 |

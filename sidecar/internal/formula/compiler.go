@@ -14,6 +14,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
+	"github.com/google/cel-go/interpreter"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -91,7 +92,6 @@ type CompiledFormula struct {
 	dependencyNames        []string
 	program                cel.Program
 	limits                 Limits
-	hasDivision            bool
 }
 
 // ValueType is the formula runtime's compact value contract. Schema V2 uses
@@ -146,7 +146,7 @@ func (compiler *Compiler) Compile(
 	if err != nil {
 		return nil, formulaError("formula.runtime", "checked formula AST is unavailable", nil)
 	}
-	nodeCount, dependencyNames, referencePaths, aggregatePaths, countNames, hasDivision, validationErr := inspectExpression(
+	nodeCount, dependencyNames, referencePaths, aggregatePaths, countNames, validationErr := inspectExpression(
 		checked.GetExpr(), fieldsByName, compiler.limits,
 	)
 	if validationErr != nil {
@@ -189,6 +189,12 @@ func (compiler *Compiler) Compile(
 		ast,
 		cel.CostLimit(compiler.limits.Cost),
 		cel.InterruptCheckFrequency(32),
+		cel.CustomDecoratorV2(func(node interpreter.InterpretableV2) (interpreter.InterpretableV2, error) {
+			if call, ok := node.(interpreter.InterpretableCall); ok {
+				return finiteFormulaCall{call}, nil
+			}
+			return node, nil
+		}),
 	)
 	if err != nil {
 		return nil, formulaError("formula.runtime", "formula program could not be created", nil)
@@ -208,7 +214,6 @@ func (compiler *Compiler) Compile(
 		dependencyNames:        dependencyNames,
 		program:                program,
 		limits:                 compiler.limits,
-		hasDivision:            hasDivision,
 	}, nil
 }
 
@@ -247,7 +252,7 @@ func (compiler *Compiler) InferExecutionSource(
 	if err != nil {
 		return ValueType{}, formulaError("formula.runtime", "checked formula AST is unavailable", nil)
 	}
-	if _, _, _, _, _, _, validationErr := inspectExpression(
+	if _, _, _, _, _, validationErr := inspectExpression(
 		checked.GetExpr(), fieldsByName, compiler.limits,
 	); validationErr != nil {
 		return ValueType{}, validationErr
@@ -276,7 +281,7 @@ func (compiler *Compiler) environment(
 	options = append(options, functionOptions()...)
 	options = append([]cel.EnvOption{
 		cel.StdLib(cel.StdLibSubset(&celenv.LibrarySubset{
-			ExcludeFunctions: []*celenv.Function{{Name: "_*_"}},
+			ExcludeFunctions: []*celenv.Function{{Name: "_*_"}, {Name: "_/_"}},
 		})),
 	}, options...)
 	env, err := cel.NewCustomEnv(options...)
@@ -312,13 +317,12 @@ func inspectExpression(
 	expression *exprpb.Expr,
 	fields map[string]v2.FieldDefinition,
 	limits Limits,
-) (int, []string, []string, []string, []string, bool, *Error) {
+) (int, []string, []string, []string, []string, *Error) {
 	dependencies := map[string]struct{}{}
 	references := map[string]struct{}{}
 	aggregateReferences := map[string]struct{}{}
 	countRelations := map[string]struct{}{}
 	nodes := 0
-	hasDivision := false
 	var walk func(*exprpb.Expr) *Error
 	walk = func(current *exprpb.Expr) *Error {
 		if current == nil {
@@ -360,9 +364,6 @@ func inspectExpression(
 				}
 				countRelations[name] = struct{}{}
 			}
-			if kind.CallExpr.Function == "_/_" {
-				hasDivision = true
-			}
 			if kind.CallExpr.Function == "_[_]" && len(kind.CallExpr.Args) == 2 {
 				if _, ok := kind.CallExpr.Args[1].ExprKind.(*exprpb.Expr_ConstExpr); !ok {
 					return formulaError("formula.dependency", "dynamic field or JSON indexing is not allowed", nil)
@@ -397,7 +398,7 @@ func inspectExpression(
 		return nil
 	}
 	if err := walk(expression); err != nil {
-		return nodes, nil, nil, nil, nil, hasDivision, err
+		return nodes, nil, nil, nil, nil, err
 	}
 	names := make([]string, 0, len(dependencies))
 	for name := range dependencies {
@@ -419,7 +420,7 @@ func inspectExpression(
 		countNames = append(countNames, name)
 	}
 	sort.Strings(countNames)
-	return nodes, names, paths, aggregatePaths, countNames, hasDivision, nil
+	return nodes, names, paths, aggregatePaths, countNames, nil
 }
 
 func relationCountName(
@@ -566,8 +567,40 @@ func celTypeForValueType(valueType ValueType) (*cel.Type, error) {
 	}
 }
 
+// Reject overflow at the operation that produces it, before a comparison or
+// conversion can hide the non-finite intermediate result.
+type finiteFormulaCall struct {
+	interpreter.InterpretableCall
+}
+
+func (call finiteFormulaCall) Eval(activation interpreter.Activation) ref.Val {
+	return finiteNumericResult(call.InterpretableCall.Eval(activation))
+}
+
+func (call finiteFormulaCall) Exec(frame *interpreter.ExecutionFrame) ref.Val {
+	return finiteNumericResult(call.InterpretableCall.Exec(frame))
+}
+
+func finiteNumericResult(value ref.Val) ref.Val {
+	if number, ok := value.(types.Double); ok && (math.IsNaN(float64(number)) || math.IsInf(float64(number), 0)) {
+		return types.NewErr("numeric overflow")
+	}
+	return value
+}
+
 func functionOptions() []cel.EnvOption {
 	options := []cel.EnvOption{
+		cel.Function("_/_",
+			cel.Overload("vibetable_divide_double_double", []*cel.Type{cel.DoubleType, cel.DoubleType}, cel.DoubleType),
+			cel.Overload("vibetable_divide_int_int", []*cel.Type{cel.IntType, cel.IntType}, cel.IntType),
+			cel.Overload("vibetable_divide_uint_uint", []*cel.Type{cel.UintType, cel.UintType}, cel.UintType),
+			cel.SingletonBinaryBinding(func(left, right ref.Val) ref.Val {
+				if divisor, ok := right.(types.Double); ok && divisor == 0 {
+					return types.NewErr("divide by zero")
+				}
+				return left.(traits.Divider).Divide(right)
+			}, traits.DividerType),
+		),
 		cel.Function("_*_",
 			cel.Overload(
 				"vibetable_multiply_int_int",
