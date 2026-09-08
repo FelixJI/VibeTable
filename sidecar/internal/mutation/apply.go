@@ -80,10 +80,11 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 	}()
 
 	var receipt Receipt
+	var replaySignal error
 	var emittedEventIDs []string
 	err = kernel.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
 		defer func() {
-			if transactionErr == nil {
+			if transactionErr == nil && replaySignal != writecoordinator.ErrBusinessReplay {
 				transactionErr = writecoordinator.PersistPocketBaseReceipt(
 					ctx,
 					txApp,
@@ -100,6 +101,9 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		}
 		if found {
 			receipt = replayed
+			if receipt.Status == StatusReplayed {
+				replaySignal = writecoordinator.ReplayedBusinessWrite(ctx, "mutation.apply", request.IdempotencyKey)
+			}
 			return nil
 		}
 
@@ -380,6 +384,12 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 	gateHeld = false
 	if err != nil {
 		return Receipt{}, err
+	}
+	if replaySignal != nil {
+		if err := ctx.Err(); err != nil {
+			return Receipt{}, err
+		}
+		return receipt, replaySignal
 	}
 	if receipt.Status == StatusApplied && kernel.publisher != nil {
 		if publishErr := kernel.publishCommitted(ctx, emittedEventIDs); publishErr != nil {
