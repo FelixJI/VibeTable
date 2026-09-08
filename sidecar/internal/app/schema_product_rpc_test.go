@@ -666,6 +666,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
 		productrpc.ReconcileRegistration(catalog),
+		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),

@@ -38,6 +38,7 @@ func fieldSettingsDescribeHTTPMux(t *testing.T, pb *pocketbase.PocketBase, regis
 		queryPageRegistration(relationSearchUnrelatedPage{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
+		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),

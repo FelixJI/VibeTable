@@ -441,6 +441,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				relationSearchTargetsRegistration(relationService),
 				queryReadRowsRegistration(queryPort),
 				queryPageRegistration(queryPort),
+				queryValidateSnapshotRegistration(queryPort),
 				schemaDescribeRegistration(pb, relationService),
 				queryCursorOpenRegistration(queryPort),
 				queryCursorFetchRegistration(queryPort),

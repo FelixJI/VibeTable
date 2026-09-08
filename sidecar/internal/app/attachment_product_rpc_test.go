@@ -326,6 +326,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
 		productrpc.ReconcileRegistration(schemaapi.New(app)),
+		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(app, nil, nil)),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),

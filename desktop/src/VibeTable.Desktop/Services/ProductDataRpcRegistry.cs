@@ -122,6 +122,11 @@ internal static class ProductDataRpcRegistry
         new("query.cursorFetch", p => Safe(p) && HasExactProperties(p, "cursor")
             && HasString(p, "cursor"),
             (g, p, t) => g.FetchQueryCursorAsync(p, t)),
+        new("query.validateSnapshot", p => Safe(p)
+            && HasOnlyProperties(p, "snapshot", "currentQuery")
+            && HasObject(p, "snapshot")
+            && (!p.TryGetProperty("currentQuery", out _) || HasObject(p, "currentQuery")),
+            (g, p, t) => g.ValidateSnapshotAsync(p, t)),
         new("query.view", p => Safe(p) && HasExactProperties(p, "tableId", "view")
             && HasString(p, "tableId") && HasObject(p, "view"),
             (g, p, t) => g.QueryViewAsync(p, t)),

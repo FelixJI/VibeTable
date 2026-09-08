@@ -479,22 +479,14 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
 
 @pytest.mark.asyncio
 async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths() -> None:
-    service, transport = service_with(
-        [
-            {"valid": True},
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_3",
-                "relations": [],
-                "lookups": [],
-            },
-        ]
-    )
-    await service.invoke(
-        "query.validateSnapshot",
-        ProductParams.model_validate({"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}}),
-    )
-    assert transport.requests[0]["json_body"]["currentQuery"] == {"limit": 10}
+    service, transport = service_with([])
+    with pytest.raises(ValueError, match=r"unknown product RPC method: query\.validateSnapshot"):
+        await service.invoke(
+            "query.validateSnapshot",
+            ProductParams.model_validate(
+                {"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}}
+            ),
+        )
 
     with pytest.raises(ValueError, match="variant"):
         await service.invoke(
@@ -510,7 +502,7 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
                 }
             ),
         )
-    assert len(transport.requests) == 1
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

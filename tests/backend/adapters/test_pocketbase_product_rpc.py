@@ -78,7 +78,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
     class MissingRouteModule(ProductQuerySchemaRpc):
         def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
             super().__init__(context)
-            self.methods = self.methods - {"query.validateSnapshot"}
+            self.methods = self.methods - {"field.recycleBin.list"}
 
     monkeypatch.setattr(product_rpc, "ProductQuerySchemaRpc", MissingRouteModule)
     with pytest.raises(RuntimeError, match="routes do not match the contract registry"):
@@ -486,7 +486,7 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
 
 
 @pytest.mark.asyncio
-async def test_snapshot_uses_fixed_route() -> None:
+async def test_snapshot_has_no_python_route_or_transport_fallback() -> None:
     service, transport = _service(
         [
             {
@@ -497,29 +497,28 @@ async def test_snapshot_uses_fixed_route() -> None:
         ]
     )
 
-    await service.invoke(
-        "query.validateSnapshot",
-        ProductParams.model_validate(
-            {
-                "snapshot": {
-                    "snapshotId": "snap",
-                    "digest": "a" * 64,
-                    "databaseId": "local",
-                    "table": "orders",
-                    "schemaRevision": "schema_1",
-                    "dataRevision": 1,
-                    "normalizedQuery": {
-                        "keyword": "",
-                        "filters": [],
-                        "sorts": [],
-                        "offset": 0,
-                        "limit": 100,
-                    },
+    with pytest.raises(ValueError, match=r"unknown product RPC method: query\.validateSnapshot"):
+        await service.invoke(
+            "query.validateSnapshot",
+            ProductParams.model_validate(
+                {
+                    "snapshot": {
+                        "snapshotId": "snap",
+                        "digest": "a" * 64,
+                        "databaseId": "local",
+                        "table": "orders",
+                        "schemaRevision": "schema_1",
+                        "dataRevision": 1,
+                        "normalizedQuery": {
+                            "keyword": "",
+                            "filters": [],
+                            "sorts": [],
+                            "offset": 0,
+                            "limit": 100,
+                        },
+                    }
                 }
-            }
-        ),
-    )
+            ),
+        )
 
-    assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/query/validate-snapshot",
-    ]
+    assert transport.requests == []
