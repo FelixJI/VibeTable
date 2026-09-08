@@ -19,7 +19,7 @@ import {
 } from "@/contracts";
 import { useHostBridge } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
-import { buildFieldChangeIntent } from "./model";
+import { buildFieldChangeIntent, relationPairPatchFromDrafts } from "./model";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
 import { useTableStore } from "@/stores/tableStore";
@@ -164,10 +164,20 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     const action = nextAction ?? store.action;
     store.beginPlan(action);
     try {
+      const relationPairPatch = action === "update" && store.isPairedRelation
+        && store.original && store.draft && store.originalRelationPair && store.relationPair
+        ? relationPairPatchFromDrafts(
+          store.original, store.draft, store.originalRelationPair, store.relationPair,
+        ) : undefined;
+      if (action === "update" && store.isPairedRelation
+        && (!store.relationPair || store.relationCatalogLoading || store.relationCatalogError)) {
+        throw new Error("请先加载完整的双向关联字段设置");
+      }
       const intent = buildFieldChangeIntent({
         action,
         result: store.result,
-        draft: ["retire", "restore", "purge"].includes(action) ? null : store.draft,
+        draft: relationPairPatch || ["retire", "restore", "purge"].includes(action) ? null : store.draft,
+        relationPairPatch,
         conversionRule: store.conversionRule,
         confirmation: store.confirmation,
         backupReceipt: store.backupReceipt,
@@ -298,7 +308,9 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
 
   async function loadRelationCatalog(): Promise<void> {
     if (!store.result || store.draft?.logicalType !== "relation") return;
-    const tableId = store.result.tableId;
+    const current = generation;
+    const described = store.result;
+    const tableId = described.tableId;
     const tables = workspace.collections.map(item => ({
       tableId: item.collection,
       displayName: collectionLabel(item, workspace.displayNames),
@@ -310,15 +322,16 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       });
     }
     store.setRelationTables(tables);
-    if (store.relationPair && !store.relationPair.reciprocalDisplayName) {
+    if (!store.isPairedRelation && store.relationPair && !store.relationPair.reciprocalDisplayName) {
       const source = tables.find(item => item.tableId === tableId);
       store.patchRelationPair({ reciprocalDisplayName: source?.displayName ?? "关联记录" });
     }
     try {
       store.beginRelationCatalog();
       const sourceSchema = await describeRelationTable(tableId);
+      if (current !== generation || !store.open) return;
       store.setRelationSchema("source", sourceSchema);
-      if (store.relationPair && !store.relationPair.sourceDisplayFieldId) {
+      if (!store.isPairedRelation && store.relationPair && !store.relationPair.sourceDisplayFieldId) {
         store.patchRelationPair({
           sourceDisplayFieldId: sourceSchema.primaryDisplayFieldId
             || sourceSchema.columns.find(column => column.fieldId && column.kind !== "system")?.fieldId
@@ -326,14 +339,46 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
         });
       }
       const targetTableId = store.draft.relation?.targetTableId;
-      if (targetTableId) await selectRelationTarget(targetTableId);
+      if (targetTableId && described.definition) {
+        const targetSchema = targetTableId === tableId
+          ? sourceSchema : await describeRelationTable(targetTableId);
+        if (current !== generation || !store.open) return;
+        store.setRelationSchema("target", targetSchema);
+        const relation = described.definition.relation;
+        if (relation?.pairId) {
+          if (!relation.reciprocalFieldId) {
+            throw new Error("另一端关联字段不可用，请重新打开字段设置");
+          }
+          store.beginRelationCatalog();
+          const reciprocal = parseFieldSettingsDescribeResultV2(unwrapFieldResult(
+            await bridge.request("field.settings.describe", {
+              tableId: targetTableId, fieldId: relation.reciprocalFieldId,
+            }),
+          ));
+          if (current !== generation || !store.open) return;
+          const field = reciprocal.definition;
+          if (reciprocal.tableId !== targetTableId
+            || field?.identity.fieldId !== relation.reciprocalFieldId
+            || field.relation?.pairId !== relation.pairId
+            || field.relation.targetTableId !== tableId
+            || field.relation.reciprocalFieldId !== described.definition.identity.fieldId) {
+            throw new Error("另一端关联字段不可用，请重新打开字段设置");
+          }
+          store.loadRelationPair({
+            reciprocalDisplayName: field.displayName,
+            reciprocalCardinality: field.relation.cardinality,
+            sourceDisplayFieldId: field.relation.displayFieldId,
+          });
+          store.setRelationSchema("target", targetSchema);
+        }
+      } else if (targetTableId) await selectRelationTarget(targetTableId);
     } catch (error) {
-      store.failRelationCatalog(error);
+      if (current === generation && store.open) store.failRelationCatalog(error);
     }
   }
 
   async function selectRelationTarget(tableId: string): Promise<void> {
-    if (!store.draft?.relation) return;
+    if (!store.draft?.relation || store.isExisting) return;
     store.patchDraft({
       relation: { ...store.draft.relation, targetTableId: tableId, displayFieldId: "" },
     });
