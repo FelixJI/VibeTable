@@ -2650,7 +2650,7 @@ async function rejectPublicRelationCascade(page, recorder, tableId, fieldId) {
 }
 
 async function openRelationPairEditor(page, physicalName, reciprocalName) {
-  const header = page.locator(`.tabulator-col[data-field="${physicalName}"]`);
+  const header = page.locator(`.tabulator-col[tabulator-field="${physicalName}"]`);
   await header.waitFor({ state: "visible", timeout: 30_000 });
   await header.click({ button: "right" });
   await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
