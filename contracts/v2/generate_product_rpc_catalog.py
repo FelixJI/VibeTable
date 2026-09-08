@@ -87,7 +87,7 @@ from backend.contracts.relation_admin import (
     RelationSingleUpdateResult,
     SchemaDescribeResult,
 )
-from backend.contracts.schema_v2 import SchemaSnapshotV2
+from backend.contracts.schema_v2 import FieldSettingsDescribeResultV2, SchemaSnapshotV2
 from backend.contracts.settings_commands import (
     CommandResult,
     CommandsResult,
@@ -662,6 +662,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             "SchemaDeleteResult",
             {"deleted": True, "tableId": "orders"},
         ),
+        "field.settings.describe": _typed(FieldSettingsDescribeResultV2),
         "schema.describe": _typed(SchemaDescribeResult),
         "schema.getTable": _typed(SchemaSnapshotV2),
         "schema.list": _manual(

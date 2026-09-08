@@ -37,7 +37,8 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 	catalog := schemaapi.New(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-	}, registration, productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
+	}, registration, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+		lookupListRegistration(relation.New(pb, nil, nil)),
 		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
@@ -46,6 +47,7 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 		queryPageRegistration(unrelatedPageForViewMustNotRun{t: t}), queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {

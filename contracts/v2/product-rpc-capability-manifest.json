@@ -82,6 +82,14 @@
       "effect": "read"
     },
     {
+      "method": "field.settings.describe",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
       "method": "file.applyHostChange",
       "scope": "workspace",
       "audience": "hostOnly",
@@ -542,7 +550,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "schema.query",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {

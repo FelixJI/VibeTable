@@ -17,12 +17,14 @@ HTTP 限额、真实持久数据或跨进程资格；没有模拟 Go parity，�
 内部错误 `-32603`，顶层形状错误是 `-32602`；空白 ID 和非路径形式 tableId 会原样
 下传。readRows 的列表元素检查和 validateSnapshot 的对象响应检查也被捕获。
 
-原始 JSON 的 23 个 case 保持不变。`query.readRows` 迁至 Go 后，Python replay 明确
-仅保留 `query.validateSnapshot` 的 10 个 case，测试同时断言两者的当前 owner，
-不会根据动态 owner 自动跳过失败。Go 独立消费 12 个 readRows 原件 case；剩余的
+原始 JSON 的 23 个 case 保持不变。`query.readRows` 迁至 Go 后曾保留
+`query.validateSnapshot` 的 10 个 Python replay case；现在该方法也迁移到 Go，
+`capture` 与 `capture_case` 全部拒绝，不会根据动态 owner 自动跳过失败。
+当前测试断言两方法均由 Go 处理，并按独立 fixture 核验全部 23 例历史输入。
+Go 独立消费 12 个 readRows 原件 case；剩余的
 Python→Sidecar transport 故障属于已移除的跨进程跳转，不作为 Go 直接调用的 parity。
 
-当前只读比较未迁移子集：
+当前仅核验历史原件输入，不运行旧 Python handler：
 
 ```text
 uv run --frozen --no-sync python -m contracts.v2.generate_query_read_oracle --check

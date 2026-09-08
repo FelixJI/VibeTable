@@ -1,0 +1,1656 @@
+{
+  "producerCommit": "2f02bfcb8afdda46fa003d6c546d2ff2a8910aae",
+  "boundary": "Original Python Product DTO/adapter; scripted authority HTTP, not a domain-issued snapshot or product qualification",
+  "cases": [
+    {
+      "name": "valid-without-current-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "valid-without-current-query",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "valid-without-current-query",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "valid-complete-current-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "valid-complete-current-query",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "currentQuery": {
+            "keyword": "Café 中文 👩🏽‍💻",
+            "filters": [
+              {
+                "field": "title",
+                "operator": "contains",
+                "value": "عربي‏"
+              }
+            ],
+            "sorts": [
+              {
+                "field": "title",
+                "direction": "desc",
+                "nullsLast": false
+              }
+            ],
+            "offset": 0,
+            "limit": 50
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            },
+            "currentQuery": {
+              "keyword": "Café 中文 👩🏽‍💻",
+              "filters": [
+                {
+                  "field": "title",
+                  "operator": "contains",
+                  "value": "عربي‏"
+                }
+              ],
+              "sorts": [
+                {
+                  "field": "title",
+                  "direction": "desc",
+                  "nullsLast": false
+                }
+              ],
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "valid-complete-current-query",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "query-changed",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "query-changed",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "currentQuery": {
+            "offset": 0,
+            "limit": 1
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": false,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "reason": "query_changed"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            },
+            "currentQuery": {
+              "offset": 0,
+              "limit": 1
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "query-changed",
+        "result": {
+          "valid": false,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "reason": "query_changed"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "schema-changed",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema-changed",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": false,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-2",
+          "reason": "schema_changed"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema-changed",
+        "result": {
+          "valid": false,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-2",
+          "reason": "schema_changed"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "application-write",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "application-write",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": false,
+          "currentDataRevision": 8,
+          "currentSchemaRevision": "schema-1",
+          "reason": "application_write"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "application-write",
+        "result": {
+          "valid": false,
+          "currentDataRevision": 8,
+          "currentSchemaRevision": "schema-1",
+          "reason": "application_write"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "empty-current-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-current-query",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "currentQuery": {}
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            },
+            "currentQuery": {}
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-current-query",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "empty-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {}
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": false,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "reason": "query_changed"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {}
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-snapshot",
+        "result": {
+          "valid": false,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "reason": "query_changed"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "empty-both-objects",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-both-objects",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {},
+          "currentQuery": {}
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {},
+            "currentQuery": {}
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-both-objects",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "missing-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {}
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-snapshot",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "null-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-snapshot",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "array-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "array-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": []
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "array-snapshot",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "string-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "string-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": "snapshot"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "string-snapshot",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "null-current-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-current-query",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "currentQuery": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-current-query",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "array-current-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "array-current-query",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "currentQuery": []
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "array-current-query",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "nonobject-params",
+        "method": "query.validateSnapshot",
+        "params": []
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "unknown-before-missing",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-before-missing",
+        "method": "query.validateSnapshot",
+        "params": {
+          "extra": false
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-before-missing",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "wrong-type-before-domain",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-type-before-domain",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": false,
+          "currentQuery": []
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-type-before-domain",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "nested-credential-before-domain",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "nested-credential-before-domain",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "nested": {
+              "password": "test-only"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "nested-credential-before-domain",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "public-domain-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "public-domain-error",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "public-domain-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "snapshot signature is invalid",
+            "code": "query.snapshot_invalid",
+            "path": "snapshot",
+            "details": {
+              "reason": "invalid_signature"
+            },
+            "retryable": false
+          }
+        }
+      },
+      "typedGoBoundary": null
+    },
+    {
+      "name": "transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "snapshot validation unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      },
+      "typedGoBoundary": "Direct Go service has no Python HTTP transport failure; public domain errors remain expressible"
+    },
+    {
+      "name": "empty-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-response",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {},
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-response",
+        "result": {}
+      },
+      "typedGoBoundary": "SnapshotValidation always emits valid/currentDataRevision/currentSchemaRevision; empty response object is not representable"
+    },
+    {
+      "name": "explicit-empty-reason",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "explicit-empty-reason",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "reason": ""
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "explicit-empty-reason",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "reason": ""
+        }
+      },
+      "typedGoBoundary": "SnapshotValidation.reason omitempty removes an explicit empty string"
+    },
+    {
+      "name": "dynamic-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "dynamic-response",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "extension": [
+            null,
+            false,
+            0,
+            "",
+            "中文"
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "dynamic-response",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1",
+          "extension": [
+            null,
+            false,
+            0,
+            "",
+            "中文"
+          ]
+        }
+      },
+      "typedGoBoundary": "SnapshotValidation has no extension field; dynamic JSON is not a blanket exemption"
+    },
+    {
+      "name": "wrong-response-types",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-response-types",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": "yes",
+          "currentDataRevision": null,
+          "currentSchemaRevision": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-response-types",
+        "result": {
+          "valid": "yes",
+          "currentDataRevision": null,
+          "currentSchemaRevision": []
+        }
+      },
+      "typedGoBoundary": "SnapshotValidation bool/int64/string members cannot encode these types"
+    },
+    {
+      "name": "null-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-response",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": "SnapshotValidation cannot represent a null root returned by scripted HTTP"
+    },
+    {
+      "name": "array-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "array-response",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "array-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "typedGoBoundary": "SnapshotValidation cannot represent an array root returned by scripted HTTP"
+    },
+    {
+      "name": "opaque-nested-snapshot",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "opaque-nested-snapshot",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            },
+            "extension": [
+              null,
+              false,
+              0,
+              "",
+              "中文"
+            ]
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              },
+              "extension": [
+                null,
+                false,
+                0,
+                "",
+                "中文"
+              ]
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "opaque-nested-snapshot",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        }
+      },
+      "typedGoBoundary": "QuerySnapshot has seven fixed fields and cannot retain arbitrary extension members in its typed value"
+    },
+    {
+      "name": "wrong-nested-snapshot-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "wrong-nested-snapshot-type",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": "seven",
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": "seven",
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "wrong-nested-snapshot-type",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        }
+      },
+      "typedGoBoundary": "QuerySnapshot.dataRevision int64 cannot encode the string forwarded by Python"
+    },
+    {
+      "name": "unknown-current-query-member",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-current-query-member",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "snapshot-scripted",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          },
+          "currentQuery": {
+            "custom": "中文"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "snapshot-scripted",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            },
+            "currentQuery": {
+              "custom": "中文"
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-current-query-member",
+        "result": {
+          "valid": true,
+          "currentDataRevision": 7,
+          "currentSchemaRevision": "schema-1"
+        }
+      },
+      "typedGoBoundary": "TableQuery has a closed UnmarshalJSON and cannot express unknown currentQuery members"
+    },
+    {
+      "name": "domain-invalid-snapshot-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "domain-invalid-snapshot-id",
+        "method": "query.validateSnapshot",
+        "params": {
+          "snapshot": {
+            "snapshotId": "invalid",
+            "digest": "signature-scripted-not-a-domain-issued-signature",
+            "databaseId": "workspace-1",
+            "table": "orders",
+            "schemaRevision": "schema-1",
+            "dataRevision": 7,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 50
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "code": "query.snapshot.invalid",
+          "path": "snapshotId",
+          "message": "query snapshot id is invalid",
+          "details": {},
+          "retryable": false
+        },
+        "failure": "invalid-snapshot-id"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query/validate-snapshot",
+          "query": null,
+          "body": {
+            "snapshot": {
+              "snapshotId": "invalid",
+              "digest": "signature-scripted-not-a-domain-issued-signature",
+              "databaseId": "workspace-1",
+              "table": "orders",
+              "schemaRevision": "schema-1",
+              "dataRevision": 7,
+              "normalizedQuery": {
+                "offset": 0,
+                "limit": 50
+              }
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "domain-invalid-snapshot-id",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "query snapshot id is invalid",
+            "code": "query.snapshot.invalid",
+            "path": "snapshotId",
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "typedGoBoundary": null
+    }
+  ]
+}

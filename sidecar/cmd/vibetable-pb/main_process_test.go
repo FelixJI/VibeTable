@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -529,59 +530,65 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 17 ||
+		len(productCapabilities.RPCMethods) != 19 ||
 		productCapabilities.RPCMethods[0] != "events.reconcile" ||
-		productCapabilities.RPCMethods[1] != "file.list" ||
-		productCapabilities.RPCMethods[2] != "history.read" ||
-		productCapabilities.RPCMethods[3] != "lookup.list" ||
-		productCapabilities.RPCMethods[4] != "lookup.query" ||
-		productCapabilities.RPCMethods[5] != "lookup.valuePage" ||
-		productCapabilities.RPCMethods[6] != "query.cursorFetch" ||
-		productCapabilities.RPCMethods[7] != "query.cursorOpen" ||
-		productCapabilities.RPCMethods[8] != "query.page" ||
-		productCapabilities.RPCMethods[9] != "query.readRows" ||
-		productCapabilities.RPCMethods[10] != "query.selectionOpen" ||
-		productCapabilities.RPCMethods[11] != "query.view" ||
-		productCapabilities.RPCMethods[12] != "relation.previewDelta" ||
-		productCapabilities.RPCMethods[13] != "relation.searchTargets" ||
-		productCapabilities.RPCMethods[14] != "schema.describe" ||
-		productCapabilities.RPCMethods[15] != "schema.getTable" ||
-		productCapabilities.RPCMethods[16] != "schema.list" ||
-		len(productCapabilities.Registrations) != 17 ||
+		productCapabilities.RPCMethods[1] != "field.settings.describe" ||
+		productCapabilities.RPCMethods[2] != "file.list" ||
+		productCapabilities.RPCMethods[3] != "history.read" ||
+		productCapabilities.RPCMethods[4] != "lookup.list" ||
+		productCapabilities.RPCMethods[5] != "lookup.query" ||
+		productCapabilities.RPCMethods[6] != "lookup.valuePage" ||
+		productCapabilities.RPCMethods[7] != "query.cursorFetch" ||
+		productCapabilities.RPCMethods[8] != "query.cursorOpen" ||
+		productCapabilities.RPCMethods[9] != "query.page" ||
+		productCapabilities.RPCMethods[10] != "query.readRows" ||
+		productCapabilities.RPCMethods[11] != "query.selectionOpen" ||
+		productCapabilities.RPCMethods[12] != "query.validateSnapshot" ||
+		productCapabilities.RPCMethods[13] != "query.view" ||
+		productCapabilities.RPCMethods[14] != "relation.previewDelta" ||
+		productCapabilities.RPCMethods[15] != "relation.searchTargets" ||
+		productCapabilities.RPCMethods[16] != "schema.describe" ||
+		productCapabilities.RPCMethods[17] != "schema.getTable" ||
+		productCapabilities.RPCMethods[18] != "schema.list" ||
+		len(productCapabilities.Registrations) != 19 ||
 		productCapabilities.Registrations[0].Method != "events.reconcile" ||
 		productCapabilities.Registrations[0].Scope != "workspace" ||
-		productCapabilities.Registrations[1].Method != "file.list" ||
+		productCapabilities.Registrations[1].Method != "field.settings.describe" ||
 		productCapabilities.Registrations[1].Scope != "workspace" ||
-		productCapabilities.Registrations[2].Method != "history.read" ||
+		productCapabilities.Registrations[2].Method != "file.list" ||
 		productCapabilities.Registrations[2].Scope != "workspace" ||
-		productCapabilities.Registrations[3].Method != "lookup.list" ||
+		productCapabilities.Registrations[3].Method != "history.read" ||
 		productCapabilities.Registrations[3].Scope != "workspace" ||
-		productCapabilities.Registrations[4].Method != "lookup.query" ||
+		productCapabilities.Registrations[4].Method != "lookup.list" ||
 		productCapabilities.Registrations[4].Scope != "workspace" ||
-		productCapabilities.Registrations[5].Method != "lookup.valuePage" ||
+		productCapabilities.Registrations[5].Method != "lookup.query" ||
 		productCapabilities.Registrations[5].Scope != "workspace" ||
-		productCapabilities.Registrations[6].Method != "query.cursorFetch" ||
+		productCapabilities.Registrations[6].Method != "lookup.valuePage" ||
 		productCapabilities.Registrations[6].Scope != "workspace" ||
-		productCapabilities.Registrations[7].Method != "query.cursorOpen" ||
+		productCapabilities.Registrations[7].Method != "query.cursorFetch" ||
 		productCapabilities.Registrations[7].Scope != "workspace" ||
-		productCapabilities.Registrations[8].Method != "query.page" ||
+		productCapabilities.Registrations[8].Method != "query.cursorOpen" ||
 		productCapabilities.Registrations[8].Scope != "workspace" ||
-		productCapabilities.Registrations[9].Method != "query.readRows" ||
+		productCapabilities.Registrations[9].Method != "query.page" ||
 		productCapabilities.Registrations[9].Scope != "workspace" ||
-		productCapabilities.Registrations[10].Method != "query.selectionOpen" ||
+		productCapabilities.Registrations[10].Method != "query.readRows" ||
 		productCapabilities.Registrations[10].Scope != "workspace" ||
-		productCapabilities.Registrations[11].Method != "query.view" ||
+		productCapabilities.Registrations[11].Method != "query.selectionOpen" ||
 		productCapabilities.Registrations[11].Scope != "workspace" ||
-		productCapabilities.Registrations[12].Method != "relation.previewDelta" ||
+		productCapabilities.Registrations[12].Method != "query.validateSnapshot" ||
 		productCapabilities.Registrations[12].Scope != "workspace" ||
-		productCapabilities.Registrations[13].Method != "relation.searchTargets" ||
+		productCapabilities.Registrations[13].Method != "query.view" ||
 		productCapabilities.Registrations[13].Scope != "workspace" ||
-		productCapabilities.Registrations[14].Method != "schema.describe" ||
+		productCapabilities.Registrations[14].Method != "relation.previewDelta" ||
 		productCapabilities.Registrations[14].Scope != "workspace" ||
-		productCapabilities.Registrations[15].Method != "schema.getTable" ||
+		productCapabilities.Registrations[15].Method != "relation.searchTargets" ||
 		productCapabilities.Registrations[15].Scope != "workspace" ||
-		productCapabilities.Registrations[16].Method != "schema.list" ||
-		productCapabilities.Registrations[16].Scope != "workspace" {
+		productCapabilities.Registrations[16].Method != "schema.describe" ||
+		productCapabilities.Registrations[16].Scope != "workspace" ||
+		productCapabilities.Registrations[17].Method != "schema.getTable" ||
+		productCapabilities.Registrations[17].Scope != "workspace" ||
+		productCapabilities.Registrations[18].Method != "schema.list" ||
+		productCapabilities.Registrations[18].Scope != "workspace" {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
 
@@ -615,6 +622,24 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || string(rowsResponse.Result) != `{"rows":[]}` || len(rowsResponse.Error) != 0 {
 		t.Fatalf("query.readRows production response = %d %+v", response.StatusCode, rowsResponse)
+	}
+
+	response = requestJSON(t, client, http.MethodPost, baseURL+"/api/vibetable/v2/product/rpc", secret,
+		workspaceV2Request(0, 7, "query.validateSnapshot", `{"snapshot":{}}`))
+	var snapshotResponse struct {
+		Error struct {
+			Code    int            `json:"code"`
+			Message string         `json:"message"`
+			Data    map[string]any `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&snapshotResponse); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	expectedSnapshotError := map[string]any{"kind": "product_data_error", "message": "query snapshot id is invalid", "code": "query.snapshot.invalid", "path": "snapshotId", "details": map[string]any{}, "retryable": false}
+	if response.StatusCode != http.StatusOK || snapshotResponse.Error.Code != -32150 || snapshotResponse.Error.Message != "Product data error" || !reflect.DeepEqual(snapshotResponse.Error.Data, expectedSnapshotError) {
+		t.Fatalf("query.validateSnapshot production error = %d %+v", response.StatusCode, snapshotResponse)
 	}
 
 	response = requestJSON(

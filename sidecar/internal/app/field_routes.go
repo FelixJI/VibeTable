@@ -29,7 +29,7 @@ func registerFieldRoutes(
 	logger *slog.Logger,
 	protectionVerifier fieldchange.ProtectionSnapshotVerifier,
 	gates ...businessWriteGate,
-) {
+) fieldSettingsDescribeDomain {
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(
@@ -290,6 +290,7 @@ func registerFieldRoutes(
 		}
 		return request.JSON(http.StatusOK, status)
 	})
+	return fieldSettingsDescribeDomain{schema: schemaCore, fields: catalog}
 }
 
 func decodeFieldRequest(reader io.Reader, target any) error {

@@ -20,7 +20,7 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "events.reconcile" or "file.list" or "history.read" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "schema.describe" or "schema.getTable" or "schema.list"
+            Assert.AreEqual(method is "events.reconcile" or "field.settings.describe" or "file.list" or "history.read" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "schema.list"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
                 route, method);
         }
@@ -30,6 +30,19 @@ public sealed class ProductRpcRouteSelectorTests
             Assert.AreEqual(method is "relation.searchTargets" or "relation.previewDelta" or "lookup.query" or "lookup.valuePage"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff, route, method);
         }
+    }
+
+    [TestMethod]
+    public void FieldSettingsDescriptionUsesItsDeclaredGoOwner()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet(
+            "field.settings.describe", out ProductDataRpcEndpoint endpoint));
+        Assert.AreEqual(ProductRpcCapabilityCatalog.Product, endpoint.CapabilityCatalog);
+        Assert.IsTrue(ProductRpcRouteSelector.Default.TrySelectProduct(
+            endpoint.Type, endpoint.CapabilityCatalog, out ProductRpcRoute route));
+        Assert.AreEqual(ProductRpcRoute.GoSidecar, route);
+        Assert.IsFalse(new ProductRpcRouteSelector(Policy()).TrySelectProduct(
+            endpoint.Type, endpoint.CapabilityCatalog, out _));
     }
 
     [TestMethod]
@@ -80,7 +93,7 @@ public sealed class ProductRpcRouteSelectorTests
         var selector = new ProductRpcRouteSelector(Policy());
 
         Assert.IsTrue(selector.TrySelectProduct(
-            "field.settings.describe",
+            "field.change.status",
             ProductRpcCapabilityCatalog.Workspace,
             out ProductRpcRoute route));
         Assert.AreEqual(ProductRpcRoute.PythonBff, route);

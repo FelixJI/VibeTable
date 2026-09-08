@@ -43,12 +43,25 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 102 {
-		t.Fatalf("RPCDescriptors length = %d, want 102", len(descriptors))
+	if len(descriptors) != 103 {
+		t.Fatalf("RPCDescriptors length = %d, want 103", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
 		t.Fatalf("RPCDescriptors are not in canonical order: %#v", descriptors)
+	}
+
+	var settings RPCDescriptor
+	for _, descriptor := range descriptors {
+		if descriptor.Method == "field.settings.describe" {
+			settings = descriptor
+		}
+	}
+	if settings != (RPCDescriptor{
+		Method: "field.settings.describe", Scope: WorkspaceScope, Audience: RendererPublic,
+		CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect,
+	}) {
+		t.Fatalf("field.settings.describe descriptor = %#v", settings)
 	}
 
 	var schema RPCDescriptor
@@ -68,14 +81,14 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 17 ||
-		got[0].Method != "events.reconcile" || got[1].Method != "file.list" ||
-		got[2] != (RPCDescriptor{
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 19 ||
+		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
+		got[3] != (RPCDescriptor{
 			Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
 			CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
-		}) || got[3].Method != "lookup.list" || got[4] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[5] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[6].Method != "query.cursorFetch" || got[7].Method != "query.cursorOpen" || got[8].Method != "query.page" || got[9].Method != "query.readRows" ||
-		got[10].Method != "query.selectionOpen" || got[11].Method != "query.view" || got[12].Method != "relation.previewDelta" || got[13] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[14].Method != "schema.describe" ||
-		got[15].Method != "schema.getTable" || got[16].Method != "schema.list" {
+		}) || got[4].Method != "lookup.list" || got[5] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[6] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[7].Method != "query.cursorFetch" || got[8].Method != "query.cursorOpen" || got[9].Method != "query.page" || got[10].Method != "query.readRows" ||
+		got[11].Method != "query.selectionOpen" || got[12] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[13].Method != "query.view" || got[14].Method != "relation.previewDelta" || got[15] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[16].Method != "schema.describe" ||
+		got[17].Method != "schema.getTable" || got[18].Method != "schema.list" {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||
