@@ -208,6 +208,37 @@ public sealed class PendingUpdateActivationJournalTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ActivationCompletionObserverCanClaimJournalLock(bool cleanupSucceeded)
+    {
+        UpdateApplyPlan plan = CreatePendingPlan("completion-lock", 'b');
+        var updater = new UpdateProcessIdentity(
+            int.MaxValue, new DateTimeOffset(2026, 8, 27, 4, 3, 0, TimeSpan.Zero));
+        PendingUpdateActivationJournal.Publish(plan, updater);
+        Assert.IsTrue(UpdateProcessCommand.TryCreateActivationGate(
+            CleanupArguments(plan, updater), out IUpdateActivationGate? gate,
+            runningRoot: plan.TargetRoot,
+            waitForUpdaterExit: _ => Task.FromResult(true),
+            cleanupStage: _ => cleanupSucceeded));
+        Assert.IsNotNull(gate);
+        // Observe completion immediately, independent of thread-pool timing.
+        Task observer = gate.Completion.ContinueWith(completed =>
+        {
+            Assert.AreEqual(cleanupSucceeded, completed.Result);
+            using FileStream claim = ClaimJournalLock(plan);
+        }, CancellationToken.None, TaskContinuationOptions.None, new ImmediateObserverScheduler());
+        gate.ConfirmActivation();
+        await observer.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private sealed class ImmediateObserverScheduler : TaskScheduler
+    {
+        protected override IEnumerable<Task>? GetScheduledTasks() => null;
+        protected override void QueueTask(Task task) => TryExecuteTask(task);
+        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued) => false;
+    }
+    [TestMethod]
     public async Task ConfirmedActivationResumesCleanupAfterFailureWithoutAnotherConfirmation()
     {
         UpdateApplyPlan plan = CreatePendingPlan("confirmed", 'd');

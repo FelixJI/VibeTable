@@ -79,6 +79,9 @@ public sealed class ProductionWorkspaceRuntimeFactory :
 
     public ulong InitialSessionEpoch { get; }
 
+    public ulong ReadLastSessionEpoch(WorkspaceRegistryEntryV2 workspace) =>
+        _authority.TryRead(workspace)?.LastSessionEpoch ?? 0;
+
     public PythonBackendSupervisor? CurrentBackend
     {
         get

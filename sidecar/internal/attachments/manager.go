@@ -66,6 +66,19 @@ type Manager struct {
 	bytes        int64
 }
 
+type managedRecordDelete struct {
+	core.BaseRecordProxy
+}
+
+var (
+	_ core.RecordProxy  = (*managedRecordDelete)(nil)
+	_ core.FilesManager = (*managedRecordDelete)(nil)
+)
+
+// BaseFilesPath suppresses PocketBase's fire-and-forget record-prefix cleanup.
+// DeleteRecord performs the same cleanup synchronously after commit instead.
+func (record *managedRecordDelete) BaseFilesPath() string { return "" }
+
 type Option func(*Manager)
 
 func WithClock(clock func() time.Time) Option {
@@ -300,7 +313,7 @@ func (manager *Manager) Prepare(
 	return finalize, nil
 }
 
-func (manager *Manager) CleanupRecord(
+func (manager *Manager) DeleteRecord(
 	ctx context.Context,
 	app core.App,
 	definition schemaexecution.Table,
@@ -308,6 +321,14 @@ func (manager *Manager) CleanupRecord(
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	tx := app.TxInfo()
+	if tx == nil {
+		return attachmentError(
+			"mutation.attachment.storage_failed",
+			"attachment record deletion requires a transaction",
+			false,
+		)
 	}
 	records, err := app.FindRecordsByFilter(
 		"vibetable_attachment_meta",
@@ -390,6 +411,48 @@ func (manager *Manager) CleanupRecord(
 			)
 		}
 	}
+	proxy := &managedRecordDelete{
+		BaseRecordProxy: core.BaseRecordProxy{Record: record},
+	}
+	if err := app.Delete(proxy); err != nil {
+		return attachmentError(
+			"mutation.attachment.storage_failed",
+			"attachment record could not be deleted",
+			true,
+		)
+	}
+	prefix := strings.TrimRight(record.BaseFilesPath(), "/") + "/"
+	tx.OnComplete(func(transactionErr error) error {
+		if transactionErr != nil {
+			return nil
+		}
+		if err := manager.fault("before_record_storage_cleanup"); err != nil {
+			return attachmentError(
+				"mutation.attachment.storage_failed",
+				"attachment storage could not be cleaned",
+				true,
+			)
+		}
+		fsys, err := app.NewFilesystem()
+		if err != nil {
+			return attachmentError(
+				"mutation.attachment.storage_failed",
+				"attachment storage could not be cleaned",
+				true,
+			)
+		}
+		fsys.SetContext(context.Background())
+		failures := fsys.DeletePrefix(prefix)
+		closeErr := fsys.Close()
+		if len(failures) != 0 || closeErr != nil {
+			return attachmentError(
+				"mutation.attachment.storage_failed",
+				"attachment storage could not be cleaned",
+				true,
+			)
+		}
+		return nil
+	})
 	return nil
 }
 

@@ -540,9 +540,136 @@ def test_wait_empty_accepts_member_exiting_after_open_before_image_query(
                     assert native.kernel32.CloseHandle(job)
 
 
+@pytest.mark.parametrize("fault", ["exit", "alive", "open", "membership", "wait", "requery"])
+@pytest.mark.integration
+def test_wait_empty_observes_child_without_image_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+) -> None:
+    from scripts.qa import _windows_process_scope_win32 as native
+
+    job_name = _job_name()
+    pid_path = tmp_path / "child.pid"
+    with (
+        _NamedEvent() as ready,
+        _NamedEvent() as root_release,
+        _NamedEvent() as child_release,
+        _launch_named_process_scope(
+            ProcessLaunchSpec(
+                [
+                    str(Path(sys.base_prefix) / "python.exe"),
+                    "-m",
+                    FIXTURE,
+                    job_name,
+                    "root",
+                    ready.name,
+                    root_release.name,
+                    child_release.name,
+                    str(pid_path),
+                ],
+                env={**os.environ, "PYTHONPATH": str(Path(sys.prefix) / "Lib" / "site-packages")},
+            ),
+            job_name,
+        ) as scope,
+    ):
+        child_wait = None
+        try:
+            ready.wait()
+            child_pid = _read_pid(pid_path)
+            root_release.set()
+            assert scope.root.wait(timeout=15) == 0
+            assert {member.pid for member in scope.snapshot().members} == {child_pid}
+            child_wait = _open_process_for_wait(child_pid)
+            kernel32, stable_handle = child_wait
+            assert kernel32.WaitForSingleObject(stable_handle, 0) == WAIT_TIMEOUT
+            get_pid = kernel32.GetProcessId
+            get_pid.argtypes = [wintypes.HANDLE]
+            get_pid.restype = wintypes.DWORD
+            open_process = native.kernel32.OpenProcess
+            wait_process = native.kernel32.WaitForSingleObject
+            query_job = native.kernel32.QueryInformationJobObject
+            released = False
+
+            def deny_image(*_args: object) -> bool:
+                assert kernel32.WaitForSingleObject(stable_handle, 0) == WAIT_TIMEOUT
+                ctypes.set_last_error(5)
+                return False
+
+            def open_member(access: int, inherit: bool, pid: int):
+                assert pid == child_pid
+                if fault == "open":
+                    ctypes.set_last_error(5)
+                    return 0
+                return open_process(access, inherit, pid)
+
+            def deny_membership(*_args: object) -> bool:
+                ctypes.set_last_error(5)
+                return False
+
+            def wait_member(handle: int, milliseconds: int) -> int:
+                nonlocal released
+                assert get_pid(handle) == child_pid
+                if fault == "wait":
+                    ctypes.set_last_error(6)
+                    return 0xFFFFFFFF
+                if fault in {"exit", "requery"} and not released:
+                    assert wait_process(handle, 0) == WAIT_TIMEOUT
+                    child_release.set()
+                    released = True
+                    if milliseconds == 0:
+                        return WAIT_TIMEOUT
+                return int(wait_process(handle, milliseconds))
+
+            def query_members(*args: object):
+                if fault == "requery" and released:
+                    ctypes.set_last_error(5)
+                    return False
+                return query_job(*args)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(native.kernel32, "QueryFullProcessImageNameW", deny_image)
+                patch.setattr(native.kernel32, "OpenProcess", open_member)
+                patch.setattr(native.kernel32, "WaitForSingleObject", wait_member)
+                patch.setattr(native.kernel32, "QueryInformationJobObject", query_members)
+                if fault == "membership":
+                    patch.setattr(native.kernel32, "IsProcessInJob", deny_membership)
+                result = scope.wait_empty(timeout=0.05 if fault == "alive" else 5)
+            if fault in {"exit", "requery"}:
+                assert released
+                assert kernel32.WaitForSingleObject(stable_handle, 15_000) == WAIT_OBJECT_0
+                assert scope.snapshot().members == ()
+            else:
+                assert kernel32.WaitForSingleObject(stable_handle, 0) == WAIT_TIMEOUT
+            if fault == "exit":
+                assert result.success, result
+            elif fault == "alive":
+                assert not result.success
+                assert result.remaining_pids == (child_pid,)
+            else:
+                assert not result.success
+                assert result.remaining_pids is None
+                expected_error = {
+                    "open": "OpenProcess",
+                    "membership": "IsProcessInJob",
+                    "wait": "WaitForSingleObject",
+                    "requery": "QueryInformationJobObject",
+                }[fault]
+                assert expected_error in result.errors[0]
+        finally:
+            root_release.set()
+            child_release.set()
+            if child_wait is not None:
+                kernel32, stable_handle = child_wait
+                try:
+                    assert kernel32.WaitForSingleObject(stable_handle, 15_000) == WAIT_OBJECT_0
+                finally:
+                    kernel32.CloseHandle(stable_handle)
+
+
 @pytest.mark.parametrize("wait_fails", [False, True], ids=["alive", "wait-failed"])
 @pytest.mark.integration
-def test_wait_empty_preserves_image_error_when_exit_is_not_proven(
+def test_named_member_preserves_image_error_when_exit_is_not_proven(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     wait_fails: bool,
@@ -593,9 +720,13 @@ def test_wait_empty_preserves_image_error_when_exit_is_not_proven(
             with monkeypatch.context() as patch:
                 patch.setattr(native.kernel32, "QueryFullProcessImageNameW", deny_image)
                 patch.setattr(native.kernel32, "WaitForSingleObject", check_exit)
-                result = scope.wait_empty(timeout=5)
-            assert not result.success
-            assert result.remaining_pids is None
+                snapshot = scope.snapshot()
+                assert snapshot.members
+                assert all(not member.identity_verified for member in snapshot.members)
+                assert all(member.executable_name == "unknown" for member in snapshot.members)
+                result = scope.terminate_unique("python.exe")
+            assert result.status == "failed"
+            assert result.terminated_pid is None
             assert "[WinError 5] QueryFullProcessImageNameW" in result.errors[0]
             assert scope.root.poll() is None
         finally:

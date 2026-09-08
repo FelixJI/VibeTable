@@ -235,6 +235,24 @@ def python_quality() -> None:
         _run(*command)
 
 
+def _node_quality(projects: tuple[Path, ...], node_env: dict[str, str]) -> None:
+    for project in projects:
+        _run("npm", "run", "typecheck", cwd=REPO_ROOT / project, env=node_env)
+        package = project / "package.json"
+        package_text = (REPO_ROOT / package).read_text(encoding="utf-8")
+        if '"test"' in package_text:
+            _run("npm", "run", "test", cwd=REPO_ROOT / project, env=node_env)
+        if '"build"' in package_text:
+            _run("npm", "run", "build", cwd=REPO_ROOT / project, env=node_env)
+
+
+def node_tests() -> None:
+    """Check plugin projects and retain the web stage's coverage gate."""
+    node_env = _node_environment()
+    _node_quality(NPM_PROJECTS[1:], node_env)
+    _run("npm", "run", "test:coverage", cwd=REPO_ROOT / "desktop/web-grid", env=node_env)
+
+
 def quality() -> None:
     if _candidate_prepare_mode():
         print(
@@ -247,15 +265,7 @@ def quality() -> None:
     _run("uv", "run", "python", "qa/version_check.py")
     _run("uv", "run", "python", "qa/package_check.py")
     python_quality()
-    node_env = _node_environment()
-    for project in NPM_PROJECTS:
-        _run("npm", "run", "typecheck", cwd=REPO_ROOT / project, env=node_env)
-        package = project / "package.json"
-        package_text = (REPO_ROOT / package).read_text(encoding="utf-8")
-        if '"test"' in package_text:
-            _run("npm", "run", "test", cwd=REPO_ROOT / project, env=node_env)
-        if '"build"' in package_text:
-            _run("npm", "run", "build", cwd=REPO_ROOT / project, env=node_env)
+    _node_quality(NPM_PROJECTS, _node_environment())
     _run("uv", "run", "python", "qa/go_format_check.py")
     _run("go", "vet", "./...", cwd=REPO_ROOT / "sidecar")
     _run("uv", "run", "python", "qa/next.py", "--stage", "go-test")
@@ -537,6 +547,10 @@ def release_smoke() -> None:
 def _prepare_smoke_lane(lane: str) -> None:
     if lane == "core":
         bootstrap()
+        if _candidate_prepare_mode():
+            node_env = _node_environment()
+            for project in NPM_PROJECTS[1:]:
+                _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     elif lane in {"race-a", "race-b"}:
         _install_w64devkit()
     elif lane == "resilience":
@@ -618,6 +632,7 @@ def _parser() -> argparse.ArgumentParser:
             "contracts",
             "quality",
             "python-quality",
+            "node-tests",
             "pr-e2e",
             "build",
             "smoke",
@@ -648,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
         "contracts": contracts,
         "quality": quality,
         "python-quality": python_quality,
+        "node-tests": node_tests,
         "pr-e2e": pr_e2e,
         "build": build_candidate,
         "smoke": release_smoke,

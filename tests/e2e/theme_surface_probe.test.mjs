@@ -1,0 +1,174 @@
+import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import test, { after, before } from "node:test";
+
+import {
+  collectBrowserSurfaceEvidence,
+  sampleConnectedThemeSurfaces,
+} from "./theme_surface_probe.mjs";
+import { observeTestPhases } from "./test_phase_evidence.mjs";
+
+// Preserve Edge process diagnostics in the captured Node output if bootstrap fails.
+process.env.DEBUG = [process.env.DEBUG, "pw:browser"].filter(Boolean).join(",");
+const { chromium } = await import("../../desktop/web-grid/node_modules/playwright-core/index.mjs");
+
+const tabulatorScript = fileURLToPath(
+  new URL("../../desktop/web-grid/node_modules/tabulator-tables/dist/js/tabulator.min.js", import.meta.url),
+);
+const reproduceLegacyFailure = process.argv.includes("--legacy-red");
+
+let browser;
+let page;
+const startupAbort = new AbortController();
+const cleanupTimeoutMs = 10_000;
+
+async function closeEdge() {
+  const cleanupAbort = new AbortController();
+  const phases = observeTestPhases({
+    signal: cleanupAbort.signal,
+    diagnostic: (message) => console.error(message),
+  });
+  let timeout;
+  try {
+    await Promise.race([
+      phases.phase("close Edge", () => browser.close()),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          cleanupAbort.abort();
+          reject(new Error(`Edge cleanup exceeded ${cleanupTimeoutMs}ms`));
+        }, cleanupTimeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    phases.close();
+  }
+}
+
+// Browser startup has its own bounded setup budget; it must not consume the
+// theme assertions' unchanged 10-second budget.
+before(async () => {
+  // Node's before-hook timeout does not abort HookContext.signal. The after hook
+  // cancels startup explicitly; stderr remains observable after that hook fails.
+  const phases = observeTestPhases({
+    signal: startupAbort.signal,
+    diagnostic: (message) => console.error(message),
+  });
+  try {
+    browser = await phases.phase("launch Edge", () => (
+      chromium.launch({ channel: "msedge", headless: true })
+    ));
+    if (startupAbort.signal.aborted) {
+      await closeEdge();
+      return;
+    }
+    const context = await phases.phase("create browser context", () => browser.newContext());
+    if (startupAbort.signal.aborted) return;
+    page = await phases.phase("open browser page", () => context.newPage());
+  } finally {
+    phases.close();
+  }
+}, { timeout: 30_000 });
+
+after(async () => {
+  startupAbort.abort();
+  if (browser) await closeEdge();
+}, { timeout: cleanupTimeoutMs });
+
+test("connected theme sampling never reads a stale Tabulator cell", { timeout: 10_000 }, async (t) => {
+  const phases = observeTestPhases(t);
+  t.after(() => phases.close());
+  {
+    await phases.phase("render Tabulator fixture", () => page.setContent(`
+      <style>
+        html.dark { color-scheme: dark; }
+        #grid, .tabulator, .tabulator-tableholder, .tabulator-row, .tabulator-cell {
+          background: rgb(18, 24, 38); color: rgb(239, 244, 255);
+        }
+        .bad-palette #grid, .bad-palette .tabulator, .bad-palette .tabulator-tableholder,
+        .bad-palette .tabulator-row, .bad-palette .tabulator-cell {
+          background: rgb(255, 255, 255) !important; color: rgb(0, 0, 0) !important;
+        }
+        .bad-contrast #grid, .bad-contrast .tabulator, .bad-contrast .tabulator-tableholder,
+        .bad-contrast .tabulator-row, .bad-contrast .tabulator-cell {
+          background: rgb(18, 24, 38) !important; color: rgb(26, 32, 46) !important;
+        }
+      </style>
+      <div id="grid"></div>
+    `));
+    await phases.phase("load Tabulator", () => page.addScriptTag({ path: tabulatorScript }));
+    await phases.phase("create Tabulator", () => page.evaluate(() => {
+      window.__themeProbeTable = new Tabulator("#grid", {
+        data: [{ initial: "initial", replacement: "replacement" }],
+        layout: "fitData",
+        columns: [{ title: "Initial", field: "initial" }],
+      });
+    }));
+
+    const initialCell = page.locator(".tabulator-row .tabulator-cell").first();
+    const staleCell = await phases.phase("capture initial Tabulator cell", async () => {
+      await initialCell.waitFor({ state: "visible", timeout: 3_000 });
+      return initialCell.elementHandle();
+    });
+    await phases.phase("replace Tabulator column", async () => {
+      await page.evaluate(() => window.__themeProbeTable.setColumns([
+        { title: "Replacement", field: "replacement" },
+      ]));
+      await page.locator(".tabulator-row .tabulator-cell").first().waitFor({ state: "visible" });
+    });
+
+    const staleEvidence = await phases.phase("sample stale Tabulator cell", () => (
+      staleCell.evaluate(collectBrowserSurfaceEvidence)
+    ));
+    if (reproduceLegacyFailure) {
+      assert.notEqual(staleEvidence.rawBackground, "", JSON.stringify(staleEvidence));
+    } else {
+      assert.equal(staleEvidence.rawBackground, "", JSON.stringify(staleEvidence));
+      assert.equal(staleEvidence.foreground, "", JSON.stringify(staleEvidence));
+      assert.equal(staleEvidence.visible, false, JSON.stringify(staleEvidence));
+    }
+
+    const recovered = await phases.phase("sample recovered theme surfaces", () => (
+      sampleConnectedThemeSurfaces(page)
+    ));
+    assert.equal(recovered.root.rootDark, false);
+    assert.equal(recovered.table.visible, true, JSON.stringify(recovered));
+    assert.equal(recovered.cell.visible, true, JSON.stringify(recovered));
+    assert.equal(recovered.cell.rawBackground, "rgb(18, 24, 38)", JSON.stringify(recovered));
+    assert.ok(recovered.cell.backgroundLuminance < 0.25, JSON.stringify(recovered));
+    assert.ok(recovered.cell.contrast >= 4.5, JSON.stringify(recovered));
+
+    const badContrast = await phases.phase("sample bad contrast theme surfaces", async () => {
+      await page.evaluate(() => document.documentElement.classList.add("bad-contrast"));
+      return sampleConnectedThemeSurfaces(page);
+    });
+    assert.ok(badContrast.cell.backgroundLuminance < 0.25, JSON.stringify(badContrast));
+    assert.ok(badContrast.cell.contrast < 4.5, JSON.stringify(badContrast));
+
+    const badPalette = await phases.phase("sample bad palette theme surfaces", async () => {
+      await page.evaluate(() => {
+        document.documentElement.classList.remove("bad-contrast");
+        document.documentElement.classList.add("bad-palette");
+      });
+      return sampleConnectedThemeSurfaces(page);
+    });
+    assert.equal(badPalette.cell.backgroundLuminance < 0.25, false, JSON.stringify(badPalette));
+
+    await phases.phase("verify hidden cell sampling timeout", async () => {
+      await page.locator(".tabulator-row .tabulator-cell").first().evaluate((element) => {
+        element.style.visibility = "hidden";
+      });
+      await assert.rejects(
+        () => sampleConnectedThemeSurfaces(page, { timeout: 50 }),
+        /Timeout 50ms exceeded/,
+      );
+    });
+    await phases.phase("verify removed grid sampling timeout", async () => {
+      await page.evaluate(() => document.querySelector("#grid")?.remove());
+      await assert.rejects(
+        () => sampleConnectedThemeSurfaces(page, { timeout: 50 }),
+        /Timeout 50ms exceeded/,
+      );
+    });
+  }
+});

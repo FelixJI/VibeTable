@@ -398,6 +398,9 @@ def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     assert "无结束字段" in by_id["22-timeline-date-move"]
     assert "mutation authority" in by_id["22-timeline-date-move"]
     assert "重开" in by_id["22-timeline-date-move"]
+    assert "同一 workspace UUID" in by_id["23-directory-replica-recovery"]
+    assert "database.opened" in by_id["23-directory-replica-recovery"]
+    assert "replica.status" in by_id["23-directory-replica-recovery"]
 
 
 def test_node_runner_inventory_matches_the_product_scenario_manifest() -> None:
@@ -460,7 +463,9 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
             "async function scenario22"
         )
     ]
-    timeline = source[source.index("async function scenario22") : source.index("const scenarios")]
+    timeline = source[
+        source.index("async function scenario22") : source.index("function hasExactWorkspaceWire")
+    ]
 
     assert 'getByTestId("workspace-create")' in workspace
     assert 'getByTestId("snapshot-create")' in workspace
@@ -538,6 +543,30 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert '"query.page"' in timeline
     assert '"table.updateCellRequested"' not in timeline
     assert "createV2Field(page, tableId" not in timeline
+
+
+def test_directory_replica_recovery_uses_one_public_observation_per_checkpoint() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    recovery = source[
+        source.index("function hasExactWorkspaceWire") : source.index("const scenarios")
+    ]
+
+    # Behavioral receipt and revision assertions run in the real scenario;
+    # this guard only rejects extra observations and authority bypasses.
+    assert recovery.count("await readDirectoryReplicaCheckpoint(") == 2
+    assert recovery.count('rawBridgeRequest(page, "query.page"') == 1
+    assert recovery.count('rawWorkspaceV2Request(page, "replica.status"') == 1
+    assert recovery.count("requestSidecarKill(") == 1
+    for forbidden in (
+        "replica.synchronize",
+        "replica.forceTakeover",
+        "workspace_bootstrap_capture",
+        "__vibetableE2EBridgeDiagnostics",
+        ".sqlite",
+        "page.waitForTimeout",
+        '"mutation.apply"',
+    ):
+        assert forbidden not in recovery
 
 
 def test_content_search_and_restore_scenarios_cover_m6_m7_m8_product_boundaries() -> None:
@@ -2419,7 +2448,8 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert '"history.read"' not in source
     assert '"history.query"' in source
     assert "rawWorkspaceV2Request(" in source
-    assert '"history.queryRequested"' not in source
+    assert 'rawBridgeRequest(\n    page,\n    "history.queryRequested"' in source
+    assert '"history.pageLoaded"' in source
     assert "externalRequests.length === 0" in source
     assert 'url.hostname === "app.vibetable.local"' in source
     assert '["127.0.0.1", "::1", "localhost"]' in source
@@ -2438,7 +2468,9 @@ def test_node_runner_waits_for_bridge_quiescence_instead_of_a_fixed_delay() -> N
             "async function acknowledgeExpectedBridgeFailure"
         )
     ]
-    completion_start = source.index("const implementation = scenarios[args.scenario]")
+    completion_start = source.index(
+        "result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page)"
+    )
     completion = source[
         completion_start : source.index("assertCleanRendererDiagnostics(recorder", completion_start)
     ]
@@ -2452,6 +2484,20 @@ def test_node_runner_waits_for_bridge_quiescence_instead_of_a_fixed_delay() -> N
     assert "await page.waitForTimeout(250)" not in completion
     assert "JSON.stringify(details)" in source
     assert "serialized.slice(0, 4_000)" in source
+
+
+def test_natural_aging_seed_closes_the_field_drawer_before_snapshot_navigation() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    seed = source[
+        source.index("async function seedNaturalRetentionAging") : source.index(
+            "async function resumeNaturalRetentionAging"
+        )
+    ]
+
+    assert seed.count('await createEmptyTable(page, "A1 ') == 2
+    assert seed.count("await closeFieldSettingsDrawer(page);") == 2
+    assert "await closeFieldSettingsDrawer(page);\n  const beforeOlder" in seed
+    assert "await closeFieldSettingsDrawer(page);\n  const beforeNewer" in seed
 
 
 def test_expected_bridge_rejection_is_acknowledged_only_after_the_scenario_asserts_it() -> None:
@@ -2537,6 +2583,29 @@ def test_atomic_import_fault_waits_for_transactional_barrier() -> None:
     assert "storageProof.counts?.outbox === 0" in source
     assert "handled_storage_proof_ids" in orchestrator
     assert "result.requestId !== requestId" in source
+    scenario = source[
+        source.index("async function scenario09") : source.index("async function scenario10")
+    ]
+    assert "beginImportFaultOutcomeCapture(page)" in scenario
+    assert "waitForCreatedTask()" in scenario
+    assert "openFaultWindow({ deadlineAt: faultDeadline })" in scenario
+    assert "waitForMutationBarrier(runtime)" in scenario
+    assert "requestSidecarKill(runtime" in scenario
+    assert "waitForFailedImportUi(page, faultDeadline)" in scenario
+    assert "importFaultCapture.settle({" in scenario
+    assert "await acknowledgeExpectedBridgeFailure(page, outcome.failure);" in scenario
+    assert scenario.index("beginImportFaultOutcomeCapture(page)") < scenario.index(
+        "confirmImportPreview(page)"
+    )
+    assert (
+        scenario.index("waitForMutationBarrier(runtime)")
+        < scenario.index("openFaultWindow({ deadlineAt: faultDeadline })")
+        < scenario.index("requestSidecarKill(runtime")
+    )
+    assert scenario.index("verifiedFault") < scenario.index("importFaultCapture.settle({")
+    assert scenario.index("waitForFailedImportUi(page, faultDeadline)") < scenario.index(
+        "importFaultCapture.settle({"
+    )
 
 
 def test_product_json_scenario_uses_keyboard_and_normalized_deep_comparisons() -> None:
@@ -3000,24 +3069,80 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("import_fault_outcome.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
         runner.NODE_RUNNER.with_name("packaged_runtime_probe.test.mjs"),
+        runner.NODE_RUNNER.with_name("packaged_rpc_probe.test.mjs"),
+        runner.NODE_RUNNER.with_name("preview_artifact_publication.test.mjs"),
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
+        runner.NODE_RUNNER.with_name("table_mutation_receipt_capture.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),
+        runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
+        runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
     ]
-    completed = subprocess.run(
-        [str(ensure_node(runner.ROOT)), "--test", *(str(path) for path in test_files)],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                str(ensure_node(runner.ROOT)),
+                "--test",
+                "--test-concurrency=1",
+                *(str(path) for path in test_files),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as error:
+        for label, output in (("stdout", error.stdout), ("stderr", error.stderr)):
+            text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
+            error.add_note(f"Node contract {label}:\n{text or '<no captured output>'}")
+        raise
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected_stdout", "expected_stderr"),
+    [
+        (
+            b"last test passed\xff",
+            b"pending Edge phase\xfe",
+            "last test passed\ufffd",
+            "pending Edge phase\ufffd",
+        ),
+        ("last test passed", "pending Edge phase", "last test passed", "pending Edge phase"),
+    ],
+)
+def test_node_contract_timeout_preserves_output_and_original_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: bytes | str,
+    stderr: bytes | str,
+    expected_stdout: str,
+    expected_stderr: str,
+) -> None:
+    failure = subprocess.TimeoutExpired(["locked-node", "--test"], 30, output=stdout, stderr=stderr)
+
+    def timeout(*args: object, **kwargs: object) -> None:
+        assert kwargs["timeout"] == 30
+        raise failure
+
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
+
+    assert caught.value is failure
+    rendered = str(caught.getrepr())
+    assert f"Node contract stdout:\n{expected_stdout}" in "\n".join(caught.value.__notes__)
+    assert f"Node contract stderr:\n{expected_stderr}" in "\n".join(caught.value.__notes__)
+    assert expected_stdout in rendered
+    assert expected_stderr in rendered
 
 
 def test_realtime_scenario_recovers_a_packaged_backend_with_a_fresh_safe_session() -> None:
@@ -3164,3 +3289,76 @@ def test_nonzero_node_exit_preserves_structured_scenario_failure_but_rejects_pas
     assert result["nodeExitCode"] == 7
     assert result["error"]["code"] == expected_code
     assert expected_message in result["error"]["message"]
+
+
+RECOVERY_SAMPLE_NAMES = (
+    "recovery.sidecar.killToReadableTable",
+    "recovery.backend.killToWritableSession",
+    "recovery.workspace.closeAfterBackendExit",
+    "recovery.workspace.reopenAfterBackendExit",
+)
+
+
+def _recovery_timing_result():
+    return {
+        "scenario": "10-sse-reconnect",
+        "status": "passed",
+        "lifecycle": {"status": "passed"},
+        "uiTimings": [
+            {"name": name, "durationMs": index * 100.5}
+            for index, name in enumerate(RECOVERY_SAMPLE_NAMES, start=1)
+        ],
+    }
+
+
+def test_recovery_timings_are_separate_and_require_clean_lifecycle() -> None:
+    result = _recovery_timing_result()
+    summary = runner.summarize_performance([result])
+    assert summary["byUiAction"] == []
+    assert summary["recovery"] == {
+        "status": "measured",
+        "clock": "node-performance-now",
+        "runs": [
+            {"durationsMs": dict(zip(RECOVERY_SAMPLE_NAMES, (100.5, 201, 301.5, 402), strict=True))}
+        ],
+        "unmeasuredRuns": 0,
+    }
+    result["lifecycle"]["status"] = "failed"
+    summary = runner.summarize_performance([result])
+    assert summary["recovery"]["status"] == "not-measured"
+    assert summary["recovery"]["runs"] == []
+    assert summary["recovery"]["unmeasuredRuns"] == 1
+
+
+@pytest.mark.parametrize(
+    "defect", ["scenario-failed", "missing", "duplicate", "unknown", "negative", "bool", "nan"]
+)
+def test_recovery_summary_rejects_partial_or_invalid_measurements(defect: str) -> None:
+    result = _recovery_timing_result()
+    if defect == "scenario-failed":
+        result["status"] = "failed"
+    elif defect == "missing":
+        result["uiTimings"].pop()
+    elif defect == "duplicate":
+        result["uiTimings"].append(result["uiTimings"][0])
+    elif defect == "unknown":
+        result["uiTimings"][0]["name"] = "recovery.unknown"
+    else:
+        result["uiTimings"][0]["durationMs"] = {"negative": -1, "bool": True, "nan": float("nan")}[
+            defect
+        ]
+    summary = runner.summarize_performance([result])
+    assert summary["recovery"]["status"] == "not-measured"
+    assert summary["recovery"]["runs"] == []
+    assert summary["recovery"]["unmeasuredRuns"] == 1
+
+
+def test_recovery_summary_does_not_claim_unscheduled_recovery() -> None:
+    result = _recovery_timing_result()
+    result["scenario"] = "07-attachment-history"
+    assert runner.summarize_performance([result])["recovery"] == {
+        "status": "not-measured",
+        "clock": "node-performance-now",
+        "runs": [],
+        "unmeasuredRuns": 0,
+    }

@@ -40,4 +40,11 @@
     <ProjectReference Include="..\..\src\VibeTable.Workspace\VibeTable.Workspace.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="TestData\Qualification\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>Qualification\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
 </Project>

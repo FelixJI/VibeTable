@@ -2461,3 +2461,4 @@ export interface DocumentWorkspaceChangedPayload {
 }
 export * from "./schemaV2";
 export * from "./fileDocumentQuery";
+export * from "./documentDiffV2";

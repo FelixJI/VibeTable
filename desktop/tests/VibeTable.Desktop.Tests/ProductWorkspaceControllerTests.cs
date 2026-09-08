@@ -255,29 +255,30 @@ public sealed class ProductWorkspaceControllerTests
     }
 
     [TestMethod]
-    public async Task SupersededGuardWaitSkipsOldRpcAndOpensOnlyReplacement()
+    public async Task SupersededDuringGuardSkipsOldRpcAndOpensOnlyReplacement()
     {
         using var fixture = new Fixture();
-        var guardEntered = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        using var releaseGuard = new ManualResetEventSlim();
+        Task? replacement = null;
+        int guardCalls = 0;
         fixture.GuardsResult = () =>
         {
-            guardEntered.TrySetResult();
-            releaseGuard.Wait();
+            guardCalls++;
+            if (guardCalls == 1)
+            {
+                fixture.Transition(new PluginProjectContext(
+                    "local:replacement-workspace", "replacement:2", 2));
+                replacement = fixture.Controller.SuperviseOpenAsync();
+            }
             return true;
         };
         fixture.Gateway.DatabaseOpenResults["local://workspace/test"] = OpenResult();
 
         Task first = fixture.Controller.SuperviseOpenAsync();
-        await guardEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        fixture.Transition(new PluginProjectContext(
-            "local:replacement-workspace", "replacement:2", 2));
-        Task second = fixture.Controller.SuperviseOpenAsync();
-        releaseGuard.Set();
+        await first;
 
-        await Task.WhenAll(first, second);
-
+        Assert.IsNotNull(replacement);
+        Assert.AreSame(first, replacement);
+        Assert.AreEqual(2, guardCalls);
         Assert.AreEqual(1, fixture.Gateway.OpenDatabaseCalls.Count);
         FakeWebReplySink.Reply opened = fixture.Reply.Replies.Single(
             reply => reply.Type == "database.opened");

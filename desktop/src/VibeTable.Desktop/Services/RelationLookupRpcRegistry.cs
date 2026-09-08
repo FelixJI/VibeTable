@@ -28,12 +28,6 @@ internal static class RelationLookupRpcRegistry
     private static readonly RelationLookupRpcEndpoint[] RegisteredEndpoints =
     [
         new(
-            "schema.describe",
-            payload => HasString(payload, "collection")
-                && HasNumber(payload, "requestGeneration")
-                && HasArray(payload, "accepts"),
-            (gateway, payload, token) => gateway.DescribeSchemaAsync(payload, token)),
-        new(
             "relation.searchTargets",
             payload => HasString(payload, "relationId"),
             (gateway, payload, token) => gateway.SearchRelationTargetsAsync(payload, token)),
@@ -53,16 +47,12 @@ internal static class RelationLookupRpcRegistry
             (gateway, payload, token) => gateway.UpdateSingleRelationAsync(payload, token)),
         new(
             "relation.previewDelta",
-            IsValidRelationDelta,
+            IsValidRelationPreview,
             (gateway, payload, token) => gateway.PreviewRelationDeltaAsync(payload, token)),
         new(
             "relation.applyDelta",
             IsValidRelationDelta,
             (gateway, payload, token) => gateway.ApplyRelationDeltaAsync(payload, token)),
-        new(
-            "lookup.list",
-            payload => HasString(payload, "collection"),
-            (gateway, payload, token) => gateway.ListLookupsAsync(payload, token)),
         new(
             "lookup.query",
             IsValidLookupQuery,
@@ -86,6 +76,9 @@ internal static class RelationLookupRpcRegistry
         => ByType.TryGetValue(type, out endpoint!);
 
     private static bool IsValidRelationDelta(JsonElement payload)
+        => IsValidRelationPreview(payload) && HasArray(payload, "updates");
+
+    private static bool IsValidRelationPreview(JsonElement payload)
         => HasStrings(
                 payload,
                 "relationId",
@@ -93,7 +86,6 @@ internal static class RelationLookupRpcRegistry
                 "expectedSchemaRevision",
                 "idempotencyKey")
             && HasArray(payload, "adds")
-            && HasArray(payload, "updates")
             && HasArray(payload, "removes");
 
     private static bool IsRelationChangeAction(JsonElement payload)

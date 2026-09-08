@@ -9,5 +9,16 @@
   {"name":"search-request-missing-query","model":"SearchRequest","payload":{"contractVersion":"1.0","logic":"and","filters":[],"sorts":[],"scope":"current","cursor":null,"limit":50}},
   {"name":"search-filter-raw-sql","model":"SearchFilter","payload":{"field":"rawSql","operator":"eq","value":"select 1"}},
   {"name":"search-status-invalid-state","model":"SearchStatus","payload":{"state":"silentFallback","generation":2,"checkpoint":null,"processed":0,"total":null,"errorCode":null}},
+  {"name":"formula-position-negative-line","model":"FormulaTextPosition","payload":{"line":-1,"character":0}},
+  {"name":"formula-range-missing-end","model":"FormulaTextRange","payload":{"start":{"line":0,"character":0}}},
+  {"name":"formula-range-unknown-property","model":"FormulaTextRange","payload":{"start":{"line":0,"character":0},"end":{"line":0,"character":4},"encoding":"utf-8"}},
+  {"name":"formula-token-invalid-kind","model":"FormulaAuthorToken","payload":{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"kind":"table","fieldId":"fld_quantity","relationFieldId":null,"targetFieldId":null}},
+  {"name":"formula-token-empty-field-id","model":"FormulaAuthorToken","payload":{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":4}},"kind":"field","fieldId":"","relationFieldId":null,"targetFieldId":null}},
+  {"name":"formula-document-missing-revision","model":"FormulaAuthorDocument","payload":{"displaySource":"{数量}","tokens":[]}},
+  {"name":"formula-document-zero-revision","model":"FormulaAuthorDocument","payload":{"displaySource":"{数量}","tokens":[],"documentRevision":0}},
+  {"name":"computed-old-pending-state","model":"ComputedCellEnvelope","payload":{"state":"pending","value":null,"definitionVersion":3,"sourceDataRevision":8,"dependencyWatermark":7,"diagnostic":null}},
+  {"name":"computed-old-error-state","model":"ComputedCellEnvelope","payload":{"state":"error","value":null,"definitionVersion":3,"sourceDataRevision":8,"dependencyWatermark":8,"diagnostic":"formula.syntax"}},
+  {"name":"computed-unknown-state","model":"ComputedCellEnvelope","payload":{"state":"blocked","value":null,"definitionVersion":3,"sourceDataRevision":8,"dependencyWatermark":8,"diagnostic":null}},
+  {"name":"computed-invalid-watermark-type","model":"ComputedCellEnvelope","payload":{"state":"updating","value":null,"definitionVersion":3,"sourceDataRevision":8,"dependencyWatermark":[],"diagnostic":null}},
   {"name":"computed-null-version","model":"ComputedCellEnvelope","payload":{"state":"ready","value":"42","definitionVersion":null,"sourceDataRevision":8,"dependencyWatermark":8,"diagnostic":null}}
 ]

@@ -1,4 +1,4 @@
-package app
+package productrpc
 
 import (
 	"context"
@@ -6,12 +6,11 @@ import (
 	"errors"
 
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/productcapabilities"
-	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/realtime"
 )
 
-func reconcileRegistration(source realtime.RevisionSource) productrpc.Registration {
-	return productrpc.Registration{
+func ReconcileRegistration(source realtime.RevisionSource) Registration {
+	return Registration{
 		Method: "events.reconcile", Scope: productcapabilities.WorkspaceScope,
 		ValidateParams: validateReconcileParams,
 		Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -23,15 +22,19 @@ func reconcileRegistration(source realtime.RevisionSource) productrpc.Registrati
 			if err == nil {
 				return result, nil
 			}
-			var realtimeError *realtime.Error
-			if !errors.As(err, &realtimeError) {
-				return nil, err
-			}
-			return nil, &productrpc.PublicError{
-				Code: realtimeError.Code, Message: realtimeError.Message,
-				Retryable: realtimeError.Retryable,
-			}
+			return nil, reconcileProductError(err)
 		},
+	}
+}
+
+func reconcileProductError(err error) error {
+	var realtimeError *realtime.Error
+	if !errors.As(err, &realtimeError) {
+		return err
+	}
+	return &PublicError{
+		Code: realtimeError.Code, Message: realtimeError.Message,
+		Retryable: realtimeError.Retryable,
 	}
 }
 

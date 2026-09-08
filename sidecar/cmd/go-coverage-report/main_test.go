@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -233,5 +234,60 @@ func TestReportEvidenceIncludesGroupIdentityAndNamedSummary(t *testing.T) {
 		"branch 75.00% (3/4), diff 100.00% (0/0)\n"
 	if summary := formatCoverageSummary(result); summary != expected {
 		t.Fatalf("coverage summary = %q, want %q", summary, expected)
+	}
+}
+
+func TestChangedLinesExcludesChangesAddedOnlyToAdvancedBase(t *testing.T) {
+	repositoryRoot := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", args...)
+		command.Dir = repositoryRoot
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repositoryRoot, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-b", "main")
+	git("config", "user.name", "Coverage test")
+	git("config", "user.email", "coverage@example.invalid")
+	write("existing.go", "package fixture\n\nfunc existing() int { return 1 }\n")
+	write("local.go", "package fixture\n\nfunc local() int { return 1 }\n")
+	git("add", "existing.go", "local.go")
+	git("commit", "-m", "initial")
+	originalBase := git("rev-parse", "HEAD")
+	git("switch", "-c", "feature")
+	write("feature.go", "package fixture\n\nfunc feature() int { return 1 }\n")
+	git("add", "feature.go")
+	git("commit", "-m", "feature")
+	git("switch", "-c", "synthetic", originalBase)
+	git("merge", "--no-ff", "feature", "-m", "PR checkout")
+	git("switch", "main")
+	write("existing.go", "package fixture\n\nfunc existing() int { return 2 }\n")
+	git("add", "existing.go")
+	git("commit", "-m", "unrelated main change")
+	git("switch", "synthetic")
+	write("feature.go", "package fixture\n\nfunc feature() int { return 3 }\n")
+	write("local.go", "package fixture\n\nfunc local() int { return 5 }\n")
+	write("untracked.go", "package fixture\n\nfunc untracked() int { return 4 }\n")
+	changed, base, err := changedLines(repositoryRoot, "main", []string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed["existing.go"]) != 0 {
+		t.Fatalf("advanced main was counted as PR changes: %v", changed)
+	}
+	if !changed["feature.go"][3] || !changed["local.go"][3] || !changed["untracked.go"][3] {
+		t.Fatalf("PR or untracked changes were omitted: %v", changed)
+	}
+	if base != originalBase {
+		t.Fatalf("resolved base = %q, want common ancestor %q", base, originalBase)
 	}
 }

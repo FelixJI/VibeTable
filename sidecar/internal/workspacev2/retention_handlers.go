@@ -538,9 +538,8 @@ func (source *workspaceRetentionInventory) Inventory(
 	if err != nil {
 		return retention.Inventory{}, err
 	}
-	recordByID := make(map[string]snapshot.Record, len(records))
+	recordByID := make(map[string]retention.Snapshot, len(records))
 	for _, record := range records {
-		recordByID[record.SnapshotID] = record
 		if _, tombstoned := tombstonedSnapshots[record.SnapshotID]; tombstoned {
 			continue
 		}
@@ -549,11 +548,12 @@ func (source *workspaceRetentionInventory) Inventory(
 			result.UnknownManifest = true
 			continue
 		}
-		node, exists := result.Nodes[root]
+		_, exists := result.Nodes[root]
 		if !exists {
 			result.CorruptIndex = true
 			continue
 		}
+		roots := []objectrepo.ObjectID{root}
 		for _, child := range record.Objects {
 			if child == root {
 				continue
@@ -562,7 +562,7 @@ func (source *workspaceRetentionInventory) Inventory(
 				result.CorruptIndex = true
 				continue
 			}
-			node.Children = appendUniqueObjectID(node.Children, child)
+			roots = appendUniqueObjectID(roots, child)
 		}
 		historyObjects, historyErr := snapshot.HistoryObjectIDs(
 			ctx,
@@ -586,15 +586,16 @@ func (source *workspaceRetentionInventory) Inventory(
 				result.CorruptIndex = true
 				continue
 			}
-			node.Children = appendUniqueObjectID(node.Children, child)
+			roots = appendUniqueObjectID(roots, child)
 		}
-		result.Nodes[root] = node
-		result.Snapshots = append(result.Snapshots, retention.Snapshot{
+		entry := retention.Snapshot{
 			SnapshotID: record.SnapshotID,
-			Root:       root,
+			Roots:      roots,
 			CreatedAt:  record.CreatedAt,
 			Pinned:     record.Pinned,
-		})
+		}
+		recordByID[record.SnapshotID] = entry
+		result.Snapshots = append(result.Snapshots, entry)
 	}
 	policy, _, err := source.runtime.state.retention(ctx)
 	if err != nil {
@@ -645,7 +646,7 @@ func activeRetentionPinRoots(
 
 func (source *workspaceRetentionInventory) pendingPlanRoots(
 	ctx context.Context,
-	records map[string]snapshot.Record,
+	records map[string]retention.Snapshot,
 	tombstonedSnapshots map[string]struct{},
 ) ([]objectrepo.ObjectID, error) {
 	now := source.now().UTC()
@@ -677,11 +678,12 @@ func (source *workspaceRetentionInventory) pendingPlanRoots(
 		if !found {
 			return nil, errors.New("retention.pending_plan_snapshot_missing")
 		}
-		root := record.ObjectMap["file-state-root"]
-		if root == "" {
+		if len(record.Roots) == 0 {
 			return nil, errors.New("retention.pending_plan_root_missing")
 		}
-		roots = appendUniqueObjectID(roots, root)
+		for _, root := range record.Roots {
+			roots = appendUniqueObjectID(roots, root)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

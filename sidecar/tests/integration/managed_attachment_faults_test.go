@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const (
@@ -47,7 +49,7 @@ type attachmentFaultFixture struct {
 	execution  schemaexecution.Table
 	titleField v2.FieldDefinition
 	fileField  v2.FieldDefinition
-	apply      func(string, mutation.Operation) (mutation.Receipt, error)
+	apply      func(context.Context, string, mutation.Operation) (mutation.Receipt, error)
 }
 
 func newAttachmentFaultFixture(
@@ -119,8 +121,12 @@ func newAttachmentFaultFixture(
 			}
 		}),
 	)
-	apply := func(key string, operation mutation.Operation) (mutation.Receipt, error) {
-		return kernel.Apply(context.Background(), mutation.Request{
+	apply := func(
+		ctx context.Context,
+		key string,
+		operation mutation.Operation,
+	) (mutation.Receipt, error) {
+		return kernel.Apply(ctx, mutation.Request{
 			ContractVersion: mutation.ContractVersion,
 			RequestID:       "request_" + key,
 			IdempotencyKey:  "idem_" + key,
@@ -139,7 +145,7 @@ func newAttachmentFaultFixture(
 func (fixture attachmentFaultFixture) insert(t *testing.T) {
 	t.Helper()
 	recordID := attachmentFaultRecordID
-	if _, err := fixture.apply("insert", mutation.Operation{
+	if _, err := fixture.apply(context.Background(), "insert", mutation.Operation{
 		Kind: mutation.OperationInsert, RecordID: &recordID,
 		Values: map[string]any{fixture.titleField.Identity.PhysicalName: "fault fixture"},
 	}); err != nil {
@@ -154,7 +160,7 @@ func (fixture attachmentFaultFixture) setAttachments(
 	removed []string,
 ) error {
 	t.Helper()
-	_, err := fixture.apply(key, mutation.Operation{
+	_, err := fixture.apply(context.Background(), key, mutation.Operation{
 		Kind:              mutation.OperationSetAttachments,
 		RecordID:          stringPointerForAttachmentFault(attachmentFaultRecordID),
 		FieldID:           fixture.fileField.Identity.FieldID,
@@ -336,6 +342,164 @@ func TestManagedAttachmentsCommittedDBCleanupFailureIsReportedAndRecoverable(t *
 	report, integrityErr = fixture.manager.Integrity(context.Background(), fixture.app)
 	if integrityErr != nil || !report.Valid {
 		t.Fatalf("cleanup recovery integrity=%#v err=%v", report, integrityErr)
+	}
+}
+
+func TestManagedAttachmentsCommittedDeleteCleanupFailureKeepsCoordinatorPending(t *testing.T) {
+	fixture := newAttachmentFaultFixture(
+		t,
+		queryTempDir(t),
+		attachments.WithFaultInjector(func(point string) error {
+			if point == "before_record_storage_cleanup" {
+				return errors.New("injected committed delete cleanup failure")
+			}
+			return nil
+		}),
+	)
+	defer resetApp(t, fixture.app)
+	fixture.insert(t)
+
+	ctx := context.Background()
+	if err := writecoordinator.EnsurePocketBaseReceiptTable(ctx, fixture.app); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := writecoordinator.OpenPersistent(
+		filepath.Join(queryTempDir(t), "coordination.db"),
+		"workspace-1", 1, "claim-1", 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	token, _ := coordinator.Current()
+	_, err = coordinator.Write(ctx, token, func(writeCtx context.Context, intent writecoordinator.WriteIntent) error {
+		bound, bindErr := writecoordinator.WithBusinessIntent(
+			writeCtx, intent, "mutation.apply", "coordinated-delete",
+		)
+		if bindErr != nil {
+			return bindErr
+		}
+		_, applyErr := fixture.apply(bound, "coordinated_delete_record", mutation.Operation{
+			Kind:     mutation.OperationDelete,
+			RecordID: stringPointerForAttachmentFault(attachmentFaultRecordID),
+		})
+		return applyErr
+	})
+	if !errors.Is(err, writecoordinator.ErrExternalCommitted) {
+		t.Errorf("committed cleanup error = %v", err)
+	}
+	committed, receiptErr := writecoordinator.HasPocketBaseReceipt(ctx, fixture.app, token, 1)
+	if receiptErr != nil || !committed {
+		t.Fatalf("PocketBase receipt = %v, %v", committed, receiptErr)
+	}
+	state := coordinator.RecoveryState()
+	if state.PendingMutationRevision != 1 || state.Counters.MutationRevision != 0 {
+		t.Errorf("coordinator state after committed cleanup error = %#v", state)
+	}
+	if _, nextErr := coordinator.Write(ctx, token, func(context.Context, writecoordinator.WriteIntent) error {
+		return errors.New("next write callback must not run")
+	}); !errors.Is(nextErr, writecoordinator.ErrRecoveryRequired) {
+		t.Fatalf("next write reused committed revision: %v", nextErr)
+	}
+}
+
+func TestManagedAttachmentsDeleteThenRecreateSameRecordKeepsNewFile(t *testing.T) {
+	cleanupStarted := make(chan struct{})
+	allowCleanup := make(chan struct{})
+	cleanupReleased := false
+	t.Cleanup(func() {
+		if !cleanupReleased {
+			close(allowCleanup)
+		}
+	})
+	fixture := newAttachmentFaultFixture(
+		t,
+		queryTempDir(t),
+		attachments.WithFaultInjector(func(point string) error {
+			if point == "before_record_storage_cleanup" {
+				close(cleanupStarted)
+				<-allowCleanup
+			}
+			return nil
+		}),
+	)
+	defer resetApp(t, fixture.app)
+	fixture.insert(t)
+	if err := fixture.manager.Stage("delete_old", "old.txt", []byte("old content")); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.setAttachments(t, "delete_old", []string{"delete_old"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fixture.manager.Drop("delete_old")
+	deleteHookCalled := false
+	fixture.app.OnRecordAfterDeleteSuccess().Bind(&hook.Handler[*core.RecordEvent]{
+		Id: "managed-delete-record-hook",
+		Func: func(event *core.RecordEvent) error {
+			if event.Record.Id == attachmentFaultRecordID {
+				deleteHookCalled = true
+			}
+			return event.Next()
+		},
+	})
+	deleteResult := make(chan error, 1)
+	go func() {
+		_, err := fixture.apply(context.Background(), "delete_for_recreate", mutation.Operation{
+			Kind:     mutation.OperationDelete,
+			RecordID: stringPointerForAttachmentFault(attachmentFaultRecordID),
+		})
+		deleteResult <- err
+	}()
+	select {
+	case <-cleanupStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("committed attachment deletion did not enter the storage cleanup seam")
+	}
+	if _, err := fixture.app.FindRecordById(
+		fixture.definition.PhysicalName,
+		attachmentFaultRecordID,
+	); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("record lookup before storage cleanup returned %v, want not found", err)
+	}
+	select {
+	case err := <-deleteResult:
+		t.Fatalf("delete returned before committed storage cleanup was released: %v", err)
+	default:
+	}
+	close(allowCleanup)
+	cleanupReleased = true
+	select {
+	case err := <-deleteResult:
+		if err != nil {
+			t.Fatalf("delete attachment record: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("attachment deletion did not return after storage cleanup completed")
+	}
+	fixture.app.OnRecordAfterDeleteSuccess().Unbind("managed-delete-record-hook")
+	if !deleteHookCalled {
+		t.Fatal("managed attachment deletion skipped PocketBase record hooks")
+	}
+	if _, err := fixture.apply(context.Background(), "recreate", mutation.Operation{
+		Kind:     mutation.OperationInsert,
+		RecordID: stringPointerForAttachmentFault(attachmentFaultRecordID),
+		Values: map[string]any{
+			fixture.titleField.Identity.PhysicalName: "recreated fixture",
+		},
+	}); err != nil {
+		t.Fatalf("recreate attachment record: %v", err)
+	}
+	if err := fixture.manager.Stage("recreate_new", "new.txt", []byte("new content")); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.setAttachments(t, "recreate_new", []string{"recreate_new"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fixture.manager.Drop("recreate_new")
+
+	report, err := fixture.manager.Integrity(context.Background(), fixture.app)
+	if err != nil || !report.Valid {
+		t.Fatalf("recreated attachment integrity=%#v err=%v", report, err)
 	}
 }
 

@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "capturedDate": "2026-09-05",
+  "tools": {
+    "clippitCli": "0.9.0",
+    "clippitOpenXmlSdk": "3.5.1",
+    "clippitLibraryCandidate": "3.9.0",
+    "microsoftWord": "16.0",
+    "microsoftExcel": "16.0",
+    "wpsOffice": "12.1.0.28488"
+  },
+  "scenarios": [
+    {
+      "id": "clippit-cjk-single-character",
+      "engine": "Clippit CLI word compare",
+      "inputs": ["docx/cjk-before.docx", "docx/cjk-after.docx"],
+      "settings": "author=VibeTable Qualification; dateTime=2026-09-05T00:00:00Z; caseInsensitive=false",
+      "observations": {
+        "revisions": 2,
+        "deletedText": "合同状态为甲。",
+        "insertedText": "合同状态为乙。",
+        "microsoft365SchemaValid": true
+      },
+      "evidence": "evidence/clippit-cjk-compared.docx"
+    },
+    {
+      "id": "clippit-format-only",
+      "engine": "Clippit CLI word compare",
+      "inputs": ["docx/format-before.docx", "docx/format-after.docx"],
+      "settings": "author=VibeTable Qualification; dateTime=2026-09-05T00:00:00Z; caseInsensitive=false",
+      "observations": {
+        "revisions": 0,
+        "microsoft365SchemaValid": true
+      },
+      "evidence": "evidence/clippit-format-compared.docx"
+    },
+    {
+      "id": "clippit-accept-existing-revisions",
+      "engine": "Clippit CLI word accept-revisions",
+      "inputs": ["docx/existing-revisions.docx"],
+      "observations": {
+        "inputRevisionElements": 2,
+        "outputRevisionElements": 0,
+        "microsoft365SchemaValid": true
+      },
+      "evidence": "evidence/clippit-existing-revisions-accepted.docx"
+    },
+    {
+      "id": "clippit-comprehensive",
+      "engine": "Clippit CLI word compare",
+      "inputs": ["docx/content-before.docx", "docx/content-after.docx"],
+      "settings": "author=VibeTable Qualification; dateTime=2026-09-05T00:00:00Z; caseInsensitive=false",
+      "observations": {
+        "revisions": 15,
+        "microsoft365SchemaValid": true
+      }
+    },
+    {
+      "id": "word-native-comprehensive",
+      "engine": "Word.Application.CompareDocuments",
+      "inputs": ["docx/content-before.docx", "docx/content-after.docx"],
+      "settings": "Destination=New; Granularity=WordLevel; all Compare* flags=true; documents opened ReadOnly=true",
+      "observations": {
+        "revisions": 14,
+        "sourcesTimestampUnchanged": true,
+        "microsoft365SchemaValid": true
+      }
+    },
+    {
+      "id": "word-native-format-only",
+      "engine": "Word.Application.CompareDocuments",
+      "inputs": ["docx/format-before.docx", "docx/format-after.docx"],
+      "settings": "Destination=New; Granularity=WordLevel; CompareFormatting=true; documents opened ReadOnly=true",
+      "observations": {
+        "revisions": 2,
+        "sourcesTimestampUnchanged": true,
+        "microsoft365SchemaValid": true
+      }
+    },
+    {
+      "id": "wps-viewer-probe",
+      "engine": "WPS Writer executable",
+      "inputs": ["derived Clippit comprehensive result"],
+      "settings": "/n; hidden qualification session",
+      "observations": {
+        "installed": true,
+        "launcherDelegated": true,
+        "documentTitleObserved": false,
+        "derivedArtifactTimestampUnchanged": true,
+        "result": "inconclusive"
+      }
+    },
+    {
+      "id": "wps-native-provider-probe",
+      "engine": "COM registration probe",
+      "inputs": [],
+      "settings": "KWPS.Application; WPS.Application; Kingsoft.WPS.Application",
+      "observations": {
+        "registeredProgIds": 0,
+        "result": "not-qualified"
+      }
+    }
+  ]
+}

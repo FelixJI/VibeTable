@@ -1,18 +1,22 @@
 package workspacev2
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
+	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 )
 
 func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testing.T) {
@@ -60,6 +64,11 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	repositoryBefore := snapshotRepositoryFiles(t, runtime.paths.objects)
+	historicalObjectBefore := readRepositoryObject(t, runtime, first.Revision.ObjectID)
+	effectiveObjectBefore := readRepositoryObject(t, runtime, second.Revision.ObjectID)
+	effectiveFile := filepath.Join(root, "files", "plans", "q3.txt")
+	effectiveFileBefore := snapshotSourceFile(t, effectiveFile)
 
 	destination := filepath.Join(t.TempDir(), "diff-session")
 	if err := os.Mkdir(destination, 0o700); err != nil {
@@ -133,7 +142,9 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 	projection := result.(materializeDiffPairResult)
 	if projection.DocumentID != documentID ||
 		projection.HistoricalRevisionID != first.Revision.RevisionID ||
-		projection.EffectiveRevisionID != second.Revision.RevisionID {
+		projection.HistoricalContentHash != first.Revision.ContentHash ||
+		projection.EffectiveRevisionID != second.Revision.RevisionID ||
+		projection.EffectiveContentHash != second.Revision.ContentHash {
 		t.Fatalf("result = %#v", projection)
 	}
 	for name, expected := range map[string]string{
@@ -149,6 +160,42 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("entries = %#v, %v", entries, err)
 	}
+	assertParams := json.RawMessage(`{"documentId":"` + documentID +
+		`","historicalRevisionId":"` + first.Revision.RevisionID +
+		`","expectedHistoricalContentHash":"` + first.Revision.ContentHash +
+		`","expectedEffectiveRevisionId":"` + second.Revision.RevisionID +
+		`","expectedEffectiveContentHash":"` + second.Revision.ContentHash + `"}`)
+	assertion, err := runtime.assertEffectiveRevision(
+		context.Background(), wire, assertParams,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRepositoryFilesUnchanged(t, runtime.paths.objects, repositoryBefore)
+	if actual := readRepositoryObject(t, runtime, first.Revision.ObjectID); !bytes.Equal(actual, historicalObjectBefore) {
+		t.Fatalf("historical repository object changed: %q", actual)
+	}
+	if actual := readRepositoryObject(t, runtime, second.Revision.ObjectID); !bytes.Equal(actual, effectiveObjectBefore) {
+		t.Fatalf("effective repository object changed: %q", actual)
+	}
+	assertSourceFileUnchanged(t, effectiveFile, effectiveFileBefore)
+	if actual := assertion.(map[string]any); actual["documentId"] != documentID ||
+		actual["historicalRevisionId"] != first.Revision.RevisionID ||
+		actual["historicalContentHash"] != first.Revision.ContentHash ||
+		actual["effectiveRevisionId"] != second.Revision.RevisionID ||
+		actual["effectiveContentHash"] != second.Revision.ContentHash ||
+		actual["stable"] != true || len(actual) != 6 {
+		t.Fatalf("assertion = %#v", actual)
+	}
+	invalidHashParams := json.RawMessage(`{"documentId":"` + documentID +
+		`","historicalRevisionId":"` + first.Revision.RevisionID +
+		`","expectedHistoricalContentHash":"sha256:not-a-valid-hash","expectedEffectiveRevisionId":"` + second.Revision.RevisionID +
+		`","expectedEffectiveContentHash":"` + second.Revision.ContentHash + `"}`)
+	if _, err := runtime.assertEffectiveRevision(
+		context.Background(), wire, invalidHashParams,
+	); err == nil || err.Error() != "file_history.request_invalid" {
+		t.Fatalf("invalid hash error = %v", err)
+	}
 
 	third, err := runtime.history.Save(context.Background(), filehistory.SaveRequest{
 		Token: token, DocumentID: documentID,
@@ -159,8 +206,6 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 	if err != nil || third.Revision.RevisionID == "" {
 		t.Fatal(err)
 	}
-	assertParams := json.RawMessage(`{"documentId":"` + documentID +
-		`","expectedEffectiveRevisionId":"` + second.Revision.RevisionID + `"}`)
 	if _, err := runtime.assertEffectiveRevision(
 		context.Background(), wire, assertParams,
 	); !errors.Is(err, filehistory.ErrEffectiveRevisionStale) {
@@ -174,4 +219,90 @@ func TestMaterializeDiffPairWritesOnlyFixedFilesAndPostCASDetectsStale(t *testin
 		publicResponse.Error.Code != "filehistory.effective_revision_stale" {
 		t.Fatalf("public post CAS error = %#v", publicResponse.Error)
 	}
+}
+
+type sourceFileSnapshot struct {
+	content []byte
+	modTime time.Time
+}
+
+func snapshotRepositoryFiles(t *testing.T, root string) map[string]sourceFileSnapshot {
+	t.Helper()
+	files := map[string]sourceFileSnapshot{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("repository source contains a symlink")
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files[relative] = snapshotSourceFile(t, path)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func assertRepositoryFilesUnchanged(
+	t *testing.T,
+	root string,
+	before map[string]sourceFileSnapshot,
+) {
+	t.Helper()
+	after := snapshotRepositoryFiles(t, root)
+	if len(after) != len(before) {
+		t.Fatalf("repository file count changed: before=%d after=%d", len(before), len(after))
+	}
+	for path, expected := range before {
+		actual, ok := after[path]
+		if !ok || !bytes.Equal(actual.content, expected.content) || !actual.modTime.Equal(expected.modTime) {
+			t.Fatalf("repository source changed: %s", path)
+		}
+	}
+}
+
+func snapshotSourceFile(t *testing.T, path string) sourceFileSnapshot {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sourceFileSnapshot{content: content, modTime: info.ModTime()}
+}
+
+func assertSourceFileUnchanged(t *testing.T, path string, before sourceFileSnapshot) {
+	t.Helper()
+	after := snapshotSourceFile(t, path)
+	if !bytes.Equal(after.content, before.content) || !after.modTime.Equal(before.modTime) {
+		t.Fatalf("source file changed: %s", path)
+	}
+}
+
+func readRepositoryObject(t *testing.T, runtime *Runtime, id objectrepo.ObjectID) []byte {
+	t.Helper()
+	reader, err := runtime.repository.Open(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatal(errors.Join(readErr, closeErr))
+	}
+	return content
 }

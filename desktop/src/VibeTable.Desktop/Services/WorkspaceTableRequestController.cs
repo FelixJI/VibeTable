@@ -17,6 +17,7 @@ public sealed class WorkspaceTableRequestController
         TimeSpan.FromMilliseconds(25);
 
     private readonly TableWorkspaceService _workspace;
+    private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
     private readonly IDatabasePicker _picker;
     private readonly IWebReplySink _reply;
     private readonly Func<IProductDataRpcGateway?> _productGateway;
@@ -39,7 +40,8 @@ public sealed class WorkspaceTableRequestController
         TimeSpan? schemaLifecycleTimeout = null,
         Func<CancellationToken>? sessionToken = null,
         TimeProvider? timeProvider = null,
-        PluginProjectContextBindingRegistry? pluginBindings = null)
+        PluginProjectContextBindingRegistry? pluginBindings = null,
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
         : this(
             workspace,
             picker,
@@ -51,7 +53,8 @@ public sealed class WorkspaceTableRequestController
             schemaLifecycleTimeout,
             sessionToken,
             timeProvider,
-            pluginBindings)
+            pluginBindings,
+            sessionEnvelopeFilter)
     {
     }
 
@@ -65,7 +68,8 @@ public sealed class WorkspaceTableRequestController
         TimeSpan? schemaLifecycleTimeout = null,
         Func<CancellationToken>? sessionToken = null,
         TimeProvider? timeProvider = null,
-        PluginProjectContextBindingRegistry? pluginBindings = null)
+        PluginProjectContextBindingRegistry? pluginBindings = null,
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
         : this(
             workspace,
             picker,
@@ -77,7 +81,8 @@ public sealed class WorkspaceTableRequestController
             schemaLifecycleTimeout,
             sessionToken,
             timeProvider,
-            pluginBindings)
+            pluginBindings,
+            sessionEnvelopeFilter)
     {
         ArgumentNullException.ThrowIfNull(noDatabaseOpenRoute);
     }
@@ -93,9 +98,11 @@ public sealed class WorkspaceTableRequestController
         TimeSpan? schemaLifecycleTimeout,
         Func<CancellationToken>? sessionToken,
         TimeProvider? timeProvider,
-        PluginProjectContextBindingRegistry? pluginBindings)
+        PluginProjectContextBindingRegistry? pluginBindings,
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _sessionEnvelopeFilter = sessionEnvelopeFilter;
         _picker = picker ?? throw new ArgumentNullException(nameof(picker));
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _terminals = new DatabaseOpenTerminalPublisher(
@@ -251,13 +258,28 @@ public sealed class WorkspaceTableRequestController
                 "table.selected requires a non-empty 'table' payload field.");
             return;
         }
-        CancellationToken sessionToken = _sessionToken();
+        WorkspaceRequestEpochLease? epochLease = null;
+        if (_sessionEnvelopeFilter is not null
+            && !_sessionEnvelopeFilter.TryCapture(request.Scope, out epochLease))
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "Table selection belongs to a stale or invalid workspace session.",
+                "BAD_WORKSPACE_SCOPE");
+            return;
+        }
+        using var requestLease = epochLease;
+        CancellationToken windowToken = _sessionToken();
+        using var linkedCancellation = epochLease is null ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(windowToken, epochLease.CancellationToken);
+        CancellationToken sessionToken = linkedCancellation?.Token ?? windowToken;
         try
         {
             await _workspace.SelectTableWithSchemaAsync(table, sessionToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception) when (sessionToken.IsCancellationRequested)
+        catch (Exception) when (sessionToken.IsCancellationRequested
+            || epochLease?.CancellationToken.IsCancellationRequested == true)
         {
             return;
         }

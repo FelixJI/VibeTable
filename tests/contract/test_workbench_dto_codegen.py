@@ -50,6 +50,10 @@ def test_generated_dtos_are_current_and_schema_subset_is_closed() -> None:
         "SearchRequest",
         "SearchHit",
         "SearchStatus",
+        "FormulaTextPosition",
+        "FormulaTextRange",
+        "FormulaAuthorToken",
+        "FormulaAuthorDocument",
         "ComputedCellEnvelope",
         "SchemaAuditEvent",
     }
@@ -68,6 +72,23 @@ def test_shared_positive_fixtures_match_generated_closed_models(
     assert parsed.model_dump(mode="json", by_alias=True) == payload
 
 
+def test_formula_author_fixture_uses_zero_based_utf16_ranges() -> None:
+    document = json.loads((FIXTURES / "positive.json").read_text(encoding="utf-8"))[
+        "FormulaAuthorDocument"
+    ]
+    source = document["displaySource"]
+    encoded = source.encode("utf-16-le")
+    fragments: list[str] = []
+
+    for token in document["tokens"]:
+        start = token["range"]["start"]
+        end = token["range"]["end"]
+        assert start["line"] == end["line"] == 0
+        fragments.append(encoded[start["character"] * 2 : end["character"] * 2].decode("utf-16-le"))
+
+    assert fragments == ["{数量}", "{客户😀}", "{明细}.{金额}"]
+
+
 @pytest.mark.parametrize(
     "case",
     json.loads((FIXTURES / "negative.json").read_text(encoding="utf-8")),
@@ -81,6 +102,25 @@ def test_shared_negative_fixtures_fail_closed(case: dict[str, object]) -> None:
     model = getattr(generated_workbench, model_name)
     with pytest.raises(ValidationError):
         model.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["ready", "updating", "failed", "cancelled", "invalid", "too_expensive"],
+)
+def test_computed_cell_envelope_accepts_only_public_states(state: str) -> None:
+    parsed = generated_workbench.ComputedCellEnvelope.model_validate(
+        {
+            "state": state,
+            "value": None,
+            "definitionVersion": 1,
+            "sourceDataRevision": 0,
+            "dependencyWatermark": 0,
+            "diagnostic": None,
+        }
+    )
+
+    assert parsed.state == state
 
 
 def test_generator_rejects_open_or_partially_optional_models() -> None:

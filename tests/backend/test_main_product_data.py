@@ -32,7 +32,6 @@ class FakeProductService:
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("schema.list", {}),
         (
             "events.reconcile",
             {
@@ -41,6 +40,21 @@ class FakeProductService:
                 "dataRevision": "data_0001",
             },
         ),
+        ("schema.list", {}),
+        ("query.page", {"tableId": "orders", "query": {}}),
+        ("query.page", {"extra": True}),
+        ("query.cursorOpen", {"tableId": "orders", "query": {}}),
+        ("query.cursorFetch", {"cursor": "opaque"}),
+        ("query.cursorOpen", {"extra": True}),
+        ("query.cursorFetch", {"extra": True}),
+        ("query.view", {"tableId": "orders", "view": {}}),
+        ("query.view", {"extra": True}),
+        ("lookup.valuePage", {"extra": True}),
+        ("relation.previewDelta", {"extra": True}),
+        ("lookup.query", {"extra": True}),
+        ("schema.list", {"extra": True}),
+        ("schema.getTable", {"tableId": "orders"}),
+        ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
     ],
 )
 async def test_go_owned_product_methods_have_no_python_registration_or_fallback(
@@ -108,13 +122,47 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
-        "schema.list",
+        "relation.searchTargets",
+        "query.selectionOpen",
+        "lookup.list",
+        "lookup.query",
+        "lookup.valuePage",
+        "query.cursorFetch",
+        "query.cursorOpen",
+        "query.page",
+        "query.readRows",
+        "query.view",
+        "relation.previewDelta",
+        "schema.describe",
+        "file.list",
+        "history.read",
         "events.reconcile",
+        "schema.getTable",
+        "schema.list",
     }
     assert set(PYTHON_PRODUCT_RPC_REGISTRY) == set(dispatcher.registered_methods)
     assert set(dispatcher.registered_methods) >= WORKSPACE_CATALOG_METHODS
     assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
-        WORKSPACE_CATALOG_METHODS | {"events.reconcile", "schema.list"}
+        WORKSPACE_CATALOG_METHODS
+        | {
+            "events.reconcile",
+            "file.list",
+            "history.read",
+            "lookup.list",
+            "lookup.query",
+            "lookup.valuePage",
+            "query.cursorFetch",
+            "query.cursorOpen",
+            "query.page",
+            "query.readRows",
+            "query.selectionOpen",
+            "query.view",
+            "relation.previewDelta",
+            "relation.searchTargets",
+            "schema.describe",
+            "schema.getTable",
+            "schema.list",
+        }
     )
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods
@@ -126,15 +174,18 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
     dispatcher = RpcDispatcher()
     service = FakeProductService()
     _register_pocketbase_product_methods(dispatcher, service)
-
     response = await dispatcher.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": "schema.getTable", "params": {"tableId": "orders"}}
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "query.validateSnapshot",
+            "params": {"snapshot": {}},
+        }
     )
-
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "schema.getTable"
+    assert method == "query.validateSnapshot"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -142,34 +193,20 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("schema.getTable", {"tableId": "orders", "extra": True}),
-        ("schema.getTable", {}),
-        ("schema.getTable", {"tableId": 7}),
-        (
-            "schema.describe",
-            {
-                "collection": "orders",
-                "tableId": "orders",
-                "requestGeneration": 1,
-                "accepts": [
-                    "vibetable.relation-capabilities.v1",
-                    "vibetable.lookup-query.v1",
-                ],
-            },
-        ),
+        ("query.validateSnapshot", {"snapshot": {}, "extra": True}),
+        ("query.validateSnapshot", {}),
+        ("query.validateSnapshot", {"snapshot": 7}),
+        ("query.validateSnapshot", {"snapshot": {}, "collection": "orders"}),
     ],
 )
 async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
-    method: str,
-    params: dict[str, object],
+    method: str, params: dict[str, object]
 ) -> None:
     dispatcher = RpcDispatcher()
     _register_pocketbase_product_methods(dispatcher, FakeProductService())
-
     response = await dispatcher.dispatch(
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
     )
-
     assert response is not None
     assert response["error"]["code"] == CODE_INVALID_PARAMS
 
@@ -192,18 +229,15 @@ async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
             "mutation.digest_conflict",
         ),
         (
-            PocketBaseTransportError(
-                "sidecar unavailable",
-                code="sidecar.unavailable",
-            ),
+            PocketBaseTransportError("sidecar unavailable", code="sidecar.unavailable"),
             "sidecar.unavailable",
         ),
     ],
 )
 async def test_product_rpc_preserves_sanitized_structured_errors(
-    failure: Exception,
-    expected_code: str,
+    failure: Exception, expected_code: str
 ) -> None:
+
     class ErrorService(FakeProductService):
         async def invoke(self, method: str, params: ProductParams) -> dict[str, object]:
             del method, params
@@ -211,16 +245,14 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
 
     dispatcher = RpcDispatcher()
     _register_pocketbase_product_methods(dispatcher, ErrorService())
-
     response = await dispatcher.dispatch(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "schema.getTable",
-            "params": {"tableId": "orders"},
+            "method": "query.validateSnapshot",
+            "params": {"snapshot": {}},
         }
     )
-
     assert response is not None
     assert response["error"]["code"] == CODE_PRODUCT_DATA
     assert response["error"]["data"]["code"] == expected_code

@@ -11,13 +11,11 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
-	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
 )
 
 func TestReconcileProductHTTPMatchesAuthoritativeRealtimeRoute(t *testing.T) {
 	pb := schemaProductStore(t)
-	catalog := schemaapi.New(pb)
 	lifecycle, err := schemacore.NewTableLifecycle(pb)
 	if err != nil {
 		t.Fatal(err)
@@ -29,17 +27,17 @@ func TestReconcileProductHTTPMatchesAuthoritativeRealtimeRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux := schemaProductMux(t, catalog)
+	mux := schemaProductMux(t, pb)
 	params := `{"tableId":"` + receipt.TableID + `","schemaRevision":"schema_0001","dataRevision":"data_0000"}`
-	product := reconcileProductRequest(t, mux, params)
+	product := schemaProductRequestForMethod(
+		t, mux, context.Background(), "events.reconcile", params, schemaListWire,
+	)
 	if product.Error != nil {
 		t.Fatalf("Product reconcile error = %+v", product.Error)
 	}
 	rest := httptest.NewRecorder()
 	mux.ServeHTTP(rest, httptest.NewRequest(
-		http.MethodPost,
-		"/api/vibetable/v1/events/reconcile",
-		bytes.NewBufferString(params),
+		http.MethodPost, "/api/vibetable/v1/events/reconcile", bytes.NewBufferString(params),
 	))
 	if rest.Code != http.StatusOK {
 		t.Fatalf("realtime REST = %d %s", rest.Code, rest.Body)
@@ -58,33 +56,34 @@ func TestReconcileProductHTTPMatchesAuthoritativeRealtimeRoute(t *testing.T) {
 
 func TestReconcileProductHTTPRejectsClosedParamsAndPreservesSourceFailure(t *testing.T) {
 	pb := schemaProductStore(t)
-	mux := schemaProductMux(t, schemaapi.New(pb))
+	mux := schemaProductMux(t, pb)
 	for _, params := range []string{
 		`{}`,
 		`{"tableId":"orders","schemaRevision":"schema_0001","dataRevision":"data_0000","extra":true}`,
 		`{"tableId":"orders","schemaRevision":1,"dataRevision":"data_0000"}`,
 	} {
 		t.Run(params, func(t *testing.T) {
-			response := reconcileProductRequest(t, mux, params)
+			response := schemaProductRequestForMethod(
+				t, mux, context.Background(), "events.reconcile", params, schemaListWire,
+			)
 			if response.Error == nil || response.Error.Code != productrpc.CodeInvalidParams {
 				t.Fatalf("closed params response = %+v", response)
 			}
 		})
 	}
 	params := `{"tableId":"missing","schemaRevision":"schema_0001","dataRevision":"data_0000"}`
-	product := reconcileProductRequest(t, mux, params)
+	product := schemaProductRequestForMethod(
+		t, mux, context.Background(), "events.reconcile", params, schemaListWire,
+	)
 	if product.Error == nil || product.Error.Code != productrpc.CodeProductData {
 		t.Fatalf("source failure Product response = %+v", product)
 	}
 	rest := httptest.NewRecorder()
 	mux.ServeHTTP(rest, httptest.NewRequest(
-		http.MethodPost,
-		"/api/vibetable/v1/events/reconcile",
-		bytes.NewBufferString(params),
+		http.MethodPost, "/api/vibetable/v1/events/reconcile", bytes.NewBufferString(params),
 	))
 	var restError map[string]any
-	if rest.Code != http.StatusInternalServerError ||
-		json.Unmarshal(rest.Body.Bytes(), &restError) != nil {
+	if rest.Code != http.StatusInternalServerError || json.Unmarshal(rest.Body.Bytes(), &restError) != nil {
 		t.Fatalf("source failure REST = %d %s", rest.Code, rest.Body)
 	}
 	for _, key := range []string{"code", "message", "retryable"} {
@@ -92,28 +91,4 @@ func TestReconcileProductHTTPRejectsClosedParamsAndPreservesSourceFailure(t *tes
 			t.Fatalf("source failure %s: Product=%v REST=%v", key, product.Error.Data, restError)
 		}
 	}
-}
-
-func reconcileProductRequest(
-	t *testing.T,
-	mux http.Handler,
-	params string,
-) productrpc.ResponseEnvelope {
-	t.Helper()
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, productRPCPath, bytes.NewBufferString(
-		`{"jsonrpc":"2.0","id":"reconcile","method":"events.reconcile","wire":`+
-			schemaListWire+`,"params":`+params+`}`,
-	))
-	request.Header.Set("Content-Type", "application/json")
-	mux.ServeHTTP(response, request)
-	var envelope productrpc.ResponseEnvelope
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if response.Code != http.StatusOK || string(envelope.ID) != `"reconcile"` ||
-		string(envelope.Wire) != schemaListWire {
-		t.Fatalf("Product envelope changed: %d %s", response.Code, response.Body)
-	}
-	return envelope
 }

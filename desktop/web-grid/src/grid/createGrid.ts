@@ -461,11 +461,14 @@ function formulaValueFormatter(cell: { getValue(): unknown }): HTMLElement {
   const root = document.createElement("span");
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const envelope = raw as Record<string, unknown>;
-    if (envelope.state === "updating" || envelope.state === "error") {
+    if (envelope.state === "ready") {
+      root.textContent = envelope.value == null ? "—" : String(envelope.value);
+      return root;
+    }
+    const label = formulaStateLabel(envelope.state);
+    if (label) {
       root.className = `vt-lookup-state vt-lookup-state--${envelope.state}`;
-      root.textContent = envelope.state === "updating"
-        ? t("grid.formula.updating")
-        : t("grid.formula.failed");
+      root.textContent = t(label);
       const diagnostic = envelope.diagnostic;
       if (diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)) {
         const message = (diagnostic as Record<string, unknown>).message;
@@ -476,6 +479,17 @@ function formulaValueFormatter(cell: { getValue(): unknown }): HTMLElement {
   }
   root.textContent = raw == null ? "—" : String(raw);
   return root;
+}
+
+function formulaStateLabel(state: unknown): string | null {
+  switch (state) {
+    case "updating": return "grid.formula.updating";
+    case "failed": return "grid.formula.failed";
+    case "cancelled": return "grid.formula.cancelled";
+    case "invalid": return "grid.formula.invalid";
+    case "too_expensive": return "grid.formula.too_expensive";
+    default: return null;
+  }
 }
 
 /**

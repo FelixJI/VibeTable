@@ -163,6 +163,7 @@ def _renderer_data_type(value: str) -> str:
         "bool": "boolean",
         "date": "date",
         "dateTime": "datetime",
+        "datetime": "datetime",
         "autoDate": "datetime",
         "autodate": "datetime",
         "time": "time",

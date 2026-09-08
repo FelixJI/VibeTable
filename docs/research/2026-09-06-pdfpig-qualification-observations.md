@@ -1,0 +1,149 @@
+# PdfPig 候选资格发现记录（A6，2026-09-06）
+
+## 范围与状态
+
+这是基于 `main@770fb96e` 的隔离原型观察，不是产品资格报告。未修改产品项目、锁文件、workflow 或
+发布资产，未采纳适配器。[ADR 0014](../adr/0014-pdf-extraction-adapter-qualification.md)记录待接受的决策。
+
+原型固定 PdfPig 0.1.16、SharpZipLib 1.4.2，使用 .NET 10；独立 Poppler 仅作为本地 oracle。
+临时源码、生成样本和原始结果尚未纳入版本化 CI；以下实测不能替代采用前的可重放 corpus 与正式门禁。
+
+## 主要观察
+
+| 边界 | 原始或反面证据 | 隔离探针结果及限制 |
+| --- | --- | --- |
+| 普通文本、Flate、Tj/TJ、中文 | 基础生成 corpus 的 UTF-16 BOM 样本不证明字体映射 | 非恒等字码 ToUnicode 返回“数据工作”，与 Poppler 一致。 |
+| 损坏 Flate | 默认 PdfPig 把一份坏流当空正文；BCL ZLibStream 接受缺最后四字节 trailer 的流 | `Inflater(false)` 完整结束判断拒绝缺尾 1–4 字节、错 Adler、坏 header；空合法流仍成功。 |
+| zlib 窗口 | 固定 SharpZipLib 原始解码接受 CINFO=8 | 检查 CM=8、CINFO≤7 后拒绝；这是既有 zlib 协议校验，不增加源码或产物 hash。 |
+| xref stream | PdfPig 将声明 Length=32480 的流连同边界外 LF 交给 filter，输入成为32481字节 | 仅第一 filter、Type XRef、直接整数 Length 且其外只有 LF/CRLF 时按 Length 取流；声明内尾随数据和错误 Length 仍拒绝。 |
+| 字体映射缺口 | 少一个字码映射时返回 U+0004 并发出 warning；Poppler 只返回可映射文本 | 候选 warning 拒绝策略返回失败且正文为空。是否保守误拒仍待覆盖；不按 warning 文案分类。 |
+| 无 ToUnicode | 不能仅按该字段缺失认定乱码 | 一份 Adobe 字体映射样本与 Poppler 可见 token 一致，仍需区分已知映射与缺口。 |
+| 页面外文本 | 现扫描器不能按对象可达性界定正文 | 同文件含 metadata、附件、批注及 AP、未列入 Kids 的页面；两个 oracle 都只返回可见页正文。 |
+| 单流/累计 | 代码存在不等于边界已验证 | 33 MiB 流拒绝；9页各32 MiB在第九流触发256 MiB累计限制，stdout为空。只证明 Flate 路径。 |
+
+最后一次 warning 拒绝探针对27份发现样本逐项比对预注册进程退出结果，无意外变化；这包括有意拒绝的
+损坏/超限样本，不等于27份产品状态契约全部通过。输出截断、其他 filter/predictor、加密、真实扫描件、
+深层/循环对象、产品取消和 generation 事务仍未完成资格。
+
+## 独立公开生产者
+
+- [W3C Dummy PDF](https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf)：两者均返回
+  `Dummy PDF file`，没有 warning。
+- [CTeX 官方手册](https://mirrors.ctan.org/language/chinese/ctex/ctex.pdf)：下载样本1,426,774字节、195页，
+  文档版本2.6.5；“宏集手册”“中文排版”“标题文字汉化”“数字日期转换”四个预注册 token 在 Poppler、
+  默认 PdfPig 和修正 xref 边界后的严格探针中均命中，严格探针无 warning。
+
+这些 PDF 仅保留在本地，未提交副本。CTAN [包页](https://ctan.org/pkg/ctex)标明 LPPL 1.3c；
+再分发前仍需核对完整文档许可资产。记录 URL、版本、页面和 token，不把再次下载或普通本地 hash 当资格。
+
+### W3C predictor 反证
+
+另取 [PDF7 原示例](https://www.w3.org/WAI/WCAG20/Techniques/working-examples/PDF7/ocr-example.pdf)
+和 [OCR/tagged 示例](https://www.w3.org/WAI/WCAG20/Techniques/working-examples/PDF7/ocr-example-tagged.pdf)，
+分别为894,734和431,357字节。最初把前者预注册为无文本扫描件，Poppler 实测返回一页2333个 code points，
+该预期明确失败；后者为一页2243个 code points。它们都不能作为无文本扫描件资格证据。
+
+未修改的默认 PdfPig 对两份文件均返回一页、无 warning，并命中 `Test Document`、`Header One`、`Lorem ipsum`
+和 `WCAG2.0`；不要求两个引擎的空白和字符计数逐字相同。严格探针对两份均 exit 1、stdout 为空：xref 流使用
+`Predictor 12`，Columns 分别为3/4及4/5，命中尚未实现的参数拒绝。初始失败与默认路径对照分别冻结为
+`scan-pair-initial-expectation-failure.json` 和 `w3c-predictor-default-discovery.json`，不覆盖此前27样本结果。
+
+固定源码的 [PngPredictor](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig/Filters/PngPredictor.cs)
+是 internal 类；公共 [FlateFilter](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig/Filters/FlateFilter.cs)
+会吞掉解码异常并返回输入。候选目前没有公开、独立且可靠暴露失败的 predictor 接口；不能据默认路径成功直接
+替换严格路径。参数支持、错误分类和维护成本仍需决策，本轮未通过反射调用内部实现或放宽流完整性检查。
+### 无文本图片页对照
+
+固定上游的 [LibreOffice 图片页](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Tests/Integration/Documents/Single%20Page%20Images%20-%20from%20libre%20office.pdf)
+也不能按文件名认定无文本：89,006字节、一页、3个页面图片映射；Poppler、默认 PdfPig 和严格探针均读到
+9个 code points，原空文本预期失败，保留为 `libreoffice-image-discovery.json`。
+
+随后用本地 Poppler 将上述 W3C 原示例第一页渲染到144 DPI的 ARGB32 位图，再由
+[Cairo PDF surface](https://www.cairographics.org/manual/cairo-PDF-Surfaces.html)仅绘制该位图，生成新的图片页。
+这是明确记录转换过程的测试样本，不是未修改的外部扫描原件。生成物为270,527字节、PDF 1.7，producer
+`cairo 1.18.4`；页面渲染人工检查保留标题、段落和列表，可见内容不是空白。
+
+预注册一页、空文本且有页面图片后，[Poppler 页面图片映射](https://poppler.freedesktop.org/api/glib/poppler-Poppler-Page.html#poppler-page-get-image-mapping)
+确认1个图片；Poppler、默认 PdfPig 和严格探针均返回一页、0个 code points，后两者无 warning。
+严格探针本机单次为173 ms wall、234.375 ms CPU、61,132,800 B峰值工作集。独立记录为
+`raster-image-expectation.json`、`raster-image-discovery.json`，不覆盖27样本或此前失败记录。
+该发现仅补充已知无文本图片页的解析行为；产品 `noTextLayer` 映射、全 corpus、取消和分发资格仍待验收，
+原件与转换副本均未提交，再分发许可未据此认定通过。
+## 资源与退出测量
+
+前两行取自最后一轮27样本 warning 拒绝探针，原始记录另存为
+`strict-admission-results-20260906-final-observations.json`；取消行取自独立的
+`cancellation-discovery.json`。不同轮次的数值不混用，也不将波动解读为优化收益。
+
+| 场景 | Wall time | CPU | 峰值工作集 | 结论范围 |
+| --- | --- | --- | --- | --- |
+| 9页累计 Flate 超限 | 1244 ms | 1328.125 ms | 244,465,664 B | 触发256 MiB累计拒绝，没有部分正文。 |
+| CTeX 195页严格提取 | 1346 ms | 1515.625 ms | 110,067,712 B | 本机单次发现值，不作跨机器性能承诺。 |
+| 提取开始后50/200/500 ms终止自有探针进程 | 取消到退出5.27/6.25/8.80 ms | 未测 | 未测 | 三次取消前均存活，退出后stdout空；不是产品进程树或任务结算验收。 |
+
+8个候选依赖 DLL 的普通构建总量为5,979,648字节；不含最终worker/运行时/NOTICE，不能冒充发布ZIP差值。
+
+## 维护与上游证据
+
+- [PdfPig 0.1.16](https://www.nuget.org/packages/PdfPig/0.1.16)和
+  [固定源码](https://github.com/UglyToad/PdfPig/tree/v0.1.16)：严格 parse 开关不保证所有 filter/字体失败
+  都作为错误返回；公开 filter provider 和日志接口提供适配 seam，但必须保留版本升级回归。
+- [SharpZipLib 1.4.2](https://www.nuget.org/packages/SharpZipLib/1.4.2)的
+  [Inflater](https://github.com/icsharpcode/SharpZipLib/blob/v1.4.2/src/ICSharpCode.SharpZipLib/Zip/Compression/Inflater.cs)：
+  需区分完整结束、缺输入、需字典和无进展；返回零字节本身不是成功 EOF。
+- [RFC 1950 §2.2](https://www.rfc-editor.org/rfc/rfc1950.html#section-2.2)约束 zlib 的方法、窗口和 trailer。
+  字典及声明内尾随数据在当前探针拒绝；正式 adapter 政策须在资格中明确。
+- 既有[方案比较](2026-09-04-pdf-extraction-adapter-options.md)继续有效；纯 Go候选在已测 Type0 中文样本上的乱码
+  不能用字面 BOM 样本覆盖，native/JVM/商业方案的离线和许可成本也不能被“更成熟”代替。
+
+## 固定包的分发材料核对
+
+本机 `net10.0` 探针的 assets 图只有 PdfPig 0.1.16 和 SharpZipLib 1.4.2 两个 NuGet 包，分别选择
+`net9.0` 和 `net6.0` 资产；不能把旧目标框架的依赖组计入本次实际闭包。包元数据分别声明 Apache-2.0 和
+MIT，并绑定下表固定源码。这里只核对来源和分发材料，不宣称许可、NOTICE 或正式 SBOM 已通过发布资格。
+
+| 材料 | 已核事实 | 采用前的分发检查 |
+| --- | --- | --- |
+| PdfPig [LICENSE](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/LICENSE) / [NOTICES.txt](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/NOTICES.txt) | 固定源码保留 Apache、PDFBox/FontBox 和 Adobe 归属说明；NuGet 文件清单没有独立 LICENSE/NOTICES 文件。 | 在候选材料清单中明确保留位置，不能仅以 NuGet license expression 代替分发材料。 |
+| Adobe 字形表 | 固定包 `UglyToad.PdfPig.Fonts.dll` 确有 `glyphlist` 和 `zapfdingbats` 嵌入资源；[原始头部](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Fonts/Resources/GlyphList/glyphlist)包含二进制再分发的归属、条件和免责声明要求。 | 核对两份原始声明在分发文档或材料中的保留；根目录 NOTICES 的归属摘要不等于完整声明。 |
+| Adobe AFM | [Fonts 项目](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Fonts/UglyToad.PdfPig.Fonts.csproj)嵌入 AFM 与 `MustRead.html`；DLL 资源清单确认二者存在。 | [MustRead](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/src/UglyToad.PdfPig.Fonts/Resources/AdobeFontMetrics/MustRead.html)要求保留归属、伴随说明及修改声明；不得因输出目录没有独立 HTML 就误报 DLL 缺少它。 |
+| SharpZipLib [LICENSE.txt](https://github.com/icsharpcode/SharpZipLib/blob/33f64eb0f28cdd2b084cb822fcc224c7c5aba553/LICENSE.txt) | 固定源码提供 MIT 完整原文；NuGet 使用 license expression，未附独立文本。 | 保留该版本原文及归属，不手写替代其年份或文本。 |
+
+原文和实际 DLL 资源清单保留为本地资格证据，未复制到产品或提交第三方资源。最终 worker 的资产集合、裁剪
+结果和 SBOM 尚未确定；采用时仍需以实际离线发布候选核对，不能用当前两个包的图代表未来完整发布闭包。
+20 项自有发现样本现已整理为[版本化语料入口](../../tests/contract/pdf_qualification_corpus.md)，冻结目标状态、token 与页面外文本排除项；七项合法样本重新通过独立 Poppler 语义核对。生成器成功并不等于产品资格通过。新增当前 Go 消费入口对同一语料报告 8 项不匹配，其中 4 项为 MUST，正常以非零退出保留差距；对应状态、token、排除项和实际预算可复查。外部生产者、剩余资源/取消边界及产品状态映射仍待补齐，再决定是否接受 ADR。
+
+
+## 2026-09-07 自有图片与输入/输出预算对照
+
+版本化 corpus 新增三项预注册 MUST，复用同一固定原型，没有重建环境或切换依赖。
+Poppler 对自有 RGB 图片页确认一个图像且正文为空；它是明确生成的图片页，不是第三方扫描原件。
+
+| 样本 | 严格原型观察 | Wall / CPU / 峰值工作集 |
+| --- | --- | --- |
+| 自有 RGB 图片页 | exit 0，0 字符，无 warning | 166 ms / 171.875 ms / 58,191,872 B |
+| 超过 64 MiB 的合法 PDF | exit 1，input limit，无正文 | 2 ms / 31.25 ms / 26,693,632 B |
+| 4,001 × 500 个 B 的页面正文 | exit 0，2,000,500 字符且全为 B，无 warning；**未执行输出上限** | 1,215 ms / 1,218.75 ms / 799,211,520 B |
+
+原始结果保留为 `owned-image-only-oracle.json` 和 `owned-boundaries-discovery.json`。这是本机单次发现，
+不是性能 SLO 或内存预算通过声明。尤其输出样本证明该原型仍不满足策略中的 2,000,000 code points 上限；
+它在生成所有页面文字后才输出，不能据此认定有受控峰值内存。产品 worker 与硬资源边界仍未资格通过。
+
+同一批输入由当前 Go 报告器得到 `noTextLayer`、`resourceLimited` 和 `truncated`，精确错误码及正文长度
+均匹配预注册契约。但新增完整字符断言后，输出样本未通过：当前 accumulator 在相邻 Tj token 之间增加分隔
+空格，独立 PdfPig 读出的 2,000,500 字符则全部为 B。初次仅检查长度时漏掉此差距，最终报告不得沿用初次通过
+结论。完整23项保留原8项并新增这项 MUST 差距，共9项不匹配、exit 1；图片页和输入超限通过，不表示 A6 完成。
+
+## 输出截断不能替代解析资源边界
+
+对同一 `output-over-2m.pdf`，隔离探针新增 `--bounded-output` 发现模式：按 Unicode rune 汇总最多
+2,000,000 code points，发现下一字符时报告截断。该模式仍先由 PdfPig 构造完整页面，不是产品实现。
+
+本机单次观察为 exit 0、truncated=true、正文精确2,000,000个B、无warning；wall1269ms、CPU1328.125ms、
+峰值工作集826,925,056字节。原未截断发现值为799,211,520字节；两次观察不用于推导性能回归或稳定差值，
+但均表明最终输出上限不能证明解析峰值内存受控。原型只解决本样本的最终正文长度，不关闭 worker RSS、
+取消/终止、后续页完整验证或产品状态映射资格。不得将这个实验模式接入生产或据此接受 ADR。
+
+本地原始输出与去正文观察分别保留为 `build/a6-pdfpig-spike/output-bounded-result.json` 和
+`output-bounded-observation.json`；修改前探针源码保留为 `Program.before-output-bound.txt`。复用原有
+PdfPig0.1.16/SharpZipLib1.4.2恢复资产，无依赖或产品构建配置变更。

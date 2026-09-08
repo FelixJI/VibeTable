@@ -27,6 +27,7 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
     private readonly ILocalDocumentPreview _preview;
     private readonly ILocalDocumentFilePicker _filePicker;
     private readonly IWorkspaceHostEpochLeaseSource? _epochLeaseSource;
+    private readonly DocumentDiffArtifactBroker? _diffArtifacts;
     private readonly WorkspaceDocumentDiffCoordinator? _diffCoordinator;
     private long _sequence;
     private bool _disposed;
@@ -73,10 +74,11 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
             if (epochLeaseSource is null)
                 throw new ArgumentException(
                     "Document diff requires a workspace epoch lease source.");
+            _diffArtifacts = new DocumentDiffArtifactBroker(diffTempRoot);
             _diffCoordinator = new WorkspaceDocumentDiffCoordinator(
                 epochLeaseSource,
                 diffEngine,
-                diffTempRoot);
+                _diffArtifacts);
         }
         else if (diffEngine is not null || diffTempRoot is not null)
         {
@@ -240,6 +242,7 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
         _disposed = true;
         _capabilities.RotateEpoch();
         _preview.Dispose();
+        _diffArtifacts?.Dispose();
     }
 
     private async Task<DocumentQueryPage> ReadDocumentsAsync(

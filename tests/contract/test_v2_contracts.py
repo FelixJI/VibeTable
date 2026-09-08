@@ -175,17 +175,25 @@ def test_diff_materialization_rpcs_are_closed_host_contracts() -> None:
         "documentId",
         "historicalRevisionId",
         "effectiveRevisionId",
+        "historicalContentHash",
+        "effectiveContentHash",
         "historicalMimeType",
         "effectiveMimeType",
     }
     assertion = cases["fileHistory.assertEffectiveRevision"]
     assert set(assertion["paramsSchema"]["properties"]) == {
         "documentId",
+        "historicalRevisionId",
+        "expectedHistoricalContentHash",
         "expectedEffectiveRevisionId",
+        "expectedEffectiveContentHash",
     }
     assert set(assertion["resultSchema"]["properties"]) == {
         "documentId",
+        "historicalRevisionId",
         "effectiveRevisionId",
+        "historicalContentHash",
+        "effectiveContentHash",
         "stable",
     }
 

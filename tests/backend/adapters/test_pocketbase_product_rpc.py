@@ -12,11 +12,9 @@ from backend.adapters.pocketbase import product_rpc
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.product_query_schema_rpc import (
     ProductQuerySchemaRpc,
-    _product_query_filter_operators,
 )
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
-from backend.contracts.schema_v2 import FieldDefinitionV2
 
 
 def _formula_v2_field() -> dict[str, Any]:
@@ -28,78 +26,6 @@ def _formula_v2_field() -> dict[str, Any]:
     field["display"]["kind"] = "readonly"
     field["formula"] = {"language": "cel-v1", "source": "1 + 1", "resultType": "number"}
     return field
-
-
-def _schema_v2_field(
-    *, field_id: str, physical_name: str, display_name: str, logical_type: str
-) -> dict[str, Any]:
-    path = Path(__file__).parents[3] / "contracts/schema-v2/fixtures/field-definition.json"
-    field = json.loads(path.read_text(encoding="utf-8"))
-    field["identity"] = {
-        "fieldId": field_id,
-        "physicalName": physical_name,
-        "providerFieldId": f"pb_{field_id.removeprefix('fld_')}",
-    }
-    field["displayName"] = display_name
-    field["logicalType"] = logical_type
-    storage_kind, display_kind = {
-        "text": ("pocketbase-text", "text"),
-        "editor": ("pocketbase-editor", "editor"),
-        "number": ("pocketbase-number", "number"),
-        "bool": ("pocketbase-bool", "bool"),
-        "date": ("pocketbase-date", "date"),
-        "dateTime": ("pocketbase-date", "dateTime"),
-        "time": ("pocketbase-text", "time"),
-        "autoDate": ("pocketbase-autodate", "readonly"),
-        "email": ("pocketbase-email", "email"),
-        "url": ("pocketbase-url", "url"),
-        "select": ("pocketbase-select", "select"),
-        "multiSelect": ("pocketbase-select", "select"),
-        "relation": ("pocketbase-relation", "relation"),
-        "file": ("pocketbase-file", "file"),
-        "geoPoint": ("pocketbase-geo-point", "geoPoint"),
-        "json": ("pocketbase-json", "json"),
-        "formula": ("computed", "readonly"),
-        "lookup": ("computed", "readonly"),
-    }[logical_type]
-    field["storage"]["kind"] = storage_kind
-    field["display"]["kind"] = display_kind
-    if logical_type in {"autoDate", "formula", "lookup"}:
-        field["value"]["presence"] = {"mode": "computed"}
-    elif logical_type in {"json"}:
-        field["value"]["presence"] = {"mode": "native"}
-    else:
-        field["value"]["presence"] = {"mode": "companion"}
-    if logical_type == "select":
-        field["constraints"]["selection"]["max"] = 1
-    elif logical_type == "json":
-        field["storage"]["options"]["maxSize"] = 1024 * 1024
-        field["display"]["mode"] = "code"
-        field["display"]["indent"] = 2
-    if logical_type == "relation":
-        field["relation"] = {
-            "targetTableId": "customers",
-            "cardinality": "one",
-            "deletePolicy": "restrict",
-            "displayFieldId": "fld_00000002",
-        }
-    return field
-
-
-def _schema_v2_snapshot(
-    fields: list[dict[str, Any]], *, table_id: str = "orders", revision: str = "schema_4"
-) -> dict[str, Any]:
-    return {
-        "contract": "vibetable.schema.v2",
-        "tableId": table_id,
-        "displayName": table_id.title(),
-        "kind": "base",
-        "schemaRevision": revision,
-        "dataRevision": 1,
-        "archivePolicy": {"mode": "none", "fieldId": None, "archivedValue": None},
-        "fields": fields,
-        "capabilities": [],
-    }
 
 
 class FakeTransport:
@@ -152,7 +78,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
     class MissingRouteModule(ProductQuerySchemaRpc):
         def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
             super().__init__(context)
-            self.methods = self.methods - {"schema.getTable"}
+            self.methods = self.methods - {"query.validateSnapshot"}
 
     monkeypatch.setattr(product_rpc, "ProductQuerySchemaRpc", MissingRouteModule)
     with pytest.raises(RuntimeError, match="routes do not match the contract registry"):
@@ -160,12 +86,73 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_schema_list_is_retired_from_python_adapter_without_transport() -> None:
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        (
+            "events.reconcile",
+            {
+                "tableId": "orders",
+                "schemaRevision": "schema_0001",
+                "dataRevision": "data_0001",
+            },
+        ),
+        ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
+        (
+            "lookup.query",
+            {
+                "contract": "vibetable.lookup-query.v1",
+                "collection": "orders",
+                "fieldRefs": ["customer_name"],
+                "query": {},
+                "requestGeneration": 7,
+                "schemaRevision": "schema-1",
+                "permissionRevision": "schema-1",
+                "lookupRevision": "lookup-1",
+            },
+        ),
+        ("relation.searchTargets", {"relationId": "orders.customer"}),
+        (
+            "lookup.valuePage",
+            {
+                "collection": "records",
+                "fieldRef": "owner.name",
+                "sourceRecordId": "record-1",
+                "schemaRevision": "s1",
+                "permissionRevision": "p1",
+                "lookupRevision": "l1",
+                "offset": 0,
+                "limit": 10,
+            },
+        ),
+        (
+            "relation.previewDelta",
+            {
+                "relationId": "orders.related",
+                "sourceItemId": "source-1",
+                "expectedSchemaRevision": "schema-1",
+                "adds": [],
+                "removes": [],
+                "idempotencyKey": "preview-1",
+            },
+        ),
+        ("schema.getTable", {"tableId": "orders"}),
+        ("schema.list", {}),
+        ("query.page", {"tableId": "orders", "query": {}}),
+        ("query.selectionOpen", {"tableId": "orders", "query": {}}),
+        ("query.cursorOpen", {"tableId": "orders", "query": {}}),
+        ("query.cursorFetch", {"cursor": "opaque"}),
+        ("schema.describe", {"collection": "orders", "requestGeneration": 1, "accepts": []}),
+    ],
+)
+async def test_go_owned_methods_are_retired_from_python_adapter_without_transport(
+    method: str, params: dict[str, object]
+) -> None:
     service, transport = _service([{"tables": []}])
-    params = PRODUCT_RPC_REGISTRY["schema.list"].model_validate({})
+    validated = PRODUCT_RPC_REGISTRY[method].model_validate(params)
 
-    with pytest.raises(ValueError, match=r"unknown product RPC method: schema\.list"):
-        await service.invoke("schema.list", params)
+    with pytest.raises(ValueError, match=rf"unknown product RPC method: {method}"):
+        await service.invoke(method, validated)
 
     assert transport.requests == []
 
@@ -286,340 +273,6 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schema_description_rejects_path_and_query_delimiters() -> None:
-    service, transport = _service([])
-
-    for table_id in ("../orders", "orders?admin=true", "orders#fragment", "%2fadmin"):
-        with pytest.raises(ValueError, match="table id is invalid"):
-            await service.invoke(
-                "schema.describe",
-                ProductParams.model_validate(
-                    {
-                        "collection": table_id,
-                        "requestGeneration": 1,
-                        "accepts": [
-                            "vibetable.relation-capabilities.v1",
-                            "vibetable.lookup-query.v1",
-                        ],
-                    }
-                ),
-            )
-
-    assert transport.requests == []
-
-
-@pytest.mark.parametrize("logical_type", ["editor", "email", "url"])
-def test_product_query_text_family_uses_portable_text_operators(logical_type: str) -> None:
-    assert _product_query_filter_operators({"logicalType": logical_type}) == [
-        "eq",
-        "ne",
-        "in",
-        "contains",
-        "starts_with",
-        "ends_with",
-        "is_null",
-        "is_not_null",
-    ]
-
-
-@pytest.mark.parametrize("logical_type", ["dateTime", "autoDate"])
-def test_product_query_date_family_uses_ordered_operators(logical_type: str) -> None:
-    assert _product_query_filter_operators({"logicalType": logical_type}) == [
-        "eq",
-        "ne",
-        "in",
-        "gt",
-        "lt",
-        "gte",
-        "lte",
-        "between",
-        "is_null",
-        "is_not_null",
-    ]
-
-
-def test_product_query_geo_point_uses_json_operators() -> None:
-    assert _product_query_filter_operators({"logicalType": "geoPoint"}) == [
-        "contains",
-        "is_null",
-        "is_not_null",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_schema_description_adapts_filter_operators_to_query_execution_types() -> None:
-    formula = _formula_v2_field()
-    formula["identity"] = {
-        "fieldId": "fld_formula1",
-        "physicalName": "f_formula1",
-        "providerFieldId": "pb_formula1",
-    }
-    formula["displayName"] = "Score"
-    lookup = _schema_v2_field(
-        field_id="fld_lookup01",
-        physical_name="f_lookup01",
-        display_name="Lookup",
-        logical_type="lookup",
-    )
-    lookup["value"]["presence"] = {"mode": "computed"}
-    lookup["storage"]["kind"] = "computed"
-    lookup["display"]["kind"] = "readonly"
-    lookup["lookup"] = {
-        "path": [{"relationFieldId": "fld_customer"}],
-        "targetFieldId": "fld_metric01",
-    }
-    many_relation = _schema_v2_field(
-        field_id="fld_customers",
-        physical_name="f_customers",
-        display_name="Customers",
-        logical_type="relation",
-    )
-    many_relation["relation"]["cardinality"] = "many"
-    many_lookup = _schema_v2_field(
-        field_id="fld_manylook",
-        physical_name="f_manylook",
-        display_name="Many lookup",
-        logical_type="lookup",
-    )
-    many_lookup["value"]["presence"] = {"mode": "computed"}
-    many_lookup["storage"]["kind"] = "computed"
-    many_lookup["display"]["kind"] = "readonly"
-    many_lookup["lookup"] = {
-        "path": [{"relationFieldId": "fld_customers"}],
-        "targetFieldId": "fld_metric01",
-    }
-    select = _schema_v2_field(
-        field_id="fld_status01",
-        physical_name="f_status01",
-        display_name="Status",
-        logical_type="select",
-    )
-    select["select"] = {
-        "options": [
-            {
-                "optionId": "opt_active01",
-                "label": "Active",
-                "color": "green",
-                "order": 0,
-                "state": "active",
-            }
-        ]
-    }
-    multi_select = _schema_v2_field(
-        field_id="fld_tags0001",
-        physical_name="f_tags0001",
-        display_name="Tags",
-        logical_type="multiSelect",
-    )
-    multi_select["select"] = select["select"]
-    json_field = _schema_v2_field(
-        field_id="fld_metadata",
-        physical_name="f_metadata",
-        display_name="Metadata",
-        logical_type="json",
-    )
-    json_field["json"] = {
-        "rootType": "object",
-        "maxSize": 65536,
-        "schema": {},
-    }
-    file_field = _schema_v2_field(
-        field_id="fld_file0001",
-        physical_name="f_file0001",
-        display_name="Files",
-        logical_type="file",
-    )
-    file_field["file"] = {
-        "maxFiles": 1,
-        "maxBytesPerFile": 1048576,
-        "allowedMimeTypes": [],
-        "thumbs": [],
-        "protected": False,
-    }
-    definition = _schema_v2_snapshot(
-        [
-            _schema_v2_field(
-                field_id="fld_region01",
-                physical_name="f_region01",
-                display_name="Region",
-                logical_type="text",
-            ),
-            _schema_v2_field(
-                field_id="fld_amount01",
-                physical_name="f_amount01",
-                display_name="Amount",
-                logical_type="number",
-            ),
-            _schema_v2_field(
-                field_id="fld_due_date",
-                physical_name="f_due_date",
-                display_name="Due date",
-                logical_type="date",
-            ),
-            _schema_v2_field(
-                field_id="fld_time0001",
-                physical_name="f_time0001",
-                display_name="Time",
-                logical_type="time",
-            ),
-            select,
-            multi_select,
-            _schema_v2_field(
-                field_id="fld_active01",
-                physical_name="f_active01",
-                display_name="Active",
-                logical_type="bool",
-            ),
-            json_field,
-            file_field,
-            _schema_v2_field(
-                field_id="fld_customer",
-                physical_name="f_customer",
-                display_name="Customer",
-                logical_type="relation",
-            ),
-            many_relation,
-            lookup,
-            many_lookup,
-            formula,
-        ]
-    )
-    target_definition = _schema_v2_snapshot(
-        [
-            _schema_v2_field(
-                field_id="fld_metric01",
-                physical_name="f_metric01",
-                display_name="Metric",
-                logical_type="number",
-            )
-        ],
-        table_id="customers",
-    )
-    for field in [*definition["fields"], *target_definition["fields"]]:
-        FieldDefinitionV2.model_validate(field)
-    capability_path = Path(__file__).parents[3] / "contracts/schema-v2/fixtures/capability.json"
-    capability_template = json.loads(capability_path.read_text(encoding="utf-8"))
-    definition["capabilities"] = []
-    for logical_type in (
-        "text",
-        "number",
-        "date",
-        "time",
-        "select",
-        "multiSelect",
-        "bool",
-        "json",
-        "file",
-        "relation",
-        "lookup",
-        "formula",
-    ):
-        capability = dict(capability_template)
-        capability["logicalType"] = logical_type
-        capability["filterOperators"] = ["eq", "ne", "isEmpty", "isNotEmpty"]
-        definition["capabilities"].append(capability)
-    service, _ = _service(
-        [
-            definition,
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_4",
-                "lookupMaxDepth": 8,
-                "relations": [],
-                "lookups": [
-                    {
-                        "lookupId": "orders.fld_lookup01",
-                        "tableId": "orders",
-                        "fieldId": "fld_lookup01",
-                        "physicalName": "f_lookup01",
-                        "displayName": "Lookup",
-                        "relationFieldId": "fld_customer",
-                        "path": [{"relationId": "orders.fld_customer"}],
-                        "targetFieldId": "fld_metric01",
-                        "resultCardinality": "one",
-                        "outputStorage": "decimal",
-                        "revision": 1,
-                    },
-                    {
-                        "lookupId": "orders.fld_manylook",
-                        "tableId": "orders",
-                        "fieldId": "fld_manylook",
-                        "physicalName": "f_manylook",
-                        "displayName": "Many lookup",
-                        "relationFieldId": "fld_customers",
-                        "path": [{"relationId": "orders.fld_customers"}],
-                        "targetFieldId": "fld_metric01",
-                        "resultCardinality": "many",
-                        "outputStorage": "decimal",
-                        "revision": 1,
-                    },
-                ],
-            },
-            target_definition,
-        ]
-    )
-
-    described = await service.invoke(
-        "schema.describe",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "requestGeneration": 1,
-                "accepts": [
-                    "vibetable.relation-capabilities.v1",
-                    "vibetable.lookup-query.v1",
-                ],
-            }
-        ),
-    )
-
-    operators = {
-        column["fieldId"]: column["filterOperators"] for column in described["schema"]["columns"]
-    }
-    text_operators = [
-        "eq",
-        "ne",
-        "in",
-        "contains",
-        "starts_with",
-        "ends_with",
-        "is_null",
-        "is_not_null",
-    ]
-    ordered_operators = [
-        "eq",
-        "ne",
-        "in",
-        "gt",
-        "lt",
-        "gte",
-        "lte",
-        "between",
-        "is_null",
-        "is_not_null",
-    ]
-    scalar_operators = ["eq", "ne", "in", "is_null", "is_not_null"]
-    json_operators = ["contains", "is_null", "is_not_null"]
-    assert operators == {
-        "id": text_operators,
-        "fld_region01": text_operators,
-        "fld_amount01": ordered_operators,
-        "fld_due_date": ordered_operators,
-        "fld_time0001": text_operators,
-        "fld_status01": text_operators,
-        "fld_tags0001": json_operators,
-        "fld_active01": scalar_operators,
-        "fld_metadata": json_operators,
-        "fld_file0001": json_operators,
-        "fld_customer": scalar_operators,
-        "fld_customers": scalar_operators,
-        "fld_lookup01": ordered_operators,
-        "fld_manylook": json_operators,
-        "fld_formula1": ordered_operators,
-    }
-
-
-@pytest.mark.asyncio
 async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     service, transport = _service(
         [
@@ -707,52 +360,9 @@ async def test_schema_delete_uses_fixed_route_and_revision_guard() -> None:
 
 
 @pytest.mark.asyncio
-async def test_relation_delta_translates_legacy_target_names() -> None:
-    service, transport = _service(
-        [
-            {
-                "relationId": "orders.customer",
-                "sourceRecordId": "order-1",
-                "current": [],
-                "result": [],
-                "adds": 1,
-                "removes": 0,
-                "canApply": True,
-            }
-        ]
-    )
-    params = ProductParams.model_validate(
-        {
-            "relationId": "orders.customer",
-            "sourceItemId": "order-1",
-            "expectedSchemaRevision": "schema_0001",
-            "adds": [
-                {
-                    "target": {
-                        "collection": "customers",
-                        "itemId": "customer-1",
-                        "label": "Ada",
-                    }
-                }
-            ],
-            "updates": [],
-            "removes": [],
-            "idempotencyKey": "relation-1",
-        }
-    )
-
-    await service.invoke("relation.previewDelta", params)
-
-    assert transport.requests[0]["json_body"]["adds"] == [
-        {"tableId": "customers", "recordId": "customer-1", "label": "Ada"}
-    ]
-    assert transport.requests[0]["json_body"]["actor"]["id"] == "local-user"
-
-
-@pytest.mark.asyncio
-async def test_reconcile_is_retired_from_python_adapter_without_transport() -> None:
+async def test_reconcile_has_no_python_transport_fallback() -> None:
     service, transport = _service([])
-    params = PRODUCT_RPC_REGISTRY["events.reconcile"].model_validate(
+    params = ProductParams.model_validate(
         {
             "tableId": "orders",
             "schemaRevision": "schema_0001",
@@ -761,38 +371,20 @@ async def test_reconcile_is_retired_from_python_adapter_without_transport() -> N
     )
 
     with pytest.raises(ValueError, match=r"unknown product RPC method: events\.reconcile"):
-        await service.invoke(
-            "events.reconcile",
-            params,
-        )
+        await service.invoke("events.reconcile", params)
 
     assert transport.requests == []
 
 
 @pytest.mark.asyncio
-async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
+async def test_history_restore_uses_closed_product_routes() -> None:
     service, transport = _service(
         [
-            {"changeSets": [], "total": 0},
             {"token": "restore-token", "canApply": True},
             {"restoredToRevision": "rev-1"},
-            {"attachments": []},
         ]
     )
 
-    await service.invoke(
-        "history.read",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "itemId": "order-1",
-                "scope": "row",
-                "limit": 20,
-                "offset": 0,
-                "actions": ["update", "restore"],
-            }
-        ),
-    )
     await service.invoke(
         "history.previewRestore",
         ProductParams.model_validate(
@@ -810,18 +402,8 @@ async def test_history_and_attachment_refs_use_closed_product_routes() -> None:
             {"collection": "orders", "itemId": "order-1", "token": "restore-token"}
         ),
     )
-    await service.invoke(
-        "file.list",
-        ProductParams.model_validate(
-            {"tableId": "orders", "recordId": "order-1", "fieldId": "invoice"}
-        ),
-    )
-
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/history/change-sets"
-    assert transport.requests[0]["query"]["action"] == ["update", "restore"]
-    assert transport.requests[1]["path"] == "/api/vibetable/v1/history/restore-preview"
-    assert transport.requests[2]["path"] == "/api/vibetable/v1/history/restore-apply"
-    assert transport.requests[3]["path"].endswith("/attachments/refs")
+    assert transport.requests[0]["path"] == "/api/vibetable/v1/history/restore-preview"
+    assert transport.requests[1]["path"] == "/api/vibetable/v1/history/restore-apply"
 
 
 @pytest.mark.asyncio
@@ -909,10 +491,9 @@ async def test_trusted_host_attachment_download_keeps_capability_and_path_native
 
 
 @pytest.mark.asyncio
-async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
+async def test_snapshot_uses_fixed_route() -> None:
     service, transport = _service(
         [
-            {"rows": [{"id": "row-1"}]},
             {
                 "valid": True,
                 "currentDataRevision": 2,
@@ -921,10 +502,6 @@ async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
         ]
     )
 
-    assert await service.invoke(
-        "query.readRows",
-        ProductParams.model_validate({"tableId": "orders", "rowIds": ["row-1"]}),
-    ) == {"rows": [{"id": "row-1"}]}
     await service.invoke(
         "query.validateSnapshot",
         ProductParams.model_validate(
@@ -949,207 +526,5 @@ async def test_table_rows_and_snapshot_use_fixed_routes() -> None:
     )
 
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/query",
         "/api/vibetable/v1/query/validate-snapshot",
     ]
-
-
-@pytest.mark.asyncio
-async def test_relation_renderer_contracts_are_adapted_from_product_shapes() -> None:
-    definition = _schema_v2_snapshot(
-        [
-            _schema_v2_field(
-                field_id="fld_customer1",
-                physical_name="f_customer1",
-                display_name="Customer",
-                logical_type="relation",
-            )
-        ]
-    )
-    lookup = {
-        "lookupId": "orders.customer_name",
-        "tableId": "orders",
-        "fieldId": "customer_name",
-        "physicalName": "customer_name",
-        "displayName": "Customer name",
-        "relationFieldId": "customer",
-        "targetFieldId": "name",
-        "resultCardinality": "one",
-        "outputStorage": "text",
-        "revision": 3,
-    }
-    relation = {
-        "relationId": "orders.customer",
-        "sourceTableId": "orders",
-        "sourceFieldId": "fld_customer1",
-        "physicalName": "f_customer1",
-        "targetTableId": "customers",
-        "cardinality": "one",
-        "deletePolicy": "restrict",
-    }
-    service, transport = _service(
-        [
-            definition,
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_4",
-                "lookupMaxDepth": 8,
-                "relations": [relation],
-                "lookups": [lookup],
-            },
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_4",
-                "lookups": [lookup],
-            },
-            {
-                "relationId": "orders.customer",
-                "sourceRecordId": "order-1",
-                "current": [
-                    {
-                        "tableId": "customers",
-                        "recordId": "customer-1",
-                        "label": "Ada",
-                    }
-                ],
-                "result": [],
-                "adds": 0,
-                "removes": 0,
-                "canApply": True,
-            },
-        ]
-    )
-
-    described = await service.invoke(
-        "schema.describe",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "requestGeneration": 9,
-                "accepts": [
-                    "vibetable.relation-capabilities.v1",
-                    "vibetable.lookup-query.v1",
-                ],
-            }
-        ),
-    )
-    assert described["capabilities"]["lookupMaxDepth"] == 8
-    listed = await service.invoke(
-        "lookup.list",
-        ProductParams.model_validate({"collection": "orders"}),
-    )
-    preview = await service.invoke(
-        "relation.previewDelta",
-        ProductParams.model_validate(
-            {
-                "relationId": "orders.customer",
-                "sourceItemId": "order-1",
-                "expectedSchemaRevision": "schema_4",
-                "adds": [],
-                "removes": [],
-                "idempotencyKey": "rel-1",
-            }
-        ),
-    )
-
-    assert described["contract"] == "vibetable.schema-describe.v1"
-    assert described["requestGeneration"] == 9
-    assert described["schema"]["normalizedRelations"][0]["kind"] == "m2o"
-    assert listed["collection"] == "orders"
-    assert "aggregation" not in listed["definitions"][0]
-    assert listed["lookupRevision"] == described["schema"]["lookupRevision"]
-    assert preview == {
-        "delta": {
-            "relationId": "orders.customer",
-            "sourceItemId": "order-1",
-            "expectedSchemaRevision": "schema_4",
-            "adds": [],
-            "removes": [],
-            "idempotencyKey": "rel-1",
-        },
-        "current": [
-            {
-                "collection": "customers",
-                "itemId": "customer-1",
-                "label": "Ada",
-                "secondaryLabel": None,
-            }
-        ],
-        "diagnostics": [],
-        "canApply": True,
-    }
-    assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v2/schema/tables/orders",
-        "/api/vibetable/v1/relations/describe",
-        "/api/vibetable/v1/lookups/describe",
-        "/api/vibetable/v1/relations/preview-delta",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_lookup_value_page_maps_physical_field_ref_to_stable_field_id() -> None:
-    lookup = {
-        "lookupId": "orders.line_skus_id",
-        "tableId": "orders",
-        "fieldId": "line_skus_id",
-        "physicalName": "line_skus",
-        "displayName": "Line SKUs",
-        "relationFieldId": "lines_id",
-        "targetFieldId": "sku_id",
-        "outputStorage": "json",
-        "revision": 1,
-    }
-    catalog = {
-        "tableId": "orders",
-        "schemaRevision": "schema_7",
-        "relations": [],
-        "lookups": [lookup],
-    }
-    page = {
-        "state": "ok",
-        "value": ["SKU-001"],
-        "provenance": [
-            {
-                "collection": "lines",
-                "collectionLabel": "明细",
-                "itemId": "line-1",
-                "recordLabel": "SKU-001",
-                "fieldId": "sku_id",
-                "fieldLabel": "SKU",
-                "value": "SKU-001",
-            }
-        ],
-        "provenanceTotal": 10_001,
-        "provenanceOffset": 100,
-        "provenanceLimit": 100,
-        "provenanceHasMore": True,
-    }
-    service, transport = _service([catalog, page])
-    lookup_revision = "sha256:6bd7460cb0333244b51b9ba40a0f4ce61198cdf9f6012ad812152671fdbb329e"
-
-    result = await service.invoke(
-        "lookup.valuePage",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "fieldRef": "line_skus",
-                "sourceRecordId": "order-1",
-                "offset": 100,
-                "limit": 100,
-                "schemaRevision": "schema_7",
-                "permissionRevision": "schema_7",
-                "lookupRevision": lookup_revision,
-            }
-        ),
-    )
-
-    assert result["provenanceTotal"] == 10_001
-    assert transport.requests[-1]["path"] == "/api/vibetable/v1/lookups/value-page"
-    assert transport.requests[-1]["json_body"] == {
-        "tableId": "orders",
-        "schemaRevision": "schema_7",
-        "sourceRecordId": "order-1",
-        "fieldId": "line_skus_id",
-        "offset": 100,
-        "limit": 100,
-    }

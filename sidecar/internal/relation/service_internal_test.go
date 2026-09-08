@@ -98,6 +98,13 @@ func TestLookupOutputStorageAdaptsV2TypeAtWireSeam(t *testing.T) {
 			},
 			output: "datetime",
 		},
+		{
+			name: "auto date",
+			field: v2.FieldDefinition{
+				LogicalType: v2.LogicalAutoDate,
+			},
+			output: "datetime",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

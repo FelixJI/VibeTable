@@ -32,6 +32,7 @@ const (
 	restorePhaseInstalling = "installing"
 	restorePhaseInstalled  = "installed"
 	restorePhaseCommitted  = "committed"
+	restoreJournalMaxBytes = 1 << 20
 )
 
 type pendingSnapshotRestore struct {
@@ -50,7 +51,10 @@ type pendingSnapshotRestore struct {
 	DatabaseHash         string                       `json:"databaseHash"`
 	SettingsHash         string                       `json:"settingsHash"`
 	Files                map[string]restoreStagedFile `json:"files"`
+	Attachments          map[string]restoreStagedFile `json:"attachments,omitempty"`
 	PreviousSettings     bool                         `json:"previousSettings"`
+	StorageCaptured      bool                         `json:"storageCaptured,omitempty"`
+	PreviousStorage      bool                         `json:"previousStorage,omitempty"`
 	Sequence             uint64                       `json:"sequence"`
 	Method               string                       `json:"method"`
 	Scope                string                       `json:"scope"`
@@ -93,14 +97,14 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if err := validateLocalRestoreStorageObjectMap(record.ObjectMap); err != nil {
+		return err
+	}
 	staging := restoreStagingRoot(paths, receipt.OperationID)
 	if err := os.MkdirAll(filepath.Dir(staging), 0o700); err != nil {
 		return err
 	}
 	if err := os.Mkdir(staging, 0o700); err != nil {
-		return err
-	}
-	if err := os.Mkdir(filepath.Join(staging, "files"), 0o700); err != nil {
 		return err
 	}
 	cleanup := true
@@ -109,6 +113,12 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 			_ = os.RemoveAll(staging)
 		}
 	}()
+	if err := os.Mkdir(filepath.Join(staging, "files"), 0o700); err != nil {
+		return err
+	}
+	if err := os.Mkdir(filepath.Join(staging, "storage"), 0o700); err != nil {
+		return err
+	}
 	databaseID := record.ObjectMap["database"]
 	settingsID := record.ObjectMap["workspace-settings"]
 	if databaseID == "" || settingsID == "" {
@@ -123,6 +133,9 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 		return err
 	}
 	if err := verifySQLiteDatabase(filepath.Join(staging, "data.db")); err != nil {
+		return err
+	}
+	if err := verifyLocalRestoreStorage(filepath.Join(staging, "data.db")); err != nil {
 		return err
 	}
 	settingsHash, _, err := runtime.stageRestoreObject(
@@ -182,8 +195,32 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 			Hash: hash, Size: size,
 		}
 	}
+	attachments := make(map[string]restoreStagedFile)
+	var attachmentBytes int64
+	for name, id := range record.ObjectMap {
+		if !strings.HasPrefix(name, "attachment:") {
+			continue
+		}
+		relative := strings.TrimPrefix(name, "attachment:")
+		target, err := restoreRelativeTarget(
+			filepath.Join(staging, "storage"),
+			relative,
+		)
+		if err != nil {
+			return err
+		}
+		hash, size, err := runtime.stageRestoreObject(ctx, id, target)
+		if err != nil {
+			return err
+		}
+		if size > maxSnapshotWorkingSet-attachmentBytes {
+			return errors.New("restore.resource_limit")
+		}
+		attachmentBytes += size
+		attachments[relative] = restoreStagedFile{Hash: hash, Size: size}
+	}
 	journal := pendingSnapshotRestore{
-		FormatVersion:        2,
+		FormatVersion:        3,
 		OperationID:          receipt.OperationID,
 		WorkspaceID:          runtime.manifest.WorkspaceID,
 		SnapshotID:           record.SnapshotID,
@@ -198,7 +235,9 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 		DatabaseHash:         databaseHash,
 		SettingsHash:         settingsHash,
 		Files:                files,
+		Attachments:          attachments,
 		PreviousSettings:     false,
+		StorageCaptured:      true,
 		Sequence:             sequence,
 		Method:               receipt.Method,
 		Scope:                string(receipt.Scope),
@@ -210,6 +249,92 @@ func (runtime *Runtime) stagePendingSnapshotRestore(
 	}
 	cleanup = false
 	return nil
+}
+
+func validateLocalRestoreStorageObjectMap(
+	objectMap map[string]objectrepo.ObjectID,
+) error {
+	keys := make([]string, 0)
+	for name := range objectMap {
+		if !strings.HasPrefix(name, "attachment:") {
+			continue
+		}
+		keys = append(keys, strings.TrimPrefix(name, "attachment:"))
+	}
+	return validateLocalRestoreStorageKeys(keys)
+}
+
+func validateLocalRestoreStorageKeys(keys []string) error {
+	files := make(map[string]struct{}, len(keys))
+	directories := make(map[string]struct{})
+	for _, key := range keys {
+		if err := validateLocalRestoreStorageKey(key); err != nil {
+			return errors.New("restore.path_invalid")
+		}
+		canonical := strings.ToUpper(key)
+		if _, found := files[canonical]; found {
+			return errors.New("restore.path_invalid")
+		}
+		if _, found := directories[canonical]; found {
+			return errors.New("restore.path_invalid")
+		}
+		for offset := strings.IndexByte(canonical, '/'); offset >= 0; {
+			directory := canonical[:offset]
+			if _, found := files[directory]; found {
+				return errors.New("restore.path_invalid")
+			}
+			directories[directory] = struct{}{}
+			next := strings.IndexByte(canonical[offset+1:], '/')
+			if next < 0 {
+				break
+			}
+			offset += next + 1
+		}
+		files[canonical] = struct{}{}
+	}
+	return nil
+}
+
+func validateLocalRestoreStorageKey(key string) error {
+	if key == "" ||
+		strings.Contains(key, `\`) ||
+		path.IsAbs(key) ||
+		path.Clean(key) != key ||
+		key == "." {
+		return errors.New("restore.path_invalid")
+	}
+	for _, component := range strings.Split(key, "/") {
+		if strings.ContainsAny(component, `<>:"|?*`) ||
+			strings.HasSuffix(component, ".") ||
+			strings.HasSuffix(component, " ") {
+			return errors.New("restore.path_invalid")
+		}
+		for _, character := range component {
+			if character < ' ' {
+				return errors.New("restore.path_invalid")
+			}
+		}
+		base := component
+		if index := strings.IndexByte(base, '.'); index >= 0 {
+			base = base[:index]
+		}
+		base = strings.ToUpper(strings.TrimRight(base, " ."))
+		if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+			((strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) &&
+				isWindowsReservedDeviceDigit(base[3:])) {
+			return errors.New("restore.path_invalid")
+		}
+	}
+	return nil
+}
+
+func isWindowsReservedDeviceDigit(value string) bool {
+	switch value {
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³":
+		return true
+	default:
+		return false
+	}
 }
 
 func (runtime *Runtime) stageRestoreObject(
@@ -285,6 +410,27 @@ func verifySQLiteDatabase(path string) error {
 	return nil
 }
 
+func verifyLocalRestoreStorage(databasePath string) error {
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var raw []byte
+	if err := db.QueryRow(`SELECT value FROM _params WHERE id = 'settings'`).Scan(&raw); err != nil {
+		return errors.Join(errors.New("restore.attachment_storage_unsupported"), err)
+	}
+	var stored struct {
+		S3 *struct {
+			Enabled bool `json:"enabled"`
+		} `json:"s3"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil || stored.S3 == nil || stored.S3.Enabled {
+		return errors.New("restore.attachment_storage_unsupported")
+	}
+	return nil
+}
+
 func writeRestoreJournal(
 	paths workspacePaths,
 	journal pendingSnapshotRestore,
@@ -295,6 +441,19 @@ func writeRestoreJournal(
 	raw, err := json.Marshal(journal)
 	if err != nil {
 		return err
+	}
+	budgetRaw := raw
+	if journal.FormatVersion == 3 {
+		future := journal
+		future.Phase = restorePhaseInstalling
+		future.PreviousStorage = true
+		budgetRaw, err = json.Marshal(future)
+		if err != nil {
+			return err
+		}
+	}
+	if len(budgetRaw) > restoreJournalMaxBytes {
+		return errors.New("restore.journal_resource_limit")
 	}
 	temporary, err := os.CreateTemp(
 		paths.coordination,
@@ -326,7 +485,7 @@ func writeRestoreJournal(
 func readRestoreJournal(
 	paths workspacePaths,
 ) (pendingSnapshotRestore, bool, error) {
-	raw, err := readFileBounded(restoreJournalPath(paths), 1<<20)
+	raw, err := readFileBounded(restoreJournalPath(paths), restoreJournalMaxBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return pendingSnapshotRestore{}, false, nil
 	}
@@ -355,7 +514,8 @@ func validateRestoreJournal(
 	paths workspacePaths,
 	journal pendingSnapshotRestore,
 ) error {
-	if (journal.FormatVersion != 1 && journal.FormatVersion != 2) ||
+	if (journal.FormatVersion != 1 && journal.FormatVersion != 2 &&
+		journal.FormatVersion != 3) ||
 		!validUUID(journal.OperationID) ||
 		!validUUID(journal.WorkspaceID) ||
 		!validUUID(journal.SnapshotID) ||
@@ -375,6 +535,11 @@ func validateRestoreJournal(
 		journal.Scope != string(protocolv2.WorkspaceScope) ||
 		journal.RequestHash == "" ||
 		!json.Valid(journal.Result) {
+		return errors.New("restore.journal_corrupt")
+	}
+	if (journal.FormatVersion == 3) != journal.StorageCaptured ||
+		(journal.FormatVersion != 3 &&
+			(journal.Attachments != nil || journal.PreviousStorage)) {
 		return errors.New("restore.journal_corrupt")
 	}
 	if _, err := time.Parse(
@@ -401,6 +566,24 @@ func validateRestoreJournal(
 		); err != nil || file.Size < 0 || file.Hash == "" {
 			return errors.New("restore.journal_corrupt")
 		}
+	}
+	attachmentKeys := make([]string, 0, len(journal.Attachments))
+	for relative := range journal.Attachments {
+		attachmentKeys = append(attachmentKeys, relative)
+	}
+	if err := validateLocalRestoreStorageKeys(attachmentKeys); err != nil {
+		return errors.New("restore.journal_corrupt")
+	}
+	var attachmentBytes int64
+	for relative, file := range journal.Attachments {
+		if _, err := restoreRelativeTarget(
+			filepath.Join(staging, "storage"),
+			relative,
+		); err != nil || file.Size < 0 || file.Hash == "" ||
+			file.Size > maxSnapshotWorkingSet-attachmentBytes {
+			return errors.New("restore.journal_corrupt")
+		}
+		attachmentBytes += file.Size
 	}
 	return nil
 }
@@ -463,12 +646,24 @@ func ApplyPendingSnapshotRestore(
 			_ = os.RemoveAll(rollback)
 		}
 	}()
-	if journal.FormatVersion == 2 {
+	if journal.FormatVersion >= 2 {
 		if err := stagePreviousWorkspaceSettings(
 			ctx,
 			paths,
 			rollback,
 		); err != nil {
+			return false, err
+		}
+	}
+	if journal.FormatVersion == 3 {
+		journal.PreviousStorage = false
+		info, err := os.Lstat(filepath.Join(paths.data, "storage"))
+		if err == nil {
+			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return false, errors.New("restore.attachment_storage_invalid")
+			}
+			journal.PreviousStorage = true
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return false, err
 		}
 	}
@@ -556,6 +751,19 @@ func verifyRestoreStaging(
 			return errors.Join(errors.New("restore.staging_corrupt"), err)
 		}
 	}
+	for relative, expected := range journal.Attachments {
+		target, err := restoreRelativeTarget(
+			filepath.Join(staging, "storage"),
+			relative,
+		)
+		if err != nil {
+			return err
+		}
+		hash, size, err := hashRestoreFile(target)
+		if err != nil || hash != expected.Hash || size != expected.Size {
+			return errors.Join(errors.New("restore.staging_corrupt"), err)
+		}
+	}
 	return nil
 }
 
@@ -578,6 +786,28 @@ func installRestoreFiles(
 		liveDatabase,
 	); err != nil {
 		return err
+	}
+	if journal.FormatVersion == 3 {
+		liveStorage := filepath.Join(paths.data, "storage")
+		if journal.PreviousStorage {
+			if err := os.Rename(
+				liveStorage,
+				filepath.Join(rollback, "storage"),
+			); err != nil {
+				return err
+			}
+		} else if _, err := os.Lstat(liveStorage); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return errors.New("restore.attachment_storage_conflict")
+			}
+			return err
+		}
+		if err := os.Rename(
+			filepath.Join(staging, "storage"),
+			liveStorage,
+		); err != nil {
+			return err
+		}
 	}
 	if _, err := os.Lstat(paths.files); err == nil {
 		if err := os.Rename(
@@ -706,6 +936,12 @@ func rollbackPendingSnapshotRestore(
 			os.Rename(filepath.Join(rollback, "files"), paths.files),
 		)
 	}
+	if journal.FormatVersion == 3 {
+		rollbackErrors = append(
+			rollbackErrors,
+			rollbackSnapshotRestoreStorage(paths, journal),
+		)
+	}
 	if journal.FormatVersion == 1 {
 		liveSettings := filepath.Join(paths.metadata, "settings.json")
 		if journal.PreviousSettings {
@@ -753,6 +989,179 @@ func rollbackPendingSnapshotRestore(
 	_ = os.RemoveAll(restoreStagingRoot(paths, journal.OperationID))
 	_ = os.RemoveAll(rollback)
 	return nil
+}
+
+func rollbackSnapshotRestoreStorage(
+	paths workspacePaths,
+	journal pendingSnapshotRestore,
+) error {
+	return rollbackSnapshotRestoreStorageWithMatcher(
+		paths, journal, snapshotRestoreStorageMatches,
+	)
+}
+
+func rollbackSnapshotRestoreStorageWithMatcher(
+	paths workspacePaths,
+	journal pendingSnapshotRestore,
+	storageMatches func(string, map[string]restoreStagedFile) (bool, error),
+) error {
+	conflict := errors.New("restore.attachment_storage_conflict")
+	rollback := restoreRollbackRoot(paths, journal.OperationID)
+	directoryExists := func(target string) (bool, error) {
+		info, err := os.Lstat(target)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return false, conflict
+		}
+		return true, nil
+	}
+	validRollback, err := directoryExists(rollback)
+	if err != nil || !validRollback {
+		return errors.Join(conflict, err)
+	}
+	live := filepath.Join(paths.data, "storage")
+	previous := filepath.Join(rollback, "storage")
+	quarantine := filepath.Join(rollback, "storage-quarantine")
+	previousExists, err := directoryExists(previous)
+	if err != nil {
+		return err
+	}
+	quarantineExists, err := directoryExists(quarantine)
+	if err != nil {
+		return err
+	}
+	if journal.PreviousStorage && !previousExists {
+		if quarantineExists || journal.Phase != restorePhaseInstalling {
+			return conflict
+		}
+		liveExists, err := directoryExists(live)
+		if err != nil || !liveExists {
+			return errors.Join(conflict, err)
+		}
+		if err := os.Rename(live, quarantine); err != nil {
+			return err
+		}
+		matches, matchErr := storageMatches(quarantine, journal.Attachments)
+		liveExists, liveErr := directoryExists(live)
+		if liveErr != nil || liveExists {
+			return errors.Join(conflict, matchErr, liveErr)
+		}
+		restoreErr := os.Rename(quarantine, live)
+		if matchErr != nil || matches || restoreErr != nil {
+			return errors.Join(conflict, matchErr, restoreErr)
+		}
+		return nil
+	}
+	if !quarantineExists {
+		liveExists, err := directoryExists(live)
+		if err != nil {
+			return err
+		}
+		if !liveExists {
+			if previousExists {
+				return os.Rename(previous, live)
+			}
+			return nil
+		}
+		if err := os.Rename(live, quarantine); err != nil {
+			return err
+		}
+	}
+	matches, matchErr := snapshotRestoreStorageMatches(quarantine, journal.Attachments)
+	if matchErr != nil || !matches {
+		liveExists, liveErr := directoryExists(live)
+		if liveErr != nil || liveExists {
+			return errors.Join(conflict, matchErr, liveErr)
+		}
+		return errors.Join(conflict, matchErr, os.Rename(quarantine, live))
+	}
+	liveExists, err := directoryExists(live)
+	if err != nil || liveExists {
+		return errors.Join(conflict, err)
+	}
+	if err := os.RemoveAll(quarantine); err != nil {
+		return err
+	}
+	if previousExists {
+		return os.Rename(previous, live)
+	}
+	return nil
+}
+
+func snapshotRestoreStorageMatches(
+	root string,
+	expected map[string]restoreStagedFile,
+) (bool, error) {
+	return snapshotRestoreStorageMatchesWithHasher(root, expected, hashRestoreFile)
+}
+
+func snapshotRestoreStorageMatchesWithHasher(
+	root string,
+	expected map[string]restoreStagedFile,
+	hashFile func(string) (string, int64, error),
+) (bool, error) {
+	mismatch := errors.New("restore.attachment_storage_mismatch")
+	invalid := errors.New("restore.attachment_storage_invalid")
+	info, err := os.Lstat(root)
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, invalid
+	}
+	files := 0
+	err = filepath.Walk(root, func(target string, info os.FileInfo, err error) error {
+		if err != nil || target == root {
+			return err
+		}
+		relative, err := filepath.Rel(root, target)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if info.IsDir() {
+			if _, expectedFile := expected[relative]; expectedFile {
+				return invalid
+			}
+			for name := range expected {
+				if strings.HasPrefix(name, relative+"/") {
+					return nil
+				}
+			}
+			return mismatch
+		}
+		if !info.Mode().IsRegular() {
+			return invalid
+		}
+		file, found := expected[relative]
+		if !found {
+			return mismatch
+		}
+		if info.Size() != file.Size {
+			return mismatch
+		}
+		hash, size, err := hashFile(target)
+		if err != nil {
+			return err
+		}
+		if hash != file.Hash || size != file.Size {
+			return mismatch
+		}
+		files++
+		return nil
+	})
+	if errors.Is(err, mismatch) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return files == len(expected), nil
 }
 
 func (runtime *Runtime) CompletePendingSnapshotRestore(

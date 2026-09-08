@@ -1,0 +1,1352 @@
+{
+  "producerCommit": "8cf989c5873830d28d61067a9afb82ddb06db124",
+  "boundary": "Python Product dispatcher + adapter; scripted authority transport",
+  "cases": [
+    {
+      "name": "omitted-query-and-paging-defaults",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "omitted-query-and-paging-defaults",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "omitted-query-and-paging-defaults",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 1
+        }
+      }
+    },
+    {
+      "name": "explicit-query-and-paging",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "explicit-query-and-paging",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "query": "中文 Café",
+          "offset": 2,
+          "limit": 3
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "中文 Café",
+            "offset": 2,
+            "limit": 3
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "explicit-query-and-paging",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 1
+        }
+      }
+    },
+    {
+      "name": "whitespace-query-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "whitespace-query-preserved",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "query": " \t "
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": " \t ",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "whitespace-query-preserved",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 1
+        }
+      }
+    },
+    {
+      "name": "whitespace-relation-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "whitespace-relation-forwarded",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": " "
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": " ",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "whitespace-relation-forwarded",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 1
+        }
+      }
+    },
+    {
+      "name": "empty-result",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-result",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [],
+          "total": 0
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-result",
+        "result": {
+          "items": [],
+          "total": 0
+        }
+      }
+    },
+    {
+      "name": "non-object-items-filtered",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-items-filtered",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            null,
+            false,
+            0,
+            "",
+            [],
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 6
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-items-filtered",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 6
+        }
+      }
+    },
+    {
+      "name": "all-non-object-items-filtered",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "all-non-object-items-filtered",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            null,
+            false,
+            0,
+            "",
+            []
+          ],
+          "total": 5
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "all-non-object-items-filtered",
+        "result": {
+          "items": [],
+          "total": 5
+        }
+      }
+    },
+    {
+      "name": "negative-total-preserved",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "negative-total-preserved",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": -1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "negative-total-preserved",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": -1
+        }
+      }
+    },
+    {
+      "name": "limit-101-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "limit-101-forwarded",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "limit": 101
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 101
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "limit-101-forwarded",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 1
+        }
+      }
+    },
+    {
+      "name": "negative-offset-zero-limit-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "negative-offset-zero-limit-forwarded",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "offset": -1,
+          "limit": 0
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": -1,
+            "limit": 0
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "negative-offset-zero-limit-forwarded",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 1
+        }
+      }
+    },
+    {
+      "name": "long-query-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "long-query-forwarded",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "query": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1,
+          "snapshot": {
+            "opaque": "authority-only"
+          },
+          "extra": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "long-query-forwarded",
+        "result": {
+          "items": [
+            {
+              "collection": "orders",
+              "itemId": "r1",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي"
+            }
+          ],
+          "total": 1
+        }
+      }
+    },
+    {
+      "name": "missing-relation",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-relation",
+        "method": "relation.searchTargets",
+        "params": {}
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-relation",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "empty-relation",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-relation",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": ""
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-relation",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "empty-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-query",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "query": ""
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-query",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "null-query",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-query",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "query": null
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-query",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "boolean-offset",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-offset",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "offset": false
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-offset",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "string-limit",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "string-limit",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "limit": "50"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "string-limit",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "unknown-parameter",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-parameter",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "collection": "orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-parameter",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "nested-credential",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "nested-credential",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders",
+          "query": {
+            "password": "test-only"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "nested-credential",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "non-object-result",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "non-object-result",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "non-object-result",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "missing-items",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-items",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "total": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-items",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "null-items",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "null-items",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": null,
+          "total": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "null-items",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "item-missing-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "item-missing-label",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1"
+            }
+          ],
+          "total": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "item-missing-label",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "item-empty-record-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "item-empty-record-id",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "",
+              "label": "中文 Café 👩🏽‍💻 ‏عربي",
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "item-empty-record-id",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "item-non-text-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "item-non-text-label",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [
+            {
+              "tableId": "orders",
+              "recordId": "r1",
+              "label": false,
+              "secondaryLabel": "private authority detail",
+              "extra": {
+                "enabled": false
+              }
+            }
+          ],
+          "total": 1
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "item-non-text-label",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "missing-total",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "missing-total",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "missing-total",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "boolean-total",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "boolean-total",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [],
+          "total": false
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "boolean-total",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "string-total",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "string-total",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "items": [],
+          "total": "0"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "string-total",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "public-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "public-error",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "public-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Relation was not found",
+            "code": "relation.not_found",
+            "path": "relationId",
+            "details": {
+              "relationId": "rel-orders"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "method": "relation.searchTargets",
+        "params": {
+          "relationId": "rel-orders"
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/search-targets",
+          "query": null,
+          "body": {
+            "relationId": "rel-orders",
+            "query": "",
+            "offset": 0,
+            "limit": 50
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "Sidecar unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    }
+  ]
+}

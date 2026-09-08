@@ -18,7 +18,7 @@ public sealed class ProductDataRpcRegistryTests
         [
             "field.settings.describe", "field.change.plan", "field.change.apply",
             "field.change.status", "field.change.cancel", "field.recycleBin.list",
-            "schema.getTable", "query.page", "query.cursorOpen", "query.cursorFetch", "query.view",
+            "lookup.list", "schema.describe", "schema.getTable", "query.page", "query.cursorOpen", "query.cursorFetch", "query.view",
             "contentProfile.load", "contentProfile.commit", "contentProfile.delete",
             "recordDocumentLink.list", "recordDocumentLink.commit",
             "recordDocumentLink.repair", "recordDocumentLink.delete",

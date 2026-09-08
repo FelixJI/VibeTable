@@ -12,7 +12,7 @@
 | Web Document Diff → WPF → sidecar | `document.diffRequested` / `document.diffCancelRequested` → `WorkspaceDocumentOsAdapter` / coordinator → Host-only `fileHistory.materializeDiffPair` 与 `assertEffectiveRevision` | sidecar 固定 target/effective revision；Host 持有两文件 path grant 和 epoch/sequence lease；Web 只持 entry handle/revision id。 | operationId + entryHandle 精确取消；materialize 前后 CAS stale 映射为稳定 `stale`；epoch 轮换取消在途请求，raw Web materialize 被拒绝。 | Workspace/OpenXml engine tests、Desktop adapter/cancel tests、Web service/store/view tests、产品场景 `14-document-diff`。 |
 | WPF test-mode controls → 产品 E2E | runner 写入受控 controls dir → WPF test-mode picker/normal-close watcher | 仅 `--test-mode + --e2e-controls-dir` 可用；production 始终使用 native picker，不向 renderer 暴露 raw path route。 | 缺失/无效 fixture fail closed；normal close 后报告 Host exit、后代进程和端口释放。 | `ProductE2eControlTests`、`WorkspacePathGrantStoreTests`、runner 契约，以及[当前场景声明](../quality/product-e2e-capability-index.md)与对应 `required` 报告。 |
 
-## 宿主 Product 调用与首个 Go owner
+## 宿主 Product 调用与 Go owner
 
 `JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method、严格 Schema v2 解析
 及原 Python client 的通知。invoker 只读现有生成 policy/Workspace catalog 分类，拥有固定代际
@@ -33,18 +33,35 @@ binding 只提供配对 client、完整代际比较与 typed gateway 构造；�
 gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
 至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
 schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
-现行 Product owner 中，`events.reconcile` 与 `schema.list` 已迁到 Go，其余方法仍为 Python。
+现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch`、`query.selectionOpen` 与 `query.view` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
+`query.view` 以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
+参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
+`lookup.valuePage` 经同一policy直达既有Go relation服务，以目录revision和稳定fieldId绑定来源分页；
+Python专属分页转译已删除；lookup.query也已迁移，供冻结独立输入和其他路径使用的revision helper保留。完整原件与资格状态见[分页资格](../quality/lookup-value-page.md)。
+`file.token` 与本地 import/export task producer 按后续切片处理。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
 非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认
-`events.reconcile`、`schema.list` 选中 Go 且其他读方法仍为 Python。Go 的私有 Product HTTP
-与原 schema REST/reconcile route 共用真实 authority；Python 保留全量参数模型，但不再注册或转发
-`events.reconcile`、`schema.list`。Python SSE supervisor、cursor-gap recovery，以及本地 import/export
-任务的 `task.changed` producer 仍由后续 L4 片处理。独立 Workspace catalog 的六个
+生成 policy 按方法选择当前唯一 owner，并验证 `query.page` 与 `query.readRows` 通过 Product HTTP gateway 保持返回值。游标组合测试验证 Go open/fetch 的 cursor 传递，selection 组合测试验证默认 Go owner 的代际租约、取消及公开失败零 fallback。
+Go Product 与 REST 的 `events.reconcile` 共用 revision authority，`file.list` 共用 attachment manager，
+`schema.getTable` 共用 `schemaexecution.Describe` 投影与 field 错误分类，`schema.list` 共用
+Catalog 投影。Python 保留共享参数模型，但不再注册或转发已迁移的方法。独立 Workspace catalog 的六个
 既有方法名单由参数 contract 与 golden generator 共享，不作为未知方法的默认 Python fallback。
 同一真实 composition fixture 还覆盖 Lazy 同 Client 新 snapshot 轮换而不提前结束旧在途请求，
 以及 health reader 的期望 epoch lease、严格 schema.list、远端错误和 close 取消。
+
+## Host 设备偏好（L6）
+
+`settings.readDevice` / `settings.saveDevice` 经 Router 闭集 manifest 校验后直达
+`DeviceSettingsRequestController`；owner 为 `wpfHost`，Python 不再注册这两个方法。
+`global` 仅是 transport scope：文件仍位于当前 runtime root 的
+`.vibetable/data/state/device-settings.json`，旧 snake JSON 与 camel wire 均保留。
+Host 捕获当前 workspace/epoch lease，在写入、同目录原子替换及回包前核对当前绑定；
+请求携带 workspace scope 时复用该 scope 的 epoch/sequence 准入，不重新绑定到当前 session。
+关闭/切换通过现有 drain 等待请求退出，无 Python Ready 前提，也不改变业务只读 authority。
+`DeviceSettingsRequestControllerTests` 以真实 session/临时 JSON 验证；尚无可见 UI 消费者，
+不把该测试当作 packaged UI/E2E 通过证据。
 
 ## 维护规则
 
@@ -52,3 +69,15 @@ schema.list，保持健康错误码与严格响应解析。它们不依赖 rende
 - session/epoch 轮换、取消与错误 envelope 属于 wire 行为；行为保持型重构不得顺手改变。
 - Document Diff 继续复用 sidecar authority、Host path grant 和 epoch seam；不得建立 Web 到 repository 的旁路，
   也不得把本机绝对路径放进 bridge payload。
+
+
+`query.selectionOpen` 的 Product owner 为 Go；它直接调用既有 SelectionPort 的原子
+schema/cursor 投影并保留请求 tableId 与三项 revision 配对。Python 专属 handler/client
+已删除，宿主仅按生成 policy 路由，无 Python fallback。游标签发与续读的数据权威仍为
+同一 PocketBase QueryPort；`cursorFetch` 的 Product 路由 owner 不构成新的游标 authority。
+
+`lookup.query` 经 `lookupQueryRegistration` 直达既有 relation catalog/query 端口；专属 Python handler 和 grouped-view client 已退役，共享 relation export 的 lookup client 保留。八字段 Product 与 workspace/epoch 准入不变，Go 失败不回落 Python。原 Python 冻结回放、typed 表达边界及 S29 的当前验收状态见 [lookup.query 资格](../quality/lookup-query.md)。
+
+## Go 权威实时恢复（L4）
+
+`ProductRealtimeSession` 通过认证 Go v2 SSE 接收活动公式任务与有限终态通知，在 renderer 业务订阅就绪后交付；WPF 管理连接代际、epoch 和投递生命周期，不建立任务权威缓存。Python SSE supervisor、latest revision cache 与 data.changed 二次包装删除；Python 本地 import/export task.changed producer 保留。恢复失败不得推进 bookmark，旧 epoch 不得交付。细节和完整验收边界见 [ADR 0012](../adr/0012-go-owned-realtime-recovery.md)。

@@ -16,7 +16,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -1509,7 +1509,7 @@ def _is_lower_hex(value: object, *, length: int) -> bool:
     )
 
 
-def _is_valid_self_update_rollback_receipt(
+def _self_update_rollback_receipt_error(
     receipt: object,
     *,
     receipt_name: str,
@@ -1519,27 +1519,27 @@ def _is_valid_self_update_rollback_receipt(
     expected_updater_process_id: int,
     updated_process_id: int,
     expected_failure_code: str,
-) -> bool:
+) -> str | None:
     if not isinstance(receipt, dict) or set(receipt) != _SELF_UPDATE_ACTIVATION_POINTER_V2_FIELDS:
-        return False
+        return "fields"
     receipt_updater_process_id = receipt.get("updaterProcessId")
     watchdog_process_id = receipt.get("watchdogProcessId")
     receipt_updated_process_id = receipt.get("updatedProcessId")
     worker_process_id = receipt.get("workerProcessId")
     process_ids = (receipt_updater_process_id, watchdog_process_id, worker_process_id)
     if any(type(process_id) is not int or process_id <= 0 for process_id in process_ids):
-        return False
+        return "processIds"
     if type(expected_updater_process_id) is not int or expected_updater_process_id <= 0:
-        return False
+        return "expectedUpdaterProcessId"
     if receipt_updater_process_id != expected_updater_process_id:
-        return False
+        return "updaterProcessId"
     if type(updated_process_id) is not int or updated_process_id <= 0:
-        return False
+        return "expectedUpdatedProcessId"
     if (
         type(receipt_updated_process_id) is not int
         or receipt_updated_process_id != updated_process_id
     ):
-        return False
+        return "updatedProcessId"
 
     timestamp_fields = (
         "updaterStartedAtUtc",
@@ -1553,7 +1553,7 @@ def _is_valid_self_update_rollback_receipt(
     )
     timestamps = {field: _offset_datetime(receipt.get(field)) for field in timestamp_fields}
     if any(timestamp is None for timestamp in timestamps.values()):
-        return False
+        return "timestamps"
     updater_started = cast(datetime, timestamps["updaterStartedAtUtc"])
     created_at = cast(datetime, timestamps["createdAtUtc"])
     watchdog_started = cast(datetime, timestamps["watchdogStartedAtUtc"])
@@ -1571,16 +1571,16 @@ def _is_valid_self_update_rollback_receipt(
         <= worker_started
         <= rolled_back
     ):
-        return False
+        return "timestampOrder"
     if watchdog_process_id != receipt_updater_process_id or watchdog_started != updater_started:
-        return False
+        return "watchdogIdentity"
     process_identities = {
         (receipt_updater_process_id, updater_started),
         (updated_process_id, updated_started),
         (worker_process_id, worker_started),
     }
     if len(process_identities) != 3:
-        return False
+        return "distinctProcessIdentities"
 
     rollback_attempt = receipt.get("rollbackAttempt")
     ledger = receipt.get("ownedEntryLedger")
@@ -1590,7 +1590,7 @@ def _is_valid_self_update_rollback_receipt(
         (HOST_EXE_NAME, "restored"),
     }
     if not isinstance(ledger, list) or len(ledger) != len(expected_ledger):
-        return False
+        return "ownedEntryLedger"
     if any(
         not isinstance(entry, dict)
         or set(entry) != {"name", "phase"}
@@ -1598,39 +1598,184 @@ def _is_valid_self_update_rollback_receipt(
         or type(entry["phase"]) is not str
         for entry in ledger
     ):
-        return False
+        return "ownedEntryLedger"
     actual_ledger = {(entry["name"], entry["phase"]) for entry in ledger}
     worker_replacement_count = receipt.get("workerReplacementCount")
-    return (
-        type(receipt.get("schemaVersion")) is int
-        and receipt.get("schemaVersion") == 2
-        and receipt.get("state") == "rollbackComplete"
-        and type(receipt.get("targetRoot")) is str
+    if not (type(receipt.get("schemaVersion")) is int and receipt.get("schemaVersion") == 2):
+        return "schemaVersion"
+    if receipt.get("state") != "rollbackComplete":
+        return "state"
+    if not (
+        type(receipt.get("targetRoot")) is str
         and Path(receipt["targetRoot"]).resolve() == target.resolve()
-        and type(receipt.get("stagingRoot")) is str
+    ):
+        return "targetRoot"
+    if not (
+        type(receipt.get("stagingRoot")) is str
         and Path(receipt["stagingRoot"]).resolve() == stage.resolve()
-        and receipt.get("currentVersion") == "1.0.0"
-        and receipt.get("targetVersion") == "1.0.1"
-        and receipt.get("token") == token
-        and receipt.get("smokeTest") is True
-        and receipt.get("confirmedAt") is None
-        and _is_lower_hex(receipt.get("ownedGroupId"), length=32)
-        and receipt.get("launchNonce") is None
-        and receipt.get("failureCode") == expected_failure_code
-        and receipt.get("workerLaunchNonce") is None
-        and type(worker_replacement_count) is int
-        and worker_replacement_count in (0, 1)
-        and actual_ledger == expected_ledger
-        and _is_lower_hex(rollback_attempt, length=32)
-        and receipt_name == f".VibeTable.Next.update-rollback-{rollback_attempt}.json"
-        and receipt.get("rollbackErrorCode") is None
-    )
+    ):
+        return "stagingRoot"
+    if receipt.get("currentVersion") != "1.0.0":
+        return "currentVersion"
+    if receipt.get("targetVersion") != "1.0.1":
+        return "targetVersion"
+    if receipt.get("token") != token:
+        return "token"
+    if receipt.get("smokeTest") is not True:
+        return "smokeTest"
+    if receipt.get("confirmedAt") is not None:
+        return "confirmedAt"
+    if not (_is_lower_hex(receipt.get("ownedGroupId"), length=32)):
+        return "ownedGroupId"
+    if receipt.get("launchNonce") is not None:
+        return "launchNonce"
+    if receipt.get("failureCode") != expected_failure_code:
+        return "failureCode"
+    if receipt.get("workerLaunchNonce") is not None:
+        return "workerLaunchNonce"
+    if not (type(worker_replacement_count) is int and worker_replacement_count in (0, 1)):
+        return "workerReplacementCount"
+    if actual_ledger != expected_ledger:
+        return "ownedEntryLedger"
+    if not (_is_lower_hex(rollback_attempt, length=32)):
+        return "rollbackAttempt"
+    if receipt_name != f".VibeTable.Next.update-rollback-{rollback_attempt}.json":
+        return "receiptName"
+    if receipt.get("rollbackErrorCode") is not None:
+        return "rollbackErrorCode"
+    return None
 
 
 @dataclass(frozen=True)
 class _SelfUpdateConsumedRequest:
     path: Path
     description: str
+
+
+@dataclass(frozen=True)
+class _SelfUpdateCrashObservation:
+    process_id: int
+    started_at_utc: str
+    exit_code: int
+
+
+def _self_update_start_ticks(value: object) -> int:
+    parsed = _offset_datetime(value)
+    if parsed is None or not isinstance(value, str):
+        raise BuildError("desktop self-update crash process start time is invalid")
+    fraction = re.search(r"\.(\d{1,7})(?:Z|[+-]\d{2}:\d{2})$", value)
+    remainder = int(fraction[1].ljust(7, "0")[6]) if fraction else 0
+    return (parsed - datetime(1601, 1, 1, tzinfo=UTC)) // timedelta(microseconds=1) * 10 + remainder
+
+
+def _request_self_update_crash_exit(process_id: int, started: str, request: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x00100000 | 0x1000, False, process_id)
+    if not handle:
+        raise BuildError("desktop self-update crash process open failed")
+    try:
+        creation, exit_time, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            raise BuildError("desktop self-update crash process identity query failed")
+        actual_ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        if actual_ticks != _self_update_start_ticks(started):
+            raise BuildError("desktop self-update crash process identity changed")
+        if kernel.WaitForSingleObject(handle, 0) != 258:
+            raise BuildError("desktop self-update crash process exited before request")
+        # Keep the verified handle open across request consumption and exit;
+        # never reopen a dead PID to infer its exit status.
+        with request.open("x", encoding="utf-8"):
+            pass
+        if kernel.WaitForSingleObject(handle, 30_000) != 0:
+            raise BuildError("desktop self-update crash process wait failed")
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            raise BuildError("desktop self-update crash process exit code is unavailable")
+        if code.value in (0, 259):
+            raise BuildError("desktop self-update crash process did not exit abnormally")
+        return code.value
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def trigger_self_update_crash(
+    root: Path,
+    *,
+    process_scope: WindowsProcessScope,
+    target: Path,
+    stage: Path,
+    token: str,
+    updater_process_id: int,
+    timeout_seconds: float = 60,
+) -> _SelfUpdateCrashObservation:
+    """Observe a held, claimed updated host before delivering its fixed crash request."""
+    controls = root / SELF_UPDATE_UPDATED_CONTROLS_DIR
+    hold = controls / "self-update-health-timeout-hold.request"
+    process_file = root / SELF_UPDATE_SMOKE_READINESS_DIR / SELF_UPDATE_SMOKE_PROCESS_FILE
+    deadline = time.monotonic() + timeout_seconds
+    while hold.exists() or not process_file.is_file():
+        if time.monotonic() >= deadline:
+            raise BuildError("desktop self-update crash rendezvous timed out")
+        time.sleep(0.05)
+    process_id = read_self_update_process_evidence(
+        process_file, token=token, target_version="1.0.1"
+    )
+    pointer = json.loads((root / PENDING_UPDATE_ACTIVATION_POINTER).read_text(encoding="utf-8"))
+    if not isinstance(pointer, dict) or any(
+        pointer.get(key) != value
+        for key, value in {
+            "schemaVersion": 2,
+            "state": "awaitingHealth",
+            "smokeTest": True,
+            "token": token,
+            "currentVersion": "1.0.0",
+            "targetVersion": "1.0.1",
+            "failureCode": None,
+            "updaterProcessId": updater_process_id,
+            "watchdogProcessId": updater_process_id,
+            "updatedProcessId": process_id,
+            "launchNonce": None,
+        }.items()
+    ):
+        raise BuildError("desktop self-update crash awaiting-health identity is invalid")
+    if any(
+        not isinstance(pointer.get(key), str) or Path(pointer[key]).resolve() != expected.resolve()
+        for key, expected in (("targetRoot", target), ("stagingRoot", stage))
+    ):
+        raise BuildError("desktop self-update crash awaiting-health identity is invalid")
+    started = pointer.get("updatedStartedAtUtc")
+    _self_update_start_ticks(started)
+    if not any(
+        member.pid == process_id
+        and member.identity_verified
+        and member.executable_name == HOST_EXE_NAME
+        for member in process_scope.snapshot().members
+    ):
+        raise BuildError("desktop self-update crash process is not owned")
+    exit_code = _request_self_update_crash_exit(
+        process_id, cast(str, started), controls / "self-update-crash.request"
+    )
+    print(f"desktop self-update updated-crash: pid={process_id}, exitCode=0x{exit_code:08x}")
+    return _SelfUpdateCrashObservation(process_id, cast(str, started), exit_code)
 
 
 def _wait_for_self_update_rollback(
@@ -1646,9 +1791,12 @@ def _wait_for_self_update_rollback(
     expected_failure_code: str,
     health_failure_readiness: Path | None,
     consumed_request: _SelfUpdateConsumedRequest | None,
+    crash_observation: _SelfUpdateCrashObservation | None = None,
     timeout_seconds: float = 120,
 ) -> int:
     """Validate shared terminal rollback evidence and return the restored host PID."""
+    if scenario_slug == "updated-crash" and crash_observation is None:
+        raise BuildError("desktop self-update crash evidence has no observed exit")
     deadline = time.monotonic() + timeout_seconds
     restored_readiness = root / SELF_UPDATE_RESTORED_READINESS_DIR / SHELL_READINESS_FILE
     restored_state = root / SELF_UPDATE_RESTORED_CONTROLS_DIR / "host-lifecycle-state.json"
@@ -1664,17 +1812,31 @@ def _wait_for_self_update_rollback(
         ):
             time.sleep(0.05)
             continue
+        evidence_role = "failed-readiness"
         try:
             failed = (
                 json.loads(health_failure_readiness.read_text(encoding="utf-8"))
                 if health_failure_readiness is not None
                 else None
             )
+            evidence_role = "rollback-receipt"
             receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+            evidence_role = "restored-readiness"
             restored = json.loads(restored_readiness.read_text(encoding="utf-8"))
+            evidence_role = "restored-state"
             state = json.loads(restored_state.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise BuildError("desktop self-update smoke rollback evidence is invalid") from exc
+        except json.JSONDecodeError as exc:
+            raise BuildError(
+                "desktop self-update smoke rollback evidence is invalid: "
+                f"{scenario_slug}/{evidence_role}: "
+                f"JSONDecodeError line={exc.lineno} column={exc.colno}"
+            ) from exc
+        except OSError as exc:
+            raise BuildError(
+                "desktop self-update smoke rollback evidence is invalid: "
+                f"{scenario_slug}/{evidence_role}: {type(exc).__name__} "
+                f"errno={exc.errno} winerror={getattr(exc, 'winerror', None)}"
+            ) from exc
         if health_failure_readiness is not None and (
             not isinstance(failed, dict)
             or failed.get("ready") is not False
@@ -1682,7 +1844,7 @@ def _wait_for_self_update_rollback(
             or not failed["error"]
         ):
             raise BuildError("desktop self-update smoke did not observe a health failure")
-        if not _is_valid_self_update_rollback_receipt(
+        receipt_error = _self_update_rollback_receipt_error(
             receipt,
             receipt_name=receipts[0].name,
             target=target,
@@ -1691,12 +1853,39 @@ def _wait_for_self_update_rollback(
             expected_updater_process_id=updater_process_id,
             updated_process_id=updated_process_id,
             expected_failure_code=expected_failure_code,
-        ):
-            raise BuildError("desktop self-update smoke rollback receipt identity is invalid")
+        )
+        if receipt_error is not None:
+            raise BuildError(
+                "desktop self-update smoke rollback receipt identity is invalid: "
+                f"{scenario_slug}/{receipt_error}"
+            )
         if consumed_request is not None and consumed_request.path.exists():
             raise BuildError(
                 f"desktop self-update smoke did not consume {consumed_request.description}"
             )
+        if crash_observation is not None:
+            controls = root / SELF_UPDATE_UPDATED_CONTROLS_DIR
+            try:
+                marker = json.loads(
+                    (controls / "self-update-crash.json").read_text(encoding="utf-8")
+                )
+                valid_crash = (
+                    isinstance(marker, dict)
+                    and set(marker) == {"action", "processId", "startedAtUtc"}
+                    and marker["action"] == "Environment.FailFast"
+                    and type(marker["processId"]) is int
+                    and marker["processId"] == crash_observation.process_id == updated_process_id
+                    and _self_update_start_ticks(marker["startedAtUtc"])
+                    == _self_update_start_ticks(crash_observation.started_at_utc)
+                    == _self_update_start_ticks(receipt["updatedStartedAtUtc"])
+                    and type(crash_observation.exit_code) is int
+                    and crash_observation.exit_code not in (0, 259)
+                    and not (controls / "self-update-crash.request").exists()
+                )
+            except (OSError, ValueError, BuildError) as exc:
+                raise BuildError("desktop self-update crash evidence is invalid") from exc
+            if not valid_crash:
+                raise BuildError("desktop self-update crash evidence is invalid")
         if (
             restored.get("ready") is not True
             or restored.get("mode") != "shell"
@@ -1893,6 +2082,7 @@ def _seed_self_update_health_failure_registry(root: Path) -> None:
 class _SelfUpdateRollbackEvidence:
     health_failure_readiness: Path | None = None
     consumed_request: _SelfUpdateConsumedRequest | None = None
+    crash_request: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1936,6 +2126,13 @@ def _arrange_self_update_health_timeout(root: Path) -> _SelfUpdateRollbackEviden
     )
 
 
+def _arrange_self_update_updated_crash(root: Path) -> _SelfUpdateRollbackEvidence:
+    return replace(
+        _arrange_self_update_health_timeout(root),
+        crash_request=root / SELF_UPDATE_UPDATED_CONTROLS_DIR / "self-update-crash.request",
+    )
+
+
 _HEALTH_FAILURE_ROLLBACK_SCENARIO = _SelfUpdateRollbackScenario(
     slug="health-failure",
     failure_code="workspaceHealthProbeFailed",
@@ -1954,9 +2151,16 @@ _HEALTH_TIMEOUT_ROLLBACK_SCENARIO = _SelfUpdateRollbackScenario(
     arrange_failure=_arrange_self_update_health_timeout,
     updater_wait_timeout_seconds=180,
 )
+_UPDATED_CRASH_ROLLBACK_SCENARIO = _SelfUpdateRollbackScenario(
+    slug="updated-crash",
+    failure_code="updatedProcessExited",
+    arrange_failure=_arrange_self_update_updated_crash,
+    updater_wait_timeout_seconds=120,
+)
 _SELF_UPDATE_ROLLBACK_SCENARIOS = (
     _HEALTH_FAILURE_ROLLBACK_SCENARIO,
     _UPDATED_EXIT_ROLLBACK_SCENARIO,
+    _UPDATED_CRASH_ROLLBACK_SCENARIO,
     _HEALTH_TIMEOUT_ROLLBACK_SCENARIO,
 )
 
@@ -2133,6 +2337,16 @@ def _run_desktop_self_update_rollback_smoke(
         )
         blocking_parent.terminate()
         blocking_parent.wait(timeout=30)
+        crash_observation = None
+        if expected_evidence.crash_request is not None:
+            crash_observation = trigger_self_update_crash(
+                root,
+                process_scope=applied_scope,
+                target=target,
+                stage=stage,
+                token=token,
+                updater_process_id=applied.pid,
+            )
         applied_returncode = applied.wait(timeout=scenario.updater_wait_timeout_seconds)
         if applied_returncode != 0:
             raise BuildError(
@@ -2155,6 +2369,7 @@ def _run_desktop_self_update_rollback_smoke(
             expected_failure_code=scenario.failure_code,
             health_failure_readiness=expected_evidence.health_failure_readiness,
             consumed_request=expected_evidence.consumed_request,
+            crash_observation=crash_observation,
         )
         identity = json.loads((target / "release.json").read_text(encoding="utf-8"))
         if identity.get("version") != "1.0.0":

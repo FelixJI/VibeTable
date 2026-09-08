@@ -121,17 +121,21 @@ class SidecarTransportError(AssertionError):
     def __init__(self, message: str, evidence: SidecarProcessEvidence) -> None:
         super().__init__(message)
         self._message = message
-        self._evidence = evidence
+        self._failure_evidence = evidence
+        self._final_evidence: SidecarProcessEvidence | None = None
         self._lock = threading.Lock()
 
     def finalize(self, evidence: SidecarProcessEvidence) -> None:
         with self._lock:
-            self._evidence = evidence
+            self._final_evidence = evidence
 
     def __str__(self) -> str:
         with self._lock:
-            evidence = self._evidence
-        return f"{self._message}; {evidence.diagnostic_text()}"
+            final_evidence = self._final_evidence
+        message = f"{self._message}; atFailure={{{self._failure_evidence.diagnostic_text()}}}"
+        if final_evidence is not None:
+            message += f"; afterStop={{{final_evidence.diagnostic_text()}}}"
+        return message
 
 
 class Sidecar:

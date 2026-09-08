@@ -52,7 +52,13 @@ function samplePage(): TablePage {
 }
 
 describe("buildColumns (read-only Tabulator column defs)", () => {
-  it("renders formula recalculation state and diagnostic instead of a stale value", () => {
+  it.each([
+    ["updating", "计算中"],
+    ["failed", "计算失败"],
+    ["cancelled", "计算已取消"],
+    ["invalid", "公式无效"],
+    ["too_expensive", "计算成本过高"],
+  ])("renders formula %s state and diagnostic instead of a stale value", (state, label) => {
     const page: TablePage = {
       ...samplePage(),
       columns: [{
@@ -63,12 +69,28 @@ describe("buildColumns (read-only Tabulator column defs)", () => {
     const column = buildColumns(page)[0];
     const formatter = column?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
     const rendered = formatter({ getValue: () => ({
-      state: "error", value: null,
-      diagnostic: { code: "calculation.failed", message: "boom" },
+      state, value: null,
+      diagnostic: { code: `calculation.${state}`, message: "detail" },
     }) });
 
-    expect(rendered.textContent).toBe("计算失败");
-    expect(rendered.title).toBe("boom");
+    expect(rendered.textContent).toBe(label);
+    expect(rendered.className).toContain(`vt-lookup-state--${state}`);
+    expect(rendered.title).toBe("detail");
+  });
+
+  it("unwraps a ready formula envelope", () => {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [{
+        name: "total", title: "Total", kind: "formula", dataType: "decimal",
+        editable: false, nullable: true,
+      }],
+    };
+    const column = buildColumns(page)[0];
+    const formatter = column?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+
+    expect(formatter({ getValue: () => ({ state: "ready", value: 12.5 }) }).textContent)
+      .toBe("12.5");
   });
 
   it("emits one Tabulator column per TablePage column", () => {

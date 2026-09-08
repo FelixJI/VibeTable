@@ -502,3 +502,74 @@ test("records a bounded closed dialog-focus ledger without business identity", (
     delete globalThis.window;
   }
 });
+
+test("retains public document-list failure codes without messages or response data", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    const codes = ["DOCUMENT_LIST_FAILED", "DOCUMENT_LIST_INVALID"];
+    for (const code of codes) {
+      webview.postMessage({ type: "document.listRequested", requestId: code, payload: {} });
+      listeners[0]({
+        data: {
+          type: "operation.failed",
+          requestId: code,
+          payload: { code, message: "private document path", details: { path: "private-path" } },
+        },
+      });
+    }
+    const result = readBridgeDiagnosticsInPage();
+    assert.deepEqual(result.failures.map(failure => failure.code), codes);
+    assert.deepEqual(result.roundTrips.map(reply => reply.code), codes);
+    assert.equal(result.pending.length, 0);
+    assert.equal(JSON.stringify(result).includes("private document path"), false);
+    assert.equal(JSON.stringify(result).includes("private-path"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("records document operation failure notifications without retaining private payloads", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    const codes = [
+      "workspace.internal_failed",
+      "workspace.operation_conflict",
+      "workspace.scope_required",
+      "workspace.sequence_stale",
+      "workspace.session_epoch_stale",
+      "private-code",
+    ];
+    for (const code of codes) {
+      listeners[0]({ data: {
+        type: "document.operationFailed",
+        payload: { code, message: "private source path", path: "private-file.txt" },
+      } });
+    }
+    const result = readBridgeDiagnosticsInPage();
+    assert.deepEqual(result.failures.map(failure => failure.code), [...codes.slice(0, -1), null]);
+    assert.ok(result.failures.every(failure => failure.requestId === null
+      && failure.operation === null && failure.responseType === "document.operationFailed"
+      && failure.messageLength === "private source path".length));
+    assert.equal(result.pending.length, 0);
+    assert.equal(JSON.stringify(result).includes("private-"), false);
+    assert.equal(JSON.stringify(result).includes("private source path"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});

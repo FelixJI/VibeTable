@@ -44,6 +44,10 @@
     "SearchResolveRequest",
     "SearchResolveResult",
     "SearchStatus",
+    "FormulaTextPosition",
+    "FormulaTextRange",
+    "FormulaAuthorToken",
+    "FormulaAuthorDocument",
     "ComputedCellEnvelope",
     "SchemaAuditEvent"
   ],
@@ -467,12 +471,52 @@
         "errorCode": {"type": ["string", "null"]}
       }
     },
+    "FormulaTextPosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line", "character"],
+      "properties": {
+        "line": {"type": "integer", "minimum": 0},
+        "character": {"type": "integer", "minimum": 0}
+      }
+    },
+    "FormulaTextRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"$ref": "#/$defs/FormulaTextPosition"},
+        "end": {"$ref": "#/$defs/FormulaTextPosition"}
+      }
+    },
+    "FormulaAuthorToken": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["range", "kind", "fieldId", "relationFieldId", "targetFieldId"],
+      "properties": {
+        "range": {"$ref": "#/$defs/FormulaTextRange"},
+        "kind": {"enum": ["field", "relation", "relationTarget"]},
+        "fieldId": {"type": "string", "minLength": 1},
+        "relationFieldId": {"type": ["string", "null"], "minLength": 1},
+        "targetFieldId": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "FormulaAuthorDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displaySource", "tokens", "documentRevision"],
+      "properties": {
+        "displaySource": {"type": "string"},
+        "tokens": {"type": "array", "items": {"$ref": "#/$defs/FormulaAuthorToken"}},
+        "documentRevision": {"type": "integer", "minimum": 1}
+      }
+    },
     "ComputedCellEnvelope": {
       "type": "object",
       "additionalProperties": false,
       "required": ["state", "value", "definitionVersion", "sourceDataRevision", "dependencyWatermark", "diagnostic"],
       "properties": {
-        "state": {"enum": ["ready", "pending", "stale", "error"]},
+        "state": {"enum": ["ready", "updating", "failed", "cancelled", "invalid", "too_expensive"]},
         "value": {"type": ["string", "number", "boolean", "null"]},
         "definitionVersion": {"type": "integer", "minimum": 1},
         "sourceDataRevision": {"type": "integer", "minimum": 0},

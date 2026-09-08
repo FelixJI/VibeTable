@@ -14,6 +14,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacedb"
 )
 
 type businessIntentContextKey struct{}
@@ -86,6 +87,10 @@ func EnsurePocketBaseReceiptTable(ctx context.Context, app core.App) error {
 			UNIQUE(workspace_id, session_epoch, fence_epoch, claim_id, kind, identity)
 		)
 	`).WithContext(ctx).Execute()
+	if err != nil {
+		return err
+	}
+	_, err = app.DB().NewQuery(workspacedb.ImportedCompletionsSchema).WithContext(ctx).Execute()
 	return err
 }
 
@@ -186,6 +191,39 @@ func PersistPocketBaseReceipt(
 	return txApp.Save(record)
 }
 
+// ClassifyPocketBaseTransactionError preserves a prepared intent unless a
+// missing business receipt proves that the authoritative transaction rolled back.
+func ClassifyPocketBaseTransactionError(
+	ctx context.Context,
+	app core.App,
+	transactionErr error,
+) error {
+	if transactionErr == nil || errors.Is(transactionErr, ErrExternalCommitted) {
+		return transactionErr
+	}
+	intent, ok := businessIntentFrom(ctx)
+	if !ok {
+		return transactionErr
+	}
+	committed, err := HasPocketBaseReceipt(
+		context.WithoutCancel(ctx),
+		app,
+		intent.Token,
+		intent.MutationRevision,
+	)
+	if err != nil {
+		return errors.Join(
+			ErrExternalCommitted,
+			transactionErr,
+			fmt.Errorf("verify PocketBase business receipt: %w", err),
+		)
+	}
+	if !committed {
+		return transactionErr
+	}
+	return errors.Join(ErrExternalCommitted, transactionErr)
+}
+
 func HasPocketBaseReceipt(
 	ctx context.Context,
 	app core.App,
@@ -249,6 +287,21 @@ func HasPocketBaseReceiptIdentity(
 		"workspace": workspaceID,
 		"kind":      kind,
 		"identity":  identity,
+	}).Row(&count)
+	if err != nil {
+		return false, err
+	}
+	if count < 0 || count > 1 {
+		return false, errors.New("workspace.business_receipt_corrupt")
+	}
+	if count == 1 {
+		return true, nil
+	}
+	// Imported completion facts carry no authority fields and are consumed
+	// only by this permanent business-idempotency query.
+	err = app.DB().NewQuery(`SELECT COUNT(*) FROM workspace_v2_imported_completions
+		WHERE workspace_id = {:workspace} AND kind = {:kind} AND identity = {:identity}`).WithContext(ctx).Bind(dbx.Params{
+		"workspace": workspaceID, "kind": kind, "identity": identity,
 	}).Row(&count)
 	if err != nil {
 		return false, err

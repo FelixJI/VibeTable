@@ -1,0 +1,242 @@
+{
+  "producerCommit": "c97c83336e4aa1bdf993fc46a7de57040219fb03",
+  "boundary": "Python Product dispatcher + adapter; typed-shape scripted authority response, not a signed-domain snapshot",
+  "cases": [
+    {
+      "name": "page-typed-unicode-falsy",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-typed-unicode-falsy",
+        "method": "query.page",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 5
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "offset": 0,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 1,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 5
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 5
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-typed-unicode-falsy",
+        "result": {
+          "rows": [
+            {
+              "id": "r1",
+              "text": "中文 Café 👩🏽‍💻 ‏عربي",
+              "blank": "",
+              "zero": 0,
+              "negativeZero": -0.0,
+              "false": false,
+              "null": null,
+              "array": [],
+              "object": {}
+            }
+          ],
+          "offset": 0,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 1,
+          "snapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 0,
+              "limit": 5
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "page-typed-empty-offset",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-typed-empty-offset",
+        "method": "query.page",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 5,
+            "limit": 5
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "rows": [],
+          "offset": 5,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 1,
+          "querySnapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 5,
+              "limit": 5
+            }
+          }
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "orders",
+            "query": {
+              "offset": 5,
+              "limit": 5
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-typed-empty-offset",
+        "result": {
+          "rows": [],
+          "offset": 5,
+          "limit": 5,
+          "filteredRows": 1,
+          "totalRows": 1,
+          "snapshot": {
+            "snapshotId": "opaque-producer-snapshot",
+            "digest": "opaque-producer-digest",
+            "databaseId": "database-1",
+            "table": "orders",
+            "schemaRevision": "schema_1",
+            "dataRevision": 0,
+            "normalizedQuery": {
+              "offset": 5,
+              "limit": 5
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "page-typed-product-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "page-typed-product-error",
+        "method": "query.page",
+        "params": {
+          "tableId": "orders",
+          "query": {
+            "offset": 0,
+            "limit": 5
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": "product"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": null,
+          "body": {
+            "operation": "page",
+            "tableId": "orders",
+            "query": {
+              "offset": 0,
+              "limit": 5
+            }
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "page-typed-product-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "Snapshot is stale",
+            "code": "query.snapshot_stale",
+            "path": "snapshot",
+            "details": {
+              "expected": "data_0",
+              "actual": "data_1"
+            },
+            "retryable": false
+          }
+        }
+      }
+    }
+  ]
+}

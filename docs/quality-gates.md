@@ -36,8 +36,10 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
   line/branch/diff 阈值；未知字段、空清单、重复或跨组重叠包、非法路径、缺失阈值及空
   line/branch 分母都会 fail closed。分析器固定按产品目标 `windows/amd64` 解析 build
   constraints，不把 `!windows` 源码计入分母。authority 组覆盖 `filehistory`、`restore`、
-  `query` 与 `mutation`，并用 `./...` 汇集自测、跨包接口测试和 integration 对这四包的
-  覆盖；完整无 instrumentation 的 `go test ./...` 与产品 E2E 仍由独立门禁执行。
+  `query`、`mutation` 与 Go `productrpc` adapter，并用 `./...` 汇集自测、跨包接口测试和
+  integration 对这些包的覆盖；完整无 instrumentation 的 `go test ./...` 与产品 E2E 仍由
+  独立门禁执行。差异覆盖率以所选基线与当前 HEAD 的 Git merge-base 提交为准，
+  报告记录该固定提交；保留工作区及未跟踪 Go 文件的差异，不计入仅在后续 main 上出现的改动。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
 - Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a` 与
   `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、以三个
@@ -78,7 +80,7 @@ Host/runtime capability，也不表示场景已通过；只有与候选 source S
 
 - 任意未预期的 `operation.failed` 或场景结束时仍 pending 的 bridge 请求，直接判定场景失败；不能再用“稍后轮询成功”掩盖中途错误。
 - 普通历史查询以 p95 500ms 为告警线、单次 2s 为硬上限；历史抽屉首屏以 p95 750ms 为告警线、单次 2s 为硬上限。
-- sidecar 故障注入后的读取属于恢复性能：允许在宿主内等待最多 3s，但只重试 `query.page` 和 `history.queryRequested` 这类幂等读取。写入、恢复应用等操作禁止自动重试。
+- sidecar 故障注入后的读取属于恢复性能：允许在宿主内等待最多 3s，但只重试仍由恢复控制器处理的 `history.queryRequested` 等幂等读取。`query.page` 已由 Go Product owner 处理，请求绑定原会话代际；转发不可用时直接失败，禁止重放到新 owner。写入、恢复应用等操作禁止自动重试。
 - 场景的 180s 是防挂死超时，不是性能目标；场景总耗时包含建表、导入、截图和故障注入，应与同场景历史基线比较，不能拿它替代用户交互延迟。
 - 在累计至少 10 次同规格 Windows runner 数据前，p95 预算先作为报告/告警项；零 bridge 失败与零 pending 立即作为硬门禁。连续三次 p95 超线或相对稳定基线上升 50% 时再升级为阻断项。
 

@@ -542,13 +542,32 @@ class _Win32PlatformScope:
                 return pids
             waited = False
             for pid in pids:
-                handle = self.open_member(pid)
-                if handle is None:
-                    continue
-                try:
-                    if not handle.belongs_to_scope():
+                # Waiting needs a stable Job-owned handle, not image metadata.
+                access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+                raw_handle = kernel32.OpenProcess(access, False, pid)
+                if not raw_handle:
+                    error = ctypes.get_last_error()
+                    if error == ERROR_INVALID_PARAMETER:
                         continue
-                    handle.wait(remaining)
+                    raise ctypes.WinError(error, f"OpenProcess({pid})")
+                handle = _OwnedHandle(int(raw_handle))
+                try:
+                    belongs = wintypes.BOOL()
+                    _check(
+                        kernel32.IsProcessInJob(
+                            handle.value, self._job.value, ctypes.byref(belongs)
+                        ),
+                        "IsProcessInJob(member)",
+                    )
+                    if not belongs.value:
+                        continue
+                    result = int(
+                        kernel32.WaitForSingleObject(handle.value, _milliseconds(remaining))
+                    )
+                    if result not in (WAIT_OBJECT_0, WAIT_TIMEOUT):
+                        raise ctypes.WinError(
+                            ctypes.get_last_error(), "WaitForSingleObject(member)"
+                        )
                     waited = True
                     break
                 finally:

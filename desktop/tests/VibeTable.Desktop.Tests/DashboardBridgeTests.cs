@@ -194,6 +194,25 @@ public sealed class DashboardBridgeTests
     [TestMethod]
     public async Task Dispatcher_NeverRunsMoreThanSixDashboardQueriesConcurrently()
     {
+        // Keep the blocked-continuation regression deterministic without changing the global thread pool.
+        var scheduler = new ConcurrentExclusiveSchedulerPair(TaskScheduler.Default, maxConcurrencyLevel: 1);
+        try
+        {
+            await Task.Factory.StartNew(
+                VerifyDashboardConcurrencyAsync,
+                CancellationToken.None,
+                TaskCreationOptions.None,
+                scheduler.ExclusiveScheduler).Unwrap();
+        }
+        finally
+        {
+            scheduler.Complete();
+            await scheduler.Completion;
+        }
+    }
+
+    private static async Task VerifyDashboardConcurrencyAsync()
+    {
         var (dispatcher, gateway, sink) = CreateDispatcher();
         var release = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -213,9 +232,9 @@ public sealed class DashboardBridgeTests
         Assert.IsTrue(SpinWait.SpinUntil(() => gateway.QueryCount == 6, 2_000));
         Assert.AreEqual(6, gateway.MaxActiveQueries);
         release.SetResult();
-        Assert.IsTrue(SpinWait.SpinUntil(
-            () => sink.Replies.Count(reply => reply.Type == "dashboard.queryLoaded") == 8,
-            2_000));
+        IReadOnlyList<FakeWebReplySink.Reply> replies =
+            await sink.WaitForCountAsync("dashboard.queryLoaded", 8);
+        Assert.AreEqual(8, replies.Count);
         Assert.IsTrue(gateway.MaxActiveQueries <= 6);
     }
 

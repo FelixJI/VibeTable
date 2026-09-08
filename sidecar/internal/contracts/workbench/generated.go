@@ -266,6 +266,30 @@ type SearchStatus struct {
 	ErrorCode  *string `json:"errorCode"`
 }
 
+type FormulaTextPosition struct {
+	Line      int64 `json:"line"`
+	Character int64 `json:"character"`
+}
+
+type FormulaTextRange struct {
+	Start FormulaTextPosition `json:"start"`
+	End   FormulaTextPosition `json:"end"`
+}
+
+type FormulaAuthorToken struct {
+	Range           FormulaTextRange `json:"range"`
+	Kind            string           `json:"kind"`
+	FieldId         string           `json:"fieldId"`
+	RelationFieldId *string          `json:"relationFieldId"`
+	TargetFieldId   *string          `json:"targetFieldId"`
+}
+
+type FormulaAuthorDocument struct {
+	DisplaySource    string               `json:"displaySource"`
+	Tokens           []FormulaAuthorToken `json:"tokens"`
+	DocumentRevision int64                `json:"documentRevision"`
+}
+
 type ComputedCellEnvelope struct {
 	State               string  `json:"state"`
 	Value               any     `json:"value"`

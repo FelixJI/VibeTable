@@ -212,7 +212,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task OldResponseIsDroppedAfterWorkspaceSwitch()
+    public async Task PythonFieldSettingsResponseSettlesAsStaleAfterWorkspaceSwitch()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -228,20 +228,28 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var dispatcher = CreateDispatcher(sink, filter);
         dispatcher.SetProductDataGateway(gateway);
 
-        dispatcher.Dispatch(QueryRequest("old-response", ScopeFor(opened, 1)));
+        using var settingsParams = JsonDocument.Parse(
+            """{"tableId":"tbl_records"}""");
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "field.settings.describe", "old-response", settingsParams.RootElement.Clone(), string.Empty,
+            ScopeFor(opened, 1)));
         await transport.WaitForWriteAsync();
         await fixture.Manager.SwitchAsync(
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
         transport.CompleteResponse();
-        await Task.Delay(150);
+        await sink.WaitForFailedAsync();
 
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "old-response"));
+        AssertRetiredReply(sink, "old-response");
     }
 
     [TestMethod]
-    public async Task GoRouteHonorsEpochCancellationWithoutRendererReply()
+    [DataRow("query.page")]
+    [DataRow("lookup.valuePage")]
+    [DataRow("relation.searchTargets")]
+    [DataRow("relation.previewDelta")]
+    [DataRow("lookup.query")]
+    public async Task GoRouteSettlesEpochCancellationWithoutSuccess(string method)
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -268,11 +276,11 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(
             sink,
-            GoQuerySelector(),
+            ProductRpcRouteSelector.Default,
             sessionEnvelopeFilter: filter);
         controller.SetProductSidecarForwarder(sidecar);
         Task dispatch = controller.DispatchAsync(
-            GoQueryRequest("go-cancel", ScopeFor(opened, 1)));
+            GoReadRequest(method, "go-cancel", ScopeFor(opened, 1)));
         await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
@@ -283,12 +291,16 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await switching.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(1, sidecar.CallCount);
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "go-cancel"));
+        AssertRetiredReply(sink, "go-cancel");
     }
 
     [TestMethod]
-    public async Task GoRouteDropsLateResultWhenForwarderIgnoresEpochCancellation()
+    [DataRow("query.page")]
+    [DataRow("lookup.valuePage")]
+    [DataRow("relation.searchTargets")]
+    [DataRow("relation.previewDelta")]
+    [DataRow("lookup.query")]
+    public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation(string method)
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -314,11 +326,11 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(
             sink,
-            GoQuerySelector(),
+            ProductRpcRouteSelector.Default,
             sessionEnvelopeFilter: filter);
         controller.SetProductSidecarForwarder(sidecar);
-        RoutedWebRequest request = GoQueryRequest(
-            "go-late",
+        RoutedWebRequest request = GoReadRequest(
+            method, "go-late",
             ScopeFor(opened, 1));
         Task dispatch = controller.DispatchAsync(request);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -334,8 +346,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await switching.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual(1, sidecar.CallCount);
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "go-late"));
+        AssertRetiredReply(sink, "go-late");
     }
 
     [TestMethod]
@@ -371,39 +382,45 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task RecoverableReadDoesNotRetryOnNewEpochGateway()
+    public async Task GoQueryDoesNotReplayOldEpochFailureOnReplacementForwarder()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
         WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
         WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
-            first.WorkspaceId,
-            WorkspaceOpenMode.Writable);
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
         using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
-        await using var staleClient = new JsonRpcClient(
-            new ControlledQueryTransport());
-        using var staleGateway = new JsonRpcProductDataGateway(staleClient);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ProductSidecarForwardResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldForwarder = new ControlledProductSidecarForwarder((_, _) =>
+        {
+            started.TrySetResult();
+            return response.Task;
+        });
+        var replacement = new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("Old epoch request must not be replayed"));
+        var python = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(python);
+        using var gateway = new JsonRpcProductDataGateway(client);
         var sink = new FakeWebReplySink();
-        var dispatcher = CreateDispatcher(sink, filter);
-        dispatcher.SetProductDataGateway(staleGateway);
-        staleGateway.Dispose();
+        var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
+        controller.SetGateway(gateway);
+        controller.SetProductSidecarForwarder(oldForwarder);
+        RoutedWebRequest request = GoQueryRequest("stale-retry", ScopeFor(opened, 1));
 
-        dispatcher.Dispatch(QueryRequest("stale-retry", ScopeFor(opened, 1)));
-        await Task.Delay(60);
-        await fixture.Manager.SwitchAsync(
-            second.WorkspaceId,
-            WorkspaceOpenMode.Writable);
-        var replacementTransport = new ControlledQueryTransport();
-        await using var replacementClient = new JsonRpcClient(
-            replacementTransport);
-        using var replacementGateway = new JsonRpcProductDataGateway(
-            replacementClient);
-        dispatcher.SetProductDataGateway(replacementGateway);
-        await Task.Delay(200);
+        Task dispatch = controller.DispatchAsync(request);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+        controller.SetProductSidecarForwarder(replacement);
+        response.SetException(new BackendUnavailableException("Old sidecar unavailable"));
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
 
-        Assert.AreEqual(0, replacementTransport.WriteCount);
-        Assert.IsFalse(sink.Replies.Any(
-            reply => reply.RequestId == "stale-retry"));
+        Assert.AreEqual(1, oldForwarder.CallCount);
+        Assert.IsTrue(JsonElement.DeepEquals(request.Wire, oldForwarder.Calls.Single().Wire));
+        Assert.AreEqual(0, replacement.CallCount);
+        Assert.AreEqual(0, python.WriteCount);
+        AssertRetiredReply(sink, "stale-retry");
     }
 
     [TestMethod]
@@ -708,6 +725,187 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             @"""code"":""BAD_PAYLOAD""");
     }
 
+    private static void AssertRetiredReply(FakeWebReplySink sink, string requestId)
+    {
+        FakeWebReplySink.Reply reply = sink.Replies.Single(item => item.RequestId == requestId);
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("workspace.session_stale", payload.GetProperty("code").GetString());
+        Assert.IsFalse(sink.Replies.Any(item => item.RequestId is null));
+    }
+
+    [TestMethod]
+    [DataRow(null, true)]
+    [DataRow("selection-retired", true)]
+    [DataRow("selection-active", false)]
+    public async Task TableSelectionRetirementDoesNotEscapeAsWorkspaceError(string? requestId, bool retire)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult(
+            new[] { "records" }, Array.Empty<string>(), TestDisplayNames.For("records"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var read = new TaskCompletionSource<TableSelectionProjection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        gateway.SelectionOpenOverride = async (_, _, _) =>
+        {
+            Assert.IsTrue(filter.TryCaptureHost(
+                opened.WorkspaceId!.Value, opened.SessionEpoch, Guid.NewGuid(), out var lease));
+            using (lease)
+            {
+                started.TrySetResult();
+                return await read.Task.WaitAsync(lease!.CancellationToken);
+            }
+        };
+        var workspace = new TableWorkspaceService(gateway);
+        await workspace.OpenDatabaseAsync("db");
+        var notifications = new List<TableNotification>();
+        workspace.Notification += notifications.Add;
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(
+            workspace, new FakeDatabasePicker("local://configured"), sink,
+            NoDatabaseOpenRoute.Instance, sessionEnvelopeFilter: filter);
+        using var document = JsonDocument.Parse("""{"table":"records"}""");
+        Task dispatch = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "table.selected", requestId, document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            if (!retire)
+            {
+                read.TrySetCanceled();
+                await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => dispatch);
+                Assert.AreEqual(WorkspaceSessionState.OpenedWritable, fixture.Manager.Current.State);
+                return;
+            }
+            Task switching = fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+            await switching.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.AreEqual(0, notifications.Count);
+            Assert.AreEqual(0, sink.Replies.Count);
+        }
+        finally
+        {
+            read.TrySetCanceled();
+        }
+    }
+    [TestMethod]
+    public async Task TableSelectionRejectsRetiredScopeBeforeResolvingTable()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        await fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+        var sink = new FakeWebReplySink();
+        using var dispatcher = CreateDispatcher(sink, filter);
+        using var document = JsonDocument.Parse("""{"table":"not-in-current-workspace"}""");
+        await dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "table.selected", "selection-stale", document.RootElement.Clone(),
+            string.Empty, ScopeFor(opened, 1)));
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("selection-stale", reply.RequestId);
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", payload.GetProperty("code").GetString());
+    }
+    [TestMethod]
+    [DataRow("field.settings.describe", "{\"tableId\":\"tbl_records\"}")]
+    public async Task PythonReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
+        controller.SetGateway(gateway);
+        using var document = JsonDocument.Parse(payload);
+        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
+            type, "relation-retired", document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
+        await transport.WaitForWriteAsync();
+
+        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
+            second.WorkspaceId, WorkspaceOpenMode.Writable);
+        try
+        {
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+            await switching.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            transport.CompleteResponse();
+        }
+
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("relation-retired", reply.RequestId);
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement result = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("workspace.session_stale", result.GetProperty("code").GetString());
+        Assert.AreEqual(1, transport.WriteCount);
+    }
+
+    [TestMethod]
+    [DataRow("lookup.valuePage",
+        "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
+        + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
+        + "\"offset\":0,\"limit\":10}")]
+    [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\",\"sourceItemId\":\"record-1\",\"expectedSchemaRevision\":\"schema-1\",\"adds\":[],\"removes\":[],\"idempotencyKey\":\"preview-test\"}")]
+    [DataRow("lookup.query", ProductDataSidecarRoutingTests.LookupQueryPayload)]
+    public async Task RelationReadRejectsRetiredScopeBeforeGateway(string type, string payload)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        await fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
+        controller.SetGateway(gateway);
+        var sidecar = new ControlledProductSidecarForwarder((call, _) =>
+            Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                call.Wire.Clone(), JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() }))));
+        controller.SetProductSidecarForwarder(sidecar);
+        using var document = JsonDocument.Parse(payload);
+        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
+            type, "relation-stale", document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
+        try
+        {
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            transport.CompleteResponse();
+        }
+
+        Assert.AreEqual(0, transport.WriteCount);
+        Assert.AreEqual(0, sidecar.CallCount);
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("relation-stale", reply.RequestId);
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement result = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", result.GetProperty("code").GetString());
+    }
+
     private static WorkspaceRequestDispatcher CreateDispatcher(
         FakeWebReplySink sink,
         WorkspaceSessionEnvelopeFilter filter)
@@ -831,7 +1029,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             await Task.Delay(10, timeout.Token);
     }
 
-    private static RoutedWebRequest QueryRequest(
+    private static RoutedWebRequest QueryPageRequest(
         string requestId,
         WorkspaceWireScope scope)
     {
@@ -845,11 +1043,44 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             scope);
     }
 
+    private static RoutedWebRequest GoReadRequest(
+        string method, string requestId, WorkspaceWireScope scope)
+    {
+        RoutedWebRequest request = GoQueryRequest(requestId, scope);
+        return method == "lookup.query"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.Deserialize<JsonElement>(ProductDataSidecarRoutingTests.LookupQueryPayload),
+            }
+            : method == "lookup.valuePage"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.SerializeToElement(new { collection = "records", fieldRef = "owner.name", sourceRecordId = "record-1", schemaRevision = "s1", permissionRevision = "p1", lookupRevision = "l1", offset = 0, limit = 10 }),
+            }
+            : method == "relation.searchTargets"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.SerializeToElement(new { relationId = "records.owner" }),
+            }
+            : method == "relation.previewDelta"
+            ? request with
+            {
+                Type = method,
+                Payload = JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
+                    expectedSchemaRevision = "schema-1", adds = Array.Empty<object>(),
+                    removes = Array.Empty<object>(), idempotencyKey = "preview-test" }),
+            }
+            : request;
+    }
+
     private static RoutedWebRequest GoQueryRequest(
         string requestId,
         WorkspaceWireScope scope)
     {
-        RoutedWebRequest request = QueryRequest(requestId, scope);
+        RoutedWebRequest request = QueryPageRequest(requestId, scope);
         JsonElement wire = JsonSerializer.SerializeToElement(new
         {
             scope = scope.Scope,
@@ -862,14 +1093,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     private static ProductRpcRouteSelector GoQuerySelector()
-        => new(ProductRpcCapabilityManifest.CreateForTests(
-            new ProductRpcCapability(
-                "query.page",
-                "workspace",
-                "rendererPublic",
-                "product.query.page",
-                "goSidecar",
-                "read")));
+        => new(ProductRpcCapabilityManifest.Default);
 
     private static WorkspaceWireScope ScopeFor(
         WorkspaceSessionV2 session,
@@ -1119,8 +1343,19 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                   "id": "{{_requestId}}",
                   "result": {
                     "rows": [],
-                    "total": 0,
-                    "snapshot": {"schemaRevision": "schema_0001"}
+                    "nextCursor": null,
+                    "hasMore": false,
+                    "filteredRows": 0,
+                    "totalRows": 0,
+                    "querySnapshot": {
+                      "workspaceId": "00000000000000000000000000000000",
+                      "sessionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "provider": "local",
+                      "table": "tbl_records",
+                      "schemaRevision": "schema_0001",
+                      "dataRevision": 0,
+                      "query": {"offset": 0, "limit": 100}
+                    }
                   }
                 }
                 """);

@@ -1,6 +1,9 @@
 export const messages: Record<string, string> = {
   "grid.formula.updating": "计算中",
   "grid.formula.failed": "计算失败",
+  "grid.formula.cancelled": "计算已取消",
+  "grid.formula.invalid": "公式无效",
+  "grid.formula.too_expensive": "计算成本过高",
   "common.copy": "复制",
   "common.copied": "已复制",
   "files.import": "导入文件",

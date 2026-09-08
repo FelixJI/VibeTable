@@ -38,7 +38,7 @@ def _invalidate_first_rpc_scope(source: dict[str, object]) -> None:
     first["scope"] = "session"
 
 
-def test_policy_joins_catalog_and_inventory_with_reconcile_and_schema_list_migrated() -> None:
+def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> None:
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
@@ -50,12 +50,29 @@ def test_policy_joins_catalog_and_inventory_with_reconcile_and_schema_list_migra
         "scope": "workspace",
         "audience": "rendererPublic",
         "capabilityId": "schema.query",
-        "owner": "pythonBff",
+        "owner": "goSidecar",
         "effect": "read",
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
         "events.reconcile",
+        "file.list",
+        "history.read",
+        "lookup.list",
+        "lookup.query",
+        "lookup.valuePage",
+        "query.cursorFetch",
+        "query.cursorOpen",
+        "query.page",
+        "query.readRows",
+        "query.selectionOpen",
+        "query.view",
+        "relation.previewDelta",
+        "relation.searchTargets",
+        "schema.describe",
+        "schema.getTable",
         "schema.list",
+        "settings.readDevice",
+        "settings.saveDevice",
     }
     schema_list = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.list")
     assert schema_list == {
@@ -66,6 +83,21 @@ def test_policy_joins_catalog_and_inventory_with_reconcile_and_schema_list_migra
         "owner": "goSidecar",
         "effect": "read",
     }
+    query_page = next(item for item in manifest["rpcMethods"] if item["method"] == "query.page")
+    assert query_page == {
+        "method": "query.page",
+        "scope": "workspace",
+        "audience": "rendererPublic",
+        "capabilityId": "schema.query",
+        "owner": "goSidecar",
+        "effect": "read",
+    }
+    assert (
+        next(item for item in manifest["rpcMethods"] if item["method"] == "query.validateSnapshot")[
+            "owner"
+        ]
+        == "pythonBff"
+    )
     assert {item["owner"] for item in manifest["eventTopics"]} == {
         "pythonBff",
         "goSidecar",
@@ -137,9 +169,31 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 100
+    assert len(methods) == 83
     assert methods[0] == "command.list"
-    assert current_owner_methods("goSidecar") == ("events.reconcile", "schema.list")
+    assert current_owner_methods("goSidecar") == (
+        "events.reconcile",
+        "file.list",
+        "history.read",
+        "lookup.list",
+        "lookup.query",
+        "lookup.valuePage",
+        "query.cursorFetch",
+        "query.cursorOpen",
+        "query.page",
+        "query.readRows",
+        "query.selectionOpen",
+        "query.view",
+        "relation.previewDelta",
+        "relation.searchTargets",
+        "schema.describe",
+        "schema.getTable",
+        "schema.list",
+    )
+    assert current_owner_methods("wpfHost") == (
+        "settings.readDevice",
+        "settings.saveDevice",
+    )
     with pytest.raises(ValueError, match="unknown current owner"):
         current_owner_methods(cast(CurrentOwner, "retiredOwner"))
 
@@ -149,7 +203,11 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert "func CurrentOwnerRPCDescriptors(owner CurrentOwner) []RPCDescriptor" in go_adapter
     assert (
         '{Method: "schema.getTable", Scope: WorkspaceScope, Audience: RendererPublic, '
-        'CapabilityID: "schema.query", Owner: PythonBff, Effect: ReadEffect}' in go_adapter
+        'CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}' in go_adapter
+    )
+    assert (
+        '{Method: "settings.saveDevice", Scope: GlobalScope, Audience: RendererPublic, '
+        'CapabilityID: "host.preferences", Owner: WpfHost, Effect: WriteEffect}' in go_adapter
     )
 
 

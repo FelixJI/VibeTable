@@ -630,6 +630,11 @@ public sealed class WebMessageRouterTests
                 type,
                 requestId = $"request-{type}",
                 payload = new { },
+                scope = new
+                {
+                    scope = "workspace", workspaceId = Guid.NewGuid(), sessionEpoch = 1,
+                    operationId = Guid.NewGuid(), sequence = 1,
+                },
             }));
             Assert.IsNull(reply, type);
             Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
@@ -652,28 +657,25 @@ public sealed class WebMessageRouterTests
 
         foreach (string type in ProductDataRpcRegistry.RequestTypes)
         {
-            string request = type == "events.reconcile"
-                ? JsonSerializer.Serialize(new
+            var request = new Dictionary<string, object?>
+            {
+                ["type"] = type,
+                ["requestId"] = $"request-{type}",
+                ["payload"] = new { },
+            };
+            if (type is "events.reconcile" or "file.list" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "schema.describe" or "schema.getTable")
+            {
+                request["scope"] = new
                 {
-                    type,
-                    requestId = $"request-{type}",
-                    scope = new
-                    {
-                        scope = "workspace",
-                        workspaceId,
-                        sessionEpoch = 1,
-                        operationId,
-                        sequence = 0,
-                    },
-                    payload = new { },
-                })
-                : JsonSerializer.Serialize(new
-                {
-                    type,
-                    requestId = $"request-{type}",
-                    payload = new { },
-                });
-            var reply = router.Route(request);
+                    sequence = 0,
+                    operationId,
+                    scope = "workspace",
+                    sessionEpoch = 1,
+                    workspaceId,
+                };
+            }
+
+            var reply = router.Route(JsonSerializer.Serialize(request));
             Assert.IsNull(reply, type);
             Assert.IsTrue(router.IsHostNotificationAllowed(type), type);
         }
@@ -904,14 +906,7 @@ public sealed class WebMessageRouterTests
         Guid workspaceId = Guid.NewGuid();
         Guid operationId = Guid.NewGuid();
         var dispatched = new List<RoutedWebRequest>();
-        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
-            new ProductRpcCapability(
-                "query.page",
-                "workspace",
-                "rendererPublic",
-                "product.query.page",
-                "goSidecar",
-                "read"));
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.Default;
         var router = new WebMessageRouter(
             dispatched.Add,
             WorkspaceRpcCapabilityManifest.Default,
@@ -952,7 +947,75 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
-    public void RelationRouteFailsClosedWhenTestPolicyAssignsGoSidecar()
+    public void RelationGoRouteRequiresScopeAndPreservesItsWire()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability(
+                "lookup.valuePage",
+                "workspace",
+                "rendererPublic",
+                "relation.lookup",
+                "goSidecar",
+                "read"));
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            policy)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? reply = router.Route(
+            """{"type":"lookup.valuePage","requestId":"relation-go","payload":{"collection":"records","fieldRef":"owner.name","sourceRecordId":"record-1","schemaRevision":"s1","permissionRevision":"p1","lookupRevision":"l1","offset":0,"limit":10}}""");
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        const string scoped = """
+            {"type":"lookup.valuePage","requestId":"relation-go","payload":{"collection":"records","fieldRef":"owner.name","sourceRecordId":"record-1","schemaRevision":"s1","permissionRevision":"p1","lookupRevision":"l1","offset":0,"limit":10},"scope":{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"22222222-2222-4222-8222-222222222222","sequence":1}}
+            """;
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            document.RootElement.GetProperty("scope"), dispatched.Single().Wire));
+    }
+
+    [TestMethod]
+    public void PreviewGoRouteRequiresScopeAndPreservesItsWire()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
+            new ProductRpcCapability(
+                "relation.previewDelta",
+                "workspace",
+                "rendererPublic",
+                "relation.lookup",
+                "goSidecar",
+                "read"));
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            policy)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? reply = router.Route(
+            """{"type":"relation.previewDelta","requestId":"relation-go","payload":{"relationId":"records.owner","sourceItemId":"record-1","expectedSchemaRevision":"schema-1","adds":[],"removes":[],"idempotencyKey":"preview-test"}}""");
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        const string scoped = """
+            {"type":"relation.previewDelta","requestId":"relation-go","payload":{"relationId":"records.owner","sourceItemId":"record-1","expectedSchemaRevision":"schema-1","adds":[],"removes":[],"idempotencyKey":"preview-test"},"scope":{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"22222222-2222-4222-8222-222222222222","sequence":1}}
+            """;
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            document.RootElement.GetProperty("scope"), dispatched.Single().Wire));
+    }
+
+    [TestMethod]
+    public void SearchGoRouteRequiresScopeAndPreservesItsWire()
     {
         var dispatched = new List<RoutedWebRequest>();
         ProductRpcCapabilityManifest policy = ProductRpcCapabilityManifest.CreateForTests(
@@ -960,7 +1023,7 @@ public sealed class WebMessageRouterTests
                 "relation.searchTargets",
                 "workspace",
                 "rendererPublic",
-                "product.relation.search_targets",
+                "relation.lookup",
                 "goSidecar",
                 "read"));
         var router = new WebMessageRouter(
@@ -974,8 +1037,56 @@ public sealed class WebMessageRouterTests
         HostReplyMessage? reply = router.Route(
             """{"type":"relation.searchTargets","requestId":"relation-go","payload":{"relationId":"customer"}}""");
 
-        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", reply?.Payload?.Code);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
         Assert.HasCount(0, dispatched);
+        const string scoped = """
+            {"type":"relation.searchTargets","requestId":"relation-go","payload":{"relationId":"customer"},"scope":{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"22222222-2222-4222-8222-222222222222","sequence":1}}
+            """;
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            document.RootElement.GetProperty("scope"), dispatched.Single().Wire));
+    }
+
+    [TestMethod]
+    public void LookupQueryGoRouteRequiresScopeAndPreservesPayloadAndWire()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            ProductRpcCapabilityManifest.Default)
+        {
+            IsReady = true,
+        };
+        JsonElement payload = JsonSerializer.Deserialize<JsonElement>(
+            ProductDataSidecarRoutingTests.LookupQueryPayload);
+        HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+        {
+            type = "lookup.query", requestId = "lookup-go", payload,
+        }));
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        string scoped = JsonSerializer.Serialize(new
+        {
+            type = "lookup.query", requestId = "lookup-go", payload,
+            scope = new
+            {
+                scope = "workspace",
+                workspaceId = "11111111-1111-4111-8111-111111111111",
+                sessionEpoch = 7,
+                operationId = "22222222-2222-4222-8222-222222222222",
+                sequence = 1,
+            },
+        });
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        RoutedWebRequest request = dispatched.Single();
+        Assert.AreEqual("lookup.query", request.Type);
+        Assert.AreEqual("lookup-go", request.RequestId);
+        Assert.IsTrue(JsonElement.DeepEquals(payload, request.Payload));
+        Assert.IsTrue(JsonElement.DeepEquals(document.RootElement.GetProperty("scope"), request.Wire));
     }
 
     [TestMethod]
@@ -994,7 +1105,9 @@ public sealed class WebMessageRouterTests
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
             Assert.AreEqual(
-                route is "events.reconcile" or "schema.list" ? "goSidecar" : "pythonBff",
+                route is "events.reconcile" or "file.list" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "schema.describe" or "schema.getTable"
+                    ? "goSidecar"
+                    : "pythonBff",
                 capability.Owner,
                 route);
         }
@@ -1003,7 +1116,8 @@ public sealed class WebMessageRouterTests
         {
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual("pythonBff", capability.Owner, route);
+            Assert.AreEqual(route is "relation.searchTargets" or "relation.previewDelta" or "lookup.query" or "lookup.valuePage" ? "goSidecar" : "pythonBff",
+                capability.Owner, route);
         }
     }
 }

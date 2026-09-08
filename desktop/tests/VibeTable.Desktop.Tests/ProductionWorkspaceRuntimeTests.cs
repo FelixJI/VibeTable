@@ -407,6 +407,26 @@ public sealed class ProductionWorkspaceRuntimeTests
         }
     }
 
+    [TestMethod]
+    public async Task LateRegistrationReadsPersistedEpochWithoutChangingAuthority()
+    {
+        string root = CreateRoot();
+        try
+        {
+            WorkspaceRegistryEntryV2 entry = Entry(root);
+            new DesktopWorkspaceAuthorityStore().Reserve(entry, 11);
+            string path = Path.Combine(WorkspaceLayout.Paths(root).Coordination, "desktop-runtime-authority.json");
+            byte[] original = File.ReadAllBytes(path);
+            await using var factory = Factory();
+            Assert.AreEqual(0UL, factory.InitialSessionEpoch);
+            Assert.AreEqual(11UL, factory.ReadLastSessionEpoch(entry));
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
     private static ProductionWorkspaceRuntimeFactory Factory(
         IEnumerable<WorkspaceRegistryEntryV2>? entries = null)
         => new(

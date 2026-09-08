@@ -112,6 +112,34 @@ public sealed class WorkspaceReplicaStatusMonitorTests
     }
 
     [TestMethod]
+    public async Task PollingContinuesAfterAnIndividualRequestTimesOut()
+    {
+        int calls = 0;
+        Guid expectedWorkspace = Guid.NewGuid();
+        var recovered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var monitor = new WorkspaceReplicaStatusMonitor(
+            async (workspaceId, epoch, token) =>
+            {
+                Assert.AreEqual(expectedWorkspace, workspaceId);
+                Assert.AreEqual(7UL, epoch);
+                if (Interlocked.Increment(ref calls) == 1)
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                recovered.TrySetResult();
+                return new WorkspaceReplicaStatus(
+                    WorkspaceCoordinationStrength.Advisory,
+                    "replicated",
+                    PendingSync: false);
+            },
+            activeInterval: TimeSpan.FromMilliseconds(5),
+            idleInterval: TimeSpan.FromMilliseconds(20),
+            requestTimeout: TimeSpan.FromMilliseconds(50));
+
+        monitor.Bind(expectedWorkspace, sessionEpoch: 7, enabled: true);
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsTrue(Volatile.Read(ref calls) >= 2);
+    }
+    [TestMethod]
     public async Task ControllerRefreshProjectsRegistryEventAndBootstrapThroughPorts()
     {
         using var fixture = new WorkspaceRegistryTopologyTestContext(

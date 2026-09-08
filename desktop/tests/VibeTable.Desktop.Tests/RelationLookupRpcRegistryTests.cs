@@ -13,7 +13,9 @@ public sealed class RelationLookupRpcRegistryTests
     {
         var types = RelationLookupRpcRegistry.RequestTypes;
 
-        Assert.HasCount(9, types);
+        Assert.HasCount(7, types);
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("lookup.list"));
+        Assert.IsFalse(RelationLookupRpcRegistry.Contains("schema.describe"));
         Assert.AreEqual(
             types.Count,
             types.Distinct(StringComparer.Ordinal).Count(),
@@ -44,6 +46,17 @@ public sealed class RelationLookupRpcRegistryTests
         Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
             """{"relationId":"orders.customer","rowId":"raw","idempotencyKey":"create-1"}""")
             .RootElement));
+    }
+
+    [TestMethod]
+    public void PreviewAcceptsTheCurrentSixFieldRendererContract()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """{"relationId":"orders.customer","sourceItemId":"order-1","expectedSchemaRevision":"schema-1","adds":[],"removes":[],"idempotencyKey":"preview-1"}""");
+        Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.previewDelta", out var preview));
+        Assert.IsTrue(preview.IsValidPayload(document.RootElement));
+        Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.applyDelta", out var apply));
+        Assert.IsFalse(apply.IsValidPayload(document.RootElement));
     }
 
     [TestMethod]

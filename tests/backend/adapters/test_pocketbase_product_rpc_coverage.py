@@ -10,7 +10,6 @@ from pydantic import ValidationError
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
-from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
 class ScriptedTransport:
@@ -230,86 +229,6 @@ async def test_public_invoke_rejects_non_finite_product_response(non_finite: flo
 
 
 @pytest.mark.asyncio
-async def test_selection_open_returns_one_strict_revision_matched_projection() -> None:
-    schema = snapshot_v2("orders", [field_v2("name")], revision="schema_0001")
-    snapshot = {
-        "snapshotId": "0" * 32,
-        "digest": "d" * 64,
-        "databaseId": "db",
-        "table": "orders",
-        "schemaRevision": "schema_0001",
-        "dataRevision": 1,
-        "normalizedQuery": {"offset": 0, "limit": 10},
-    }
-    service, transport = service_with(
-        [
-            {
-                "schemaSnapshot": schema,
-                "cursorWindow": {
-                    "rows": [{"id": "row-1"}],
-                    "nextCursor": None,
-                    "hasMore": False,
-                    "filteredRows": 1,
-                    "totalRows": 1,
-                    "querySnapshot": snapshot,
-                },
-            }
-        ]
-    )
-
-    result = await service.invoke(
-        "query.selectionOpen",
-        PRODUCT_RPC_REGISTRY["query.selectionOpen"].model_validate(
-            {"tableId": "orders", "query": {"limit": 10}}
-        ),
-    )
-
-    assert result["schemaSnapshot"]["schemaRevision"] == "schema_0001"
-    assert result["cursorWindow"]["querySnapshot"]["dataRevision"] == 1
-    assert transport.requests[0]["json_body"]["operation"] == "selection.open"
-    assert transport.responses == []
-
-
-@pytest.mark.asyncio
-async def test_selection_open_rejects_malformed_schema_without_retry() -> None:
-    service, transport = service_with(
-        [
-            {
-                "schemaSnapshot": {
-                    "tableId": "orders",
-                    "schemaRevision": "schema_0001",
-                    "dataRevision": 1,
-                },
-                "cursorWindow": {
-                    "rows": [],
-                    "nextCursor": None,
-                    "hasMore": False,
-                    "filteredRows": 0,
-                    "totalRows": 0,
-                    "querySnapshot": {
-                        "snapshotId": "0" * 32,
-                        "digest": "d" * 64,
-                        "databaseId": "db",
-                        "table": "orders",
-                        "schemaRevision": "schema_0001",
-                        "dataRevision": 1,
-                        "normalizedQuery": {"offset": 0, "limit": 10},
-                    },
-                },
-            }
-        ]
-    )
-
-    with pytest.raises(ValidationError):
-        await service.invoke(
-            "query.selectionOpen",
-            ProductParams.model_validate({"tableId": "orders", "query": {"limit": 10}}),
-        )
-
-    assert len(transport.requests) == 1
-
-
-@pytest.mark.asyncio
 async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_attachment() -> None:
     service, transport = service_with(
         [
@@ -320,13 +239,11 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
                 "displayName": "订单",
                 "schemaRevision": "schema_0001",
             },
-            page([{"id": "row-1"}], limit=1),
             {"canApply": True, "operations": []},
             {"status": "applied", "receipt": {"id": "change-1"}},
             {"valid": True, "diagnostics": []},
             {"downloadCapability": "opaque", "contractVersion": "2.0"},
             {"status": "applied"},
-            {"items": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}], "total": 1},
             {
                 "target": {
                     "tableId": "customers",
@@ -350,11 +267,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             ),
         )
     )["tableId"] == "tbl_orders"
-    queried = await service.invoke(
-        "query.page", ProductParams.model_validate({"tableId": "orders", "query": {"limit": 1}})
-    )
-    assert queried["rows"] == [{"id": "row-1"}]
-    assert queried["snapshot"] == {"digest": "snapshot"}
     assert (
         await service.invoke("mutation.preview", ProductParams.model_validate({"operations": []}))
     )["canApply"] is True
@@ -395,18 +307,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
     )
     assert removed["status"] == "applied"
 
-    searched = await service.invoke(
-        "relation.searchTargets",
-        ProductParams.model_validate(
-            {
-                "relationId": "orders.customer",
-                "query": "ad",
-                "offset": 0,
-                "limit": 10,
-            }
-        ),
-    )
-    assert searched["items"][0]["collection"] == "customers"
     created = await service.invoke(
         "relation.createTarget",
         PRODUCT_RPC_REGISTRY["relation.createTarget"].model_validate(
@@ -451,7 +351,7 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
 @pytest.mark.asyncio
 async def test_route_validation_rejects_bad_rows_attachments_files_and_history() -> None:
     service, transport = service_with([])
-    with pytest.raises(ValueError, match="rowIds"):
+    with pytest.raises(ValueError, match=r"unknown product RPC method: query\.readRows"):
         await service.invoke(
             "query.readRows",
             ProductParams.model_validate({"tableId": "orders", "rowIds": [""]}),
@@ -504,10 +404,6 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                 }
             ),
         )
-    with pytest.raises(ValueError, match="actions"):
-        await service.invoke(
-            "history.read", ProductParams.model_validate({"collection": "orders", "actions": [""]})
-        )
     with pytest.raises(ValueError, match="field"):
         await service.invoke(
             "history.previewRestore",
@@ -526,133 +422,6 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
             {"relationId": "orders.customer", "collection": "customers"}
         )
     assert transport.requests == []
-
-
-@pytest.mark.asyncio
-async def test_lookup_grouped_query_returns_renderer_envelope() -> None:
-    descriptor = lookup_descriptor()
-    revision = "sha256:86864bd289da0d7c8dc42fb321de98f66b1e69fc7ac41f853f2843b044b9700b"
-    query_rows = [
-        {"id": "o-1", "customer_name": "Ada", "region": "EU"},
-        {"id": "o-2", "customer_name": "Bob", "region": "US"},
-        {"id": "o-3", "customer_name": "Ana", "region": "EU"},
-    ]
-    service, transport = service_with(
-        [
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_3",
-                "relations": [],
-                "lookups": [descriptor],
-            },
-            {
-                **page(query_rows[:2], limit=2),
-                "groupRows": [
-                    {
-                        "key": ["US", "Bob"],
-                        "count": 1,
-                        "summaries": [],
-                        "parentCount": 1,
-                        "parentSummaries": [],
-                    },
-                    {
-                        "key": ["EU", "Ada"],
-                        "count": 1,
-                        "summaries": [],
-                        "parentCount": 2,
-                        "parentSummaries": [],
-                    },
-                    {
-                        "key": ["EU", "Ana"],
-                        "count": 1,
-                        "summaries": [],
-                        "parentCount": 2,
-                        "parentSummaries": [],
-                    },
-                ],
-                "groupOffset": 0,
-                "groupLimit": 5000,
-                "hasMoreGroups": False,
-            },
-        ]
-    )
-
-    result = await service.invoke(
-        "lookup.query",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "fieldRefs": ["customer_name"],
-                "query": {
-                    "offset": 0,
-                    "limit": 2,
-                    "groups": [
-                        {"fieldRef": "region", "direction": "desc"},
-                        {"fieldRef": "customer_name", "direction": "asc"},
-                    ],
-                },
-                "requestGeneration": 8,
-                "schemaRevision": "schema_3",
-                "permissionRevision": "schema_3",
-                "lookupRevision": revision,
-            }
-        ),
-    )
-    assert result["columns"][0]["outputType"] == "text"
-    assert result["groups"][0]["key"] == "US"
-    assert any(group["path"] == ["EU"] for group in result["groups"])
-    lookup_request = transport.requests[1]["json_body"]
-    assert lookup_request["groups"] == [
-        {"field": "region", "direction": "desc"},
-        {"field": "customer_name", "direction": "asc"},
-    ]
-    assert lookup_request["groupLimit"] == 5000
-    assert transport.responses == []
-
-
-@pytest.mark.asyncio
-async def test_lookup_grouped_query_fails_closed_when_group_window_is_exhausted() -> None:
-    descriptor = lookup_descriptor()
-    revision = "sha256:86864bd289da0d7c8dc42fb321de98f66b1e69fc7ac41f853f2843b044b9700b"
-    service, transport = service_with(
-        [
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_3",
-                "relations": [],
-                "lookups": [descriptor],
-            },
-            {
-                **page([], limit=1),
-                "groupRows": [],
-                "groupOffset": 0,
-                "groupLimit": 5000,
-                "hasMoreGroups": True,
-            },
-        ]
-    )
-
-    with pytest.raises(ValueError, match="bounded window"):
-        await service.invoke(
-            "lookup.query",
-            ProductParams.model_validate(
-                {
-                    "collection": "orders",
-                    "fieldRefs": ["customer_name"],
-                    "query": {
-                        "limit": 1,
-                        "groups": [{"fieldRef": "customer_name", "direction": "asc"}],
-                    },
-                    "requestGeneration": 9,
-                    "schemaRevision": "schema_3",
-                    "permissionRevision": "schema_3",
-                    "lookupRevision": revision,
-                }
-            ),
-        )
-
-    assert len(transport.requests) == 2
-    assert transport.responses == []
 
 
 @pytest.mark.asyncio
@@ -712,7 +481,6 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
 async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths() -> None:
     service, transport = service_with(
         [
-            snapshot_v2("orders", [field_v2("name")], revision="schema_3"),
             {"valid": True},
             {
                 "tableId": "orders",
@@ -722,17 +490,11 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
             },
         ]
     )
-    assert (
-        await service.invoke(
-            "schema.getTable",
-            ProductParams.model_validate({"tableId": "orders"}),
-        )
-    )["tableId"] == "orders"
     await service.invoke(
         "query.validateSnapshot",
         ProductParams.model_validate({"snapshot": {"digest": "x"}, "currentQuery": {"limit": 10}}),
     )
-    assert transport.requests[1]["json_body"]["currentQuery"] == {"limit": 10}
+    assert transport.requests[0]["json_body"]["currentQuery"] == {"limit": 10}
 
     with pytest.raises(ValueError, match="variant"):
         await service.invoke(
@@ -748,33 +510,15 @@ async def test_small_service_boundaries_cover_optional_and_invalid_catalog_paths
                 }
             ),
         )
-    with pytest.raises(ValueError, match=r"query\.groups"):
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_migrated_selection_open_cannot_reenter_python_transport() -> None:
+    service, transport = service_with([])
+    with pytest.raises(ValueError, match=r"unknown product RPC method: query\.selectionOpen"):
         await service.invoke(
-            "lookup.query",
-            ProductParams.model_validate(
-                {
-                    "collection": "orders",
-                    "fieldRefs": [],
-                    "query": {"groups": "bad"},
-                    "requestGeneration": 1,
-                    "schemaRevision": "schema_3",
-                    "permissionRevision": "schema_3",
-                    "lookupRevision": "stale",
-                }
-            ),
+            "query.selectionOpen",
+            ProductParams.model_validate({"tableId": "orders", "query": {"limit": 10}}),
         )
-    with pytest.raises(ValueError, match="revisions are stale"):
-        await service.invoke(
-            "lookup.query",
-            ProductParams.model_validate(
-                {
-                    "collection": "orders",
-                    "fieldRefs": [],
-                    "query": {},
-                    "requestGeneration": 1,
-                    "schemaRevision": "schema_2",
-                    "permissionRevision": "schema_2",
-                    "lookupRevision": "stale",
-                }
-            ),
-        )
+    assert transport.requests == []
