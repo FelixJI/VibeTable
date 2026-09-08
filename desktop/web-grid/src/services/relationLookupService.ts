@@ -1,4 +1,5 @@
 import type {
+  DataChangedEvent,
   LookupListResult,
 	LookupCellValue,
   LookupQueryParams,
@@ -29,7 +30,7 @@ export function useRelationLookupService() {
   let unsubscribe: (() => void) | null = null;
   let invalidateAllCollections = false;
 
-  function init(onDataInvalidated?: () => void): void {
+  function init(onDataInvalidated?: (change: DataChangedEvent) => void): void {
     if (unsubscribe) return;
     unsubscribe = bridge.on("data.changed", (change) => {
       const active = store.collection;
@@ -50,10 +51,16 @@ export function useRelationLookupService() {
         ].filter((item): item is string => !!item)));
         if (change.tableId !== active && !relatedCollections.has(change.tableId)) return;
       }
+      if (!hasLookup && change.tableId !== active && onDataInvalidated) {
+        // A target data write changes display labels, not this table's schema.
+        // Refresh that read projection without beginContext clearing a draft.
+        onDataInvalidated(change);
+        return;
+      }
       // Related writes can invalidate realtime Lookup values. Let the
       // integration layer refresh authoritative rows, then renegotiate all
       // three revisions; never patch values from the visible page.
-      onDataInvalidated?.();
+      onDataInvalidated?.(change);
       void loadContext(active);
     });
   }

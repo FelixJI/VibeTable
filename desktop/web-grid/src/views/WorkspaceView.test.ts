@@ -21,12 +21,12 @@ import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { usePasteStore } from "@/stores/pasteStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useTableStore } from "@/stores/tableStore";
+import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import { useSurfaceStore } from "@/stores/surfaceStore";
 import { useDashboardDraftStore } from "@/stores/dashboardStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
-import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { setLocale } from "@/i18n";
 import {
@@ -1560,18 +1560,20 @@ describe("WorkspaceView", () => {
     expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(2);
   });
 
-  it.each(["accepted", "rejected", "draft opened"] as const)(
+  it.each(["accepted", "rejected", "draft opened", "labels applied", "labels rejected", "labels keyless"] as const)(
     "keeps recovery state consistent when the Relation context is %s after page reload",
     async (outcome) => {
       const { bridge, emit, posted } = makeRecordingBridge();
       setHostBridgeForTesting(bridge);
-      const workspace = useWorkspaceStore();
+      const labelsOnly = outcome.startsWith("labels ");
+      const accepted = outcome === "accepted" || outcome === "labels applied";
+      const workspace = useWorkspaceStore(testPinia);
       workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
       workspace.selectTable("orders");
-      useUiStore().navigate("tables");
+      useUiStore(testPinia).navigate("tables");
       const wrapper = mountView();
       await flushPromises();
-      const relations = useRelationLookupStore();
+      const relations = useRelationLookupStore(testPinia);
       // Match the page revision so the ordinary schema watcher cannot stand
       // in for the correlated recovery consumer under test.
       const schema = {
@@ -1596,7 +1598,10 @@ describe("WorkspaceView", () => {
       await flushPromises();
       const reload = posted.find((message) => message.type === "table.queryRequested")!;
       emit({ type: "table.pageLoaded", requestId: reload.requestId, payload: {
-        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        table: "orders",
+        columns: labelsOnly ? [{ name: "customer", title: "Customer", kind: "relation", dataType: "text", editable: true, nullable: true }] : [],
+        rows: labelsOnly ? [{ rowKey: "order-1", customer: "customer-1", note: "Draft" }] : [],
+        offset: 0, limit: 100, totalRows: labelsOnly ? 1 : 0, mode: "remote",
         revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
       } });
       await flushPromises();
@@ -1624,6 +1629,32 @@ describe("WorkspaceView", () => {
         collection: "orders", definitions: [], lookupRevision: "lookup_7",
       } });
       await flushPromises();
+      if (labelsOnly) {
+        const queries = posted.filter(message => message.type === "lookup.query");
+        expect(queries.length).toBeGreaterThan(0);
+        for (const query of queries) {
+          expect(query.payload).toMatchObject({ fieldRefs: [], query: { limit: 1 } });
+          if (outcome === "labels rejected") {
+            emit({ type: "operation.failed", requestId: query.requestId, payload: {
+              operation: "lookup.query", message: "labels unavailable",
+            } });
+          } else {
+            emit({ type: "lookup.query", requestId: query.requestId, payload: {
+              contract: "vibetable.lookup-query.v1", collection: "orders", requestGeneration: relations.generation,
+              schemaRevision: "schema_7", permissionRevision: "permission_7", lookupRevision: "lookup_7",
+              columns: [], groups: [], offset: 0, limit: 1, totalRows: 1, filteredRows: 1,
+              rows: [{ id: "order-1", note: "Stored", __vibetableRelationLabels: { customer: { "customer-1": "Fresh" } } }, ...(outcome === "labels keyless" ? [{ note: "keyless" }] : [])],
+              snapshot: { snapshotId: "snapshot", digest: "digest", databaseId: "pocketbase", table: "orders",
+                schemaRevision: "schema_7", dataRevision: 7, normalizedQuery: {} },
+            } });
+          }
+        }
+        await flushPromises();
+        const row = useTableStore(testPinia).allRows[0];
+        expect(row).toMatchObject({ rowKey: "order-1", customer: "customer-1", note: "Draft" });
+        expect(row?.__vibetableRelationLabels).toEqual(outcome === "labels applied"
+          ? { customer: { "customer-1": "Fresh" } } : undefined);
+      }
       expect(relations.loading).toBe(false);
       expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(1);
 
@@ -1640,9 +1671,12 @@ describe("WorkspaceView", () => {
       // Successful reconciliation retires the recovery obligation. A failed
       // context or preserved draft needs exactly one explicit correlated retry.
       expect(posted.filter((message) => message.type === "table.queryRequested"))
-        .toHaveLength(outcome === "accepted" ? 1 : 2);
+        .toHaveLength(accepted ? 1 : 2);
       expect(posted.filter((message) => message.type === "table.selected"))
-        .toHaveLength(outcome === "accepted" ? 1 : 0);
+        .toHaveLength(accepted ? 1 : 0);
+      wrapper.unmount();
+      bridge.stop();
+      await flushPromises();
     },
   );
   it("does not label unrelated background tasks as formula backfills", async () => {
@@ -2013,6 +2047,80 @@ describe("WorkspaceView", () => {
     wrapper.unmount();
   });
 
+  it("refreshes relation labels on a real target data event without replacing source values or drafts", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore(testPinia);
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    useUiStore(testPinia).navigate("tables");
+    const wrapper = mountView();
+    await flushPromises();
+    const relations = useRelationLookupStore(testPinia);
+    const described = posted.find(message => message.type === "schema.describe")!;
+    const listed = posted.find(message => message.type === "lookup.list")!;
+    expect(described).toBeDefined();
+    expect(listed).toBeDefined();
+    const schema = {
+      collection: "orders", primaryKey: "id", columns: [],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+      normalizedRelations: [{
+        relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", relatedCollection: "contracts", kind: "m2o",
+        unique: false, nullable: true, onDelete: "nullify", preset: "standard", selfRelation: false, managed: true, state: "valid", diagnostics: [],
+      }],
+    };
+    emit({ type: "schema.describe", requestId: described.requestId, payload: {
+      contract: "vibetable.schema-describe.v1", collection: "orders",
+      requestGeneration: (described.payload as { requestGeneration: number }).requestGeneration,
+      schema,
+      capabilities: { contract: "vibetable.relation-capabilities.v1", relationReadV1: true, relationEditV1: true, lookupQueryV1: true },
+    } });
+    emit({ type: "lookup.list", requestId: listed.requestId, payload: { collection: "orders", definitions: [], lookupRevision: "l" } });
+    await flushPromises();
+    expect(relations.loading).toBe(false);
+    expect(relations.schema?.collection).toBe("orders");
+    const table = useTableStore(testPinia);
+    table.setDatasetReady({
+      table: "orders", columns: [{ name: "contract", title: "Contract", kind: "relation", relationId: "orders.contract", dataType: "text", editable: true, nullable: true }],
+      rows: [{ rowKey: "order-1", contract: "target-1", note: "Draft", __vibetableRelationLabels: { contract: { "target-1": "Old" } } }],
+      offset: 0, limit: 100, totalRows: 1, mode: "remote",
+      revision: { databaseSessionId: "pocketbase", schemaRevision: "s", dataRevision: 7 },
+    });
+    await flushPromises();
+    relations.openDraft("orders.contract", "order-1", []);
+    relations.toggleDraftTarget({ collection: "contracts", itemId: "target-2", label: "Unsaved" });
+    posted.length = 0;
+    const changed = {
+      contractVersion: "2.0", topic: "data.changed", eventId: "target-label", sequence: 1,
+      occurredAt: "2026-09-09T01:00:00Z", schemaRevision: "target-schema", dataRevision: "data_0008",
+      changeSetId: "chg-label", tableId: "contracts", recordIds: ["target-1"], operation: "update",
+    };
+    emit({ type: "data.changed", payload: changed });
+    await flushPromises();
+    const request = posted.find(message => message.type === "lookup.query");
+    expect(request).toBeDefined();
+    expect(request!.payload).toMatchObject({ fieldRefs: [], query: { filters: [{ field: "id", operator: "in", value: ["order-1"] }], limit: 1 } });
+    emit({ type: "lookup.query", requestId: request!.requestId, payload: {
+      contract: "vibetable.lookup-query.v1", collection: "orders", requestGeneration: relations.generation,
+      schemaRevision: "s", permissionRevision: "p", lookupRevision: "l", columns: [], groups: [],
+      rows: [{ id: "order-1", contract: "target-1", note: "Stored", __vibetableRelationLabels: { contract: { "target-1": "Fresh" } } }],
+      offset: 0, limit: 1, totalRows: 1, filteredRows: 1,
+      snapshot: { snapshotId: "snapshot", digest: "digest", databaseId: "db", table: "orders", schemaRevision: "s", dataRevision: 7, normalizedQuery: {} },
+    } });
+    await flushPromises();
+    expect(table.allRows[0]).toEqual({ rowKey: "order-1", contract: "target-1", note: "Draft", __vibetableRelationLabels: { contract: { "target-1": "Fresh" } } });
+    expect(table.revision?.dataRevision).toBe(7);
+    expect(table.pages[0]?.limit).toBe(100);
+    expect(relations.draft?.selected).toEqual([{ collection: "contracts", itemId: "target-2", label: "Unsaved" }]);
+    expect(posted.some(message => ["table.selected", "table.queryRequested", "schema.describe"].includes(message.type))).toBe(false);
+    posted.length = 0;
+    emit({ type: "data.changed", payload: { ...changed, eventId: "source-write", tableId: "orders", schemaRevision: "s" } });
+    await flushPromises();
+    expect(posted.some(message => message.type === "lookup.query")).toBe(false);
+    wrapper.unmount();
+    bridge.stop();
+    await flushPromises();
+  });
   it("ignores a nested relation search response from a previously closed editor", async () => {
     const mainRelation = (field: string, targetCollection: string): NormalizedRelationDescriptor => ({
       relationId: `orders.${field}`, fieldRef: field, sourceCollection: "orders", kind: "m2o",

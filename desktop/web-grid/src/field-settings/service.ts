@@ -161,6 +161,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
 
   async function plan(nextAction?: FieldChangeActionV2): Promise<void> {
     if (!store.result) return;
+    const current = generation;
     const action = nextAction ?? store.action;
     store.beginPlan(action);
     try {
@@ -175,12 +176,14 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
           ? store.relationPair
           : null,
       });
-      store.setPlan(parseFieldChangePlanV2(
+      const planned = parseFieldChangePlanV2(
         unwrapFieldResult(await bridge.request("field.change.plan", intent)),
-      ));
+      );
+      if (current !== generation) return;
+      store.setPlan(planned);
       frozenOperationId = null;
     } catch (error) {
-      store.fail(error);
+      if (current === generation) store.fail(error);
     }
   }
 

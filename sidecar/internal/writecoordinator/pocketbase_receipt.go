@@ -17,6 +17,22 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/workspacedb"
 )
 
+// ErrBusinessReplay is returned only after a verified read-only replay. The
+// coordinator aborts its prepared intent; the runtime may consume the exact
+// signal only after that abort succeeds. Joined persistence failures remain errors.
+var ErrBusinessReplay = errors.New("workspace.business_write_replayed")
+
+// ReplayedBusinessWrite marks only the exact outer operation represented by a
+// read-only replay. Nested mutations belonging to another operation keep their
+// original receipt obligations; direct v1 calls have no workspace intent.
+func ReplayedBusinessWrite(ctx context.Context, kind, identity string) error {
+	intent, ok := businessIntentFrom(ctx)
+	if ok && intent.Kind == kind && intent.Identity == identity {
+		return ErrBusinessReplay
+	}
+	return nil
+}
+
 type businessIntentContextKey struct{}
 
 type BusinessIntent struct {

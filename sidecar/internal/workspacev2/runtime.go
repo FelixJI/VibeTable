@@ -477,6 +477,11 @@ func (runtime *Runtime) CoordinateBusinessWrite(
 		identity,
 		apply,
 	)
+	// Only a standalone signal proves the prepared intent was fully aborted.
+	// errors.Join with an abort failure must retain the recovery requirement.
+	if err == writecoordinator.ErrBusinessReplay {
+		return ctx.Err()
+	}
 	return err
 }
 

@@ -379,7 +379,6 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     confirmations.value = [];
     error.value = null;
     errorCode.value = null;
-    resetCatalogState();
   }
 
   function setPlan(next: FieldChangePlanV2): void {

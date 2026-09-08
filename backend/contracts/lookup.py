@@ -154,7 +154,8 @@ class LookupQuery(CamelModel):
 class LookupQueryParams(CamelModel):
     contract: Literal["vibetable.lookup-query.v1"] = "vibetable.lookup-query.v1"
     collection: str = Field(min_length=1, max_length=128)
-    field_refs: list[str] = Field(min_length=1, max_length=256)
+    # An empty Lookup projection still returns authoritative rows and relation labels.
+    field_refs: list[str] = Field(max_length=256)
     query: LookupQuery = Field(default_factory=LookupQuery)
     request_generation: int = Field(default=0, ge=0)
     schema_revision: str = Field(min_length=1, max_length=128)
