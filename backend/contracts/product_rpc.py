@@ -583,7 +583,8 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
 }
 
 
-# These existing methods belong to the independent Workspace catalog, not Product.
+# Legacy typed Host entries excluded from Product; these are not members of the
+# generated workspace.v2 catalog. Each admission removes only its own exception.
 WORKSPACE_CATALOG_METHODS = frozenset(
     {
         "field.change.apply",
@@ -591,7 +592,6 @@ WORKSPACE_CATALOG_METHODS = frozenset(
         "field.change.plan",
         "field.change.status",
         "field.recycleBin.list",
-        "field.settings.describe",
     }
 )
 

@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 102
+    assert len(manifest["rpcMethods"]) == 103
     assert len(manifest["eventTopics"]) == 6
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -55,6 +55,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
         "events.reconcile",
+        "field.settings.describe",
         "file.list",
         "history.read",
         "lookup.list",
@@ -65,6 +66,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "query.page",
         "query.readRows",
         "query.selectionOpen",
+        "query.validateSnapshot",
         "query.view",
         "relation.previewDelta",
         "relation.searchTargets",
@@ -96,7 +98,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         next(item for item in manifest["rpcMethods"] if item["method"] == "query.validateSnapshot")[
             "owner"
         ]
-        == "pythonBff"
+        == "goSidecar"
     )
     assert {item["owner"] for item in manifest["eventTopics"]} == {"pythonBff"}
     events = {item["topic"]: item for item in manifest["eventTopics"]}
@@ -162,10 +164,11 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 83
+    assert len(methods) == 82
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "events.reconcile",
+        "field.settings.describe",
         "file.list",
         "history.read",
         "lookup.list",
@@ -176,6 +179,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "query.page",
         "query.readRows",
         "query.selectionOpen",
+        "query.validateSnapshot",
         "query.view",
         "relation.previewDelta",
         "relation.searchTargets",
@@ -209,3 +213,30 @@ def test_generated_manifest_validates_against_its_closed_schema() -> None:
     schema = json.loads(MANIFEST_SCHEMA.read_text(encoding="utf-8"))
 
     _validate(manifest, schema, schema)
+
+
+def test_field_settings_go_owner_keeps_legacy_routes() -> None:
+    from backend.contracts.product_rpc import (
+        PYTHON_PRODUCT_RPC_REGISTRY,
+        WORKSPACE_CATALOG_METHODS,
+    )
+
+    method = "field.settings.describe"
+    entry = next(item for item in build_manifest()["rpcMethods"] if item["method"] == method)
+    assert entry == {
+        "method": method,
+        "scope": "workspace",
+        "audience": "rendererPublic",
+        "capabilityId": "schema.query",
+        "owner": "goSidecar",
+        "effect": "read",
+    }
+    assert method not in PYTHON_PRODUCT_RPC_REGISTRY
+    assert {
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
+    } == WORKSPACE_CATALOG_METHODS
+    assert PYTHON_PRODUCT_RPC_REGISTRY.keys() >= WORKSPACE_CATALOG_METHODS

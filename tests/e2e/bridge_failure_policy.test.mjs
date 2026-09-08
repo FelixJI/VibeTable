@@ -386,7 +386,7 @@ test("settles page and Python readiness reads in the same recovery window", asyn
       observations.push({ requestId, timeoutMs });
       if (requestId === "page") return { type: "query.page", requestId };
       if (requestId === "fields-ready") {
-        return { type: "field.settings.describe", requestId };
+        return { type: "field.recycleBin.list", requestId };
       }
       if (now === 0) {
         now = 5_000;
@@ -399,11 +399,11 @@ test("settles page and Python readiness reads in the same recovery window", asyn
   });
   window.own("page");
   assert.equal((await window.observe("page")).type, "query.page");
-  window.own("fields-retired", "field.settings.describe");
+  window.own("fields-retired", "field.recycleBin.list");
   assert.equal(await window.observe("fields-retired"), null);
   assert.deepEqual(released, ["page"]);
-  window.own("fields-ready", "field.settings.describe");
-  assert.equal((await window.observe("fields-ready")).type, "field.settings.describe");
+  window.own("fields-ready", "field.recycleBin.list");
+  assert.equal((await window.observe("fields-ready")).type, "field.recycleBin.list");
   await window.settle();
   await window.close();
   assert.deepEqual(acknowledged, ["fields-retired"]);
@@ -432,7 +432,7 @@ test("Python readiness keeps exact request identity, terminal type and failure c
       acknowledge: async response => acknowledged.push(response),
     });
     assert.throws(() => window.own("preview", "file.previewRequested"), SidecarRecoveryContractError);
-    window.own("fields", "field.settings.describe");
+    window.own("fields", "field.recycleBin.list");
     await assert.rejects(window.observe("fields"), SidecarRecoveryContractError);
     await window.close();
     assert.deepEqual(released, ["fields"]);
@@ -450,12 +450,12 @@ test("Python readiness success at the recovery deadline cannot pass", async () =
     observeTerminal: async (requestId, timeoutMs) => {
       assert.equal(timeoutMs, 1);
       now = 6_000;
-      return { type: "field.settings.describe", requestId };
+      return { type: "field.recycleBin.list", requestId };
     },
     releaseRequest: async requestId => released.push(requestId),
     acknowledge: async response => acknowledged.push(response),
   });
-  window.own("fields", "field.settings.describe");
+  window.own("fields", "field.recycleBin.list");
   await assert.rejects(window.observe("fields"), /recovery deadline expired/);
   await window.close();
   assert.deepEqual(released, ["fields"]);
