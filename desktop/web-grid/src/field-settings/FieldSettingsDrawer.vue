@@ -25,6 +25,7 @@ import type {
   LogicalTypeV2,
   SelectOptionV2,
 } from "@/contracts";
+import RelationInspectionPanel from "@/relation-inspection/RelationInspectionPanel.vue";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import { useFieldSettingsStore } from "./store";
@@ -449,6 +450,13 @@ function isTextual(type: LogicalTypeV2): boolean {
         <div>{{ store.error }}</div>
       </NAlert>
 
+      <RelationInspectionPanel
+        v-if="store.open && store.inspectionTarget && store.phase !== 'loading'
+          && (!store.result || store.result.definition?.logicalType === 'relation')"
+        :key="`${store.inspectionTarget.tableId}:${store.inspectionTarget.fieldId}`"
+        :table-id="store.inspectionTarget.tableId"
+        :field-id="store.inspectionTarget.fieldId"
+      />
       <div v-if="store.phase === 'loading'" class="loading-card">
         <NProgress type="line" processing :percentage="38" :show-indicator="false" />
         <span>正在读取字段能力与推荐设置…</span>

@@ -8,10 +8,10 @@
 - GitHub run：[main CI 33975773081](https://github.com/FelixJI/VibeTable/actions/runs/33975773081)
 - 报告契约：`contractVersion=2.0`
 - 结果：23/23 passed、0 failed、0 skipped。
-- 当前 manifest gap：5（`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`）。
+- 当前 manifest gap：6（`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`）。
 - 当前 manifest surplus：无。
 
-场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview"、"29-lookup-source-pagination" 和 "30-query-snapshot-validation" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这五项新增场景，也不证明新的关系、来源分页与快照校验资格。
+场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview"、"29-lookup-source-pagination" 和 "30-query-snapshot-validation" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；新加入的 "31-relation-pair-inspection" 同样待取得正式 main 报告；上述 23/23 历史样本不包含这六项新增场景，也不证明新的关系、来源分页与快照校验资格。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 

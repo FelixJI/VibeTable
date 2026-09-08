@@ -34,6 +34,7 @@ func queryViewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 	}, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+		unrelatedRelationInspectRegistration(t),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),

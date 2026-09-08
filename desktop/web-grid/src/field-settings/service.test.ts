@@ -61,6 +61,24 @@ describe("field settings service", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps the requested diagnosis identity after describe fails and clears it for create/close", async () => {
+    request.mockResolvedValueOnce(describeResult(true));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("old_table", "old_field");
+    request.mockRejectedValueOnce(new Error("invalid relation metadata"));
+    await service.openEdit("broken_table", "broken_field");
+    expect(store.inspectionTarget).toEqual({ tableId: "broken_table", fieldId: "broken_field" });
+    expect(store.result).toBeNull();
+    expect(store.draft).toBeNull();
+    expect(store.phase).toBe("failed");
+    service.requestClose();
+    expect(store.inspectionTarget).toBeNull();
+    request.mockResolvedValueOnce(describeResult(false));
+    await service.openCreate("new_table");
+    expect(store.inspectionTarget).toBeNull();
+    service.dispose();
+  });
   it("uses closed v2 RPCs to create, plan, apply, and refresh an edited field", async () => {
     request
       .mockResolvedValueOnce(describeResult(true))

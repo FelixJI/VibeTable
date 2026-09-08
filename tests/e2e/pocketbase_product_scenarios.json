@@ -168,5 +168,11 @@
     "title": "查询快照只读校验",
     "requirement": "真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。",
     "capabilities": ["schema.query"]
+  },
+  {
+    "id": "31-relation-pair-inspection",
+    "title": "关系完整性只读分页检查",
+    "requirement": "通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。",
+    "capabilities": ["relation.integrity-inspection"]
   }
 ]
