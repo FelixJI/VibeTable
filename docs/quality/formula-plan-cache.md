@@ -1,6 +1,6 @@
 # Formula 编译计划缓存资格
 
-状态：独立缓存候选的相关 Go race、vet 和作者集成回归已通过；全量 Go、真实打包与 fresh CI 尚未执行。本文不声明 Formula、统一 ComputationPlan 或 ADR 0013 整体验收完成。
+状态：独立缓存候选的相关 Go race、vet 和作者集成回归已通过；全量 Go 因既有临时目录清理失败未通过，真实打包与 fresh CI 尚未执行。本文不声明 Formula、统一 ComputationPlan 或 ADR 0013 整体验收完成。
 
 ## 来源与独立边界
 
@@ -47,4 +47,17 @@ go test ./internal/formula -run 'TestCELV1|TestCalculatorSharesCompilerPlan' -co
 
 ## 尚未执行
 
-独立缓存候选尚未执行 `go test ./...` 全量 Go 矩阵、其他语言完整质量入口、真实打包及产品场景、最新远端 main 同步后的 fresh PR CI。当前结果没有修复或取代其他候选中已保留的 Windows/SQLite 清理失败证据；不得据此放宽清理断言或发布门禁。
+独立缓存候选尚未执行其他语言完整质量入口、真实打包及产品场景、最新远端 main 同步后的 fresh PR CI。当前结果没有修复或取代其他候选中已保留的 Windows/SQLite 清理失败证据；不得据此放宽清理断言或发布门禁。
+
+## 完整 Go 结果
+
+固定源码 `56e74b7a142f0f1a994ec9dd6bd38dd7aef43dee` 执行一次 `go test ./...`：EXIT 1，未重试。日志 `build/qa/formula-semantic-cache/go-all.log`。失败包为 objectrepo（18.124s）与 workspacev2（80.346s），共7处叶用例清理失败，均为 `testing.go:1617: TempDir RemoveAll cleanup` 目录非空：
+
+- `TestKopiaRetentionFaultBoundariesReplayIdempotently/before-content-delete`：repository/x/n0_。
+- `TestImportedRestoreAuditIsLocalAndIdempotentAcrossCompletionReplay`：coordination。
+- `TestSnapshotRestoreValidatesWindowsStorageKeysBeforeAttachmentStaging` 的 trailing_space、valid_PocketBase_key：分别为 coordination、snapshots。
+- `TestRestoreJournalRejectsWindowsInvalidAttachmentKeys`：snapshots。
+- `TestSnapshotRestoreCommitsAuthorityAndRecoversFailedSearchRebuildAfterRestart`：coordination。
+- `TestInterruptedInstalledSnapshotRestoreRollsBackBeforeReadiness/missing-previous`：coordination。
+
+同次 cmd/vibetable-pb、app、formula、fieldchange、schemaapi、integration 均通过，分别11.250s、21.924s、4.736s、6.083s、3.185s、37.713s。失败用例日志未记录其他业务断言失败，但这不足以判断目录持有者或晚写来源，也不能将完整 Go 记为通过。保留原始失败，不修改清理策略或降低门禁。
