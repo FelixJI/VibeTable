@@ -51,6 +51,7 @@ func DefaultLimits() Limits {
 
 type Compiler struct {
 	limits Limits
+	cache  *planCache
 }
 
 func NewCompiler(limits Limits) *Compiler {
@@ -73,7 +74,9 @@ func NewCompiler(limits Limits) *Compiler {
 	if limits.EvalTimeout <= 0 {
 		limits.EvalTimeout = defaults.EvalTimeout
 	}
-	return &Compiler{limits: limits}
+	compiler := &Compiler{limits: limits}
+	compiler.cache = newPlanCache(compiler.compileExecutionTable)
+	return compiler
 }
 
 type CompiledFormula struct {

@@ -290,9 +290,7 @@ func (catalog *Catalog) validateFormulaReferences(
 	ctx context.Context,
 	definition schemaexecution.Table,
 ) error {
-	plan, formulaErr := formula.NewCompiler(
-		formula.DefaultLimits(),
-	).CompileExecutionTable(definition)
+	plan, formulaErr := formula.CompilerFor(catalog.app).CompileExecutionTable(definition)
 	if formulaErr != nil {
 		return formulaErr
 	}
@@ -816,7 +814,7 @@ func (catalog *Catalog) prepareFormulaState(
 	app core.App,
 	definition schemaexecution.Table,
 ) (schemaexecution.Table, *formula.Plan, error) {
-	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileExecutionTable(definition)
+	plan, formulaErr := formula.CompilerFor(app).CompileExecutionTable(definition)
 	if formulaErr != nil {
 		return schemaexecution.Table{}, nil, formulaErr
 	}

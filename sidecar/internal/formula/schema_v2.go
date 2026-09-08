@@ -12,15 +12,17 @@ import (
 // and definitions; execution bindings are supplied by schemaexecution.Table
 // when formulas run against PocketBase.
 type V2Table struct {
-	TableID string
-	Fields  []v2.FieldDefinition
+	TableID        string
+	SchemaRevision string
+	Fields         []v2.FieldDefinition
 }
 
 func executionTable(definition V2Table) schemaexecution.Table {
 	return schemaexecution.Table{Snapshot: v2.SchemaSnapshot{
-		Contract: v2.Contract,
-		TableID:  definition.TableID,
-		Fields:   definition.Fields,
+		Contract:       v2.Contract,
+		TableID:        definition.TableID,
+		SchemaRevision: definition.SchemaRevision,
+		Fields:         definition.Fields,
 	}}
 }
 
