@@ -62,3 +62,10 @@ PR293 squash `38098da214a0fb33bb6df1fd0707b1ba0b4ac754` 后，本分支正常合
 - 合并及此页新增资格的独立 Standards / Spec 最终增量复核各 0 新问题，原完整两轴结论保留。
 
 之前 e8b 上六场景证据保留为其真实来源的证明；此节三场景专门覆盖新主线交互，不把旧六场景全部写成4be重跑。消费者 PR 仍等待 #297 基础合入后同步最终 main、fresh CI 与 squash/post验证，当前不扩大完成声明。
+## 生产者最终同步与界面证据
+
+正常合入 #297 head `0f171e02b5bf262c8f113d1a78fcf04620bc3ceb`，形成 `42ddd9bbfa3f8beb23f77cd540f3fe9429e48d84`。相对上一消费者提交仅新增基础资格、删除两行注释和加入 data pending-watermark 回归；原 task pending-publication 回归保留。`go test -race ./tests/integration -run '^TestRealtimeCatchup' -count=1` PASS 7.333s，日志 `build/realtime-producer-joined-catchup.log`。两轴增量均 0 新问题，产品生产行为不变，继续使用上述 `4be03fb` 构建证据。
+
+下图来自该构建的实际 S10 运行 `20260908T150503Z`：sidecar 重连与 backend recovery 后的数据出现在同一表页，当前 selection 保留。图片仅展示运行结束界面，故障过程及去重结论以对应报告和契约测试为准。
+
+![真实 WebView2 恢复后的表页](../assets/screenshots/vibetable-go-realtime-recovery.png)
