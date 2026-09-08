@@ -204,8 +204,60 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	}
 	expiredCursor := initial.Backlog[0].Cursor
 	initial.Close()
-	for index := 1; index <= 10_005; index++ {
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Cold queued task", "cold_realtime")
+	service := jobs.New(app, mutation.New(app, mutation.MetadataSchemaSource{}), jobs.WithTaskPublisher(hub))
+	defer service.Shutdown()
+	queued, err := service.StartFormulaBackfill(ctx, fixture.definition.Snapshot.TableID, fixture.definition.Snapshot.SchemaRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Build the pre-existing window without replaying the retention scan for
+	// every seed row. Restore the exact installed trigger in the same transaction
+	// before exercising all boundary writes through PocketBase Save.
+	var retentionSQL string
+	if err := app.DB().NewQuery(`SELECT sql FROM sqlite_master
+		WHERE type = 'trigger' AND name = 'vibetable_outbox_retain_latest'`).Row(&retentionSQL); err != nil {
+		t.Fatal(err)
+	}
+	if retentionSQL == "" {
+		t.Fatal("production retention trigger is missing")
+	}
+	events := make([]mutation.DataChangedEvent, 10_000)
+	for index := range events {
+		events[index] = realtimeDataEvent(index + 1)
+	}
+	raw, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RunInTransaction(func(txApp core.App) error {
+		if _, err := txApp.DB().NewQuery("DROP TRIGGER vibetable_outbox_retain_latest").Execute(); err != nil {
+			return err
+		}
+		if _, err := txApp.DB().NewQuery(`
+			INSERT INTO vibetable_outbox (id, event_id, topic, payload_json, status, attempts)
+			SELECT printf('retention%06d', CAST(key AS INTEGER) + 1),
+				json_extract(value, '$.eventId'), 'data.changed', value, 'pending', 0
+			FROM json_each({:events}) ORDER BY CAST(key AS INTEGER)
+		`).Bind(map[string]any{"events": string(raw)}).Execute(); err != nil {
+			return err
+		}
+		_, err := txApp.DB().NewQuery(retentionSQL).Execute()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 10_001; index <= 10_005; index++ {
 		saveRealtimeOutboxEvent(t, app, realtimeDataEvent(index))
+	}
+	// Hub catchup also limits results, so query the authority itself to prove
+	// the real trigger removed old rows rather than hiding them in a page.
+	var retained int
+	if err := app.DB().NewQuery("SELECT COUNT(*) FROM vibetable_outbox").Row(&retained); err != nil {
+		t.Fatal(err)
+	}
+	if retained != 10_000 {
+		t.Fatalf("retained authority rows = %d", retained)
 	}
 	backlog, err := hub.Subscribe(ctx, "")
 	if err != nil {
@@ -239,6 +291,19 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 		if !errors.As(err, &realtimeErr) || realtimeErr.Code != code {
 			t.Fatalf("cursor %q error = %#v", cursor, err)
 		}
+	}
+	recovered, err := hub.SubscribeRecoverable(ctx, expiredCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	projection := recoveredProjection(t, recovered)
+	if len(projection.ActiveFormulaTasks) != 1 || projection.ActiveFormulaTasks[0].TaskID != queued.JobID ||
+		len(projection.TerminalNotifications) != 0 {
+		t.Fatalf("cold activity was not recovered from authority: %+v", projection)
+	}
+	if recovered.Backlog[0].Cursor != backlog.Backlog[len(backlog.Backlog)-1].Cursor {
+		t.Fatal("recovery cursor does not describe the retained snapshot")
 	}
 }
 
@@ -278,6 +343,66 @@ func TestRealtimeLiveDrainUsesDurableRowIDOrderWhenLaterPublishWins(t *testing.T
 	case duplicate := <-subscription.Events:
 		t.Fatalf("late publisher duplicated event %#v", duplicate)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRealtimeCatchupKeepsPendingDurableEventsForExistingSubscribers(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := realtime.New(app)
+	existing, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer existing.Close()
+
+	event := realtimeDataEvent(1)
+	saveRealtimeOutboxEvent(t, app, event)
+	joining, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer joining.Close()
+	if len(joining.Backlog) != 1 || joining.Backlog[0].ID != event.EventID {
+		t.Fatalf("joining backlog = %#v", joining.Backlog)
+	}
+
+	if err := hub.Publish(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delivered := <-existing.Events:
+		if delivered.ID != event.EventID {
+			t.Fatalf("existing event = %#v", delivered)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("existing subscriber missed pending durable event")
+	}
+	select {
+	case duplicate := <-joining.Events:
+		t.Fatalf("joining subscriber duplicated replayed event %#v", duplicate)
+	default:
+	}
+
+	next := realtimeDataEvent(2)
+	saveRealtimeOutboxEvent(t, app, next)
+	if err := hub.Publish(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	for name, subscription := range map[string]*realtime.Subscription{
+		"existing": existing,
+		"joining":  joining,
+	} {
+		select {
+		case delivered := <-subscription.Events:
+			if delivered.ID != next.EventID {
+				t.Fatalf("%s next event = %#v", name, delivered)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s subscriber missed next durable event", name)
+		}
 	}
 }
 
