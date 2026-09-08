@@ -148,6 +148,29 @@ func testRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T, reciproca
 	if err != nil {
 		t.Fatal(err)
 	}
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := query.NewPort(app, querySource)
+	sourceRows, err := port.ReadRows(ctx, source.TableID, []string{sourceRecordID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relationName := relationReceipt.Definition.Identity.PhysicalName
+	labels, ok := sourceRows[0][query.RelationLabelsField].(map[string]map[string]string)
+	if !ok || labels[relationName][targetRecordID] != "Acme" || sourceRows[0][relationName] != targetRecordID {
+		t.Fatalf("product DisplayField projection lost target label or raw ID: %#v", sourceRows[0])
+	}
+	targetRows, err := port.ReadRows(ctx, target.TableID, []string{targetRecordID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reciprocalName := relationReceipt.Related[0].Definition.Identity.PhysicalName
+	reciprocalLabels, ok := targetRows[0][query.RelationLabelsField].(map[string]map[string]string)
+	if !ok || reciprocalLabels[reciprocalName][sourceRecordID] != "SO-1001" {
+		t.Fatalf("reciprocal DisplayField projection = %#v", targetRows[0])
+	}
 	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)
 	if err != nil {
 		t.Fatal(err)

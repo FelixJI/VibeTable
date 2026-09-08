@@ -16,6 +16,21 @@ const lookup: LookupDefinition = {
 };
 
 describe("relation / Lookup grid renderers", () => {
+  it("renders display metadata while retaining raw relation IDs and falling back per target", () => {
+    const value = ["v1", "v2", "v3", "v4"];
+    const cell = {
+      getValue: () => value,
+      getRow: () => ({ getData: () => ({
+        contract: value,
+        __vibetableRelationLabels: { contract: { v1: "Launch", v2: "" } },
+      }) }),
+    };
+    const node = relationFormatter(relation)(cell);
+    expect(node.textContent).toBe("Launchv2v3+1");
+    expect(value).toEqual(["v1", "v2", "v3", "v4"]);
+    expect(node.querySelector(".vt-relation-token")?.getAttribute("title"))
+      .toBe("contracts · v1");
+  });
   it("renders direct relation values with their authoritative label", () => {
     const node = relationFormatter(relation)({ getValue: () => ({
       collection: "contracts", itemId: "v1", label: "Launch",

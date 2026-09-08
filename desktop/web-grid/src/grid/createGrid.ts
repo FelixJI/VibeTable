@@ -384,7 +384,7 @@ function toColumnDef(
     return {
       ...def,
       formatter: relation
-        ? relationFormatter(relation)
+        ? relationFormatter(relation, col.name)
         : () => {
             const node = document.createElement("span");
             node.className = "vt-lookup-state vt-lookup-state--invalid";

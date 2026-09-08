@@ -118,7 +118,7 @@ describe("authoritativeLookupController", () => {
     } finally { h.scope.stop(); }
   });
 
-  it("使用记录的完整 grid query，并丢弃较晚返回的旧 generation", async () => {
+  it.each([true, false])("使用完整 query 刷新 Lookup/Relation 并丢弃旧 generation（Lookup=%s）", async (hasLookup) => {
     const first = deferred<LookupQueryResult>();
     const second = deferred<LookupQueryResult>();
     const queryLookups = vi.fn()
@@ -128,7 +128,7 @@ describe("authoritativeLookupController", () => {
     const page: TablePage = {
       table: "orders",
       columns: [],
-      rows: [],
+      rows: [{ rowKey: "visible" }],
       offset: 0,
       limit: 500,
       totalRows: 0,
@@ -137,8 +137,9 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [
-        { name: "customer", title: "Customer", fieldId: "orders.customer", dataType: "text", editable: true, nullable: true },
+        { name: "customer", title: "Customer", fieldId: "orders.customer", kind: "relation", dataType: "text", editable: true, nullable: true },
         { name: "price", title: "Price", fieldId: "orders.price", dataType: "decimal", editable: false, nullable: true },
       ],
       datasetReady: () => true,
@@ -161,7 +162,7 @@ describe("authoritativeLookupController", () => {
         relationEditV1: true,
         lookupQueryV1: true,
       }),
-      lookups: () => [lookup],
+      lookups: () => hasLookup ? [lookup] : [],
       resetContext: vi.fn(),
       loadContext: vi.fn(async () => undefined),
       queryLookups,
@@ -189,14 +190,14 @@ describe("authoritativeLookupController", () => {
 
     expect(queryLookups).toHaveBeenLastCalledWith({
       collection: "orders",
-      fieldRefs: ["price"],
-      query: {
+      fieldRefs: hasLookup ? ["price"] : [],
+      query: hasLookup ? {
         filters: [{ field: "orders.customer", operator: "eq", value: "c1" }],
         sorts: [{ field: "orders.price", direction: "desc" }],
         groups: [{ fieldRef: "orders.customer", direction: "asc" }],
         offset: 0,
         limit: 500,
-      },
+      } : { filters: [{ field: "id", operator: "in", value: ["visible"] }], sorts: [], groups: [], offset: 0, limit: 1 },
     });
     expect(acceptResult).toHaveBeenCalledWith(result(2), 1);
     scope.stop();
@@ -221,6 +222,7 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [{
         name: "customer",
         title: "Customer",
@@ -301,6 +303,7 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [{
         name: "price",
         title: "Price",
@@ -350,7 +353,7 @@ describe("authoritativeLookupController", () => {
   });
 
   it("在 controller 边界拒绝旧 groupBy，且不发送降级后的 Lookup 请求", async () => {
-    const queryLookups = vi.fn(async () => result(1));
+    const queryLookups = vi.fn<AuthoritativeLookupDependencies["queryLookups"]>(async () => result(1));
     const reportError = vi.fn();
     const page: TablePage = {
       table: "orders",
@@ -364,6 +367,7 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [{
         name: "customer",
         title: "Customer",
@@ -412,7 +416,89 @@ describe("authoritativeLookupController", () => {
   });
 });
 
-function receiptHarness() {
+it.each(["applied", "rejected", "context", "table-aba", "dispose"] as const)(
+  "reports completion of all loaded label batches and stops retired work (%s)", async (outcome) => {
+    const rows = Array.from({ length: 405 }, (_, index) => ({ rowKey: `row-${index}` }));
+    const page: TablePage = { table: "orders", columns: [], rows: rows.slice(0, 100), offset: 300, limit: 100, totalRows: 9000, mode: "remote" };
+    const collection = ref("orders");
+    let contextGeneration = 1;
+    const scope = effectScope();
+    const lastBatch = deferred<LookupQueryResult>();
+    const queryLookups = vi.fn<AuthoritativeLookupDependencies["queryLookups"]>(async (): Promise<LookupQueryResult> => {
+      if (queryLookups.mock.calls.length === 2) {
+        if (outcome === "context") contextGeneration += 1;
+        if (outcome === "table-aba") { collection.value = "customers"; collection.value = "orders"; }
+        if (outcome === "dispose") scope.stop();
+      }
+      return queryLookups.mock.calls.length === 3 ? lastBatch.promise : result(1);
+    });
+    const acceptResult = vi.fn(() => outcome !== "rejected" || acceptResult.mock.calls.length !== 2);
+    const dependencies: AuthoritativeLookupDependencies = {
+      currentTable: () => collection.value, tablePage: () => page, loadedRows: () => rows,
+      columns: () => [{ name: "customer", title: "Customer", kind: "relation", dataType: "text", editable: true, nullable: true }],
+      datasetReady: () => true, schemaRevision: () => "schema-1", dataRevision: () => 1,
+      contextGeneration: () => contextGeneration,
+      relationSchema: () => ({ collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [], schemaRevision: "schema-1", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l" }),
+      capabilities: () => ({ contract: "vibetable.relation-capabilities.v1", relationReadV1: true, relationEditV1: true, lookupQueryV1: true }),
+      lookups: () => [], resetContext: vi.fn(), loadContext: vi.fn(async () => undefined), queryLookups, acceptResult, clearEditRejection: vi.fn(), reportError: vi.fn(),
+    };
+    const controller = scope.run(() => createAuthoritativeLookupController(dependencies))!;
+    try {
+      controller.recordQuery({ filters: [{ field: "customer", operator: "eq", value: "old-label" }], offset: 300, limit: 100 });
+      let settled = false;
+      const refreshed = controller.refresh().then((applied) => { settled = true; return applied; });
+      if (outcome === "applied") {
+        await vi.waitFor(() => expect(queryLookups).toHaveBeenCalledTimes(3));
+        expect(settled).toBe(false);
+        lastBatch.resolve(result(1));
+      }
+      await expect(refreshed).resolves.toBe(outcome === "applied");
+      const requests = queryLookups.mock.calls.map(call => call[0]);
+      expect(requests.map(request => request.query.limit)).toEqual(outcome === "applied" ? [200, 200, 5] : [200, 200]);
+      expect(requests.flatMap((request) => {
+        const filter = request.query.filters![0]!;
+        return "value" in filter ? filter.value : [];
+      })).toEqual(rows.slice(0, outcome === "applied" ? 405 : 400).map(row => row.rowKey));
+      expect(requests.every(request => request.query.offset === 0 && request.fieldRefs.length === 0)).toBe(true);
+      expect(acceptResult).toHaveBeenCalledTimes(outcome === "applied" ? 3 : outcome === "rejected" ? 2 : 1);
+      expect(page.offset).toBe(300);
+      expect(dependencies.reportError).not.toHaveBeenCalled();
+    } finally { scope.stop(); }
+  },
+);
+
+it.each([false, true])("returns the real label-only store receipt, rejecting the whole keyless batch (%s)", async (keyless) => {
+  const h = receiptHarness(true);
+  try {
+    const originalPage = h.table.pages[0];
+    const response = { ...result(h.relations.generation), rows: [{
+      id: "original", price: "server", __vibetableRelationLabels: { price: { target: "Fresh" } },
+    }] };
+    const refresh = h.controller.refresh();
+    h.pending.resolve({ ...response, rows: [...response.rows, ...(keyless ? [{ price: "keyless" }] : [])] });
+    await expect(refresh).resolves.toBe(!keyless);
+    expect(h.queryLookups).toHaveBeenCalledTimes(1);
+    if (keyless) {
+      expect(h.table.pages[0]).toBe(originalPage);
+      expect(h.table.allRows[0]).toEqual({ rowKey: "original", price: null });
+      expect(h.table.error).toBe("Lookup query returned a row without a stable key.");
+      expect(h.table.applyLookupQueryResult(response, { labelsOnly: true })).toBe(true);
+    }
+    expect(h.table.error).toBeNull();
+    expect(h.table.pages[0]).not.toBe(originalPage);
+    expect(h.table.allRows[0]).toMatchObject({ rowKey: "original", price: null,
+      __vibetableRelationLabels: { price: { target: "Fresh" } } });
+  } finally { h.scope.stop(); }
+});
+it("does not report label recovery complete when the query capability is unavailable", async () => {
+  const h = receiptHarness(true);
+  try {
+    h.relations.capabilities = { ...h.relations.capabilities!, lookupQueryV1: false };
+    await expect(h.controller.refresh()).resolves.toBe(false);
+    expect(h.queryLookups).not.toHaveBeenCalled();
+  } finally { h.scope.stop(); }
+});
+function receiptHarness(labelsOnly = false) {
   setActivePinia(createPinia());
   const table = useTableStore();
   const relations = useRelationLookupStore();
@@ -421,14 +507,14 @@ function receiptHarness() {
     collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [],
     schemaRevision: "schema-1", permissionRevision: "permission-1",
     capabilityHash: "capability-1", lookupRevision: "lookup-1",
-  }, [lookup], {
+  }, labelsOnly ? [] : [lookup], {
     contract: "vibetable.relation-capabilities.v1",
     relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
   });
   table.setDatasetReady({
     table: "orders", columns: [{
       name: "price", title: "Price", fieldId: "orders.price", dataType: "decimal",
-      editable: false, nullable: true,
+      editable: false, nullable: true, ...(labelsOnly ? { kind: "relation" as const } : {}),
     }], rows: [{ rowKey: "original", price: null }], offset: 0, limit: 500,
     totalRows: 1, mode: "remote",
     revision: { databaseSessionId: "database-1", schemaRevision: "schema-1", dataRevision: 1 },
@@ -441,6 +527,7 @@ function receiptHarness() {
   const controller = scope.run(() => createAuthoritativeLookupController({
     currentTable: () => collection.value,
     tablePage: () => table.pages[0] ?? null,
+    loadedRows: () => table.allRows,
     columns: () => table.schema,
     datasetReady: () => table.datasetReady,
     schemaRevision: () => table.revision?.schemaRevision ?? null,
@@ -453,7 +540,7 @@ function receiptHarness() {
     loadContext: vi.fn(async () => true),
     queryLookups,
     acceptResult: (response, revision) => relations.acceptLookup(response, revision)
-      && table.applyLookupQueryResult(response),
+      && table.applyLookupQueryResult(response, { labelsOnly }),
     clearEditRejection: vi.fn(), reportError,
   }))!;
   return { scope, controller, table, relations, collection, pending, queryLookups, reportError };
