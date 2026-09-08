@@ -676,6 +676,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),

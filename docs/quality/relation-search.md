@@ -6,8 +6,10 @@
 其他 relation 写方法和 lookup 方法不随本次切换。没有更改 CI、发布门禁或不支持格式的
 零写入拒绝契约。
 
+当前 query 依赖整合17 Go /83 Python /2 Host的独立证据见[query资格](lookup-query.md)，不以本文历史结果替代。
+
 本文保留 search 分支整合 main `3f665176e16e00d168edba98b40ac2ae26174c24` 的资格，
-当时为15 Go /85 Python /2 native，lookup.valuePage仍由Python负责。当前lookup切片承接
+当时为15 Go /85 Python /2 native，lookup.valuePage仍由Python负责。后续valuePage切片承接
 含search的main `6e25fd033697c57a4ca113caf98c90293b892548`，闭集16 Go /84 Python /2 native，
 lookup.valuePage、search与preview均归Go。本次增量见[Lookup资格](lookup-value-page.md)。
 下列数量、失败和产品包结果均保留其原来源，不能替代本次合并端点资格。

@@ -51,6 +51,7 @@ func relationSearchHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
+		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),

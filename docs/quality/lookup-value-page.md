@@ -1,11 +1,13 @@
 # Lookup 来源分页迁移资格
 
 本切片仅将 `lookup.valuePage` 从 Python BFF 转译迁至现有 Go relation authority。
-当前已整合 main `6e25fd033697c57a4ca113caf98c90293b892548`，闭集16 Go /84 Python /2 native；
+本文记录独立 valuePage 切片整合 main `6e25fd033697c57a4ca113caf98c90293b892548`，闭集16 Go /84 Python /2 native；
 lookup.valuePage、relation.searchTargets、relation.previewDelta均归Go，lookup.query仍归Python。
 初始实施基线为 main `a19ccd5366d62be6338f628d06b6c5a37484f20f`，清单为14 Go /86 Python /2 native；
 在该基线的分支中 search/preview 仍归 Python。后续最新 main 同步与最终包资格单独记录，
 不能把本地来源结果当成另一端点的通过证据。
+
+当前 query 依赖整合为17 Go /83 Python /2 Host，两个 lookup 方法均归Go；下文均为 valuePage 独立切片的历史证据，新的整合资格见[query资格](lookup-query.md)。
 
 ## 原始契约与实施边界
 
