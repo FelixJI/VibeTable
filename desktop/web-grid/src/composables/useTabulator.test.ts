@@ -510,6 +510,35 @@ describe("useTabulator", () => {
     wrapper.unmount();
   });
 
+  it("queues label-only row projections until the active editor finishes", async () => {
+    const gridEl = ref<HTMLElement | null>(null);
+    const table = useTableStore();
+    const wrapper = mountHost(gridEl);
+    gridEl.value = document.createElement("div");
+    table.setDatasetReady(makeDatasetReady([
+      { rowKey: "r1", name: "Draft", contract: "target", __vibetableRelationLabels: { contract: { target: "Old" } } },
+    ], [makeColumn("name"), { ...makeColumn("contract"), kind: "relation" }]));
+    await flushPromises();
+    const editing = lastMock!.on.mock.calls.find(call => call[0] === "cellEditing")![1] as () => void;
+    const edited = lastMock!.on.mock.calls.find(call => call[0] === "cellEdited")![1] as () => void;
+    editing();
+    table.applyLookupQueryResult({
+      contract: "vibetable.lookup-query.v1", collection: "users", requestGeneration: 1,
+      schemaRevision: "s", permissionRevision: "p", lookupRevision: "l", columns: [], groups: [],
+      rows: [{ id: "r1", name: "Stored", __vibetableRelationLabels: { contract: { target: "Fresh" } } }],
+      offset: 0, limit: 1, filteredRows: 1, totalRows: 1,
+      snapshot: { snapshotId: "snapshot", digest: "digest", databaseId: "db", table: "users", schemaRevision: "s", dataRevision: 1, normalizedQuery: {} },
+    }, { labelsOnly: true });
+    await flushPromises();
+    expect(lastMock!.setData).not.toHaveBeenCalled();
+    edited();
+    await flushPromises();
+    expect(lastMock!.setData).toHaveBeenCalledOnce();
+    expect(lastMock!.setData).toHaveBeenCalledWith([
+      { rowKey: "r1", name: "Draft", contract: "target", __vibetableRelationLabels: { contract: { target: "Fresh" } } },
+    ]);
+    wrapper.unmount();
+  });
   it("defers dataset replacement until an active cell editor finishes", async () => {
     const gridEl = ref<HTMLElement | null>(null);
     const table = useTableStore();

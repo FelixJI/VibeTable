@@ -2690,12 +2690,13 @@ async function scenario28(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   const authors = await createSimpleTable(page, "Preview Authors", "Name");
+  const authorCode = await createV2Field(page, authors.tableId, "Author code", "text");
   const articleTableId = await createEmptyTable(page, "Preview Articles");
   await closeFieldSettingsDrawer(page);
   const title = await createV2Field(page, articleTableId, "Title", "text");
   const relation = await createV2Field(page, articleTableId, "Authors", "relation", (draft) => {
     draft.relation.targetTableId = authors.tableId;
-    draft.relation.displayFieldId = authors.field.fieldId;
+    draft.relation.displayFieldId = authorCode.fieldId;
     draft.relation.cardinality = "many";
     return draft;
   });
@@ -2703,8 +2704,8 @@ async function scenario28(page, recorder) {
   const extraId = "previewtarget02";
   const sourceId = "previewsource01";
   const targets = await applyProductMutation(page, authors.tableId, [
-    { kind: "insert", recordId: targetId, values: { [authors.field.physicalName]: "已有作者" } },
-    { kind: "insert", recordId: extraId, values: { [authors.field.physicalName]: "候选作者" } },
+    { kind: "insert", recordId: targetId, values: { [authors.field.physicalName]: "已有作者", [authorCode.physicalName]: "AUTHOR-001" } },
+    { kind: "insert", recordId: extraId, values: { [authors.field.physicalName]: "候选作者", [authorCode.physicalName]: "AUTHOR-002" } },
   ], "preview-targets");
   const source = await applyProductMutation(page, articleTableId, [{
     kind: "insert", recordId: sourceId,
@@ -2730,6 +2731,16 @@ async function scenario28(page, recorder) {
   const beforeTargets = await read(authors.tableId);
   await selectTable(page, "Preview Articles");
   await waitForVisibleRowCount(page, 1);
+  const relationCell = page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${relation.physicalName}"]`,
+  ).first();
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: relation.physicalName, label: "AUTHOR-001" });
+  recorder.check("relation grid uses its configured display field while retaining raw target IDs",
+    (await relationCell.locator(".vt-relation-token").innerText()) === "AUTHOR-001"
+      && JSON.stringify(beforeSource.rows[0][relation.physicalName]) === JSON.stringify([targetId]));
   await page.locator(
     `.grid-wrapper[aria-busy="false"] .tabulator-cell.vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`,
   ).first().dblclick();
@@ -2751,6 +2762,24 @@ async function scenario28(page, recorder) {
     JSON.stringify(afterSource) === JSON.stringify(beforeSource)
       && JSON.stringify(afterTargets) === JSON.stringify(beforeTargets),
     { beforeSource, afterSource, beforeTargets, afterTargets });
+
+  const targetRow = afterTargets.rows.find((row) => row.id === targetId);
+  if (!targetRow?.__vibetableDigest) throw new Error("relation label update has no target CAS digest");
+  const changed = await applyProductMutation(page, authors.tableId, [{
+    kind: "update", recordId: targetId,
+    values: { [authorCode.physicalName]: "AUTHOR-UPDATED" },
+    expectedDigest: targetRow.__vibetableDigest,
+  }], "relation-display-label-update");
+  if (changed.payload?.status !== "applied") throw new Error("relation label update did not commit");
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: relation.physicalName, label: "AUTHOR-UPDATED" });
+  const refreshedSource = await read(articleTableId);
+  recorder.check("target display changes refresh grid labels without changing source links or revision",
+    (await relationCell.locator(".vt-relation-token").innerText()) === "AUTHOR-UPDATED"
+      && refreshedSource.dataRevision === afterSource.dataRevision
+      && JSON.stringify(refreshedSource.rows[0][relation.physicalName]) === JSON.stringify([targetId]));
 }
 
 async function scenario29(page, recorder) {
