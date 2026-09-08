@@ -211,8 +211,17 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Seed the full window in one statement, keeping the production retention
-	// trigger active for every row. Boundary writes still use PocketBase Save.
+	// Build the pre-existing window without replaying the retention scan for
+	// every seed row. Restore the exact installed trigger in the same transaction
+	// before exercising all boundary writes through PocketBase Save.
+	var retentionSQL string
+	if err := app.DB().NewQuery(`SELECT sql FROM sqlite_master
+		WHERE type = 'trigger' AND name = 'vibetable_outbox_retain_latest'`).Row(&retentionSQL); err != nil {
+		t.Fatal(err)
+	}
+	if retentionSQL == "" {
+		t.Fatal("production retention trigger is missing")
+	}
 	events := make([]mutation.DataChangedEvent, 10_000)
 	for index := range events {
 		events[index] = realtimeDataEvent(index + 1)
@@ -221,16 +230,34 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.DB().NewQuery(`
-		INSERT INTO vibetable_outbox (id, event_id, topic, payload_json, status, attempts)
-		SELECT printf('retention%06d', CAST(key AS INTEGER) + 1),
-			json_extract(value, '$.eventId'), 'data.changed', value, 'pending', 0
-		FROM json_each({:events}) ORDER BY CAST(key AS INTEGER)
-	`).Bind(map[string]any{"events": string(raw)}).Execute(); err != nil {
+	if err := app.RunInTransaction(func(txApp core.App) error {
+		if _, err := txApp.DB().NewQuery("DROP TRIGGER vibetable_outbox_retain_latest").Execute(); err != nil {
+			return err
+		}
+		if _, err := txApp.DB().NewQuery(`
+			INSERT INTO vibetable_outbox (id, event_id, topic, payload_json, status, attempts)
+			SELECT printf('retention%06d', CAST(key AS INTEGER) + 1),
+				json_extract(value, '$.eventId'), 'data.changed', value, 'pending', 0
+			FROM json_each({:events}) ORDER BY CAST(key AS INTEGER)
+		`).Bind(map[string]any{"events": string(raw)}).Execute(); err != nil {
+			return err
+		}
+		_, err := txApp.DB().NewQuery(retentionSQL).Execute()
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for index := 10_001; index <= 10_005; index++ {
 		saveRealtimeOutboxEvent(t, app, realtimeDataEvent(index))
+	}
+	// Hub catchup also limits results, so query the authority itself to prove
+	// the real trigger removed old rows rather than hiding them in a page.
+	var retained int
+	if err := app.DB().NewQuery("SELECT COUNT(*) FROM vibetable_outbox").Row(&retained); err != nil {
+		t.Fatal(err)
+	}
+	if retained != 10_000 {
+		t.Fatalf("retained authority rows = %d", retained)
 	}
 	backlog, err := hub.Subscribe(ctx, "")
 	if err != nil {
