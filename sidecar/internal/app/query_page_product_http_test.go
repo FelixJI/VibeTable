@@ -33,11 +33,13 @@ func queryPageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration prod
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
+		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		registration, queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))

@@ -12,7 +12,7 @@ Python 仅退役此方法的 handler/注册执行路径；完整参数模型继�
 检查取消，inventory 明确 cooperative。失败不回退 Python。
 
 准备基线为 main187390c7，包含独立 catalog 候选67414ddd和原件cherry02cf82bf。
-当前闭集16 Go /85 Python /2 Host，总103；待前置 Lookup 与 catalog 合并后再同步最终main。
+初始切片闭集16 Go /85 Python /2 Host，总103。为复用一次最终构建，本地继续整合已验证的 Lookup query/valuePage 候选697a79f6，组合闭集18 Go /83 Python /2 Host，总103；待前置 Lookup 与 catalog 合并后再同步最终main。
 本地分支中依赖存在不表示已通过远端验收。
 
 原 producer `2c211088a682163bfdd126eda4528b69cd8419f8` 的30例JSON不变。
@@ -63,13 +63,17 @@ ProductDataRequestControllerTests。旧白名单样例缺scope，另两例错误
 以及旧TestSchemaGetTableProductHTTPRejectsInvalidTableMetadata/data-revision。没有业务断言失败信息；不据此宣称该组通过或根因已确定。
 保留原日志，不重跑取绿、不添加cleanup重试或杀软例外。此前新适配独立HTTP通过与本次整合失败分别记录。
 
+## Lookup 组合验证
+
+本地组合保留三个 owner 的独立意图与冻结原件；远端仍分别交付。组合增量 Host 原八类 169 passed/0 failed/skipped，645ms；Python 九文件首轮144 passed/1 failed（1.73s），旧测试两处owner集合遗漏describe。修正时一次文本替换误触events参数行导致收集错误，已移除误行；补describe有效/非法形状均无Python注册的两例后，仅该文件27 passed（0.44s），不声称全组重跑。Go三方法 `go test -race ./internal/app -run '^Test(FieldSettingsDescribe|LookupQuery|LookupValuePage)Product' -count=1` 通过44.525s；注册两包通过1.276s/1.669s，实际sidecar子进程通过11.887s。四包vet通过。runner/index150 passed（8.84s），backend及三保留器Pyright 0 errors。日志为build/field-lookup-combined-*。组合增量 Standards 与 Spec 的发现已修正，最终未解决0/0；完整构建及 S02/S03待完成。
+
 ## 审查与剩余资格
 
 Standards指出取消声明需同步，Spec指出历史捕获文档需更新，均已修正，最终增量 Standards 与 Spec 无新增未解决问题。
 两项非阻断重复接受在本切片局部保留：已有REST与新typed adapter的八字段投影、原始Unicode预算扫描。
 前者复用同一领域实例和冻结结果约束，后者保留既有严格预算算法；集中重构会扩大多个已迁方法或共享REST的本次审查范围。
 
-Host作者不复核自己六个测试文件；主代理独立检查并要求保留基线的 Lookup Relation drain 测试，新增 Python Field drain 独立存在。两方法定向复验 2 passed/0 failed/skipped，125ms（filter 为 RelationReadSettlesBeforeRetiredRuntimeDrains|PythonFieldReadSettlesBeforeRetiredRuntimeDrains）。其余源码由独立Spec代理审查，Standards代理独立检查全部。
+初始16-owner阶段，Host作者不复核自己六个测试文件；主代理独立检查并要求保留当时仍Python的 Lookup Relation drain 测试，新增 Python Field drain 独立存在。当时两方法定向复验 2 passed/0 failed/skipped，125ms（filter 为 RelationReadSettlesBeforeRetiredRuntimeDrains|PythonFieldReadSettlesBeforeRetiredRuntimeDrains）。18-owner组合中 Lookup 已退役 Python，原等待样例改为仍Python的 field.change.status/jobId，另一条 recycleBin 样例独立保留；旧125ms不作为新方法证据。其余源码由独立Spec代理审查，Standards代理独立检查全部。
 S02增加与本次实际requestId对应的成功描述回程、完整已恢复字段及非空能力断言；S03仍验证字段错误。
 完整新构建和真实S02/S03产品运行尚未执行；旧Python包或其他方法的S29不是此owner资格。
 

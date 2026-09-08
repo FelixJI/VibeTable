@@ -2799,6 +2799,12 @@ async function scenario29(page, recorder) {
     };
   };
   const before = [await read(tableId), await read(targets.tableId)];
+  const queryDiagnosticsBefore = await readBridgeDiagnostics(page);
+  const priorQueryRequestIds = new Set([
+    ...queryDiagnosticsBefore.requests,
+    ...queryDiagnosticsBefore.roundTrips,
+    ...queryDiagnosticsBefore.pending,
+  ].map(item => item.requestId));
   await selectTable(page, "Paged Lookup Sources");
   await waitForVisibleRowCount(page, 1);
   await page.locator(
@@ -2810,6 +2816,12 @@ async function scenario29(page, recorder) {
   recorder.check("lookup source dialog starts with the first 100 of 101 sources",
     await panel.locator("ol > li").count() === 100
       && (await panel.locator("header small").innerText()).trim() === "100 / 101");
+  const lookupQueryRoundTrip = (await readBridgeDiagnostics(page)).roundTrips
+    .find(item => !priorQueryRequestIds.has(item.requestId)
+      && item.requestType === "lookup.query"
+      && item.responseType === "lookup.query" && item.code === null);
+  recorder.check("lookup grid rendering completes a successful lookup.query round trip",
+    lookupQueryRoundTrip !== undefined, { lookupQueryRoundTrip });
   await panel.locator("footer button").click();
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="lookup-sources-panel"] ol > li').length === 101);
   const actual = await panel.locator("ol > li small").allTextContents();

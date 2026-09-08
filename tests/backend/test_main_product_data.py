@@ -40,6 +40,8 @@ class FakeProductService:
                 "dataRevision": "data_0001",
             },
         ),
+        ("field.settings.describe", {"tableId": "orders"}),
+        ("field.settings.describe", {"extra": True}),
         ("schema.list", {}),
         ("query.page", {"tableId": "orders", "query": {}}),
         ("query.page", {"extra": True}),
@@ -49,7 +51,9 @@ class FakeProductService:
         ("query.cursorFetch", {"extra": True}),
         ("query.view", {"tableId": "orders", "view": {}}),
         ("query.view", {"extra": True}),
+        ("lookup.valuePage", {"extra": True}),
         ("relation.previewDelta", {"extra": True}),
+        ("lookup.query", {"extra": True}),
         ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
@@ -120,9 +124,12 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
+        "field.settings.describe",
         "relation.searchTargets",
         "query.selectionOpen",
         "lookup.list",
+        "lookup.query",
+        "lookup.valuePage",
         "query.cursorFetch",
         "query.cursorOpen",
         "query.page",
@@ -142,9 +149,12 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         WORKSPACE_CATALOG_METHODS
         | {
             "events.reconcile",
+            "field.settings.describe",
             "file.list",
             "history.read",
             "lookup.list",
+            "lookup.query",
+            "lookup.valuePage",
             "query.cursorFetch",
             "query.cursorOpen",
             "query.page",
