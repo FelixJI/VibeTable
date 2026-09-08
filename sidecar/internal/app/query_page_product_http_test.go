@@ -34,6 +34,7 @@ func queryPageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration prod
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))

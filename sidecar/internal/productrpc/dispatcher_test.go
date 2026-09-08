@@ -461,12 +461,12 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 12 ||
+	if methods := dispatcher.Methods(); len(methods) != 13 ||
 		methods[0].Method != "events.reconcile" || methods[1].Method != "file.list" ||
 		methods[2] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
 		methods[3].Method != "lookup.list" || methods[4].Method != "query.cursorFetch" || methods[5].Method != "query.cursorOpen" || methods[6].Method != "query.page" || methods[7].Method != "query.readRows" ||
-		methods[8].Method != "query.selectionOpen" || methods[9].Method != "schema.describe" ||
-		methods[10].Method != "schema.getTable" || methods[11].Method != "schema.list" {
+		methods[8].Method != "query.selectionOpen" || methods[9].Method != "query.view" || methods[10].Method != "schema.describe" ||
+		methods[11].Method != "schema.getTable" || methods[12].Method != "schema.list" {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -536,6 +536,10 @@ func generatedGoSidecarRegistrations() []Registration {
 		},
 		{
 			Method: "query.selectionOpen", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "query.view", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{

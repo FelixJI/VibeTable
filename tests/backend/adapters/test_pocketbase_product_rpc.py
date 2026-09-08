@@ -78,7 +78,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
     class MissingRouteModule(ProductQuerySchemaRpc):
         def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
             super().__init__(context)
-            self.methods = self.methods - {"query.view"}
+            self.methods = self.methods - {"query.validateSnapshot"}
 
     monkeypatch.setattr(product_rpc, "ProductQuerySchemaRpc", MissingRouteModule)
     with pytest.raises(RuntimeError, match="routes do not match the contract registry"):

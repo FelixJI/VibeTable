@@ -31,7 +31,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "query.view": self._query_view,
             "query.validateSnapshot": self._validate_snapshot,
             "mutation.preview": self._preview_mutation,
             "mutation.apply": self._apply_mutation,
@@ -102,29 +101,6 @@ class ProductQuerySchemaRpc:
                 headers=dict(self._context.headers),
                 expected_status=(200,),
             )
-        )
-
-    async def _query_view(self, params: ProductParams) -> JsonObject:
-        result = await self._context.client.execute_view(
-            table_id=_text(params.root, "tableId"),
-            view=_object(params.root, "view"),
-        )
-        page = result.page
-        return _result_object(
-            {
-                "page": {
-                    "rows": page.rows,
-                    "offset": page.offset,
-                    "limit": page.limit,
-                    "filteredRows": page.filtered_rows,
-                    "totalRows": page.total_rows,
-                    "snapshot": page.snapshot,
-                },
-                "groupRows": result.group_rows,
-                "groupOffset": result.group_offset,
-                "groupLimit": result.group_limit,
-                "hasMoreGroups": result.has_more_groups,
-            }
         )
 
     async def _validate_snapshot(self, params: ProductParams) -> JsonObject:

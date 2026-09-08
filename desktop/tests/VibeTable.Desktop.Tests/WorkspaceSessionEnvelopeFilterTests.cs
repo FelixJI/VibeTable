@@ -173,7 +173,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task PythonViewResponseSettlesAsStaleAfterWorkspaceSwitch()
+    public async Task PythonFieldSettingsResponseSettlesAsStaleAfterWorkspaceSwitch()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -189,10 +189,10 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var dispatcher = CreateDispatcher(sink, filter);
         dispatcher.SetProductDataGateway(gateway);
 
-        using var viewParams = JsonDocument.Parse(
-            """{"tableId":"tbl_records","view":{"query":{"filters":[],"sorts":[],"offset":0,"limit":100},"groups":[],"summaries":[],"groupOffset":0,"groupLimit":100}}""");
+        using var settingsParams = JsonDocument.Parse(
+            """{"tableId":"tbl_records"}""");
         dispatcher.Dispatch(new RoutedWebRequest(
-            "query.view", "old-response", viewParams.RootElement.Clone(), string.Empty,
+            "field.settings.describe", "old-response", settingsParams.RootElement.Clone(), string.Empty,
             ScopeFor(opened, 1)));
         await transport.WaitForWriteAsync();
         await fixture.Manager.SwitchAsync(

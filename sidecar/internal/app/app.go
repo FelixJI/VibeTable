@@ -445,6 +445,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				querySelectionOpenRegistration(queryPort),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
 				historyReadRegistration(workspaceRuntime),
+				queryViewRegistration(queryPort),
 			)
 			if err != nil {
 				_ = rawListener.Close()

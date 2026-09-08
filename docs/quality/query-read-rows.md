@@ -3,7 +3,7 @@
 来源 PR278 只切换 `query.readRows`：WPF 依据生成 policy 发送到 Go Product gateway，直接调用
 既有 Query Port。Python 对应 handler 与注册已移除；`query.page`、cursor、selection、view
 和 `validateSnapshot` 的 owner 在该来源中不变。本次整合另纳入独立通过 CI 的 PR280 和 PR284，
-最终同时迁移 readRows、cursorOpen、cursorFetch、selectionOpen；其余 owner 遵循最新 main。
+最终同时迁移 readRows、cursorOpen、cursorFetch、selectionOpen，并同步 main 6ed36810 的 query.view；生成清单为13 Go、87 Python、2 native。relation.searchTargets 仍由 Python 处理。
 
 参数形状、递归凭据键、深度、Unicode scalar 和紧凑 UTF-8 JSON 的 1 MiB 参数预算仍在
 Product 校验层拒绝；非字符串/空 row ID 保留原 handler 错误。空数组、重复和空白 ID
@@ -26,3 +26,5 @@ Python HTTP transport failure 不属于直达 Go Port 的领域结果，在测�
 `query.readRows` 不是网页 `ProductDataRpcRegistry` 的命令，本片不新增网页调用入口。
 代码和源码测试不代替该场景实际执行；完整 fresh CI、严格同步 main、双轴审查和合并后
 验收完成前，本片仍不能记为交付完成。
+
+同步main 6ed36810后的本地整合结果见[游标资格记录](query-cursor-window.md)：Python与Host失败已作针对性修正并聚焦复验，Go三处TempDir清理失败仍保留，最终fresh CI及产品包资格未完成；不声明整合端点全local green。

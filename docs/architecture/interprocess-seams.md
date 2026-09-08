@@ -33,7 +33,9 @@ binding 只提供配对 client、完整代际比较与 typed gateway 构造；�
 gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
 至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
 schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
-现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch` 与 `query.selectionOpen` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
+现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch`、`query.selectionOpen` 与 `query.view` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
+`query.view` 以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
+参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
 `file.token`、Python SSE/gap 恢复和本地 task producer 按后续切片处理。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。

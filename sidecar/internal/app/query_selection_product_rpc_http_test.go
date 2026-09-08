@@ -45,6 +45,7 @@ func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port inter
 	}, productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
 		querySelectionOpenRegistration(port), queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaGetTableRegistration(pb), schemaListRegistration(catalog),

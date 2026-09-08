@@ -94,6 +94,7 @@ func cursorProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interfac
 	}, queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
 		queryCursorOpenRegistration(port), queryCursorFetchRegistration(port),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),

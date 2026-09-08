@@ -33,6 +33,7 @@ func queryReadRowsHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration 
 	}, queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
 		registration, queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),

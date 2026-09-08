@@ -6,4 +6,6 @@
 
 来源端点39e05a9的新包 S02/S17于20260907T212817Z通过。来源最终端点a1067c8f包含main8cf989c5，完整CI34167677408成功；此前dispatcher fixture遗漏selection注册的CI失败已修正并保留证据。旧本地全app race清理失败及native race崩溃不改写为通过。
 
-本批与独立通过CI的readRows、cursorOpen/cursorFetch整合，最终12Go/88Python/2native，总102。四类查询HTTP fixture完整注册并用不可调用守卫阻止误调用。原始语料和生产适配器保留；最新main的page恢复及S18、原游标S17流程一并保留。来源测试不替代组合端点的相关验证、双轴审查、完整fresh CI及squash后的main CI/CD；闭环前不声明组合批次已交付。
+本批与独立通过CI的readRows、cursorOpen/cursorFetch整合，并同步包含 query.view 的 main 6ed36810，最终13Go/87Python/2native，总102。五类查询HTTP fixture完整注册并用不可调用守卫阻止误调用。原始语料和生产适配器保留；最新main的page恢复及S18、view的S02、原游标S17流程一并保留。来源测试不替代组合端点的相关验证、双轴审查、完整fresh CI及squash后的main CI/CD；闭环前不声明组合批次已交付。
+
+本次main合并工作树的失败与聚焦修正证据统一保留在[游标资格记录](query-cursor-window.md)。来源339b686d的完整CI成功不覆盖新合并端点；本地Go TempDir清理失败仍未解决，最终fresh CI和产品包资格pending。
