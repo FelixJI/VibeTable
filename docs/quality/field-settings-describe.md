@@ -97,3 +97,8 @@ bridge failures/pending和pageErrors均空。S03的字段约束错误场景通�
 包审计无错误、desktop-host/web-grid/python-backend/pocketbase-sidecar四组件freshness全部通过。
 两场景Host退出0，membersAfterExit/descendantsAfterExit和remainingPids均空，端口释放、owner lease关闭和final cleanup全部通过。
 本报告证明本地组合产品资格，独立owner PR的最新main/fresh CI/squash及合并后CI/CD仍未完成。
+## 最新依赖整合
+
+在已验证的18-owner组合上正常合入 catalog 提交`fb2e69373b6112c1cddfd7799e1d1cea39670f4e`（包含最新main `f1fb4a2a906fc1e2d0e3518cea7dde062d18946e`）。原catalog/query均为组合祖先，query分支与其squash结果tree相同；18处重复历史冲突按既有owner、完整注册和生命周期断言解决，派生物经正式生成器重建。
+
+整合后的全部非文档文件与产品资格源码`5077d6af212d7ae10676383fb7b93e9022d7f9e8`严格相等；相对整合前HEAD仅新增catalog资格文档更新。因此沿用上述真实包和S02/S03证据，没有重复构建或重复业务测试。三个生成器只读检查与Git diff检查通过。此本地整合不代表catalog已远端合并，最终PR仍须在依赖交付后严格同步main并通过fresh CI。
