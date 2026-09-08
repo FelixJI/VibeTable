@@ -2,7 +2,7 @@
 
 此变更将同一 mutation 契约下的 preview/apply 成对迁入 Go，避免预览与应用形成中间 owner 状态。保留已有 mutation Kernel 和 workspace 写门禁，Python import/export/plugin 使用的内部 client 不随产品路由删除。产品目录仍为 103 RPC、7 事件，当前 owner 为 21 Go / 80 Python / 2 Host。
 
-前置交付为 Go 权威恢复流、Host 完整消费者和独立 workspace mutation 重放修复。该修复通过独立 PR #298 验收；后续迁移 PR 须同步其实际 main 合并结果，不能把重放修复重复包装为 owner 切换。
+前置交付为 Go 权威恢复流、Host 完整消费者和独立 workspace mutation 重放修复。该修复的独立 PR #298 已通过其 head CI，并按用户授权与 #299 集成到 #302 运行 fresh CI；后续迁移 PR 须同步实际 main 合并结果，不能把重放修复重复包装为 owner 切换。
 
 ## 契约
 
@@ -37,3 +37,11 @@ Standards 未发现确定违例，指出严格 fixture 装配多处重复的维�
 
 日志 `build/mutation-owner-product-build.log`、`build/mutation-owner-product-e2e.log`；完整报告 `build/qa/product-e2e/20260908T165809Z/product-e2e-report.json`。该证据覆盖当前产品编辑和保留的 Python 工作流，不扩大为所有取消/崩溃故障注入或完整发布资格。
 补充相邻装配验证：`go test -race ./internal/app -run Product -count=1` 完成于271.748秒，但整体 FAIL。唯一报告失败为 `TestLookupListProductHTTPKeepsSemanticBudgetAcrossWireEscaping` 的 `TempDir RemoveAll cleanup: directory is not empty`；未报告 Product 业务断言失败。日志 `build/mutation-owner-product-app-race.log` 保留，不重试、不删除清理检查，也不将该运行写为 PASS。该清理问题与此前本地 Go 阶段同类，完整远端门禁仍负责最终验收。
+
+## Host 修复集成后的实际产品补充
+
+正常合并 Host d17314f24e3ed71f1aa116707074ffdacd9d726a 后，冻结源码 2204a406e00d5e34725881ba980b4ad830496ce7；owner 实现不变，新增生产差异是自动恢复保留响应时最新的兼容 Dashboard 会话筛选。复用既有环境执行 `uv run --frozen --no-sync python scripts/build_next.py`，完整构建退出 0，sidecar build-info commit 为 2204a406e00d，四组件 freshness 全通过。
+
+`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 02-all-field-schema --scenario 08-stale-conflict --scenario 16-dashboard-lifecycle`：运行 20260908T185856Z，3/3 PASS、0 skip。S02 13.173 秒/18 断言；S08 4.751 秒/8 断言；S16 28.225 秒/17 断言。各场景 Node/Host exit 0，pageErrors、异常 bridge、pending 均为 0；members/descendants 为空，端口释放、owner lease 和最终清理通过。
+
+原始报告为 build/qa/product-e2e/20260908T185856Z/product-e2e-report.json；构建和运行日志为 build/mutation-owner-current-host-build.log、build/mutation-owner-current-host-e2e.log。S04/S11 仍归属于前述 9d6af2ef 运行，没有在本次源码重跑。前置 #300/#302 尚待完整合并闭环；本补充不替代最终 fresh CI。
