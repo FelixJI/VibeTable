@@ -1,20 +1,27 @@
 # 字段描述 Product catalog 准入资格
 
-## 意图与边界
+## 当前组合与历史边界
+
+现有 PR293 将本地 catalog 准入、字段描述 Go owner 和快照 Go owner 合并为完整 schema.query 只读意图。
+当前组合为 19 Go / 82 Python / 2 Host，共 103，field.settings.describe 已在本地改为 Go owner。
+以下准入阶段和主干同步阶段记录描述当时的 Python owner，不是最终组合状态；保留原验证与失败证据。
+最终组合产品资格和交付状态见 [字段描述](field-settings-describe.md) 与 [快照校验](query-validate-snapshot.md)。
+
+## 准入阶段意图与边界
 
 `field.settings.describe` 已是公开的只读 typed 入口，但原来依赖 Host 的 `Workspace` 分类固定走
 Python，未纳入 Product 的封闭 owner/audience policy。Python 的历史排除集合也把它称作
 Workspace catalog 项；实际 Workspace RPC registry、policy 和 59 方法 manifest 均不包含它。
 
 本切片只把此方法纳入 Product catalog，新增 `workspace` scope、`rendererPublic` audience、
-`schema.query` capabilityId 和 `read` effect，当前 owner 仍为 `pythonBff`。
+`schema.query` capabilityId 和 `read` effect，该阶段 owner 仍为 `pythonBff`。
 `schema.query` 与既有 schema 描述/读取能力对应；这是新声明，不是从 Workspace manifest 复制的旧值。
 
 Host 使用正常的 Product policy 准入，缺失 policy、非公开 audience 或不可用 transport owner 时拒绝。
 Python 参数模型、业务 handler、现有 sidecar REST 及有效请求的返回语义保持原契约。
 另外五个历史 Field typed 入口继续原路由；真实 Workspace manifest 无需扩展。
 
-这项变更独立完成封闭策略覆盖。后续 Go owner 迁移必须另行完成 producer、Python 专属执行路径退役、
+这项变更独立完成封闭策略覆盖。Go owner 迁移还必须完成 producer、Python 专属执行路径退役、
 无 fallback 的 Host 接线、真实新构建字段助手场景和 fresh CI，不能引用本项作为 Go 执行资格。
 
 ## 验证记录
