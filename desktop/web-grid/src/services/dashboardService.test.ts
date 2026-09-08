@@ -110,6 +110,269 @@ describe("dashboardService", () => {
     service.dispose();
   });
 
+  it("recovery rereads catalog, manifest, committed dashboard and visible panel data without discarding a draft", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Old", note: "", panels: [panel] },
+      config: {}, revision: "r0", queryLimits: {},
+    });
+    const service = useDashboardService();
+    const recovering = service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", {
+      dashboards: [{ id: "d1", name: "Recovered", note: "", panels: [panel] }],
+    });
+    await flushPromises();
+    reply(h, "dashboard.readRequested", "dashboard.loaded", {
+      dashboard: { id: "d1", name: "Recovered", note: "", panels: [panel] },
+      config: {}, revision: "r1", queryLimits: {},
+    });
+    await flushPromises();
+    replySchema(h);
+    await flushPromises();
+    reply(h, "dashboard.queryRequested", "dashboard.queryLoaded", {
+      rows: [{ status: "paid", value: 42 }], truncated: false, maxPoints: 100,
+    });
+    await expect(recovering).resolves.toBe("applied");
+    expect(store.current?.name).toBe("Recovered");
+
+    service.beginEdit();
+    useDashboardDraftStore().rename("Unsaved", "");
+    const draftRecovery = service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", { dashboards: [] });
+    await expect(draftRecovery).resolves.toBe("dirty");
+    expect(useDashboardDraftStore().draft?.name).toBe("Unsaved");
+    expect(h.posted.filter((item) => item.type === "dashboard.readRequested")).toHaveLength(1);
+    useDashboardDraftStore().stop();
+    service.setRecoverySurfaceVisible(false);
+    const hiddenRecovery = service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", { dashboards: [] });
+    await expect(hiddenRecovery).resolves.toBe("dirty");
+    expect(h.posted.filter((item) => item.type === "dashboard.readRequested")).toHaveLength(1);
+    service.dispose();
+  });
+
+  it("does not let a retired recovery's slow catalog or manifest overwrite newer metadata", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const service = useDashboardService();
+    service.setRecoverySurfaceVisible(false);
+    const first = service.recoverAuthoritative();
+    await flushPromises();
+    const firstList = h.posted.filter((item) => item.type === "dashboard.listRequested").at(-1)!;
+    const firstManifest = h.posted.filter((item) => item.type === "dashboard.manifestRequested").at(-1)!;
+
+    const second = service.recoverAuthoritative();
+    await flushPromises();
+    const secondList = h.posted.filter((item) => item.type === "dashboard.listRequested").at(-1)!;
+    const secondManifest = h.posted.filter((item) => item.type === "dashboard.manifestRequested").at(-1)!;
+    h.emit("dashboard.listLoaded", { dashboards: [{ id: "new", name: "New", note: "", panels: [] }] }, String(secondList.requestId));
+    h.emit("dashboard.manifestLoaded", {
+      manifest: { manifestVersion: "new", panels: [] }, queryLimits: {},
+    }, String(secondManifest.requestId));
+    await expect(second).resolves.toBe("dirty");
+
+    h.emit("dashboard.listLoaded", { dashboards: [{ id: "old", name: "Old", note: "", panels: [] }] }, String(firstList.requestId));
+    h.emit("dashboard.manifestLoaded", {
+      manifest: { manifestVersion: "old", panels: [] }, queryLimits: {},
+    }, String(firstManifest.requestId));
+    await expect(first).resolves.toBe("retired");
+    expect(useDashboardStore().list.map((entry) => entry.id)).toEqual(["new"]);
+    expect(useDashboardStore().manifestVersion).toBe("new");
+    service.dispose();
+  });
+
+  it("retires pending recovery metadata at an epoch boundary without polluting the reset store", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const service = useDashboardService();
+    service.setRecoverySurfaceVisible(false);
+    const recovering = service.recoverAuthoritative();
+    await flushPromises();
+    const list = h.posted.filter((item) => item.type === "dashboard.listRequested").at(-1)!;
+    const manifest = h.posted.filter((item) => item.type === "dashboard.manifestRequested").at(-1)!;
+
+    service.retireRecovery();
+    h.emit("dashboard.listLoaded", { dashboards: [{ id: "old", name: "Old", note: "", panels: [] }] }, String(list.requestId));
+    h.emit("dashboard.manifestLoaded", {
+      manifest: { manifestVersion: "old", panels: [] }, queryLimits: {},
+    }, String(manifest.requestId));
+    await expect(recovering).resolves.toBe("retired");
+    expect(useDashboardStore().list).toEqual([]);
+    expect(useDashboardStore().manifestVersion).toBeNull();
+    service.dispose();
+  });
+
+  it("does not let a retired recovery's late failure fail the newer Dashboard store", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const service = useDashboardService();
+    service.setRecoverySurfaceVisible(false);
+    const first = service.recoverAuthoritative();
+    await flushPromises();
+    const firstList = h.posted.filter((item) => item.type === "dashboard.listRequested").at(-1)!;
+    const firstManifest = h.posted.filter((item) => item.type === "dashboard.manifestRequested").at(-1)!;
+    const second = service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", { dashboards: [] });
+    await expect(second).resolves.toBe("dirty");
+
+    h.emit("operation.failed", { message: "old list failed", operation: "dashboard.listRequested" }, String(firstList.requestId));
+    h.emit("operation.failed", { message: "old manifest failed", operation: "dashboard.manifestRequested" }, String(firstManifest.requestId));
+    await expect(first).resolves.toBe("retired");
+    expect(useDashboardStore().error).toBeNull();
+    service.dispose();
+  });
+
+  it("retires an old recovery panel query before it can write a new workspace's matching panel", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    useDashboardStore().receiveWorkspace({
+      dashboard: { id: "d1", name: "Old", note: "", panels: [panel] },
+      config: {}, revision: "r0", queryLimits: {},
+    });
+    const service = useDashboardService();
+    const recovering = service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", { dashboards: [{ id: "d1", name: "Old", note: "", panels: [panel] }] });
+    await flushPromises();
+    reply(h, "dashboard.readRequested", "dashboard.loaded", {
+      dashboard: { id: "d1", name: "Old", note: "", panels: [panel] }, config: {}, revision: "r1", queryLimits: {},
+    });
+    await flushPromises();
+    replySchema(h);
+    await flushPromises();
+    const oldQuery = h.posted.filter((item) => item.type === "dashboard.queryRequested").at(-1)!;
+
+    service.retireRecovery();
+    useDashboardStore().receiveWorkspace({
+      dashboard: { id: "d2", name: "New", note: "", panels: [{ ...panel, dashboardId: "d2" }] },
+      config: {}, revision: "r2", queryLimits: {},
+    });
+    h.emit("dashboard.queryLoaded", { rows: [{ status: "old", value: 1 }], truncated: false, maxPoints: 100 }, String(oldQuery.requestId));
+    await expect(recovering).resolves.toBe("retired");
+    expect(useDashboardStore().panelData.p1?.rows).toEqual([]);
+    service.dispose();
+  });
+
+  it("settles only a recovery-owned loading phase when live data retires that recovery", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Ops", note: "", panels: [panel] },
+      config: {}, revision: "r0", queryLimits: {},
+    });
+    const service = useDashboardService(); service.init();
+    void service.recoverAuthoritative();
+    await flushPromises();
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", {
+      dashboards: [{ id: "d1", name: "Ops", note: "", panels: [panel] }],
+    });
+    await flushPromises();
+    expect(store.phase).toBe("loading");
+
+    h.emit("data.changed", { tableId: "orders" });
+    expect(store.phase).toBe("ready");
+    void service.refresh();
+    await flushPromises();
+    expect(h.posted.filter((item) => item.type === "dashboard.listRequested")).toHaveLength(2);
+    service.dispose();
+  });
+
+  it("does not retire a user selection when live data supersedes an older recovery", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    const service = useDashboardService(); service.init();
+    void service.recoverAuthoritative();
+    await flushPromises();
+    const selecting = service.select("d2");
+    await flushPromises();
+    const selectedRead = h.posted.filter((item) => item.type === "dashboard.readRequested").at(-1)!;
+    expect(store.phase).toBe("loading");
+
+    h.emit("data.changed", { tableId: "orders" });
+    expect(store.phase).toBe("loading");
+    // The recovery is still dirty, but a refresh cannot start a new recovery
+    // over the unresolved user selection.
+    void service.refresh();
+    await flushPromises();
+    expect(h.posted.filter((item) => item.type === "dashboard.listRequested")).toHaveLength(1);
+
+    h.emit("dashboard.loaded", {
+      dashboard: { id: "d2", name: "Selected", note: "", panels: [] },
+      config: {}, revision: "r2", queryLimits: {},
+    }, String(selectedRead.requestId));
+    await selecting;
+    expect(store.current?.id).toBe("d2");
+    expect(store.phase).toBe("ready");
+    service.dispose();
+  });
+
+  it("does not let recovery metadata that finishes after selection replace the selected dashboard", async () => {
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Old", note: "", panels: [] },
+      config: {}, revision: "r1", queryLimits: {},
+    });
+    const service = useDashboardService();
+    const recovering = service.recoverAuthoritative();
+    await flushPromises();
+    const selecting = service.select("d2");
+    await flushPromises();
+    const selectedRead = h.posted.filter((item) => item.type === "dashboard.readRequested").at(-1)!;
+
+    replyManifest(h);
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", {
+      dashboards: [{ id: "d1", name: "Old", note: "", panels: [] }],
+    });
+    await flushPromises();
+
+    h.emit("dashboard.loaded", {
+      dashboard: { id: "d2", name: "Selected", note: "", panels: [] },
+      config: {}, revision: "r2", queryLimits: {},
+    }, String(selectedRead.requestId));
+    await selecting;
+    expect(store.current).toMatchObject({ id: "d2", name: "Selected" });
+    expect(store.phase).toBe("ready");
+    await expect(recovering).resolves.toBe("retired");
+    service.dispose();
+  });
+
+  it("refreshes live panels after data.changed without waiting for pending recovery metadata", async () => {
+    vi.useFakeTimers();
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const store = useDashboardStore();
+    store.receiveWorkspace({
+      dashboard: { id: "d1", name: "Ops", note: "", panels: [panel] },
+      config: {}, revision: "r1", queryLimits: {},
+    });
+    store.setPanelState("p1", { state: "ready", rows: [{ status: "old", value: 1 }] });
+    const service = useDashboardService(); service.init();
+    void service.recoverAuthoritative();
+    await flushPromises();
+
+    h.emit("data.changed", { tableId: "orders" });
+    await vi.advanceTimersByTimeAsync(350);
+    await flushPromises();
+    replySchema(h);
+    await flushPromises();
+    const liveQuery = h.posted.filter((item) => item.type === "dashboard.queryRequested").at(-1)!;
+    h.emit("dashboard.queryLoaded", {
+      rows: [{ status: "live", value: 2 }], truncated: false, maxPoints: 100,
+    }, String(liveQuery.requestId));
+    await flushPromises();
+
+    expect(store.panelData.p1?.rows).toEqual([{ status: "live", value: 2 }]);
+    expect(h.posted.filter((item) => item.type === "dashboard.listRequested")).toHaveLength(1);
+    service.dispose();
+  });
+
   it("loads, queries, and applies session filters without persisting their values", async () => {
     const h = harness(); setHostBridgeForTesting(h.bridge);
     const service = useDashboardService(); service.init();

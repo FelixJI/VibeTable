@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 
@@ -17,13 +18,19 @@ public sealed class GridRequestController
 
     private readonly GridStateCoordinator? _coordinator;
     private readonly IWebReplySink _reply;
+    private readonly Func<CancellationToken> _sessionToken;
+    private readonly WorkspaceSessionEnvelopeFilter? _sessions;
 
     public GridRequestController(
         GridStateCoordinator? coordinator,
-        IWebReplySink reply)
+        IWebReplySink reply,
+        Func<CancellationToken>? sessionToken = null,
+        WorkspaceSessionEnvelopeFilter? sessions = null)
     {
         _coordinator = coordinator;
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
+        _sessionToken = sessionToken ?? (() => CancellationToken.None);
+        _sessions = sessions;
     }
 
     public static bool Handles(string requestType)
@@ -72,8 +79,44 @@ public sealed class GridRequestController
                 "QUERY_INVALID");
         }
 
+        if (request.RequestId is not null)
+            return CompleteQueryAsync(request, table, query);
         _coordinator.RequestQuery(table, query);
         return Task.CompletedTask;
+    }
+
+    private async Task CompleteQueryAsync(RoutedWebRequest request, string table, JsonElement query)
+    {
+        WorkspaceRequestEpochLease? lease = null;
+        if (_sessions is not null && !_sessions.TryCapture(request.Scope, out lease))
+        {
+            await RejectAsync(request, "Workspace request belongs to a stale session.", "BAD_WORKSPACE_SCOPE");
+            return;
+        }
+        using (lease)
+        using (var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            _sessionToken(), lease?.CancellationToken ?? CancellationToken.None))
+        {
+            bool IsCurrent() => !lifetime.IsCancellationRequested
+                && (_sessions is null || _sessions.IsCurrent(lease));
+            try
+            {
+                TablePage page = await _coordinator!.RequestQueryAsync(table, query, lifetime.Token)
+                    .ConfigureAwait(false);
+                if (IsCurrent()) _reply.PostResponse("table.pageLoaded", request.RequestId, page);
+            }
+            catch (OperationCanceledException)
+            {
+                if (IsCurrent())
+                    await RejectAsync(request, "Table query was cancelled.", "QUERY_CANCELLED");
+            }
+            catch (Exception exception)
+            {
+                if (!IsCurrent()) return;
+                MutationError error = MutationErrorMapper.Map(exception);
+                await RejectAsync(request, error.Message, error.Code ?? "QUERY_FAILED");
+            }
+        }
     }
 
     private Task CursorAsync(RoutedWebRequest request)

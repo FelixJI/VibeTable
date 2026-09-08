@@ -10,10 +10,10 @@
  *   4. `app.mount("#app")` — synchronously mounts the tree. App subscribes to
  *      host startup state before the bridge handshake; WorkspaceView remains
  *      gated until the local runtime is ready.
- *   5. `bridge.start()` + `bridge.notify("app.ready", {})` — tell the .NET
+ *   5. `bridge.start()` + `app.ready {phase: "shell"}` — tell the .NET
  *      host the renderer can receive startup state. WorkspaceView sends a
- *      second app.ready after its business subscriptions mount so cached
- *      database state is replayed without a race.
+ *      second app.ready {phase: "business"} after its business subscriptions
+ *      mount so database state can be replayed and realtime can start safely.
  *
  * Calling `useHostBridge()` is fine anywhere: it's just a module function that
  * returns the singleton. We invoke it after mount so subscriptions from step 4
@@ -56,7 +56,7 @@ app.mount("#app");
 // Start the host bridge and notify the .NET host that the renderer is ready.
 // This happens AFTER mount so the startup-state subscription is registered.
 bridge.start();
-bridge.notify("app.ready", {});
+bridge.notify("app.ready", { phase: "shell" });
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {

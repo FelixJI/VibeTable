@@ -190,6 +190,72 @@ func TestRealtimeTaskCancellationAdvancesSequenceAndKeepsIdentity(t *testing.T) 
 	}
 }
 
+func TestRealtimeCatchupDoesNotSkipPendingPublicationForExistingSubscriber(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := realtime.New(app)
+	existing, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer existing.Close()
+	running := jobs.Snapshot{
+		JobID: "job-subscriber-catchup", State: "running",
+		Progress: jobs.Progress{Completed: 1, Total: 2},
+	}
+	// Commit before the original publisher gets to drain, as in a jobs transaction.
+	if err := hub.PersistTaskChanged(ctx, app, running); err != nil {
+		t.Fatal(err)
+	}
+	joining, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer joining.Close()
+	if len(joining.Backlog) != 1 {
+		t.Fatalf("joining backlog = %#v", joining.Backlog)
+	}
+	if err := hub.PublishTaskChanged(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-existing.Events:
+		if event.ID != joining.Backlog[0].ID {
+			t.Fatalf("existing subscriber received %q instead of committed event", event.ID)
+		}
+	default:
+		t.Fatal("joining catchup skipped committed task for existing subscriber")
+	}
+	select {
+	case duplicate := <-joining.Events:
+		t.Fatalf("joining subscriber duplicated its backlog: %#v", duplicate)
+	default:
+	}
+	completed := running
+	completed.State = "complete"
+	if err := hub.PublishTaskChanged(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+	for label, subscription := range map[string]*realtime.Subscription{
+		"existing": existing, "joining": joining,
+	} {
+		select {
+		case event := <-subscription.Events:
+			var snapshot realtime.TaskChangedEvent
+			if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.TaskID != running.JobID || snapshot.State != "succeeded" {
+				t.Fatalf("%s terminal snapshot = %#v", label, snapshot)
+			}
+		default:
+			t.Fatalf("%s subscriber missed terminal task snapshot", label)
+		}
+	}
+}
+
 func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	t *testing.T,
 ) {
@@ -204,7 +270,32 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	}
 	expiredCursor := initial.Backlog[0].Cursor
 	initial.Close()
-	for index := 1; index <= 10_005; index++ {
+	fixture := createFormulaBackfillFixture(t, ctx, app, "Cold queued task", "cold_realtime")
+	service := jobs.New(app, mutation.New(app, mutation.MetadataSchemaSource{}), jobs.WithTaskPublisher(hub))
+	defer service.Shutdown()
+	queued, err := service.StartFormulaBackfill(ctx, fixture.definition.Snapshot.TableID, fixture.definition.Snapshot.SchemaRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the full window in one statement, keeping the production retention
+	// trigger active for every row. Boundary writes still use PocketBase Save.
+	events := make([]mutation.DataChangedEvent, 10_000)
+	for index := range events {
+		events[index] = realtimeDataEvent(index + 1)
+	}
+	raw, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DB().NewQuery(`
+		INSERT INTO vibetable_outbox (id, event_id, topic, payload_json, status, attempts)
+		SELECT printf('retention%06d', CAST(key AS INTEGER) + 1),
+			json_extract(value, '$.eventId'), 'data.changed', value, 'pending', 0
+		FROM json_each({:events}) ORDER BY CAST(key AS INTEGER)
+	`).Bind(map[string]any{"events": string(raw)}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for index := 10_001; index <= 10_005; index++ {
 		saveRealtimeOutboxEvent(t, app, realtimeDataEvent(index))
 	}
 	backlog, err := hub.Subscribe(ctx, "")
@@ -239,6 +330,19 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 		if !errors.As(err, &realtimeErr) || realtimeErr.Code != code {
 			t.Fatalf("cursor %q error = %#v", cursor, err)
 		}
+	}
+	recovered, err := hub.SubscribeRecoverable(ctx, expiredCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	projection := recoveredProjection(t, recovered)
+	if len(projection.ActiveFormulaTasks) != 1 || projection.ActiveFormulaTasks[0].TaskID != queued.JobID ||
+		len(projection.TerminalNotifications) != 0 {
+		t.Fatalf("cold activity was not recovered from authority: %+v", projection)
+	}
+	if recovered.Backlog[0].Cursor != backlog.Backlog[len(backlog.Backlog)-1].Cursor {
+		t.Fatal("recovery cursor does not describe the retained snapshot")
 	}
 }
 
@@ -278,6 +382,66 @@ func TestRealtimeLiveDrainUsesDurableRowIDOrderWhenLaterPublishWins(t *testing.T
 	case duplicate := <-subscription.Events:
 		t.Fatalf("late publisher duplicated event %#v", duplicate)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRealtimeCatchupKeepsPendingDurableEventsForExistingSubscribers(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := realtime.New(app)
+	existing, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer existing.Close()
+
+	event := realtimeDataEvent(1)
+	saveRealtimeOutboxEvent(t, app, event)
+	joining, err := hub.Subscribe(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer joining.Close()
+	if len(joining.Backlog) != 1 || joining.Backlog[0].ID != event.EventID {
+		t.Fatalf("joining backlog = %#v", joining.Backlog)
+	}
+
+	if err := hub.Publish(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delivered := <-existing.Events:
+		if delivered.ID != event.EventID {
+			t.Fatalf("existing event = %#v", delivered)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("existing subscriber missed pending durable event")
+	}
+	select {
+	case duplicate := <-joining.Events:
+		t.Fatalf("joining subscriber duplicated replayed event %#v", duplicate)
+	default:
+	}
+
+	next := realtimeDataEvent(2)
+	saveRealtimeOutboxEvent(t, app, next)
+	if err := hub.Publish(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	for name, subscription := range map[string]*realtime.Subscription{
+		"existing": existing,
+		"joining":  joining,
+	} {
+		select {
+		case delivered := <-subscription.Events:
+			if delivered.ID != next.EventID {
+				t.Fatalf("%s next event = %#v", name, delivered)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s subscriber missed next durable event", name)
+		}
 	}
 }
 

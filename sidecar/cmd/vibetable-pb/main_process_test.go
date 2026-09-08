@@ -419,6 +419,53 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	command, stderr, baseURL := startSidecarHelper(t, env)
 	client := &http.Client{Timeout: 15 * time.Second}
 
+	t.Run("cold realtime recovery uses the authenticated production route", func(t *testing.T) {
+		unauthorized := request(t, client, http.MethodGet, baseURL+"/api/vibetable/v2/events", "")
+		if unauthorized.StatusCode != http.StatusUnauthorized {
+			unauthorized.Body.Close()
+			t.Fatalf("unauthenticated recovery stream status=%d", unauthorized.StatusCode)
+		}
+		drainAndClose(t, unauthorized.Body)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/vibetable/v2/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(auth.HeaderName, secret)
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+			t.Fatalf("recovery stream status=%d type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+		}
+		frame := map[string]string{}
+		scanner := bufio.NewScanner(response.Body)
+		for scanner.Scan() && scanner.Text() != "" {
+			key, value, _ := strings.Cut(scanner.Text(), ": ")
+			frame[key] = value
+		}
+		if err := scanner.Err(); err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(frame["data"]), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if frame["id"] != "rt:0" || frame["event"] != "realtime.recovered" || len(payload) != 4 ||
+			payload["contractVersion"] != "2.0" || payload["topic"] != "realtime.recovered" {
+			t.Fatalf("cold recovery frame=%v", frame)
+		}
+		for _, key := range []string{"activeFormulaTasks", "terminalNotifications"} {
+			items, ok := payload[key].([]any)
+			if !ok || len(items) != 0 {
+				t.Fatalf("cold recovery %s=%v", key, payload[key])
+			}
+		}
+	})
+
 	response := request(
 		t, client, http.MethodGet,
 		baseURL+"/api/vibetable/v2/capabilities", secret,

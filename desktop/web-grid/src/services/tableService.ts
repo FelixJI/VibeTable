@@ -1,5 +1,10 @@
 import { useHostBridge } from "./bridgeContext";
+import { nextTick, watch } from "vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import {
+  registerWorkspaceEpochReset,
+  useWorkspaceSessionStore,
+} from "@/stores/workspaceSessionStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
@@ -11,6 +16,7 @@ import type {
   EditSchemaResult,
   TablePage,
   TablePageLoadedPayload,
+  TableQuery,
   TaskChangedEvent,
 } from "@/contracts";
 import {
@@ -31,15 +37,18 @@ import {
  *
  * Outbound flow (web -> host):
  *   - `table.selected` (notify, fire-and-forget): posted on selectTable/refresh.
+ *   - `table.queryRequested` (correlated): reloadCurrentQuery waits until its
+ *     complete revision-bound page has actually reached tableStore.
  *
  * Call `init()` once at app boot to subscribe to inbound events.
  */
 export function useTableService(): {
-  init: () => void;
+  init: (onRealtimeRecovered?: TableRealtimeRecoveredHandler) => void;
   dispose: () => void;
   selectTable: (name: string) => void;
   refresh: (options?: TableRefreshOptions) => void;
   loadNextWindow: () => void;
+  reloadCurrentQuery: () => Promise<TableQueryReloadResult>;
 } {
   const bridge = useHostBridge();
   const tableStore = useTableStore();
@@ -47,11 +56,17 @@ export function useTableService(): {
   const history = useHistoryStore();
   const realtimeStore = useRealtimeStore();
   const viewQueryStore = useViewQueryStore();
+  const workspaceSessionStore = useWorkspaceSessionStore();
   const taskTracker = new RealtimeTaskTracker();
   const unsubscribe: Array<() => void> = [];
   let initialized = false;
+  let disposed = false;
+  let queryReloadGeneration = 0;
+  let stopQueryReloadWatcher: (() => void) | null = null;
+  let realtimeGeneration = 0;
   let pendingDataChange: DataChangedEvent | null = null;
   let refreshAfterLoad: TableRefreshOptions | null = null;
+  let terminalDelivery: Promise<void> = Promise.resolve();
   let staleSnapshotRetries = 0;
   const maxStaleSnapshotRetries = 3;
   // `table.selected` is a fire-and-forget notify whose failure path posts
@@ -75,6 +90,19 @@ export function useTableService(): {
       reloadSchema: () => invalidateAndRefresh("reload-schema"),
     },
   );
+
+  function retireQueryReloads(): void {
+    queryReloadGeneration += 1;
+  }
+
+  function observeCurrentQuery(): void {
+    if (stopQueryReloadWatcher) return;
+    stopQueryReloadWatcher = watch(
+      () => queryFingerprint(viewQueryStore.toQuery()),
+      () => retireQueryReloads(),
+      { flush: "sync" },
+    );
+  }
 
   function disarmLoadWatchdog(): void {
     if (loadWatchdogTimer !== null) {
@@ -134,9 +162,18 @@ export function useTableService(): {
     refresh({ preserveHistory: true });
   }
 
-  function init(): void {
+  function init(onRealtimeRecovered?: TableRealtimeRecoveredHandler): void {
     if (initialized) return;
+    disposed = false;
     initialized = true;
+    observeCurrentQuery();
+    unsubscribe.push(registerWorkspaceEpochReset(
+      "table-service-realtime",
+      ({ previousWorkspaceId, nextWorkspaceId }) => {
+        retireRealtime();
+        if (previousWorkspaceId !== nextWorkspaceId) lastSelectedTable = null;
+      },
+    ));
     unsubscribe.push(bridge.on("database.opened", (payload: DatabaseOpenedPayload) => {
       // After a sidecar-crash session recycle the host rebuilds the catalog
       // and re-posts it; the previously selected table must be re-driven
@@ -215,19 +252,66 @@ export function useTableService(): {
       reconcileDataChange(payload);
     }));
     unsubscribe.push(bridge.on("task.changed", applyTaskChange));
+    unsubscribe.push(bridge.on("realtime.recovered", (payload) => {
+      let delivery;
+      try {
+        delivery = taskTracker.acceptRecovery(payload);
+      } catch {
+        // Keep malformed recovery frames visible through the existing stable
+        // reconcile diagnostic, without treating their unvalidated payload as
+        // an ordinary task event.
+        realtimeStore.failReconcile(new Error("Realtime recovery snapshot was rejected."));
+        return;
+      }
+      realtimeStore.clearReconcileError();
+      realtimeStore.replaceFormulaTaskProjection(delivery.activeFormulaTasks);
+      queueRecoveredTerminals(
+        delivery.terminalNotifications,
+        realtimeGeneration,
+      );
+      onRealtimeRecovered?.();
+    }));
   }
 
   function dispose(): void {
     for (const stop of unsubscribe.splice(0)) stop();
+    stopQueryReloadWatcher?.();
+    stopQueryReloadWatcher = null;
     initialized = false;
+    disposed = true;
+    retireRealtime();
+    lastSelectedTable = null;
+  }
+
+  function retireRealtime(): void {
+    retireQueryReloads();
+    realtimeGeneration += 1;
+    realtime.reset();
+    taskTracker.reset();
     pendingDataChange = null;
     refreshAfterLoad = null;
     staleSnapshotRetries = 0;
     disarmLoadWatchdog();
   }
 
+  function queueRecoveredTerminals(
+    terminals: readonly TaskChangedEvent[],
+    deliveryGeneration: number,
+  ): void {
+    terminalDelivery = terminalDelivery.catch(() => undefined).then(async () => {
+      for (const terminal of terminals) {
+        if (deliveryGeneration !== realtimeGeneration || disposed) return;
+        // Do not use applyTaskChange: recovery terminals are retained UI
+        // receipts, never a second signal to reload the table.
+        realtimeStore.applyRecoveredTerminal(terminal);
+        await nextTick();
+      }
+    });
+  }
+
   function selectTable(name: string): void {
     if (!name) return;
+    retireQueryReloads();
     lastSelectedTable = name;
     pendingDataChange = null;
     refreshAfterLoad = null;
@@ -245,6 +329,7 @@ export function useTableService(): {
   }
 
   function refresh(options: TableRefreshOptions = {}): void {
+    retireQueryReloads();
     const current = workspaceStore.currentTable;
     if (!current) return;
     if (!options.preserveHistory) staleSnapshotRetries = 0;
@@ -274,14 +359,62 @@ export function useTableService(): {
     bridge.notify("table.cursorRequested", { cursor });
   }
 
+  async function reloadCurrentQuery(): Promise<TableQueryReloadResult> {
+    if (!initialized || disposed) return "retired";
+    observeCurrentQuery();
+    const table = workspaceStore.currentTable;
+    if (!table) return "retired";
+
+    const query = viewQueryStore.toQuery();
+    const queryKey = queryFingerprint(query);
+    const requestGeneration = ++queryReloadGeneration;
+    const loadGeneration = tableStore.loadGeneration;
+    const workspaceId = workspaceSessionStore.activeWorkspaceId;
+    const sessionEpoch = workspaceSessionStore.sessionEpoch;
+    const stillCurrent = (): boolean =>
+      requestGeneration === queryReloadGeneration
+      && loadGeneration === tableStore.loadGeneration
+      && workspaceId === workspaceSessionStore.activeWorkspaceId
+      && sessionEpoch === workspaceSessionStore.sessionEpoch
+      && table === workspaceStore.currentTable
+      && queryKey === queryFingerprint(viewQueryStore.toQuery());
+
+    try {
+      const page = (await bridge.request(
+        "table.queryRequested",
+        { table, query },
+      )) as TablePageLoadedPayload;
+      if (!stillCurrent()) return "retired";
+      // `table.pageLoaded` is optional about revisions at the broad transport
+      // contract, but this recovery acknowledgement is only meaningful for a
+      // complete revision-bound window. setDatasetReady also installs groups,
+      // cursor state, and datasetReady atomically rather than only replacing
+      // the visible page.
+      if (page.table !== table || !page.revision) return "failed";
+      if (!tableStore.setDatasetReady(page)) return "failed";
+      // A correlated page may complete an earlier notify-based table load.
+      // Preserve its queued data reconciliation/deferred refresh semantics;
+      // the latter can synchronously retire this acknowledgement by starting
+      // a newer load, so only report applied after revalidating the store.
+      completeLoad();
+      return stillCurrent() && tableStore.datasetReady ? "applied" : "retired";
+    } catch {
+      return stillCurrent() ? "failed" : "retired";
+    }
+  }
+
   function reconcileDataChange(event: DataChangedEvent): void {
     const revision = tableStore.revision;
     if (!revision || event.tableId !== workspaceStore.currentTable) return;
+    const generation = realtimeGeneration;
     void realtime.handle(
       event,
       revision.schemaRevision,
       formatProductDataRevision(revision.dataRevision),
-    ).catch((error: unknown) => realtimeStore.failReconcile(error));
+    ).catch((error: unknown) => {
+      // The epoch can retire after handle rejects but before this consumer runs.
+      if (generation === realtimeGeneration) realtimeStore.failReconcile(error);
+    });
   }
 
   function invalidateAndRefresh(action: "refresh-data" | "reload-schema"): void {
@@ -313,11 +446,22 @@ export function useTableService(): {
     }
   }
 
-  return { init, dispose, selectTable, refresh, loadNextWindow };
+  return { init, dispose, selectTable, refresh, loadNextWindow, reloadCurrentQuery };
 }
+
+/** Outcome of a correlated reload of the currently active table query. */
+export type TableQueryReloadResult = "applied" | "retired" | "failed";
+
+/** Called after tableService has validated and atomically projected recovery tasks. */
+export type TableRealtimeRecoveredHandler = () => void;
 
 export interface TableRefreshOptions {
   readonly preserveHistory?: boolean;
+}
+
+/** Stable transport-semantic identity for the query built by viewQueryStore. */
+function queryFingerprint(query: TableQuery): string {
+  return JSON.stringify(query);
 }
 
 /**

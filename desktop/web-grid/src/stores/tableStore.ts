@@ -417,10 +417,10 @@ export const useTableStore = defineStore("table", () => {
    * Existing scalar values are retained only when the query projection omits
    * them; Lookup values are never derived from the visible page.
    */
-  function applyLookupQueryResult(result: LookupQueryResult): void {
+  function applyLookupQueryResult(result: LookupQueryResult): boolean {
     const currentPage = pages.value[0];
     const currentSchema = schema.value;
-    if (!currentPage || !currentSchema) return;
+    if (!currentPage || !currentSchema) return false;
     const lookupDataRevision = result.snapshot?.dataRevision;
     const currentDataRevision = revision.value?.dataRevision;
     if (
@@ -432,7 +432,7 @@ export const useTableStore = defineStore("table", () => {
       // still current, but its QueryPort snapshot predates the committed
       // mutation. Ignore it so stale scalar columns cannot make the UI appear
       // to have reverted before undo/update confirmation actually arrives.
-      return;
+      return false;
     }
     const previous = new Map(allRows.value.map((row) => [String(row.rowKey), row]));
     const fieldNames = new Map(currentSchema.flatMap((column) => [
@@ -450,7 +450,7 @@ export const useTableStore = defineStore("table", () => {
       const rowKey = wireRow.rowKey ?? wireRow.id;
       if (typeof rowKey !== "string" && typeof rowKey !== "number") {
         error.value = LOOKUP_STABLE_KEY_ERROR;
-        return;
+        return false;
       }
       const row: Record<string, unknown> = {
         ...(previous.get(String(rowKey)) ?? {}),
@@ -485,6 +485,7 @@ export const useTableStore = defineStore("table", () => {
     }];
     rowCount.value = result.totalRows;
     lookupGroups.value = result.groups;
+    return true;
   }
 
   return {

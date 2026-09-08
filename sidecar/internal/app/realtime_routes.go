@@ -2,11 +2,13 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -24,7 +26,7 @@ func registerRealtimeRoutes(
 	hub *realtime.Hub,
 	revisions realtime.RevisionSource,
 ) {
-	r.GET("/api/vibetable/v1/events", func(request *core.RequestEvent) error {
+	stream := func(request *core.RequestEvent, subscribe func(context.Context, string) (*realtime.Subscription, error)) error {
 		query := request.Request.URL.Query()
 		if len(query) > 1 || len(query["after"]) > 1 {
 			return writeRealtimeError(request, &realtime.Error{
@@ -43,8 +45,11 @@ func registerRealtimeRoutes(
 		if after == "" {
 			after = headerCursor
 		}
-		subscription, err := hub.Subscribe(request.Request.Context(), after)
+		subscription, err := subscribe(request.Request.Context(), after)
 		if err != nil {
+			if request.Request.Context().Err() != nil {
+				return nil
+			}
 			return writeRealtimeError(request, err)
 		}
 		defer subscription.Close()
@@ -114,6 +119,25 @@ func registerRealtimeRoutes(
 				}
 			}
 		}
+	}
+	r.GET("/api/vibetable/v1/events", func(request *core.RequestEvent) error {
+		return stream(request, hub.Subscribe)
+	})
+	r.GET("/api/vibetable/v2/events", func(request *core.RequestEvent) error {
+		query, err := url.ParseQuery(request.Request.URL.RawQuery)
+		if err != nil || len(request.Request.Header.Values("Last-Event-ID")) > 1 {
+			return writeRealtimeError(request, &realtime.Error{
+				Code: "realtime.request.invalid", Message: "realtime cursor encoding or cardinality is invalid",
+			})
+		}
+		for key := range query {
+			if key != "after" {
+				return writeRealtimeError(request, &realtime.Error{
+					Code: "realtime.request.invalid", Message: "events accepts only an after cursor",
+				})
+			}
+		}
+		return stream(request, hub.SubscribeRecoverable)
 	})
 	r.POST(
 		"/api/vibetable/v1/events/reconcile",
@@ -175,7 +199,7 @@ func writeRealtimeError(request *core.RequestEvent, err error) error {
 	}
 	status := http.StatusUnprocessableEntity
 	switch realtimeErr.Code {
-	case "realtime.request.invalid":
+	case "realtime.request.invalid", "realtime.cursor_invalid":
 		status = http.StatusBadRequest
 	case "realtime.cursor_unknown":
 		status = http.StatusNotFound

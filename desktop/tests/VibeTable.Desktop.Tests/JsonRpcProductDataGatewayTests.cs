@@ -319,31 +319,9 @@ public sealed class JsonRpcProductDataGatewayTests
         Assert.HasCount(0, transport.Methods);
     }
 
-    [TestMethod]
-    public async Task DataChangedNotificationUsesFrozenProductEnvelope()
-    {
-        await using var fixture = new NotificationBindingFixture();
-        JsonRpcProductDataGateway gateway = fixture.Gateway;
-        var received = new TaskCompletionSource<DataChangedEvent>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        gateway.DataChanged += value => received.TrySetResult(value);
-
-        fixture.Transport.EnqueueNotification(
-            "data.changed",
-            """
-            {"contractVersion":"2.0","topic":"data.changed","eventId":"evt_1","sequence":12,
-             "occurredAt":"2026-07-24T08:30:00Z","schemaRevision":"schema_0007",
-             "dataRevision":"data_0012","changeSetId":"chg_1","tableId":"tbl_orders",
-             "recordIds":["rec_1"],"operation":"update"}
-            """);
-
-        var change = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.AreEqual("tbl_orders", change.TableId);
-        CollectionAssert.AreEqual(new[] { "rec_1" }, change.RecordIds.ToArray());
-    }
 
     [TestMethod]
-    public async Task TaskChangedNotificationCrossesTheProductBoundary()
+    public async Task OnlyPythonImportExportNotificationsCrossTheProductBoundary()
     {
         await using var fixture = new NotificationBindingFixture();
         JsonRpcProductDataGateway gateway = fixture.Gateway;
@@ -351,12 +329,17 @@ public sealed class JsonRpcProductDataGatewayTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         gateway.TaskChanged += value => received.TrySetResult(value);
 
+        fixture.Transport.EnqueueNotification("task.changed",
+            """{"contractVersion":"2.0","topic":"task.changed","taskType":"formulaBackfill","taskId":"must-not-forward"}""");
+        fixture.Transport.EnqueueNotification("data.changed",
+            """{"contractVersion":"2.0","topic":"data.changed","eventId":"must-not-forward"}""");
+
         fixture.Transport.EnqueueNotification(
             "task.changed",
             """
             {"contractVersion":"2.0","topic":"task.changed","eventId":"evt_2","sequence":13,
              "occurredAt":"2026-07-24T08:31:00Z","taskId":"job_1",
-             "taskType":"formulaBackfill","state":"running","progress":0.5,
+             "taskType":"import","state":"running","progress":0.5,
              "cursor":"row:5000","error":null}
             """);
 

@@ -749,6 +749,9 @@ def _result_payload(spec: ResultSpec) -> tuple[object, dict[str, object]]:
 
 def _event_cases(fixtures: Path, topics: list[str]) -> list[dict[str, object]]:
     typed = {
+        "realtime.recovered": json.loads(
+            (fixtures / "realtime-recovery-event.json").read_text(encoding="utf-8")
+        ),
         "data.changed": json.loads(
             (fixtures / "data-changed-event.json").read_text(encoding="utf-8")
         ),
@@ -793,6 +796,7 @@ def main() -> None:
         "plugin.file.requested",
         "plugin.interaction.requested",
         "plugin.task.changed",
+        "realtime.recovered",
         "task.changed",
     ]
     catalog: dict[str, object] = {

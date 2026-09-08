@@ -150,7 +150,8 @@ public sealed class WorkspaceRequestDispatcher :
                 timeProvider,
                 _pluginBindings,
                 sessionEnvelopeFilter);
-        _gridController = new GridRequestController(coordinator, _reply);
+        _gridController = new GridRequestController(
+            coordinator, _reply, () => _workspaceSessionToken, sessionEnvelopeFilter);
         _dashboardController = new DashboardRequestController(
             _reply,
             correlatedRequestTimeout,
