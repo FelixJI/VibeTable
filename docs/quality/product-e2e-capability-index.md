@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：25
-- 唯一能力：43
-- 场景—能力关联：56
+- 场景：26
+- 唯一能力：44
+- 场景—能力关联：57
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -49,6 +49,7 @@
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `relation.fanout` | <code>06-relation-fanout</code>（关系 cascade 方向与影响预览） |
 | `relation.preview` | <code>28-relation-delta-preview</code>（多值关系预览与取消） |
+| `relation.search` | <code>27-relation-target-search</code>（关系目标搜索） |
 | `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `replica.recovery` | <code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复） |
 | `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
@@ -88,4 +89,5 @@
 | <code>22-timeline-date-move</code> | Timeline 单日期拖动持久化 | 通过真实 Tables UI 创建 date 字段并配置无结束字段的 Timeline；把权威 point 记录拖到目标日期后只经既有 mutation authority 提交，刷新以及离开 Tables 后重开仍保持目标日期。 | `timeline.lifecycle`、`mutation.authority` |
 | <code>23-directory-replica-recovery</code> | 目录副本释放、重开与进程恢复 | 通过真实 Workspace Center 创建目录镜像工作区，并在真实 Tables UI 写入表与记录；公开释放活动缓存后以同一 workspace UUID 重开，等待 database.opened，再以单次 query.page 与 replica.status 验证目录副本；精确终止 sidecar 并等待同 session 的 replacement database.opened，最后以单次查询和状态读取证明数据与副本状态保持一致。 | `workspace.lifecycle`、`workspace.protection`、`replica.recovery` |
 | <code>26-lookup-definition-read</code> | Lookup 持久定义读取 | 通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。 | `lookup.definition-read` |
+| <code>27-relation-target-search</code> | 关系目标搜索 | 真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复；不提交关联写入。 | `relation.search` |
 | <code>28-relation-delta-preview</code> | 多值关系预览与取消 | 真实多值关系编辑器经预览加载权威已关联目标；增加本地草稿选择后取消，源与目标表记录及schema/data revision保持不变。 | `relation.preview` |

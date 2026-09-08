@@ -98,6 +98,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
             },
         ),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
+        ("relation.searchTargets", {"relationId": "orders.customer"}),
         (
             "relation.previewDelta",
             {
