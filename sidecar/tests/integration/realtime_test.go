@@ -211,7 +211,25 @@ func TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors(
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index := 1; index <= 10_005; index++ {
+	// Seed the full window in one statement, keeping the production retention
+	// trigger active for every row. Boundary writes still use PocketBase Save.
+	events := make([]mutation.DataChangedEvent, 10_000)
+	for index := range events {
+		events[index] = realtimeDataEvent(index + 1)
+	}
+	raw, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.DB().NewQuery(`
+		INSERT INTO vibetable_outbox (id, event_id, topic, payload_json, status, attempts)
+		SELECT printf('retention%06d', CAST(key AS INTEGER) + 1),
+			json_extract(value, '$.eventId'), 'data.changed', value, 'pending', 0
+		FROM json_each({:events}) ORDER BY CAST(key AS INTEGER)
+	`).Bind(map[string]any{"events": string(raw)}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for index := 10_001; index <= 10_005; index++ {
 		saveRealtimeOutboxEvent(t, app, realtimeDataEvent(index))
 	}
 	backlog, err := hub.Subscribe(ctx, "")

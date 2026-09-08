@@ -38,3 +38,11 @@ go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAnd
 当前完整 Go 入口 `uv run --frozen --no-sync python qa/next.py --stage go-test` 已在冻结提交 ffc39038 上运行并失败：既有 workspacev2/history 场景在 TempDir RemoveAll 清理时报目录非空；记录见 `build/realtime-full-go-test.log`。脚本原有有限重试未使其通过，没有修改重试或门禁。相关恢复 integration 通过，失败不能当作完整质量通过，也不据此断言外部杀软或文件占用根因。Go format 检查通过。完整多栈质量与 Go coverage 尚未运行；不得将相关验证写成完整 quality PASS。最终 fresh PR `required`、squash 与合并后 CI/CD 仍待完成。既有旧 Host 分支的 S10 报告不能替代最新源码消费者的产品验收。
 
 L4 最终完成还需：整合已存在的 Host/Web 半成品，保持最新 main 的 owner 与共享绑定；以完整事务切换到 Go→WPF，删除 Python SSE supervisor、latest revision cache 和二次包装，保留本地任务 producer；新构建上的 S10、旧 epoch/ABA、duplicate/gap、正常关闭和端口清理均须有适用证据。
+
+## 最新 CI 超时与夹具修复
+
+`0f171e02` 的 CI `34241974199` 在 race-a 失败：`TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors` 触发既有五分钟上限，堆栈仍在10,005条fixture准备循环的 PocketBase Save。没有将 required 失败当作通过，也没有调整timeout、窗口或重试策略。
+
+先测量仅合并事务的版本，定向 race PASS 181.193s，改善有限，未采用。最终将前10,000条真实事件序列化后通过单条绑定参数 SQL 有序准备，每行仍执行原生产 retention trigger；最后五条边界写入保留 PocketBase Save。原来的10,000窗口、9,999续读、四类cursor、活动恢复和水位一致性断言全部保留。
+
+`go test -race ./tests/integration -run '^TestRealtimeOutboxRetainsTenThousandAndClassifiesDurableCursors$' -count=1 -timeout=5m`：PASS 160.178s，日志 `build/realtime-retention-bulk-race.log`。事务实验日志 `build/realtime-retention-transaction-race.log` 保留。独立 Standards / Spec 增量各0；生产代码未变。此本地改善不替代修复提交上的 fresh CI，远端是否消除超时仍待确认。
