@@ -2,7 +2,7 @@
 
 此变更将同一 mutation 契约下的 preview/apply 成对迁入 Go，避免预览与应用形成中间 owner 状态。保留已有 mutation Kernel 和 workspace 写门禁，Python import/export/plugin 使用的内部 client 不随产品路由删除。产品目录仍为 103 RPC、7 事件，当前 owner 为 21 Go / 80 Python / 2 Host。
 
-前置交付为 Go 权威恢复流、Host 完整消费者和独立 workspace mutation 重放修复。重放与字段计划修复的#302以及标签#303均已各自通过CI，现由#304统一端点接续fresh CI。Host #300已完成合并后main CI/CD闭环；后续迁移PR仍须同步#304实际main结果，不能把基础修复重复包装为owner切换。
+前置交付为 Go 权威恢复流、Host 完整消费者和独立 workspace mutation 重放修复。重放与字段计划修复的#302以及标签#303均已各自通过CI，已由#304统一端点通过fresh CI并squash进入main。Host #300已完成合并后main CI/CD闭环；本分支已同步#304实际main结果，基础修复不重复计入owner切换的PR diff。
 
 ## 契约
 
@@ -66,3 +66,7 @@ Standards 未发现确定违例，指出严格 fixture 装配多处重复的维�
 五场景Node/生命周期Host退出0，pageErrors、未确认bridge failures、pending均0；成员/后代为空，端口、lease和最终清理通过。覆盖产品Go owner与保留Python Data IO/Plugin路径的相邻交界，不推断全部取消/崩溃或完整发布资格。
 
 报告build/qa/product-e2e/20260908T210452Z/product-e2e-report.json，日志build/mutation-owner-qualified-product-e2e.log。此源码未重跑S16，先前2204a406上的S16证据保持历史归属。等待#304实际main后完成独立Mutation PR的fresh CI、squash和main CI/CD。
+
+## 实际 main 端点同步
+
+#304 的 required CI 全部成功，2026-09-08 21:43 UTC squash 合并为 `3bf03bc6f47399bacbdb1305a9b110c8d3b11ae5`。本分支通过正常 merge 同步为 `2eb6b2f76ed3f292c2ce7be59b7ad81077fe5362`，与此前 `ba3c8871` Git tree 完全一致；复用上述 `e7eb3362` 构建、定向 race 与五场景资格，无需重复生成可执行文件。#304 合并后的 main CI/CD 仍在跟踪，本 owner PR 的 fresh CI、squash 和合并后闭环仍待完成。
