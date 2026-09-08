@@ -82,3 +82,11 @@ CI 34260106715 的 release.smoke 为 3/4 PASS、S16 FAIL。诊断 trace 证明 N
 - Standards / Spec 独立增量各 0 个确定问题；真实最新包 S16 与新 fresh CI 待完成。
 
 原 CI 日志及完整 prepare 证据保留在主工作区 build/pr300-ci-34260106715-*；本地日志为本工作树 build/dashboard-recovery-filter-*.log。
+
+## 2026-09-09 core 覆盖率门禁补齐
+
+PR CI34262996944 的 core 分片全部1497个Web测试通过，但 WorkspaceView.vue 分支覆盖率357/451=79.15%，未达到既有80%门禁；该运行失败，不计通过。原日志及core报告已保留。缺失范围为恢复页面之后等待Relation上下文返回的分支，现有测试此前没有完整响应该阶段。
+
+仅新增三个真实bridge测试：上下文成功后清除恢复dirty、上下文拒绝后由工具栏显式重试、等待期间新开draft保持所选目标并在关闭后重试。生产和阈值未修改。`npm run test:coverage` 基线退出1；修复后退出0，174文件1500测试通过57.27秒，WorkspaceView分支369/451=81.81%，所有原覆盖门禁通过；`npm run typecheck`退出0。初版测试误用Ctrl+R而没有经过工具栏恢复入口，失败保留并改为真实AppToolbar refresh事件；没有调整生产行为。
+
+新增测试独立Standards与Spec均无确定问题，正常hooks通过。随后正常合入main7966cef5（PR301），Web tree相对测试提交3dc32334无差异；当前fresh CI仍待验证。证据日志build/host-workspace-coverage-baseline.log、host-workspace-coverage-fixed.log、host-workspace-typecheck-fixed.log和host-workspace-recovery-focused-corrected.log。纯测试补齐未重建实际包，既有d173产品证据仍按原源码归属，不冒称最新合并head已有本地整包运行。
