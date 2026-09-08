@@ -435,6 +435,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			},
 				productrpc.ReconcileRegistration(schemaCatalog),
 				lookupListRegistration(relationService),
+				relationSearchTargetsRegistration(relationService),
 				queryPageRegistration(queryPort),
 				schemaDescribeRegistration(pb, relationService),
 				schemaGetTableRegistration(pb),

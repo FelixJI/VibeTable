@@ -2,7 +2,7 @@
 
 固定生产者：`8cf989c5873830d28d61067a9afb82ddb06db124`。
 
-本片只冻结迁移前行为，未切换 owner 或修改生产代码。专用生成器独立定义30例 request
+原始冻结提交只捕获迁移前行为。专用生成器独立定义30例 request
 与 authority 输入，经真实 `RpcDispatcher`、`PRODUCT_RPC_REGISTRY` 的 `ProductParams`、
 `PocketBaseProductRpc`、`ProductRelationLookupFileRpc` 和 `PocketBaseProductContext`
 捕获完整公开响应。只脚本化 HTTP transport，每例至多一次 authority 请求。
@@ -33,13 +33,13 @@ total 不随过滤重新计算，且原 Python 接受负整数；bool或非整�
 `ProductParams` 32层深度边界，不把嵌套搜索query伪称为合法领域输入。
 
 ```text
-uv run --frozen --no-sync python -m contracts.v2.generate_relation_search_oracle --write
 uv run --frozen --no-sync python -m contracts.v2.generate_relation_search_oracle --check
 uv run --frozen --no-sync python -m pytest --no-cov tests/contract/test_relation_search_python_oracle.py -q
 ```
 
-`--write` 只可 exclusive create，不覆盖已有原件；默认及 `--check` 比较完整捕获文本，
-差异时报错且不写文件。聚焦 `--no-cov` 不代替完整CI覆盖率与发布门禁。
-后续 owner 迁移应退役对应 Python replay并保留原件；新 owner 独立消费语料，并另补真实
-Go Port、现有关系编辑器搜索/候选/空结果/迟到响应的产品证据。本片没有执行 Go、桌面、
-打包 E2E 或发布 smoke，不宣称关系查询迁移完成。
+迁移后 Python capture 已退役，`--write` 始终拒绝。默认及 `--check` 只验证固定生产者与
+历史 request/authority 输入，原30例 JSON 保持不变；不以当前 owner 重写原响应。
+Go 测试独立消费原件：22例完整公开 wire 比对，8例明确记录 DTO 或传输边界不可表达性。
+原 Python 对混合 JSON 的行为仍在原件中保留；不得把这些历史边界当作 Go 真实领域输出。
+聚焦 `--no-cov` 不代替完整 CI 覆盖率与发布门禁。真实关系编辑器的搜索、分页、空结果
+及宿主迟到响应证据另见本次迁移资格记录，尚未完成的产品运行不得记为通过。

@@ -2457,7 +2457,7 @@ async function scenario06(page, recorder) {
   const authors = await createSimpleTable(page, "E2E Authors V2", "Name");
   const articleTableId = await createEmptyTable(page, "E2E Articles V2");
   await closeFieldSettingsDrawer(page);
-  await createV2Field(page, articleTableId, "Title", "text");
+  const title = await createV2Field(page, articleTableId, "Title", "text");
   const relation = await createV2Field(
     page,
     articleTableId,
@@ -2496,6 +2496,61 @@ async function scenario06(page, recorder) {
       ),
     { cascade: cascade.planned },
   );
+  const unicodeLabel = "中文 Cafe\u0301 👩🏽‍💻";
+  const labels = Array.from({ length: 51 }, (_, index) => (
+    index === 0 ? unicodeLabel : `Search author ${String(index).padStart(2, "0")}`
+  ));
+  const targets = await applyProductMutation(page, authors.tableId, labels.map((label) => ({
+    kind: "insert", recordId: null, values: { [authors.field.physicalName]: label },
+  })), "relation-search-targets");
+  const source = await applyProductMutation(page, articleTableId, [{
+    kind: "insert", recordId: null, values: { [title.physicalName]: "Search candidates" },
+  }], "relation-search-source");
+  if (targets.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`relation search fixture did not commit: ${JSON.stringify({ targets, source })}`);
+  }
+  await closeFieldSettingsDrawer(page);
+  await selectTable(page, "E2E Articles V2");
+  await waitForVisibleRowCount(page, 1);
+  await page.locator(
+    `.grid-wrapper[aria-busy="false"] .vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`,
+  ).first().dblclick();
+  const panel = page.locator(".relation-editor:visible");
+  await panel.waitFor();
+  const candidates = panel.locator(".relation-editor__candidate-label");
+  const loadMore = panel.getByTestId("relation-load-more");
+  await loadMore.waitFor();
+  recorder.check("relation search opens the default 50 of 51 candidates",
+    await candidates.count() === 50 && /50 \/ 51/u.test(await loadMore.innerText()));
+  await loadMore.click();
+  await page.waitForFunction(() => (
+    document.querySelectorAll(".relation-editor .relation-editor__candidate-label").length === 51
+  ));
+  await loadMore.waitFor({ state: "hidden" });
+  const allLabels = await candidates.allTextContents();
+  recorder.check("relation search next page preserves all targets without duplicates",
+    new Set(allLabels).size === 51
+      && JSON.stringify([...allLabels].sort()) === JSON.stringify([...labels].sort()),
+    { allLabels });
+  const search = panel.getByRole("textbox", { name: /^(搜索目标记录|Search target records)$/u });
+  await search.fill("中文 Cafe\u0301");
+  await page.waitForFunction((expected) => {
+    const rows = document.querySelectorAll(".relation-editor .relation-editor__candidate-label");
+    return rows.length === 1 && rows[0].textContent === expected;
+  }, unicodeLabel);
+  recorder.check("relation search preserves the matching Unicode label",
+    await candidates.first().innerText() === unicodeLabel);
+  await search.fill("no-relation-target-unique-absent");
+  await panel.getByText(/^(没有匹配记录|No matching records)$/u).waitFor();
+  recorder.check("relation search empty result does not expose an error or another page",
+    await candidates.count() === 0 && !await loadMore.isVisible()
+      && await panel.locator(".relation-editor__error").count() === 0);
+  await search.fill("");
+  await loadMore.waitFor();
+  recorder.check("clearing relation search restores the default first page",
+    await candidates.count() === 50 && /50 \/ 51/u.test(await loadMore.innerText()));
+  await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
   return;
 }
 

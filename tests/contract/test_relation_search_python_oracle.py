@@ -1,4 +1,4 @@
-"""Replay the original relation target search without rewriting its wire baseline."""
+"""Protect retained relation search inputs and public params after its owner migration."""
 
 from __future__ import annotations
 
@@ -12,12 +12,8 @@ from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, Json
 from contracts.v2 import generate_relation_search_oracle as oracle
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", oracle.cases(), ids=lambda case: case.name)
-async def test_original_relation_search_matches_frozen_wire(case: oracle.Case) -> None:
-    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    expected = next(entry for entry in frozen["cases"] if entry["name"] == case.name)
-    assert oracle.render(await oracle.capture_case(case)) == oracle.render(expected)
+def test_original_relation_search_inputs_remain_frozen() -> None:
+    oracle.validate_frozen_inputs()
 
 
 def test_frozen_search_distinguishes_defaults_filtering_and_public_projection() -> None:
@@ -69,27 +65,17 @@ def test_frozen_search_distinguishes_defaults_filtering_and_public_projection() 
     assert entries["transport-error"]["response"]["error"]["data"]["code"] == "sidecar.unavailable"
 
 
-@pytest.mark.asyncio
-async def test_search_public_params_keep_utf8_budget_and_unicode_scalar_rejection() -> None:
+def test_search_public_params_keep_utf8_budget_and_unicode_scalar_rejection() -> None:
     params: JsonObject = {"relationId": "rel", "query": ""}
     overhead = len(json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode())
     params["query"] = "x" * ((1 << 20) - overhead)
     model = PRODUCT_RPC_REGISTRY[oracle.METHODS[0]]
     model.model_validate(params)
     params["query"] += "x"
-    over = await oracle.capture_case(oracle.Case("oversize", oracle.METHODS[0], params))
-    invalid_unicode = await oracle.capture_case(
-        oracle.Case(
-            "invalid-unicode",
-            oracle.METHODS[0],
-            {"relationId": "rel", "query": "\ud800"},
-        )
-    )
-    for entry in (over, invalid_unicode):
-        assert entry["authorityRequests"] == []
-        response = entry["response"]
-        assert isinstance(response, dict)
-        assert response["error"] == {"code": -32602, "message": "Invalid params"}
+    with pytest.raises(ValidationError):
+        model.model_validate(params)
+    with pytest.raises(ValidationError):
+        model.model_validate({"relationId": "rel", "query": "\ud800"})
 
 
 def test_shared_product_depth_guard_is_distinct_from_search_closed_field_types() -> None:
@@ -103,14 +89,12 @@ def test_shared_product_depth_guard_is_distinct_from_search_closed_field_types()
         ProductParams.model_validate({"query": [nested]})
 
 
-def test_capture_exclusively_creates_output(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_retired_capture_rejects_writes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "retained.json"
     target.write_text("retained evidence", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
-    with pytest.raises(FileExistsError):
+    with pytest.raises(SystemExit):
         oracle.main()
     assert target.read_text(encoding="utf-8") == "retained evidence"
 

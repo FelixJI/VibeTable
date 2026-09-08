@@ -353,6 +353,7 @@ func historyReadProductFixture(
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(runtime),
 		lookupListRegistration(relation.New(pb, nil, nil)),
+		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		queryPageRegistration(query.NewPort(pb, nil)),
 	)
 	if err != nil {

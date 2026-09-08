@@ -34,7 +34,6 @@ class ProductRelationLookupFileRpc:
             "file.token": self._create_file_token,
             "file.applyHostChange": self._apply_host_attachment_change,
             "file.saveHostFile": self._save_attachment_to_host,
-            "relation.searchTargets": self._search_relation_targets,
             "relation.createTarget": self._create_relation_target,
             "relation.updateSingle": self._update_single_relation,
             "relation.previewDelta": self._preview_relation_delta,
@@ -156,33 +155,6 @@ class ProductRelationLookupFileRpc:
             expected_status=(200,),
         )
         return {"contractVersion": "2.0", "saved": True, "bytes": saved_bytes}
-
-    async def _search_relation_targets(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        result = await self._context.post(
-            "/api/vibetable/v1/relations/search-targets",
-            {
-                "relationId": _text(raw, "relationId"),
-                "query": _optional_text(raw, "query"),
-                "offset": _integer(raw, "offset", 0),
-                "limit": _integer(raw, "limit", 50),
-            },
-        )
-        items = result.get("items")
-        if not isinstance(items, list):
-            raise ValueError("PocketBase returned invalid relation targets")
-        return {
-            "items": [
-                {
-                    "collection": _text(item, "tableId"),
-                    "itemId": _text(item, "recordId"),
-                    "label": _text(item, "label"),
-                }
-                for item in items
-                if isinstance(item, dict)
-            ],
-            "total": _integer(result, "total"),
-        }
 
     async def _create_relation_target(self, params: ProductParams) -> JsonObject:
         raw = params.root

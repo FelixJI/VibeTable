@@ -127,8 +127,7 @@ public sealed class ProductDataRequestController
         }
         if (!_routeSelector.TrySelectRelation(
                 request.Type,
-                out ProductRpcRoute relationRoute)
-            || relationRoute != ProductRpcRoute.PythonBff)
+                out ProductRpcRoute relationRoute))
         {
             RejectUnknown(request);
             return;
@@ -141,8 +140,8 @@ public sealed class ProductDataRequestController
                 "BAD_PAYLOAD");
             return;
         }
-        IRelationLookupRpcGateway? gateway = CurrentGateway;
-        if (gateway is null)
+        var (gateway, sidecarForwarder, _) = CaptureProductContext(request.Scope);
+        if (relationRoute == ProductRpcRoute.PythonBff && gateway is null)
         {
             _reply.PostOperationFailed(
                 request.RequestId,
@@ -152,10 +151,44 @@ public sealed class ProductDataRequestController
         }
         try
         {
-            JsonElement result = await endpoint.InvokeAsync(
-                gateway,
-                request.Payload,
-                epochLease?.CancellationToken ?? CancellationToken.None).ConfigureAwait(false);
+            JsonElement result;
+            if (relationRoute == ProductRpcRoute.GoSidecar)
+            {
+                if (string.IsNullOrWhiteSpace(request.RequestId)
+                    || request.Wire.ValueKind != JsonValueKind.Object)
+                {
+                    RejectPayload(request);
+                    return;
+                }
+                if (sidecarForwarder is null)
+                    throw new BackendUnavailableException(
+                        "The Product Sidecar route is not bound.");
+                ProductSidecarForwardResult forwarded =
+                    await sidecarForwarder.ForwardAsync(
+                        request.RequestId,
+                        request.Type,
+                        request.Wire,
+                        request.Payload,
+                        epochLease?.CancellationToken
+                            ?? CancellationToken.None).ConfigureAwait(false);
+                result = forwarded switch
+                {
+                    ProductSidecarSuccess success => success.Result,
+                    ProductSidecarFailure failure => throw new RpcRemoteException(
+                        failure.Error.Code,
+                        failure.Error.Message,
+                        failure.Error.Data),
+                    _ => throw new BackendUnavailableException(
+                        "The Product Sidecar returned an unknown outcome."),
+                };
+            }
+            else
+            {
+                result = await endpoint.InvokeAsync(
+                    gateway!,
+                    request.Payload,
+                    epochLease?.CancellationToken ?? CancellationToken.None).ConfigureAwait(false);
+            }
             if (!IsRequestCurrent(epochLease))
             {
                 PostRetiredRelationRequest();
@@ -175,7 +208,9 @@ public sealed class ProductDataRequestController
         {
             RejectPayload(request);
         }
-        catch (RpcRemoteException exception) when (exception.Code == -32030)
+        catch (Exception exception) when (exception is BackendUnavailableException
+            or ObjectDisposedException
+            || exception is RpcRemoteException { Code: -32030 })
         {
             _reply.PostOperationFailed(
                 request.RequestId,

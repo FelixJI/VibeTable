@@ -328,6 +328,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 	},
 		productrpc.ReconcileRegistration(schemaapi.New(app)),
 		lookupListRegistration(relation.New(app, nil, nil)),
+		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		queryPageRegistration(query.NewPort(app, nil)),
 		schemaDescribeRegistration(app, relation.New(app, nil, nil)),
 		schemaGetTableRegistration(app),
