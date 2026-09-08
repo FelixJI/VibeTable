@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -366,6 +367,64 @@ def test_ci_downloads_lane_reports_and_evidence_at_the_automation_root() -> None
     assert "path: build/automation\n" in download_step
     assert "path: build/automation/lane-reports" not in download_step
     assert "merge-multiple: true" in download_step
+
+
+@pytest.mark.parametrize("job_name", ["shard", "required"])
+@pytest.mark.parametrize("download_exit", [0, 23])
+def test_ci_candidate_download_binds_current_run_and_propagates_failure(
+    job_name: str,
+    download_exit: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = re.split(r"\n  \S", ci.split(f"\n  {job_name}:\n", 1)[1], maxsplit=1)[0]
+    assert "    permissions:\n      contents: read\n      actions: read\n" in job
+    assert ci.split("\njobs:\n", 1)[0].count("actions: read") == 0
+    step = job.split("- name: Download immutable candidate handoff\n", 1)[1]
+    step = step.split("      - ", 1)[0]
+    assert "GH_TOKEN: ${{ github.token }}" in step
+    assert "shell: pwsh" in step
+    if job_name == "required":
+        assert "if: needs.plan.outputs.sharded == 'true'" in step
+    command = "\n".join(
+        line.removeprefix("          ") for line in step.split("run: |\n", 1)[1].splitlines()
+    )
+
+    monkeypatch.setenv("GITHUB_RUN_ID", "123456")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repository")
+    executable = sys.executable.replace("'", "''")
+    shell = shutil.which("pwsh")
+    assert shell is not None, "candidate handoff requires PowerShell Core"
+    # The fake CLI tests shell failure propagation, not HTTP or ZIP integrity.
+    script = (
+        "function gh {\n"
+        "Write-Output ($args | ConvertTo-Json -Compress)\n"
+        f"& '{executable}' -c 'import sys; sys.exit({download_exit})'\n"
+        "}\n"
+        f"{command}\n"
+        "Write-Output 'candidate-consumer-reached'\n"
+    )
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == download_exit, result.stderr
+    output = result.stdout.splitlines()
+    assert json.loads(output[0]) == [
+        "run",
+        "download",
+        "123456",
+        "--repo",
+        "owner/repository",
+        "--name",
+        "ci-candidate-handoff",
+        "--dir",
+        ".",
+    ]
+    assert ("candidate-consumer-reached" in output) is (download_exit == 0)
 
 
 def test_candidate_prepare_bootstraps_only_release_build_dependencies(
