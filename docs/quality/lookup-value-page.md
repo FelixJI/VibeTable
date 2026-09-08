@@ -49,7 +49,7 @@ Host复用已有Go forwarder与epoch lease，保留完整八字段payload、scop
 比较两表记录及schema/data revision不变。打开面板本身不调用valuePage，不能据此宣称分页通过。
 历史S06/S26元数据及main 23/23来源报告保持原义，新场景缺口由现有证据契约记录。
 
-实际S29包、最终fresh CI及合并后main CI/CD尚未完成，不提前声明资格通过。
+当前 Go owner 组合的成功 S29 包资格、最终fresh CI及合并后main CI/CD尚未完成，不提前声明通过。
 
 交叉注册增量：sidecar目录执行 `go test -race ./internal/app -run 'TestQuery.*ProductHTTP|TestSchemaListProductHTTPMatchesRealCatalogREST|TestFileListProductHTTPMatchesAttachmentRESTAndConsumesCapabilities|TestHistoryReadProductHTTPReturnsFreshAuditedPage' -count=1`，passed61.705s。此项只覆盖本次受影响的既有HTTP夹具，未重复已通过的Lookup测试。
 
@@ -74,3 +74,27 @@ S26/S28/S29并存，原main23场景报告的source/run不变，历史manifest ga
 
 本轮生成器首次误传不支持的 `--write`，仅usage拒绝，未运行生成；按实际默认写入模式生成成功。
 尚待更新后产品构建/S29与最终fresh CI，来源包和旧完整矩阵不充当新端点通过证据。
+
+## UI 与只读边界依赖组合
+
+Go owner 来源 `3b477257` 的实际S29 `20260908T060700Z` 失败：加载更多按钮在视口外，
+没有完成分页。UI来源 `e74d95c3f338307122ef79a10878f79a8f9fde35` 的实际S29
+`20260908T063000Z` 已能普通点击按钮，但Python owner的后续分页RPC失败；此时未取得第101条。
+独立只读边界回归随后用真实中间件捕获旧POST 423，并以精确路径许可修复。两次产品失败均保留。
+
+UI与边界组合来源 `7092f0d35e221c94e00cb0878e82ed7f47a00f8d` 的实际S29
+`20260908T065613Z` 为1/1 passed，普通点击完成100→101条唯一Unicode来源、分页耗尽及
+两表记录/revision不变。包审计、四组件新鲜度、Host退出0、成员/后代为空、端口释放和清理通过。
+**该来源的lookup.valuePage仍归Python，不是本Go owner端点的产品资格。**
+
+当前在 `3b477257` 正常合入依赖 `1a4160193ae6db3ba19c8177340ec9986a2ee308`，
+仅承接UI布局、精确只读POST边界、相关测试及资格文档/截图，共八个依赖文件，均与依赖来源一致。
+清单仍为15 Go /85 Python /2 native；lookup生产adapter、39原始案例、owner接线及S29脚本未改。
+当前组合新包/S29和fresh CI尚待执行，未复用Python owner的通过结论。
+
+本次组合聚焦验证：sidecar目录执行
+`go test -race ./internal/app -run '^TestWorkspaceV2(LookupValuePage|WriteBoundary|WriteRejection)' -count=1`，
+passed7.750s（`lookup-dependency-boundary-race.log`）；
+`uv run --frozen --no-sync python -m pytest tests/contract/test_product_e2e_capability_index.py tests/e2e/test_product_e2e_runner.py -q --no-cov`，
+150 passed8.59s（`lookup-dependency-runner.log`）。policy与E2E索引生成一致性检查通过。
+未重复此前全部Go/.NET测试，未在本次检查中构建产品包。
