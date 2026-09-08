@@ -7,8 +7,11 @@ import type {
 } from "@/contracts";
 import { t } from "@/i18n";
 
-export function relationFormatter(descriptor: NormalizedRelationDescriptor) {
-  return (cell: { getValue(): unknown }): HTMLElement => {
+export function relationFormatter(descriptor: NormalizedRelationDescriptor, field = descriptor.fieldRef) {
+  return (cell: {
+    getValue(): unknown;
+    getRow?(): { getData(): Record<string, unknown> };
+  }): HTMLElement => {
     const root = element("div", "vt-relation-value");
     root.dataset.relationKind = descriptor.kind;
     if (descriptor.state !== "valid") {
@@ -26,10 +29,17 @@ export function relationFormatter(descriptor: NormalizedRelationDescriptor) {
       root.append(element("span", "vt-cell-empty", "—"));
       return root;
     }
+    const metadata = cell.getRow?.().getData().__vibetableRelationLabels;
+    const labels = isRecord(metadata) && isRecord(metadata[field]) ? metadata[field] : {};
     for (const target of targets.slice(0, 3)) {
       const token = element("span", "vt-relation-token");
-      token.append(document.createTextNode(target.label || target.itemId));
-      token.title = `${target.collection} · ${target.itemId}`;
+      const label = labels[target.itemId];
+      token.append(document.createTextNode(
+        typeof label === "string" && label.trim() !== ""
+          ? label
+          : target.label || target.itemId,
+      ));
+      token.title = `${target.collection || descriptor.relatedCollection || ""} · ${target.itemId}`;
       root.append(token);
     }
     if (targets.length > 3) root.append(element("span", "vt-relation-more", `+${targets.length - 3}`));

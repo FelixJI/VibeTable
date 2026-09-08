@@ -112,3 +112,25 @@ def test_lookup_query_rejects_more_than_two_server_side_groups() -> None:
                 "lookupRevision": "lookup:1",
             }
         )
+
+
+def test_lookup_query_accepts_empty_projection_for_relation_display_labels() -> None:
+    params = LookupQueryParams.model_validate(
+        {
+            "collection": "orders",
+            "fieldRefs": [],
+            "query": {
+                "filters": [{"field": "id", "operator": "in", "value": ["order-1"]}],
+                "offset": 0,
+                "limit": 1,
+            },
+            "schemaRevision": "schema:1",
+            "permissionRevision": "permission:1",
+            "lookupRevision": "lookup:1",
+        }
+    )
+
+    dumped = params.model_dump(by_alias=True, mode="json")
+    assert dumped["fieldRefs"] == []
+    assert dumped["query"]["filters"][0]["value"] == ["order-1"]
+    assert dumped["query"]["limit"] == 1

@@ -268,6 +268,43 @@ describe("relationLookupService", () => {
     }));
   });
 
+  it("refreshes target labels without resetting the active relation draft", () => {
+    const store = useRelationLookupStore();
+    store.beginContext("orders");
+    store.schema = {
+      collection: "orders", primaryKey: "id", columns: [],
+      normalizedRelations: [{
+        relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
+        relatedCollection: "contracts", unique: false, nullable: true,
+        onDelete: "nullify", preset: "standard", selfRelation: false, managed: true, state: "valid", diagnostics: [],
+      }],
+      schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+    };
+    store.openDraft("orders.contract", "order-1", []);
+    store.toggleDraftTarget({ collection: "contracts", itemId: "target-1", label: "Unsaved" });
+    const generation = store.generation;
+    let changed: ((change: DataChangedEvent) => void) | undefined;
+    setHostBridgeForTesting({
+      request,
+      on: vi.fn((_type, handler) => { changed = handler as (change: DataChangedEvent) => void; return vi.fn(); }),
+    } as unknown as HostBridge);
+    const invalidated = vi.fn();
+    const service = useRelationLookupService();
+    service.init(invalidated);
+    const event: DataChangedEvent = {
+      contractVersion: "2.0", topic: "data.changed", eventId: "label-change",
+      sequence: 7, occurredAt: "2026-07-24T08:30:00Z", schemaRevision: "target-schema", dataRevision: "data_0007",
+      changeSetId: "chg-label", tableId: "contracts", recordIds: ["target-1"], operation: "update",
+    };
+    changed?.({ ...event, tableId: "unrelated" });
+    expect(invalidated).not.toHaveBeenCalled();
+    changed?.(event);
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    expect(store.generation).toBe(generation);
+    expect(store.draft?.selected).toEqual([{ collection: "contracts", itemId: "target-1", label: "Unsaved" }]);
+    expect(request).not.toHaveBeenCalled();
+    service.dispose();
+  });
   it("invalidates an active deep Lookup for a change beyond the first-hop schema", async () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("orders");

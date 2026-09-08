@@ -417,7 +417,7 @@ export const useTableStore = defineStore("table", () => {
    * Existing scalar values are retained only when the query projection omits
    * them; Lookup values are never derived from the visible page.
    */
-  function applyLookupQueryResult(result: LookupQueryResult): void {
+  function applyLookupQueryResult(result: LookupQueryResult, options: { labelsOnly?: boolean } = {}): void {
     const currentPage = pages.value[0];
     const currentSchema = schema.value;
     if (!currentPage || !currentSchema) return;
@@ -435,6 +435,28 @@ export const useTableStore = defineStore("table", () => {
       return;
     }
     const previous = new Map(allRows.value.map((row) => [String(row.rowKey), row]));
+    if (options.labelsOnly) {
+      const labelsByRow = new Map(result.rows.flatMap((row) => {
+        const key = row.rowKey ?? row.id;
+        return typeof key === "string" || typeof key === "number" ? [[String(key), row] as const] : [];
+      }));
+      // New row/page references notify the Grid's shallow watcher. Keep every
+      // page boundary, cursor and business value, including optimistic edits.
+      pages.value = pages.value.map(page => ({
+        ...page,
+        rows: page.rows.map((row) => {
+          const wireRow = labelsByRow.get(String(row.rowKey));
+          if (!wireRow) return row;
+          const updated = { ...row };
+          delete updated.__vibetableRelationLabels;
+          if (wireRow.__vibetableRelationLabels !== undefined) {
+            updated.__vibetableRelationLabels = wireRow.__vibetableRelationLabels;
+          }
+          return updated;
+        }),
+      }));
+      return;
+    }
     const fieldNames = new Map(currentSchema.flatMap((column) => [
       [column.fieldId ?? column.name, column.name] as const,
       [column.name, column.name] as const,
@@ -456,6 +478,12 @@ export const useTableStore = defineStore("table", () => {
         ...(previous.get(String(rowKey)) ?? {}),
         rowKey,
       };
+      // Display labels belong to this authoritative read; never retain labels
+      // from an older target value or relation display-field definition.
+      delete row.__vibetableRelationLabels;
+      if (wireRow.__vibetableRelationLabels !== undefined) {
+        row.__vibetableRelationLabels = wireRow.__vibetableRelationLabels;
+      }
       for (const [wireField, value] of Object.entries(wireRow)) {
         if (wireField === "rowKey") continue;
         if (wireField === "__vibetableDigest") {

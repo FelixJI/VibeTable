@@ -106,3 +106,7 @@ CI/CD 状态监控只读，不重跑、触发、取消或批准 run。主线程�
 PR 7 按回滚边界拆为 RR1（pair 原子更新）和 RR2（完整性 inspect/repair）。RR1 已有双端配置、many→one 预检、不可变身份/目标、revision 冲突和真实表头编辑/重开证据，见 [本地资格](../quality/relation-pair-update.md)。前置字段设置修复 #299 由已分别通过 CI 的修复集成 PR #302 收尾，反向 presence 独立修复为 #301；均须以实际 main 合并结果为准。
 
 当前 S06 从旧 cascade 预览扩展为 pair 更新及公开策略拒绝，历史 main 的旧场景结果不充当新场景资格。RR1 尚待最终 fresh CI 和合并闭环；RR2 未完成。DisplayField 配置保存已验证，但 Grid 标签消费仍 Open，不能据此标记 Relation 或完整产品链 Closed。Picker 继续遵守 ADR 0009 的表主显示字段契约。
+
+## 2026-09-09 Relation 标签消费进度
+
+既有DisplayField的Grid消费已在独立查询展示意图中实现并完成本地质量、真实S28/S02验证，见[标签资格](../quality/relation-display-labels.md)。这补齐此前“配置保存但单元格仍显示ID”的缺口；保持Picker主显示字段和原始关系ID，不切换owner。多窗口批量刷新与编辑队列已通过回归，整体Relation、RR2完整性修复和跨表计算链仍Partial；fresh CI和合并闭环尚待完成。

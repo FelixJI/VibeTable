@@ -190,6 +190,8 @@ func isJSONNull(raw []byte) bool {
 }
 
 type RelationDescriptor struct {
+	DisplayField    string                     `json:"displayField,omitempty"`
+	PresenceFields  map[string]string          `json:"presenceFields,omitempty"`
 	TableName       string                     `json:"tableName"`
 	PrimaryKey      string                     `json:"primaryKey"`
 	RowRevisionName string                     `json:"rowRevisionName,omitempty"`
