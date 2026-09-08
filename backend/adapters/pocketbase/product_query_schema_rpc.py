@@ -37,7 +37,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "query.page": self._query_page,
             "query.selectionOpen": self._open_selection_projection,
             "query.view": self._query_view,
             "query.validateSnapshot": self._validate_snapshot,
@@ -110,22 +109,6 @@ class ProductQuerySchemaRpc:
                 headers=dict(self._context.headers),
                 expected_status=(200,),
             )
-        )
-
-    async def _query_page(self, params: ProductParams) -> JsonObject:
-        page = await self._context.client.query_page(
-            table_id=_text(params.root, "tableId"),
-            query=_object(params.root, "query"),
-        )
-        return _result_object(
-            {
-                "rows": page.rows,
-                "offset": page.offset,
-                "limit": page.limit,
-                "filteredRows": page.filtered_rows,
-                "totalRows": page.total_rows,
-                "snapshot": page.snapshot,
-            }
         )
 
     async def _open_selection_projection(self, params: ProductParams) -> JsonObject:

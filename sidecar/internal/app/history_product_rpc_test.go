@@ -354,6 +354,7 @@ func historyReadProductFixture(
 		historyReadRegistration(runtime),
 		queryReadRowsRegistration(query.NewPort(pb, nil)),
 		lookupListRegistration(relation.New(pb, nil, nil)),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 	)

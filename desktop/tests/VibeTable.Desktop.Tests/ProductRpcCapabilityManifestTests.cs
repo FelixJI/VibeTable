@@ -54,6 +54,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "lookup.list:workspace",
                 "query.cursorFetch:workspace",
                 "query.cursorOpen:workspace",
+                "query.page:workspace",
                 "query.readRows:workspace",
                 "schema.describe:workspace",
                 "schema.getTable:workspace",

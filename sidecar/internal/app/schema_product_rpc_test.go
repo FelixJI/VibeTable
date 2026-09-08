@@ -668,6 +668,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		productrpc.ReconcileRegistration(catalog),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		queryReadRowsRegistration(query.NewPort(pb, nil)),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
@@ -692,4 +693,18 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		t.Fatal(err)
 	}
 	return mux
+}
+
+type unrelatedQueryPageMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedQueryPageMustNotRun) QueryPage(context.Context, string, query.TableQuery) (query.Page, error) {
+	probe.t.Fatal("unrelated page query must not run")
+	return query.Page{}, nil
+}
+
+type unrelatedQueryReadRowsMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedQueryReadRowsMustNotRun) ReadRows(context.Context, string, []string) ([]map[string]any, error) {
+	probe.t.Fatal("unrelated row read must not run")
+	return nil, nil
 }

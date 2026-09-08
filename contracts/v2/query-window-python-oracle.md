@@ -2,7 +2,7 @@
 
 本语料为 PR140 的 L3A 后续迁移冻结 `query.page`、`query.cursorOpen` 和
 `query.cursorFetch` 的 Python 契约。生产者固定为 Git 基线
-`c97c83336e4aa1bdf993fc46a7de57040219fb03`。冻结时没有修改生产路径；当前游标迁移已退役 cursorOpen/cursorFetch 的 Python replay，只保留仍属 Python 的 page replay。
+`c97c83336e4aa1bdf993fc46a7de57040219fb03`。冻结时没有修改生产路径；当前 page、cursorOpen、cursorFetch 均已迁出 Python，原 replay 全部退役。
 
 27 个固定输入执行真实 `RpcDispatcher`、闭合 ProductParams、Python adapter 与
 PocketBaseClient，仅下游 transport 返回预设响应或异常。原件记录完整 JSON-RPC
@@ -18,7 +18,7 @@ PocketBaseClient，仅下游 transport 返回预设响应或异常。原件记�
 冻结结果不能由后续实现重算替代；owner 迁移时应明确退役对应 Python replay，并独立
 消费原件验证新 owner。没有新增依赖、摘要或通用生成框架。
 
-原27个案例保持不可变；当前只读比较尚未迁移的10个page案例（复用锁定环境）：
+原27个案例保持不可变。page 与 cursor owner 均已迁出 Python，所有 Python replay 均拒绝。默认及 `--check` 只核验固定生产者、案例清单、请求与 authority 输入，不声称执行旧 Python handler（复用锁定环境）：
 
 ```text
 uv run --frozen --no-sync python -m contracts.v2.generate_query_window_oracle --check

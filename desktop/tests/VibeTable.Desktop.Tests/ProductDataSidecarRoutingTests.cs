@@ -206,8 +206,7 @@ public sealed class ProductDataSidecarRoutingTests
     private static ProductDataRequestController Controller(FakeWebReplySink sink)
         => new(
             sink,
-            SelectorFor("query.page", "goSidecar"),
-            readRecoveryTimeout: TimeSpan.FromMilliseconds(50));
+            SelectorFor("query.page", "goSidecar"));
 
     private static ProductRpcRouteSelector SelectorFor(string method, string owner)
         => new(ProductRpcCapabilityManifest.CreateForTests(
