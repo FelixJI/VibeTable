@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from qa import next as next_gate
 from qa import release_candidate
 from scripts.qa.windows_process_scope import (
     ProcessWorkingSetMember,
@@ -133,6 +134,14 @@ def _probe_evidence() -> dict[str, object]:
     }
 
 
+def _rpc_probe_evidence() -> dict[str, object]:
+    return {
+        "status": "passed",
+        "tableId": "tbl_runtime_baseline",
+        "samples": {method: list(range(30, 0, -1)) for method in ("schema.getTable", "query.page")},
+    }
+
+
 def _workspace() -> WorkspaceOpenEvidence:
     return {
         "workspaceId": "11111111-1111-4111-8111-111111111111",
@@ -167,9 +176,11 @@ class _Session:
         return _working_sets()
 
 
+@pytest.mark.parametrize("rpc_fails", [False, True])
 def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
     monkeypatch,
     tmp_path: Path,
+    rpc_fails: bool,
 ) -> None:
     package_root = tmp_path / "package"
     archive, identity_path, candidate_evidence = _write_candidate(
@@ -191,9 +202,11 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         observer.host_ready()
         observer.workspace_open_requested()
         observer.workspace_opened()
-        yield session
-        session.lifecycle = _lifecycle()
-        events.append("exit")
+        try:
+            yield session
+        finally:
+            session.lifecycle = _lifecycle()
+            events.append("exit")
 
     def probe(_cdp_url: str, _report_path: Path) -> dict[str, object]:
         events.append("probe")
@@ -202,6 +215,21 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
     def prepare_probe():
         events.append("prepare")
         return probe
+
+    def prepare_rpc():
+        events.append("prepare-rpc")
+
+        def rpc(cdp_url: str, table_id: str, _report_path: Path) -> dict[str, object]:
+            assert cdp_url == session.cdp_url
+            assert table_id == "tbl_runtime_baseline"
+            events.append("rpc")
+            if rpc_fails:
+                raise packaged_runtime_baseline.BaselineMeasurementError(
+                    "RPC_PROBE_FAILED", "packaged RPC probe failed"
+                )
+            return _rpc_probe_evidence()
+
+        return rpc
 
     monkeypatch.setattr(packaged_runtime_baseline, "opened_packaged_workspace", opened)
     clock = iter((0, 10, 20, 30, 40))
@@ -218,10 +246,39 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         monotonic_ns=lambda: next(clock),
         sleep=lambda seconds: events.append(f"sleep:{seconds}"),
         probe_factory=prepare_probe,
+        rpc_probe_factory=prepare_rpc,
     )
 
-    assert events == ["prepare", "launch", "probe", "sleep:1.0", "snapshot", "exit"]
+    assert events == [
+        "prepare",
+        "prepare-rpc",
+        "launch",
+        "probe",
+        "sleep:1.0",
+        "snapshot",
+        "rpc",
+        "exit",
+    ]
+    archived_report = next_gate.persist_runtime_baseline_evidence(
+        report_path,
+        tmp_path / "archived-evidence",
+        expected_candidate=candidate_evidence,
+        require_passing_report=not rpc_fails,
+    )
+    assert archived_report is not None
+    assert json.loads(archived_report.read_text(encoding="utf-8")) == report
+    if rpc_fails:
+        assert report["status"] == "failed"
+        assert report["coverage"]["rpcLatency"] == "not-measured"
+        assert report["rpcLatency"] is None
+        assert report["errors"][0]["code"] == "RPC_PROBE_FAILED"
+        assert json.loads(report_path.read_text(encoding="utf-8")) == report
+        return
     assert report["status"] == "passed"
+    assert report["coverage"]["rpcLatency"] == "measured"
+    assert report["rpcLatency"]["methods"]["query.page"]["p50Ms"] == 15
+    assert report["rpcLatency"]["methods"]["query.page"]["p95Ms"] == 29
+    assert report["rpcLatency"]["methods"]["query.page"]["firstMs"] == 30
     assert report["releaseCandidate"] == candidate_evidence
     measurements = report["measurements"]
     assert isinstance(measurements, dict)
@@ -294,6 +351,7 @@ def test_packaged_baseline_never_persists_passed_before_normal_cleanup(
         monotonic_ns=lambda: next(clock),
         sleep=lambda _seconds: None,
         probe_factory=lambda: lambda *_args: _probe_evidence(),
+        rpc_probe_factory=lambda: lambda *_args: _rpc_probe_evidence(),
     )
 
     persisted = json.loads(report_path.read_text(encoding="utf-8"))
@@ -350,6 +408,7 @@ def test_packaged_baseline_rejects_boolean_numeric_probe_fields(
         monotonic_ns=lambda: next(clock),
         sleep=lambda _seconds: None,
         probe_factory=lambda: lambda *_args: invalid,
+        rpc_probe_factory=lambda: lambda *_args: _rpc_probe_evidence(),
     )
 
     assert report["status"] == "failed"
@@ -504,6 +563,7 @@ def test_packaged_baseline_never_writes_into_verified_candidate(
         expected_source_sha=SOURCE_SHA,
         json_report=report_path,
         probe_factory=lambda: pytest.fail("probe must not be prepared"),
+        rpc_probe_factory=lambda: lambda *_args: _rpc_probe_evidence(),
     )
 
     assert opened is False
@@ -556,6 +616,7 @@ def test_packaged_baseline_rejects_resolved_checksum_alias(
         expected_source_sha=SOURCE_SHA,
         json_report=checksum_target,
         probe_factory=lambda: pytest.fail("probe must not be prepared"),
+        rpc_probe_factory=lambda: lambda *_args: _rpc_probe_evidence(),
     )
 
     assert report["status"] == "failed"
@@ -607,3 +668,28 @@ def test_packaged_baseline_rejects_candidate_before_opening_workspace(
     assert isinstance(errors, list)
     assert isinstance(errors[0], dict)
     assert errors[0]["code"] == "CANDIDATE_PACKAGE_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    "bad_samples", [[], [1] * 29, [True] * 30, [float("nan")] * 30, [float("inf")] * 30, [-1] * 30]
+)
+def test_rpc_baseline_rejects_incomplete_or_invalid_samples(bad_samples) -> None:
+    value = _rpc_probe_evidence()
+    value["samples"]["query.page"] = bad_samples
+    with pytest.raises(
+        packaged_runtime_baseline.BaselineMeasurementError, match="invalid RPC samples"
+    ):
+        packaged_runtime_baseline._rpc_latency_evidence(value, "tbl_runtime_baseline")
+
+
+def test_rpc_baseline_rejects_different_table_and_raw_payloads() -> None:
+    value = _rpc_probe_evidence()
+    with pytest.raises(
+        packaged_runtime_baseline.BaselineMeasurementError, match="invalid RPC probe"
+    ):
+        packaged_runtime_baseline._rpc_latency_evidence(value, "tbl_other")
+    value["rawPayload"] = {"private": "not evidence"}
+    with pytest.raises(
+        packaged_runtime_baseline.BaselineMeasurementError, match="invalid RPC probe"
+    ):
+        packaged_runtime_baseline._rpc_latency_evidence(value, "tbl_runtime_baseline")

@@ -65,6 +65,13 @@ internal static class ProductDataRpcRegistry
             && HasString(p, "tableId"),
             (g, p, t) => g.ListRecycledFieldsAsync(p, t),
             CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+        new("lookup.list", p => Safe(p)
+            && HasExactProperties(p, "collection") && HasString(p, "collection"),
+            (g, p, t) => g.ListLookupsAsync(p, t)),
+        new("schema.describe", p => Safe(p)
+            && HasExactProperties(p, "collection", "requestGeneration", "accepts")
+            && HasString(p, "collection") && HasNumber(p, "requestGeneration") && HasArray(p, "accepts"),
+            (g, p, t) => g.DescribeSchemaAsync(p, t)),
         new("schema.getTable", p => Safe(p) && HasExactProperties(p, "tableId") && HasString(p, "tableId"),
             (g, p, t) => g.GetTableSchemaAsync(p, t)),
         new("contentProfile.load", p => Safe(p)

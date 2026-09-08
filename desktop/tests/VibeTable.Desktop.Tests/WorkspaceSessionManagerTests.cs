@@ -270,6 +270,43 @@ public sealed class WorkspaceSessionManagerTests
         Assert.AreEqual(101, fixture.RuntimeFactory.Created);
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LateRegisteredWorkspaceAdvancesPersistedEpochAfterLease(bool changedDuringLease)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 entry = fixture.AddWorkspace("Existing", "existing");
+        var authority = new DesktopWorkspaceAuthorityStore();
+        authority.Reserve(entry, 11);
+        fixture.RuntimeFactory.UsePersistedAuthority = true;
+        if (changedDuringLease)
+            fixture.Lease.Acquiring = () => authority.Reserve(entry, 27);
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(entry.WorkspaceId, WorkspaceOpenMode.Writable);
+        Assert.AreEqual(changedDuringLease ? 28UL : 12UL, opened.SessionEpoch);
+        Assert.AreEqual(opened.SessionEpoch, authority.TryRead(entry)!.LastSessionEpoch);
+        Assert.AreEqual(1, fixture.RuntimeFactory.Active);
+    }
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InvalidPersistedEpochReleasesLeaseWithoutCreatingRuntime(bool corrupt)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 entry = fixture.AddWorkspace("Existing", "existing");
+        var authority = new DesktopWorkspaceAuthorityStore();
+        authority.Reserve(entry, long.MaxValue);
+        string path = Path.Combine(WorkspaceLayout.Paths(entry.SelectedRoot).Coordination, "desktop-runtime-authority.json");
+        if (corrupt) File.WriteAllText(path, "{}");
+        byte[] original = File.ReadAllBytes(path);
+        fixture.RuntimeFactory.UsePersistedAuthority = true;
+        WorkspaceRegistryException error = await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(() =>
+            fixture.Manager.OpenAsync(entry.WorkspaceId, WorkspaceOpenMode.Writable));
+        Assert.AreEqual(corrupt ? "workspace.authority_corrupt" : "workspace.session_epoch_invalid", error.Code);
+        Assert.AreEqual(0, fixture.Lease.Active);
+        Assert.AreEqual(0, fixture.RuntimeFactory.Created);
+        CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+    }
     private sealed class SessionFixture : IDisposable
     {
         public SessionFixture()
@@ -344,9 +381,14 @@ public sealed class WorkspaceSessionManagerTests
         public Guid? FailNextDrainFor { get; set; }
         public Guid? FailNextStopFor { get; set; }
         public ulong BoundSessionEpoch { get; private set; }
+        public bool UsePersistedAuthority { get; set; }
+        public ulong ReadLastSessionEpoch(WorkspaceRegistryEntryV2 workspace) =>
+            UsePersistedAuthority ? new DesktopWorkspaceAuthorityStore().TryRead(workspace)?.LastSessionEpoch ?? 0 : 0;
 
         public IWorkspaceRuntime Create(WorkspaceRegistryEntryV2 workspace, ulong sessionEpoch)
         {
+            if (UsePersistedAuthority)
+                new DesktopWorkspaceAuthorityStore().Reserve(workspace, sessionEpoch);
             Created++;
             var fail = FailNextStartFor == workspace.WorkspaceId;
             if (fail)
@@ -436,6 +478,7 @@ public sealed class WorkspaceSessionManagerTests
     {
         public int Active { get; private set; }
         public WorkspaceOpenMode? GrantedMode { get; set; }
+        public Action? Acquiring { get; set; }
 
         public Task<WorkspaceOpenMode> AcquireAsync(
             WorkspaceRegistryEntryV2 workspace,
@@ -444,6 +487,7 @@ public sealed class WorkspaceSessionManagerTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Active++;
+            Acquiring?.Invoke();
             return Task.FromResult(GrantedMode ?? requestedMode);
         }
 

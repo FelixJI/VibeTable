@@ -26,7 +26,7 @@
 - workspace RPC policy 只声明 capabilityId 与 audience，并必须精确覆盖 registry；scope 直接由
   registry 派生，缺失、未知或重复方法均由生成器 fail closed。`rendererInternal` 与
   `hostOnly` 方法不得从 raw renderer bridge 进入。
-- 不保留历史版本目录、冻结 corpus 或 v1→v2 adapter。协议变更直接更新 v2 schema、fixture、
+- RPC 协议不保留历史版本目录或 v1→v2 adapter；Workspace/SnapshotPackage 兼容性 corpus 按 ADR 0011 追加冻结。协议变更直接更新 v2 schema、fixture、
   运行时消费者和跨语言 round-trip 测试。
 - 产品与 workspace catalog 分别由专用生成器维护，避免调用方或测试依赖另一个模块的内部
   registry。

@@ -433,9 +433,23 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				productrpc.ReconcileRegistration(schemaCatalog),
+				lookupListRegistration(relationService),
+				lookupQueryRegistration(relationService),
+				lookupValuePageRegistration(relationService),
+				relationSearchTargetsRegistration(relationService),
+				queryReadRowsRegistration(queryPort),
+				queryPageRegistration(queryPort),
+				schemaDescribeRegistration(pb, relationService),
+				queryCursorOpenRegistration(queryPort),
+				queryCursorFetchRegistration(queryPort),
 				schemaGetTableRegistration(pb),
 				schemaListRegistration(schemaCatalog),
+				querySelectionOpenRegistration(queryPort),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
+				historyReadRegistration(workspaceRuntime),
+				queryViewRegistration(queryPort),
+				relationPreviewDeltaRegistration(relationService),
 			)
 			if err != nil {
 				_ = rawListener.Close()

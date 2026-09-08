@@ -1429,6 +1429,8 @@ useKeyboard({
 .plugin-action-overlay > :deep(*) { height: 100%; }
 .plugin-action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }
 .lookup-sources-panel {
+	/* Override NModal's centered intrinsic sizing so top/bottom bound the panel. */
+	align-self: stretch;
 	position: fixed;
 	z-index: 78;
 	top: 0;

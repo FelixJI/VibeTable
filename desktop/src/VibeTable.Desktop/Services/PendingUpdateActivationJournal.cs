@@ -594,6 +594,10 @@ internal static class PendingUpdateActivationJournal
             {
                 throw InvalidPointer("watchdog 与当前更新 attempt 不一致。");
             }
+            if (current.State == "rollbackFailed")
+            {
+                return current;
+            }
             return current with
             {
                 State = "rollbackFailed",
@@ -737,6 +741,8 @@ internal static class PendingUpdateActivationJournal
             TryMarkRollbackFailed(attempt, worker, exception is ReleaseUpdateException
                 ? "UPDATE_ROLLBACK_SHAPE_AMBIGUOUS"
                 : "UPDATE_ROLLBACK_IO_FAILED");
+            UpdateRecoveryFailureEvidence.WriteOnce(
+                attempt.StagingRoot, ".rollback-worker-error.json", exception);
             throw;
         }
     }
@@ -2052,6 +2058,21 @@ internal static class PendingUpdateActivationJournal
 
         private async Task CompleteAsync(bool confirm)
         {
+            bool completed;
+            try
+            {
+                completed = await CompleteJournalAsync(confirm).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                WriteActivationFailureEvidence(plan.StagingRoot, exception);
+                completed = false;
+            }
+            _completion.TrySetResult(completed);
+        }
+
+        private async Task<bool> CompleteJournalAsync(bool confirm)
+        {
             string lockPath = GetLockPath(plan.TargetRoot);
             FileStream? claim = null;
             try
@@ -2061,8 +2082,7 @@ internal static class PendingUpdateActivationJournal
                     pending.UpdaterStartedAtUtc);
                 if (!await waitForUpdaterExit(updater).ConfigureAwait(false))
                 {
-                    _completion.TrySetResult(false);
-                    return;
+                    return false;
                 }
                 claim = AcquireLock(lockPath);
                 PendingUpdateActivation current = Read(pointerPath);
@@ -2075,27 +2095,23 @@ internal static class PendingUpdateActivationJournal
                     || currentValidated.Plan != plan
                     || currentValidated.FailedApply != failedApply)
                 {
-                    _completion.TrySetResult(false);
-                    return;
+                    return false;
                 }
                 if (currentValidated.FailedApply)
                 {
                     if (current.State != PreparedState)
                     {
-                        _completion.TrySetResult(false);
-                        return;
+                        return false;
                     }
                     UpdateProcessCommand.RejectReparsePoint(pointerPath);
                     File.Delete(pointerPath);
-                    _completion.TrySetResult(true);
-                    return;
+                    return true;
                 }
                 if (confirm)
                 {
                     if (current.State != PreparedState)
                     {
-                        _completion.TrySetResult(false);
-                        return;
+                        return false;
                     }
                     current = current with
                     {
@@ -2106,13 +2122,11 @@ internal static class PendingUpdateActivationJournal
                 }
                 else if (current.State != ConfirmedState)
                 {
-                    _completion.TrySetResult(false);
-                    return;
+                    return false;
                 }
                 if (!currentValidated.StageAlreadyAbsent && !cleanupStage(plan))
                 {
-                    _completion.TrySetResult(false);
-                    return;
+                    return false;
                 }
                 if (plan.SmokeTest)
                 {
@@ -2120,12 +2134,7 @@ internal static class PendingUpdateActivationJournal
                 }
                 UpdateProcessCommand.RejectReparsePoint(pointerPath);
                 File.Delete(pointerPath);
-                _completion.TrySetResult(true);
-            }
-            catch (Exception exception)
-            {
-                WriteActivationFailureEvidence(plan.StagingRoot, exception);
-                _completion.TrySetResult(false);
+                return true;
             }
             finally
             {

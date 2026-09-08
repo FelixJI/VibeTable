@@ -108,6 +108,11 @@ def test_workspace_compatibility_corpus_artifacts_match_declared_checksums() -> 
             assert artifact["expected"] in {"read", "migrate", "reject-newer-zero-write"}
 
     subprocess.run(
+        [sys.executable, str(ROOT / "contracts/v2/generate_v050_corpus.py"), "--check"],
+        cwd=ROOT,
+        check=True,
+    )
+    subprocess.run(
         [
             sys.executable,
             str(ROOT / "contracts" / "v2" / "generate_compatibility_package.py"),

@@ -440,3 +440,83 @@ func TestHistoryApplyRestoreV2FailsClosedWithoutAdvancingRevision(
 		t.Fatalf("non-history audit namespace was not normalized: %v", mapped)
 	}
 }
+
+func TestImportedBackgroundCompletionPreventsReplayWithoutAuthorityReceipt(t *testing.T) {
+	runtime := newHistoryRestoreTestRuntime(t, &historyRestoreStub{})
+	ctx := context.Background()
+	if err := writecoordinator.EnsurePocketBaseReceiptTable(ctx, runtime.app); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.app.DB().NewQuery(`
+        INSERT INTO workspace_v2_imported_completions VALUES (
+            '` + testWorkspaceID + `', 'formula.backfill.batch', 'historical-job:rows-1-100');
+    `).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	// The imported job cursor still names an already committed batch. There
+	// is deliberately no mutation cache or active-authority receipt to help.
+	for range 2 {
+		if err := runtime.CoordinateIdempotentBusinessWrite(ctx, "formula.backfill.batch", "historical-job:rows-1-100", func(context.Context) error {
+			return errors.New("replayed an imported completed batch")
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token, counters := runtime.coordinator.Current()
+	if counters.MutationRevision != 0 {
+		t.Fatalf("replay advanced revision: %d", counters.MutationRevision)
+	}
+	if found, err := writecoordinator.HasPocketBaseReceipt(ctx, runtime.app, token, 1); err != nil || found {
+		t.Fatalf("completion became authority receipt: %v %v", found, err)
+	}
+	if found, err := writecoordinator.HasPocketBaseReceiptIdentity(ctx, runtime.app, "99999999-9999-4999-8999-999999999999", "formula.backfill.batch", "historical-job:rows-1-100"); err != nil || found {
+		t.Fatalf("completion crossed workspace: %v %v", found, err)
+	}
+}
+
+func TestReadBusinessHistoryPreservesDrainCancellation(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		name := "cancelled"
+		expected := error(context.Canceled)
+		if deadline {
+			name = "deadline"
+			expected = context.DeadlineExceeded
+		}
+		t.Run(name, func(t *testing.T) {
+			service := &historyRestoreStub{}
+			runtime := newHistoryRestoreTestRuntime(t, service)
+			ctx, cancel := context.WithCancel(context.Background())
+			if deadline {
+				cancel()
+				ctx, cancel = context.WithDeadline(context.Background(), time.Unix(0, 0))
+			} else {
+				cancel()
+			}
+			defer cancel()
+			if err := runtime.drainBusinessHistory(ctx); !errors.Is(err, expected) {
+				t.Fatalf("real outbox drain did not report the causal cancellation: %v", err)
+			}
+			_, err := runtime.ReadBusinessHistory(ctx, audit.ReadParams{TableID: "orders"})
+			if !errors.Is(err, expected) {
+				t.Fatalf("history read lost drain cancellation: got %v, want %v", err, expected)
+			}
+			if service.queryParams.TableID != "" {
+				t.Fatal("cancelled drain reached history projection")
+			}
+		})
+	}
+}
+
+func TestReadBusinessHistoryDoesNotMaskStorageFailureWithCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runtime := &Runtime{}
+	_, err := runtime.ReadBusinessHistory(ctx, audit.ReadParams{})
+	var historyError *audit.Error
+	if !errors.As(err, &historyError) || historyError.Code != "history.storage_failed" {
+		t.Fatalf("unavailable ledger must retain its storage error: %v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatal("unrelated cancellation masked the unavailable ledger")
+	}
+}

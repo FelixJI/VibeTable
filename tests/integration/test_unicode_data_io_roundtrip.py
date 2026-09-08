@@ -5,10 +5,11 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
@@ -33,10 +34,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_VALUES = {
     "nfc": "Caf\u00e9 \U0001f469\U0001f3fd\u200d\U0001f4bb",
     "nfd": "Cafe\u0301 \U0001f469\U0001f3fd\u200d\U0001f4bb",
+    "cjk": "\u4e2d\u6587 \U00020000",
+    "rtl": "\u200f\u0639\u0631\u0628\u064a 123",
+    "locale_case": "I i \u0130 \u0131 \u00df SS",
 }
 EXPECTED_CODE_POINTS = {
     "nfc": (0x43, 0x61, 0x66, 0xE9, 0x20, 0x1F469, 0x1F3FD, 0x200D, 0x1F4BB),
     "nfd": (0x43, 0x61, 0x66, 0x65, 0x301, 0x20, 0x1F469, 0x1F3FD, 0x200D, 0x1F4BB),
+    "cjk": (0x4E2D, 0x6587, 0x20, 0x20000),
+    "rtl": (0x200F, 0x639, 0x631, 0x628, 0x64A, 0x20, 0x31, 0x32, 0x33),
+    "locale_case": (0x49, 0x20, 0x69, 0x20, 0x130, 0x20, 0x131, 0x20, 0xDF, 0x20, 0x53, 0x53),
 }
 
 
@@ -73,6 +80,96 @@ def _physical_name(definition: Mapping[str, object]) -> str:
     physical_name = identity.get("physicalName")
     assert isinstance(physical_name, str)
     return physical_name
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
+    tmp_path: Path, source_sidecar_binary: Path
+) -> None:
+    sidecar = Sidecar(
+        source_sidecar_binary,
+        _create_v2_workspace(tmp_path / "workspace"),
+        workspace_identity={
+            "VIBETABLE_WORKSPACE_ID": WORKSPACE_ID,
+            "VIBETABLE_WORKSPACE_SESSION_EPOCH": str(SESSION_EPOCH),
+            "VIBETABLE_WORKSPACE_FENCE_EPOCH": str(FENCE_EPOCH),
+            "VIBETABLE_WORKSPACE_CLAIM_ID": CLAIM_ID,
+        },
+    )
+    try:
+        sidecar.start()
+        table = _create_table(sidecar, "native_dates", "create-native-dates")
+        fields: list[str] = []
+        for logical_type in ("date", "dateTime"):
+            definition = _create_field(
+                sidecar,
+                table,
+                _recommended_field_draft(sidecar, table["tableId"], logical_type, logical_type),
+                f"create-native-{logical_type}",
+            )["definition"]
+            assert isinstance(definition, dict)
+            fields.append(_physical_name(definition))
+        date_field, datetime_field = fields
+        source = tmp_path / "native-dates.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        assert sheet is not None
+        sheet.append(fields)
+        sheet.append([date(2026, 8, 29), datetime(2026, 8, 29, 14, 5, 6, 123000)])
+        sheet.append(["1900-02-28", "2026-08-29T00:00:00+08:00"])
+        workbook.save(source)
+        workbook.close()
+
+        config = PocketBaseConfig(
+            base_url=f"http://{sidecar.address}", session_secret=sidecar.secret
+        )
+        client = PocketBaseClient(
+            transport=StdlibPocketBaseTransport(config), session_secret=sidecar.secret
+        )
+        tasks = build_task_service()
+        runtime = ProductDataIoRuntime(client=client, task_service=tasks)
+        grant = await tasks.register_host_import_source(
+            HostImportSourceParams(
+                path=str(source.resolve()),
+                size_bytes=source.stat().st_size,
+                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        )
+        plan = await runtime.preview_import(
+            PreviewImportParams(
+                grant_id=grant.grant_id,
+                collection=table["tableId"],
+                schema_revision=table["schemaRevision"],
+            )
+        )
+        assert plan.summary.total_rows == plan.summary.valid_rows == 2
+        assert plan.summary.error_count == 0
+        expected = {
+            "2026-08-29": "2026-08-29T14:05:06.123Z",
+            "1900-02-28": "2026-08-28T16:00:00Z",
+        }
+        assert {row.values[date_field]: row.values[datetime_field] for row in plan.rows} == expected
+        query = {"filters": [], "sorts": [], "offset": 0, "limit": 100}
+        assert (await client.query_page(table_id=table["tableId"], query=query)).rows == []
+        applied = await runtime.apply_import(
+            ApplyImportParams(
+                grant_id=grant.grant_id,
+                collection=table["tableId"],
+                token=plan.token.token,
+                idempotency_prefix="native-xlsx-dates",
+            )
+        )
+        assert applied.created_count == 2
+        assert applied.failed_rows == []
+        page = await client.query_page(table_id=table["tableId"], query=query)
+        # The query port exposes PocketBase's UTC date wire format, not preview DTOs.
+        assert {row[date_field]: row[datetime_field] for row in page.rows} == {
+            "2026-08-29 00:00:00.000Z": "2026-08-29 14:05:06.123Z",
+            "1900-02-28 00:00:00.000Z": "2026-08-28 16:00:00.000Z",
+        }
+    finally:
+        sidecar.stop()
 
 
 def _assert_unicode_values(values: Mapping[str, str]) -> None:
@@ -166,8 +263,8 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 mode="create_only",
             )
         )
-        assert plan.summary.total_rows == 2
-        assert plan.summary.valid_rows == 2
+        assert plan.summary.total_rows == len(EXPECTED_VALUES)
+        assert plan.summary.valid_rows == len(EXPECTED_VALUES)
         assert plan.summary.error_count == 0
         assert plan.unmatched_columns == []
         _assert_unicode_values(
@@ -186,7 +283,7 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 idempotency_prefix="unicode-data-io-roundtrip",
             )
         )
-        assert applied.created_count == 2
+        assert applied.created_count == len(EXPECTED_VALUES)
         assert applied.failed_rows == []
 
         query = {"filters": [], "sorts": [], "offset": 0, "limit": 100}
@@ -211,7 +308,7 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 format="csv",
             )
         )
-        assert csv_result.rows_written == 2
+        assert csv_result.rows_written == len(EXPECTED_VALUES)
         with csv_target.open("r", encoding="utf-8-sig", newline="") as stream:
             csv_values = _labeled_values(
                 csv.DictReader(stream),
@@ -232,7 +329,7 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
                 format="xlsx",
             )
         )
-        assert xlsx_result.rows_written == 2
+        assert xlsx_result.rows_written == len(EXPECTED_VALUES)
         workbook = load_workbook(xlsx_target, read_only=True, data_only=True)
         try:
             worksheet = workbook.active

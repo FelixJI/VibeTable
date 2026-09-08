@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -101,7 +102,7 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.pocketbase == "0.40.1"
     assert versions.cel == "0.31.0"
     assert versions.contract == "v1"
-    assert versions.schema == "10"
+    assert versions.schema == "11"
     assert len(versions.migration_hash) == 64
 
 
@@ -168,6 +169,10 @@ def test_version_update_derives_workspace_policy_without_claiming_n_minus_one(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / relative, target)
 
+    shutil.copytree(
+        REPO_ROOT / "contracts/v2/fixtures",
+        tmp_path / "contracts/v2/fixtures",
+    )
     changed = update_versions(tmp_path, "0.5.2")
     policy = json.loads(
         (tmp_path / "contracts/v2/workspace-version-policy.json").read_text(encoding="utf-8")
@@ -339,7 +344,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "pocketBaseVersion": "0.40.1",
         "celVersion": "0.31.0",
         "contractVersion": "2.0",
-        "schemaVersion": "10",
+        "schemaVersion": "11",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }
@@ -993,6 +998,194 @@ def test_self_update_health_timeout_accepts_strict_rollback_after_hold_consumpti
         wait_for_rollback()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows process handle contract")
+@pytest.mark.parametrize(
+    "fault",
+    [None, "normal", "reused-pid", "wait", "not-owned", "not-claimed", "open", "target", "stage"],
+)
+@pytest.mark.parametrize("path_suffix", ["", os.sep])
+def test_crash_observer_holds_exact_handle_before_request_and_rejects_normal_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None, path_suffix: str
+) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    exit_code = 0 if fault == "normal" else 0x80131623
+    evidence = build_next._UPDATED_CRASH_ROLLBACK_SCENARIO.arrange_failure(tmp_path)
+    assert evidence.consumed_request is not None
+    assert evidence.crash_request is not None
+    request = evidence.crash_request
+    assert not request.exists()
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path, failure_code="updatedProcessExited"
+    )
+    started = "2026-08-28T04:00:02.1234567+00:00"
+    pointer = {
+        **fixture.receipt,
+        "state": "awaitingHealth",
+        "updatedStartedAtUtc": started,
+        "failureCode": None,
+    }
+    pointer["targetRoot"] = str(fixture.target) + path_suffix
+    pointer["stagingRoot"] = str(fixture.stage) + path_suffix
+    if fault in ("target", "stage"):
+        pointer["targetRoot" if fault == "target" else "stagingRoot"] = str(tmp_path / "wrong")
+    if fault == "not-claimed":
+        pointer["state"] = "launchingUpdatedApp"
+    (tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER).write_text(json.dumps(pointer))
+    process_file = tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR
+    process_file.mkdir()
+    (process_file / build_next.SELF_UPDATE_SMOKE_PROCESS_FILE).write_text(
+        json.dumps(
+            {
+                "token": fixture.token,
+                "targetVersion": "1.0.1",
+                "processId": 700,
+            }
+        )
+    )
+    scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(
+            snapshot=lambda: SimpleNamespace(
+                members=()
+                if fault == "not-owned"
+                else (
+                    SimpleNamespace(
+                        pid=700, executable_name="VibeTable.Next.exe", identity_verified=True
+                    ),
+                )
+            )
+        ),
+    )
+    evidence.consumed_request.path.unlink()
+    events: list[str] = []
+
+    def opened(_rights: int, _inherit: bool, pid: int) -> int:
+        assert pid == 700
+        assert not request.exists()
+        events.append("open")
+        return 0 if fault == "open" else 123
+
+    def times(_handle: int, creation: ctypes.c_void_p, *_rest: object) -> int:
+        value = ctypes.cast(creation, ctypes.POINTER(wintypes.FILETIME)).contents
+        value.dwLowDateTime = (134323632021234567 + (fault == "reused-pid")) & 0xFFFFFFFF
+        value.dwHighDateTime = 134323632021234567 >> 32
+        events.append("identity")
+        return 1
+
+    def waited(_handle: int, milliseconds: int) -> int:
+        if milliseconds == 0:
+            assert not request.exists()
+            return 258
+        assert request.is_file()
+        events.append("exit")
+        return 258 if fault == "wait" else 0
+
+    def exited(_handle: int, result: ctypes.c_void_p) -> int:
+        ctypes.cast(result, ctypes.POINTER(wintypes.DWORD)).contents.value = exit_code
+        return 1
+
+    kernel = SimpleNamespace(
+        OpenProcess=Mock(side_effect=opened),
+        GetProcessTimes=Mock(side_effect=times),
+        WaitForSingleObject=Mock(side_effect=waited),
+        GetExitCodeProcess=Mock(side_effect=exited),
+        CloseHandle=Mock(side_effect=lambda _handle: events.append("close") or 1),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel)
+
+    def observe() -> build_next._SelfUpdateCrashObservation:
+        return build_next.trigger_self_update_crash(
+            tmp_path,
+            process_scope=scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            timeout_seconds=0.1,
+        )
+
+    errors = {
+        "normal": "did not exit abnormally",
+        "reused-pid": "identity changed",
+        "wait": "wait failed",
+        "not-owned": "not owned",
+        "not-claimed": "identity is invalid",
+        "open": "open failed",
+        "target": "identity is invalid",
+        "stage": "identity is invalid",
+    }
+    if fault is not None:
+        with pytest.raises(build_next.BuildError, match=errors[fault]):
+            observe()
+    else:
+        assert observe() == build_next._SelfUpdateCrashObservation(700, started, exit_code)
+    if fault in ("not-owned", "not-claimed", "target", "stage"):
+        assert events == []
+    elif fault == "open":
+        assert events == ["open"]
+    elif fault == "reused-pid":
+        assert events == ["open", "identity", "close"]
+    else:
+        assert events == ["open", "identity", "exit", "close"]
+    assert request.exists() == (fault in (None, "normal", "wait"))
+
+
+@pytest.mark.parametrize("fault", [None, "missing", "action", "pid", "start", "normal", "request"])
+def test_crash_rollback_requires_observed_exit_bound_to_receipt_and_consumed_request(
+    tmp_path: Path, fault: str | None
+) -> None:
+    evidence = build_next._UPDATED_CRASH_ROLLBACK_SCENARIO.arrange_failure(tmp_path)
+    assert evidence.consumed_request is not None
+    assert evidence.crash_request is not None
+    evidence.consumed_request.path.unlink()
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path, failure_code="updatedProcessExited"
+    )
+    marker: dict[str, object] = {
+        "action": "Environment.FailFast",
+        "processId": 700,
+        "startedAtUtc": "2026-08-28T04:00:02+00:00",
+    }
+    if fault == "action":
+        marker["action"] = "normal-close"
+    if fault == "pid":
+        marker["processId"] = 701
+    if fault == "start":
+        marker["startedAtUtc"] = "2026-08-28T04:00:02.0000001+00:00"
+    if fault != "missing":
+        (evidence.crash_request.parent / "self-update-crash.json").write_text(json.dumps(marker))
+    if fault == "request":
+        evidence.crash_request.touch()
+    observation = build_next._SelfUpdateCrashObservation(
+        700, "2026-08-28T04:00:02+00:00", 0 if fault == "normal" else 0x80131623
+    )
+
+    def wait() -> int:
+        return build_next._wait_for_self_update_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=700,
+            scenario_slug="updated-crash",
+            expected_failure_code="updatedProcessExited",
+            health_failure_readiness=None,
+            consumed_request=evidence.consumed_request,
+            crash_observation=observation,
+            timeout_seconds=0.1,
+        )
+
+    if fault is None:
+        assert wait() == 701
+    else:
+        with pytest.raises(build_next.BuildError, match="crash evidence"):
+            wait()
+
+
 def test_restored_self_update_host_close_rejects_process_that_already_exited(
     tmp_path: Path,
 ) -> None:
@@ -1227,6 +1420,7 @@ def test_self_update_rollback_batch_delegates_scenarios_in_release_order(
     assert calls == [
         ("health-failure", "health-failure", "workspaceHealthProbeFailed"),
         ("updated-exit", "updated-exit", "updatedProcessExited"),
+        ("updated-crash", "updated-crash", "updatedProcessExited"),
         ("health-timeout", "health-timeout", "healthTimeout"),
     ]
 
@@ -1235,7 +1429,7 @@ def test_self_update_rollback_scenarios_bound_updater_wait_to_failure_budget() -
     assert [
         scenario.updater_wait_timeout_seconds
         for scenario in build_next._SELF_UPDATE_ROLLBACK_SCENARIOS
-    ] == [120, 120, 180]
+    ] == [120, 120, 120, 180]
 
 
 def test_health_failure_blocker_is_owned_before_plan_preparation(
@@ -1760,7 +1954,7 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
 
     shutil.copy2(REPO_ROOT / "contracts/v2/workspace-version-policy.json", policy_path)
     restored_policy = json.loads(policy_path.read_text(encoding="utf-8"))
-    assert restored_policy["compatibilityCorpus"]["immutablePrefix"]["formalReleaseCount"] == 0
+    assert restored_policy["compatibilityCorpus"]["immutablePrefix"]["baselineCount"] >= 1
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
     baseline_artifact = corpus["baselines"][0]["artifacts"][0]
     baseline_path = desktop_contracts / baseline_artifact["path"]
@@ -2271,3 +2465,113 @@ def test_upgrade_migration_failure_automatically_keeps_old_binary_and_data(
     assert (data / "data.db").read_bytes() == b"old-db"
     manifest = json.loads(transaction.manifest.read_text(encoding="utf-8"))
     assert manifest["activation"]["status"] == "rolledBack"
+
+
+@pytest.mark.parametrize(
+    ("role", "relative_path"),
+    [
+        ("failed-readiness", "self-update-readiness/vibetable-readiness.json"),
+        ("rollback-receipt", None),
+        ("restored-readiness", "self-update-restored-readiness/vibetable-readiness.json"),
+        ("restored-state", "self-update-restored-controls/host-lifecycle-state.json"),
+    ],
+)
+def test_self_update_rollback_reports_invalid_json_role_without_contents(
+    tmp_path: Path, role: str, relative_path: str | None
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={"ready": False, "error": "fixture failure"},
+    )
+    evidence_path = fixture.receipt_path if relative_path is None else tmp_path / relative_path
+    evidence_path.write_text("{private-test-payload", encoding="utf-8")
+    with pytest.raises(build_next.BuildError) as caught:
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+    message = str(caught.value)
+    assert role in message
+    assert "JSONDecodeError line=1 column=2" in message
+    assert "private-test-payload" not in message
+    assert str(tmp_path) not in message
+    assert fixture.token not in message
+
+
+def test_self_update_rollback_reports_os_error_without_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={"ready": False, "error": "fixture failure"},
+    )
+    original = Path.read_text
+
+    def read_evidence(path: Path, *args: object, **kwargs: object) -> str:
+        if path == fixture.receipt_path:
+            raise PermissionError(13, "private-test-error", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_evidence)
+    with pytest.raises(build_next.BuildError) as caught:
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+    message = str(caught.value)
+    assert "rollback-receipt" in message
+    assert "PermissionError errno=13" in message
+    assert str(tmp_path) not in message
+    assert "private-test-error" not in message
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("schemaVersion", 2.0, "schemaVersion"),
+        ("state", "restoredLaunchPending", "state"),
+        ("token", "private-token-not-for-logs", "token"),
+        ("targetRoot", "private-path-not-for-logs", "targetRoot"),
+        ("workerProcessId", 0, "processIds"),
+        ("createdAtUtc", "2026-08-28T03:59:59+00:00", "timestampOrder"),
+        ("ownedEntryLedger", [], "ownedEntryLedger"),
+    ],
+)
+def test_rollback_receipt_rejection_reports_only_scenario_and_check(
+    tmp_path: Path, field: str, value: object, reason: str
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path,
+        failure_code="workspaceHealthProbeFailed",
+        health_failure_readiness={"ready": False, "error": "expected health failure"},
+    )
+    fixture.receipt[field] = value
+    fixture.receipt_path.write_text(json.dumps(fixture.receipt), encoding="utf-8")
+    with pytest.raises(build_next.BuildError) as captured:
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+    assert str(captured.value) == (
+        f"desktop self-update smoke rollback receipt identity is invalid: health-failure/{reason}"
+    )

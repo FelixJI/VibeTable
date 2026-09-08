@@ -1,0 +1,690 @@
+{
+  "formatVersion": 1,
+  "method": "history.read",
+  "page": {
+    "collection": "订单",
+    "itemId": "row_1",
+    "changeSets": [
+      {
+        "rootRevisionId": "revision_1",
+        "changeSetId": "change_1",
+        "activityId": null,
+        "action": "update",
+        "timestamp": "2026-08-10T12:34:56Z",
+        "actor": {
+          "userId": "user_1",
+          "displayName": "用户一"
+        },
+        "scalarChanges": [
+          {
+            "field": "金额",
+            "before": null,
+            "after": 12.5
+          }
+        ],
+        "relationChanges": [],
+        "itemId": "row_1",
+        "recordLabel": "订单 🧪",
+        "revisionIds": [
+          "revision_1"
+        ],
+        "affectedRecords": 1,
+        "recordChanges": [
+          {
+            "revisionId": "revision_1",
+            "itemId": "row_1",
+            "recordLabel": null,
+            "action": "update",
+            "scalarChanges": [
+              {
+                "field": "金额",
+                "before": null,
+                "after": 12.5
+              }
+            ],
+            "relationChanges": []
+          }
+        ]
+      }
+    ],
+    "total": 1,
+    "capabilityHash": "fixture-capability",
+    "schemaRevision": "schema_7",
+    "scope": "row",
+    "field": null,
+    "hasMore": false,
+    "archivedDefaultRevisionIds": {
+      "row_1": "revision_0"
+    }
+  },
+  "cases": [
+    {
+      "name": "row",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "changeSets": [
+            {
+              "rootRevisionId": "revision_1",
+              "changeSetId": "change_1",
+              "activityId": null,
+              "action": "update",
+              "timestamp": "2026-08-10T12:34:56Z",
+              "actor": {
+                "userId": "user_1",
+                "displayName": "用户一"
+              },
+              "scalarChanges": [
+                {
+                  "field": "金额",
+                  "before": null,
+                  "after": 12.5
+                }
+              ],
+              "relationChanges": [],
+              "itemId": "row_1",
+              "recordLabel": "订单 🧪",
+              "revisionIds": [
+                "revision_1"
+              ],
+              "affectedRecords": 1,
+              "recordChanges": [
+                {
+                  "revisionId": "revision_1",
+                  "itemId": "row_1",
+                  "recordLabel": null,
+                  "action": "update",
+                  "scalarChanges": [
+                    {
+                      "field": "金额",
+                      "before": null,
+                      "after": 12.5
+                    }
+                  ],
+                  "relationChanges": []
+                }
+              ]
+            }
+          ],
+          "total": 1,
+          "capabilityHash": "fixture-capability",
+          "schemaRevision": "schema_7",
+          "scope": "row",
+          "field": null,
+          "hasMore": false,
+          "archivedDefaultRevisionIds": {
+            "row_1": "revision_0"
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/history/change-sets",
+          "query": {
+            "collection": [
+              "订单"
+            ],
+            "limit": [
+              "20"
+            ],
+            "offset": [
+              "0"
+            ],
+            "scope": [
+              "row"
+            ],
+            "itemId": [
+              "row_1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unicode-filters",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[\"update\",\"restore\"],\"field\":\"金额\",\"search\":\"订单 <b>& café café 🧪 \",\"actorId\":\"用户一\",\"recordId\":\"row_2\",\"dateFrom\":\"2026-08-01T00:00:00Z\",\"dateTo\":\"2026-08-31T23:59:59Z\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "changeSets": [
+            {
+              "rootRevisionId": "revision_1",
+              "changeSetId": "change_1",
+              "activityId": null,
+              "action": "update",
+              "timestamp": "2026-08-10T12:34:56Z",
+              "actor": {
+                "userId": "user_1",
+                "displayName": "用户一"
+              },
+              "scalarChanges": [
+                {
+                  "field": "金额",
+                  "before": null,
+                  "after": 12.5
+                }
+              ],
+              "relationChanges": [],
+              "itemId": "row_1",
+              "recordLabel": "订单 🧪",
+              "revisionIds": [
+                "revision_1"
+              ],
+              "affectedRecords": 1,
+              "recordChanges": [
+                {
+                  "revisionId": "revision_1",
+                  "itemId": "row_1",
+                  "recordLabel": null,
+                  "action": "update",
+                  "scalarChanges": [
+                    {
+                      "field": "金额",
+                      "before": null,
+                      "after": 12.5
+                    }
+                  ],
+                  "relationChanges": []
+                }
+              ]
+            }
+          ],
+          "total": 1,
+          "capabilityHash": "fixture-capability",
+          "schemaRevision": "schema_7",
+          "scope": "row",
+          "field": null,
+          "hasMore": false,
+          "archivedDefaultRevisionIds": {
+            "row_1": "revision_0"
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/history/change-sets",
+          "query": {
+            "collection": [
+              "订单"
+            ],
+            "limit": [
+              "20"
+            ],
+            "offset": [
+              "0"
+            ],
+            "scope": [
+              "row"
+            ],
+            "itemId": [
+              "row_1"
+            ],
+            "field": [
+              "金额"
+            ],
+            "search": [
+              "订单 <b>& café café 🧪 "
+            ],
+            "actorId": [
+              "用户一"
+            ],
+            "dateFrom": [
+              "2026-08-01T00:00:00Z"
+            ],
+            "dateTo": [
+              "2026-08-31T23:59:59Z"
+            ],
+            "recordId": [
+              "row_2"
+            ],
+            "action": [
+              "update",
+              "restore"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty-scope-fallback",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"\",\"actions\":[]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "changeSets": [
+            {
+              "rootRevisionId": "revision_1",
+              "changeSetId": "change_1",
+              "activityId": null,
+              "action": "update",
+              "timestamp": "2026-08-10T12:34:56Z",
+              "actor": {
+                "userId": "user_1",
+                "displayName": "用户一"
+              },
+              "scalarChanges": [
+                {
+                  "field": "金额",
+                  "before": null,
+                  "after": 12.5
+                }
+              ],
+              "relationChanges": [],
+              "itemId": "row_1",
+              "recordLabel": "订单 🧪",
+              "revisionIds": [
+                "revision_1"
+              ],
+              "affectedRecords": 1,
+              "recordChanges": [
+                {
+                  "revisionId": "revision_1",
+                  "itemId": "row_1",
+                  "recordLabel": null,
+                  "action": "update",
+                  "scalarChanges": [
+                    {
+                      "field": "金额",
+                      "before": null,
+                      "after": 12.5
+                    }
+                  ],
+                  "relationChanges": []
+                }
+              ]
+            }
+          ],
+          "total": 1,
+          "capabilityHash": "fixture-capability",
+          "schemaRevision": "schema_7",
+          "scope": "row",
+          "field": null,
+          "hasMore": false,
+          "archivedDefaultRevisionIds": {
+            "row_1": "revision_0"
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/history/change-sets",
+          "query": {
+            "collection": [
+              "订单"
+            ],
+            "limit": [
+              "20"
+            ],
+            "offset": [
+              "0"
+            ],
+            "scope": [
+              "row"
+            ],
+            "itemId": [
+              "row_1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "optional-null",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":null,\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[],\"field\":null,\"search\":null,\"actorId\":null,\"dateFrom\":null,\"dateTo\":null,\"recordId\":null}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "changeSets": [
+            {
+              "rootRevisionId": "revision_1",
+              "changeSetId": "change_1",
+              "activityId": null,
+              "action": "update",
+              "timestamp": "2026-08-10T12:34:56Z",
+              "actor": {
+                "userId": "user_1",
+                "displayName": "用户一"
+              },
+              "scalarChanges": [
+                {
+                  "field": "金额",
+                  "before": null,
+                  "after": 12.5
+                }
+              ],
+              "relationChanges": [],
+              "itemId": "row_1",
+              "recordLabel": "订单 🧪",
+              "revisionIds": [
+                "revision_1"
+              ],
+              "affectedRecords": 1,
+              "recordChanges": [
+                {
+                  "revisionId": "revision_1",
+                  "itemId": "row_1",
+                  "recordLabel": null,
+                  "action": "update",
+                  "scalarChanges": [
+                    {
+                      "field": "金额",
+                      "before": null,
+                      "after": 12.5
+                    }
+                  ],
+                  "relationChanges": []
+                }
+              ]
+            }
+          ],
+          "total": 1,
+          "capabilityHash": "fixture-capability",
+          "schemaRevision": "schema_7",
+          "scope": "row",
+          "field": null,
+          "hasMore": false,
+          "archivedDefaultRevisionIds": {
+            "row_1": "revision_0"
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/history/change-sets",
+          "query": {
+            "collection": [
+              "订单"
+            ],
+            "limit": [
+              "20"
+            ],
+            "offset": [
+              "0"
+            ],
+            "scope": [
+              "row"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "missing-actions",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "unknown-field",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[],\"extra\":\"unrecognized\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "nested-credential",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[{\"sessionSecret\":\"fixture-only\"}]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "fractional-limit",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":1.5,\"offset\":0,\"scope\":\"row\",\"actions\":[]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "boolean-limit",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":true,\"offset\":0,\"scope\":\"row\",\"actions\":[]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "string-limit",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":\"20\",\"offset\":0,\"scope\":\"row\",\"actions\":[]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "null-scope",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":null,\"actions\":[]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "null-actions",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":null}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "empty-action",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[\"\"]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "empty-optional",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[],\"field\":\"\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "empty-collection",
+      "paramsJson": "{\"collection\":\"\",\"itemId\":\"row_1\",\"limit\":20,\"offset\":0,\"scope\":\"row\",\"actions\":[]}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "non-finite-exponent",
+      "paramsJson": "{\"collection\": \"\\u8ba2\\u5355\", \"itemId\": \"row_1\", \"limit\": 1e309, \"offset\": 0, \"scope\": \"row\", \"actions\": []}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.table_not_found",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"limit\": 20, \"offset\": 0, \"scope\": \"row\", \"actions\": []}",
+      "sidecarStatus": 404,
+      "sidecarError": {
+        "code": "history.table_not_found",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "history.table_not_found",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/history/change-sets",
+          "query": {
+            "collection": [
+              "订单"
+            ],
+            "limit": [
+              "20"
+            ],
+            "offset": [
+              "0"
+            ],
+            "scope": [
+              "row"
+            ],
+            "itemId": [
+              "row_1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.storage_failed",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"limit\": 20, \"offset\": 0, \"scope\": \"row\", \"actions\": []}",
+      "sidecarStatus": 500,
+      "sidecarError": {
+        "code": "history.storage_failed",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": true
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "history.storage_failed",
+            "path": null,
+            "details": {},
+            "retryable": true
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/history/change-sets",
+          "query": {
+            "collection": [
+              "订单"
+            ],
+            "limit": [
+              "20"
+            ],
+            "offset": [
+              "0"
+            ],
+            "scope": [
+              "row"
+            ],
+            "itemId": [
+              "row_1"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "producer": {
+    "commit": "0ae2a75a2d85d764520a0fa1574bc4e4df7417c2",
+    "route": "pythonBff",
+    "python": "3.13.12"
+  }
+}

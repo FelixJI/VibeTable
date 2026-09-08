@@ -31,7 +31,6 @@ public sealed class WorkspacePathGrantStore
     private readonly TimeProvider _timeProvider;
     private readonly Dictionary<string, Grant> _grants =
         new(StringComparer.Ordinal);
-    private string? _recentSnapshotImport;
 
     public WorkspacePathGrantStore(
         IWorkspacePathPicker picker,
@@ -81,7 +80,7 @@ public sealed class WorkspacePathGrantStore
             method,
             operationId,
             "snapshot-import",
-            PickSnapshotImport);
+            _picker.PickSnapshotImportSource);
         Replace(
             root,
             "pathGrant",
@@ -200,26 +199,6 @@ public sealed class WorkspacePathGrantStore
                     _timeProvider.GetUtcNow().AddMinutes(5)));
         }
         root[propertyName] = grantId;
-    }
-
-    private string? PickSnapshotImport()
-    {
-        lock (_gate)
-        {
-            if (_recentSnapshotImport is not null)
-            {
-                string selected = _recentSnapshotImport;
-                _recentSnapshotImport = null;
-                return selected;
-            }
-        }
-        string? path = _picker.PickSnapshotImportSource();
-        if (!string.IsNullOrWhiteSpace(path))
-        {
-            lock (_gate)
-                _recentSnapshotImport = Path.GetFullPath(path);
-        }
-        return path;
     }
 
     private void PurgeExpired()

@@ -21,6 +21,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
@@ -324,9 +325,23 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
+		productrpc.ReconcileRegistration(schemaapi.New(app)),
+		lookupListRegistration(relation.New(app, nil, nil)),
+		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		schemaDescribeRegistration(app, relation.New(app, nil, nil)),
 		schemaGetTableRegistration(app),
 		schemaListRegistration(schemaapi.New(app)),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
+		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
+		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(app, manager),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)

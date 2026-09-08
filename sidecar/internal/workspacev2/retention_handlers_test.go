@@ -744,16 +744,15 @@ func TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance(
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshotRoot := record.ObjectMap["file-state-root"]
-	if !containsRetentionObjectID(
-		inventory.Nodes[snapshotRoot].Children,
-		historyOnly,
-	) {
-		t.Fatalf(
-			"snapshot retention graph omitted %s: %#v",
-			historyOnly,
-			inventory.Nodes[snapshotRoot],
-		)
+	var snapshotRoots []objectrepo.ObjectID
+	for _, entry := range inventory.Snapshots {
+		if entry.SnapshotID == record.SnapshotID {
+			snapshotRoots = entry.Roots
+			break
+		}
+	}
+	if !containsRetentionObjectID(snapshotRoots, historyOnly) {
+		t.Fatalf("snapshot retention roots omitted %s: %#v", historyOnly, snapshotRoots)
 	}
 	for _, liveRoot := range []objectrepo.ObjectID{
 		third.Revision.ObjectID,

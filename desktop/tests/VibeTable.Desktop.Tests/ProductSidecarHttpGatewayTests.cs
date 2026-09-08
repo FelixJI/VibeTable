@@ -129,6 +129,57 @@ public sealed class ProductSidecarHttpGatewayTests
     }
 
     [TestMethod]
+    [DataRow('a', 1)]
+    [DataRow('é', 2)]
+    public async Task LookupControllerForwardsExactParameterBudgetThroughHttp(char character, int utf8Bytes)
+    {
+        int available = 1024 * 1024 - "{\"collection\":\"\"}".Length;
+        string collection = new(character, available / utf8Bytes);
+        collection += new string('a', available % utf8Bytes);
+        JsonElement parameters = JsonSerializer.SerializeToElement(new { collection });
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = "workspace", workspaceId = WorkspaceId, sessionEpoch = 7,
+            operationId = ClaimId, sequence = 0,
+        });
+        int posts = 0;
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+                return Json(Capabilities(
+                    rpcMethods: "[\"lookup.list\"]",
+                    registrations: "[{\"method\":\"lookup.list\",\"scope\":\"workspace\"}]"));
+            posts++;
+            Assert.AreEqual(HttpMethod.Post, request.Method);
+            Assert.AreEqual("/api/vibetable/v2/product/rpc", request.RequestUri!.AbsolutePath);
+            using JsonDocument sent = JsonDocument.Parse(request.Content!.ReadAsStream());
+            Assert.AreEqual("lookup.list", sent.RootElement.GetProperty("method").GetString());
+            Assert.IsTrue(JsonElement.DeepEquals(parameters, sent.RootElement.GetProperty("params")));
+            Assert.IsTrue(JsonElement.DeepEquals(wire, sent.RootElement.GetProperty("wire")));
+            return Json(SuccessResponse(
+                id: "lookup-budget", wire: wire.GetRawText(),
+                result: "{\"collection\":\"tbl_records\",\"definitions\":[],\"lookupRevision\":\"rev\"}"));
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new("lookup.list", "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        var pythonTransport = new CountingQueryTransport();
+        await using var pythonClient = new JsonRpcClient(pythonTransport);
+        using var pythonGateway = new JsonRpcProductDataGateway(pythonClient);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(pythonGateway);
+        controller.SetProductSidecarForwarder(gateway);
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "lookup.list", "lookup-budget", parameters, string.Empty, Wire: wire));
+
+        Assert.AreEqual(1, posts);
+        Assert.AreEqual(0, pythonTransport.WriteCount);
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("lookup.list", reply.Type);
+        Assert.AreEqual("lookup-budget", reply.RequestId);
+    }
+
+    [TestMethod]
     public async Task ForwardSendsOneClosedRequestAndReturnsClonedSuccess()
     {
         const string wireJson =
@@ -259,24 +310,84 @@ public sealed class ProductSidecarHttpGatewayTests
     }
 
     [TestMethod]
-    public async Task RequestOverOneMiBIsRejectedWithoutPost()
+    public async Task LegalHistoryParamsOverOneMiBReachTheProductPeer()
+    {
+        byte[]? body = null;
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/capabilities"))
+            {
+                return Json(Capabilities(
+                    rpcMethods: "[\"history.read\"]",
+                    registrations: "[{\"method\":\"history.read\",\"scope\":\"workspace\"}]"));
+            }
+            body = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            return Json(SuccessResponse());
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new("history.read", "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        using JsonDocument empty = JsonDocument.Parse("{}");
+        using JsonDocument parameters = JsonDocument.Parse(
+            JsonSerializer.Serialize(new
+            {
+                collection = "orders", itemId = "row-1", limit = 20, offset = 0, scope = "row",
+                search = new string('x', 1024 * 1024 - 128), actions = Array.Empty<string>(),
+            }));
+
+        await gateway.ForwardAsync(
+            "request-1", "history.read", empty.RootElement,
+            parameters.RootElement, CancellationToken.None);
+
+        Assert.IsNotNull(body);
+        Assert.IsGreaterThan(1024 * 1024, body.Length);
+        Assert.AreEqual(2, handler.SendCount);
+    }
+
+    [TestMethod]
+    public async Task RequestOverFourMiBIsRejectedWithoutPost()
     {
         var handler = ProductHandler(_ =>
             throw new AssertFailedException("Oversize request was sent."));
         using var gateway = await ReadyGatewayAsync(handler);
         using JsonDocument empty = JsonDocument.Parse("{}");
         using JsonDocument parameters = JsonDocument.Parse(
-            JsonSerializer.Serialize(new { value = new string('x', 1024 * 1024) }));
+            JsonSerializer.Serialize(new { value = new string('x', 4 * 1024 * 1024) }));
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.ForwardAsync(
-                "request-1",
-                "query.page",
-                empty.RootElement,
-                parameters.RootElement,
-                CancellationToken.None));
+                "request-1", "query.page", empty.RootElement,
+                parameters.RootElement, CancellationToken.None));
 
         Assert.AreEqual(1, handler.SendCount);
+    }
+
+    [TestMethod]
+    [DataRow('x', 1)]
+    [DataRow('é', 2)]
+    public async Task OneMiBSemanticParamsLeaveRoomForEnvelopeAndEscaping(char character, int bytesPerCharacter)
+    {
+        byte[]? body = null;
+        var handler = ProductHandler(request =>
+        {
+            body = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            return Json(SuccessResponse());
+        });
+        using var gateway = await ReadyGatewayAsync(handler);
+        using JsonDocument empty = JsonDocument.Parse("{}");
+        int available = 1024 * 1024 - "{\"collection\":\"\"}".Length;
+        string collection = new string(character, available / bytesPerCharacter)
+            + new string('x', available % bytesPerCharacter);
+        JsonElement parameters = JsonSerializer.SerializeToElement(new { collection });
+
+        await gateway.ForwardAsync("request-1", "query.page", empty.RootElement,
+            parameters, CancellationToken.None);
+
+        Assert.IsNotNull(body);
+        Assert.IsGreaterThan(1024 * 1024, body.Length);
+        Assert.IsLessThanOrEqualTo(4 * 1024 * 1024, body.Length);
+        using JsonDocument envelope = JsonDocument.Parse(body);
+        Assert.AreEqual(collection, envelope.RootElement.GetProperty("params").GetProperty("collection").GetString());
+        Assert.AreEqual(2, handler.SendCount);
     }
 
     [TestMethod]

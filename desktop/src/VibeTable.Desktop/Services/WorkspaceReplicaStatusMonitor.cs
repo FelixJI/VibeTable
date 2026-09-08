@@ -240,6 +240,11 @@ public sealed class WorkspaceReplicaStatusMonitor : IAsyncDisposable
             {
                 return;
             }
+            catch (OperationCanceledException)
+            {
+                // An individual request timeout does not retire this session.
+                // Keep the existing low cadence before the next observation.
+            }
             catch (Exception exception) when (
                 exception is IOException
                     or HttpRequestException

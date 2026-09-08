@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,11 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
+	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
@@ -25,6 +29,17 @@ import (
 )
 
 const schemaListWire = `{"scope":"workspace","workspaceId":"11111111-1111-4111-8111-111111111111","sessionEpoch":7,"operationId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","sequence":1}`
+
+type unrelatedHistoryReadMustNotRun struct{ t *testing.T }
+
+func (reader unrelatedHistoryReadMustNotRun) ReadBusinessHistory(
+	context.Context,
+	audit.ReadParams,
+) (audit.Page, error) {
+	reader.t.Helper()
+	reader.t.Fatal("unrelated Product fixture unexpectedly invoked history.read")
+	return audit.Page{}, errors.New("unexpected history.read invocation")
+}
 
 func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
 	pb := schemaProductStore(t)
@@ -440,6 +455,29 @@ func TestSchemaListProductHTTPPreservesPublicStorageErrorAndCancellation(t *test
 	}
 }
 
+func TestSchemaProductStoreCleanupTerminatesBeforeReset(t *testing.T) {
+	var pb *pocketbase.PocketBase
+	terminated := false
+	bootstrappedAtTermination := false
+	t.Run("fixture", func(t *testing.T) {
+		pb = schemaProductStore(t)
+		pb.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
+			terminated = true
+			bootstrappedAtTermination = event.App.IsBootstrapped()
+			return event.Next()
+		})
+	})
+	if !terminated {
+		t.Error("fixture cleanup did not invoke OnTerminate")
+	}
+	if !bootstrappedAtTermination {
+		t.Error("OnTerminate must run before bootstrap state is reset")
+	}
+	if pb == nil || pb.IsBootstrapped() {
+		t.Error("fixture cleanup did not reset bootstrap state")
+	}
+}
+
 func schemaProductStore(t *testing.T) *pocketbase.PocketBase {
 	t.Helper()
 	pb := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir(), HideStartBanner: true})
@@ -448,7 +486,10 @@ func schemaProductStore(t *testing.T) *pocketbase.PocketBase {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := pb.ResetBootstrapState(); err != nil {
+		event := &core.TerminateEvent{App: pb}
+		if err := pb.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
+			return event.App.ResetBootstrapState()
+		}); err != nil {
 			t.Error(err)
 		}
 	})
@@ -471,24 +512,30 @@ func createSchemaProductField(
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog := fieldchange.NewCatalog(pb)
-	store := fieldchange.NewPocketBasePlanStore(pb)
-	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
-	executor := fieldchange.NewExecutor(pb, store)
-	revisions, err := catalog.Revisions(context.Background(), tableID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
-		Action: v2.ActionCreate, TableID: tableID, ExpectedSchemaRev: revisions.Schema,
+	return applySchemaProductField(t, pb, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: tableID,
 		Draft: &v2.FieldDraft{
 			DisplayName: displayName, LogicalType: logicalType,
 			Value: recommended.Value, Constraints: recommended.Constraints,
 			Storage: recommended.Storage, Display: recommended.Display,
 			File: recommended.File, JSON: recommended.JSON,
 		},
-		Actor: v2.Actor{ID: "local-user", Kind: "user"},
-	})
+	}, operationID)
+}
+
+func applySchemaProductField(t *testing.T, pb *pocketbase.PocketBase, intent v2.FieldChangeIntent, operationID string) v2.ApplyReceipt {
+	t.Helper()
+	catalog := fieldchange.NewCatalog(pb)
+	store := fieldchange.NewPocketBasePlanStore(pb)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(pb, store)
+	revisions, err := catalog.Revisions(context.Background(), intent.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.ExpectedSchemaRev = revisions.Schema
+	intent.Actor = v2.Actor{ID: "local-user", Kind: "user"}
+	plan, err := planner.Plan(context.Background(), intent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,9 +665,23 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
+		productrpc.ReconcileRegistration(catalog),
+		lookupListRegistration(relation.New(pb, nil, nil)),
+		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
+		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
+		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog),
+		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
+		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
+		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -630,10 +691,33 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	})
 	registerFieldRoutes(r, pb, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
+	registerRelationRoutes(r, relation.New(pb, nil, nil))
+	registerRealtimeRoutes(r, nil, catalog)
 	registerProductRoutes(r, dispatcher)
 	mux, err := r.BuildMux()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return mux
+}
+
+type unrelatedQueryReadRowsMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedQueryReadRowsMustNotRun) ReadRows(context.Context, string, []string) ([]map[string]any, error) {
+	probe.t.Fatal("unrelated row read must not run")
+	return nil, nil
+}
+
+type unrelatedSelectionMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedSelectionMustNotRun) OpenSelectionProjection(context.Context, string, query.TableQuery) (query.SelectionProjection, error) {
+	probe.t.Fatal("unrelated query.selectionOpen must not execute")
+	return query.SelectionProjection{}, nil
+}
+
+type unrelatedViewMustNotRun struct{ t *testing.T }
+
+func (probe unrelatedViewMustNotRun) ExecuteViewQuery(context.Context, string, query.ViewQuery) (query.ViewResult, error) {
+	probe.t.Fatal("unrelated view query must not run")
+	return query.ViewResult{}, nil
 }

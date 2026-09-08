@@ -15,7 +15,8 @@ export function beginRawBridgeRequestInPage({
   }
   const scope = wirePort.reserve(operationId);
   window.__vibetableE2ERawRequests ??= {};
-  const entry = { message: null, listener: null, released: false };
+  const entry = { message: null, listener: null, released: false, elapsedMs: null };
+  let startedAt;
   const listener = (event) => {
     if (entry.released) return;
     let message = event.data;
@@ -24,6 +25,7 @@ export function beginRawBridgeRequestInPage({
     }
     if (!message || message.requestId !== requestId) return;
     if (entry.message !== null) return;
+    entry.elapsedMs = performance.now() - startedAt;
     entry.message = message;
     window.chrome.webview.removeEventListener("message", listener);
     entry.listener = null;
@@ -32,6 +34,7 @@ export function beginRawBridgeRequestInPage({
   window.__vibetableE2ERawRequests[requestId] = entry;
   try {
     window.chrome.webview.addEventListener("message", listener);
+    startedAt = performance.now();
     window.chrome.webview.postMessage({
       type: requestType,
       requestId,
@@ -55,6 +58,10 @@ export function beginRawBridgeRequestInPage({
 
 export function readRawBridgeRequestTerminalInPage({ requestId }) {
   return window.__vibetableE2ERawRequests?.[requestId]?.message ?? null;
+}
+
+export function readRawBridgeRequestElapsedInPage({ requestId }) {
+  return window.__vibetableE2ERawRequests?.[requestId]?.elapsedMs ?? null;
 }
 
 export function releaseRawBridgeRequestInPage({ requestId }) {

@@ -11,7 +11,8 @@ namespace VibeTable.Desktop.Services;
 
 public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
 {
-    private const int MaxRequestBytes = 1024 * 1024, MaxResponseBytes = 4 * 1024 * 1024;
+    // Budget the encoded envelope separately from decoded Product parameters.
+    private const int MaxRequestBytes = 4 * 1024 * 1024, MaxResponseBytes = 4 * 1024 * 1024;
     private static readonly Regex PublicErrorCode = new(
         "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+\\z", RegexOptions.CultureInvariant);
     private readonly object _stateGate = new();

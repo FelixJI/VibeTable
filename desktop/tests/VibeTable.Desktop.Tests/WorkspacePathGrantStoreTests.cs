@@ -82,6 +82,48 @@ public sealed class WorkspacePathGrantStoreTests
     }
 
     [TestMethod]
+    public void SnapshotInspectionSelectsANewSourceEachTime()
+    {
+        var picker = new FakePicker { SnapshotImport = "first.vtsnapshot" };
+        var grants = new WorkspacePathGrantStore(picker);
+        using JsonDocument source = JsonDocument.Parse(
+            """{"pathGrant":"host-picker://snapshot-import"}""");
+        foreach (string selected in new[] { "first.vtsnapshot", "second.vtsnapshot" })
+        {
+            picker.SnapshotImport = selected;
+            Guid operationId = Guid.NewGuid();
+            JsonElement materialized = grants.MaterializeSentinels(
+                "snapshot.inspectPackage", operationId, source.RootElement);
+            WorkspaceSidecarPathGrant? binding = grants.ConsumeForSidecar(
+                materialized, "snapshot.inspectPackage", operationId);
+
+            Assert.IsNotNull(binding);
+            Assert.AreEqual(Path.GetFullPath(selected), binding.Path);
+        }
+    }
+
+    [TestMethod]
+    public void CancellingANewSnapshotInspectionDoesNotReuseThePreviousSource()
+    {
+        var picker = new FakePicker { SnapshotImport = "first.vtsnapshot" };
+        var grants = new WorkspacePathGrantStore(picker);
+        using JsonDocument source = JsonDocument.Parse(
+            """{"pathGrant":"host-picker://snapshot-import"}""");
+        Guid operationId = Guid.NewGuid();
+        JsonElement materialized = grants.MaterializeSentinels(
+            "snapshot.inspectPackage", operationId, source.RootElement);
+        Assert.IsNotNull(grants.ConsumeForSidecar(
+            materialized, "snapshot.inspectPackage", operationId));
+        picker.SnapshotImport = null;
+
+        WorkspacePathGrantException error = Assert.ThrowsExactly<WorkspacePathGrantException>(() =>
+            grants.MaterializeSentinels(
+                "snapshot.inspectPackage", Guid.NewGuid(), source.RootElement));
+
+        Assert.AreEqual("workspace.path_selection_cancelled", error.Code);
+    }
+
+    [TestMethod]
     public void SnapshotExtractGrantUsesDedicatedPurposeAndIsSingleUse()
     {
         string target = Path.Combine(Path.GetTempPath(), "季度规划.docx");
@@ -231,7 +273,7 @@ public sealed class WorkspacePathGrantStoreTests
     {
         public string? WorkspaceRoot { get; init; }
         public string? SnapshotExport { get; init; }
-        public string? SnapshotImport { get; init; }
+        public string? SnapshotImport { get; set; }
         public string? FileUpgrade { get; init; }
         public string? PickWorkspaceRoot() => WorkspaceRoot;
         public string? PickSnapshotExportTarget() => SnapshotExport;

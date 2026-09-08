@@ -6,7 +6,7 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRpcRouteSelectorTests
 {
     [TestMethod]
-    public void GeneratedPolicyMovesFileAndSchemaReadsToGo()
+    public void GeneratedPolicySelectsCurrentOwners()
     {
         var selector = new ProductRpcRouteSelector(
             ProductRpcCapabilityManifest.Default);
@@ -20,14 +20,15 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "file.list" or "schema.getTable" or "schema.list"
+            Assert.AreEqual(method is "events.reconcile" or "file.list" or "history.read" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "schema.describe" or "schema.getTable" or "schema.list"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
                 route, method);
         }
         foreach (string method in RelationLookupRpcRegistry.RequestTypes)
         {
             Assert.IsTrue(selector.TrySelectRelation(method, out ProductRpcRoute route), method);
-            Assert.AreEqual(ProductRpcRoute.PythonBff, route, method);
+            Assert.AreEqual(method is "relation.searchTargets" or "relation.previewDelta" or "lookup.query" or "lookup.valuePage"
+                ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff, route, method);
         }
     }
 
@@ -86,12 +87,18 @@ public sealed class ProductRpcRouteSelectorTests
     }
 
     [TestMethod]
-    public void RelationPolicyCannotSelectGoSidecar()
+    [DataRow("lookup.valuePage")]
+    [DataRow("relation.searchTargets")]
+    [DataRow("relation.previewDelta")]
+    [DataRow("lookup.query")]
+    public void RelationPolicySelectsItsDeclaredTransportOwner(string method)
     {
         var selector = new ProductRpcRouteSelector(Policy(
-            Capability("relation.searchTargets", "goSidecar")));
+            Capability(method, "goSidecar")));
 
-        Assert.IsFalse(selector.TrySelectRelation("relation.searchTargets", out _));
+        Assert.IsTrue(selector.TrySelectRelation(method, out ProductRpcRoute route));
+        Assert.AreEqual(ProductRpcRoute.GoSidecar, route);
+        Assert.IsFalse(selector.TrySelectRelation("history.previewRestore", out _));
     }
 
     private static ProductRpcCapability Capability(string method, string owner)

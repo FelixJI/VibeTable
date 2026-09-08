@@ -36,8 +36,9 @@ import {
   waitForCapturedBridgeMessage,
 } from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
+import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
-import { classifyWorkspaceSearchObservation } from "./workspace_search_terminal.mjs";
+import { waitForWorkspaceSearchRebuildTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 import {
   collectBrowserSurfaceEvidence,
@@ -1140,7 +1141,115 @@ async function scenario02(page, recorder, _network, runtime) {
     { legacyWrite },
   );
   await acknowledgeExpectedBridgeFailure(page, legacyWrite);
+  await verifyQueryViewGroupingUI(page, recorder);
   return;
+}
+
+async function verifyQueryViewGroupingUI(page, recorder) {
+  const displayName = "E2E Query View Groups";
+  const grouped = await createSimpleTable(page, displayName, "Group");
+  const amount = await createV2Field(page, grouped.tableId, "Amount", "number");
+  const values = [["中文组", 0], ["中文组", 7], ["Cafe\u0301", 3]];
+  const seeded = await applyProductMutation(page, grouped.tableId, values.map(([group, value]) => ({
+    kind: "insert",
+    recordId: null,
+    values: { [grouped.field.physicalName]: group, [amount.physicalName]: value },
+  })), "e2e-query-view-groups");
+  if (seeded.payload?.status !== "applied") {
+    throw new Error(`query.view grouping seed was not committed: ${JSON.stringify(seeded)}`);
+  }
+  await selectTable(page, displayName);
+  await waitForVisibleRowCount(page, 3);
+  await page.evaluate((tableId) => {
+    const capture = { message: null };
+    const listener = (event) => {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      if (message?.type === "table.datasetReady" && message.payload?.table === tableId) {
+        capture.message = message;
+      }
+    };
+    capture.release = () => window.chrome.webview.removeEventListener("message", listener);
+    window.__vibetableE2EQueryViewGroups = capture;
+    window.chrome.webview.addEventListener("message", listener);
+  }, grouped.tableId);
+  let primaryError = null;
+  try {
+    await page.getByTestId("view-group-trigger").click();
+    const groupCard = page.locator(".control-card:visible")
+      .filter({ has: page.getByTestId("view-group-apply") });
+    await groupCard.getByRole("button", { name: "＋ 分组字段", exact: true }).click();
+    await selectVisibleNOption(page, "view-group-field-0", "Group");
+    await page.getByTestId("view-group-apply").click();
+    await page.getByTestId("view-group-results").waitFor({ state: "visible", timeout: 30_000 });
+    await page.getByTestId("toolbar-table-title").click();
+    await page.getByTestId("view-summary-trigger").click();
+    const summaryCard = page.locator(".control-card:visible")
+      .filter({ has: page.getByTestId("view-summary-apply") });
+    await summaryCard.getByRole("button", { name: "＋ 汇总字段", exact: true }).click();
+    const summarySelects = summaryCard.locator(".config-row--summary .n-base-selection");
+    for (const [index, label] of [[0, "Amount"], [1, "求和"]]) {
+      await summarySelects.nth(index).click();
+      const option = page.locator(".n-base-select-option:visible").filter({ hasText: label }).first();
+      await option.click();
+      await option.waitFor({ state: "hidden", timeout: 10_000 });
+    }
+    await page.getByTestId("view-summary-apply").click();
+    await page.getByTestId("toolbar-table-title").click();
+    await page.waitForFunction((tableId) => {
+      const payload = window.__vibetableE2EQueryViewGroups?.message?.payload;
+      if (payload?.table !== tableId || payload.groupRows?.length !== 2) return false;
+      const expected = new Map([["中文组", [2, 7]], ["Cafe\u0301", [1, 3]]]);
+      const groupsMatch = new Set(payload.groupRows.map((row) => row.key?.[0])).size === expected.size
+        && payload.groupRows.every((row) => {
+          const match = expected.get(row.key?.[0]);
+          return row.key?.length === 1 && match && row.count === match[0]
+            && row.summaries?.length === 1 && row.summaries[0] === match[1];
+        });
+      const entries = [...document.querySelectorAll('[data-testid="view-group-results"] > ol > li')];
+      return groupsMatch && entries.length === 2
+        && new Set(entries.map((entry) => entry.querySelector(".group-key")?.textContent?.trim())).size === 2
+        && entries.every((entry) => {
+          const label = entry.querySelector(".group-key")?.textContent?.trim();
+          const name = [...expected.keys()].find((key) => label === `Group: ${key}`);
+          if (!name) return false;
+          const [count, sum] = expected.get(name);
+          return entry.querySelector("b")?.textContent?.trim() === String(count)
+            && entry.querySelector(".group-summary")?.textContent?.trim() === `Amount 合计: ${sum}`;
+        });
+    }, grouped.tableId, { timeout: 30_000 });
+    const dataset = await page.evaluate(() => window.__vibetableE2EQueryViewGroups.message.payload);
+    recorder.check("query.view group controls render authoritative counts and sums including zero and Unicode",
+      dataset.rows?.length === 3 && dataset.groupRows?.length === 2 && dataset.hasMoreGroups === false
+        && dataset.rows.some((row) => row[grouped.field.physicalName] === "中文组"
+          && row[amount.physicalName] === 0),
+      { tableId: grouped.tableId, seededValues: values, groupRows: dataset.groupRows,
+        rendered: await page.getByTestId("view-group-results").innerText() });
+    recorder.check("group datasetReady retains the selection window schema and data revision",
+      dataset.querySnapshot?.table === grouped.tableId
+        && typeof dataset.revision?.schemaRevision === "string"
+        && dataset.revision.schemaRevision.length > 0
+        && Number.isInteger(dataset.revision?.dataRevision)
+        && dataset.querySnapshot.schemaRevision === dataset.revision.schemaRevision
+        && dataset.querySnapshot.dataRevision === dataset.revision.dataRevision,
+      { tableId: grouped.tableId, revision: dataset.revision, querySnapshot: dataset.querySnapshot });
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(() => {
+        window.__vibetableE2EQueryViewGroups?.release();
+        delete window.__vibetableE2EQueryViewGroups;
+      });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(primaryError, cleanupError, "query.view notification capture cleanup failed")) {
+        throw cleanupError;
+      }
+    }
+  }
 }
 
 async function rawBridgeRequest(
@@ -1419,9 +1528,12 @@ async function waitForQueryPage(page, payload, predicate, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let response = null;
   while (Date.now() < deadline) {
-    response = await rawBridgeRequest(page, "query.page", payload);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    response = await rawBridgeRequest(page, "query.page", payload, Math.min(20_000, remainingMs));
+    if (Date.now() >= deadline) break;
     if (response.type === "query.page" && predicate(response.payload)) return response;
-    await page.waitForTimeout(50);
+    await page.waitForTimeout(Math.min(50, Math.max(0, deadline - Date.now())));
   }
   throw new Error(`query.page did not reach the expected state: ${JSON.stringify(response)}`);
 }
@@ -1844,6 +1956,117 @@ async function scenario03(page, recorder) {
   return;
 }
 
+function controlOwnJsonReconcileInPage({ operation, tableId, field }) {
+  const key = "__vibetableE2EOwnJsonReconcile";
+  if (operation !== "start") return window[key]?.[operation]() ?? null;
+  const webview = window.chrome.webview;
+  const originalPostMessage = webview.postMessage;
+  const state = { heldRequestId: null, forwards: 0, released: null, error: null };
+  let held = null;
+  let deadline = null;
+  let rowKey = null;
+  let revision = null;
+  let schemaRevision = null;
+  let reconciled = false;
+  let refreshes = 0;
+  let datasetReady = false;
+  let schemaReady = false;
+  const parse = (value) => {
+    if (typeof value !== "string") return value;
+    try { return JSON.parse(value); } catch { return null; }
+  };
+  const forward = (reason) => {
+    if (!held) return;
+    const pending = held;
+    held = null;
+    clearTimeout(deadline);
+    state.released = reason;
+    state.forwards += 1;
+    return originalPostMessage.apply(pending.receiver, pending.args);
+  };
+  function postMessage(...args) {
+    const message = parse(args[0]);
+    if (rowKey === null && message?.type === "table.updateCellRequested"
+      && message.payload?.table === tableId && message.payload?.column === field) {
+      rowKey = message.payload.rowKey;
+    }
+    if (rowKey !== null && message?.type === "events.reconcile"
+      && message.payload?.tableId === tableId) {
+      if (held) {
+        state.error ??= "controlled reconcile received a competing request";
+      } else if (state.heldRequestId === null) {
+        state.heldRequestId = message.requestId;
+        held = { receiver: this, args };
+        deadline = setTimeout(() => {
+          state.error ??= "controlled reconcile hold exceeded 8 seconds";
+          forward("deadline");
+        }, 8_000);
+        return;
+      } else {
+        state.error ??= "controlled reconcile received a competing request";
+      }
+    }
+    if (rowKey !== null && message?.type === "table.selected" && message.payload?.table === tableId) {
+      refreshes += 1;
+      if (state.released !== "after-selection" || refreshes !== 1) {
+        state.error ??= "controlled reconcile observed an unexpected table refresh";
+      }
+    }
+    return originalPostMessage.apply(this, args);
+  }
+  const receive = (event) => {
+    const message = parse(event.data);
+    const payload = message?.payload;
+    if (message?.type === "table.editCommitted" && payload?.rowKey === rowKey
+      && payload.column === field && payload.storedValue?.nested?.value === 7) {
+      revision = payload.revision;
+    }
+    if (message?.type === "events.reconcile" && message.requestId === state.heldRequestId) {
+      reconciled = payload?.action === "refresh-data";
+      if (!reconciled) state.error ??= "controlled reconcile did not return refresh-data";
+    }
+    if (state.released === "after-selection" && refreshes === 1 && payload?.table === tableId) {
+      if (message?.type === "table.datasetReady" && payload.revision?.dataRevision >= revision?.dataRevision
+        && payload.rows?.some((row) => row.rowKey === rowKey && row[field]?.nested?.value === 7)) {
+        datasetReady = true;
+        schemaRevision = payload.revision.schemaRevision;
+      }
+      if (message?.type === "table.editSchemaLoaded" && payload.schemaRevision === schemaRevision) {
+        schemaReady = true;
+      }
+    }
+  };
+  const ready = (afterRefresh) => {
+    if (state.error) throw new Error(state.error);
+    const cell = document.querySelector(
+      `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${field}"]`,
+    );
+    return Boolean(cell && revision && (afterRefresh
+      ? reconciled && refreshes === 1 && datasetReady && schemaReady
+      : held));
+  };
+  webview.postMessage = postMessage;
+  webview.addEventListener("message", receive);
+  window[key] = {
+    "selection-ready": () => ready(false),
+    "refresh-ready": () => ready(true),
+    release: () => {
+      if (!held || state.error) throw new Error(state.error ?? "controlled reconcile was not held");
+      forward("after-selection");
+    },
+    stop: () => {
+      try { forward("cleanup"); } finally {
+        clearTimeout(deadline);
+        webview.removeEventListener("message", receive);
+        if (webview.postMessage === postMessage) webview.postMessage = originalPostMessage;
+        else state.error ??= "controlled reconcile postMessage owner changed";
+        delete window[key];
+      }
+      return { ...state, reconciled, refreshes, datasetReady, schemaReady };
+    },
+  };
+}
+
 async function scenario04(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -1969,32 +2192,77 @@ async function scenario04(page, recorder, _network, runtime) {
     enabled: true,
   };
   await page.getByTestId("json-editor-input").fill(JSON.stringify(expectedEditorValue));
-  await page.getByTestId("json-editor-save").click();
-  await page.getByTestId("json-editor-modal").waitFor({ state: "hidden", timeout: 30_000 });
-  const editorQuery = await waitForQueryPage(page, {
-    tableId,
-    query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  }, (payload) => payload?.rows?.[0]?.[jsonField]?.nested?.value === 7);
-  const editorValue = editorQuery.payload?.rows?.[0]?.[jsonField];
-  recorder.check("structured JSON editor committed a typed object through the UI",
-    editorQuery.type === "query.page"
-      && canonicalJsonText(editorValue) === canonicalJsonText(expectedEditorValue),
-  {
-    editorValue,
-    expectedEditorValue,
-    normalizedEditorValue: canonicalJsonText(editorValue),
-  });
+  await page.evaluate(controlOwnJsonReconcileInPage, { operation: "start", tableId, field: jsonField });
+  try {
+    await page.getByTestId("json-editor-save").click();
+    await page.getByTestId("json-editor-modal").waitFor({ state: "hidden", timeout: 30_000 });
+    const editorQuery = await waitForQueryPage(page, {
+      tableId,
+      query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    }, (payload) => payload?.rows?.[0]?.[jsonField]?.nested?.value === 7);
+    const editorValue = editorQuery.payload?.rows?.[0]?.[jsonField];
+    recorder.check("structured JSON editor committed a typed object through the UI",
+      editorQuery.type === "query.page"
+        && canonicalJsonText(editorValue) === canonicalJsonText(expectedEditorValue),
+    {
+      editorValue,
+      expectedEditorValue,
+      normalizedEditorValue: canonicalJsonText(editorValue),
+    });
 
-  await page.context().grantPermissions(
-    ["clipboard-read", "clipboard-write"],
-    { origin: "https://app.vibetable.local" },
-  );
-  await page.evaluate(async (value) => navigator.clipboard.writeText(value),
-    '{"nested":{"value":8},"items":[4,5],"enabled":false}');
-  jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
-  await jsonCell.click();
-  await page.keyboard.press("Control+V");
-  await page.getByTestId("paste-panel").waitFor({ timeout: 30_000 });
+    await page.context().grantPermissions(
+      ["clipboard-read", "clipboard-write"],
+      { origin: "https://app.vibetable.local" },
+    );
+    await page.evaluate(async (value) => navigator.clipboard.writeText(value),
+      '{"nested":{"value":8},"items":[4,5],"enabled":false}');
+    await page.waitForFunction(
+      controlOwnJsonReconcileInPage,
+      { operation: "selection-ready" },
+      { timeout: 30_000 },
+    );
+    jsonCell = page.locator(`.tabulator-cell[tabulator-field="${jsonField}"]`).first();
+    await jsonCell.click();
+    const selectedBeforeRefresh = await jsonCell.evaluate((cell) => ({
+      range: cell.getAttribute("data-range"),
+      selected: cell.getAttribute("aria-selected"),
+    }));
+    recorder.check("JSON Payload range selection is active before its reconcile refresh",
+      selectedBeforeRefresh.range === "0" && selectedBeforeRefresh.selected === "true",
+      { selectedBeforeRefresh },
+    );
+    await page.evaluate(controlOwnJsonReconcileInPage, { operation: "release" });
+    await page.waitForFunction(
+      controlOwnJsonReconcileInPage,
+      { operation: "refresh-ready" },
+      { timeout: 30_000 },
+    );
+    const rangeSelection = await jsonCell.evaluate((cell) => ({
+      range: cell.getAttribute("data-range"),
+      selected: cell.getAttribute("aria-selected"),
+    }));
+    recorder.check("JSON Payload range selection survives its own reconcile refresh",
+      rangeSelection.range === "0" && rangeSelection.selected === "true",
+      { rangeSelection },
+    );
+    await page.keyboard.press("Control+V");
+    await page.getByTestId("paste-panel").waitFor({ timeout: 30_000 });
+  } finally {
+    const controlledReconcile = await page.evaluate(
+      controlOwnJsonReconcileInPage,
+      { operation: "stop" },
+    );
+    recorder.check("JSON reconcile control forwarded exactly one original request and restored the bridge",
+      controlledReconcile?.error === null
+        && controlledReconcile.forwards === 1
+        && controlledReconcile.released === "after-selection"
+        && controlledReconcile.reconciled
+        && controlledReconcile.refreshes === 1
+        && controlledReconcile.datasetReady
+        && controlledReconcile.schemaReady,
+      { controlledReconcile },
+    );
+  }
   const ack = page.getByTestId("paste-ack");
   if (await ack.isVisible().catch(() => false)) await ack.click();
   await page.getByTestId("paste-confirm").click();
@@ -2292,12 +2560,20 @@ async function scenario05(page, recorder, _network, runtime) {
 }
 
 async function scenario06(page, recorder) {
+  await runRelationScenario(page, recorder, false);
+}
+
+async function scenario27(page, recorder) {
+  await runRelationScenario(page, recorder, true);
+}
+
+async function runRelationScenario(page, recorder, searchTargets) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   const authors = await createSimpleTable(page, "E2E Authors V2", "Name");
   const articleTableId = await createEmptyTable(page, "E2E Articles V2");
   await closeFieldSettingsDrawer(page);
-  await createV2Field(page, articleTableId, "Title", "text");
+  const title = await createV2Field(page, articleTableId, "Title", "text");
   const relation = await createV2Field(
     page,
     articleTableId,
@@ -2336,7 +2612,275 @@ async function scenario06(page, recorder) {
       ),
     { cascade: cascade.planned },
   );
+  if (!searchTargets) return;
+  const unicodeLabel = "中文 Cafe\u0301 👩🏽‍💻";
+  const labels = Array.from({ length: 51 }, (_, index) => (
+    index === 0 ? unicodeLabel : `Search author ${String(index).padStart(2, "0")}`
+  ));
+  const targets = await applyProductMutation(page, authors.tableId, labels.map((label) => ({
+    kind: "insert", recordId: null, values: { [authors.field.physicalName]: label },
+  })), "relation-search-targets");
+  const source = await applyProductMutation(page, articleTableId, [{
+    kind: "insert", recordId: null, values: { [title.physicalName]: "Search candidates" },
+  }], "relation-search-source");
+  if (targets.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`relation search fixture did not commit: ${JSON.stringify({ targets, source })}`);
+  }
+  await selectTable(page, "E2E Articles V2");
+  await waitForVisibleRowCount(page, 1);
+  await page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell.vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`,
+  ).first().dblclick();
+  const panel = page.locator(".relation-editor:visible");
+  await panel.waitFor();
+  const candidates = panel.locator(".relation-editor__candidate-label");
+  const loadMore = panel.getByTestId("relation-load-more");
+  await loadMore.waitFor();
+  recorder.check("relation search opens the default 50 of 51 candidates",
+    await candidates.count() === 50 && /50 \/ 51/u.test(await loadMore.innerText()));
+  await loadMore.click();
+  await page.waitForFunction(() => (
+    document.querySelectorAll(".relation-editor .relation-editor__candidate-label").length === 51
+  ));
+  await loadMore.waitFor({ state: "hidden" });
+  const allLabels = await candidates.allTextContents();
+  recorder.check("relation search next page preserves all targets without duplicates",
+    new Set(allLabels).size === 51
+      && JSON.stringify([...allLabels].sort()) === JSON.stringify([...labels].sort()),
+    { allLabels });
+  const search = panel.getByRole("textbox", { name: /^(搜索目标记录|Search target records)$/u });
+  await search.fill("中文 Cafe\u0301");
+  await page.waitForFunction((expected) => {
+    const rows = document.querySelectorAll(".relation-editor .relation-editor__candidate-label");
+    return rows.length === 1 && rows[0].textContent === expected;
+  }, unicodeLabel);
+  recorder.check("relation search preserves the matching Unicode label",
+    await candidates.first().innerText() === unicodeLabel);
+  await search.fill("no-relation-target-unique-absent");
+  await panel.getByText(/^(没有匹配记录|No matching records)$/u).waitFor();
+  recorder.check("relation search empty result does not expose an error or another page",
+    await candidates.count() === 0 && !await loadMore.isVisible()
+      && await panel.locator(".relation-editor__error").count() === 0);
+  await search.fill("");
+  await loadMore.waitFor();
+  recorder.check("clearing relation search restores the default first page",
+    await candidates.count() === 50 && /50 \/ 51/u.test(await loadMore.innerText()));
+  await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
   return;
+}
+
+async function scenario28(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const authors = await createSimpleTable(page, "Preview Authors", "Name");
+  const articleTableId = await createEmptyTable(page, "Preview Articles");
+  await closeFieldSettingsDrawer(page);
+  const title = await createV2Field(page, articleTableId, "Title", "text");
+  const relation = await createV2Field(page, articleTableId, "Authors", "relation", (draft) => {
+    draft.relation.targetTableId = authors.tableId;
+    draft.relation.displayFieldId = authors.field.fieldId;
+    draft.relation.cardinality = "many";
+    return draft;
+  });
+  const targetId = "previewtarget01";
+  const extraId = "previewtarget02";
+  const sourceId = "previewsource01";
+  const targets = await applyProductMutation(page, authors.tableId, [
+    { kind: "insert", recordId: targetId, values: { [authors.field.physicalName]: "已有作者" } },
+    { kind: "insert", recordId: extraId, values: { [authors.field.physicalName]: "候选作者" } },
+  ], "preview-targets");
+  const source = await applyProductMutation(page, articleTableId, [{
+    kind: "insert", recordId: sourceId,
+    values: { [title.physicalName]: "Preview only", [relation.physicalName]: [targetId] },
+  }], "preview-source");
+  if (targets.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`relation preview fixture did not commit: ${JSON.stringify({ targets, source })}`);
+  }
+  const read = async (tableId) => {
+    const response = await rawBridgeRequest(page, "query.page", {
+      tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    });
+    if (response.type !== "query.page" || !response.payload?.snapshot) {
+      throw new Error(`preview authority read failed: ${JSON.stringify(response)}`);
+    }
+    return {
+      rows: response.payload.rows,
+      schemaRevision: response.payload.snapshot.schemaRevision,
+      dataRevision: response.payload.snapshot.dataRevision,
+    };
+  };
+  const beforeSource = await read(articleTableId);
+  const beforeTargets = await read(authors.tableId);
+  await selectTable(page, "Preview Articles");
+  await waitForVisibleRowCount(page, 1);
+  await page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell.vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`,
+  ).first().dblclick();
+  const panel = page.locator(".relation-editor:visible");
+  await panel.waitFor();
+  const selected = panel.locator(".relation-editor__token");
+  await selected.filter({ hasText: targetId }).waitFor();
+  recorder.check("many relation preview hydrates the authority's existing target",
+    await selected.count() === 1 && (await selected.first().innerText()).trim() === targetId);
+  await panel.locator(".relation-editor__candidate").filter({ hasText: "候选作者" }).click();
+  await panel.locator(".relation-editor__token").filter({ hasText: "候选作者" }).waitFor();
+  recorder.check("many relation editor holds a second selection as an uncommitted draft",
+    await selected.count() === 2 && await panel.locator(".relation-editor__error").count() === 0);
+  await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const afterSource = await read(articleTableId);
+  const afterTargets = await read(authors.tableId);
+  recorder.check("preview and cancelled draft preserve both authority tables and revisions",
+    JSON.stringify(afterSource) === JSON.stringify(beforeSource)
+      && JSON.stringify(afterTargets) === JSON.stringify(beforeTargets),
+    { beforeSource, afterSource, beforeTargets, afterTargets });
+}
+
+async function scenario29(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const targets = await createSimpleTable(page, "Paged Lookup Targets", "Name");
+  const tableId = await createEmptyTable(page, "Paged Lookup Sources");
+  await closeFieldSettingsDrawer(page);
+  const title = await createV2Field(page, tableId, "Title", "text");
+  const relation = await createV2Field(page, tableId, "Targets", "relation", (draft) => {
+    draft.relation.targetTableId = targets.tableId;
+    draft.relation.displayFieldId = targets.field.fieldId;
+    draft.relation.cardinality = "many";
+    return draft;
+  });
+  const lookup = await createV2Field(page, tableId, "Target names", "lookup", (draft) => {
+    draft.lookup = {
+      path: [{ relationFieldId: relation.fieldId }],
+      targetFieldId: targets.field.fieldId,
+    };
+    return draft;
+  });
+  const ids = Array.from({ length: 101 }, (_, index) => `lookuptarget${String(index).padStart(3, "0")}`);
+  const labels = ids.map((_, index) => `来源 ${String(index).padStart(3, "0")} 雪`);
+  const inserted = await applyProductMutation(page, targets.tableId, ids.map((recordId, index) => ({
+    kind: "insert", recordId, values: { [targets.field.physicalName]: labels[index] },
+  })), "lookup-page-targets");
+  const source = await applyProductMutation(page, tableId, [{
+    kind: "insert", recordId: "lookupsource001",
+    values: { [title.physicalName]: "Paged sources", [relation.physicalName]: ids },
+  }], "lookup-page-source");
+  if (inserted.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`lookup page fixture did not commit: ${JSON.stringify({ inserted, source })}`);
+  }
+  const read = async (collection) => {
+    const response = await rawBridgeRequest(page, "query.page", {
+      tableId: collection, query: { filters: [], sorts: [], offset: 0, limit: 500 },
+    });
+    if (response.type !== "query.page" || !response.payload?.snapshot) {
+      throw new Error(`lookup page authority read failed: ${JSON.stringify(response)}`);
+    }
+    return {
+      rows: response.payload.rows,
+      schemaRevision: response.payload.snapshot.schemaRevision,
+      dataRevision: response.payload.snapshot.dataRevision,
+    };
+  };
+  const before = [await read(tableId), await read(targets.tableId)];
+  const queryDiagnosticsBefore = await readBridgeDiagnostics(page);
+  const priorQueryRequestIds = new Set([
+    ...queryDiagnosticsBefore.requests,
+    ...queryDiagnosticsBefore.roundTrips,
+    ...queryDiagnosticsBefore.pending,
+  ].map(item => item.requestId));
+  await selectTable(page, "Paged Lookup Sources");
+  await waitForVisibleRowCount(page, 1);
+  await page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${lookup.physicalName}"] .vt-lookup-source-more`,
+  ).click();
+  const panel = page.getByTestId("lookup-sources-panel");
+  await panel.waitFor();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="lookup-sources-panel"] ol > li').length === 100);
+  recorder.check("lookup source dialog starts with the first 100 of 101 sources",
+    await panel.locator("ol > li").count() === 100
+      && (await panel.locator("header small").innerText()).trim() === "100 / 101");
+  const lookupQueryRoundTrip = (await readBridgeDiagnostics(page)).roundTrips
+    .find(item => !priorQueryRequestIds.has(item.requestId)
+      && item.requestType === "lookup.query"
+      && item.responseType === "lookup.query" && item.code === null);
+  recorder.check("lookup grid rendering completes a successful lookup.query round trip",
+    lookupQueryRoundTrip !== undefined, { lookupQueryRoundTrip });
+  await panel.locator("footer button").click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="lookup-sources-panel"] ol > li').length === 101);
+  const actual = await panel.locator("ol > li small").allTextContents();
+  recorder.check("loading more appends every Unicode source once and exhausts the page",
+    actual.length === 101 && new Set(actual).size === 101
+      && labels.every(label => actual.some(text => text.endsWith(` · ${label}`)))
+      && await panel.locator("footer").count() === 0
+      && await panel.locator('[role="alert"]').count() === 0
+      && (await panel.locator("header small").innerText()).trim() === "101 / 101",
+    { actual });
+  await panel.getByRole("button", { name: /^(关闭|Close)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const after = [await read(tableId), await read(targets.tableId)];
+  recorder.check("lookup source paging preserves authority rows and revisions",
+    JSON.stringify(after) === JSON.stringify(before), { before, after });
+}
+
+async function scenario26(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const authors = await createSimpleTable(page, "Lookup Authors", "Name");
+  const articleTableId = await createEmptyTable(page, "Lookup Articles");
+  await closeFieldSettingsDrawer(page);
+  await createV2Field(page, articleTableId, "Title", "text");
+  const relation = await createV2Field(
+    page,
+    articleTableId,
+    "Author",
+    "relation",
+    (draft) => {
+      draft.relation.targetTableId = authors.tableId;
+      draft.relation.displayFieldId = authors.field.fieldId;
+      return draft;
+    },
+  );
+  const lookup = await createV2Field(
+    page,
+    articleTableId,
+    "Author name",
+    "lookup",
+    (draft) => {
+      draft.lookup = {
+        path: [{ relationFieldId: relation.fieldId }],
+        targetFieldId: authors.field.fieldId,
+      };
+      return draft;
+    },
+  );
+  const listed = await rawBridgeRequest(page, "lookup.list", { collection: articleTableId });
+  const definition = listed.payload?.definitions?.find(
+    (item) => item.fieldKey === lookup.physicalName,
+  );
+  const described = await rawBridgeRequest(page, "schema.describe", {
+    collection: articleTableId,
+    requestGeneration: 7006,
+    accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+  });
+  recorder.check(
+    "lookup list reads the persisted definition through the packaged Product bridge",
+    listed.type === "lookup.list"
+      && listed.payload?.collection === articleTableId
+      && listed.payload?.definitions?.length === 1
+      && definition?.displayName === "Author name"
+      && definition?.source?.kind === "target_field"
+      && definition?.source?.fieldRef === authors.field.fieldId
+      && definition?.path?.length === 1
+      && definition?.path?.[0]?.relationId === `${articleTableId}.${relation.fieldId}`
+      && definition?.outputType === "text"
+      && definition?.state === "valid"
+      && described.type === "schema.describe"
+      && typeof listed.payload?.lookupRevision === "string"
+      && listed.payload.lookupRevision.length > 0
+      && listed.payload.lookupRevision === described.payload?.schema?.lookupRevision,
+    { listed, described },
+  );
 }
 
 async function selectTable(page, displayName) {
@@ -2607,6 +3151,33 @@ async function scenario07(page, recorder, _network, runtime) {
       `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
     );
   }
+  const attachmentProductHistoryReply = await rawBridgeRequest(
+    page,
+    "history.queryRequested",
+    {
+      collection: tableId,
+      scope: "cell",
+      itemId: recordId,
+      field: attachmentField,
+      limit: 50,
+      offset: 0,
+      actions: [],
+    },
+    20_000,
+    ["history.pageLoaded"],
+  );
+  const attachmentProductHistory = attachmentProductHistoryReply.payload;
+  recorder.check(
+    "host Product history query returns the same attachment revision",
+    attachmentProductHistoryReply.type === "history.pageLoaded"
+      && attachmentProductHistory?.collection === tableId
+      && attachmentProductHistory?.scope === "cell"
+      && attachmentProductHistory?.itemId === recordId
+      && attachmentProductHistory?.field === attachmentField
+      && attachmentProductHistory?.changeSets?.some((changeSet) =>
+        changeSet.rootRevisionId === originalRevision),
+    { attachmentProductHistoryReply, originalRevision },
+  );
   const historyDrawerStartedAt = performance.now();
   await page.getByTestId("toolbar-history").click();
   await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
@@ -2884,6 +3455,20 @@ async function waitForTableRecovery(
           }
           const recoveredCount = await page.locator(".tabulator-row").count();
           if (recoveredCount === expectedRows) {
+            // Go page reads can recover before the Python-owned attachment gateway.
+            // Keep this read under the same deadline and terminal ownership window.
+            if (Date.now() >= deadline) {
+              throw new SidecarRecoveryContractError("sidecar recovery deadline expired");
+            }
+            const fieldRequestId = await beginRawBridgeRequest(
+              page, "field.settings.describe", { tableId },
+            );
+            recoveryReads.own(fieldRequestId, "field.settings.describe");
+            const fields = await recoveryReads.observe(fieldRequestId);
+            if (fields?.type !== "field.settings.describe") {
+              lastError = new Error("Python field description did not recover");
+              continue;
+            }
             await recoveryReads.settle();
             if (recoveryFailureOwnerToken !== null) {
               const failureWindow = await page.evaluate(
@@ -3014,7 +3599,18 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       && lastResponse.payload?.rows?.length === expectedRows
       && lastResponse.payload?.snapshot?.schemaRevision
     ) {
-      return lastResponse.payload;
+      const recoveredPage = lastResponse.payload;
+      // query.page is Go-owned and can recover before the Python write gateway.
+      // Probe that gateway through its read-only contract within the same deadline.
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      lastResponse = await rawBridgeRequest(
+        page, "field.settings.describe", { tableId }, Math.min(20_000, remainingMs),
+      );
+      if (Date.now() >= deadline) break;
+      if (lastResponse.type === "field.settings.describe") {
+        return recoveredPage;
+      }
     }
     await acknowledgeExpectedSidecarRecoveryFailure(
       lastResponse,
@@ -3171,6 +3767,7 @@ async function scenario10(page, recorder, _network, runtime) {
     { baselineRowCount },
   );
 
+  const sidecarRecoveryStarted = performance.now();
   const fault = await requestPackagedProcessKill(
     runtime,
     "kill-sidecar",
@@ -3183,6 +3780,9 @@ async function scenario10(page, recorder, _network, runtime) {
     page,
     tableId,
     1,
+  );
+  runtime.recordUiTiming(
+    "recovery.sidecar.killToReadableTable", performance.now() - sidecarRecoveryStarted,
   );
   const activeSidebarTable = page
     .getByTestId("sidebar-table-name")
@@ -3232,6 +3832,7 @@ async function scenario10(page, recorder, _network, runtime) {
   const backendSourceSession = await page.evaluate(
     () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null,
   );
+  const backendRecoveryStarted = performance.now();
   const backendFault = await requestPackagedProcessKill(
     runtime,
     "kill-backend",
@@ -3248,6 +3849,7 @@ async function scenario10(page, recorder, _network, runtime) {
     backendSourceSession.sessionEpoch,
     "workspace.open",
   );
+  const closeStarted = performance.now();
   const closed = await rawLifecycleWorkspaceV2Request(
     page,
     "workspace.close",
@@ -3259,10 +3861,14 @@ async function scenario10(page, recorder, _network, runtime) {
     closed.result?.state === "closed" && closed.result?.workspaceId === null,
     { closed },
   );
+  runtime.recordUiTiming(
+    "recovery.workspace.closeAfterBackendExit", performance.now() - closeStarted,
+  );
   await openWorkspaceCenterFromSwitcher(page);
   const workspaceCenter = page.getByTestId("workspace-center");
   const workspace = workspaceCenter.getByRole("button", { name: /E2E Product Workspace/ });
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  const reopenStarted = performance.now();
   await workspace.click();
   const recoveredBootstrap = await waitForCapturedBridgeMessage(page, 60_000);
   const recoveredSession = recoveredBootstrap.payload.session;
@@ -3273,6 +3879,14 @@ async function scenario10(page, recorder, _network, runtime) {
       && recoveredSession.writable === true
       && recoveredSession.sessionEpoch > backendSourceSession.sessionEpoch,
     { backendSourceSession, recoveredSession },
+  );
+
+  const writableSessionObserved = performance.now();
+  runtime.recordUiTiming(
+    "recovery.workspace.reopenAfterBackendExit", writableSessionObserved - reopenStarted,
+  );
+  runtime.recordUiTiming(
+    "recovery.backend.killToWritableSession", writableSessionObserved - backendRecoveryStarted,
   );
 
   const retentionBeforeStaleWrite = (
@@ -3517,44 +4131,7 @@ async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000)
     throw new Error(`WorkspaceSearch rebuild was not accepted: ${JSON.stringify(response)}`);
   }
 
-  await page.waitForFunction(
-    ({ expectedGeneration }) => {
-      const index = document.querySelector(".index-state");
-      const state = index?.getAttribute("data-state");
-      const generation = index?.getAttribute("data-generation");
-      return state === "building" && generation === String(expectedGeneration);
-    },
-    { expectedGeneration: accepted.generation },
-    { timeout: 30_000 },
-  );
-  const terminalStates = ["ready", "failed", "degraded"];
-  await page.waitForFunction(
-    ({ terminalStates }) => {
-      const index = document.querySelector(".index-state");
-      const state = index?.getAttribute("data-state");
-      return terminalStates.includes(state);
-    },
-    { terminalStates },
-    { timeout },
-  );
-  const terminal = await page.getByTestId("workspace-search-view")
-    .locator(".index-state")
-    .evaluate((element) => ({
-      state: element.getAttribute("data-state"),
-      generation: Number(element.getAttribute("data-generation")),
-    }));
-  if (classifyWorkspaceSearchObservation({
-    acceptedGeneration: accepted.generation,
-    ...terminal,
-  }) !== "terminal") {
-    throw new Error(
-      `WorkspaceSearch terminal does not belong to accepted rebuild: ${JSON.stringify({
-        accepted,
-        terminal,
-      })}`,
-    );
-  }
-  return { ...terminal, accepted };
+  return waitForWorkspaceSearchRebuildTerminal(page, accepted, timeout);
 }
 
 async function scenario12(page, recorder, _network, runtime) {
@@ -4999,7 +5576,8 @@ async function scenario17(page, recorder, _network, runtime) {
       bindingId: "requests",
       query: {
         contractVersion: "1.0", tableId: seeded.tableId,
-        fields: [seeded.field.physicalName], filters: [], sorts: [], cursor: null, pageSize: 100,
+        fields: [seeded.field.physicalName], filters: [],
+        sorts: [{ fieldId: seeded.field.physicalName, direction: "desc" }], cursor: null, pageSize: 1,
       },
       variables: [],
     }],
@@ -5049,7 +5627,20 @@ async function scenario17(page, recorder, _network, runtime) {
   await form.locator("input").fill("Created through Interface");
   await form.getByRole("button", { name: "提交" }).click();
   await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
+  const cursorPager = runtimeSurface.getByRole("navigation", { name: "requests 分页", exact: true });
+  await cursorPager.getByRole("button", { name: "下一页", exact: true }).click();
   await runtimeSurface.getByText("Created through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface cursor fetch renders the second record and terminates pagination",
+    (await cursorPager.innerText()).includes("2–2 / 2")
+      && await cursorPager.getByRole("button", { name: "下一页", exact: true }).isDisabled()
+      && !(await runtimeSurface.innerText()).includes("Updated through Interface"),
+    { pager: await cursorPager.innerText() });
+  await cursorPager.getByRole("button", { name: "上一页", exact: true }).click();
+  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  recorder.check("Interface cursor reopens the first window when navigating back",
+    (await cursorPager.innerText()).includes("1–1 / 2")
+      && await cursorPager.getByRole("button", { name: "上一页", exact: true }).isDisabled(),
+    { pager: await cursorPager.innerText() });
 
   const pluginAction = page.getByTestId("interface-runtime-plugin-action").getByRole("button");
   page.once("dialog", (dialog) => dialog.accept());
@@ -5128,14 +5719,28 @@ async function scenario18(page, recorder, _network, runtime) {
   const contentInputs = contentPanel.locator(".content-main .n-input input, .content-main .n-input textarea");
   await contentInputs.nth(0).fill("E2E content record edited");
   await contentInputs.nth(1).fill("Durable violet body saved through the content reading layout.");
+  const contentSaveDeadline = Date.now() + 30_000;
   await page.getByTestId("content-record-save").click();
+  // Persisted rows can become readable before the save receipt leaves edit mode.
+  await page.getByTestId("content-record-save").waitFor({
+    state: "hidden",
+    timeout: Math.max(1, contentSaveDeadline - Date.now()),
+  });
+  const contentSaveRemainingMs = contentSaveDeadline - Date.now();
+  if (contentSaveRemainingMs <= 0) {
+    throw new Error("content record save did not complete within 30 seconds");
+  }
   const contentSaved = await waitForQueryPage(page, {
     tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 10 },
   }, (payload) => payload?.rows?.[0]?.[titleField.physicalName]
       === "E2E content record edited"
     && payload.rows[0]?.[bodyField.physicalName]
-      === "Durable violet body saved through the content reading layout.");
+      === "Durable violet body saved through the content reading layout.",
+  contentSaveRemainingMs);
+  if (Date.now() >= contentSaveDeadline) {
+    throw new Error("content record save did not complete within 30 seconds");
+  }
   recorder.check("ContentProfile and record edits flow through the packaged content UI",
     (await contentPanel.innerText()).includes("E2E content record edited")
       && (await contentPanel.innerText()).includes("Durable violet body"),
@@ -6195,6 +6800,293 @@ async function scenario22(page, recorder, _network, runtime) {
   });
 }
 
+function hasExactWorkspaceWire(message) {
+  const outer = message?.wire;
+  const inner = message?.payload?.wire;
+  if (!outer || !inner || typeof outer !== "object" || typeof inner !== "object") return false;
+  const outerKeys = Object.keys(outer).sort();
+  const innerKeys = Object.keys(inner).sort();
+  return typeof message.requestId === "string"
+    && message.requestId.length > 0
+    && typeof outer.operationId === "string"
+    && outer.scope === "global"
+    && outerKeys.length === 3
+    && innerKeys.length === 3
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+      .test(outer.operationId)
+    && Number.isSafeInteger(outer.sequence)
+    && outer.sequence >= 0
+    && outerKeys.length === innerKeys.length
+    && outerKeys.every((key, index) => key === innerKeys[index] && outer[key] === inner[key]);
+}
+
+async function activateDirectoryReplicaWorkspace(page, { method, activate }) {
+  const workspaceCenter = page.getByTestId("workspace-center");
+  const databaseOpened = await activateWorkspaceAndWaitForDatabaseOpened({
+    beginCapture: (expectation) => beginWorkspaceActivationCapture(page, {
+      ...expectation, waitForHydration: true,
+    }),
+    activate,
+    waitForActivation: (timeoutMs) => Promise.race([
+      workspaceCenter.waitFor({ state: "hidden", timeout: timeoutMs })
+        .then(() => ({ kind: "opened" })),
+      page.getByTestId("workspace-operation-error")
+        .waitFor({ state: "visible", timeout: timeoutMs })
+        .then(async () => ({
+          kind: "failed",
+          message: await page.getByTestId("workspace-operation-error").innerText(),
+        })),
+    ]),
+    method,
+  });
+  const session = await page.evaluate(
+    () => window.__vibetableE2EBridgeCapture?.session ?? null,
+  );
+  if (!session) throw new Error(`activation capture omitted ${method} session`);
+  return { databaseOpened, session };
+}
+
+async function readDirectoryReplicaCheckpoint(page, tableId) {
+  const query = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  const replicaReply = await rawWorkspaceV2Request(page, "replica.status", {});
+  return { query, replica: replicaReply.result };
+}
+
+async function scenario23(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const originalSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeCapture?.session ?? null,
+  );
+  if (!originalSession) throw new Error("initial workspace activation omitted its session");
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  const modal = page.getByTestId("workspace-flow-modal");
+  const workspaceName = "E2E Directory Replica";
+  await modal.locator("input").first().fill(workspaceName);
+  await modal.locator('.n-radio-button:has(input[value="other"])').click();
+  await modal.locator('.n-radio-button:has(input[value="mirrored"])').click();
+  const syncMark = page.getByTestId("workspace-user-marked-sync");
+  await syncMark.click();
+  recorder.check("Workspace Center exposes the requested mirrored directory topology",
+    await modal.locator('input[value="other"]').isChecked()
+      && await modal.locator('input[value="mirrored"]').isChecked()
+      && await syncMark.getAttribute("aria-checked") === "true",
+  { workspaceName });
+
+  await beginWorkspaceV2MethodCapture(page, "workspace.create");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const createTerminal = await waitForCapturedBridgeMessage(page, 60_000);
+  const workspaceId = createTerminal.payload?.result?.workspaceId;
+  recorder.check("mirrored workspace creation returns one exact global wire terminal",
+    createTerminal.type === "workspace.v2.response"
+      && createTerminal.payload?.method === "workspace.create"
+      && createTerminal.payload?.ok === true
+      && createTerminal.payload?.result?.status === "created"
+      && typeof workspaceId === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+        .test(workspaceId)
+      && hasExactWorkspaceWire(createTerminal),
+  { createTerminal });
+  const card = page.getByTestId("workspace-center").getByRole("button", {
+    name: new RegExp(workspaceName),
+  });
+  await card.waitFor({ state: "visible", timeout: 60_000 });
+
+  const initial = await activateDirectoryReplicaWorkspace(page, {
+    method: "workspace.switch",
+    activate: () => card.click(),
+  });
+  const initialSession = initial.session;
+  const initialIdentity = workspaceId.replaceAll("-", "");
+  recorder.check("new directory replica opens one exact provisional project session",
+    initialSession.workspaceId === workspaceId
+      && initialSession.sessionEpoch > originalSession.sessionEpoch
+      && initialSession.state === "openedProvisional"
+      && initialSession.openMode === "provisional"
+      && initialSession.writable === false
+      && initialSession.provisional === true
+      && initial.databaseOpened.payload?.projectKey === `local:${initialIdentity}`
+      && initial.databaseOpened.payload?.projectRevision
+        === `${initialIdentity}:${initialSession.sessionEpoch}`,
+  { originalSession, initial });
+
+  await page.getByTestId("home-view").waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("nav-tables").click();
+  const tableName = "E2E Directory Replica Records";
+  const table = await createSimpleTable(page, tableName, "Value");
+  await selectTable(page, tableName);
+  const insertCaptureId = await page.evaluate(
+    installTableMutationReceiptCaptureInPage,
+    { requestType: "table.insertRowRequested" },
+  );
+  await page.getByTestId("toolbar-insert-row").click({ timeout: 30_000 });
+  const insertReceipt = await waitForCapturedBridgeMessage(page, 30_000, insertCaptureId);
+  recorder.check("public row insertion returns one exact committed mutation receipt",
+    insertReceipt.type === "table.rowsInserted"
+      && insertReceipt.owner?.requestType === "table.insertRowRequested"
+      && insertReceipt.owner?.table === table.tableId
+      && insertReceipt.owner?.workspaceId === initialSession.workspaceId
+      && insertReceipt.owner?.sessionEpoch === initialSession.sessionEpoch
+      && Array.isArray(insertReceipt.owner?.valueKeys)
+      && insertReceipt.owner.valueKeys.length === 0
+      && (typeof insertReceipt.payload?.rowKey === "string"
+        || Number.isSafeInteger(insertReceipt.payload?.rowKey))
+      && typeof insertReceipt.payload?.revision?.databaseSessionId === "string"
+      && insertReceipt.payload.revision.databaseSessionId.length > 0
+      && typeof insertReceipt.payload?.revision?.schemaRevision === "string"
+      && insertReceipt.payload.revision.schemaRevision.length > 0
+      && insertReceipt.owner?.schemaRevision === insertReceipt.payload.revision.schemaRevision
+      && Number.isSafeInteger(insertReceipt.payload?.revision?.dataRevision)
+      && insertReceipt.payload.revision.dataRevision >= 0,
+  { insertReceipt });
+  const value = "directory replica survives";
+  const cell = page.locator(
+    `.tabulator-cell.tabulator-editable[tabulator-field="${table.field.physicalName}"]`,
+  ).first();
+  await cell.waitFor({ state: "visible", timeout: 30_000 });
+  await cell.dblclick();
+  const editor = cell.locator("input, textarea").first();
+  await editor.waitFor({ state: "visible", timeout: 10_000 });
+  await editor.fill(value);
+  const editCaptureId = await page.evaluate(
+    installTableMutationReceiptCaptureInPage,
+    { requestType: "table.updateCellRequested" },
+  );
+  await editor.press("Enter");
+  const editTerminal = await waitForCapturedBridgeMessage(page, 30_000, editCaptureId);
+  recorder.check("public cell edit commits the inserted row with an advancing revision",
+    editTerminal.type === "table.editCommitted"
+      && editTerminal.owner?.requestType === "table.updateCellRequested"
+      && editTerminal.owner?.table === table.tableId
+      && editTerminal.owner?.workspaceId === initialSession.workspaceId
+      && editTerminal.owner?.sessionEpoch === initialSession.sessionEpoch
+      && editTerminal.owner?.rowKey === insertReceipt.payload?.rowKey
+      && editTerminal.owner?.column === table.field.physicalName
+      && editTerminal.owner?.schemaRevision === insertReceipt.payload?.revision?.schemaRevision
+      && editTerminal.payload?.rowKey === insertReceipt.payload?.rowKey
+      && editTerminal.payload?.column === table.field.physicalName
+      && editTerminal.payload?.storedValue === value
+      && editTerminal.payload?.currentRow?.[table.field.physicalName] === value
+      && editTerminal.payload?.revision?.databaseSessionId
+        === insertReceipt.payload?.revision?.databaseSessionId
+      && editTerminal.payload?.revision?.schemaRevision
+        === insertReceipt.payload?.revision?.schemaRevision
+      && Number.isSafeInteger(editTerminal.payload?.revision?.dataRevision)
+      && editTerminal.payload.revision.dataRevision
+        > insertReceipt.payload?.revision?.dataRevision,
+  { insertReceipt, editTerminal });
+  await cell.filter({ hasText: value }).waitFor({ state: "visible", timeout: 30_000 });
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  await page.getByTestId("storage-settings").waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("workspace-storage-release-cache-preview").click({ timeout: 90_000 });
+  await page.getByTestId("workspace-storage-confirmation").locator("input").fill(workspaceName);
+  await beginWorkspaceV2MethodCapture(page, "workspace.storage.apply");
+  await page.getByTestId("workspace-storage-relocate-apply").click();
+  const releaseTerminal = await waitForCapturedBridgeMessage(page, 60_000);
+  const releasedStorage = releaseTerminal.payload?.result?.storage;
+  recorder.check("public storage release applies the verified replica and exact wire identity",
+    releaseTerminal.type === "workspace.v2.response"
+      && releaseTerminal.payload?.method === "workspace.storage.apply"
+      && releaseTerminal.payload?.ok === true
+      && releaseTerminal.payload?.result?.workspaceId === workspaceId
+      && releaseTerminal.payload?.result?.status === "applied"
+      && releasedStorage?.mode === "mirrored"
+      && releasedStorage?.pendingSync === false
+      && releasedStorage?.replicaVerified === true
+      && hasExactWorkspaceWire(releaseTerminal),
+  { releaseTerminal });
+
+  await page.getByTestId("nav-home").click();
+  const workspaceCenter = page.getByTestId("workspace-center");
+  await workspaceCenter.waitFor({ state: "visible", timeout: 60_000 });
+  const reopenCard = workspaceCenter.getByRole("button", { name: new RegExp(workspaceName) });
+  const reopened = await activateDirectoryReplicaWorkspace(page, {
+    method: "workspace.open",
+    activate: () => reopenCard.click(),
+  });
+  const session = reopened.session;
+  const identity = workspaceId.replaceAll("-", "");
+  recorder.check("released directory replica reopens the same UUID as one provisional session",
+    session.workspaceId === workspaceId
+      && session.sessionEpoch > initialSession.sessionEpoch
+      && session.state === "openedProvisional"
+      && session.openMode === "provisional"
+      && session.writable === false
+      && session.provisional === true
+      && reopened.databaseOpened.payload?.projectKey === `local:${identity}`
+      && reopened.databaseOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
+  { initialSession, reopened });
+
+  const beforeRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const beforeRow = beforeRestart.query.payload?.rows?.[0];
+  const beforeSnapshot = beforeRestart.query.payload?.snapshot;
+  const replica = beforeRestart.replica;
+  recorder.check("one query and one status expose the released directory replica",
+    beforeRestart.query.type === "query.page"
+      && beforeRestart.query.payload?.rows?.length === 1
+      && beforeRow?.[table.field.physicalName] === value
+      && beforeRow?.id === insertReceipt.payload?.rowKey
+      && beforeSnapshot?.table === table.tableId
+      && typeof beforeSnapshot?.databaseId === "string"
+      && beforeSnapshot.databaseId.length > 0
+      && beforeSnapshot?.schemaRevision === editTerminal.payload?.revision?.schemaRevision
+      && beforeSnapshot?.dataRevision === editTerminal.payload?.revision?.dataRevision
+      && replica.coordinationStrength === "advisory"
+      && replica.syncState === "replicated"
+      && replica.pendingSync === false,
+  { beforeRestart });
+
+  const bridgeBeforeRestart = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("directory replica restart begins from a quiescent bridge",
+    bridgeBeforeRestart !== null
+      && (bridgeBeforeRestart.failures ?? []).length === 0
+      && (bridgeBeforeRestart.pending ?? []).length === 0,
+  { bridgeBeforeRestart });
+
+  await beginBridgeMessageCapture(page, ["database.opened"]);
+  const kill = await requestSidecarKill(
+    runtime,
+    "verify released directory replica survives restart",
+  );
+  const replacementOpened = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("the packaged controller kills one exact sidecar before same-session readiness",
+    kill.status === "completed"
+      && kill.action === "kill-sidecar"
+      && kill.processName === "vibetable-pb.exe"
+      && Number.isInteger(kill.pid)
+      && kill.pid > 0
+      && replacementOpened.type === "database.opened"
+      && replacementOpened.payload?.projectKey === `local:${identity}`
+      && replacementOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
+  { kill, replacementOpened, session });
+
+  const afterRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const afterRow = afterRestart.query.payload?.rows?.[0];
+  const afterSnapshot = afterRestart.query.payload?.snapshot;
+  recorder.check("replacement sidecar preserves the exact row, revisions, and replica status",
+    afterRestart.query.type === "query.page"
+      && afterRestart.query.payload?.rows?.length === 1
+      && afterRow?.id === beforeRow.id
+      && afterRow?.[table.field.physicalName] === value
+      && afterSnapshot?.table === beforeSnapshot.table
+      && afterSnapshot?.databaseId === beforeSnapshot.databaseId
+      && afterSnapshot?.schemaRevision === beforeSnapshot.schemaRevision
+      && afterSnapshot?.dataRevision === beforeSnapshot.dataRevision
+      && afterRestart.replica.coordinationStrength === replica.coordinationStrength
+      && afterRestart.replica.syncState === replica.syncState
+      && afterRestart.replica.pendingSync === replica.pendingSync,
+  { beforeRestart, afterRestart });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "23-directory-replica-recovery.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -6218,7 +7110,215 @@ const scenarios = {
   "20-kanban-lane-drag": scenario20,
   "21-calendar-date-move": scenario21,
   "22-timeline-date-move": scenario22,
+  "23-directory-replica-recovery": scenario23,
+  "26-lookup-definition-read": scenario26,
+  "27-relation-target-search": scenario27,
+  "28-relation-delta-preview": scenario28,
+  "29-lookup-source-pagination": scenario29,
 };
+
+async function naturalSnapshot(page, recorder, previousIds) {
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-versions").click();
+  const settings = page.getByTestId("snapshot-settings");
+  await settings.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("snapshot-create").click();
+  let listed = null;
+  let snapshot = null;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline && !snapshot) {
+    listed = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+    snapshot = listed.result?.snapshots?.find((item) => !previousIds.includes(item.snapshotId)
+      && item.state === "ready" && item.integrity === "verified") ?? null;
+    if (!snapshot) await page.waitForTimeout(100);
+  }
+  recorder.check("manual snapshot is ready and verified through public snapshot.list",
+    typeof snapshot?.snapshotId === "string", { snapshot, listed: listed.result });
+  return snapshot;
+}
+
+async function seedNaturalRetentionAging(page, recorder) {
+  await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
+  const center = page.getByTestId("workspace-center");
+  await center.waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("workspace-create").click();
+  const modal = page.getByTestId("workspace-flow-modal");
+  await modal.locator("input").first().fill("A1 Natural Retention");
+  const locationPolicy = modal.getByTestId("workspace-location-policy");
+  await locationPolicy.locator('label:has(input[value="other"])').click();
+  recorder.check("seed selects the custom workspace location through its visible label",
+    await locationPolicy.locator('input[value="other"]').isChecked());
+  await page.getByTestId("workspace-flow-confirm").click();
+  const workspace = center.getByRole("button", { name: /A1 Natural Retention/ });
+  await workspace.waitFor({ state: "visible", timeout: 60_000 });
+  await workspace.click();
+  await page.getByTestId("home-view").waitFor({ state: "visible", timeout: 60_000 });
+
+  await page.getByTestId("nav-tables").click();
+  await createEmptyTable(page, "A1 older snapshot content");
+  await closeFieldSettingsDrawer(page);
+  const beforeOlder = (await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 }))
+    .result?.snapshots?.map((item) => item.snapshotId) ?? [];
+  const older = await naturalSnapshot(page, recorder, beforeOlder);
+
+  await page.getByTestId("nav-tables").click();
+  await createEmptyTable(page, "A1 newer snapshot content");
+  await closeFieldSettingsDrawer(page);
+  const beforeNewer = (await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 }))
+    .result?.snapshots?.map((item) => item.snapshotId) ?? [];
+  const newer = await naturalSnapshot(page, recorder, beforeNewer);
+
+  const olderRow = page.locator(`[id="snapshot-${older.snapshotId}"]`);
+  await olderRow.click();
+  await beginWorkspaceV2MethodCapture(page, "snapshot.update");
+  await page.getByTestId("snapshot-settings").locator(".detail-title button").click();
+  const unpinUpdate = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("Versions UI receives the older snapshot unpin terminal",
+    unpinUpdate.payload?.method === "snapshot.update" && unpinUpdate.payload?.ok === true,
+  { unpinUpdate });
+  const unpinned = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+  recorder.check("older snapshot is unpinned through the Versions UI",
+    unpinned.result?.snapshots?.some((item) => item.snapshotId === older.snapshotId && !item.pinned),
+  { older: older.snapshotId, snapshots: unpinned.result?.snapshots });
+
+  await page.getByTestId("settings-nav-storage").click();
+  const storage = page.getByTestId("storage-settings");
+  await storage.waitFor({ state: "visible", timeout: 30_000 });
+  const retention = storage.locator(".retention-grid");
+  await retention.locator(".n-input-number input").nth(0).fill("1");
+  await retention.locator(".n-input-number input").nth(1).fill("1");
+  await retention.locator(".n-input-number input").nth(2).fill("1");
+  await retention.locator(".n-input-number input").nth(3).fill("1");
+  for (const bucketField of [
+    retention.locator(".bucket-field").first(),
+    retention.locator(".bucket-field").nth(1),
+  ]) {
+    const buckets = bucketField.locator(".n-base-close");
+    while (await buckets.count()) await buckets.first().click();
+  }
+  await beginWorkspaceV2MethodCapture(page, "retention.update");
+  await page.getByTestId("retention-save").click();
+  const retentionUpdate = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("Settings UI receives the retention update terminal",
+    retentionUpdate.payload?.method === "retention.update" && retentionUpdate.payload?.ok === true,
+  { retentionUpdate });
+  const policy = (await rawWorkspaceV2Request(page, "retention.get", {})).result;
+  recorder.check("Settings UI saves one-day, one-item policy with no retention buckets",
+    policy?.snapshotDays === 1 && policy?.snapshotCount === 1
+      && Array.isArray(policy?.snapshotBuckets) && policy.snapshotBuckets.length === 0
+      && policy?.fileRevisionDays === 1 && policy?.fileRevisionCount === 1
+      && Array.isArray(policy?.fileRevisionBuckets) && policy.fileRevisionBuckets.length === 0,
+  { policy });
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null);
+  recorder.check("seed exposes the workspace UUID after real UI creation", typeof session?.workspaceId === "string", { session });
+  return { workspaceId: session.workspaceId, olderSnapshotId: older.snapshotId, newerSnapshotId: newer.snapshotId };
+}
+
+function hasActiveNaturalAgingWorkspaceSessionInPage() {
+  const session = window.__vibetableE2EBridgeDiagnostics?.workspaceSession;
+  return typeof session?.workspaceId === "string"
+    && Number.isSafeInteger(session.sessionEpoch)
+    && session.sessionEpoch > 0;
+}
+
+function openNaturalAgingWorkspaceInPage(targetTestId) {
+  const session = window.__vibetableE2EBridgeDiagnostics?.workspaceSession;
+  if (typeof session?.workspaceId === "string"
+    && Number.isSafeInteger(session.sessionEpoch)
+    && session.sessionEpoch > 0) return false;
+  // Locate the UUID-bound card through its existing marker; never click Delete.
+  const card = document.querySelector(`[data-testid="${targetTestId}"]`)
+    ?.closest(".workspace-card");
+  const button = card?.querySelector("button[aria-label]");
+  if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+  button.click();
+  return true;
+}
+
+async function resumeNaturalRetentionAging(page, recorder, statePath) {
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  const center = page.getByTestId("workspace-center");
+  const home = page.getByTestId("home-view");
+  const start = await Promise.race([
+    center.waitFor({ state: "visible", timeout: 60_000 }).then(() => "center"),
+    home.waitFor({ state: "visible", timeout: 60_000 }).then(() => "home"),
+  ]);
+  const switchParams = { targetWorkspaceId: state.workspaceId, openMode: "writable" };
+  let switched;
+  try {
+    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
+  } catch (error) {
+    const prefix = "workspace.switch failed closed: ";
+    let failure;
+    try {
+      failure = error instanceof Error && error.message.startsWith(prefix)
+        ? JSON.parse(error.message.slice(prefix.length))
+        : null;
+    } catch {
+      throw error;
+    }
+    if (!["workspace.capability_unavailable", "workspace.session_required"]
+      .includes(failure?.code)) throw error;
+    const activeSession = page.waitForFunction(
+      hasActiveNaturalAgingWorkspaceSessionInPage,
+      undefined,
+      { timeout: 60_000 },
+    );
+    const targetTestId = `workspace-delete-${state.workspaceId}`;
+    const activation = await Promise.race([
+      activeSession.then(() => "session"),
+      page.getByTestId(targetTestId).waitFor({ state: "visible", timeout: 60_000 })
+        .then(() => "center"),
+    ]);
+    if (activation === "center") {
+      await page.evaluate(openNaturalAgingWorkspaceInPage, targetTestId);
+    }
+    await activeSession;
+    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
+  }
+  recorder.check(
+    "resume switch opens the seeded workspace writable",
+    switched.result?.workspaceId === state.workspaceId
+      && Number.isSafeInteger(switched.result?.sessionEpoch)
+      && switched.result.sessionEpoch > 0
+      && switched.result?.state === "openedWritable",
+    { start, expected: state.workspaceId, switched: switched.result },
+  );
+  await page.getByTestId("nav-home").click();
+  await home.waitFor({ state: "visible", timeout: 60_000 });
+
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  const plan = page.getByTestId("retention-plan-preview");
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
+  await plan.click();
+  const preview = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("mature retention plan has reclaimable bytes", preview.payload?.result?.reclaimableBytes > 0,
+    { preview });
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await page.getByTestId("retention-plan-apply").click();
+  const applied = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("mature retention apply deletes logical objects without physical reclaim",
+    applied.payload?.result?.deletedObjects > 0 && applied.payload?.result?.reclaimedBytes === 0,
+  { applied });
+  const remaining = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+  recorder.check("retention removes the aged snapshot and preserves the newer snapshot",
+    !remaining.result?.snapshots?.some((item) => item.snapshotId === state.olderSnapshotId)
+      && remaining.result?.snapshots?.some((item) => item.snapshotId === state.newerSnapshotId),
+  { remaining: remaining.result });
+  await beginWorkspaceV2MethodCapture(page, "retention.plan");
+  await plan.click();
+  const secondPlan = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("second retention plan is empty", secondPlan.payload?.result?.reclaimableBytes === 0,
+    { secondPlan });
+  await beginWorkspaceV2MethodCapture(page, "retention.apply");
+  await page.getByTestId("retention-plan-apply").click();
+  const secondApply = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("second retention apply is a zero logical cleanup",
+    secondApply.payload?.result?.deletedObjects === 0 && secondApply.payload?.result?.reclaimedBytes === 0,
+  { secondApply });
+  return {};
+}
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -6284,9 +7384,13 @@ async function main() {
     page = await locateProductPage(browser);
     observePage(page);
     await installBridgeDiagnostics(page);
-    const implementation = scenarios[args.scenario];
+    const implementation = args["natural-aging-phase"] === "seed"
+      ? (candidate, checks) => seedNaturalRetentionAging(candidate, checks)
+      : args["natural-aging-phase"] === "resume"
+        ? (candidate, checks) => resumeNaturalRetentionAging(candidate, checks, args.state)
+        : scenarios[args.scenario];
     if (implementation) {
-      await implementation(page, recorder, network, {
+      const phaseResult = await implementation(page, recorder, network, {
         evidenceDir,
         controlsDir: path.resolve(args["controls-dir"]),
         dataRoot: path.resolve(args["data-root"]),
@@ -6298,6 +7402,7 @@ async function main() {
           });
         },
       });
+      if (phaseResult && args["natural-aging-phase"]) Object.assign(result, phaseResult);
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
     result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);

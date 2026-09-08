@@ -1,33 +1,84 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
-import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
+import test, { after, before } from "node:test";
+
 import {
   collectBrowserSurfaceEvidence,
   sampleConnectedThemeSurfaces,
 } from "./theme_surface_probe.mjs";
 import { observeTestPhases } from "./test_phase_evidence.mjs";
 
+// Preserve Edge process diagnostics in the captured Node output if bootstrap fails.
+process.env.DEBUG = [process.env.DEBUG, "pw:browser"].filter(Boolean).join(",");
+const { chromium } = await import("../../desktop/web-grid/node_modules/playwright-core/index.mjs");
+
 const tabulatorScript = fileURLToPath(
   new URL("../../desktop/web-grid/node_modules/tabulator-tables/dist/js/tabulator.min.js", import.meta.url),
 );
 const reproduceLegacyFailure = process.argv.includes("--legacy-red");
 
+let browser;
+let page;
+const startupAbort = new AbortController();
+const cleanupTimeoutMs = 10_000;
+
+async function closeEdge() {
+  const cleanupAbort = new AbortController();
+  const phases = observeTestPhases({
+    signal: cleanupAbort.signal,
+    diagnostic: (message) => console.error(message),
+  });
+  let timeout;
+  try {
+    await Promise.race([
+      phases.phase("close Edge", () => browser.close()),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          cleanupAbort.abort();
+          reject(new Error(`Edge cleanup exceeded ${cleanupTimeoutMs}ms`));
+        }, cleanupTimeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    phases.close();
+  }
+}
+
+// Browser startup has its own bounded setup budget; it must not consume the
+// theme assertions' unchanged 10-second budget.
+before(async () => {
+  // Node's before-hook timeout does not abort HookContext.signal. The after hook
+  // cancels startup explicitly; stderr remains observable after that hook fails.
+  const phases = observeTestPhases({
+    signal: startupAbort.signal,
+    diagnostic: (message) => console.error(message),
+  });
+  try {
+    browser = await phases.phase("launch Edge", () => (
+      chromium.launch({ channel: "msedge", headless: true })
+    ));
+    if (startupAbort.signal.aborted) {
+      await closeEdge();
+      return;
+    }
+    const context = await phases.phase("create browser context", () => browser.newContext());
+    if (startupAbort.signal.aborted) return;
+    page = await phases.phase("open browser page", () => context.newPage());
+  } finally {
+    phases.close();
+  }
+}, { timeout: 30_000 });
+
+after(async () => {
+  startupAbort.abort();
+  if (browser) await closeEdge();
+}, { timeout: cleanupTimeoutMs });
+
 test("connected theme sampling never reads a stale Tabulator cell", { timeout: 10_000 }, async (t) => {
   const phases = observeTestPhases(t);
-  const browser = await phases.phase("launch Edge", () => (
-    chromium.launch({ channel: "msedge", headless: true })
-  ));
-  t.after(async () => {
-    try {
-      await phases.phase("close Edge", () => browser.close());
-    } finally {
-      phases.close();
-    }
-  }, { timeout: 10_000 });
-
+  t.after(() => phases.close());
   {
-    const page = await phases.phase("open browser page", () => browser.newPage());
     await phases.phase("render Tabulator fixture", () => page.setContent(`
       <style>
         html.dark { color-scheme: dark; }

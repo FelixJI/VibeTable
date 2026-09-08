@@ -4,7 +4,6 @@ from backend.adapters.pocketbase.client import (
     PocketBaseClient,
     PocketBaseProductError,
     QueryPageResult,
-    ViewQueryResult,
 )
 from backend.adapters.pocketbase.mutation import PocketBaseBulkMutationClient
 from backend.adapters.pocketbase.realtime import (
@@ -31,5 +30,4 @@ __all__ = [
     "QueryPageResult",
     "StdlibPocketBaseTransport",
     "StdlibSSEConnector",
-    "ViewQueryResult",
 ]
