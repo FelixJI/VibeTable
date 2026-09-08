@@ -605,6 +605,7 @@ export const messages: Record<string, string> = {
   "workspace.notification.relationLookupFailed": "The relation or Lookup operation failed. Try again shortly.",
   "workspace.notification.relationLookupTimeout": "The relation or Lookup operation timed out. Try again.",
   "workspace.notification.operationFailed": "The operation failed. Try again.",
+  "workspace.notification.realtimeStopped": "Live updates stopped. Close and reopen the workspace.",
   "workspace.editRejected.conflict": "The data changed elsewhere. This edit was restored to the latest value.",
   "workspace.editRejected.schema": "The table schema changed. This edit was not saved.",
   "workspace.editRejected.validation": "This value could not be saved. Check it and try again.",

@@ -781,10 +781,11 @@ public sealed class WorkspaceTableRequestController
         string? createdTableId = null,
         string? deletedTableId = null)
     {
-        _workspace.UpdateKnownTables(summary.Tables);
+        _workspace.UpdateKnownCatalog(summary);
         var broadcast = new
         {
             tables = summary.Tables,
+            views = summary.Views,
             displayNames = summary.DisplayNames,
         };
         if (requestId is not null)
@@ -793,6 +794,7 @@ public sealed class WorkspaceTableRequestController
                 ? new
                 {
                     tables = summary.Tables,
+                    views = summary.Views,
                     displayNames = summary.DisplayNames,
                     createdTableId,
                 }
@@ -800,6 +802,7 @@ public sealed class WorkspaceTableRequestController
                     ? new
                     {
                         tables = summary.Tables,
+                        views = summary.Views,
                         displayNames = summary.DisplayNames,
                         deletedTableId,
                     }

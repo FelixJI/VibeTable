@@ -248,6 +248,11 @@ public sealed class TableWorkspaceService
     public async Task RefreshKnownTablesAsync(CancellationToken token)
     {
         var summary = await _gateway.ListTablesAsync(token).ConfigureAwait(true);
+        UpdateKnownCatalog(summary);
+    }
+
+    internal void UpdateKnownCatalog(TableSummary summary)
+    {
         var filtered = FilterUserTables(summary.Tables);
         Volatile.Write(ref _knownTables, filtered);
         Volatile.Write(ref _knownViews, summary.Views);

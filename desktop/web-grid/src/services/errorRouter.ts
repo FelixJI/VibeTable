@@ -22,13 +22,17 @@ import { useTableStore } from "@/stores/tableStore";
  * The router subscribes exactly once per `init()` call; the caller (typically
  * `main.ts` during bootstrap) is responsible for invoking `init()` once.
  */
-export function useErrorRouter(): { init: () => void } {
+export function useErrorRouter(options: { onRealtimeFailure?: () => void } = {}): { init: () => void } {
   const bridge = useHostBridge();
   const table = useTableStore();
   const paste = usePasteStore();
 
   function init(): void {
     bridge.on("operation.failed", (payload: OperationFailedPayload) => {
+      if (payload.operation === "realtime.stream") {
+        options.onRealtimeFailure?.();
+        return;
+      }
       if (payload.code === "query.cursor_stale") return;
       if (paste.phase === "applying") {
         paste.setError(payload.message);

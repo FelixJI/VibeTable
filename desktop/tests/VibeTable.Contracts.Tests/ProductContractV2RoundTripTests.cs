@@ -21,6 +21,7 @@ public sealed class ProductContractV2RoundTripTests
         "mutation-request.json",
         "product-error.json",
         "product-rpc-catalog.json",
+        "realtime-recovery-event.json",
         "table-definition.json",
         "task-changed-event.json",
     ];

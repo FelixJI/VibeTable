@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     private readonly ProductWorkspaceController _productWorkspace;
     private readonly WorkspaceRequestDispatcher _dispatcher;
     private readonly IProductSidecarGatewayLifecycle _productSidecarGatewayLifecycle;
+    private readonly ProductRealtimeSession _productRealtime;
     private readonly PluginProjectContextBindingRegistry _databaseOpens;
     private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
@@ -376,6 +377,11 @@ public partial class MainWindow : Window
             new ProductSidecarGatewayLifecycle(_runtime, _dispatcher);
         _runtime.RegisterProductSidecarGatewayLifecycle(
             _productSidecarGatewayLifecycle);
+        _productRealtime = new ProductRealtimeSession(_runtime,
+            () => Volatile.Read(ref _updateHealthProbeInProgress) == 0
+                ? _runtime.CaptureProductSidecarGeneration() : null,
+            _workspaceSessions, _workspaceSessionFilter, _webBridge.Realtime,
+            _workspace.UpdateKnownCatalog, code => _readiness?.Trace(code));
         _authorityTransition = new ProductAuthorityTransitionCoordinator(
             productAuthority,
             _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
@@ -601,12 +607,10 @@ public partial class MainWindow : Window
         if (_productGateway is not null)
         {
             _dispatcher.ClearProductDataGateway(_productGateway);
-            _productGateway.DataChanged -= OnProductDataChanged;
             _productGateway.TaskChanged -= OnProductTaskChanged;
             _productGateway.Dispose();
         }
         _productGateway = binding.CreateGateway(_workspaceSessionFilter);
-        _productGateway.DataChanged += OnProductDataChanged;
         _productGateway.TaskChanged += OnProductTaskChanged;
         _dispatcher.SetProductDataGateway(_productGateway);
 
@@ -746,7 +750,6 @@ public partial class MainWindow : Window
             if (_productGateway is not null)
             {
                 _dispatcher.ClearProductDataGateway(_productGateway);
-                _productGateway.DataChanged -= OnProductDataChanged;
                 _productGateway.TaskChanged -= OnProductTaskChanged;
                 _productGateway.Dispose();
                 _productGateway = null;
@@ -785,7 +788,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnRendererReady()
+    private void OnRendererReady(RendererReadyPhase phase)
     {
         _router.IsReady = true;
         _dispatcher.RotateDocumentCapabilityEpoch();
@@ -795,6 +798,7 @@ public partial class MainWindow : Window
             CompleteRendererBootstrap();
         }
         TryWriteReadiness();
+        _webBridge.Realtime.SetReady(phase);
     }
 
     private void CompleteRendererBootstrap()
@@ -898,11 +902,6 @@ public partial class MainWindow : Window
 
     private void OpenProductWorkspaceWhenReady()
         => _productWorkspace.OpenWhenReady();
-
-    private void OnProductDataChanged(DataChangedEvent change)
-    {
-        _webBridge.PostNotification("data.changed", change);
-    }
 
     private void OnProductTaskChanged(JsonElement change)
     {
@@ -1011,6 +1010,8 @@ public partial class MainWindow : Window
     private void OnClosed(object? sender, EventArgs args)
     {
         if (Interlocked.Exchange(ref _closing, 1) != 0) return;
+        _webBridge.Realtime.Retire();
+        _productRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _productSidecarGatewayLifecycle.Dispose();
         _testModeHost?.Dispose();
         Application.Current.SessionEnding -= OnSessionEnding;
@@ -1025,7 +1026,6 @@ public partial class MainWindow : Window
         if (_productGateway is not null)
         {
             _dispatcher.ClearProductDataGateway(_productGateway);
-            _productGateway.DataChanged -= OnProductDataChanged;
             _productGateway.TaskChanged -= OnProductTaskChanged;
             _productGateway.Dispose();
         }

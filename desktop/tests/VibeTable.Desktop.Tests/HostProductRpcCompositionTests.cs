@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
@@ -13,6 +14,53 @@ namespace VibeTable.Desktop.Tests;
 [DoNotParallelize]
 public sealed class HostProductRpcCompositionTests
 {
+    [TestMethod]
+    public async Task RealtimeAndFreshCatalogUseGoWhileTheActualPythonSupervisorIsStopped()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        await fixture.Backend.StopAsync(CancellationToken.None);
+        Assert.IsNull(fixture.Factory.CaptureHostProductRpcBinding());
+        fixture.Http.Result = Json("""{"tables":[{"tableId":"orders","kind":"base","displayName":"Orders"}]}""");
+        using var source = new TestSseStream(Encoding.UTF8.GetBytes(
+            "id: rt:0\nevent: realtime.recovered\ndata: {\"contractVersion\":\"2.0\",\"topic\":\"realtime.recovered\",\"activeFormulaTasks\":[],\"terminalNotifications\":[]}\n\n"),
+            blockAtEnd: true);
+        fixture.Http.RealtimeSource = source;
+        var posted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var topics = new List<string>();
+        var delivery = new ProductRealtimeDelivery((action, _) => { action(); return Task.CompletedTask; },
+            () => true, (topic, _) =>
+            {
+                topics.Add(topic);
+                if (topic == "realtime.recovered") posted.TrySetResult();
+            });
+        await using var owner = new ProductRealtimeSession(fixture.Factory,
+            fixture.Factory.CaptureProductSidecarGeneration, fixture.Sessions,
+            fixture.Leases, delivery, _ => { }, code => posted.TrySetException(new InvalidOperationException(code)), fixture.Http);
+        delivery.SetReady(RendererReadyPhase.Business);
+        await posted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
+        CollectionAssert.AreEqual(new[] { "database.collectionsChanged", "realtime.recovered" }, topics);
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task SidecarGenerationChangeIsPublishedWithoutAReadyPythonClient()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        long original = fixture.Factory.CaptureProductSidecarGeneration()!.SidecarGenerationId;
+        var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ((IProductSidecarGenerationAuthority)fixture.Factory).CurrentChanged += () =>
+        {
+            if (fixture.Factory.CaptureProductSidecarGeneration() is { } snapshot
+                && snapshot.SidecarGenerationId != original && fixture.Backend.State != BackendState.Ready)
+                changed.TrySetResult();
+        };
+        await fixture.Backend.StopAsync(CancellationToken.None);
+        await fixture.Sidecar.StopAsync(CancellationToken.None);
+        await fixture.Sidecar.StartAsync(CancellationToken.None);
+        await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
@@ -502,6 +550,7 @@ public sealed class HostProductRpcCompositionTests
         internal HttpPeer Http { get; }
         internal Action? BeforeSidecarReady { get; set; }
         internal WorkspaceSessionV2 Session => _sessions.Current;
+        internal WorkspaceSessionManager Sessions => _sessions;
 
         private Fixture(bool useTestPolicy)
         {
@@ -592,6 +641,7 @@ public sealed class HostProductRpcCompositionTests
     private sealed class HttpPeer(
         IReadOnlyList<ProductSidecarRegistration> registrations) : HttpMessageHandler
     {
+        internal Stream? RealtimeSource { get; set; }
         internal IDictionary<string, string> Environment { get; set; } = null!;
         internal int ProductCalls { get; private set; }
         internal int ProductHandshakes { get; private set; }
@@ -602,6 +652,12 @@ public sealed class HostProductRpcCompositionTests
         internal JsonElement LastWire { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
+            if (RealtimeSource is not null && request.RequestUri!.AbsolutePath.EndsWith("/events", StringComparison.Ordinal))
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(RealtimeSource) };
+                response.Content.Headers.ContentType = new("text/event-stream");
+                return response;
+            }
             if (request.Method == HttpMethod.Get)
             {
                 if (request.RequestUri!.AbsolutePath.Contains("/product/", StringComparison.Ordinal)) ProductHandshakes++;

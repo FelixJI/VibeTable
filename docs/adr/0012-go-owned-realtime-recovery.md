@@ -13,4 +13,6 @@ Go 持有实时游标、去重与 authority revision；WPF 只持有连接代际
 - 获取事务与读取继承请求 context，取消会释放 subscriber 注册锁；恢复 Hub 必须绑定已提交的根 App，不得从尚未提交的外层事务交付快照。持久任务的类型、状态、时间校验由 cold、增量与 live 共用。
 - 这是当前活动投影与有限通知窗口，不是完整 durable 任务历史。不存在的旧活动项只移除，不合成成功；窗口外的终态提示不作承诺。仅 active 的方案被否决，因为现有空 cursor 重启契约仍要求保留窗口内的成功、失败、取消通知。
 
-本次仅新增 Go v2 transport，现有 v1/Python 生产路径保持不变。后续紧邻切片先准备 renderer 消费者，再由 WPF 原子切流并删除 Python SSE supervisor/latest revision cache/二次包装：仅 app.ready 后且 UI 实际投递时仍属当前 generation 才可交付，epoch 退休不能沿用未投递恢复帧的 bookmark。renderer 必须真正重读目录/当前表页、Relation/Lookup、Dashboard 目录/定义/panels，隐藏消费者保存 dirty 状态；刷新失败不得冒充恢复完成。完整 L4 验收仍需新路径场景 10、recycle/gap/duplicate/ABA/late event/正常关闭与端口清理。
+WPF 的 session-owned 单流直接消费 Go v2，删除 Python SSE supervisor/latest revision cache/二次包装；Python 仅保留导入/导出及插件自己的任务通知。仅 app.ready 的 business 阶段确认订阅已安装后（shell 阶段只启动引导），且 UI 实际 Post 时仍属当前 session/epoch/renderer generation 才提交 bookmark。cold/gap 恢复先从 Go fresh 读取完整 table/view 目录，通过既有 database.collectionsChanged 投递，再投递 realtime.recovered；epoch 退休不能沿用未投递帧的 bookmark。正常 EOF 和明确可重试的 Go 错误使用有界退避，非法/未知 cursor 不重置；终止错误通过既有 operation.failed 的 realtime.stream 分流提示，不影响 table/paste/undo 状态。
+
+renderer 必须真正重读当前表页、Relation/Lookup、Dashboard 目录/定义/panels，隐藏消费者保存 dirty 状态；刷新失败不得冒充恢复完成。Host 定向回归不替代 renderer 组合及完整 L4 验收：后者仍需新路径场景 10、recycle/gap/duplicate/ABA/late event/正常关闭与端口清理。

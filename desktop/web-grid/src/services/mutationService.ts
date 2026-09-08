@@ -482,6 +482,7 @@ export function useMutationService(): {
     // A host-side failure rejects the pending history Promise. historyStore
     // then restores the entry to its original stack for a truthful retry.
     bridge.on("operation.failed", (failure) => {
+      if (failure.operation === "realtime.stream") return;
       const message =
         typeof failure === "object"
         && failure !== null

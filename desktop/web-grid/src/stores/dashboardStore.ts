@@ -101,16 +101,25 @@ export const useDashboardStore = defineStore("dashboards", () => {
     error.value = null;
   }
 
-  function receiveWorkspace(value: unknown): void {
+  function receiveWorkspace(value: unknown, options: { preserveSessionFilters?: boolean } = {}): void {
     const source = isRecord(value) ? value : {};
-    current.value = parseWireDashboard(source.dashboard);
+    const next = parseWireDashboard(source.dashboard);
+    const nextConfig = normalizeConfig(source.config);
+    const preservedFilters = options.preserveSessionFilters && current.value?.id === next.id
+      ? Object.fromEntries(Object.entries(sessionFilterValues.value).filter(([key]) => {
+        const before = config.value.globalFilters.find(filter => filter.key === key);
+        const after = nextConfig.globalFilters.find(filter => filter.key === key);
+        return before && after && compatibleSessionFilter(before, after);
+      }))
+      : {};
+    current.value = next;
     revision.value = typeof source.revision === "string" ? source.revision : null;
-    config.value = normalizeConfig(source.config);
+    config.value = nextConfig;
     limits.value = normalizeLimits(source.queryLimits);
     panelData.value = Object.fromEntries(
       current.value.panels.map((panel) => [panel.id, emptyPanelData()]),
     );
-    sessionFilterValues.value = {};
+    sessionFilterValues.value = preservedFilters;
     phase.value = "ready";
     error.value = null;
   }
@@ -191,6 +200,18 @@ export const useDashboardStore = defineStore("dashboards", () => {
     setFilterValue, clearFilterValues, reset,
   };
 });
+
+function compatibleSessionFilter(
+  before: DashboardFilterVariablePayload,
+  after: DashboardFilterVariablePayload,
+): boolean {
+  const bindings = (filter: DashboardFilterVariablePayload) => Object.entries(filter.fieldBindings ?? {})
+    .sort(([left], [right]) => left.localeCompare(right));
+  return before.type === after.type
+    && JSON.stringify([...before.allowedFields].sort()) === JSON.stringify([...after.allowedFields].sort())
+    && JSON.stringify([...before.targetPanels].sort()) === JSON.stringify([...after.targetPanels].sort())
+    && JSON.stringify(bindings(before)) === JSON.stringify(bindings(after));
+}
 
 function parseManifestEntry(
   value: unknown,

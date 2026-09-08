@@ -1,4 +1,4 @@
-import { watch } from "vue";
+import { onScopeDispose, watch } from "vue";
 
 import type {
   ColumnSchema,
@@ -24,7 +24,8 @@ type QueryLookups = ReturnType<typeof useRelationLookupService>["queryLookups"];
 
 export interface AuthoritativeLookupController {
   recordQuery(query: TableQuery): void;
-  refresh(): Promise<void>;
+  /** True only after all required projections apply, or a ready context needs no query. */
+  refresh(): Promise<boolean>;
 }
 
 export interface AuthoritativeLookupDependencies {
@@ -35,6 +36,7 @@ export interface AuthoritativeLookupDependencies {
   readonly datasetReady: () => boolean;
   readonly schemaRevision: () => string | null;
   readonly dataRevision: () => number | null;
+  readonly contextGeneration: () => number;
   readonly relationSchema: () => SchemaSnapshot | null;
   readonly capabilities: () => RelationLookupCapabilities | null;
   readonly lookups: () => readonly LookupDefinition[];
@@ -52,6 +54,11 @@ export function createAuthoritativeLookupController(
   const shouldShowNotification = createNotificationDeduper();
   let requestGeneration = 0;
   let interactiveQuery: TableQuery | null = null;
+  let disposed = false;
+  onScopeDispose(() => {
+    disposed = true;
+    requestGeneration += 1;
+  });
 
   watch(
     dependencies.currentTable,
@@ -65,7 +72,7 @@ export function createAuthoritativeLookupController(
       }
       void dependencies.loadContext(collection);
     },
-    { immediate: true },
+    { immediate: true, flush: "sync" },
   );
 
   watch(
@@ -89,23 +96,35 @@ export function createAuthoritativeLookupController(
     () => { void refresh(); },
   );
 
-  async function refresh(): Promise<void> {
+  async function refresh(): Promise<boolean> {
+    if (disposed) return false;
     const generation = ++requestGeneration;
+    const contextGeneration = dependencies.contextGeneration();
     const collection = dependencies.currentTable();
     const page = dependencies.tablePage();
     const columns = dependencies.columns();
+    const relationSchema = dependencies.relationSchema();
     const capabilities = dependencies.capabilities();
     const lookups = dependencies.lookups();
     const dataRevision = dependencies.dataRevision();
     if (
       !collection
       || !page
+      || page.table !== collection
       || !columns
       || !dependencies.datasetReady()
-      || !capabilities?.lookupQueryV1
-      || (lookups.length === 0 && !columns.some(column => column.kind === "relation"))
+      || !capabilities
+      || !relationSchema
+      || relationSchema.collection !== collection
+      || relationSchema.schemaRevision !== dependencies.schemaRevision()
       || dataRevision === null
-    ) return;
+    ) return false;
+    if (lookups.length === 0 && !columns.some(column => column.kind === "relation")) return true;
+    if (!capabilities.lookupQueryV1) return false;
+    const stillCurrent = (): boolean =>
+      generation === requestGeneration
+      && contextGeneration === dependencies.contextGeneration()
+      && collection === dependencies.currentTable();
     const fieldRefs = buildLookupProjectionFieldRefs(lookups);
     const fieldRefByName = new Map(columns.map(column => [
       column.name,
@@ -125,7 +144,7 @@ export function createAuthoritativeLookupController(
         for (let offset = 0; offset < ids.length; offset += 200) {
           const batch = ids.slice(offset, offset + 200);
           queries.push({
-            filters: [{ field: dependencies.relationSchema()?.primaryKey ?? "id", operator: "in", value: batch }],
+            filters: [{ field: relationSchema.primaryKey, operator: "in", value: batch }],
             sorts: [], groups: [], offset: 0, limit: batch.length,
           });
         }
@@ -134,21 +153,23 @@ export function createAuthoritativeLookupController(
         queries.push({ filters, sorts, groups, offset: page.offset, limit: Math.min(page.limit, 500) });
       }
       for (const query of queries) {
-        if (generation !== requestGeneration || dependencies.dataRevision() !== dataRevision) return;
+        if (!stillCurrent() || dependencies.dataRevision() !== dataRevision) return false;
         const result = await dependencies.queryLookups({ collection, fieldRefs, query });
         if (
-          generation !== requestGeneration
+          !stillCurrent()
           || dependencies.dataRevision() !== dataRevision
           || result.snapshot.dataRevision !== dataRevision
-        ) return;
-        dependencies.acceptResult(result, dataRevision);
+        ) return false;
+        if (!dependencies.acceptResult(result, dataRevision)) return false;
       }
+      return true;
     } catch (error) {
-      if (generation !== requestGeneration) return;
+      if (!stillCurrent()) return false;
       const content = relationLookupErrorMessage(error);
       if (content && shouldShowNotification(relationLookupNoticeKey(error))) {
         dependencies.reportError(content);
       }
+      return false;
     }
   }
 

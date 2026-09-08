@@ -8,6 +8,32 @@ namespace VibeTable.Desktop.Tests;
 public sealed class GridRequestControllerTests
 {
     [TestMethod]
+    public async Task CorrelatedQueryReturnsOnePageWithoutDatasetBroadcast()
+    {
+        var gateway = new FakeTableRpcGateway();
+        var page = new TablePage("records", [], [], 0, 100, 0, "remote");
+        gateway.CursorOpenResults["records"] = page;
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = new GridStateCoordinator(gateway, notifications.Add, time);
+        var sink = new FakeWebReplySink();
+        var controller = new GridRequestController(coordinator, sink);
+        using var payload = JsonDocument.Parse("""{"table":"records","query":{"filters":[]}}""");
+
+        Task request = controller.DispatchAsync(new RoutedWebRequest(
+            "table.queryRequested", "query-recovery", payload.RootElement, string.Empty));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await request.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(1, sink.Replies.Count, "The correlated query must settle its requester.");
+        var reply = sink.Replies.Single();
+        Assert.AreEqual("table.pageLoaded", reply.Type);
+        Assert.AreEqual("query-recovery", reply.RequestId);
+        Assert.AreSame(page, reply.Payload);
+        Assert.AreEqual(0, notifications.Count, "The same result must not also be broadcast.");
+    }
+
+    [TestMethod]
     public async Task DispatchAsync_ForwardsOpaqueQueryAndCursorAcrossControllerInterface()
     {
         var gateway = new FakeTableRpcGateway();
@@ -66,6 +92,29 @@ public sealed class GridRequestControllerTests
             "opaque",
             gateway.RawViewQueries.Single().GetProperty("extension").GetString());
         CollectionAssert.AreEqual(new[] { "cursor-2" }, gateway.CursorFetchCalls);
+    }
+
+    [TestMethod]
+    public async Task CancelledSessionRetiresDebouncedCorrelatedRequestWithoutReadingOrReplying()
+    {
+        var gateway = new FakeTableRpcGateway();
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = new GridStateCoordinator(gateway, notifications.Add, time);
+        var sink = new FakeWebReplySink();
+        using var session = new CancellationTokenSource();
+        var controller = new GridRequestController(coordinator, sink, () => session.Token);
+        using var payload = JsonDocument.Parse("""{"table":"records","query":{}}""");
+        Task request = controller.DispatchAsync(new RoutedWebRequest(
+            "table.queryRequested", "cancel-before-read", payload.RootElement, string.Empty));
+
+        session.Cancel();
+        await request.WaitAsync(TimeSpan.FromSeconds(2));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+
+        Assert.AreEqual(0, gateway.QueryWindowCalls.Count);
+        Assert.AreEqual(0, sink.Replies.Count);
+        Assert.AreEqual(0, notifications.Count);
     }
 
     [TestMethod]
