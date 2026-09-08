@@ -38,7 +38,7 @@ schema.list，保持健康错误码与严格响应解析。它们不依赖 rende
 参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
 `lookup.valuePage` 经同一policy直达既有Go relation服务，以目录revision和稳定fieldId绑定来源分页；
 Python专属分页转译已删除；lookup.query也已迁移，供冻结独立输入和其他路径使用的revision helper保留。完整原件与资格状态见[分页资格](../quality/lookup-value-page.md)。
-`file.token`、Python SSE/gap 恢复和本地 task producer 按后续切片处理。
+`file.token` 与本地 import/export task producer 按后续切片处理。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
@@ -77,3 +77,7 @@ schema/cursor 投影并保留请求 tableId 与三项 revision 配对。Python �
 同一 PocketBase QueryPort；`cursorFetch` 的 Product 路由 owner 不构成新的游标 authority。
 
 `lookup.query` 经 `lookupQueryRegistration` 直达既有 relation catalog/query 端口；专属 Python handler 和 grouped-view client 已退役，共享 relation export 的 lookup client 保留。八字段 Product 与 workspace/epoch 准入不变，Go 失败不回落 Python。原 Python 冻结回放、typed 表达边界及 S29 的当前验收状态见 [lookup.query 资格](../quality/lookup-query.md)。
+
+## Go 权威实时恢复（L4）
+
+`ProductRealtimeSession` 通过认证 Go v2 SSE 接收活动公式任务与有限终态通知，在 renderer 业务订阅就绪后交付；WPF 管理连接代际、epoch 和投递生命周期，不建立任务权威缓存。Python SSE supervisor、latest revision cache 与 data.changed 二次包装删除；Python 本地 import/export task.changed producer 保留。恢复失败不得推进 bookmark，旧 epoch 不得交付。细节和完整验收边界见 [ADR 0012](../adr/0012-go-owned-realtime-recovery.md)。

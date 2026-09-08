@@ -65,6 +65,9 @@ export function useRelationLookupService() {
   }
 
   async function loadContext(collection: string): Promise<boolean> {
+    // `beginContext` intentionally resets its context. Do not turn an
+    // authoritative background refresh into an implicit discard of an edit.
+    if (store.draft) return false;
     const requestGeneration = store.beginContext(collection);
     try {
       const [described, listed] = await Promise.all([

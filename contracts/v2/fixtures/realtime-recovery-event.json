@@ -1,0 +1,48 @@
+{
+  "contractVersion": "2.0",
+  "topic": "realtime.recovered",
+  "activeFormulaTasks": [
+    {
+      "taskId": "formula-resumed",
+      "state": "running",
+      "progress": 0.5,
+      "cursor": "row:5000",
+      "error": null
+    }
+  ],
+  "terminalNotifications": [
+    {
+      "contractVersion": "2.0",
+      "topic": "task.changed",
+      "eventId": "evt_formula_cancelled_before_resume",
+      "sequence": 40,
+      "occurredAt": "2026-09-03T08:30:00Z",
+      "taskId": "formula-resumed",
+      "taskType": "formulaBackfill",
+      "state": "cancelled",
+      "progress": 1,
+      "cursor": "row:4999",
+      "error": {
+        "contractVersion": "2.0",
+        "code": "formula.cancelled",
+        "path": null,
+        "message": "formula work was cancelled before resume",
+        "details": {},
+        "retryable": false
+      }
+    },
+    {
+      "contractVersion": "2.0",
+      "topic": "task.changed",
+      "eventId": "evt_formula_succeeded",
+      "sequence": 39,
+      "occurredAt": "2026-09-03T08:29:00Z",
+      "taskId": "formula-finished",
+      "taskType": "formulaBackfill",
+      "state": "succeeded",
+      "progress": 1,
+      "cursor": "row:4998",
+      "error": null
+    }
+  ]
+}

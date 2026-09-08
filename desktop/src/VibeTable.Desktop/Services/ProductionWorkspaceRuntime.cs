@@ -448,6 +448,15 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         ClientReady?.Invoke();
     }
 
+    internal void NotifySidecarCurrentChanged(ProductionWorkspaceRuntime runtime)
+    {
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_current, runtime)) return;
+        }
+        ProductSidecarCurrentChanged?.Invoke();
+    }
+
     internal void NotifyRecoveryFailed(
         ProductionWorkspaceRuntime runtime,
         Exception exception)
@@ -616,6 +625,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         ProductionWorkspaceRuntimeDependencies dependencies =
             createDependencies(sidecarOptions, backendOptions);
         Sidecar = dependencies.Sidecar;
+        Sidecar.StatusChanged += OnSidecarCurrentChanged;
         var localData = new LocalDataService(Sidecar);
         Backend = dependencies.Backend;
         Gateway = dependencies.Gateway;
@@ -751,6 +761,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             return;
         _owner.Deactivate(this);
         _runtime.ClientReady -= OnClientReady;
+        Sidecar.StatusChanged -= OnSidecarCurrentChanged;
         _runtime.RecoveryFailed -= OnRecoveryFailed;
         Gateway.Dispose();
         await _runtime.DisposeAsync().ConfigureAwait(false);
@@ -782,6 +793,9 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         if (Capabilities is not null)
             _owner.NotifyClientReady(this);
     }
+
+    private void OnSidecarCurrentChanged(object? sender, PocketBaseStatus status)
+        => _owner.NotifySidecarCurrentChanged(this);
 
     private void OnRecoveryFailed(Exception exception)
         => _owner.NotifyRecoveryFailed(this, exception);

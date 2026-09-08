@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 
@@ -51,6 +52,21 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             ?? throw new ArgumentNullException(nameof(processFailed));
         _isolatedUserDataRoot = isolatedUserDataRoot;
         _stableIsolatedUserDataRoot = stableIsolatedUserDataRoot;
+        Realtime = new ProductRealtimeDelivery(
+            (action, token) => _owner.Dispatcher.InvokeAsync(action, DispatcherPriority.Normal, token).Task,
+            () => _router.IsReady && _webView.CoreWebView2 is not null,
+            PostRealtimeNotification);
+    }
+
+    internal ProductRealtimeDelivery Realtime { get; }
+
+    private void PostRealtimeNotification(string type, object? payload)
+    {
+        if (!_router.IsHostNotificationAllowed(type))
+            throw new InvalidOperationException("Realtime notification is not registered.");
+        string json = JsonSerializer.Serialize(new { type, requestId = (string?)null, payload },
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        _webView.CoreWebView2!.PostWebMessageAsString(json);
     }
 
     /// <summary>
@@ -173,6 +189,11 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             {
                 args.Cancel = true;
             }
+            else
+            {
+                _router.IsReady = false;
+                Realtime.Retire();
+            }
         };
         core.FrameNavigationStarting += (_, args) =>
         {
@@ -231,6 +252,8 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                 return;
             }
             _readiness?.WriteError(reason);
+            _router.IsReady = false;
+            Realtime.Retire();
             _owner.Dispatcher.BeginInvoke(() => _processFailed(reason));
         };
     }

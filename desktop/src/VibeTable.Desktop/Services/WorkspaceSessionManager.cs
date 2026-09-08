@@ -96,6 +96,7 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
     private IWorkspaceRuntime? _runtime;
     private WorkspaceRegistryEntryV2? _currentEntry;
     private WorkspaceSessionV2 _current = ClosedSession(0);
+    private readonly object _publicationGate = new();
     private ulong _nextEpoch;
     private ulong _eventSequence;
     private bool _disposed;
@@ -750,10 +751,24 @@ public sealed class WorkspaceSessionManager : IAsyncDisposable
     private void Publish(WorkspaceSessionV2 session)
     {
         session.Validate();
-        _current = session;
+        lock (_publicationGate) _current = session;
         Changed?.Invoke(
             this,
             new WorkspaceSessionChangedEventArgs(session, ++_eventSequence));
+    }
+
+    // A delivery commits synchronously, never across await. Publishing a new
+    // session/phase cannot slip between the current check and the actual Post.
+    internal bool TryUseCurrentSession(Guid workspaceId, ulong epoch, Func<bool> action)
+    {
+        lock (_publicationGate)
+        {
+            return _current.WorkspaceId == workspaceId && _current.SessionEpoch == epoch
+                && _current.Phase == WorkspaceSessionPhase.Idle
+                && _current.State is (WorkspaceSessionState.OpenedReadOnly
+                    or WorkspaceSessionState.OpenedWritable or WorkspaceSessionState.OpenedProvisional)
+                && action();
+        }
     }
 
     private void ThrowIfDisposed() =>

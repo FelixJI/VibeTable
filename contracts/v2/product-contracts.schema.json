@@ -11,6 +11,7 @@
     {"$ref": "#/$defs/ManagedAttachmentRef"},
     {"$ref": "#/$defs/DataChangedEvent"},
     {"$ref": "#/$defs/TaskChangedEvent"},
+    {"$ref": "#/$defs/RecoverySnapshot"},
     {"$ref": "#/$defs/RpcContractCatalog"}
   ],
   "$defs": {
@@ -904,6 +905,46 @@
         "progress": {"type": "number", "minimum": 0, "maximum": 1},
         "cursor": {"type": ["string", "null"]},
         "error": {"$ref": "#/$defs/TaskError"}
+      }
+    },
+    "FormulaTaskState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "state", "progress", "cursor", "error"],
+      "properties": {
+        "taskId": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "enum": ["pending", "running"]},
+        "progress": {"type": "number", "minimum": 0, "maximum": 1},
+        "cursor": {"type": ["string", "null"]},
+        "error": {"$ref": "#/$defs/TaskError"}
+      }
+    },
+    "RecoverySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "topic", "activeFormulaTasks", "terminalNotifications"],
+      "properties": {
+        "contractVersion": {"$ref": "#/$defs/ContractVersion"},
+        "topic": {"const": "realtime.recovered"},
+        "activeFormulaTasks": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {"$ref": "#/$defs/FormulaTaskState"}
+        },
+        "terminalNotifications": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {"$ref": "#/$defs/TaskChangedEvent"},
+              {
+                "properties": {
+                  "taskType": {"const": "formulaBackfill"},
+                  "state": {"enum": ["succeeded", "failed", "cancelled"]}
+                }
+              }
+            ]
+          }
+        }
       }
     }
   }

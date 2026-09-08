@@ -43,7 +43,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
 
     assert manifest["contractVersion"] == "2.0"
     assert len(manifest["rpcMethods"]) == 103
-    assert len(manifest["eventTopics"]) == 6
+    assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
         "method": "schema.getTable",
@@ -100,8 +100,15 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         ]
         == "goSidecar"
     )
-    assert {item["owner"] for item in manifest["eventTopics"]} == {"pythonBff"}
+    assert {item["owner"] for item in manifest["eventTopics"]} == {
+        "pythonBff",
+        "goSidecar",
+        "wpfHost",
+    }
     events = {item["topic"]: item for item in manifest["eventTopics"]}
+    assert events["data.changed"]["owner"] == "goSidecar"
+    assert events["realtime.recovered"]["owner"] == "goSidecar"
+    assert events["task.changed"]["owner"] == "wpfHost"
     assert events["plugin.interaction.requested"]["audience"] == "rendererPublic"
     assert events["plugin.file.requested"]["audience"] == "hostOnly"
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
-import { createPinia, setActivePinia, type Pinia } from "pinia";
-import { defineComponent, h } from "vue";
+import { createPinia, getActivePinia, setActivePinia, type Pinia } from "pinia";
+import { defineComponent, h, watch } from "vue";
 import { NDropdown, NMessageProvider } from "naive-ui";
 
 import WorkspaceView from "./WorkspaceView.vue";
@@ -25,6 +25,8 @@ import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import { useSurfaceStore } from "@/stores/surfaceStore";
 import { useDashboardDraftStore } from "@/stores/dashboardStore";
+import { useRealtimeStore } from "@/stores/realtimeStore";
+import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { setLocale } from "@/i18n";
 import {
@@ -62,7 +64,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function makeRecordingBridge(): {
+function makeRecordingBridge(onPost?: (message: Outbound) => void): {
   bridge: HostBridge;
   posted: Outbound[];
   emit: (message: unknown) => void;
@@ -83,6 +85,7 @@ function makeRecordingBridge(): {
         try {
           const parsed = JSON.parse(msg) as { type: string; payload?: unknown; requestId?: string };
           posted.push({ type: parsed.type, payload: parsed.payload, requestId: parsed.requestId });
+          onPost?.(posted[posted.length - 1]!);
           return;
         } catch {
           posted.push({ type: msg, payload: undefined });
@@ -91,10 +94,12 @@ function makeRecordingBridge(): {
       }
       const env = msg as { type?: string; payload?: unknown; requestId?: string };
       posted.push({ type: env.type ?? "(unknown)", payload: env.payload, requestId: env.requestId });
+      onPost?.(posted[posted.length - 1]!);
     },
   };
   const bridge = createHostBridge({ webview: shim });
   bridge.start();
+  createdBridges.push(bridge);
   return {
     bridge,
     posted,
@@ -151,7 +156,7 @@ function seedStructuredTablePage(column: ColumnSchema): void {
   });
 }
 
-function configureWorkspaceEpochPair(): {
+function configureWorkspaceEpochPair(openInitial = true): {
   readonly session: ReturnType<typeof useWorkspaceSessionStore>;
   readonly rotate: () => boolean;
 } {
@@ -184,7 +189,7 @@ function configureWorkspaceEpochPair(): {
     phase: "idle",
     errorCode: null,
   });
-  apply(workspaceA, 1);
+  if (openInitial) apply(workspaceA, 1);
   return { session, rotate: () => apply(workspaceB, 2) };
 }
 
@@ -219,6 +224,18 @@ function mountView({ realTransitions = false }: { realTransitions?: boolean } = 
 }
 
 const mountedViews: ReturnType<typeof mount>[] = [];
+const createdBridges: HostBridge[] = [];
+
+async function disposeViewsAndBridges(): Promise<void> {
+  for (const wrapper of mountedViews.splice(0)) wrapper.unmount();
+  // Pending request catches can still run Pinia actions after unmount. Settle
+  // them before the next test installs a different active Pinia.
+  for (const bridge of createdBridges.splice(0)) bridge.stop();
+  await flushPromises();
+  setHostBridgeForTesting(null);
+  setWorkspaceV2UiPort(null);
+  vi.restoreAllMocks();
+}
 
 /** Build a valid `PastePlan` carrying a non-consumed token for apply tests. */
 function makePlan(token = "tok-xyz"): PastePlan {
@@ -258,13 +275,78 @@ describe("WorkspaceView", () => {
     };
   });
 
-  afterEach(() => {
-    for (const wrapper of mountedViews.splice(0)) wrapper.unmount();
+  afterEach(async () => {
+    await disposeViewsAndBridges();
     document.body.innerHTML = "";
     document.body.removeAttribute("tabindex");
-    setHostBridgeForTesting(null);
-    setWorkspaceV2UiPort(null);
-    vi.restoreAllMocks();
+  });
+
+  it("settles the retired view's bridge before a later view receives recovery and closes its draft", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let stopPageObserver: (() => void) | undefined;
+    try {
+      const old = makeRecordingBridge();
+      setHostBridgeForTesting(old.bridge);
+      const oldWorkspace = useWorkspaceStore();
+      oldWorkspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      oldWorkspace.selectTable("orders");
+      mountView();
+      await flushPromises();
+      expect(old.posted.some((message) => message.type === "schema.describe")).toBe(true);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await disposeViewsAndBridges();
+
+      testPinia = createPinia();
+      setActivePinia(testPinia);
+      const current = makeRecordingBridge();
+      setHostBridgeForTesting(current.bridge);
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+      const ownedRealtime = useRealtimeStore();
+      const ownedTable = useTableStore();
+      const ownedRelations = useRelationLookupStore();
+      mountView();
+      await flushPromises();
+      current.emit({ type: "realtime.recovered", payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [{ taskId: "first-cold-task", state: "running", progress: 0.5,
+          cursor: "0.5", error: null }], terminalNotifications: [],
+      } });
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(5_001);
+      const mountedPiniaSelected = getActivePinia() === testPinia;
+      const observedTask = useRealtimeStore().activeFormulaBackfill?.taskId;
+      const relations = useRelationLookupStore();
+      relations.openDraft("orders.customer", "order-1", []);
+      let appliedPages = 0;
+      stopPageObserver = watch(() => useTableStore().datasetReady, (ready) => {
+        if (ready) appliedPages += 1;
+      }, { flush: "post" });
+      const first = current.posted.find((message) => message.type === "table.queryRequested")!;
+      current.emit({ type: "table.pageLoaded", requestId: first.requestId, payload: {
+        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+      } });
+      await flushPromises();
+      const mountedDraftOpened = ownedRelations.draft !== null;
+      relations.closeDraft();
+      await flushPromises();
+      expect.soft(mountedPiniaSelected).toBe(true);
+      expect.soft(observedTask).toBe("first-cold-task");
+      expect.soft(ownedRealtime.activeFormulaBackfill?.taskId).toBe("first-cold-task");
+      expect.soft(ownedTable.datasetReady).toBe(true);
+      expect.soft(appliedPages).toBe(1);
+      expect.soft(mountedDraftOpened).toBe(true);
+      expect.soft(current.posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(2);
+    } finally {
+      stopPageObserver?.();
+      try {
+        await disposeViewsAndBridges();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it("mounts and calls service.init() for every service without errors", async () => {
@@ -1278,6 +1360,291 @@ describe("WorkspaceView", () => {
     expect(status.get('[role="progressbar"]').attributes("aria-valuenow")).toBe("64");
   });
 
+  it("receives the first cold recovery only after a held first-open reply installs business subscriptions", async () => {
+    let connections = 0;
+    const { bridge, emit, posted } = makeRecordingBridge((message) => {
+      if (message.type !== "app.ready"
+        || (message.payload as { phase?: string }).phase !== "business") return;
+      connections += 1;
+      emit({ type: "realtime.recovered", payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [{ taskId: "first-cold-task", state: "running", progress: 0.5,
+          cursor: "0.5", error: null }], terminalNotifications: [],
+      } });
+    });
+    setHostBridgeForTesting(bridge);
+    const { session } = configureWorkspaceEpochPair(false);
+    session.setWorkspaces(session.workspaces.map((entry, index) => ({
+      ...entry, lastOpenedAt: index === 0 ? "2026-09-03T00:00:00Z" : null,
+    })));
+    useUiStore().setWorkspaceStartupPolicy("lastWorkspace");
+    const reply = deferred<void>();
+    const request = vi.fn(async () => {
+      const opened = {
+        contractVersion: "2.0" as const, workspaceId: session.workspaces[0]!.workspaceId,
+        sessionEpoch: 1, state: "openedWritable" as const, openMode: "writable" as const,
+        writable: true, provisional: false, phase: "idle" as const, errorCode: null,
+      };
+      session.applySession(opened);
+      await reply.promise;
+      return opened;
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    bridge.notify("app.ready", {}); // Legacy shell readiness is not business readiness.
+    mountView();
+    await flushPromises();
+    expect(request).toHaveBeenCalledOnce();
+    expect(session.hasOpenWorkspace).toBe(true);
+    expect(connections).toBe(0);
+    expect(useRealtimeStore().activeFormulaBackfill).toBeNull();
+    reply.resolve();
+    await flushPromises();
+    expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("first-cold-task");
+    expect(connections).toBe(1);
+    expect(posted).toContainEqual(expect.objectContaining({
+      type: "app.ready", payload: { phase: "business" },
+    }));
+  });
+
+  it("wires recovered realtime through the root consumer before app.ready and starts a correlated table reload", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+
+    expect(posted.some((message) => message.type === "app.ready")).toBe(true);
+    emit({
+      type: "realtime.recovered",
+      payload: {
+        contractVersion: "2.0",
+        topic: "realtime.recovered",
+        activeFormulaTasks: [{
+          taskId: "formula-recovered",
+          state: "running",
+          progress: 0.5,
+          cursor: "0.5",
+          error: null,
+        }],
+        terminalNotifications: [],
+      },
+    });
+    await flushPromises();
+
+    expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("formula-recovered");
+    expect(posted).toContainEqual(expect.objectContaining({
+      type: "table.queryRequested",
+      payload: expect.objectContaining({ table: "orders" }),
+    }));
+  });
+
+  it("retires recovery before its post-page Relation read when the current table changes", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened(
+      [{ collection: "orders" }, { collection: "customers" }],
+      { orders: "Orders", customers: "Customers" },
+    );
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+    // Isolate the root recovery call from the pre-existing datasetReady
+    // watcher: its context already matches the page that will be delivered.
+    const relations = useRelationLookupStore();
+    relations.collection = "orders";
+    relations.schema = {
+      collection: "orders", primaryKey: "id", schemaRevision: "schema_7",
+      permissionRevision: "permission_7", capabilityHash: "cap_7", lookupRevision: "lookup_7",
+      normalizedRelations: [], columns: [],
+    };
+    relations.capabilities = {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+    };
+    const beforeOrdersContexts = posted.filter((message) =>
+      message.type === "schema.describe"
+      && (message.payload as { collection?: string }).collection === "orders",
+    ).length;
+
+    emit({
+      type: "realtime.recovered",
+      payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [], terminalNotifications: [],
+      },
+    });
+    await flushPromises();
+    const reload = [...posted].reverse().find((message) => message.type === "table.queryRequested")!;
+    const stopSwitch = watch(
+      () => useTableStore().datasetReady,
+      (ready) => { if (ready) workspace.selectTable("customers"); },
+      { flush: "post", once: true },
+    );
+    emit({
+      type: "table.pageLoaded",
+      requestId: reload.requestId,
+      payload: {
+        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+      },
+    });
+    // This post-flush change runs after reloadCurrentQuery has resolved
+    // applied, but before the root coordinator resumes its next await.
+    await flushPromises();
+    stopSwitch();
+
+    expect(posted.filter((message) =>
+      message.type === "schema.describe"
+      && (message.payload as { collection?: string }).collection === "orders",
+    )).toHaveLength(beforeOrdersContexts);
+  });
+
+  it("leaves a failed recovery dirty without scheduling an implicit retry", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+
+    emit({
+      type: "realtime.recovered",
+      payload: { contractVersion: "2.0", topic: "realtime.recovered", activeFormulaTasks: [], terminalNotifications: [] },
+    });
+    await flushPromises();
+    const reload = [...posted].reverse().find((message) => message.type === "table.queryRequested")!;
+    emit({
+      type: "operation.failed",
+      requestId: reload.requestId,
+      payload: { message: "offline", operation: "table.queryRequested" },
+    });
+    await flushPromises();
+
+    expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(1);
+  });
+
+  it("uses a relation draft close as an explicit finite retry trigger for retained recovery dirtiness", async () => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    mountView();
+    await flushPromises();
+    const relations = useRelationLookupStore();
+    relations.openDraft("orders.customer", "order-1", []);
+
+    emit({
+      type: "realtime.recovered",
+      payload: { contractVersion: "2.0", topic: "realtime.recovered", activeFormulaTasks: [], terminalNotifications: [] },
+    });
+    await flushPromises();
+    const first = [...posted].reverse().find((message) => message.type === "table.queryRequested")!;
+    emit({
+      type: "table.pageLoaded",
+      requestId: first.requestId,
+      payload: {
+        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+      },
+    });
+    await flushPromises();
+    expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(1);
+
+    relations.closeDraft();
+    await flushPromises();
+    expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(2);
+  });
+
+  it.each(["accepted", "rejected", "draft opened"] as const)(
+    "keeps recovery state consistent when the Relation context is %s after page reload",
+    async (outcome) => {
+      const { bridge, emit, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+      useUiStore().navigate("tables");
+      const wrapper = mountView();
+      await flushPromises();
+      const relations = useRelationLookupStore();
+      // Match the page revision so the ordinary schema watcher cannot stand
+      // in for the correlated recovery consumer under test.
+      const schema = {
+        collection: "orders", primaryKey: "id", schemaRevision: "schema_7",
+        permissionRevision: "permission_7", capabilityHash: "cap_7", lookupRevision: "lookup_7",
+        normalizedRelations: [], columns: [],
+      };
+      const capabilities = {
+        contract: "vibetable.relation-capabilities.v1" as const,
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true,
+      };
+      relations.collection = "orders";
+      relations.schema = schema;
+      relations.capabilities = capabilities;
+      await flushPromises();
+      posted.length = 0;
+
+      emit({ type: "realtime.recovered", payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [], terminalNotifications: [],
+      } });
+      await flushPromises();
+      const reload = posted.find((message) => message.type === "table.queryRequested")!;
+      emit({ type: "table.pageLoaded", requestId: reload.requestId, payload: {
+        table: "orders", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+      } });
+      await flushPromises();
+      const contexts = posted.filter((message) => message.type === "schema.describe");
+      expect(contexts).toHaveLength(1);
+      const described = contexts[0]!;
+      const listed = posted.find((message) => message.type === "lookup.list")!;
+      expect(relations.loading).toBe(true);
+      if (outcome === "draft opened") {
+        relations.openDraft("orders.customer", "order-1", []);
+        relations.toggleDraftTarget({ collection: "customers", itemId: "customer-2", label: "Unsaved" });
+      }
+      if (outcome === "rejected") {
+        emit({ type: "operation.failed", requestId: described.requestId, payload: {
+          operation: "schema.describe", message: "context unavailable",
+        } });
+      } else {
+        emit({ type: "schema.describe", requestId: described.requestId, payload: {
+          contract: "vibetable.schema-describe.v1", collection: "orders",
+          requestGeneration: (described.payload as { requestGeneration: number }).requestGeneration,
+          schema, capabilities,
+        } });
+      }
+      emit({ type: "lookup.list", requestId: listed.requestId, payload: {
+        collection: "orders", definitions: [], lookupRevision: "lookup_7",
+      } });
+      await flushPromises();
+      expect(relations.loading).toBe(false);
+      expect(posted.filter((message) => message.type === "table.queryRequested")).toHaveLength(1);
+
+      if (outcome === "draft opened") {
+        expect(relations.draft?.selected).toEqual([
+          { collection: "customers", itemId: "customer-2", label: "Unsaved" },
+        ]);
+        relations.closeDraft();
+      } else {
+        expect(relations.error).toBe(outcome === "rejected" ? "context unavailable" : null);
+        wrapper.findComponent(AppToolbar).vm.$emit("refresh");
+      }
+      await flushPromises();
+      // Successful reconciliation retires the recovery obligation. A failed
+      // context or preserved draft needs exactly one explicit correlated retry.
+      expect(posted.filter((message) => message.type === "table.queryRequested"))
+        .toHaveLength(outcome === "accepted" ? 1 : 2);
+      expect(posted.filter((message) => message.type === "table.selected"))
+        .toHaveLength(outcome === "accepted" ? 1 : 0);
+    },
+  );
   it("does not label unrelated background tasks as formula backfills", async () => {
     const { bridge, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
