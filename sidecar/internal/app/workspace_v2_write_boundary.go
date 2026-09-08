@@ -24,6 +24,7 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 	"/api/vibetable/v1/relations/preview-delta":  {},
 	"/api/vibetable/v1/lookups/query":            {},
 	"/api/vibetable/v1/lookups/preview":          {},
+	"/api/vibetable/v1/lookups/value-page":       {},
 	"/api/vibetable/v1/mutations/preview":        {},
 	"/api/vibetable/v1/events/reconcile":         {},
 	"/api/vibetable/v2/import-preview":           {},
