@@ -607,11 +607,31 @@ describe("tableStore mutation extensions", () => {
     }]);
   });
 
-  it("normalizes PocketBase id to rowKey when merging Lookup rows", () => {
+  it("refreshes only relation labels without replacing edited cells or page state", () => {
+    const s = useTableStore();
+    s.setDatasetReady(makeDatasetReady([
+      { rowKey: "r1", title: "Draft", contract: "target", __vibetableRelationLabels: { contract: { target: "Old" } } },
+      { rowKey: "r2", title: "Keep", contract: "other" },
+    ], [makeColumn("title"), { ...makeColumn("contract"), kind: "relation" }], 2));
+    const page = s.pages[0];
+    s.applyLookupQueryResult({
+      contract: "vibetable.lookup-query.v1", collection: "records", requestGeneration: 2,
+      schemaRevision: "s", permissionRevision: "p", lookupRevision: "l", columns: [],
+      rows: [{ id: "r1", title: "Stored", contract: "target", __vibetableRelationLabels: { contract: { target: "Fresh" } } }],
+      groups: [], offset: 0, limit: 1, filteredRows: 1, totalRows: 1, snapshot: lookupSnapshot(1),
+    }, { labelsOnly: true });
+    expect(s.pages[0]).toMatchObject({ ...page, rows: expect.any(Array) });
+    expect(s.rowCount).toBe(2);
+    expect(s.allRows).toEqual([
+      { rowKey: "r1", title: "Draft", contract: "target", __vibetableRelationLabels: { contract: { target: "Fresh" } } },
+      { rowKey: "r2", title: "Keep", contract: "other" },
+    ]);
+  });
+  it.each([undefined, {}, { contract: { target: "Fresh" } }])("replaces relation label metadata when merging Lookup rows: %j", (labels) => {
     const s = useTableStore();
     s.setDatasetReady({
       ...makeDatasetReady([
-        { rowKey: "r1", title: "draft", lookupValue: null },
+        { rowKey: "r1", title: "draft", lookupValue: null, __vibetableRelationLabels: { contract: { target: "Stale" } } },
       ], [
         { ...makeColumn("title"), fieldId: "records.title" },
         {
@@ -632,7 +652,7 @@ describe("tableStore mutation extensions", () => {
       permissionRevision: "p",
       lookupRevision: "l",
       columns: [],
-      rows: [{ id: "r1", "records.lookup": "resolved" }],
+      rows: [{ id: "r1", "records.lookup": "resolved", ...(labels === undefined ? {} : { __vibetableRelationLabels: labels }) }],
       groups: [],
       offset: 0,
       limit: 1,
@@ -645,6 +665,7 @@ describe("tableStore mutation extensions", () => {
       rowKey: "r1",
       title: "draft",
       lookupValue: "resolved",
+      ...(labels === undefined ? {} : { __vibetableRelationLabels: labels }),
     }]);
   });
 

@@ -745,26 +745,12 @@ func (port *Port) queryRows(
 	params map[string]any,
 	descriptor TableDescriptor,
 ) ([]map[string]any, error) {
-	rows, err := queryDynamicRows(
-		app.DB().NewQuery(sql).WithContext(ctx).Bind(dbx.Params(params)))
+	rows, err := readQueryRows(ctx, app, sql, params, descriptor)
 	if err != nil {
 		return nil, err
 	}
-	for _, row := range rows {
-		for name, value := range row {
-			field, ok := descriptor.Fields[name]
-			if !ok {
-				continue
-			}
-			row[name] = decodeFieldValue(value, field)
-		}
-		for name := range descriptor.PresenceFields {
-			alias := presenceAlias(name)
-			if !truthyPresence(row[alias]) {
-				row[name] = nil
-			}
-			delete(row, alias)
-		}
+	if err := projectRelationLabels(ctx, app, descriptor, rows); err != nil {
+		return nil, err
 	}
 	// Provider-neutral/query-compiler tests and virtual sources may not have a
 	// PocketBase record collection. Product descriptors always supply
@@ -1053,4 +1039,29 @@ func operationError(err error) error {
 		return productErr
 	}
 	return storageError(err)
+}
+
+func readQueryRows(ctx context.Context, app core.App, sql string, params map[string]any, descriptor TableDescriptor) ([]map[string]any, error) {
+	rows, err := queryDynamicRows(
+		app.DB().NewQuery(sql).WithContext(ctx).Bind(dbx.Params(params)))
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		for name, value := range row {
+			field, ok := descriptor.Fields[name]
+			if !ok {
+				continue
+			}
+			row[name] = decodeFieldValue(value, field)
+		}
+		for name := range descriptor.PresenceFields {
+			alias := presenceAlias(name)
+			if !truthyPresence(row[alias]) {
+				row[name] = nil
+			}
+			delete(row, alias)
+		}
+	}
+	return rows, nil
 }

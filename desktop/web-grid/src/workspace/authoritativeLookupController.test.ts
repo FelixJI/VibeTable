@@ -56,7 +56,7 @@ function result(generation: number, dataRevision = 1): LookupQueryResult {
 }
 
 describe("authoritativeLookupController", () => {
-  it("使用记录的完整 grid query，并丢弃较晚返回的旧 generation", async () => {
+  it.each([true, false])("使用完整 query 刷新 Lookup/Relation 并丢弃旧 generation（Lookup=%s）", async (hasLookup) => {
     const first = deferred<LookupQueryResult>();
     const second = deferred<LookupQueryResult>();
     const queryLookups = vi.fn()
@@ -66,7 +66,7 @@ describe("authoritativeLookupController", () => {
     const page: TablePage = {
       table: "orders",
       columns: [],
-      rows: [],
+      rows: [{ rowKey: "visible" }],
       offset: 0,
       limit: 500,
       totalRows: 0,
@@ -75,8 +75,9 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [
-        { name: "customer", title: "Customer", fieldId: "orders.customer", dataType: "text", editable: true, nullable: true },
+        { name: "customer", title: "Customer", fieldId: "orders.customer", kind: "relation", dataType: "text", editable: true, nullable: true },
         { name: "price", title: "Price", fieldId: "orders.price", dataType: "decimal", editable: false, nullable: true },
       ],
       datasetReady: () => true,
@@ -98,7 +99,7 @@ describe("authoritativeLookupController", () => {
         relationEditV1: true,
         lookupQueryV1: true,
       }),
-      lookups: () => [lookup],
+      lookups: () => hasLookup ? [lookup] : [],
       resetContext: vi.fn(),
       loadContext: vi.fn(async () => undefined),
       queryLookups,
@@ -126,14 +127,14 @@ describe("authoritativeLookupController", () => {
 
     expect(queryLookups).toHaveBeenLastCalledWith({
       collection: "orders",
-      fieldRefs: ["price"],
-      query: {
+      fieldRefs: hasLookup ? ["price"] : [],
+      query: hasLookup ? {
         filters: [{ field: "orders.customer", operator: "eq", value: "c1" }],
         sorts: [{ field: "orders.price", direction: "desc" }],
         groups: [{ fieldRef: "orders.customer", direction: "asc" }],
         offset: 0,
         limit: 500,
-      },
+      } : { filters: [{ field: "id", operator: "in", value: ["visible"] }], sorts: [], groups: [], offset: 0, limit: 1 },
     });
     expect(acceptResult).toHaveBeenCalledWith(result(2), 1);
     scope.stop();
@@ -158,6 +159,7 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [{
         name: "customer",
         title: "Customer",
@@ -237,6 +239,7 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [{
         name: "price",
         title: "Price",
@@ -285,7 +288,7 @@ describe("authoritativeLookupController", () => {
   });
 
   it("在 controller 边界拒绝旧 groupBy，且不发送降级后的 Lookup 请求", async () => {
-    const queryLookups = vi.fn(async () => result(1));
+    const queryLookups = vi.fn<AuthoritativeLookupDependencies["queryLookups"]>(async () => result(1));
     const reportError = vi.fn();
     const page: TablePage = {
       table: "orders",
@@ -299,6 +302,7 @@ describe("authoritativeLookupController", () => {
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => "orders",
       tablePage: () => page,
+      loadedRows: () => page.rows,
       columns: () => [{
         name: "customer",
         title: "Customer",
@@ -344,4 +348,34 @@ describe("authoritativeLookupController", () => {
     expect(reportError).toHaveBeenCalledTimes(1);
     scope.stop();
   });
+});
+
+it("refreshes all loaded cursor windows in bounded ID batches while retaining source query state", async () => {
+  const rows = Array.from({ length: 405 }, (_, index) => ({ rowKey: `row-${index}` }));
+  const page: TablePage = { table: "orders", columns: [], rows: rows.slice(0, 100), offset: 300, limit: 100, totalRows: 9000, mode: "remote" };
+  const queryLookups = vi.fn<AuthoritativeLookupDependencies["queryLookups"]>(async () => result(1));
+  const acceptResult = vi.fn(() => true);
+  const dependencies: AuthoritativeLookupDependencies = {
+    currentTable: () => "orders", tablePage: () => page, loadedRows: () => rows,
+    columns: () => [{ name: "customer", title: "Customer", kind: "relation", dataType: "text", editable: true, nullable: true }],
+    datasetReady: () => true, schemaRevision: () => "schema-1", dataRevision: () => 1,
+    relationSchema: () => ({ collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [], schemaRevision: "schema-1", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l" }),
+    capabilities: () => ({ contract: "vibetable.relation-capabilities.v1", relationReadV1: true, relationEditV1: true, lookupQueryV1: true }),
+    lookups: () => [], resetContext: vi.fn(), loadContext: vi.fn(async () => undefined), queryLookups, acceptResult, clearEditRejection: vi.fn(), reportError: vi.fn(),
+  };
+  const scope = effectScope();
+  const controller = scope.run(() => createAuthoritativeLookupController(dependencies))!;
+  controller.recordQuery({ filters: [{ field: "customer", operator: "eq", value: "old-label" }], offset: 300, limit: 100 });
+  await controller.refresh();
+  expect(queryLookups).toHaveBeenCalledTimes(3);
+  const requests = queryLookups.mock.calls.map(call => call[0]);
+  expect(requests.map(request => request.query.limit)).toEqual([200, 200, 5]);
+  expect(requests.flatMap((request) => {
+    const filter = request.query.filters![0]!;
+    return "value" in filter ? filter.value : [];
+  })).toEqual(rows.map(row => row.rowKey));
+  expect(requests.every(request => request.query.offset === 0 && request.fieldRefs.length === 0)).toBe(true);
+  expect(acceptResult).toHaveBeenCalledTimes(3);
+  expect(page.offset).toBe(300);
+  scope.stop();
 });

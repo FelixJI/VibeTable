@@ -183,7 +183,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         var sanitizedValues = new Dictionary<string, object?>(StringComparer.Ordinal);
         foreach ((string name, object? value) in values)
         {
-            if (name is "id" or "rowKey" or "__vibetableDigest")
+            if (name is "id" or "rowKey" or "__vibetableDigest" or "__vibetableRelationLabels")
             {
                 continue;
             }

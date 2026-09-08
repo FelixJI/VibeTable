@@ -405,6 +405,7 @@ const pendingRelationCreation = relationEditorController.pendingCreation;
 const authoritativeLookups = createAuthoritativeLookupController({
   currentTable: () => workspace.currentTable,
   tablePage: () => tableStore.pages[0] ?? null,
+  loadedRows: () => tableStore.allRows,
   columns: () => tableStore.schema,
   datasetReady: () => tableStore.datasetReady,
   schemaRevision: () => tableStore.revision?.schemaRevision ?? null,
@@ -417,7 +418,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
   queryLookups: request => relationLookupService.queryLookups(request),
   acceptResult: (result, currentDataRevision) => {
     if (!relationLookup.acceptLookup(result, currentDataRevision)) return false;
-    tableStore.applyLookupQueryResult(result);
+    tableStore.applyLookupQueryResult(result, { labelsOnly: relationLookup.lookups.length === 0 });
     return true;
   },
   clearEditRejection: () => { editRejection.value = null; },
@@ -650,12 +651,14 @@ function initializeBusinessConsumers(): void {
   // handlers for the same key (see hostBridge).
   workspaceService.init();
   tableService.init();
-  // tableService/mutationService already own scalar-row reconciliation.
-  // Relation/Lookup invalidation reloads its capability context and the
-  // dataRevision watcher below re-queries authoritative Lookup rows. Starting
-  // a second full-table refresh here briefly removes the grid, can satisfy UI
-  // waits before an undo is committed, and races the mutation confirmation.
-  relationLookupService.init();
+  // Source writes reconcile through tableService/mutationService. Target-only
+  // writes refresh Relation display metadata in place; a full table reload
+  // would discard cursor windows and interfere with edits awaiting receipts.
+  relationLookupService.init((change) => {
+    if (change.tableId !== workspace.currentTable && relationLookup.lookups.length === 0) {
+      void authoritativeLookups.refresh();
+    }
+  });
   pasteService.init();
   mutationService.init(
     (error) => {
