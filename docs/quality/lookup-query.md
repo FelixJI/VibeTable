@@ -25,11 +25,11 @@ S29 通过真实 WebView2 选择源表渲染 Lookup、点击来源面板并从 1
 - Ruff check / format 通过（13 个 Python 文件）；完整 backend 加冻结保留器/测试 Pyright 0 errors；policy、product E2E index 和保留原件 --check 均通过。首次 Pyright 未解析共享环境失败，随后指定 --pythonpath 仍受项目 venvPath 约束；最终通过 --venvpath 指向已有环境，不修改配置或安装依赖。
 - 交叉 HTTP 首次 build failed，根因是注册 guard 被错误插入两处普通语句；修正为 mux 注册列表唯一一行，旧日志 build/lookup-query-cross-http.log 保留，修正后交叉 HTTP race 实际测试通过（125.524s），新日志 build/lookup-query-cross-http-corrected.log 保留。更早 direct preview 测试误插入已撤销且该文件无 diff。
 
-独立 Standards 当前无必须修复项；P3 建议合并与 query.view 重复的原始 Unicode 扫描器，本切片接受局部重复，避免把另一 decoder 的行为改动混入 owner 切换。独立 Spec 的 S06 场景绑定问题已修正为 S29 并复核代码部分；产品资格仍待实际运行。
+独立 Standards 当前无必须修复项；P3 建议合并与 query.view 重复的原始 Unicode 扫描器，本切片接受局部重复，避免把另一 decoder 的行为改动混入 owner 切换。独立 Spec 的 S06 场景绑定问题已修正为 S29 并复核代码部分；该轮审查时产品资格尚待实际运行，后续实际结果见下文。
 
 ## 尚未完成
 
-实际 Go 构建物 S29 及最终文档/增量双轴审查 pending。runner/index 150 passed（21.08s），日志 build/lookup-query-runner-index.log。当前未提交本地 owner 变更、未开 PR。最终严格同步 main 的 fresh CI、squash merge 与合并后 CI/CD 均 pending；上述局部通过不能称完整交付。
+本地实现已提交 523a806e2e82885ae252e493872673de8a3a1133，正常同步 main2c211088 后为 a74fcf9f0f033fdc17d7a31e339a60f5840550ed；增量仅主题探针，独立 Standards/Spec 均无新增问题。runner/index 150 passed（21.08s），日志 build/lookup-query-runner-index.log。尚未开 PR，须待依赖分页 PR291 先进入 main；最终资格文档增量复核待完成。最终严格同步 main 的 fresh CI、squash merge 与合并后 CI/CD 均 pending；上述局部通过不能称完整交付。
 
 相关精确执行入口（uv 使用已有环境，PYTHONPATH 显式绑定本工作树）：
 
@@ -42,3 +42,12 @@ uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py 
 ```
 
 上述 Python 相关集对应保留的首次 133 passed / 1 failed；修正后仅 `tests/backend/test_main_product_data.py::test_product_rpc_registration_is_closed_and_provider_neutral` 定向通过，未将首次失败改写为整体全绿。
+## 实际 Go 构建物 S29
+
+固定生产源码 `a74fcf9f0f033fdc17d7a31e339a60f5840550ed`：`uv run --frozen --no-sync python scripts/build_next.py` 完整所有组件构建 EXIT0，复用已有 uv、Node 24.19.0、Go 和 .NET 缓存，没有使用 skip 标志；日志 build/lookup-query-product-build.log。
+
+`uv run --frozen --no-sync python -m tests.e2e.product_e2e_runner --scenario 29-lookup-source-pagination`：QA `20260908T085038Z` 为 1/1 passed、0 failed、0 skipped，8629ms。九项断言全部成功，包含选表后新 lookup.query 往返、普通点击来源 100→101、唯一 Unicode、耗尽、业务行/revision 不变。完整诊断中的两次 lookup.query 请求与响应类型匹配、code=null；bridge failures/pending、pageErrors 为空。包审计无错误、四组件 freshness 全部通过。lifecycle.hostExitCode=0、成员/后代列表为空、端口释放、owner lease 关闭和最终 cleanup 全通过，无剩余 PID。报告为 build/qa/product-e2e/20260908T085038Z/product-e2e-report.json。
+
+最终 S29 诊断窗口修正已获独立双轴复核：按旧 requests/roundTrips/pending 的 requestId 排除既有请求，不依赖满200条后会滚动的长度切片。首次字符串替换因CRLF只替换定义，消费端遗漏由复审发现后完整纠正；另执行实际源码窗口片段，确认满队列接受新请求、拒绝旧在途完成，日志 build/lookup-query-window-check.log。此局部检查与实际产品报告分别保留。
+
+正常提交的 Ruff format/check、version consistency、package contract hooks 均 passed。
