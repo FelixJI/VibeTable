@@ -358,7 +358,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				)
 			}
 		}
-		registerFieldRoutes(
+		fieldSettings := registerFieldRoutes(
 			event.Router, pb, fieldMigration, jobService, options.Logger,
 			fieldProtectionVerifier,
 			businessGate,
@@ -433,6 +433,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				fieldSettingsDescribeRegistration(fieldSettings),
 				productrpc.ReconcileRegistration(schemaCatalog),
 				lookupListRegistration(relationService),
 				relationSearchTargetsRegistration(relationService),

@@ -49,6 +49,7 @@ public sealed class ProductRpcCapabilityManifestTests
             new[]
             {
                 "events.reconcile:workspace",
+                "field.settings.describe:workspace",
                 "file.list:workspace",
                 "history.read:workspace",
                 "lookup.list:workspace",

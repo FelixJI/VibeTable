@@ -13,6 +13,8 @@ public sealed class ProductDataSidecarRoutingTests
     [DataRow("schema.describe", false)]
     [DataRow("lookup.list", true)]
     [DataRow("lookup.list", false)]
+    [DataRow("field.settings.describe", true)]
+    [DataRow("field.settings.describe", false)]
     [DataRow("relation.searchTargets", true)]
     [DataRow("relation.searchTargets", false)]
     [DataRow("relation.previewDelta", true)]
@@ -20,7 +22,11 @@ public sealed class ProductDataSidecarRoutingTests
     public async Task CatalogReadUsesGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
     {
         var sink = new FakeWebReplySink();
-        var sidecar = SuccessForwarder();
+        var sidecar = method == "field.settings.describe"
+            ? new ControlledProductSidecarForwarder((call, _) =>
+                Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                    call.Wire.Clone(), FieldSettingsResult())))
+            : SuccessForwarder();
         var pythonTransport = new CountingQueryTransport();
         await using var pythonClient = new JsonRpcClient(pythonTransport);
         using var pythonGateway = new JsonRpcProductDataGateway(pythonClient);
@@ -30,7 +36,9 @@ public sealed class ProductDataSidecarRoutingTests
         RoutedWebRequest request = QueryRequest("describe-go") with
         {
             Type = method,
-            Payload = method == "relation.searchTargets"
+            Payload = method == "field.settings.describe"
+                ? FieldSettingsParameters()
+                : method == "relation.searchTargets"
                 ? JsonSerializer.SerializeToElement(new { relationId = "records.owner" })
                 : method == "relation.previewDelta"
                 ? JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1",
@@ -59,6 +67,9 @@ public sealed class ProductDataSidecarRoutingTests
             Assert.AreEqual(method, call.Method);
             Assert.IsTrue(JsonElement.DeepEquals(request.Wire, call.Wire));
             Assert.IsTrue(JsonElement.DeepEquals(request.Payload, call.Parameters));
+            if (method == "field.settings.describe")
+                Assert.IsTrue(JsonElement.DeepEquals(FieldSettingsResult(),
+                    Assert.IsInstanceOfType<JsonElement>(reply.Payload)));
         }
         else
         {
@@ -121,7 +132,9 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
-    public async Task UnavailableGoBindingIsSentOnceWithoutPythonFallback()
+    [DataRow("query.page")]
+    [DataRow("field.settings.describe")]
+    public async Task UnavailableGoBindingIsSentOnceWithoutPythonFallback(string method)
     {
         var sink = new FakeWebReplySink();
         var sidecar = new ControlledProductSidecarForwarder((_, _) =>
@@ -129,11 +142,15 @@ public sealed class ProductDataSidecarRoutingTests
         var pythonTransport = new CountingQueryTransport();
         await using var pythonClient = new JsonRpcClient(pythonTransport);
         using var pythonGateway = new JsonRpcProductDataGateway(pythonClient);
-        var controller = Controller(sink);
+        var controller = new ProductDataRequestController(sink,
+            method == "query.page" ? SelectorFor(method, "goSidecar") : ProductRpcRouteSelector.Default);
         controller.SetGateway(pythonGateway);
         controller.SetProductSidecarForwarder(sidecar);
 
-        await controller.DispatchAsync(QueryRequest("unavailable-go"));
+        RoutedWebRequest request = QueryRequest("unavailable-go");
+        if (method == "field.settings.describe")
+            request = request with { Type = method, Payload = FieldSettingsParameters() };
+        await controller.DispatchAsync(request);
 
         FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
         Assert.IsNotNull(reply);
@@ -230,6 +247,64 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
+    [DataRow(-32602, false, "BAD_PAYLOAD")]
+    [DataRow(-32030, false, "PRODUCT_DATA_FAILED")]
+    [DataRow(-32150, false, "PRODUCT_DATA_FAILED")]
+    [DataRow(-32150, true, "field.not_found")]
+    public async Task FieldSettingsGoErrorsPreserveThePythonProductMapping(
+        int code, bool publicDomainError, string expectedCode)
+    {
+        const string method = "field.settings.describe";
+        JsonElement? data = publicDomainError ? JsonSerializer.SerializeToElement(new
+        {
+            kind = "product_data_error", code = "field.not_found", path = "fieldId",
+            message = "field was not found", details = new { fieldId = "标题 Cafe\u0301" },
+            retryable = false,
+        }) : null;
+        foreach (bool goOwner in new[] { false, true })
+        {
+            var sink = new FakeWebReplySink();
+            var pythonTransport = new CountingQueryTransport(id => JsonSerializer.SerializeToElement(new
+            {
+                jsonrpc = "2.0", id, error = new { code, message = "failure", data },
+            }));
+            await using var client = new JsonRpcClient(pythonTransport);
+            using var gateway = new JsonRpcProductDataGateway(client);
+            var controller = new ProductDataRequestController(sink, goOwner
+                ? ProductRpcRouteSelector.Default : SelectorFor(method, "pythonBff"));
+            controller.SetGateway(gateway);
+            var sidecar = FailureForwarder(new ProductSidecarRpcError(code, "failure", data));
+            controller.SetProductSidecarForwarder(sidecar);
+            await controller.DispatchAsync(QueryRequest("field-settings-failure") with
+            {
+                Type = method, Payload = FieldSettingsParameters(),
+            });
+
+            FakeWebReplySink.Reply reply = sink.Replies.Single();
+            Assert.AreEqual(publicDomainError ? method : "operation.failed", reply.Type);
+            JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+            if (publicDomainError)
+            {
+                JsonElement expected = JsonSerializer.SerializeToElement(new
+                {
+                    error = new
+                    {
+                        code = expectedCode, path = "fieldId", message = "field was not found",
+                        details = new { fieldId = "标题 Cafe\u0301" }, retryable = false,
+                    },
+                });
+                Assert.IsTrue(JsonElement.DeepEquals(expected, payload));
+            }
+            else
+            {
+                Assert.AreEqual(expectedCode, payload.GetProperty("code").GetString());
+            }
+            Assert.AreEqual(goOwner ? 1 : 0, sidecar.CallCount);
+            Assert.AreEqual(goOwner ? 0 : 1, pythonTransport.WriteCount);
+        }
+    }
+
+    [TestMethod]
     public void WorkspaceDispatcherExposesOnlyConditionalSidecarBindingSeam()
     {
         var tableGateway = new FakeTableRpcGateway();
@@ -251,6 +326,18 @@ public sealed class ProductDataSidecarRoutingTests
         => new(
             sink,
             SelectorFor("query.page", "goSidecar"));
+
+    internal static JsonElement FieldSettingsParameters() => JsonSerializer.SerializeToElement(new
+    {
+        tableId = "tbl_records", fieldId = "标题 Cafe\u0301 👩🏽‍💻",
+    });
+
+    internal static JsonElement FieldSettingsResult() => JsonSerializer.SerializeToElement(new
+    {
+        contract = "vibetable.schema.v2", tableId = "tbl_records", fieldId = "标题 Cafe\u0301 👩🏽‍💻",
+        schemaRevision = "schema_1", dataRevision = 7, definition = (object?)null,
+        capabilities = Array.Empty<object>(), recommendedDefaultsVersion = 1,
+    });
 
     private static ProductRpcRouteSelector SelectorFor(string method, string owner)
         => new(ProductRpcCapabilityManifest.CreateForTests(

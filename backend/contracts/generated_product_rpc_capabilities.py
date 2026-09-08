@@ -16,7 +16,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "data.export",
         "data.generateTemplate",
         "data.previewImport",
-        "field.settings.describe",
         "file.applyHostChange",
         "file.saveHostFile",
         "file.token",
@@ -96,6 +95,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
     ),
     "goSidecar": (
         "events.reconcile",
+        "field.settings.describe",
         "file.list",
         "history.read",
         "lookup.list",

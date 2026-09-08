@@ -662,7 +662,7 @@ public sealed class WebMessageRouterTests
                 ["requestId"] = $"request-{type}",
                 ["payload"] = new { },
             };
-            if (type is "events.reconcile" or "file.list" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "schema.describe" or "schema.getTable")
+            if (type is "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "schema.describe" or "schema.getTable")
             {
                 request["scope"] = new
                 {
@@ -910,7 +910,7 @@ public sealed class WebMessageRouterTests
             ? ProductRpcCapabilityManifest.CreateForTests()
             : ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
                 "field.settings.describe", "workspace", audience,
-                "schema.query", "pythonBff", "read"));
+                "schema.query", "goSidecar", "read"));
         var router = new WebMessageRouter(dispatched.Add,
             WorkspaceRpcCapabilityManifest.Default, policy) { IsReady = true };
         HostReplyMessage? rejected = router.Route(
@@ -966,6 +966,41 @@ public sealed class WebMessageRouterTests
         JsonElement expectedWire = expectedDocument.RootElement.GetProperty("scope");
         Assert.IsTrue(JsonElement.DeepEquals(expectedWire, routed.Wire));
         Assert.AreEqual(expectedWire.GetRawText(), routed.Wire.GetRawText());
+    }
+
+    [TestMethod]
+    public void FieldSettingsGoRouteRequiresWorkspaceScopeAndPreservesParameters()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default, ProductRpcCapabilityManifest.Default)
+        {
+            IsReady = true,
+        };
+        HostReplyMessage? missing = router.Route(
+            """{"type":"field.settings.describe","requestId":"missing","payload":{"tableId":"tbl_records","fieldId":"fld_title"}}""");
+        HostReplyMessage? invalid = router.Route(
+            """{"type":"field.settings.describe","requestId":"invalid","scope":{"scope":"workspace"},"payload":{"tableId":"tbl_records","fieldId":"fld_title"}}""");
+        string accepted = JsonSerializer.Serialize(new
+        {
+            type = "field.settings.describe",
+            requestId = "describe-go",
+            scope = new
+            {
+                scope = "workspace", workspaceId = "11111111-1111-4111-8111-111111111111",
+                sessionEpoch = 7, operationId = "22222222-2222-4222-8222-222222222222", sequence = 1,
+            },
+            payload = ProductDataSidecarRoutingTests.FieldSettingsParameters(),
+        });
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", missing?.Payload?.Code);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", invalid?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        Assert.IsNull(router.Route(accepted));
+        RoutedWebRequest routed = dispatched.Single();
+        using JsonDocument document = JsonDocument.Parse(accepted);
+        Assert.AreEqual(document.RootElement.GetProperty("scope").GetRawText(), routed.Wire.GetRawText());
+        Assert.IsTrue(JsonElement.DeepEquals(
+            ProductDataSidecarRoutingTests.FieldSettingsParameters(), routed.Payload));
     }
 
     [TestMethod]
@@ -1052,7 +1087,7 @@ public sealed class WebMessageRouterTests
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
             Assert.AreEqual(
-                route is "events.reconcile" or "file.list" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "schema.describe" or "schema.getTable"
+                route is "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "schema.describe" or "schema.getTable"
                     ? "goSidecar"
                     : "pythonBff",
                 capability.Owner,

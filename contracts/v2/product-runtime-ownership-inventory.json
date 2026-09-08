@@ -191,11 +191,10 @@
       "currentPath": [
         "renderer",
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -212,7 +211,7 @@
         "pocketBase"
       ],
       "stateLifetime": "request",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
       "productScenarios": [
         "02-all-field-schema",
@@ -222,7 +221,7 @@
       "targetPr": null,
       "deleteWhen": "Go directly serves field settings description and the Python forwarding handler is removed.",
       "evidence": [
-        "backend/adapters/pocketbase/product_query_schema_rpc.py",
+        "sidecar/internal/app/field_settings_describe_product_rpc.go",
         "sidecar/internal/app/field_routes.go",
         "desktop/src/VibeTable.Desktop/Services/ProductDataRpcRegistry.cs",
         "tests/e2e/pocketbase_product_scenarios.json"

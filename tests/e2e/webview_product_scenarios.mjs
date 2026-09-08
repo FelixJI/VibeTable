@@ -1118,6 +1118,22 @@ async function scenario02(page, recorder, _network, runtime) {
     tableId,
     fieldId: amount.fieldId,
   });
+  const describedRoundTrip = await page.evaluate((requestId) => (
+    window.__vibetableE2EBridgeDiagnostics?.roundTrips?.find((item) => (
+      item.requestId === requestId
+      && item.requestType === "field.settings.describe"
+      && item.responseType === "field.settings.describe"
+      && item.code == null
+    )) ?? null
+  ), restoredDescribe.requestId);
+  recorder.check(
+    "Go-owned field settings read returns the complete restored definition and capabilities",
+    describedRoundTrip !== null
+      && restoredDescribe.payload?.definition?.identity?.fieldId === amount.fieldId
+      && Array.isArray(restoredDescribe.payload?.capabilities)
+      && restoredDescribe.payload.capabilities.length > 0,
+    { describedRoundTrip, restoredDescribe },
+  );
   recorder.check(
     "retire and restore preserve field identity through the recycle bin",
     retired.applied?.type === "field.change.apply"
@@ -3443,18 +3459,18 @@ async function waitForTableRecovery(
           }
           const recoveredCount = await page.locator(".tabulator-row").count();
           if (recoveredCount === expectedRows) {
-            // Go page reads can recover before the Python-owned attachment gateway.
+            // Go page reads can recover before the Python write gateway.
             // Keep this read under the same deadline and terminal ownership window.
             if (Date.now() >= deadline) {
               throw new SidecarRecoveryContractError("sidecar recovery deadline expired");
             }
             const fieldRequestId = await beginRawBridgeRequest(
-              page, "field.settings.describe", { tableId },
+              page, "field.recycleBin.list", { tableId },
             );
-            recoveryReads.own(fieldRequestId, "field.settings.describe");
+            recoveryReads.own(fieldRequestId, "field.recycleBin.list");
             const fields = await recoveryReads.observe(fieldRequestId);
-            if (fields?.type !== "field.settings.describe") {
-              lastError = new Error("Python field description did not recover");
+            if (fields?.type !== "field.recycleBin.list") {
+              lastError = new Error("Python field recycle-bin read did not recover");
               continue;
             }
             await recoveryReads.settle();
@@ -3593,10 +3609,10 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       lastResponse = await rawBridgeRequest(
-        page, "field.settings.describe", { tableId }, Math.min(20_000, remainingMs),
+        page, "field.recycleBin.list", { tableId }, Math.min(20_000, remainingMs),
       );
       if (Date.now() >= deadline) break;
-      if (lastResponse.type === "field.settings.describe") {
+      if (lastResponse.type === "field.recycleBin.list") {
         return recoveredPage;
       }
     }

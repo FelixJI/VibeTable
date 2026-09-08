@@ -97,6 +97,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
                 "dataRevision": "data_0001",
             },
         ),
+        ("field.settings.describe", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
         ("relation.searchTargets", {"relationId": "orders.customer"}),
         (
@@ -189,14 +190,10 @@ def test_schema_v2_apply_params_reject_open_nested_objects() -> None:
 async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
     service, transport = _service(
         [
-            {"contract": "vibetable.schema.v2", "definition": None},
             {"contract": "vibetable.schema.v2", "planId": "plan_1"},
             {"contract": "vibetable.schema.v2", "operationId": "op_1"},
             {"contract": "vibetable.schema.v2", "fields": []},
         ]
-    )
-    describe = PRODUCT_RPC_REGISTRY["field.settings.describe"].model_validate(
-        {"tableId": "orders", "fieldId": "fld_12345678"}
     )
     plan = PRODUCT_RPC_REGISTRY["field.change.plan"].model_validate(
         {
@@ -228,18 +225,16 @@ async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
     )
     recycle = PRODUCT_RPC_REGISTRY["field.recycleBin.list"].model_validate({"tableId": "orders"})
 
-    await service.invoke("field.settings.describe", describe)
     await service.invoke("field.change.plan", plan)
     await service.invoke("field.change.apply", apply)
     await service.invoke("field.recycleBin.list", recycle)
 
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v2/field-settings/orders",
         "/api/vibetable/v2/field-change/plan",
         "/api/vibetable/v2/field-change/apply",
         "/api/vibetable/v2/field-recycle-bin/orders",
     ]
-    assert transport.requests[1]["json_body"]["relationPair"] == {
+    assert transport.requests[0]["json_body"]["relationPair"] == {
         "reciprocalDisplayName": "订单",
         "reciprocalCardinality": "many",
         "sourceDisplayFieldId": "fld_order_number",

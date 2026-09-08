@@ -67,6 +67,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         record.name for record in inventory.rpc_methods if record.current_route == "goSidecar"
     } == {
         "events.reconcile",
+        "field.settings.describe",
         "file.list",
         "history.read",
         "lookup.list",

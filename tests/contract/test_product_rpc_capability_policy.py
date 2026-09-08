@@ -55,6 +55,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
         "events.reconcile",
+        "field.settings.describe",
         "file.list",
         "history.read",
         "lookup.list",
@@ -160,10 +161,11 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 86
+    assert len(methods) == 85
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "events.reconcile",
+        "field.settings.describe",
         "file.list",
         "history.read",
         "lookup.list",
@@ -207,9 +209,8 @@ def test_generated_manifest_validates_against_its_closed_schema() -> None:
     _validate(manifest, schema, schema)
 
 
-def test_field_settings_admission_keeps_python_owner_and_legacy_routes() -> None:
+def test_field_settings_go_owner_keeps_legacy_routes() -> None:
     from backend.contracts.product_rpc import (
-        PRODUCT_RPC_REGISTRY,
         PYTHON_PRODUCT_RPC_REGISTRY,
         WORKSPACE_CATALOG_METHODS,
     )
@@ -221,10 +222,10 @@ def test_field_settings_admission_keeps_python_owner_and_legacy_routes() -> None
         "scope": "workspace",
         "audience": "rendererPublic",
         "capabilityId": "schema.query",
-        "owner": "pythonBff",
+        "owner": "goSidecar",
         "effect": "read",
     }
-    assert PYTHON_PRODUCT_RPC_REGISTRY[method] is PRODUCT_RPC_REGISTRY[method]
+    assert method not in PYTHON_PRODUCT_RPC_REGISTRY
     assert {
         "field.change.apply",
         "field.change.cancel",

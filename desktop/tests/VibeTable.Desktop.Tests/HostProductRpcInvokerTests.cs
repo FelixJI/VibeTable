@@ -71,9 +71,11 @@ public sealed class HostProductRpcInvokerTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task RetiredGenerationCannotPublishALateReply(bool remoteError)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task RetiredGenerationCannotPublishALateReply(bool remoteError, bool fieldSettings)
     {
         await using var fixture = await HostFixture.OpenAsync();
         fixture.Http.BeforeReply = (_, _) =>
@@ -82,10 +84,13 @@ public sealed class HostProductRpcInvokerTests
             return Task.CompletedTask;
         };
         fixture.Http.Error = remoteError ? Json("""{"code":-32602,"message":"Invalid params"}""") : null;
-        using JsonRpcProductDataGateway gateway = fixture.Gateway();
+        if (fieldSettings) fixture.Http.Result = ProductDataSidecarRoutingTests.FieldSettingsResult();
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
 
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => gateway.ListTablesAsync(
-            Json("{}"), CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => fieldSettings
+            ? gateway.DescribeFieldSettingsAsync(
+                ProductDataSidecarRoutingTests.FieldSettingsParameters(), CancellationToken.None)
+            : gateway.ListTablesAsync(Json("{}"), CancellationToken.None));
 
         Assert.AreEqual(0, fixture.Python.WriteCount);
         Assert.AreEqual(1, fixture.Http.Calls.Count);
@@ -232,10 +237,13 @@ public sealed class HostProductRpcInvokerTests
     [TestMethod]
     public async Task WorkspaceCatalogKeepsPythonAndMissingProductOwnerFailsClosed()
     {
-        await using var fixture = await HostFixture.OpenAsync();
+        JsonElement expected = Json("""{"contract":"vibetable.schema.v2","fields":[]}""");
+        await using var fixture = await HostFixture.OpenAsync(id =>
+            JsonSerializer.SerializeToElement(new { jsonrpc = "2.0", id, result = expected }));
         using JsonRpcProductDataGateway gateway = fixture.Gateway();
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-            gateway.ListRecycledFieldsAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
+        JsonElement recycled = await gateway.ListRecycledFieldsAsync(
+            Json("""{"tableId":"orders"}"""), CancellationToken.None);
+        Assert.IsTrue(JsonElement.DeepEquals(expected, recycled));
         Assert.AreEqual(1, fixture.Python.WriteCount);
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.DescribeFieldSettingsAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
@@ -268,22 +276,26 @@ public sealed class HostProductRpcInvokerTests
     }
 
     [TestMethod]
-    public async Task FieldSettingsDescriptionUsesGeneratedPythonPolicyWithoutSidecar()
+    public async Task FieldSettingsDescriptionUsesGeneratedGoPolicyWithoutPython()
     {
-        JsonElement expected = Json("""
-            {"contract":"vibetable.schema.v2","tableId":"tbl_orders","fieldId":"",
-             "schemaRevision":"schema_1","dataRevision":1,"definition":null,
-             "capabilities":[],"recommendedDefaultsVersion":1}
-            """);
-        await using var fixture = await HostFixture.OpenAsync(id =>
-            JsonSerializer.SerializeToElement(new { jsonrpc = "2.0", id, result = expected }));
+        JsonElement expected = ProductDataSidecarRoutingTests.FieldSettingsResult();
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Result = expected;
         using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        JsonElement parameters = ProductDataSidecarRoutingTests.FieldSettingsParameters();
         JsonElement result = await gateway.DescribeFieldSettingsAsync(
-            Json("""{"tableId":"tbl_orders"}"""), CancellationToken.None);
+            parameters, CancellationToken.None);
         Assert.IsTrue(JsonElement.DeepEquals(expected, result));
-        Assert.AreEqual(1, fixture.Python.WriteCount);
-        Assert.AreEqual(0, fixture.Http.Handshakes);
-        Assert.AreEqual(0, fixture.Http.Calls.Count);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        Assert.AreEqual(1, fixture.Http.Handshakes);
+        JsonElement call = fixture.Http.Calls.Single();
+        Assert.AreEqual("field.settings.describe", call.GetProperty("method").GetString());
+        Assert.IsTrue(JsonElement.DeepEquals(parameters, call.GetProperty("params")));
+        JsonElement wire = call.GetProperty("wire");
+        Assert.AreEqual("workspace", wire.GetProperty("scope").GetString());
+        Assert.AreEqual(fixture.Session.WorkspaceId!.Value.ToString("D"),
+            wire.GetProperty("workspaceId").GetString());
+        Assert.AreEqual(fixture.Session.SessionEpoch, wire.GetProperty("sessionEpoch").GetUInt64());
     }
 
     private sealed class HostFixture : IAsyncDisposable
@@ -338,7 +350,7 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("file.list", "workspace"), new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }

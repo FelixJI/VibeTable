@@ -1,10 +1,10 @@
 # field.settings.describe 原 Python 契约冻结
 
-固定 producer：`2c211088a682163bfdd126eda4528b69cd8419f8`。只新增本目录捕获器、原 29 例加一次授权追加的第 30 例 JSON、本文及一个聚焦测试文件，不改 owner、生产、CI 或 inventory。初次原件使用 exclusive create，之后不得覆盖；默认和 --check 重新捕获全部公开 wire 并只读比较。
+固定 producer：`2c211088a682163bfdd126eda4528b69cd8419f8`。以下记录原 Python 捕获阶段的历史入口、边界和验证；原29例加授权追加第30例 JSON 保持不变。当前 Python 专属执行路径及捕获器已退役，默认和 `--check` 仅验证保留的原始输入/producer/边界元数据，`--write` 始终拒绝，不重新捕获或覆盖结果。
 
 ## 实际入口与边界
 
-该方法是 `WORKSPACE_CATALOG_METHODS` 的成员，属于独立 Workspace catalog。它仍经 `PRODUCT_RPC_REGISTRY` 的实际闭字段 DTO 与 `PocketBaseProductRpc` 执行，不因此变成 Product current-owner 清单的一员。实际路径为 `RpcDispatcher` → `FieldSettingsDescribeParams` → `PocketBaseProductRpc` → `ProductQuerySchemaRpc._describe_field_settings` → recording transport。捕获器没有调用另一个模型代替真实方法，也没有从 Go 或 expected 推导输入。
+原 producer 将该方法放在 `WORKSPACE_CATALOG_METHODS` 历史排除集合中；这个名称不代表实际 Workspace registry/manifest 成员。原执行经 `PRODUCT_RPC_REGISTRY` 的实际闭字段 DTO 与 `PocketBaseProductRpc` 执行，不因此变成 Product current-owner 清单的一员。实际路径为 `RpcDispatcher` → `FieldSettingsDescribeParams` → `PocketBaseProductRpc` → `ProductQuerySchemaRpc._describe_field_settings` → recording transport。捕获器没有调用另一个模型代替真实方法，也没有从 Go 或 expected 推导输入。
 
 `backend/contracts/product_rpc.py` 的实际特例只允许 tableId、fieldId，必需 tableId。两者存在时必须是非空字符串；fieldId 省略合法，null、空字符串、数字均前置拒绝。Product 先执行 JSON/深度/递归凭据/紧凑 UTF-8 1 MiB 校验。RpcRequest 自身先于方法 DTO：数组 params 在真实 dispatcher 返回 -32600；本原件其余闭字段错误为 -32602。
 
@@ -22,15 +22,15 @@
 
 6 例明确边界：空响应对象；开放 definition/额外根成员；错误类型与缺字段对象；null 根；array 根；Python HTTP transport 故障。参考的 typed 结构是 `sidecar/internal/contracts/schemav2wire/generated.go` 的 `FieldSettingsDescribeResult`，生产 REST 当前实际组装 map 并读取 schemaCore/catalog。只有选定更窄 typed port 后这些才成为实现需明确处理的表达边界，不是默认丢弃原行为的豁免。公开领域错误可由既有 field error 映射表达，未标成 transport；动态 JSON 不得一概豁免。
 
-本冻结没有调用真实 PocketBase 存储、Go port 或产品 UI，没有数据读写/发布资格结论。若后续迁移，主代理需先裁定独立 Workspace catalog 的路由/owner 原子范围，不能直接把该方法加入 Product owner 清单来凑计数。
+本冻结阶段未调用真实 PocketBase 存储、Go port 或产品 UI，不构成数据读写/发布资格。后续独立 catalog 准入先明确 Product policy 与 Python owner；本次 owner 迁移才将此单方法交给 Go，见 [Go 迁移资格](../../docs/quality/field-settings-describe.md)。
 
-## 捕获完整性
+## 原 producer 的捕获完整性（历史）
 
 来源 guard 先检查实际导入符号的文件属于当前工作树 backend，再对这些 handler/client/dispatcher/DTO/error registry/辅助函数/生成 capability 来源执行固定 producer 的 `git diff --quiet --no-ext-diff --no-textconv`。源码漂移、Git 不可用或验证非零都在 capture 入口 fail closed；不新增普通 hash。
 
 transport 所有访问尝试先记账，再检查准确路径、方法、query、header、body、次数。违规独立记录；即使 AssertionError 被真实 dispatcher 转成普通内部错误，捕获器也会在 dispatcher 返回后直接报错。测试覆盖错误路径、第二次访问、外国模块来源、模拟 Git diff 漂移/失败、已有原件禁止覆盖、默认/check 的差异拒绝且不写。
 
-## 可复现验证
+## 原 producer 的验证记录（历史，不适用于当前退役捕获器）
 
 在本冻结工作树根复用已存在共享环境，不重建：
 

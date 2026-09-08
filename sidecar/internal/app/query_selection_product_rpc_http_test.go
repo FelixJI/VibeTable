@@ -48,6 +48,7 @@ func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port inter
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
+		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaGetTableRegistration(pb), schemaListRegistration(catalog),

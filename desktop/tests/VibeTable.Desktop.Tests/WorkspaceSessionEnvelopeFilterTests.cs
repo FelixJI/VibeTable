@@ -173,7 +173,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task PythonFieldSettingsResponseSettlesAsStaleAfterWorkspaceSwitch()
+    public async Task PythonFieldRecycleBinResponseSettlesAsStaleAfterWorkspaceSwitch()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -192,13 +192,16 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         using var settingsParams = JsonDocument.Parse(
             """{"tableId":"tbl_records"}""");
         dispatcher.Dispatch(new RoutedWebRequest(
-            "field.settings.describe", "old-response", settingsParams.RootElement.Clone(), string.Empty,
+            "field.recycleBin.list", "old-response", settingsParams.RootElement.Clone(), string.Empty,
             ScopeFor(opened, 1)));
         await transport.WaitForWriteAsync();
         await fixture.Manager.SwitchAsync(
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
-        transport.CompleteResponse();
+        transport.CompleteResponse(JsonSerializer.SerializeToElement(new
+        {
+            contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
+        }));
         await sink.WaitForFailedAsync();
 
         AssertRetiredReply(sink, "old-response");
@@ -208,6 +211,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [DataRow("query.page")]
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
+    [DataRow("field.settings.describe")]
     public async Task GoRouteSettlesEpochCancellationWithoutSuccess(string method)
     {
         using var fixture = new SessionFixture();
@@ -257,6 +261,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [DataRow("query.page")]
     [DataRow("relation.searchTargets")]
     [DataRow("relation.previewDelta")]
+    [DataRow("field.settings.describe")]
     public async Task GoRouteSettlesLateResultWhenForwarderIgnoresEpochCancellation(string method)
     {
         using var fixture = new SessionFixture();
@@ -298,7 +303,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
         response.SetResult(new ProductSidecarSuccess(
             request.Wire.Clone(),
-            JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() })));
+            method == "field.settings.describe"
+                ? ProductDataSidecarRoutingTests.FieldSettingsResult()
+                : JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() })));
         await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
         await switching.WaitAsync(TimeSpan.FromSeconds(2));
 
@@ -820,11 +827,57 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
+    [DataRow("field.recycleBin.list", "{\"tableId\":\"tbl_records\"}")]
+    public async Task PythonFieldReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
+        controller.SetGateway(gateway);
+        using var document = JsonDocument.Parse(payload);
+        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
+            type, "relation-retired", document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
+        await transport.WaitForWriteAsync();
+
+        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
+            second.WorkspaceId, WorkspaceOpenMode.Writable);
+        try
+        {
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+            await switching.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            transport.CompleteResponse(JsonSerializer.SerializeToElement(new
+            {
+                contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
+            }));
+        }
+
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("relation-retired", reply.RequestId);
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement result = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("workspace.session_stale", result.GetProperty("code").GetString());
+        Assert.AreEqual(1, transport.WriteCount);
+    }
+
+    [TestMethod]
     [DataRow("lookup.valuePage",
         "{\"collection\":\"records\",\"fieldRef\":\"owner.name\",\"sourceRecordId\":\"record-1\","
         + "\"schemaRevision\":\"s1\",\"permissionRevision\":\"p1\",\"lookupRevision\":\"l1\","
         + "\"offset\":0,\"limit\":10}")]
     [DataRow("relation.previewDelta", "{\"relationId\":\"records.owner\",\"sourceItemId\":\"record-1\",\"expectedSchemaRevision\":\"schema-1\",\"adds\":[],\"removes\":[],\"idempotencyKey\":\"preview-test\"}")]
+    [DataRow("field.settings.describe", "{\"tableId\":\"tbl_records\",\"fieldId\":\"fld_title\"}")]
     public async Task RelationReadRejectsRetiredScopeBeforeGateway(string type, string payload)
     {
         using var fixture = new SessionFixture();
@@ -1001,6 +1054,12 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         string method, string requestId, WorkspaceWireScope scope)
     {
         RoutedWebRequest request = GoQueryRequest(requestId, scope);
+        if (method == "field.settings.describe")
+            return request with
+            {
+                Type = method,
+                Payload = ProductDataSidecarRoutingTests.FieldSettingsParameters(),
+            };
         return method == "relation.searchTargets"
             ? request with
             {
@@ -1276,8 +1335,16 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         public Task WaitForWriteAsync()
             => _written.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        public void CompleteResponse()
+        public void CompleteResponse(JsonElement? result = null)
         {
+            if (result is { } supplied)
+            {
+                _incoming.Writer.TryWrite(JsonSerializer.SerializeToElement(new
+                {
+                    jsonrpc = "2.0", id = _requestId, result = supplied,
+                }));
+                return;
+            }
             using var response = JsonDocument.Parse(
                 $$"""
                 {

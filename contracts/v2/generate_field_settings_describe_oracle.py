@@ -1,36 +1,17 @@
-"""Freeze the original Workspace field.settings.describe execution and public wire."""
+"""Retain original field settings inputs after retiring their Python execution path."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import inspect
 import json
-import subprocess
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
-from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseProductError
-from backend.adapters.pocketbase.product_query_schema_rpc import ProductQuerySchemaRpc
-from backend.adapters.pocketbase.product_relation_lookup_file_rpc import (
-    ProductRelationLookupFileRpc,
-)
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.product_rpc_support import _path_segment, _result_object
-from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, JsonValue
-from backend.rpc.dispatcher import RpcDispatcher
-from backend.rpc.error_registry import RpcErrorRegistry
-from backend.rpc.messages import RpcRequest
-from backend.rpc.product_errors import register_product_rpc_errors
+from backend.contracts.product_rpc import JsonObject, JsonValue
 
 PRODUCER_COMMIT = "2c211088a682163bfdd126eda4528b69cd8419f8"
 METHOD = "field.settings.describe"
 OUTPUT = Path(__file__).with_name("field-settings-describe-python-oracle.json")
-CAPTURE_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -278,197 +259,43 @@ def populated_settings_case() -> Case:
     )
 
 
-class RecordingTransport:
-    """Record every attempt and keep protocol failures outside the public RPC envelope."""
-
-    def __init__(self, case: Case) -> None:
-        self.case = case
-        self.requests: list[JsonObject] = []
-        self.violations: list[str] = []
-
-    async def request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue] | None = None,
-        json_body: JsonValue = None,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        self.requests.append(
-            {
-                "method": method,
-                "path": path,
-                "query": dict(query) if query is not None else None,
-                "body": json_body,
-                "expectedStatus": list(expected_status),
-            }
-        )
-        params = self.case.params
-        try:
-            assert isinstance(params, dict)
-            assert len(self.requests) == 1
-            assert method == "GET"
-            assert path == "/api/vibetable/v2/field-settings/" + str(params["tableId"])
-            expected_query = {"fieldId": params["fieldId"]} if "fieldId" in params else {}
-            assert query == expected_query
-            assert headers == {"X-VibeTable-Session": "oracle-only"}
-            assert tuple(expected_status) == (200,)
-            assert json_body is None
-        except AssertionError:
-            self.violations.append(f"attempt {len(self.requests)}: {method} {path}")
-            raise
-        if self.case.failure == "domain":
-            raise PocketBaseProductError(
-                status=404,
-                payload={
-                    "contract": "vibetable.schema.v2",
-                    "code": "field.not_found",
-                    "path": "fieldId",
-                    "message": "field was not found",
-                    "details": {"fieldId": "missing"},
-                    "retryable": False,
-                    "occurredAt": "2026-09-08T00:00:00Z",
-                },
-            )
-        if self.case.failure == "transport":
-            raise PocketBaseTransportError("field settings unavailable")
-        return self.case.response
-
-    async def request_multipart(
-        self,
-        path: str,
-        *,
-        json_body: Mapping[str, JsonValue],
-        uploads: Sequence[tuple[str, str]],
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        self.requests.append({"method": "MULTIPART", "path": path})
-        self.violations.append("field settings must not upload")
-        raise AssertionError(self.violations[-1])
-
-    async def download_to_file(
-        self,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue],
-        target_path: str,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-        maximum_bytes: int = 2 * 1024 * 1024 * 1024,
-    ) -> int:
-        self.requests.append({"method": "DOWNLOAD", "path": path})
-        self.violations.append("field settings must not download")
-        raise AssertionError(self.violations[-1])
-
-
-def require_producer_source() -> None:
-    paths: set[str] = set()
-    for symbol in (
-        PocketBaseProductRpc,
-        ProductQuerySchemaRpc,
-        ProductRelationLookupFileRpc,
-        PocketBaseClient,
-        PocketBaseProductError,
-        PocketBaseTransportError,
-        PRODUCT_RPC_REGISTRY[METHOD],
-        RpcDispatcher,
-        RpcRequest,
-        RpcErrorRegistry,
-        register_product_rpc_errors,
-        _path_segment,
-        _result_object,
-        current_owner_methods,
+def validate_frozen_inputs() -> None:
+    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    if frozen.get("producerCommit") != PRODUCER_COMMIT:
+        raise ValueError("Frozen field settings producer changed")
+    if (
+        frozen.get("boundary")
+        != "Original Workspace catalog method through Python Product DTO/adapter; scripted authority HTTP"
     ):
-        source = Path(inspect.getfile(symbol)).resolve()
-        if not source.is_relative_to(CAPTURE_ROOT / "backend"):
-            raise RuntimeError(
-                "Capture requires this checkout's backend; set PYTHONPATH to its root"
-            )
-        paths.add(source.relative_to(CAPTURE_ROOT).as_posix())
-    try:
-        difference = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(CAPTURE_ROOT),
-                "diff",
-                "--quiet",
-                "--no-ext-diff",
-                "--no-textconv",
-                PRODUCER_COMMIT,
-                "--",
-                *sorted(paths),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError("Cannot verify fixed producer source") from error
-    if difference.returncode != 0:
-        raise RuntimeError("Capture source differs from fixed producer or Git verification failed")
-
-
-async def capture_case(case: Case) -> JsonObject:
-    require_producer_source()
-    transport = RecordingTransport(case)
-    service = PocketBaseProductRpc(
-        client=PocketBaseClient(transport=transport, session_secret="oracle-only"),
-        transport=transport,
-        session_secret="oracle-only",
-    )
-    dispatcher = RpcDispatcher()
-    register_product_rpc_errors()
-    dispatcher.register(METHOD, partial(service.invoke, METHOD), PRODUCT_RPC_REGISTRY[METHOD])
-    request: JsonObject = {
-        "jsonrpc": "2.0",
-        "id": case.name,
-        "method": METHOD,
-        "params": case.params,
-    }
-    response = await dispatcher.dispatch(request)
-    if transport.violations:
-        raise RuntimeError(
-            "Capture authority protocol violation: " + "; ".join(transport.violations)
-        )
-    return {
-        "name": case.name,
-        "request": request,
-        "authorityFixture": {"response": case.response, "failure": case.failure},
-        "authorityRequests": list(transport.requests),
-        "response": response,
-        "typedGoBoundary": case.typed_boundary,
-    }
-
-
-async def capture() -> JsonObject:
-    return {
-        "producerCommit": PRODUCER_COMMIT,
-        "boundary": "Original Workspace catalog method through Python Product DTO/adapter; scripted authority HTTP",
-        "cases": [await capture_case(case) for case in cases()],
-    }
-
-
-def render(value: JsonObject) -> str:
-    return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
+        raise ValueError("Frozen field settings boundary changed")
+    entries = frozen.get("cases")
+    expected_cases = cases()
+    if not isinstance(entries, list) or len(entries) != len(expected_cases):
+        raise ValueError("Frozen field settings case inventory changed")
+    for entry, case in zip(entries, expected_cases, strict=True):
+        expected: JsonObject = {
+            "name": case.name,
+            "request": {"jsonrpc": "2.0", "id": case.name, "method": METHOD, "params": case.params},
+            "authorityFixture": {"response": case.response, "failure": case.failure},
+            "typedGoBoundary": case.typed_boundary,
+        }
+        if not isinstance(entry, dict) or any(
+            entry.get(key) != value for key, value in expected.items()
+        ):
+            raise ValueError(f"Frozen field settings inputs changed: {case.name}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--write", action="store_true", help="Create once; never replace original")
-    modes.add_argument("--check", action="store_true", help="Compare full capture (default)")
+    parser.add_argument("--write", action="store_true", help="Retired; always rejected")
+    parser.add_argument("--check", action="store_true", help="Validate retained inputs (default)")
     args = parser.parse_args()
     if args.write:
-        result = render(asyncio.run(capture()))
-        with OUTPUT.open("x", encoding="utf-8", newline="\n") as stream:
-            stream.write(result)
-    elif OUTPUT.read_text(encoding="utf-8") != render(asyncio.run(capture())):
-        parser.error("Original field settings differs; inspect, do not regenerate")
+        parser.error("Python capture is retired; preserve the original producer and frozen file")
+    try:
+        validate_frozen_inputs()
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
     return 0
 
 

@@ -23,7 +23,6 @@ class ProductQuerySchemaRpc:
     def __init__(self, context: PocketBaseProductContext) -> None:
         self._context = context
         self._handlers: dict[str, ProductRpcHandler] = {
-            "field.settings.describe": self._describe_field_settings,
             "field.change.plan": self._plan_field_change,
             "field.change.apply": self._apply_field_change,
             "field.change.status": self._field_change_status,
@@ -52,21 +51,6 @@ class ProductQuerySchemaRpc:
 
     async def _delete_schema(self, params: ProductParams) -> JsonObject:
         return await self._context.post("/api/vibetable/v1/schema/delete", params.root)
-
-    async def _describe_field_settings(self, params: ProductParams) -> JsonObject:
-        table_id = _path_segment(_text(params.root, "tableId"))
-        query: dict[str, str] = {}
-        if "fieldId" in params.root:
-            query["fieldId"] = _text(params.root, "fieldId")
-        return _result_object(
-            await self._context.transport.request(
-                "GET",
-                f"/api/vibetable/v2/field-settings/{table_id}",
-                query=query,
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
-        )
 
     async def _plan_field_change(self, params: ProductParams) -> JsonObject:
         return await self._context.post("/api/vibetable/v2/field-change/plan", params.root)
