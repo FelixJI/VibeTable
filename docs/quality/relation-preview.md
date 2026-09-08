@@ -1,12 +1,14 @@
 # relation.previewDelta 迁移资格
 
 本文保留 preview 来源分支整合 main `a19ccd5366d62be6338f628d06b6c5a37484f20f` 时的资格，
-当时闭集14 Go /86 Python /2 native。当前 lookup 切片已承接含 preview 的 main
+当时闭集14 Go /86 Python /2 native。后续 valuePage 切片承接含 preview 的 main
 `6e25fd033697c57a4ca113caf98c90293b892548`，最终闭集16 Go /84 Python /2 native，
 lookup.valuePage、relation.searchTargets与preview均归Go；本次增量证据见 [Lookup 来源分页迁移资格](lookup-value-page.md)。
 沿用唯一PocketBase authority与既有relation.Service/
 Kernel.Preview；不改变apply、owner生命周期、数据格式或写入协调器。Python专属preview
 handler/注册退役，共享_translate_delta/_renderer_target仍供其他方法使用。
+
+当前 query 依赖整合17 Go /83 Python /2 Host的独立证据见[query资格](lookup-query.md)，不以本文历史结果替代。
 
 ## 契约及真实读取
 

@@ -1,31 +1,22 @@
-"""Replay the original snapshot validation wire without issuing domain signatures."""
+"""Assert retained historical wire; no current code is mislabeled as the old producer."""
 
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from backend.contracts.product_rpc import JsonObject, JsonValue, ProductParams
+from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
 from contracts.v2 import generate_query_validate_snapshot_oracle as oracle
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", oracle.cases(), ids=lambda case: case.name)
-async def test_original_snapshot_validation_matches_wire(case: oracle.Case) -> None:
+def test_retained_capture_and_forwarding_contract() -> None:
+    oracle.validate_frozen_inputs()
     frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    expected = next(entry for entry in frozen["cases"] if entry["name"] == case.name)
-    assert oracle.render(await oracle.capture_case(case)) == oracle.render(expected)
-
-
-@pytest.mark.asyncio
-async def test_full_capture_and_forwarding_contract() -> None:
-    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
-    assert oracle.render(await oracle.capture()) == oracle.render(frozen)
     assert frozen["producerCommit"] == "2f02bfcb8afdda46fa003d6c546d2ff2a8910aae"
     assert len(frozen["cases"]) == len({entry["name"] for entry in frozen["cases"]}) == 30
+    assert oracle.METHOD in current_owner_methods("pythonBff")
     for entry in frozen["cases"]:
         if "result" in entry["response"]:
             assert entry["response"]["result"] == entry["authorityFixture"]["response"]
@@ -72,126 +63,90 @@ async def test_full_capture_and_forwarding_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_original_size_unicode_and_depth_guards() -> None:
-    params: JsonObject = {"snapshot": {"extension": ""}}
-    size = len(json.dumps(params, ensure_ascii=False, separators=(",", ":")).encode())
-    params = {"snapshot": {"extension": "x" * ((1 << 20) - size)}}
-    accepted = await oracle.capture_case(oracle.Case("budget", params, oracle.validation()))
-    requests = accepted["authorityRequests"]
-    assert isinstance(requests, list)
-    assert len(requests) == 1
-    deep: JsonValue = None
-    for _ in range(33):
-        deep = {"nested": deep}
-    for value in ("x" * (1 << 20), "\ud800", deep):
-        entry = await oracle.capture_case(
-            oracle.Case("guard", {"snapshot": {"extension": value}}, oracle.validation())
-        )
-        assert entry["authorityRequests"] == []
-        response = entry["response"]
-        assert isinstance(response, dict)
-        assert response["error"] == {"code": -32602, "message": "Invalid params"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "symbol_name", ["ProductQuerySchemaRpc", "PocketBaseProductRpc", "RpcDispatcher"]
-)
-async def test_foreign_source_is_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    symbol_name: str,
+@pytest.mark.parametrize("entrypoint", ["capture", "capture_case"])
+async def test_historical_capture_is_closed_even_while_owner_remains_python(
+    entrypoint: str,
 ) -> None:
-    symbol = getattr(oracle, symbol_name)
-    original = oracle.inspect.getfile
-
-    def source_file(value: type[object]) -> str:
-        return str(tmp_path / "foreign.py") if value is symbol else original(value)
-
-    monkeypatch.setattr(oracle.inspect, "getfile", source_file)
-    with pytest.raises(RuntimeError, match="this checkout's backend"):
-        await oracle.capture_case(oracle.cases()[0])
+    pending = (
+        oracle.capture() if entrypoint == "capture" else oracle.capture_case(oracle.cases()[0])
+    )
+    with pytest.raises(RuntimeError, match="Historical capture is closed"):
+        await pending
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("exit_code", [1, 128], ids=["source-drift", "git-failure"])
-async def test_fixed_producer_drift_rejected_before_dispatch(
-    monkeypatch: pytest.MonkeyPatch,
-    exit_code: int,
-) -> None:
-    observed: list[list[str]] = []
-
-    def difference(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        observed.append(command)
-        return subprocess.CompletedProcess(command, exit_code, "changed source", "")
-
-    monkeypatch.setattr(subprocess, "run", difference)
-    with pytest.raises(RuntimeError, match="fixed producer"):
-        await oracle.capture_case(oracle.cases()[0])
-    assert len(observed) == 1
-    assert oracle.PRODUCER_COMMIT in observed[0]
-    assert "backend/adapters/pocketbase/product_query_schema_rpc.py" in observed[0]
-    assert "backend/contracts/product_rpc.py" in observed[0]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("violation", ["wrong-path", "second-request"])
-async def test_protocol_violations_escape_the_real_dispatcher(
-    monkeypatch: pytest.MonkeyPatch,
-    violation: str,
-) -> None:
-
-    async def changed_handler(
-        module: oracle.ProductQuerySchemaRpc, params: ProductParams
-    ) -> JsonObject:
-        path = (
-            "/wrong-path"
-            if violation == "wrong-path"
-            else "/api/vibetable/v1/query/validate-snapshot"
-        )
-        result = await module._context.post(path, params.root)
-        if violation == "second-request":
-            return await module._context.post(path, params.root)
-        return result
-
-    monkeypatch.setattr(oracle.ProductQuerySchemaRpc, "_validate_snapshot", changed_handler)
-    with pytest.raises(RuntimeError, match="authority protocol violation"):
-        await oracle.capture_case(oracle.cases()[0])
-
-
-def test_exclusive_write_keeps_existing_original(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("exists", [False, True])
+def test_write_is_always_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exists: bool
 ) -> None:
     target = tmp_path / "original.json"
-    target.write_text("retained", encoding="utf-8")
+    if exists:
+        target.write_text("retained", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
-    with pytest.raises(FileExistsError):
+    with pytest.raises(SystemExit) as failure:
         oracle.main()
-    assert target.read_text(encoding="utf-8") == "retained"
+    assert failure.value.code == 2
+    assert target.exists() is exists
+    if exists:
+        assert target.read_text(encoding="utf-8") == "retained"
 
 
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "producer",
+        "count",
+        "input",
+        "fixture",
+        "attempt-order",
+        "typed-boundary",
+        "core-response",
+        "error-order",
+        "domain-response",
+    ],
+)
 @pytest.mark.parametrize("arguments", [[], ["--check"]])
-def test_check_is_read_only_on_difference(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    arguments: list[str],
+def test_checks_reject_changed_original_without_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fault: str, arguments: list[str]
 ) -> None:
+    frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
+    entry = frozen["cases"][0]
+    if fault == "producer":
+        frozen["producerCommit"] = "wrong-source"
+    elif fault == "count":
+        frozen["cases"].pop()
+    elif fault == "input":
+        entry["request"]["params"]["snapshot"]["table"] = "other"
+    elif fault == "fixture":
+        entry["authorityFixture"]["response"]["valid"] = False
+    elif fault == "attempt-order":
+        entry["authorityRequests"].insert(0, {"method": "GET", "path": "/unexpected"})
+    elif fault == "typed-boundary":
+        entry["typedGoBoundary"] = "invented exemption"
+    elif fault == "core-response":
+        entry["response"]["result"]["currentDataRevision"] = 8
+    elif fault == "error-order":
+        rejected = next(
+            item for item in frozen["cases"] if item["name"] == "wrong-type-before-domain"
+        )
+        rejected["response"]["error"]["code"] = -32150
+    elif fault == "domain-response":
+        frozen["cases"][-1]["response"]["error"]["data"]["path"] = "digest"
     target = tmp_path / "original.json"
-    target.write_text("{}\n", encoding="utf-8")
+    original = json.dumps(frozen, ensure_ascii=False)
+    target.write_text(original, encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", *arguments])
     with pytest.raises(SystemExit) as failure:
         oracle.main()
     assert failure.value.code == 2
-    assert target.read_text(encoding="utf-8") == "{}\n"
+    assert target.read_text(encoding="utf-8") == original
 
 
-@pytest.mark.asyncio
-async def test_real_domain_invalid_snapshot_id_has_exact_public_error() -> None:
+def test_real_domain_invalid_snapshot_id_has_exact_public_error() -> None:
     case = oracle.cases()[-1]
     assert case.name == "domain-invalid-snapshot-id"
-    body: JsonObject = {
+    body: oracle.JsonObject = {
         "contractVersion": "2.0",
         "code": "query.snapshot.invalid",
         "path": "snapshotId",
@@ -200,18 +155,8 @@ async def test_real_domain_invalid_snapshot_id_has_exact_public_error() -> None:
         "retryable": False,
     }
     assert case.response == body
-    transport = oracle.RecordingTransport(case)
-    with pytest.raises(oracle.PocketBaseProductError) as failure:
-        await transport.request(
-            "POST",
-            "/api/vibetable/v1/query/validate-snapshot",
-            json_body=case.params,
-            headers={"X-VibeTable-Session": "oracle-only"},
-        )
-    assert failure.value.status == 422
     frozen = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
     entry = frozen["cases"][-1]
-    assert await oracle.capture_case(case) == entry
     assert entry["typedGoBoundary"] is None
     assert entry["response"] == {
         "jsonrpc": "2.0",
