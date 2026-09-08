@@ -16,7 +16,7 @@
 - 新 Product adapter 参数/领域错误/取消回归通过。能力与 dispatcher 完整 race 分别 PASS1.271s/1.700s；旧精确注册清单先 RED，补充唯一新增方法后断言通过。
 - `npm run test:coverage`：176文件1554 PASS，56.88s，全部原有覆盖率门禁通过；日志 `web-full-final.log`。之后生成样例与真实 parser 的消费回归，旧样例1 FAIL→3文件59 PASS；修复只改变生成样例语义和测试。
 - Host 新路由6项回归先因缺少注册全部失败，补充后相关83项 PASS、0 skip；`ProductContractV2RoundTripTests` 10 PASS。日志 `host-routing-red.log`、`host-routing-final.log`、`host-contract-catalog.log`。
-- 既有 `{error: ...}` 领域返回的真实 resolved envelope 先2 FAIL，修复后模块53 PASS、vue-tsc通过；日志 `web-envelope-red.log`、`web-envelope-green.log`、`typecheck-envelope.log`。
+- 既有 `{error: ...}` 领域返回的真实 resolved envelope 先2 FAIL，修复后模块53 PASS、vue-tsc通过；日志 `web-envelope-red.log`、`web-envelope-green.log`、`web-typecheck-envelope.log`。
 - 16项新 DTO 测试通过；新增场景/索引/目录及 Python owner 闭集契约192 PASS。catalog、capability、inventory由现有脚本生成/校验，没有手工改生成物。
 - Standards/Spec 双轴独立审查已覆盖实现；最新真实场景仍须在打包候选上验收。
 
@@ -29,3 +29,7 @@
 新场景 `31-relation-pair-inspection` 已进入完整 manifest，声明101条来源的双页检查、检查零写入、页间修改后的拒绝及重新检查。尚未真实运行，实际表头编辑入口依赖关系双端更新 PR #305 的修复；该依赖必须按实际 main 结果同步后完成构建和场景验证。历史23场景 main 样本不覆盖新增场景，coverage index 明确列出 gap。
 
 进程能力闭集补充：`go test ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1` 旧清单 FAIL1.306s，精确加入唯一新增的 `relation.inspectPair`（20项、workspace scope）后 PASS1.720s；加 `-race` PASS10.142s。保留全部身份/失败关闭/重启断言，日志 `build/qa/relation-inspect/go-process-{red,green,race}.log`。不改变上述完整矩阵仍失败的结论。
+
+实现提交 `d9354212` 之后以正常 merge `61657e6e` 同步实际 main `3bf03bc6`，没有冲突。字段设置 service/store、检查面板/parser、目录消费共5文件83项 PASS1.76s（`build/qa/relation-inspect/main-sync-web.log`）；Spec 合并交界复审无新增问题。Standards 复核指出旧日志引用拼写，已改为实际 `web-typecheck-envelope.log`。S31 的真实候选验收仍须等待 #305 实际 main 的入口修复。
+
+同一 main 合并结果的 `npm run test:coverage`：176文件1578 PASS（55.42s），全部既有覆盖率门禁通过；Statements85.64%、Branches78.68%、Functions84.14%、Lines89.07%。日志 `build/qa/relation-inspect/main-sync-web-full.log`；未重复建立环境。
