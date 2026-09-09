@@ -63,3 +63,15 @@
 - `dotnet test desktop/VibeTable.Desktop.sln --configuration Release /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:RestoreLockedMode=true`，附加 `qa.next.dotnet_coverage_properties()` 从当前配置读取的全部原门禁参数：PASS，六个测试项目共1339 PASS、1 skip；Desktop为1102 PASS、1 skip、23s。Desktop覆盖率为Line71.17%、Branch61.71%、Method79.53%，原门禁全部通过。唯一跳过为既有 `ActivationPointerLinkIsRejectedAndRetained`，本机符号链接权限不足；未放宽其判断。日志 `build/qa/relation-inspect/qualified-dotnet.log`。
 
 以上是独立阶段通过，不改变 `core-report.json` 的失败状态，也不替代尚未执行的其他阶段、实际 main 同步和 fresh PR CI。
+## 实际 main #312 同步后的资格
+
+正常合并实际 main `3cd6f83202ea0977d690ad71cf7dff25595e4f02` 后，产品源码固定为 `61305fe52620e31dc199084ea24645f814c9fa07`。此前 #305 的依赖已随 #312 进入 main；本节替代旧章节中“实际 main 同步待完成”的状态，保留原失败证据。合并保留双方 service 测试，并用仓库脚本生成能力索引；Standards/Spec 交界审查无新增确定问题。
+
+- `npm run test -- src/field-settings/service.test.ts src/relation-inspection/RelationInspectionPanel.test.ts`：2 文件 32 PASS，3.75s。
+- `go test -race ./internal/app ./tests/integration -run 'Test(RelationInspect|RelationPairInspect)' -count=1 -v`：app 2 项 PASS 1.841s；integration 9 个顶层测试 PASS 118.778s。
+- `go vet ./internal/relation ./internal/app ./tests/integration`：EXIT 0。
+- `uv run --frozen --no-sync python scripts/build_next.py`：完整构建 EXIT 0，复用已有工具链和依赖；未反复重建。
+- 使用同一包执行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 06-relation-fanout --scenario 28-relation-delta-preview --scenario 31-relation-pair-inspection`：run `20260909T030149Z`，3/3 PASS、0 skip；S06 21.994s/17 断言，S28 6.115s/10 断言，S31 8.059s/12 断言。
+- 四组件 freshness 全部通过；三个场景的 Node/Host 退出均为 0，pageErrors 与 bridge failures/acknowledgedFailures/pending 均为 0。正常关闭后成员与后代为空，端口释放、lease 关闭及最终清理全部通过。
+
+日志为 `build/qa/relation-inspect/main-312-{web,race,vet,product-build,product-e2e}.log`；原始报告为 `build/qa/product-e2e/20260909T030149Z/product-e2e-report.json`。新证据覆盖当前固定源码的关系检查及既有关系消费者，不把旧完整 core 的失败改写为通过；fresh PR CI 仍待完成。
