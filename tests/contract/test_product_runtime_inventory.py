@@ -69,6 +69,8 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "events.reconcile",
         "field.settings.describe",
         "file.list",
+        "history.applyRestore",
+        "history.previewRestore",
         "history.read",
         "lookup.list",
         "lookup.query",

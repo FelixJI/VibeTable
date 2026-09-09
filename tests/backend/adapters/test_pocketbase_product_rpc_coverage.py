@@ -404,7 +404,7 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                 }
             ),
         )
-    with pytest.raises(ValueError, match="field"):
+    with pytest.raises(ValueError, match="unknown product RPC method"):
         await service.invoke(
             "history.previewRestore",
             ProductParams.model_validate(

@@ -34,6 +34,15 @@ type ParamsValidator func(json.RawMessage) error
 
 type Handler func(context.Context, json.RawMessage) (any, error)
 
+type operationIDContextKey struct{}
+
+// OperationID returns the submit identity from the validated Product wire.
+// Preview capability tokens and caller params cannot supply this identity.
+func OperationID(ctx context.Context) (string, bool) {
+	value, ok := ctx.Value(operationIDContextKey{}).(string)
+	return value, ok && value != ""
+}
+
 type Registration struct {
 	Method         string
 	Scope          productcapabilities.Scope
@@ -183,6 +192,14 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, raw []byte) Response
 	if validationError != nil {
 		return errorResponse(request.ID, request.Wire, CodeInvalidParams, "Invalid params", nil)
 	}
+	var wireIdentity struct {
+		OperationID string `json:"operationId"`
+	}
+	// scopeIsCurrent has already strictly validated the wire and session.
+	if err := json.Unmarshal(request.Wire, &wireIdentity); err != nil {
+		return errorResponse(request.ID, request.Wire, CodeInvalidRequest, "Invalid Request", nil)
+	}
+	ctx = context.WithValue(ctx, operationIDContextKey{}, wireIdentity.OperationID)
 	result, err, panicked := callHandler(ctx, registration.Handler, request.Params)
 	if panicked {
 		return errorResponse(request.ID, request.Wire, CodeInternalError, "Internal error", nil)

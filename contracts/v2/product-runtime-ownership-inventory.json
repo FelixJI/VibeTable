@@ -364,8 +364,56 @@
       "productScenarios": ["07-attachment-history", "12-backup-consistency"],
       "targetSlice": "L3B",
       "targetPr": null,
-      "deleteWhen": "The Go Product Adapter drains business audit history and returns the authoritative public history page; Python keeps only preview until L5 pairs it with apply.",
+      "deleteWhen": "The Go Product Adapter drains business audit history and returns the authoritative public history page.",
       "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/history_product_rpc.go", "sidecar/internal/workspacev2/history_restore_handlers.go", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.history-restore",
+      "kind": "rpc",
+      "names": [
+        "history.applyRestore",
+        "history.previewRestore"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "history.previewRestore"
+        ],
+        "write": [
+          "history.applyRestore"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "06-relation-fanout",
+        "07-attachment-history",
+        "12-backup-consistency"
+      ],
+      "targetSlice": "L3B",
+      "targetPr": null,
+      "deleteWhen": "Product preview and apply share the Go restore token owner and the single workspace business write coordinator.",
+      "evidence": [
+        "sidecar/internal/app/history_restore_product_rpc.go",
+        "sidecar/internal/workspacev2/history_restore_handlers.go",
+        "sidecar/internal/app/history_restore_product_rpc_test.go",
+        "contracts/v2/fixtures/history-restore-python-parity.json"
+      ]
     },
     {
       "id": "rpc.insights-shared-read",
@@ -781,13 +829,13 @@
     {
       "id": "rpc.relation-history-write",
       "kind": "rpc",
-      "names": ["history.applyRestore", "relation.applyDelta", "relation.createTarget", "relation.updateSingle"],
+      "names": ["relation.applyDelta", "relation.createTarget", "relation.updateSingle"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": [], "write": ["history.applyRestore", "relation.applyDelta", "relation.createTarget", "relation.updateSingle"], "notification": [], "state": []},
+      "effects": {"read": [], "write": ["relation.applyDelta", "relation.createTarget", "relation.updateSingle"], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
@@ -817,26 +865,6 @@
       "targetPr": null,
       "deleteWhen": "Read-only pair diagnostics remain Go-owned; cursors never authorize repair.",
       "evidence": ["sidecar/internal/app/relation_inspect_product_rpc.go", "sidecar/internal/relationpair/inspect.go", "sidecar/tests/integration/relation_pair_inspect_test.go"]
-    },
-    {
-      "id": "rpc.relation-lookup-history-read",
-      "kind": "rpc",
-      "names": ["history.previewRestore"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
-      "currentRoute": "pythonBff",
-      "classification": "TEMPORARY_BFF",
-      "targetOwner": "GO_AUTHORITY",
-      "authority": "GO_AUTHORITY",
-      "effects": {"read": ["history.previewRestore"], "write": [], "notification": [], "state": []},
-      "stateHolders": ["goSidecar", "pocketBase"],
-      "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
-      "timeout": "perHopBounded",
-      "productScenarios": ["06-relation-fanout", "07-attachment-history", "12-backup-consistency"],
-      "targetSlice": "L3B",
-      "targetPr": null,
-      "deleteWhen": "The Go Product Adapter returns the public relation, Lookup, and history projections and the Python projection module is deleted.",
-      "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/audit_routes.go", "sidecar/internal/app/relation_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
       "id": "rpc.relation-preview",
