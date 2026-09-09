@@ -14,6 +14,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/computationplan"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
@@ -740,6 +741,9 @@ func (catalog *Catalog) SyncComputedMetadata(
 		return err
 	}
 	if err := catalog.validateLookupReferences(ctx, definition); err != nil {
+		return err
+	}
+	if err := computationplan.Validate(ctx, definition, catalog.Describe); err != nil {
 		return err
 	}
 	prepared, plan, formulaErr := catalog.prepareFormulaState(
