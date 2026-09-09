@@ -29,6 +29,16 @@
 
 ## 1. 决策摘要
 
+### 2026-09-09 主干资格盘点
+
+主干 `25b26039` 已取得当前 manifest 的完整打包产品资格：29 场景、382 项断言通过，四组件 freshness、正常退出与端口清理通过；完整 CI 和普通 CD 哨兵成功且没有正式发布。source/run、场景耗时、恢复计时和历史失败边界统一见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)，启动/工作集/包体/RPC 样本见[运行时基线](../quality/packaged-runtime-baseline.md)。这些是已合并源码证据，不覆盖尚未合并的 PR。
+
+- L1/L2 policy 与 Go gateway、L3A 只读路由，以及已迁移的 L3B 描述/查询和 L4 权威事件路径，已有本次适用产品场景；S06 新语义与 S26–S31 不再缺少主干报告。
+- L5 仍有权威写入与共享元数据迁移；Mutation preview/apply 的开放 PR 不提前算作主干完成。History preview/apply 必须按同一恢复能力组处理，不能把 preview 单独划为只读迁移。
+- L6–L10 的 Host-native 剩余能力、Python 唯一状态迁出、按需 Worker 与普通启动移除 Python 仍按原依赖执行。当前四进程样本不代表新拓扑验收。
+- A2 只覆盖现有 S23 目录副本声明范围，手动同步仍 Internal，S24 冲突半成品尚无本次资格。A5 关系/Lookup 互操作与 A6 PDF adapter 的剩余资格仍需独立完成；不由全场通过扩大它们的能力声明。
+- A3 开发阶段暂停与 L11 独立 ADR 的决定保持。历史 S14/S23 失败与其他旧候选失败继续保留，不由新主干通过改写根因。
+
 ### 2026-09-07 开发阶段范围调整
 
 项目仍在开发阶段，允许破坏性更新。按用户明确决定，0.5.0/N-1 兼容移出当前开发验收，
@@ -490,7 +500,7 @@ flowchart LR
 字段描述声明 `workspace`、`rendererPublic`、`schema.query` 和只读 effect，另外五个 Field 方法保持原路由。
 本地准入与两个 owner 增量分别保留原件和验证记录，最终组合须完整移除相应 Python handler、
 维持无 fallback 的 Host 接线，并以同一构建完成 S02/S03/S30、fresh CI 和 squash 后验证。
-单独准入测试不能替代 Go producer 或产品资格；当前组合尚未远端验收完成。
+单独准入测试不能替代 Go producer 或产品资格；该组合随后合并，已由 2026-09-09 主干样本的适用场景验收，精确 source/run 见本计划顶部盘点及规范证据页。
 详见 [字段描述准入历史](../quality/field-settings-product-catalog.md)、
 [字段描述 Go 资格](../quality/field-settings-describe.md) 与
 [快照校验资格](../quality/query-validate-snapshot.md)。
