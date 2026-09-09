@@ -8,21 +8,13 @@
 
   <!-- OpenXml is measured independently from the Workspace dependency so
        neither assembly can hide the other's uncovered lines or branches. -->
-  <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
-    <Include>$(VibeTableDocumentDiffOpenXmlCoverageInclude)</Include>
-    <Threshold>$(VibeTableDocumentDiffOpenXmlLineCoverageMinimum),$(VibeTableDocumentDiffOpenXmlBranchCoverageMinimum)</Threshold>
-    <ThresholdType>line,branch</ThresholdType>
-    <ThresholdStat>total</ThresholdStat>
+  <PropertyGroup Condition="'$(VibeTableCoverageSettingsDirectory)' != ''">
+    <RunSettingsFilePath>$(VibeTableCoverageSettingsDirectory)/$(MSBuildProjectName).runsettings</RunSettingsFilePath>
+    <VSTestResultsDirectory>$(VibeTableCoverageResultsDirectory)/$(MSBuildProjectName)</VSTestResultsDirectory>
   </PropertyGroup>
 
-  <Target Name="ValidateVibeTableDocumentDiffOpenXmlCoverageProperties" BeforeTargets="VSTest"
-          Condition="'$(CollectCoverage)' == 'true'">
-    <Error Condition="'$(VibeTableDocumentDiffOpenXmlCoverageInclude)' == '' or '$(VibeTableDocumentDiffOpenXmlLineCoverageMinimum)' == '' or '$(VibeTableDocumentDiffOpenXmlBranchCoverageMinimum)' == ''"
-           Text="DocumentDiff.OpenXml coverage properties must come from .ci/project.json via qa/next.py." />
-  </Target>
-
   <ItemGroup>
-    <PackageReference Include="coverlet.msbuild" Version="6.0.4">
+    <PackageReference Include="coverlet.collector" Version="10.0.1">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
