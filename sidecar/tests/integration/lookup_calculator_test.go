@@ -236,6 +236,12 @@ func TestLookupCalculatorMaterializesDirectRelationInMutation(t *testing.T) {
 	for _, row := range lookupPage.Rows {
 		if row["id"] == broken.Id {
 			missingCell, _ = row[authorLookup.Definition.Identity.PhysicalName].(lookup.CellValue)
+		} else {
+			validCell, ok := row[authorLookup.Definition.Identity.PhysicalName].(lookup.CellValue)
+			if !ok || validCell.State != "ok" || validCell.Value != "Ada" ||
+				len(validCell.Provenance) != 1 || validCell.Provenance[0].ItemID != authorID {
+				t.Fatalf("missing source invalidated an unrelated row: %#v", row)
+			}
 		}
 	}
 	if missingCell.State != "invalid" || missingCell.Diagnostic == nil ||
@@ -749,5 +755,66 @@ func TestFormulaDereferencesValidatedRelationTarget(t *testing.T) {
 		formulaErr.Details["scope"] != "relation target" ||
 		formulaErr.Details["displayName"] != "Missing" {
 		t.Fatalf("invalid relation formula error = %#v", err)
+	}
+}
+
+func TestLookupFullMaterializationKeepsValuesBeyondGridPage(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	target := createV2IntegrationTable(t, ctx, app, "Materialization targets", "full_lookup_targets")
+	name := createV2IntegrationField(t, ctx, app, target.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "full_lookup_name")
+	source := createV2IntegrationTable(t, ctx, app, "Materialization sources", "full_lookup_sources")
+	title := createV2IntegrationField(t, ctx, app, source.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "full_lookup_title")
+	link := createV2IntegrationRelation(t, ctx, app, source.TableID, title.FieldID,
+		target.TableID, name.FieldID, "Targets", "Sources", "many", "full_lookup_link")
+	draft := fieldDraftForIntegration(t, v2.LogicalLookup, "Names")
+	draft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{{RelationFieldID: link.FieldID}}, TargetFieldID: name.FieldID,
+	}
+	field := createV2IntegrationField(t, ctx, app, source.TableID, draft, "full_lookup_names")
+	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for index := range 200 {
+		record := core.NewRecord(targetCollection)
+		record.Set(name.Definition.Identity.PhysicalName, fmt.Sprintf("Target %d", index))
+		if err := app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, record.Id)
+	}
+	sourceCollection, err := app.FindCollectionByNameOrId(source.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := core.NewRecord(sourceCollection)
+	record.Id = "fullsource00001"
+	record.Set(link.Definition.Identity.PhysicalName, ids)
+	definition, err := schemaexecution.Describe(ctx, app, source.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calculator := lookup.NewCalculator()
+	materialized, err := calculator.Calculate(ctx, app, definition, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physicalName := field.Definition.Identity.PhysicalName
+	values, ok := materialized[physicalName].([]any)
+	if !ok || len(values) != 200 || values[199] != "Target 199" {
+		t.Fatalf("full materialization = %#v", materialized)
+	}
+	cells, err := calculator.CalculateCells(ctx, app, definition, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := cells[physicalName]
+	if len(cell.Provenance) != 100 || cell.ProvenanceTotal != 200 || !cell.ProvenanceTotalKnown || !cell.ProvenanceHasMore {
+		t.Fatalf("grid projection = %#v", cell)
 	}
 }

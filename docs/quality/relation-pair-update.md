@@ -81,3 +81,7 @@ PR #304 已于 2026-09-08 21:43 UTC squash 合并为 `3bf03bc6f47399bacbdb1305a9
 ## 首轮 fresh CI 的契约修正
 
 CI run `34282704336` 的 core lane 在 Python 场景结构契约失败：真实 S06 已点击可见的 `.tabulator-col-title`，静态测试仍要求旧 `header.click` 字符串。只同步该精确点击断言，保留可见控件、双端权威与冲突零写入的全部断言。原测试本地 1 FAIL（0.32s），修正后 `uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -q --no-cov` 为 111 PASS（8.60s），日志 `build/qa/relation-pair-static-red.log` 与 `relation-pair-static-green.log`。产品源码未变，复用上述实际构建与三场景证据；更新后的 fresh CI 仍待完成。
+
+已将 #307 的实际 main squash `cadf5153` 正常同步为 `923904b2`，无冲突；仅包含已独立审查的 gateway 测试夹具改动，产品源码未变。合并交界 Standards/Spec 复核无确定问题。
+
+`dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter FullyQualifiedName~ProductSidecarHttpGatewayTests`：27 PASS、0 skip，120ms；日志 `build/qa/relation-pair-main-sync.log`。最新实际 main 端点的 fresh PR CI 尚待取得，不复用旧 head 的通过状态。

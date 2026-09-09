@@ -9,6 +9,19 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
+func TestCalculatorSharesCompilerPlan(t *testing.T) {
+	compiler := NewCompiler(DefaultLimits())
+	definition := formulaTable(formulaField("value_id", "value", integerType, "1"))
+	validated, err := compiler.CompileExecutionTable(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calculated, calculationErr := NewCalculator(compiler).plan(definition)
+	if calculationErr != nil || calculated != validated {
+		t.Fatalf("compiler and calculator did not share plan: %p/%p, %v", validated, calculated, calculationErr)
+	}
+}
+
 func TestCalculatorCacheIncludesFormulaDefinition(t *testing.T) {
 	calculator := NewCalculator(NewCompiler(DefaultLimits()))
 	first := formulaTable(

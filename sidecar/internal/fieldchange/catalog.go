@@ -93,7 +93,7 @@ func (catalog *Catalog) InspectFormulaDraft(
 		return FormulaDraftInspection{}, err
 	}
 	upsertFormulaField(&definition, *draft)
-	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileV2Table(definition)
+	plan, formulaErr := formula.CompilerFor(catalog.app).CompileV2Table(definition)
 	if formulaErr != nil {
 		return FormulaDraftInspection{}, formulaErr
 	}
@@ -136,7 +136,7 @@ func (catalog *Catalog) NormalizeDefinition(
 	withoutCurrent := current
 	withoutCurrent.Fields = append([]v2.FieldDefinition(nil), current.Fields...)
 	removeFormulaField(&withoutCurrent, definition.Identity.FieldID)
-	resultType, onlyInt, formulaErr := formula.NewCompiler(formula.DefaultLimits()).InferV2Source(
+	resultType, onlyInt, formulaErr := formula.CompilerFor(catalog.app).InferV2Source(
 		withoutCurrent, canonical,
 	)
 	if formulaErr != nil {
@@ -147,7 +147,7 @@ func (catalog *Catalog) NormalizeDefinition(
 	definition.Storage.Options.OnlyInt = onlyInt
 	candidate := withoutCurrent
 	upsertFormulaField(&candidate, *definition)
-	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileV2Table(candidate)
+	plan, formulaErr := formula.CompilerFor(catalog.app).CompileV2Table(candidate)
 	if formulaErr != nil {
 		return formulaErr
 	}
@@ -212,7 +212,11 @@ func (catalog *Catalog) formulaDefinition(
 	if err != nil {
 		return formula.V2Table{}, err
 	}
-	return formula.V2Table{TableID: tableID, Fields: fields}, nil
+	revisions, err := catalog.Revisions(ctx, tableID)
+	if err != nil {
+		return formula.V2Table{}, err
+	}
+	return formula.V2Table{TableID: tableID, SchemaRevision: revisions.Schema, Fields: fields}, nil
 }
 
 func validateAuthoredRelationReference(
