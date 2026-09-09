@@ -10,9 +10,11 @@
 - 结果：23/23 passed、0 failed、0 skipped。
 - 当前 manifest gap：6（`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`）。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：1（`06-relation-fanout`）。
+- 当前 manifest changed：2（`06-relation-fanout`、`07-attachment-history`）。
 
 同编号场景 "06-relation-fanout" 已从公共 cascade 预览改为两端关系字段的真实 UI 编辑、冻结计划与应用，并保留公共 cascade 拒绝边界。上述历史 source/run 的结果只覆盖当时语义，不证明当前 S06 资格；该项待正式 main 打包报告重新验收。本机局部验证不能关闭此证据缺口。gap、surplus 和 changed 均为空才满足发布证据闭合要求。
+
+同编号场景 "07-attachment-history" 现在保留历史抽屉的 Workspace V2 恢复，并新增公开 `history.previewRestoreRequested` / `history.applyRestoreRequested` 桥接闭环，独立验证 Go Product owner。旧 main 报告中的 S07 没有这些 Product 断言；即使场景编号相同，也不能用旧报告证明新增恢复入口。新增段验证预览不改变当前附件、Product 五字段结果不含 `mutationRevision`，以及返回行中的当前存储名与附件权威列表、表/记录/字段身份、原名、既有内容 checksum 和长度一致。恢复会重新生成托管存储名，不要求沿用历史名称。此项仍待包含新断言的本候选同包报告及正式 main 报告验收，S12 的快照恢复结果不能替代它。
 
 场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview"、"29-lookup-source-pagination" 和 "30-query-snapshot-validation" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；新加入的 "31-relation-pair-inspection" 同样待取得正式 main 报告；上述 23/23 历史样本不包含这六项新增场景，也不证明新的关系、来源分页与快照校验资格。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与

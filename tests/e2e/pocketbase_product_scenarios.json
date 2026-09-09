@@ -38,8 +38,8 @@
   {
     "id": "07-attachment-history",
     "title": "附件全生命周期与历史恢复",
-    "requirement": "通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256，并从历史恢复旧版本。",
-    "capabilities": ["attachment.history"]
+    "requirement": "通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256；保留历史抽屉的 Workspace 恢复，并经公开 Product 桥接预览和应用另一修订，核对预览不改当前附件、五字段返回及恢复后的附件身份和长度。",
+    "capabilities": ["attachment.history", "history.restore"]
   },
   {
     "id": "08-stale-conflict",
