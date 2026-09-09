@@ -103,9 +103,6 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	if err != nil {
 		return nil, err
 	}
-	formulaCompiler := formula.NewCompiler(formula.DefaultLimits())
-	formulaCalculator := formula.NewCalculator(formulaCompiler)
-
 	pocketbase.Version = buildinfo.PocketBaseVersion
 	pb := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir:  options.DataDir,
@@ -113,6 +110,8 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		HideStartBanner: true,
 	})
 	migrations.Register(pb)
+	formulaCompiler := formula.NewAppCompiler(pb)
+	formulaCalculator := formula.NewCalculator(formulaCompiler)
 	queryPort := query.NewPort(pb, querySource)
 	realtimeHub := realtime.New(pb)
 	jobService := jobs.New(

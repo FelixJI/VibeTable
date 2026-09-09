@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -29,6 +30,18 @@ type Plan struct {
 }
 
 func (compiler *Compiler) CompileExecutionTable(definition schemaexecution.Table) (*Plan, *Error) {
+	plan, err := compiler.cache.get(definition)
+	if err == nil {
+		return plan, nil
+	}
+	var compileErr *Error
+	if errors.As(err, &compileErr) {
+		return nil, compileErr
+	}
+	return nil, formulaError("formula.runtime", "formula compilation failed", map[string]any{"reason": err.Error()})
+}
+
+func (compiler *Compiler) compileExecutionTable(definition schemaexecution.Table) (*Plan, *Error) {
 	formulas := make([]*CompiledFormula, 0)
 	for index, field := range definition.Snapshot.Fields {
 		if field.LogicalType != v2.LogicalFormula {
