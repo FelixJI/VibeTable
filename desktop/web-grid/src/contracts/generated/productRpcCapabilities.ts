@@ -65,6 +65,7 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
   "recordDocumentLink.repair",
   "relation.applyDelta",
   "relation.createTarget",
+  "relation.inspectPair",
   "relation.previewDelta",
   "relation.searchTargets",
   "relation.updateSingle",

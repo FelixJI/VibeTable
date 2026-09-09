@@ -124,7 +124,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   ): Promise<void> {
     const current = ++generation;
     formulaPreview.cancel();
-    store.beginOpen();
+    store.beginOpen(fieldId ? { tableId, fieldId } : null);
     try {
       const result = parseFieldSettingsDescribeResultV2(unwrapFieldResult(
         await bridge.request("field.settings.describe", {

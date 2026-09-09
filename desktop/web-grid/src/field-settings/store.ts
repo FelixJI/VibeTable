@@ -42,6 +42,7 @@ export interface RelationTableOption {
 
 export const useFieldSettingsStore = defineStore("field-settings", () => {
   const open = ref(false);
+  const inspectionTarget = shallowRef<{ readonly tableId: string; readonly fieldId: string } | null>(null);
   const phase = ref<FieldSettingsPhase>("idle");
   const result = shallowRef<FieldSettingsDescribeResultV2 | null>(null);
   const original = shallowRef<FieldDraftV2 | null>(null);
@@ -157,7 +158,11 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && confirmationsComplete.value,
   );
 
-  function beginOpen(): void {
+  function beginOpen(target: { readonly tableId: string; readonly fieldId: string } | null = null): void {
+    inspectionTarget.value = target;
+    result.value = null;
+    original.value = null;
+    draft.value = null;
     open.value = true;
     phase.value = "loading";
     conversionRule.value = "";
@@ -449,6 +454,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   }
 
   function close(): void {
+    inspectionTarget.value = null;
     open.value = false;
     resetCatalogState();
     phase.value = "idle";
@@ -468,7 +474,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   }
 
   return {
-    open, phase, result, original, draft, action, conversionRule, confirmation,
+    open, phase, result, original, draft, action, conversionRule, confirmation, inspectionTarget,
     backupReceipt, plan, receipt, migration, recycled, confirmations, error,
     errorCode, relationPair, originalRelationPair, isPairedRelation, loadRelationPair,
     relationTables, relationSourceSchema, relationTargetSchema,

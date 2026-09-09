@@ -64,6 +64,16 @@ internal static class ProductDataRpcRegistry
             && HasString(p, "tableId"),
             (g, p, t) => g.ListRecycledFieldsAsync(p, t),
             CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+        new("relation.inspectPair", p => Safe(p)
+            && HasOnlyProperties(p, "tableId", "fieldId", "limit", "cursor")
+            && HasStrings(p, "tableId", "fieldId")
+            && (!p.TryGetProperty("limit", out var limit)
+                || limit.ValueKind == JsonValueKind.Number
+                && limit.TryGetInt32(out int count) && count is >= 1 and <= 200)
+            && (!p.TryGetProperty("cursor", out var cursor)
+                || cursor.ValueKind is JsonValueKind.Object or JsonValueKind.Null),
+            (_, _, _) => Task.FromException<JsonElement>(
+                new InvalidOperationException("Relation inspection requires the Go authority route."))),
         new("lookup.list", p => Safe(p)
             && HasExactProperties(p, "collection") && HasString(p, "collection"),
             (g, p, t) => g.ListLookupsAsync(p, t)),
