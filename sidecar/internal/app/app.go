@@ -440,6 +440,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				lookupQueryRegistration(relationService),
 				lookupValuePageRegistration(relationService),
 				relationSearchTargetsRegistration(relationService),
+				relationInspectPairRegistration(pb),
 				queryReadRowsRegistration(queryPort),
 				queryPageRegistration(queryPort),
 				queryValidateSnapshotRegistration(queryPort),

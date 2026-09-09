@@ -610,6 +610,14 @@
       "effect": "write"
     },
     {
+      "method": "relation.inspectPair",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
       "method": "relation.previewDelta",
       "scope": "workspace",
       "audience": "rendererPublic",

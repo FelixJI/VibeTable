@@ -1,6 +1,6 @@
 # mutation 产品 RPC Go owner 迁移资格
 
-此变更将同一 mutation 契约下的 preview/apply 成对迁入 Go，避免预览与应用形成中间 owner 状态。保留已有 mutation Kernel 和 workspace 写门禁，Python import/export/plugin 使用的内部 client 不随产品路由删除。产品目录仍为 103 RPC、7 事件，当前 owner 为 21 Go / 80 Python / 2 Host。
+此变更将同一 mutation 契约下的 preview/apply 成对迁入 Go，避免预览与应用形成中间 owner 状态。保留已有 mutation Kernel 和 workspace 写门禁，Python import/export/plugin 使用的内部 client 不随产品路由删除。同步 #319 后产品目录为 104 RPC、7 事件，当前 owner 为 22 Go / 80 Python / 2 Host。
 
 前置交付为 Go 权威恢复流、Host 完整消费者和独立 workspace mutation 重放修复。重放与字段计划修复的#302以及标签#303均已各自通过CI，已由#304统一端点通过fresh CI并squash进入main。Host #300已完成合并后main CI/CD闭环；本分支已同步#304实际main结果，基础修复不重复计入owner切换的PR diff。
 
