@@ -296,7 +296,7 @@ capability/lifecycle 和产品场景拆分实施；不能把关闭解释为其�
 
 S23 已验证公开 Workspace Center 创建目录镜像、表与记录写入、释放活动缓存、同 UUID 重开、
 精确终止 sidecar 后的 replacement database.opened，以及单次 table/query 与 replica.status 观察。
-该记录中的23/23是历史候选样本，不是当前增长后 manifest 的全场景结论。
+该记录现提供 main `25b260394a0a01e8432d23fa3d1a6e8b9b65922f` 的 29/29 固定候选样本；这不代表后续提交或新增场景已通过。
 
 剩余边界：
 
