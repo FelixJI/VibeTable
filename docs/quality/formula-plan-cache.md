@@ -6,7 +6,7 @@
 
 基线为 `main@3bf03bc6f47399bacbdb1305a9b110c8d3b11ae5`。从旧语义缓存分支四个提交 `74d73ca9`、`8bb5fd82`、`177211d2`、`6631da8e` 中按增量恢复缓存意图，保留当前 main 的 PR217 作者文档、源码位置和 UTF-16 映射实现。数值语义修正已拆出；本候选不改变除法、非有限值或数值输入边界。
 
-生产与测试共 12 个 Go 文件，另有本文档：
+生产与测试共 13 个 Go 文件，另有本文档：
 
 - `sidecar/internal/formula/cache.go`、`cache_test.go`：128 条 LRU，待编译条目计入容量；相同定义并发编译合并。缓存键使用 Schema revision 和完整字段定义，排除数据水位与运行状态；不同草稿不互相复用，编译错误不留在缓存中。
 - `sidecar/internal/formula/app_compiler.go`、`app_compiler_test.go`：应用与事务副本共享编译器，缓存准入读取根应用的已提交 revision；提交后失效，回滚不失效，迟到回调不驱逐较新计划。事务中新表尚不可见时只编译、不准入；提交后可缓存，回滚后不残留。
@@ -70,3 +70,8 @@ go test ./internal/formula -run 'TestCELV1|TestCalculatorSharesCompilerPlan' -co
 四组件 fresh，直接连接实际 WebView2，未另启浏览器。Node/Host退出0，pageErrors、未确认 bridge failures和pending均0；S12有1条已确认预期失败。两场景进程成员/后代为空，端口释放、owner lease和最终清理全部通过。原始报告 `build/qa/product-e2e/20260908T235510Z/product-e2e-report.json`，入口日志 `build/qa/formula-semantic-cache/product-e2e.log`。
 
 上述不改变完整 Go 测试的清理失败结论，也不替代 fresh required CI 或合并后 CI/CD。
+## 草稿差分 fuzz
+
+新增 `sidecar/internal/formula/cache_fuzz_test.go`，在同一编译器、同一 schema revision 下先编译草稿A、切换B、再回到A，与绕过缓存的纯编译比较错误、结果和执行错误。输入限定有效UTF-8、各source最多256字节、int16数值；4个固定seed覆盖成功、编译失败、除零和再次访问。它补充顺序草稿语义，不替代前述并发、LRU、事务测试。
+
+`go test ./internal/formula -run '^$' -fuzz '^FuzzPlanCachePreservesDraftSemantics$' -fuzztime=30s -parallel=1`：PASS30.943s，52,787次执行；日志 `build/qa/formula-semantic-cache/cache-fuzz.log`。独立Spec和Standards未发现确定问题。仅新增测试，已验收产品源码未变，无需重复构建。
