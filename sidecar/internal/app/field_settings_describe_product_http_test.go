@@ -34,7 +34,8 @@ func fieldSettingsDescribeHTTPMux(t *testing.T, pb *pocketbase.PocketBase, regis
 	t.Helper()
 	catalog := schemaapi.New(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
-		registration, relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
+		registration, relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+		unrelatedRelationInspectRegistration(t), productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
 		queryPageRegistration(relationSearchUnrelatedPage{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),

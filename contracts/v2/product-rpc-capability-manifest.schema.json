@@ -15,8 +15,8 @@
     },
     "rpcMethods": {
       "type": "array",
-      "minItems": 103,
-      "maxItems": 103,
+      "minItems": 104,
+      "maxItems": 104,
       "uniqueItems": true,
       "items": {
         "type": "object",

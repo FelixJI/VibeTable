@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 103
+    assert len(manifest["rpcMethods"]) == 104
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -68,6 +68,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
         "schema.describe",
@@ -188,6 +189,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
         "schema.describe",

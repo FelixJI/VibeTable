@@ -3148,6 +3148,88 @@ async function scenario30(page, recorder) {
   await validate(afterWrite.snapshot, undefined, "schema_changed", afterSchema);
 }
 
+async function scenario31(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const targets = await createSimpleTable(page, "Inspection Targets", "Name");
+  const sources = await createSimpleTable(page, "Inspection Sources", "Name");
+  const link = await createV2Field(page, sources.tableId, "Related targets", "relation", (draft) => {
+    draft.relation.targetTableId = targets.tableId;
+    draft.relation.displayFieldId = targets.field.fieldId;
+    draft.relation.cardinality = "many";
+    return draft;
+  });
+  const targetId = "inspecttarget01";
+  const target = await applyProductMutation(page, targets.tableId, [{
+    kind: "insert", recordId: targetId, values: { [targets.field.physicalName]: "诊断目标 雪" },
+  }], "inspection-target");
+  const inserted = await applyProductMutation(page, sources.tableId,
+    Array.from({ length: 101 }, (_, index) => ({
+      kind: "insert", recordId: `inspectrow${String(index).padStart(5, "0")}`,
+      values: { [sources.field.physicalName]: `来源 ${index}`, [link.physicalName]: [targetId] },
+    })), "inspection-sources");
+  if (target.payload?.status !== "applied" || inserted.payload?.status !== "applied") {
+    throw new Error(`inspection fixture did not commit: ${JSON.stringify({ target, inserted })}`);
+  }
+  const read = async (tableId) => {
+    const response = await rawBridgeRequest(page, "query.page", {
+      tableId, query: { filters: [], sorts: [], offset: 0, limit: 200 },
+    });
+    if (response.type !== "query.page" || !response.payload?.snapshot) {
+      throw new Error(`inspection authority read failed: ${JSON.stringify(response)}`);
+    }
+    return { rows: response.payload.rows, schemaRevision: response.payload.snapshot.schemaRevision,
+      dataRevision: response.payload.snapshot.dataRevision };
+  };
+  const state = async () => [await read(sources.tableId), await read(targets.tableId)];
+  const before = await state();
+  recorder.check("inspection fixture has 101 source rows and one target", before[0].rows.length === 101 && before[1].rows.length === 1);
+  await selectTable(page, "Inspection Sources");
+  const header = page.locator(`.tabulator-col[tabulator-field="${link.physicalName}"]`);
+  await header.waitFor({ state: "visible" });
+  await header.locator(".tabulator-col-title").click({ button: "right" });
+  await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+  const panel = page.locator(".relation-inspection");
+  await panel.waitFor({ state: "visible" });
+  const firstPage = async (button) => {
+    await panel.getByRole("button", { name: button, exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "尚有后续页" }).waitFor();
+  };
+  const finish = async () => {
+    await panel.getByRole("button", { name: "继续检查", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: /^扫描覆盖完整。/u }).waitFor();
+  };
+  await firstPage("检查关系完整性");
+  recorder.check("inspection first page retains both endpoint progress without claiming completion",
+    /已检查 100 行/u.test(await panel.locator(".inspection-endpoints li").first().innerText())
+      && await panel.getByRole("button", { name: "继续检查", exact: true }).isVisible());
+  await finish();
+  recorder.check("inspection completes both endpoints after the second page",
+    /已检查 101 行/u.test(await panel.locator(".inspection-endpoints li").first().innerText())
+      && /已检查 1 行/u.test(await panel.locator(".inspection-endpoints li").nth(1).innerText())
+      && await panel.locator("[data-finding]").count() === 0
+      && await panel.getByRole("button", { name: "继续检查", exact: true }).count() === 0
+      && await panel.getByRole("alert").count() === 0);
+  const after = await state();
+  recorder.check("inspection paging preserves authority rows and revisions", JSON.stringify(before) === JSON.stringify(after), { before, after });
+  await firstPage("重新检查");
+  const changed = await applyProductMutation(page, sources.tableId, [{
+    kind: "update", recordId: "inspectrow00000", values: { [sources.field.physicalName]: "并发更新 雪" },
+  }], "inspection-revision-change");
+  if (changed.payload?.status !== "applied") throw new Error(`inspection concurrent edit failed: ${JSON.stringify(changed)}`);
+  const afterWrite = await state();
+  await panel.getByRole("button", { name: "继续检查", exact: true }).click();
+  await panel.getByRole("alert").filter({ hasText: "检查期间数据或字段已变化" }).waitFor();
+  recorder.check("a changed revision rejects continuation and requires restarting",
+    await panel.getByRole("button", { name: "继续检查", exact: true }).count() === 0
+      && /此前发现仅供参考/u.test(await panel.getByRole("alert").innerText()));
+  const afterRejected = await state();
+  recorder.check("rejected inspection continuation performs no authority writes",
+    JSON.stringify(afterWrite) === JSON.stringify(afterRejected), { afterWrite, afterRejected });
+  await firstPage("重新检查");
+  await finish();
+  recorder.check("inspection restarts against the updated revisions without a stale error", await panel.getByRole("alert").count() === 0);
+}
 async function scenario26(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -7483,6 +7565,7 @@ const scenarios = {
   "28-relation-delta-preview": scenario28,
   "29-lookup-source-pagination": scenario29,
   "30-query-snapshot-validation": scenario30,
+  "31-relation-pair-inspection": scenario31,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {
