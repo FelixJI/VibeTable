@@ -30,7 +30,7 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 ## 当前阈值评价
 
 - Python 85%：对核心 backend 合理，保持。
-- .NET 覆盖率由 `.ci/project.json` 的 `quality.dotnet_coverage.projects` 集中管理。Desktop、Contracts、PreviewHost、Workspace、Infrastructure 与 DocumentDiff.OpenXml 分别使用独立程序集 Include 以及 line/branch total 门槛，测试项目不得持有数值、合并程序集总量或排除手写代码；新增 Coverlet 测试项目若未进入该 inventory，质量入口会 fail closed。Contracts 只排除中央清单逐文件登记、由既有 generator 拥有且经 `scripts/automation_project.py contracts` 做 freshness/兼容性检查的 `Generated/*.g.cs`，全部手写源码仍进入 line/branch total 分母；排除模式、清单与磁盘中的生成文件闭集由质量入口 fail closed 校验。
+- .NET 覆盖率由 `.ci/project.json` 的 `quality.dotnet_coverage.projects` 集中管理。`uv run python qa/next.py --stage dotnet` 调用项目专属 `qa.dotnet_coverage`，使用固定 `coverlet.collector` 在测试会话结束时同步收集；旧 `/p:CollectCoverage=true` MSBuild 模式不再是质量入口。一次 solution 测试为 Desktop、Contracts、PreviewHost、Workspace、Infrastructure 与 DocumentDiff.OpenXml 分别提供唯一程序集 Include、runsettings 和本次独立结果目录。每份报告必须由该测试项目成功 TRX 的 collector 附件绑定，且恰含预期程序集；使用原始 covered/valid 整数逐程序集比较 line/branch 门槛，不先舍入、不跨程序集平均。测试非零退出、collector 错误、缺失或错绑报告均失败。新增 Coverlet 测试项目若未进入 source/test/solution 双向 inventory，质量入口会 fail closed。Contracts 只排除中央清单逐文件登记、由既有 generator 拥有且经 `scripts/automation_project.py contracts` 做 freshness/兼容性检查的 `Generated/*.g.cs`；排除模式、清单与磁盘中的生成文件闭集保持校验。全部手写源码仍进入分母，不增加 `SkipAutoProps`、属性排除或报告合并。
 - Go 覆盖率由 `.ci/project.json` 的 `quality.go_coverage.groups` 集中管理。`core` 与
   `authority` 使用互不重叠的 `-coverpkg`、测试包清单、profile、JSON 报告和
   line/branch/diff 阈值；未知字段、空清单、重复或跨组重叠包、非法路径、缺失阈值及空
