@@ -260,40 +260,41 @@ VibeTable 不需要全面重写。长期 ownership 定义为：
 
 ### A1：Retention 非零逻辑清理与物理 Sweep 分层证据
 
-2026-09-07 验收增量：冻结候选已完成真实 24 小时自然老化后的非零逻辑清理，
-8 项产品断言和退出清理均通过，见[自然老化验收记录](../quality/retention-natural-aging-evidence.md)。
-这是指定候选的逻辑清理证据；下述物理 Sweep 资格仍独立验收，不能据此把 A1 全项标为完成。
+2026-09-09 状态核对：原 [PR #129](https://github.com/FelixJI/VibeTable/pull/129) 已关闭而非合并。
+它把 unpin 后的 24 小时 replacement root pin 当成可立即删除的对象，不能继续沿用旧场景前提。
+后续自然老化入口与冻结候选证据已通过 #267 纳入 [#273](https://github.com/FelixJI/VibeTable/pull/273)，
+不再将旧 PR 列为当前实施任务。
 
-当前开放 PR #129 负责：
+现有证据分两层，见[自然老化及独立 Sweep 记录](../quality/retention-natural-aging-evidence.md)：
 
-- 新增独立 packaged 场景，不改写已经可信的零删除场景；
-- 通过真实设置 UI 构造非零候选；
-- 证明 `retention.apply` 提交逻辑 tombstone，目标 Snapshot 从产品可达集合移除；
-- 证明 Apply 当轮 `reclaimedBytes=0` 是 90 天 grace 的预期行为，而不是“未删除”；
-- 通过二次 plan/apply 证明逻辑候选已经清空。
+- 真实等待超过 24 小时的冻结候选，实际 WPF/WebView2 非零逻辑清理 8/8 断言通过；
+  Apply 删除3个逻辑对象、reclaimedBytes=0，二次 plan/apply 候选为空。该结果属于记录中的固定候选，
+  不自动变成任意后续 main 构建的重新验收。
+- `TestRetainedSnapshotProtectsHistoryOnlyObjectsThroughMaintenance` 使用真实 Kopia、受控领域 Clock
+  推进91天，证明物理退休、保留对象可读及重启后的 Sweep 幂等；已有 race 6.912s 通过证据。
+  这不是自然等待90天，也不承诺新 pack 当轮缩小。
 
-后续独立工作负责：
-
-- 使用 sidecar `Sweep`、受控 Clock 和真实 Kopia repository 证明 grace 后物理退休；
-- 保持产品 Apply 和物理 Sweep 两种报告、审计和故障语义分离；
-- 不增加生产 test-only 时钟参数，也不通过直接改 SQLite 跳过领域接口。
+后续变更继续分别维护逻辑 Apply 与物理 Sweep 的报告和失败语义；不得新增生产 test-only 时钟参数、
+直接改 SQLite 绕过领域接口，或重复建设已有验证入口。A1 不以单个逻辑样本推导全部物理或当前候选资格。
 
 ### A2：目录镜像 Workspace/Replica 产品闭环
 
-当前开放 PR #139 负责：
+原 [PR #139](https://github.com/FelixJI/VibeTable/pull/139) 已关闭而非合并，后续按恢复布局、
+capability/lifecycle 和产品场景拆分实施；不能把关闭解释为其整批差异已交付。
+当前 main 已具备正式 migrations、replacement capability refresh 与目录恢复路径，且保存了
+[main 固定候选 S23 的实际产品证据](../e2e-performance.md)。
 
-- replica one-shot 初始化执行正式 migrations；
-- replacement sidecar Ready 后重新获取并验证 capability snapshot；
-- refresh 失败保留最后一份已验证 capability，不先清空再读取；
-- bootstrap capture 绑定目标 workspace、request、session 和模式；
-- activity root、root-level `files` 与恢复对象路径一致；
-- 真实 Workspace Center 创建目录镜像、释放活动缓存、同 UUID 重开、sidecar kill 后 table+replica 恢复。
+S23 已验证公开 Workspace Center 创建目录镜像、表与记录写入、释放活动缓存、同 UUID 重开、
+精确终止 sidecar 后的 replacement database.opened，以及单次 table/query 与 replica.status 观察。
+该记录中的23/23是历史候选样本，不是当前增长后 manifest 的全场景结论。
 
-合并后仍需明确：
+剩余边界：
 
-- 手动 `replica.synchronize` 是否继续 Internal only；
-- offline/reconnect、同步冲突和 exclusive-writer 资格是否属于下一公开范围；
-- mirrored capability 只按真实产品场景范围广告，不从内部 hook 推断用户能力。
+- 手动 `replica.synchronize` 继续 Internal only；不得凭内部 hook 扩大公开能力。
+- 双端同步冲突 S24 仍是未取得实际产品资格的半成品；恢复它前须保留最新 epoch/准入语义，
+  分别核验左右 Host 的持久数据隔离、正常关闭后载荷交换、冲突选择与败方恢复证据。
+- offline/reconnect、同步冲突与 exclusive-writer 不能由 S23 推导；目录 advisory replica
+  不承诺 exclusive writing，公开范围遵循现行 ADR 与实际能力声明。
 
 ### A3：N-1 正式兼容证据（开发阶段暂停）
 
@@ -313,13 +314,19 @@ VibeTable 不需要全面重写。长期 ownership 定义为：
 
 ### A4：新版进程真实 crash 回退
 
-现有 smoke 已覆盖成功、workspace health failure、受控退出和 health timeout。剩余场景必须：
+真实异常退出入口已经实现：#230 随 [#266](https://github.com/FelixJI/VibeTable/pull/266) 合入，
+`HostStartupOptions` 的受控 smoke 通过 `Environment.FailFast` 终止新版宿主，
+`scripts/build_next.py` 的 `updated-crash` oracle 使用预先打开的进程句柄观察退出，
+并核验回退 receipt、旧版 readiness 和清理。原成功、workspace health failure、受控退出与
+health timeout 场景保留；不再新建重复 crash harness。
 
-- 让新版宿主以真实异常退出形态终止，而不是消费正常 close request；
-- 由进程外 watchdog 识别本次 attempt 的 PID、启动时间、nonce 和 owned Job；
-- 在完整进程组为空后恢复旧包；
-- 验证 terminal receipt、旧版 readiness、未知安装根文件和外部用户数据不变；
-- 若后续默认启动不再包含 Python，更新 owned member 形状和 smoke oracle 后重新运行全部更新场景。
+资格仍按实际 source/run 归属，不能用单元测试或后续文档修订代替打包运行；#266 的历史失败及后继
+main CI/CD 成功记录同时保留在该 PR。后续 updater 或进程拓扑变更继续验证：
+
+- watchdog 识别本次 attempt 的进程、启动时刻、nonce 和 owned Job；
+- 整个进程组退出后才恢复旧包，terminal receipt 与旧版 readiness 一致；
+- 未知安装根文件与外部用户数据不变；
+- 若普通启动移除常驻 Python，更新 owned member 形状和 oracle，并重新运行完整更新场景。
 
 ### A5：数据互操作和 Unicode/locale 资格
 
@@ -639,10 +646,10 @@ A1、A2、A4 与 L0/L1 的大部分设计和相邻实现可以并行，但共享
 
 | 轨道 | 可并行工作 | 不能同时修改/合并的区域 |
 |---|---|---|
-| Retention | PR #129 产品场景；物理 Sweep 的 Go 测试设计 | E2E manifest、生成能力索引和证据页需按最新 main 重生成后串行合并 |
-| Mirrored/Replica | PR #139 初始化、恢复、capability refresh | `ProductionWorkspaceRuntime`、workspace capability、场景 15/manifest 与其他进程拓扑 PR 串行合并 |
+| Retention | 维护 A1 已有逻辑清理与物理 Sweep 两层证据 | E2E manifest、生成能力索引和证据页需按最新 main 重生成后串行合并 |
+| Mirrored/Replica | S23 范围内回归与 S24 双端冲突半成品收尾 | `ProductionWorkspaceRuntime`、workspace capability、场景 15/manifest 与其他进程拓扑 PR 串行合并 |
 | N-1 | 开发阶段暂停；已冻结 producer/anchor 保留 | 若重新启用，仍按 producer→anchor→consumer→promotion 顺序合并 |
-| Updater crash | 独立 crash harness 与 receipt oracle | 与 L10 进程成员形状变化不能同时合并；L10 后必须重新跑 smoke |
+| Updater crash | 维护已有真实 crash harness 与 receipt oracle | 与 L10 进程成员形状变化不能同时合并；L10 后必须重新跑 smoke |
 | Product migration groundwork | L0 inventory/measurement、L1 policy/schema/生成器 | Product catalog、WPF route registry 和生成物变更只允许一个权威分支依次合并 |
 | Data IO/Plugin | Worker 协议设计、corpus、任务状态梳理 | L7 前不得改变生产生命周期；两个 Worker 实现可在 L7 合并后并行 |
 | Host-native | device/shortcut/path grant ownership 设计与相邻 C# 测试 | `backend/__main__.py`、WPF composition root 的删除接线需与 L5/L7 串行 |
@@ -692,15 +699,15 @@ A1、A2、A4 与 L0/L1 的大部分设计和相邻实现可以并行，但共享
 
 ### 成熟度线
 
-1. Retention 非零逻辑清理产品场景（现 PR #129）。
-2. Retention 物理 Sweep 领域证据。
-3. Mirrored/Replica 初始化与恢复（现 PR #139）。
+1. Retention 非零逻辑清理产品场景（已有 A1 冻结候选证据，变更时按源码归属复验）。
+2. Retention 物理 Sweep 领域证据（已有独立受控 Clock 资格，不与逻辑清理混同）。
+3. Mirrored/Replica 初始化与恢复（已有 S23 历史 main 样本，保留其范围）。
 4. Mirrored 后续 offline/conflict 范围决策：公开、Hidden 或新纵切。
 5. N-1 正式 corpus producer（已冻结，保留历史证据）。
 6. N-1 anchor（已合并，保留冻结边界）。
 7. N-1 当前 reader/import consumer（开发阶段暂停）。
 8. N-1 policy promotion（开发阶段暂停，不伪造 verified）。
-9. updater 真实 crash packaged smoke。
+9. updater 真实 crash packaged smoke（已有入口，进程拓扑变化后重新验证）。
 10. CSV/XLSX/Unicode 代表性 packaged corpus。
 11. PDF 支持范围与 adapter 评估 ADR。
 
@@ -788,7 +795,7 @@ PR 必须说明：
 
 ### 15.1 旧审计剩余事项完成
 
-- PR #129 的非零 Retention 产品证据进入可信 main；
+- 非零 Retention 产品证据与独立物理 Sweep 证据进入可信 main，并保留固定源码/报告归属；
 - 目录镜像 Workspace 的声明范围进入可信 main，或明确保持 Hidden/Internal；
 - updater 真实 crash 回退打包通过；
 - A3 明确为开发阶段暂停，旧版 target 保持未验证状态；当前格式恢复与不支持格式零写入拒绝仍成立；
@@ -829,8 +836,10 @@ PR 必须说明：
 
 ## 16. 建议的立即执行顺序
 
-1. 保持 PR #129 与 PR #139 独立开发，先达到完整门禁者先合并；后合并者重基并重新生成 E2E 派生产物。
-2. 两项进入 main 后，用独立 evidence PR 更新能力矩阵、性能/场景证据和本方案状态，不在功能 PR 中提前写成完成。
+下列保留运行时迁移的依赖顺序，不表示每个历史基础设施项仍未实施；执行前按实际 main、当前队列与各节资格记录核对，复用已合并成果。
+
+1. 先清空当前可合并队列和已存在半成品；A1/A2 按本节更新后的证据状态推进，不重启已关闭的 PR #129/#139。共享 E2E 派生产物按最新 main 重生成后串行合并。
+2. 只有对应功能进入可信 main 后，才更新能力矩阵、性能/场景证据和本方案状态；固定候选或局部通过不得提前写成当前全量完成。
 3. 与上述工作并行完成 L0 ownership inventory、当前进程/RSS/RPC/包体基线和 L1 Product policy 设计。
 4. 在 L1 合并后实现 L2 WPF→Go 基础设施，保持默认路由不变。
 5. 并行开发 L3A、L3B、L4 和 L6，但重基后按共享 catalog/router 冲突串行合并。
