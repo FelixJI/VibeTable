@@ -105,6 +105,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
         "schema.describe",

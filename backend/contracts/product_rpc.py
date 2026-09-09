@@ -11,6 +11,7 @@ from backend.contracts.generated_product_rpc_capabilities import (
     PRODUCT_RPC_METHODS_BY_CURRENT_OWNER,
     current_owner_methods,
 )
+from backend.contracts.relation_inspection import RelationInspectPairRequest
 from backend.contracts.schema_v2 import ApplyRequestV2
 
 _MAX_PARAMS_BYTES = 1 << 20
@@ -97,6 +98,17 @@ def _closed_params(
             "_field_types": field_types or {},
         },
     )
+
+
+class RelationInspectPairParams(ProductParams):
+    _allowed_fields = frozenset({"tableId", "fieldId", "limit", "cursor"})
+    _required_fields = frozenset({"tableId", "fieldId"})
+    _field_types = {"tableId": (str,), "fieldId": (str,)}
+
+    @model_validator(mode="after")
+    def validate_inspection(self) -> RelationInspectPairParams:
+        RelationInspectPairRequest.model_validate(self.root)
+        return self
 
 
 class FieldChangePlanParams(ProductParams):
@@ -424,6 +436,7 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
             "dataRevision": (str,),
         },
     ),
+    "relation.inspectPair": RelationInspectPairParams,
     "relation.searchTargets": _closed_params(
         "RelationSearchTargetsParams",
         allowed=("relationId", "query", "offset", "limit"),

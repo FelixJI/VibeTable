@@ -530,7 +530,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 19 ||
+		len(productCapabilities.RPCMethods) != 20 ||
 		productCapabilities.RPCMethods[0] != "events.reconcile" ||
 		productCapabilities.RPCMethods[1] != "field.settings.describe" ||
 		productCapabilities.RPCMethods[2] != "file.list" ||
@@ -545,12 +545,13 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.RPCMethods[11] != "query.selectionOpen" ||
 		productCapabilities.RPCMethods[12] != "query.validateSnapshot" ||
 		productCapabilities.RPCMethods[13] != "query.view" ||
-		productCapabilities.RPCMethods[14] != "relation.previewDelta" ||
-		productCapabilities.RPCMethods[15] != "relation.searchTargets" ||
-		productCapabilities.RPCMethods[16] != "schema.describe" ||
-		productCapabilities.RPCMethods[17] != "schema.getTable" ||
-		productCapabilities.RPCMethods[18] != "schema.list" ||
-		len(productCapabilities.Registrations) != 19 ||
+		productCapabilities.RPCMethods[14] != "relation.inspectPair" ||
+		productCapabilities.RPCMethods[15] != "relation.previewDelta" ||
+		productCapabilities.RPCMethods[16] != "relation.searchTargets" ||
+		productCapabilities.RPCMethods[17] != "schema.describe" ||
+		productCapabilities.RPCMethods[18] != "schema.getTable" ||
+		productCapabilities.RPCMethods[19] != "schema.list" ||
+		len(productCapabilities.Registrations) != 20 ||
 		productCapabilities.Registrations[0].Method != "events.reconcile" ||
 		productCapabilities.Registrations[0].Scope != "workspace" ||
 		productCapabilities.Registrations[1].Method != "field.settings.describe" ||
@@ -579,16 +580,18 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.Registrations[12].Scope != "workspace" ||
 		productCapabilities.Registrations[13].Method != "query.view" ||
 		productCapabilities.Registrations[13].Scope != "workspace" ||
-		productCapabilities.Registrations[14].Method != "relation.previewDelta" ||
+		productCapabilities.Registrations[14].Method != "relation.inspectPair" ||
 		productCapabilities.Registrations[14].Scope != "workspace" ||
-		productCapabilities.Registrations[15].Method != "relation.searchTargets" ||
+		productCapabilities.Registrations[15].Method != "relation.previewDelta" ||
 		productCapabilities.Registrations[15].Scope != "workspace" ||
-		productCapabilities.Registrations[16].Method != "schema.describe" ||
+		productCapabilities.Registrations[16].Method != "relation.searchTargets" ||
 		productCapabilities.Registrations[16].Scope != "workspace" ||
-		productCapabilities.Registrations[17].Method != "schema.getTable" ||
+		productCapabilities.Registrations[17].Method != "schema.describe" ||
 		productCapabilities.Registrations[17].Scope != "workspace" ||
-		productCapabilities.Registrations[18].Method != "schema.list" ||
-		productCapabilities.Registrations[18].Scope != "workspace" {
+		productCapabilities.Registrations[18].Method != "schema.getTable" ||
+		productCapabilities.Registrations[18].Scope != "workspace" ||
+		productCapabilities.Registrations[19].Method != "schema.list" ||
+		productCapabilities.Registrations[19].Scope != "workspace" {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
 

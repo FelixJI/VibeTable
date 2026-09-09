@@ -79,6 +79,7 @@ from backend.contracts.presets_versions_dashboards import (
     VersionCompareResult,
     VersionsResult,
 )
+from backend.contracts.relation_inspection import RelationInspectionReport
 from backend.contracts.relation_admin import (
     RelationCreateTargetResult,
     RelationDeltaPreview,
@@ -244,6 +245,35 @@ def _model_payload(
     model: type[BaseModel],
     model_stack: tuple[type[BaseModel], ...] = (),
 ) -> dict[str, object]:
+    if model is RelationInspectionReport:
+        # A completed empty scan is valid across both the DTO and product parser;
+        # generic false booleans would omit the cursor of an unfinished scan.
+        return model.model_validate(
+            {
+                "pairId": "pair_example",
+                "endpoints": [
+                    {
+                        "tableId": "orders",
+                        "fieldId": "fld_customer",
+                        "schemaRevision": "schema_1",
+                        "dataRevision": 0,
+                    },
+                    {
+                        "tableId": "customers",
+                        "fieldId": "fld_orders",
+                        "schemaRevision": "schema_1",
+                        "dataRevision": 0,
+                    },
+                ],
+                "counts": {},
+                "samples": [],
+                "samplesTruncated": False,
+                "rowsScanned": [0, 0],
+                "pageComplete": True,
+                "finished": True,
+                "complete": True,
+            }
+        ).model_dump(mode="json", by_alias=True)
     model_stack = (*model_stack, model)
     if issubclass(model, ProductParams):
         return _product_payload(model)
@@ -634,6 +664,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "relation.applyDelta": _typed(RelationDeltaResult),
         "relation.createTarget": _typed(RelationCreateTargetResult),
         "relation.previewDelta": _typed(RelationDeltaPreview),
+        "relation.inspectPair": _typed(RelationInspectionReport),
         "relation.searchTargets": _typed(RelationSearchResult),
         "relation.updateSingle": _typed(RelationSingleUpdateResult),
         "schema.table.create": _manual(

@@ -1,3 +1,4 @@
+import type { RelationInspectionRequest, RelationInspectionReport } from "@/relation-inspection/type";
 import type {
   LookupListResult,
 	LookupCellValue,
@@ -1397,6 +1398,7 @@ export type WebMessageType =
   | "file.downloadRequested"
   | "events.reconcile"
   | "schema.describe"
+  | "relation.inspectPair"
   | "relation.searchTargets"
   | "relation.createTarget"
   | "relation.updateSingle"
@@ -1536,6 +1538,7 @@ export type HostMessageType =
   | "file.downloadRequested"
   | "events.reconcile"
   | "schema.describe"
+  | "relation.inspectPair"
   | "relation.searchTargets"
   | "relation.createTarget"
   | "relation.updateSingle"
@@ -1854,6 +1857,7 @@ export interface HostPayloadMap {
   "file.downloadRequested": AttachmentDownloadResult;
   "events.reconcile": Readonly<Record<string, unknown>>;
   "schema.describe": SchemaDescribeResult;
+  "relation.inspectPair": RelationInspectionReport;
   "relation.searchTargets": RelationSearchResult;
   "relation.createTarget": RelationCreateTargetResult;
   "relation.updateSingle": RelationSingleUpdateResult;
@@ -1977,6 +1981,7 @@ export interface WebPayloadMap {
     readonly dataRevision: string;
   };
   "schema.describe": SchemaDescribeParams;
+  "relation.inspectPair": RelationInspectionRequest;
   "relation.searchTargets": RelationSearchParams;
   "relation.createTarget": RelationCreateTargetParams;
   "relation.updateSingle": RelationUpdateSingleParams;
