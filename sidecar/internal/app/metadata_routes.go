@@ -53,6 +53,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
+		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
+			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
+		}
 		var body metadataUpsertBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -81,6 +84,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
+		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
+			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
+		}
 		var body metadataDeleteBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -251,4 +257,8 @@ func metadataHTTPStatus(err *metadata.Error) int {
 	default:
 		return http.StatusUnprocessableEntity
 	}
+}
+
+func genericMetadataWritable(namespace string) bool {
+	return namespace != string(metadata.NamespaceContentProfiles) && namespace != string(metadata.NamespaceRecordDocumentLinks)
 }

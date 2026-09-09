@@ -19,8 +19,10 @@ import (
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -661,10 +663,22 @@ func assertSchemaCapabilityModelDumpDefaults(t *testing.T, rawCapabilities any) 
 func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	t.Helper()
 	catalog := schemaapi.New(pb)
+	contentSource, err := queryschema.New(pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentMetadata := metadata.NewContentService(pb, contentSource)
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
+		contentMetadataRegistration("contentProfile.load", contentMetadata),
+		contentMetadataRegistration("contentProfile.commit", contentMetadata),
+		contentMetadataRegistration("contentProfile.delete", contentMetadata),
+		contentMetadataRegistration("recordDocumentLink.list", contentMetadata),
+		contentMetadataRegistration("recordDocumentLink.commit", contentMetadata),
+		contentMetadataRegistration("recordDocumentLink.repair", contentMetadata),
+		contentMetadataRegistration("recordDocumentLink.delete", contentMetadata),
 		productrpc.ReconcileRegistration(catalog),
 		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),

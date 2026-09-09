@@ -519,6 +519,17 @@ flowchart LR
 - 每次只迁一个可回滚能力组；
 - 旧 Python route 在切换 PR 内删除或明确标记为下一紧邻 PR 的删除项，不长期双轨。
 
+L5 首批共享 metadata 实现范围为 ContentProfile 的 load/commit/delete 与
+RecordDocumentLink 的 list/commit/repair/delete。Go 在现有 metadata 事务内完成 SchemaCore
+字段校验、按业务主键查询 record、CAS、持久 receipt 和 audit/outbox；同请求 replay 先读取
+receipt，避免把已经成功的 commit/repair/delete 误报为 revision 冲突或不存在。broken document
+link 继续允许，Surface、Dashboard、Preset、Version 不在此批范围。
+
+同批删除七个旧 Python 生产 handler、ContentModelService 和这两个 namespace 的通用写入口，
+保留 snapshot/search 所需内部读取。Host 只接受七方法的明确 content 错误码与原 data 形状。
+公开输入输出基线见 [冻结契约说明](../../contracts/v2/content-metadata-python-oracle.md)；
+源码契约通过不代表 packaged 资格，本批仍须在最终源码统一构建后运行真实包 S18。
+
 ### L6：Host-native 能力归 C#
 
 从 Python composition root 中识别并迁移：

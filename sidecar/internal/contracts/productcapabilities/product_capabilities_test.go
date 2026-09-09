@@ -81,7 +81,26 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 20 ||
+	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
+	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
+	if len(allGo) != 27 {
+		t.Fatalf("goSidecar count = %d", len(allGo))
+	}
+	otherGo := []RPCDescriptor{}
+	for _, descriptor := range allGo {
+		if !contentMethods[descriptor.Method] {
+			otherGo = append(otherGo, descriptor)
+			continue
+		}
+		effect := WriteEffect
+		if descriptor.Method == "contentProfile.load" || descriptor.Method == "recordDocumentLink.list" {
+			effect = ReadEffect
+		}
+		if descriptor.Owner != GoSidecar || descriptor.Scope != WorkspaceScope || descriptor.Audience != RendererPublic || descriptor.CapabilityID != "content.model" || descriptor.Effect != effect {
+			t.Fatalf("content descriptor = %#v", descriptor)
+		}
+	}
+	if got := otherGo; len(got) != 20 ||
 		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
 		got[3] != (RPCDescriptor{
 			Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,

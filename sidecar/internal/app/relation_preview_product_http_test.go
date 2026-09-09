@@ -37,7 +37,14 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 	catalog := schemaapi.New(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-	}, registration, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+	},
+		unrelatedContentRegistration(t, "contentProfile.commit"),
+		unrelatedContentRegistration(t, "contentProfile.delete"),
+		unrelatedContentRegistration(t, "contentProfile.load"),
+		unrelatedContentRegistration(t, "recordDocumentLink.commit"),
+		unrelatedContentRegistration(t, "recordDocumentLink.delete"),
+		unrelatedContentRegistration(t, "recordDocumentLink.list"),
+		unrelatedContentRegistration(t, "recordDocumentLink.repair"), registration, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),

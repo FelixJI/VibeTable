@@ -20,7 +20,6 @@ from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMeta
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.content_model_service import ContentModelService
 from backend.application.grid_state_service import GridStateService
 from backend.application.insights_service import InsightsService
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
@@ -39,11 +38,6 @@ from backend.contracts.data_io import (
     PreviewImportParams,
 )
 from backend.contracts.generated_workbench import (
-    ContentProfileCommitRequest,
-    ContentProfileDeleteRequest,
-    ContentProfileDeleteResult,
-    ContentProfileLoadRequest,
-    ContentProfileSnapshot,
     InterfaceCommitRequest,
     InterfaceDeleteRequest,
     InterfaceDeleteResult,
@@ -51,13 +45,6 @@ from backend.contracts.generated_workbench import (
     InterfaceListResult,
     InterfaceLoadRequest,
     InterfaceSnapshot,
-    RecordDocumentLinkCommitRequest,
-    RecordDocumentLinkDeleteRequest,
-    RecordDocumentLinkDeleteResult,
-    RecordDocumentLinkListRequest,
-    RecordDocumentLinkListResult,
-    RecordDocumentLinkRepairRequest,
-    RecordDocumentLinkSnapshot,
 )
 from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
@@ -225,48 +212,6 @@ def _register_surface_methods(
     dispatcher.register("interface.load", load_interface, InterfaceLoadRequest)
     dispatcher.register("interface.commit", commit_interface, InterfaceCommitRequest)
     dispatcher.register("interface.delete", delete_interface, InterfaceDeleteRequest)
-
-
-def _register_content_model_methods(
-    dispatcher: RpcDispatcher,
-    service: ContentModelService,
-) -> None:
-    register_application_errors(ErrorDomain.CONTENT_MODEL)
-
-    async def load_profile(params: ContentProfileLoadRequest) -> ContentProfileSnapshot:
-        return await service.load_profile(params.table_id)
-
-    async def commit_profile(params: ContentProfileCommitRequest) -> ContentProfileSnapshot:
-        return await service.commit_profile(params)
-
-    async def delete_profile(params: ContentProfileDeleteRequest) -> ContentProfileDeleteResult:
-        return await service.delete_profile(
-            params.table_id, params.expected_revision, params.idempotency_key
-        )
-
-    async def list_links(params: RecordDocumentLinkListRequest) -> RecordDocumentLinkListResult:
-        return await service.list_links(params.table_id, params.record_id)
-
-    async def commit_link(params: RecordDocumentLinkCommitRequest) -> RecordDocumentLinkSnapshot:
-        return await service.commit_link(params)
-
-    async def repair_link(params: RecordDocumentLinkRepairRequest) -> RecordDocumentLinkSnapshot:
-        return await service.repair_link(params)
-
-    async def delete_link(
-        params: RecordDocumentLinkDeleteRequest,
-    ) -> RecordDocumentLinkDeleteResult:
-        return await service.delete_link(
-            params.link_id, params.expected_revision, params.idempotency_key
-        )
-
-    dispatcher.register("contentProfile.load", load_profile, ContentProfileLoadRequest)
-    dispatcher.register("contentProfile.commit", commit_profile, ContentProfileCommitRequest)
-    dispatcher.register("contentProfile.delete", delete_profile, ContentProfileDeleteRequest)
-    dispatcher.register("recordDocumentLink.list", list_links, RecordDocumentLinkListRequest)
-    dispatcher.register("recordDocumentLink.commit", commit_link, RecordDocumentLinkCommitRequest)
-    dispatcher.register("recordDocumentLink.repair", repair_link, RecordDocumentLinkRepairRequest)
-    dispatcher.register("recordDocumentLink.delete", delete_link, RecordDocumentLinkDeleteRequest)
 
 
 def _configure_pocketbase_data_io(
@@ -472,10 +417,6 @@ async def _build_server() -> tuple[
         metadata_transport = PocketBaseInternalMetadataPort(client=client)
         revisioned_metadata = RevisionedMetadataTransportAdapter(metadata_transport)
         _register_surface_methods(dispatcher, SurfaceService(metadata_port=revisioned_metadata))
-        _register_content_model_methods(
-            dispatcher,
-            ContentModelService(metadata_port=revisioned_metadata, product_data=client),
-        )
         state_root = Path(
             os.environ.get(
                 "VIBETABLE_STATE_DIR",

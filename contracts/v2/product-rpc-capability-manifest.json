@@ -22,7 +22,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "content.model",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -30,7 +30,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "content.model",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -38,7 +38,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "content.model",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -566,7 +566,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "content.model",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -574,7 +574,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "content.model",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -582,7 +582,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "content.model",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -590,7 +590,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "content.model",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {

@@ -175,7 +175,7 @@ func TestDispatchMapsOnlyExplicitPublicErrorsAndRedactsDetails(t *testing.T) {
 			return nil, fmt.Errorf("wrapped: %w", &PublicError{
 				Code:      "schema.field.invalid_constraint",
 				Path:      &path,
-				Message:   "scale 不能大于 precision",
+				Message:   "scale 涓嶈兘澶т簬 precision",
 				Retryable: false,
 				Details: map[string]any{
 					"precision": 8,
@@ -200,7 +200,7 @@ func TestDispatchMapsOnlyExplicitPublicErrorsAndRedactsDetails(t *testing.T) {
 	}
 	wantData := map[string]any{
 		"kind":      "product_data_error",
-		"message":   "scale 不能大于 precision",
+		"message":   "scale 涓嶈兘澶т簬 precision",
 		"code":      "schema.field.invalid_constraint",
 		"path":      path,
 		"details":   map[string]any{"precision": json.Number("8"), "nested": []any{map[string]any{"safe": true}}},
@@ -461,7 +461,21 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 20 ||
+	allMethods := dispatcher.Methods()
+	if len(allMethods) != 27 {
+		t.Fatalf("production method count = %d", len(allMethods))
+	}
+	oldMethods := []Method{}
+	for _, method := range allMethods {
+		if strings.HasPrefix(method.Method, "contentProfile.") || strings.HasPrefix(method.Method, "recordDocumentLink.") {
+			if method.Scope != productcapabilities.WorkspaceScope {
+				t.Fatalf("content scope = %#v", method)
+			}
+		} else {
+			oldMethods = append(oldMethods, method)
+		}
+	}
+	if methods := oldMethods; len(methods) != 20 ||
 		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
 		methods[3] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
 		methods[4].Method != "lookup.list" || methods[5] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[6] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[7].Method != "query.cursorFetch" || methods[8].Method != "query.cursorOpen" || methods[9].Method != "query.page" || methods[10].Method != "query.readRows" ||
@@ -502,6 +516,13 @@ func generatedGoSidecarRegistrations() []Registration {
 	validator := func(json.RawMessage) error { return nil }
 	handler := func(context.Context, json.RawMessage) (any, error) { return nil, nil }
 	return []Registration{
+		{Method: "contentProfile.commit", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "contentProfile.delete", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "contentProfile.load", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.commit", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.delete", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.list", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.repair", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "events.reconcile", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,

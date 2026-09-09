@@ -426,12 +426,20 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			}
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
+			contentMetadata := metadata.NewContentService(pb, querySource)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				contentMetadataRegistration("contentProfile.load", contentMetadata, businessGate, idempotentBusinessGate),
+				contentMetadataRegistration("contentProfile.commit", contentMetadata, businessGate, idempotentBusinessGate),
+				contentMetadataRegistration("contentProfile.delete", contentMetadata, businessGate, idempotentBusinessGate),
+				contentMetadataRegistration("recordDocumentLink.list", contentMetadata, businessGate, idempotentBusinessGate),
+				contentMetadataRegistration("recordDocumentLink.commit", contentMetadata, businessGate, idempotentBusinessGate),
+				contentMetadataRegistration("recordDocumentLink.repair", contentMetadata, businessGate, idempotentBusinessGate),
+				contentMetadataRegistration("recordDocumentLink.delete", contentMetadata, businessGate, idempotentBusinessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),
 				productrpc.ReconcileRegistration(schemaCatalog),
 				lookupListRegistration(relationService),

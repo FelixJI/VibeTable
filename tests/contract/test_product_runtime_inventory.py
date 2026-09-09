@@ -66,6 +66,9 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "goSidecar"
     } == {
+        "contentProfile.commit",
+        "contentProfile.delete",
+        "contentProfile.load",
         "events.reconcile",
         "field.settings.describe",
         "file.list",
@@ -80,6 +83,10 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "recordDocumentLink.commit",
+        "recordDocumentLink.delete",
+        "recordDocumentLink.list",
+        "recordDocumentLink.repair",
         "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",

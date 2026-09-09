@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import hashlib
 import json
-import subprocess
 from pathlib import Path
 
 PRODUCER = "79c2ce4faa53d65af1fa9ee297655739d5407a2e"
@@ -135,99 +133,24 @@ def cases():
     return result
 
 
-async def capture():
-    sources = [
-        "backend/application/content_model_service.py",
-        "backend/__main__.py",
-        "backend/rpc/dispatcher.py",
-        "backend/rpc/error_registry.py",
-        "backend/contracts/generated_workbench.py",
-    ]
-    subprocess.run(
-        ["git", "diff", "--exit-code", PRODUCER, "--", *sources],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-    )
-    import backend.application.content_model_service as original
-    from backend.__main__ import _register_content_model_methods
-    from backend.application.content_model_service import ContentModelService
-    from backend.application.revisioned_metadata_port import MetadataRecord
-    from backend.rpc.dispatcher import RpcDispatcher
+def main():
+    import argparse
 
-    if Path(original.__file__).resolve() != ROOT / sources[0]:
-        raise RuntimeError("Python producer came from another worktree")
-
-    class Metadata:
-        def __init__(self, seed):
-            self.rows = {
-                (x["namespace"], x["logicalId"]): MetadataRecord(
-                    x["logicalId"], revision(x["payload"]), x["payload"]
-                )
-                for x in seed
-            }
-
-        async def read(self, query):
-            return tuple(
-                v
-                for (ns, key), v in self.rows.items()
-                if ns == query.namespace and (not query.keys or key in query.keys)
-            )
-
-        async def write(self, command):
-            row = MetadataRecord(command.logical_id, revision(command.values), command.values)
-            self.rows[command.namespace, command.logical_id] = row
-            return row
-
-        async def delete(self, command):
-            del self.rows[command.namespace, command.logical_id]
-
-    class Product:
-        async def describe_table(self, table_id):
-            if table_id != "articles":
-                raise ValueError("missing")
-            return {
-                "fields": [
-                    {"identity": {"fieldId": key}, "logicalType": kind}
-                    for key, kind in [
-                        ("fld_title000", "text"),
-                        ("fld_body0000", "editor"),
-                        ("fld_secret00", "json"),
-                    ]
-                ]
-            }
-
-        async def read_rows(self, *, table_id, row_ids):
-            return (
-                [{"id": "record-1"}] if table_id == "articles" and row_ids == ["record-1"] else []
-            )
-
-    entries = []
-    for case in cases():
-        dispatcher = RpcDispatcher()
-        _register_content_model_methods(
-            dispatcher,
-            ContentModelService(metadata_port=Metadata(case["seed"]), product_data=Product()),
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--capture", action="store_true")
+    args = parser.parse_args()
+    if args.capture:
+        raise SystemExit(
+            "Capture retired: use the fixed producer and capture source in commit 357d70e4."
         )
-        response = await dispatcher.dispatch(
-            {
-                "jsonrpc": "2.0",
-                "id": case["name"],
-                "method": case["method"],
-                "params": case["params"],
-            }
-        )
-        entries.append({**case, "response": response})
-    OUTPUT.write_text(
-        json.dumps(
-            {"producerCommit": PRODUCER, "producerSources": sources, "cases": entries},
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    assert frozen["producerCommit"] == PRODUCER
+    assert [
+        {key: value for key, value in case.items() if key != "response"} for case in frozen["cases"]
+    ] == cases()
+    print(f"Validated {len(frozen['cases'])} frozen content requests from {PRODUCER}.")
 
 
 if __name__ == "__main__":
-    asyncio.run(capture())
+    main()

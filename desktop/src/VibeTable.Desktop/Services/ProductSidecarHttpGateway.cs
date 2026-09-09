@@ -177,7 +177,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
                 .ConfigureAwait(false);
             try
             {
-                return ParseResponse(raw, requestId, wire);
+                return ParseResponse(raw, requestId, wire, method);
             }
             catch (JsonException)
             {
@@ -398,7 +398,8 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
     private static ProductSidecarForwardResult ParseResponse(
         byte[] raw,
         string requestId,
-        JsonElement requestWire)
+        JsonElement requestWire,
+        string method)
     {
         using JsonDocument document = JsonDocument.Parse(raw);
         JsonElement root = document.RootElement;
@@ -423,11 +424,11 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             throw InvalidResponse();
         if (hasResult)
             return new ProductSidecarSuccess(wire.Clone(), result.Clone());
-        ProductSidecarRpcError parsedError = ParseError(error);
+        ProductSidecarRpcError parsedError = ParseError(error, method);
         return new ProductSidecarFailure(wire.Clone(), parsedError);
     }
 
-    private static ProductSidecarRpcError ParseError(JsonElement error)
+    private static ProductSidecarRpcError ParseError(JsonElement error, string method)
     {
         JsonElement data = default;
         bool hasData = error.ValueKind == JsonValueKind.Object
@@ -443,15 +444,54 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || string.IsNullOrWhiteSpace(messageElement.GetString()))
             throw InvalidResponse();
         string message = messageElement.GetString()!;
-        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150)
-            || (code == -32150 && !hasData))
+        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32180)
+            || (code is -32150 or -32180 && !hasData))
             throw InvalidResponse();
         if (code == -32150)
             ValidateProductErrorData(data);
+        if (code == -32180)
+            ValidateContentErrorData(data, method);
         return new ProductSidecarRpcError(
             code,
             message,
             hasData ? data.Clone() : null);
+    }
+
+    private static void ValidateContentErrorData(JsonElement data, string method)
+    {
+        if (method is not ("contentProfile.load" or "contentProfile.commit" or "contentProfile.delete"
+            or "recordDocumentLink.list" or "recordDocumentLink.commit"
+            or "recordDocumentLink.repair" or "recordDocumentLink.delete"))
+            throw InvalidResponse();
+        bool hasPath = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("path", out _);
+        if (!HasExactProperties(data, hasPath ? ["kind", "message", "code", "path"] : ["kind", "message", "code"])
+            || data.GetProperty("kind").ValueKind != JsonValueKind.String
+            || data.GetProperty("kind").GetString() != "content_model_error"
+            || !IsNonEmptyString(data.GetProperty("message"))
+            || !IsNonEmptyString(data.GetProperty("code"))
+            || !PublicErrorCode.IsMatch(data.GetProperty("code").GetString()!)
+            || (hasPath && data.GetProperty("path").ValueKind != JsonValueKind.String))
+            throw InvalidResponse();
+        string code = data.GetProperty("code").GetString()!;
+        if (code is not ("content_model.edit_conflict"
+            or "content_model.idempotency_conflict"
+            or "content_model.not_found"
+            or "content_model.persistence_failed"
+            or "content_model.storage_invalid"
+            or "content_profile.body_type_invalid"
+            or "content_profile.edit_conflict"
+            or "content_profile.field_missing"
+            or "content_profile.not_found"
+            or "content_profile.search_field_duplicate"
+            or "content_profile.search_field_invalid"
+            or "content_profile.summary_type_invalid"
+            or "content_profile.table_missing"
+            or "content_profile.title_type_invalid"
+            or "record_document_link.edit_conflict"
+            or "record_document_link.not_found"
+            or "record_document_link.record_lookup_failed"
+            or "record_document_link.record_missing"))
+            throw InvalidResponse();
     }
 
     private static void ValidateProductErrorData(JsonElement data)
