@@ -3709,15 +3709,13 @@ async function scenario07(page, recorder, _network, runtime) {
       && productApplied.newRevisionId.length > 0
       && productApplied.newRevisionId !== replacementRevision
       && !Object.hasOwn(productApplied, "mutationRevision")
-      && Array.isArray(productApplied.item?.[attachmentField])
-      && productApplied.item[attachmentField].length === 1
-      && typeof productApplied.item[attachmentField][0] === "string"
-      && productApplied.item[attachmentField][0].length > 0,
+      && typeof productApplied.item?.[attachmentField] === "string"
+      && productApplied.item[attachmentField].length > 0,
     { productAppliedReply, replacementRevision, replacementFile },
   );
   // Restoring stages a fresh managed file. Its current stored name comes from
   // the committed Product row, while table/record/field and content stay bound.
-  const productStoredName = productApplied.item[attachmentField][0];
+  const productStoredName = productApplied.item[attachmentField];
   const productRestored = await waitForAttachmentList(
     page,
     attachmentParams,
