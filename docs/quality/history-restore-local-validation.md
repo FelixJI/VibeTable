@@ -9,3 +9,15 @@
 源码验证另保留原失败边界：`build/history-go-tests.log` 的完整五包运行中，app 的 `TestReconcileProductHTTPRejectsClosedParamsAndPreservesSourceFailure` 在 TempDir 清理时报告目录非空，未修改这个无关 fixture；productcapabilities 的旧 owner 数期望也失败，随后按生成 catalog 的真实 22 项 Go owner 更新，最终 app/productrpc/productcapabilities 聚焦测试通过（`build/history-final-focused-tests.log`）。原 workspacev2、audit 和 productrpc 包通过；这不表示原完整五包运行成功。Go vet 及 31 项冻结 Python parity oracle 均通过。
 
 Python 完整质量日志 `build/history-python-quality.log` 中 Ruff format/check、backend Pyright/mypy 和覆盖率 91.43% 通过，pytest 为 1831 passed、1 skipped、2 failed。失败的 `test_node_runner_inventory_matches_the_product_scenario_manifest` 和 `test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime` 均因本 worktree 缺少 Web 的 node_modules。核对 lock 一致并复用现有依赖后，以 `uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -k 'node_runner_inventory_matches or bridge_recovery_and_workspace_wire_contracts' -q --no-cov *> build/history-python-node-correction.log` 精确复验，2 passed、109 deselected、7.15s，记录于 `build/history-python-node-correction.log`；未重新宣称原完整质量入口成功。
+
+## 进程能力清单的 CI 修正
+
+PR #324 的 head `c4c0db56` 在 CI run `34361869988` 的 core job `102507477291`
+失败：`TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart` 仍使用旧的 20 方法
+预期，而真实进程已声明包含 `history.previewRestore` 与 `history.applyRestore` 的 22 方法。
+这是迁移后遗漏更新的独立进程契约，原 CI 失败保留。
+
+测试现在显式列出 22 个预期方法，并分别严格核对 RPC 方法和 registration 的数量、顺序、
+名称，以及每个 registration 的 workspace scope；不从生产生成清单推导预期。
+使用既有 Go 1.27.0 执行 `go test ./cmd/vibetable-pb -count=1`（sidecar 目录）通过，
+包耗时 4.711s。只有测试和本记录改变，不重建此前已验证的产品包；新 head 仍须 fresh CI。
