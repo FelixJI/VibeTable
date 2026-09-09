@@ -84,3 +84,37 @@ CI run `34282769151` 的 core 与 race-b 同在 `TestSidecarWorkspaceV2HTTPFails
 已将 #307 的实际 main squash `cadf5153` 正常同步为 `e871bf1c`，无冲突；仅包含已独立审查的 gateway 测试夹具改动，产品源码未变。合并交界 Standards/Spec 复核无确定问题。
 
 `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter FullyQualifiedName~ProductSidecarHttpGatewayTests`：27 PASS、0 skip，116ms；日志 `build/qa/mutation-main-sync.log`。最新实际 main 端点的 fresh PR CI 尚待取得，不复用旧 head 的通过状态。
+
+## 同步 #312 实际 main 后的资格
+
+原 PR head `91490903cf6adff3c0031b7828f17b29e35e86ba` 的 CI run `34293658250` 保留两次失败：attempt 1 在 Coverlet 6.0.4 汇总 hits 时出现 `EndOfStreamException`（`Unable to read beyond the end of the stream`）；attempt 2 的 core job `102296968911` 在 `WorkspaceSessionEnvelopeFilterTests.LifecycleCloseWaitsForOtherInflightButNotItsOwnEnvelope` 第 209 行等待关闭时超过既有 2 秒预算。旧日志 `ci-306-core-latest.log`、`ci-306-core-attempt2.log` 保留。本次不第三次原样重跑该 run，也不修改超时、覆盖率或生命周期实现；失败根因仍未确定。
+
+正常 merge #312 实际 main `3cd6f83202ea0977d690ad71cf7dff25595e4f02`，固定生产候选为 `689d51f5d4049ba680d22a8c5d48273641b1f1c5`。无冲突，保留 main 的 Formula 编译缓存初始化和本 PR 的 preview/apply 成对注册及 apply 写门禁。上述生命周期测试、filter 与 session manager 在同步前后无差异，因此这次同步没有修复旧超时路径。本轮未修改依赖或 lock，复用既有环境；main 交界两轴审查均为 0 个确定问题。
+
+以下均在该固定生产候选执行一次，日志目录为 `build/qa/mutation-owner-main-312/`：
+
+| 命令 | 结果 | 日志 |
+|---|---|---|
+| `uv run --frozen --no-sync python contracts/v2/generate_mutation_product_oracle.py --check` | EXIT 0 | `oracle-check.log` |
+| `uv run --frozen --no-sync python contracts/v2/product_rpc_capability_policy.py --check` | EXIT 0 | `policy-check.log` |
+| `uv run --frozen --no-sync python contracts/v2/product_runtime_inventory.py --check` | EXIT 0 | `inventory-check.log` |
+| `uv run --frozen --no-sync python -m pytest tests/contract/test_mutation_product_oracle.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/backend/test_main_product_data.py tests/backend/adapters/test_pocketbase_product_rpc_coverage.py tests/backend/adapters/test_pocketbase_product_rpc.py -q --no-cov` | 111 PASS，1.81 秒 | `python-related.log` |
+| `go test -race ./internal/app -run '^(TestMutationProduct\|TestMutationExistingREST)' -count=1 -timeout=5m` | PASS，29.037 秒 | `go-mutation-race.log` |
+| `go test -race ./internal/contracts/productcapabilities ./internal/productrpc -count=1` | PASS，1.261 / 1.693 秒 | `go-routing-race.log` |
+| `go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1` | PASS，11.801 秒 | `go-process-race.log` |
+| `go vet ./internal/app ./internal/contracts/productcapabilities ./internal/productrpc ./cmd/vibetable-pb` | EXIT 0 | `go-vet.log` |
+| `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore` | 1099 PASS、1 既有 skip，26 秒 | `desktop-full.log` |
+| `uv run --frozen --no-sync python scripts/build_next.py` | 完整构建 EXIT 0，无跳过步骤 | `product-build.log` |
+
+Go 命令在 `sidecar/` 执行；表格中的正则竖线是 Markdown 转义，实际命令使用 `|`。Desktop 的 skip 为原有 `ActivationPointerLinkIsRejectedAndRetained`，本轮未修改其行为。本轮未运行完整 Python 覆盖率、Web 覆盖率、全部 Go 测试或 .NET solution 覆盖率；上述聚焦与单项目检查不替代完整 fresh CI。
+
+实际包 `dist/VibeTable.Next` 的 sidecar build-info 为 `0.5.1 / 689d51f5d404`。运行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 05-formula-lifecycle --scenario 28-relation-delta-preview`，报告 `build/qa/product-e2e/20260909T032034Z/product-e2e-report.json`，运行日志 `build/qa/mutation-owner-main-312/product-e2e.log`，结果 2/2 PASS、0 failed、0 skipped。
+
+| 场景 | 耗时 | 断言 | bridge roundTrips |
+|---|---:|---:|---:|
+| S05 Formula 生命周期 | 6775 ms | 7 | 47 |
+| S28 Relation preview/标签 | 6134 ms | 10 | 60 |
+
+两场景 Node/Host exit 0，pageErrors、bridge failures、acknowledgedFailures、pending 均为 0；成员和后代为空，端口释放、owner lease 与最终清理通过。四组件 freshness 全通过。已查看报告目录下两张场景截图；`28-relation-delta-preview/28-relation-delta-preview.png` 显示 `AUTHOR-UPDATED`，S05 截图仅记录场景最终界面，生命周期断言以报告为准。
+
+本地全部进程已终态。当前候选仍需新 head 的 fresh required、squash 和合并后 main CI/CD；这次通过不覆盖或解释两次旧 CI 失败，也不扩大为全部故障注入或完整发布资格。
