@@ -118,3 +118,40 @@ Go 命令在 `sidecar/` 执行；表格中的正则竖线是 Markdown 转义，�
 两场景 Node/Host exit 0，pageErrors、bridge failures、acknowledgedFailures、pending 均为 0；成员和后代为空，端口释放、owner lease 与最终清理通过。四组件 freshness 全通过。已查看报告目录下两张场景截图；`28-relation-delta-preview/28-relation-delta-preview.png` 显示 `AUTHOR-UPDATED`，S05 截图仅记录场景最终界面，生命周期断言以报告为准。
 
 本地全部进程已终态。当前候选仍需新 head 的 fresh required、squash 和合并后 main CI/CD；这次通过不覆盖或解释两次旧 CI 失败，也不扩大为全部故障注入或完整发布资格。
+
+
+## 同步 #319 实际 main 后的资格
+
+正常 merge `GitHub/main` 的 `25b260394a0a01e8432d23fa3d1a6e8b9b65922f`，固定生产候选为 `d27fc82f7c7185877e8e6c1ce95a9516ac5a90ba`。八处冲突均来自严格 owner/注册清单及 fixture：保留 main 的 `relation.inspectPair` 与本分支的 `mutation.preview/apply`，按排序同步完整清单到 22 Go / 80 Python / 2 Host。权威 inventory 自动合并后运行 `product_rpc_capability_policy.py` 生成目录，未手改派生文件追认结果。两个手工冲突 HTTP fixture 保留双方不得调用的占位注册；mutation fixture 原有目录自动注册机制保持不变。
+
+本次没有修改 mutation Kernel、写门禁或 Host fallback 行为。preview/apply 共用同一 Go Kernel，apply 仍在 `mutation.apply` 业务写门禁中使用 `IdempotencyKey`；Request/PreviewResult 没有 preview 签发的 plan token，不把其他能力的 token 迁移计入本意图。真实 HTTP 契约确认 preview 不改变权威状态，apply 产生一份 gate proof，重放不重复记录、revision、审计、事件或幂等效应。Host composition 与 disposed forwarder 测试确认默认 Go 路由、Go 失败无 Python fallback，写入只调用旧 forwarder 一次，替代端和 Python 均零次。
+
+日志统一保存在 `build/qa/mutation-owner-main-319/`。复用既有 `.venv`、工具和 Node 依赖；后续 Python 命令显式设置当前工作树为 `PYTHONPATH`，`python-source.log` 确认 `backend.__file__` 来自本工作树。没有修改依赖、lock、CI、覆盖率或超时。
+
+| 验证命令 | 结果 | 日志 |
+|---|---|---|
+| `uv run --frozen --no-sync python contracts/v2/generate_mutation_product_oracle.py --check` | EXIT 0 | `oracle-check.log` |
+| `uv run --frozen --no-sync python contracts/v2/product_rpc_capability_policy.py --check` | EXIT 0 | `policy-check.log` |
+| `uv run --frozen --no-sync python contracts/v2/product_runtime_inventory.py --check` | EXIT 0 | `inventory-check.log` |
+| `uv run --frozen --no-sync python -m pytest tests/contract/test_mutation_product_oracle.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/backend/test_main_product_data.py tests/backend/adapters/test_pocketbase_product_rpc_coverage.py tests/backend/adapters/test_pocketbase_product_rpc.py -q --no-cov` | 112 PASS，1.36 秒 | `python-related.log` |
+| `uv run --frozen --no-sync python scripts/automation_project.py python-quality` | Ruff/Pyright/mypy PASS；1833 PASS、1 既有 skip，73.83 秒，覆盖率 91.42% | `python-quality.log` |
+| `go test -race ./internal/app -run '^(TestMutationProduct\|TestMutationExistingREST\|TestRelationInspect)' -count=1 -timeout=5m` | PASS，19.731 秒 | `go-mutation-race-fixed.log` |
+| `go test -race ./internal/contracts/productcapabilities ./internal/productrpc -count=1` | PASS，1.241 / 1.645 秒 | `go-routing-race.log` |
+| `go test -race ./cmd/vibetable-pb -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$' -count=1` | PASS，10.274 秒 | `go-process-race.log` |
+| `go test -race ./internal/app -run '^(TestFieldSettingsDescribeProductHTTP\|TestRelationSearchProductHTTP)' -count=1 -timeout=5m` | PASS，15.412 秒 | `go-conflict-fixtures-race.log` |
+| `go vet ./internal/app ./internal/contracts/productcapabilities ./internal/productrpc ./cmd/vibetable-pb` | EXIT 0 | `go-vet.log` |
+| `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore` | 1105 PASS、1 既有 skip，23 秒 | `desktop-full.log` |
+| `uv run --frozen --no-sync python scripts/build_next.py` | 一次完整构建 EXIT 0，无跳过步骤 | `product-build.log` |
+
+Go 命令在 `sidecar/` 执行，使用已有固定 Go 1.27 / w64devkit，命令级 `CGO_ENABLED=1` 和 `CC`；表格竖线为 Markdown 转义。第一次 race 因当前命令未启 CGO 被工具拒绝，日志 `go-mutation-race.log`；随后一轮因本次多补了目录已自动注册的 `relation.inspectPair` 而失败，日志 `go-mutation-race-cgo.log`，并保留其中的 TempDir 清理错误。去除该多余补入后运行上表，不放宽重复注册或清理检查。Desktop skip 仍是 `ActivationPointerLinkIsRejectedAndRetained`。正常 merge 提交的 Ruff format/check、version consistency、package contract hooks 均 PASS，日志 `merge-commit.log`。
+
+实际包为 `dist/VibeTable.Next`，sidecar build-info 为 `0.5.1 / d27fc82f7c71`，四组件 freshness 全通过。对同一包执行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 02-all-field-schema --scenario 31-relation-pair-inspection`，运行 `20260909T121959Z`，2/2 PASS、0 failed、0 skipped。S02 验证 owner 迁移后的普通编辑/撤销；S31 验证本次 main 新增关系检查的目录和路由交界，不重复扩展其他已取得历史资格的场景。
+
+| 场景 | 耗时 | 断言 | bridge roundTrips | 已确认预期失败 |
+|---|---:|---:|---:|---:|
+| S02 普通编辑/撤销 | 14062 ms | 18 | 161 | 1 |
+| S31 关系完整性检查 | 7544 ms | 12 | 68 | 0 |
+
+两场景 Node/Host exit 0，pageErrors、未确认 bridge failures、pending 均为 0；成员和后代为空，端口释放、owner lease 和最终清理通过。报告 `build/qa/product-e2e/20260909T121959Z/product-e2e-report.json`，日志 `product-e2e.log`。已检查两场景截图；S31 显示双端 101/1 行完成检查及“扫描覆盖完整不代表关系健康”。S02 截图记录最终分组界面，编辑/撤销结果以断言为准。
+
+本轮未重跑完整 Web 覆盖率、全部 Go 测试或 .NET solution 覆盖率；完整门禁仍由当前 head 的 fresh `required` 验证。本地运行均已终态，后续生产源码无改动；新 head 的 push、fresh CI、squash 与 main CI/CD 由主代理继续，本节不把旧 CI 成功复用为新 head 的验收。
