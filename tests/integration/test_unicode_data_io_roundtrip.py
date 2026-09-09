@@ -63,7 +63,7 @@ def _build_source_sidecar(output_dir: Path) -> Path:
     return output
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def source_sidecar_binary() -> Iterator[Path]:
     build_root = REPO_ROOT / "build" / "qa"
     build_root.mkdir(parents=True, exist_ok=True)
@@ -197,8 +197,10 @@ def _labeled_values(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_format", ["csv", "csv-bom", "xlsx"])
 async def test_unicode_code_points_survive_import_authority_read_and_exports(
     tmp_path: Path,
+    source_format: str,
     source_sidecar_binary: Path,
 ) -> None:
     data_dir = _create_v2_workspace(tmp_path / "workspace")
@@ -232,11 +234,26 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
         label_field = _physical_name(label_definition)
         value_field = _physical_name(value_definition)
 
-        source = tmp_path / "unicode-source.csv"
-        with source.open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.writer(stream, lineterminator="\n")
-            writer.writerow([label_field, value_field])
-            writer.writerows(EXPECTED_VALUES.items())
+        source = tmp_path / (
+            "unicode-source.xlsx" if source_format == "xlsx" else "unicode-source.csv"
+        )
+        if source_format == "xlsx":
+            workbook = Workbook()
+            worksheet = workbook.active
+            assert worksheet is not None
+            worksheet.append([label_field, value_field])
+            for label, value in EXPECTED_VALUES.items():
+                worksheet.append([label, value])
+            workbook.save(source)
+            workbook.close()
+            source_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            encoding = "utf-8-sig" if source_format == "csv-bom" else "utf-8"
+            with source.open("w", encoding=encoding, newline="") as stream:
+                writer = csv.writer(stream, lineterminator="\n")
+                writer.writerow([label_field, value_field])
+                writer.writerows(EXPECTED_VALUES.items())
+            source_mime = "text/csv"
 
         config = PocketBaseConfig(
             base_url=f"http://{sidecar.address}",
@@ -252,7 +269,7 @@ async def test_unicode_code_points_survive_import_authority_read_and_exports(
             HostImportSourceParams(
                 path=str(source.resolve()),
                 size_bytes=source.stat().st_size,
-                mime_type="text/csv",
+                mime_type=source_mime,
             )
         )
         plan = await runtime.preview_import(
