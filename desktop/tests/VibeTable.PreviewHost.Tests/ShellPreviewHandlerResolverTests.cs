@@ -177,6 +177,21 @@ public sealed class ShellPreviewHandlerResolverTests
         session.Dispose();
     }
 
+    [STATestMethod]
+    public void ShellPreviewSession_RejectsRegisteredComClassWithoutPreviewInterface()
+    {
+        // FileOpenDialog is registered on supported Windows versions but is not an
+        // IPreviewHandler. Constructing it does not show a dialog.
+        using var session = new ShellPreviewSession(
+            Path.Combine("C:\\", "Documents", "report.docx"),
+            Guid.Parse("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7"));
+
+        Assert.Throws<PreviewHostLoadException>(() => session.Start(IntPtr.Zero, 100, 80));
+        session.Resize(100, 80);
+        session.Dispose();
+        session.Dispose();
+    }
+
     [TestMethod]
     public void NativeRect_PreservesPixelBounds()
     {
