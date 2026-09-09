@@ -15,7 +15,7 @@
 
 同一 main 候选覆盖该样本当时登记的 29 个场景：01–23、26–31，累计 382 项断言通过。S06 两端关系字段的真实 UI 编辑、冻结计划与应用，以及 S26–S31 的 Lookup 描述、关系搜索与预览、来源分页、查询快照与关系完整性检查，均获得本次打包报告；不再沿用旧 S06 语义或六场缺口。
 
-新场景 `32-relation-lookup-data-io` 不在上述主干样本中，仍待正式 main 打包报告验收。本候选局部资格见[关系与 Lookup 数据互操作](quality/relation-lookup-data-io.md)，不能用旧 29/29 报告关闭该缺口。
+新场景 S32 不在上述主干样本中，仍待正式 main 打包报告验收。本候选局部资格见[关系与 Lookup 数据互操作](quality/relation-lookup-data-io.md)，不能用旧 29/29 报告关闭该缺口。
 
 四组件 desktop-host、web-grid、python-backend、pocketbase-sidecar freshness 全部通过。所有场景附着真实 WPF/WebView2，Node/Host 正常退出，进程组及后代为空、端口与 owner lease 清理通过。诊断为 0 个未确认 bridge failure、0 个 pending request，另有 33 个已确认事件（含预期取消）；性能汇总的 28 次失败使用不同口径，不能称为全程没有拒绝响应。
 
