@@ -799,6 +799,26 @@
       "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/audit_routes.go", "sidecar/internal/app/relation_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
+      "id": "rpc.relation-inspect",
+      "kind": "rpc",
+      "names": ["relation.inspectPair"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": ["relation.inspectPair"], "write": [], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": ["31-relation-pair-inspection"],
+      "targetSlice": "L3B",
+      "targetPr": null,
+      "deleteWhen": "Read-only pair diagnostics remain Go-owned; cursors never authorize repair.",
+      "evidence": ["sidecar/internal/app/relation_inspect_product_rpc.go", "sidecar/internal/relationpair/inspect.go", "sidecar/tests/integration/relation_pair_inspect_test.go"]
+    },
+    {
       "id": "rpc.relation-lookup-history-read",
       "kind": "rpc",
       "names": ["history.previewRestore"],
