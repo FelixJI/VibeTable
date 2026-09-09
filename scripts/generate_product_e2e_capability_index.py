@@ -47,6 +47,7 @@ _CURRENT_RESULT_PATTERN = re.compile(
 )
 _MANIFEST_GAP_LINE_PATTERN = re.compile(r"(?m)^- 当前 manifest gap：([^\r\n]+)$")
 _MANIFEST_SURPLUS_LINE_PATTERN = re.compile(r"(?m)^- 当前 manifest surplus：([^\r\n]+)$")
+_MANIFEST_CHANGED_LINE_PATTERN = re.compile(r"(?m)^- 当前 manifest changed：([^\r\n]+)$")
 _TEMPORARY_REPORT_PATTERN = re.compile(
     r"build[\\/](?:q|qa)(?:[\\/]|(?=[\s`)]|$))",
     re.IGNORECASE,
@@ -277,12 +278,6 @@ def check_product_e2e_evidence_documents(
             for scenario_id in current_by_id.keys() & verified_by_id.keys()
             if current_by_id[scenario_id] != verified_by_id[scenario_id]
         )
-        if rewritten_ids:
-            errors.append(
-                f"{display_path}: same-id scenario semantics differ from the source manifest: "
-                + ", ".join(rewritten_ids)
-            )
-
         manifest_gap, verified_evidence = _parse_manifest_delta(
             current_evidence,
             line_pattern=_MANIFEST_GAP_LINE_PATTERN,
@@ -297,8 +292,21 @@ def check_product_e2e_evidence_documents(
             display_path=display_path,
             errors=errors,
         )
+        manifest_changed, verified_evidence = _parse_manifest_delta(
+            verified_evidence,
+            line_pattern=_MANIFEST_CHANGED_LINE_PATTERN,
+            label="changed",
+            display_path=display_path,
+            errors=errors,
+        )
         expected_gap = Counter(current_by_id.keys() - verified_by_id.keys())
         expected_surplus = Counter(verified_by_id.keys() - current_by_id.keys())
+        expected_changed = Counter(rewritten_ids)
+        if manifest_changed != expected_changed:
+            errors.append(
+                f"{display_path}: current manifest changed must exactly list same-id scenario "
+                "semantics differing from the source manifest"
+            )
         if manifest_gap != expected_gap:
             errors.append(
                 f"{display_path}: current manifest gap must exactly list scenarios added "
@@ -309,10 +317,10 @@ def check_product_e2e_evidence_documents(
                 f"{display_path}: current manifest surplus must exactly list source "
                 "manifest scenarios absent from the current manifest"
             )
-        if require_closed and (expected_gap or expected_surplus):
+        if require_closed and (expected_gap or expected_surplus or expected_changed):
             errors.append(
                 f"{display_path}: release evidence reconciliation must be closed; "
-                "current manifest gap and surplus must both be empty"
+                "current manifest gap, surplus and changed must all be empty"
             )
 
         observed_scenarios = Counter(_SCENARIO_REFERENCE_PATTERN.findall(verified_evidence))

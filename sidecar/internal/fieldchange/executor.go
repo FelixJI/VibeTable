@@ -252,6 +252,13 @@ func (executor *Executor) apply(
 					},
 				)
 			}
+			if related.ExpectedDataRevision != nil &&
+				relatedRevisions.Data != *related.ExpectedDataRevision {
+				return productError("field.change.data_conflict", "relatedChanges",
+					"reciprocal table data revision changed after planning",
+					map[string]any{"tableId": related.TableID,
+						"expected": *related.ExpectedDataRevision, "actual": relatedRevisions.Data})
+			}
 		}
 		if plan.Intent.Action == v2.ActionPurge {
 			var verifyErr error
@@ -336,10 +343,12 @@ func (executor *Executor) apply(
 				return relatedParseErr
 			}
 			relatedRevision++
-			if saveErr := saveTableRevisionAndComputedMetadata(
-				ctx, txApp, relatedPlan, relatedRevision,
-			); saveErr != nil {
-				return saveErr
+			if related.TableID != plan.Intent.TableID {
+				if saveErr := saveTableRevisionAndComputedMetadata(
+					ctx, txApp, relatedPlan, relatedRevision,
+				); saveErr != nil {
+					return saveErr
+				}
 			}
 			receipt.Related = append(receipt.Related, v2.RelatedApplyReceipt{
 				TableID: related.TableID, FieldID: related.FieldID,
@@ -421,7 +430,7 @@ func pairedPlan(
 	plan.Before = related.Before
 	plan.After = related.After
 	plan.ExpectedSchemaRev = related.ExpectedSchemaRevision
-	plan.ExpectedDataRevision = nil
+	plan.ExpectedDataRevision = related.ExpectedDataRevision
 	plan.RelatedChanges = nil
 	return plan
 }

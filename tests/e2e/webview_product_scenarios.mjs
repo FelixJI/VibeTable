@@ -2583,6 +2583,246 @@ async function scenario27(page, recorder) {
   await runRelationScenario(page, recorder, true);
 }
 
+async function readRelationPairAuthority(page, tableId, fieldId) {
+  const source = await rawBridgeRequest(page, "field.settings.describe", { tableId, fieldId });
+  const definition = source.payload?.definition;
+  if (!definition?.relation?.pairId || !definition.relation.reciprocalFieldId) {
+    throw new Error(`paired relation definition unavailable: ${JSON.stringify(source)}`);
+  }
+  const reciprocal = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: definition.relation.targetTableId,
+    fieldId: definition.relation.reciprocalFieldId,
+  });
+  const endpoints = [];
+  for (const described of [source, reciprocal]) {
+    if (!described.payload?.definition) throw new Error("relation endpoint is missing");
+    const rows = await rawBridgeRequest(page, "query.page", {
+      tableId: described.payload.tableId,
+      query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    });
+    if (!Array.isArray(rows.payload?.rows) || rows.payload.totalRows > 100) {
+      throw new Error(`relation authority fixture is incomplete: ${JSON.stringify(rows)}`);
+    }
+    endpoints.push({
+      tableId: described.payload.tableId,
+      definition: described.payload.definition,
+      schemaRevision: described.payload.schemaRevision,
+      dataRevision: described.payload.dataRevision,
+      rows: [...rows.payload.rows].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+    });
+  }
+  return endpoints;
+}
+
+function relationPairIdentitiesAndLinks(endpoints) {
+  return endpoints.map(({ tableId, definition, rows }) => ({
+    tableId,
+    identity: definition.identity,
+    pairId: definition.relation.pairId,
+    reciprocalFieldId: definition.relation.reciprocalFieldId,
+    targetTableId: definition.relation.targetTableId,
+    rows: rows.map((row) => {
+      const value = row[definition.identity.physicalName];
+      const links = value == null || value === "" ? [] : Array.isArray(value) ? value : [value];
+      return { id: row.id, links: [...links].sort() };
+    }),
+  }));
+}
+
+async function rejectPublicRelationCascade(page, recorder, tableId, fieldId) {
+  const before = await readRelationPairAuthority(page, tableId, fieldId);
+  const rejected = await rawBridgeRequest(page, "field.change.plan", {
+    action: "update", tableId, fieldId,
+    expectedSchemaRevision: before[0].schemaRevision,
+    expectedDataRevision: before[0].dataRevision,
+    draft: null,
+    relationPairPatch: { deletePolicy: "cascade" },
+    actor: { id: "product-e2e", kind: "user" },
+    conversionRule: "", confirmation: "", backupReceipt: "",
+  });
+  recorder.check("public cascade is explicitly rejected without changing either relation endpoint",
+    rejected.payload?.error?.code === "field.contract.invalid"
+      && rejected.payload?.canApply !== true
+      && canonicalJsonText(before) === canonicalJsonText(
+        await readRelationPairAuthority(page, tableId, fieldId),
+      ), { rejected });
+  if (rejected.type === "operation.failed") await acknowledgeExpectedBridgeFailure(page, rejected);
+}
+
+async function openRelationPairEditor(page, physicalName, reciprocalName) {
+  const header = page.locator(`.tabulator-col[tabulator-field="${physicalName}"]`);
+  await header.waitFor({ state: "visible", timeout: 30_000 });
+  await header.locator(".tabulator-col-title").click({ button: "right" });
+  await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+  await page.getByTestId("relation-reciprocal-name").waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction((name) => (
+    document.querySelector('[data-testid="relation-reciprocal-name"] input')?.value === name
+  ), reciprocalName, { timeout: 30_000 });
+}
+
+async function planRelationPairThroughUi(page) {
+  await beginBridgeMessageCapture(page, ["field.change.plan", "operation.failed"]);
+  await page.getByTestId("field-plan-button").click();
+  await page.waitForFunction(() => !!window.__vibetableE2EBridgeCapture?.message,
+    undefined, { timeout: 30_000 });
+  const response = await page.evaluate(() => window.__vibetableE2EBridgeCapture.message);
+  if (response.type !== "field.change.plan" || response.payload?.error) {
+    throw new Error(`relation UI planning failed: ${JSON.stringify(response)}`);
+  }
+  await page.getByTestId("field-change-plan").waitFor({ state: "visible", timeout: 30_000 });
+  return response.payload;
+}
+
+async function applyRelationPairThroughUi(page) {
+  const planCard = page.getByTestId("field-change-plan");
+  for (const checkbox of await planCard.getByRole("checkbox").all()) {
+    if (!await checkbox.isChecked()) await checkbox.check();
+  }
+  await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
+  await page.getByTestId("field-apply-button").click();
+  await page.waitForFunction(() => !!window.__vibetableE2EBridgeCapture?.message,
+    undefined, { timeout: 30_000 });
+  const response = await page.evaluate(() => window.__vibetableE2EBridgeCapture.message);
+  if (response.type !== "field.change.apply" || response.payload?.error || response.payload?.migrationJobId) {
+    throw new Error(`relation UI apply did not complete atomically: ${JSON.stringify(response)}`);
+  }
+  await planCard.waitFor({ state: "hidden", timeout: 30_000 });
+}
+
+async function editRelationPairScenario(page, recorder, authors, articleTableId, title, relation) {
+  const targetDisplay = await createV2Field(page, authors.tableId, "Author code", "text");
+  const sourceDisplay = await createV2Field(page, articleTableId, "Article code", "text");
+  const targetId = "pairtarget00001";
+  const sourceId = "pairsource00001";
+  const target = await applyProductMutation(page, authors.tableId, [{
+    kind: "insert", recordId: targetId,
+    values: { [authors.field.physicalName]: "原作者", [targetDisplay.physicalName]: "A-01" },
+  }], "pair-edit-target");
+  const source = await applyProductMutation(page, articleTableId, [{
+    kind: "insert", recordId: sourceId,
+    values: { [title.physicalName]: "原文章", [sourceDisplay.physicalName]: "P-01", [relation.physicalName]: targetId },
+  }], "pair-edit-source");
+  if (target.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`relation pair fixture did not commit: ${JSON.stringify({ target, source })}`);
+  }
+  const before = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  const identitiesAndLinks = relationPairIdentitiesAndLinks(before);
+  recorder.check("relation pair fixture has reciprocal links before editing",
+    canonicalJsonText(identitiesAndLinks.map(endpoint => endpoint.rows)) === canonicalJsonText([
+      [{ id: sourceId, links: [targetId] }], [{ id: targetId, links: [sourceId] }],
+    ]), { identitiesAndLinks });
+  await selectTable(page, "E2E Articles V2");
+  await waitForVisibleRowCount(page, 1);
+  await openRelationPairEditor(page, relation.physicalName, before[1].definition.displayName);
+  await fillNInput(page, "field-display-name", "文章作者");
+  await fillNInput(page, "relation-reciprocal-name", "作者文章");
+  await selectVisibleNOption(page, "relation-source-cardinality", "多条");
+  await selectVisibleNOption(page, "relation-reciprocal-cardinality", "单条");
+  await selectVisibleNOption(page, "relation-target-display-field", "Author code");
+  await selectVisibleNOption(page, "relation-source-display-field", "Article code");
+  await selectVisibleNOption(page, "relation-delete-policy", "阻止删除");
+  const planned = await planRelationPairThroughUi(page);
+  const related = planned.relatedChanges?.[0];
+  recorder.check("frozen pair plan contains both endpoint settings and preserves their identities",
+    planned.canApply === true && planned.createsMigration === false
+      && planned.relatedChanges?.length === 1 && related.tableId === authors.tableId
+      && planned.after?.displayName === "文章作者" && related.after?.displayName === "作者文章"
+      && planned.after?.relation?.cardinality === "many" && related.after?.relation?.cardinality === "one"
+      && planned.after?.relation?.displayFieldId === targetDisplay.fieldId
+      && related.after?.relation?.displayFieldId === sourceDisplay.fieldId
+      && planned.after?.relation?.deletePolicy === "restrict" && related.after?.relation?.deletePolicy === "restrict"
+      && canonicalJsonText(planned.after.identity) === canonicalJsonText(before[0].definition.identity)
+      && canonicalJsonText(related.after.identity) === canonicalJsonText(before[1].definition.identity), { planned });
+  const sourceSummary = page.getByTestId("field-plan-source-change");
+  const reciprocalSummary = page.getByTestId("field-plan-reciprocal-change");
+  await sourceSummary.waitFor({ state: "visible" });
+  await reciprocalSummary.waitFor({ state: "visible" });
+  const sourceSummaryText = await sourceSummary.innerText();
+  const reciprocalSummaryText = await reciprocalSummary.innerText();
+  recorder.check("frozen plan visibly presents both relation endpoints before apply",
+    sourceSummaryText.includes("文章作者 · 多条")
+      && sourceSummaryText.includes("显示字段：Author code")
+      && sourceSummaryText.includes("共享删除策略：阻止删除")
+      && reciprocalSummaryText.includes("作者文章 · 单条")
+      && reciprocalSummaryText.includes("显示字段：Article code")
+      && reciprocalSummaryText.includes("共享删除策略：阻止删除"),
+    { sourceSummaryText, reciprocalSummaryText });
+  recorder.check("planning preserves both authoritative definitions and links",
+    canonicalJsonText(before) === canonicalJsonText(
+      await readRelationPairAuthority(page, articleTableId, relation.fieldId),
+    ));
+  await applyRelationPairThroughUi(page);
+  const committed = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  recorder.check("UI apply atomically saves both planned definitions without replacing pair or links",
+    canonicalJsonText(committed.map(endpoint => endpoint.definition))
+      === canonicalJsonText([planned.after, related.after])
+      && canonicalJsonText(relationPairIdentitiesAndLinks(committed)) === canonicalJsonText(identitiesAndLinks),
+    { committed });
+  await closeFieldSettingsDrawer(page);
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: relation.physicalName, label: "A-01" });
+  recorder.check("pair source Grid consumes the newly selected target display field",
+    await page.locator(`.tabulator-cell[tabulator-field="${relation.physicalName}"] .vt-relation-token`)
+      .innerText() === "A-01");
+  await selectTable(page, "E2E Authors V2");
+  const reciprocalPhysicalName = committed[1].definition.identity.physicalName;
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: reciprocalPhysicalName, label: "P-01" });
+  recorder.check("pair reciprocal Grid consumes the newly selected source display field",
+    await page.locator(`.tabulator-cell[tabulator-field="${reciprocalPhysicalName}"] .vt-relation-token`)
+      .innerText() === "P-01");
+  await selectTable(page, "E2E Articles V2");
+  await waitForVisibleRowCount(page, 1);
+  await openRelationPairEditor(page, relation.physicalName, "作者文章");
+  recorder.check("reopened relation editor reads the committed names and cardinalities",
+    await page.getByTestId("field-display-name").locator("input").inputValue() === "文章作者"
+      && (await page.getByTestId("relation-source-cardinality").innerText()).includes("多条")
+      && (await page.getByTestId("relation-reciprocal-cardinality").innerText()).includes("单条")
+      && (await page.getByTestId("relation-target-display-field").innerText()).includes("Author code")
+      && (await page.getByTestId("relation-source-display-field").innerText()).includes("Article code")
+      && (await page.getByTestId("relation-delete-policy").innerText()).includes("阻止删除"));
+  await selectVisibleNOption(page, "relation-delete-policy", "置空");
+  const setNull = await planRelationPairThroughUi(page);
+  recorder.check("public setNull plans the same shared policy on both endpoints",
+    setNull.canApply === true && setNull.after?.relation?.deletePolicy === "setNull"
+      && setNull.relatedChanges?.[0]?.after?.relation?.deletePolicy === "setNull");
+  await applyRelationPairThroughUi(page);
+  const clearedPolicy = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  recorder.check("setNull apply preserves pair and links while saving both endpoint policies",
+    clearedPolicy.every(endpoint => endpoint.definition.relation.deletePolicy === "setNull")
+      && canonicalJsonText(relationPairIdentitiesAndLinks(clearedPolicy)) === canonicalJsonText(identitiesAndLinks));
+  await closeFieldSettingsDrawer(page);
+
+  const secondTargetId = "pairtarget00002";
+  const second = await applyProductMutation(page, authors.tableId, [{
+    kind: "insert", recordId: secondTargetId,
+    values: { [authors.field.physicalName]: "第二作者", [targetDisplay.physicalName]: "A-02" },
+  }], "pair-edit-second-target");
+  const multiple = await applyProductMutation(page, articleTableId, [{
+    kind: "update", recordId: sourceId, values: { [relation.physicalName]: [targetId, secondTargetId] },
+  }], "pair-edit-multiple-links");
+  if (second.payload?.status !== "applied" || multiple.payload?.status !== "applied") {
+    throw new Error(`multi-link fixture failed: ${JSON.stringify({ second, multiple })}`);
+  }
+  const conflictBefore = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  await openRelationPairEditor(page, relation.physicalName, "作者文章");
+  await selectVisibleNOption(page, "relation-source-cardinality", "单条");
+  const blocked = await planRelationPairThroughUi(page);
+  recorder.check("many-to-one conflict is visible and cannot discard existing links",
+    blocked.canApply === false && blocked.errors?.some(error => error.code === "relation.cardinality.conflict")
+      && (await page.getByTestId("field-change-plan").innerText()).includes("relation.cardinality.conflict")
+      && await page.getByTestId("field-apply-button").isDisabled()
+      && canonicalJsonText(conflictBefore) === canonicalJsonText(
+        await readRelationPairAuthority(page, articleTableId, relation.fieldId),
+      ), { blocked });
+  await closeFieldSettingsDrawer(page);
+  await rejectPublicRelationCascade(page, recorder, articleTableId, relation.fieldId);
+}
+
 async function runRelationScenario(page, recorder, searchTargets) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -2601,34 +2841,11 @@ async function runRelationScenario(page, recorder, searchTargets) {
       return draft;
     },
   );
-  const cascade = await applyV2FieldChange(
-    page,
-    articleTableId,
-    relation.fieldId,
-    "update",
-    {
-      mutateDraft: (draft) => {
-        draft.relation.deletePolicy = "cascade";
-        return draft;
-      },
-    },
-  );
-  recorder.check(
-    "cascade relation plan exposes direction, impact, and danger classification before apply",
-    cascade.planned?.type === "field.change.plan"
-      && cascade.planned.payload?.classes?.includes("danger")
-      && cascade.planned.payload?.confirmations?.includes("cascade")
-      && cascade.planned.payload?.impact?.records >= 0
-      && Array.isArray(cascade.planned.payload?.impact?.dependencies)
-      && cascade.planned.payload?.warnings?.some(
-        (warning) => warning.details?.direction === "targetToSource",
-      )
-      && cascade.planned.payload?.steps?.some(
-        (step) => step.details?.direction === "targetToSource",
-      ),
-    { cascade: cascade.planned },
-  );
-  if (!searchTargets) return;
+  if (!searchTargets) {
+    await editRelationPairScenario(page, recorder, authors, articleTableId, title, relation);
+    return;
+  }
+  await rejectPublicRelationCascade(page, recorder, articleTableId, relation.fieldId);
   const unicodeLabel = "中文 Cafe\u0301 👩🏽‍💻";
   const labels = Array.from({ length: 51 }, (_, index) => (
     index === 0 ? unicodeLabel : `Search author ${String(index).padStart(2, "0")}`
