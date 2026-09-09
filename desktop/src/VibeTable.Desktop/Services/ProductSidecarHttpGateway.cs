@@ -459,38 +459,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
 
     private static void ValidateContentErrorData(JsonElement data, string method)
     {
-        if (method is not ("contentProfile.load" or "contentProfile.commit" or "contentProfile.delete"
-            or "recordDocumentLink.list" or "recordDocumentLink.commit"
-            or "recordDocumentLink.repair" or "recordDocumentLink.delete"))
-            throw InvalidResponse();
-        bool hasPath = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("path", out _);
-        if (!HasExactProperties(data, hasPath ? ["kind", "message", "code", "path"] : ["kind", "message", "code"])
-            || data.GetProperty("kind").ValueKind != JsonValueKind.String
-            || data.GetProperty("kind").GetString() != "content_model_error"
-            || !IsNonEmptyString(data.GetProperty("message"))
-            || !IsNonEmptyString(data.GetProperty("code"))
-            || !PublicErrorCode.IsMatch(data.GetProperty("code").GetString()!)
-            || (hasPath && data.GetProperty("path").ValueKind != JsonValueKind.String))
-            throw InvalidResponse();
-        string code = data.GetProperty("code").GetString()!;
-        if (code is not ("content_model.edit_conflict"
-            or "content_model.idempotency_conflict"
-            or "content_model.not_found"
-            or "content_model.persistence_failed"
-            or "content_model.storage_invalid"
-            or "content_profile.body_type_invalid"
-            or "content_profile.edit_conflict"
-            or "content_profile.field_missing"
-            or "content_profile.not_found"
-            or "content_profile.search_field_duplicate"
-            or "content_profile.search_field_invalid"
-            or "content_profile.summary_type_invalid"
-            or "content_profile.table_missing"
-            or "content_profile.title_type_invalid"
-            or "record_document_link.edit_conflict"
-            or "record_document_link.not_found"
-            or "record_document_link.record_lookup_failed"
-            or "record_document_link.record_missing"))
+        if (!ProductRpcErrorMapper.TryMapContent(method, data, out _))
             throw InvalidResponse();
     }
 
