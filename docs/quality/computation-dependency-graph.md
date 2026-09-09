@@ -47,4 +47,10 @@
 
 ## 剩余验证
 
-七个 Go 文件的 `gofmt -l` 无输出，`git diff --check` EXIT 0。完整 Go 结果如上为 FAIL。尚未运行完整产品构建、实际产品 E2E 或此候选的 fresh CI；这些不得由聚焦测试结果代替。
+七个 Go 文件的 `gofmt -l` 无输出，`git diff --check` EXIT 0。完整 Go 结果如上为 FAIL，不因以下产品验证通过而改写。
+
+固定源码 `dd443e95d3b4804e01619923dbcfbba7bbf0aecc` 的 `uv run --frozen --no-sync python scripts/build_next.py` 完整构建 EXIT 0，没有 skip；日志 `build/qa/computation-dependency-graph/product-build.log`。同候选执行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 02-all-field-schema --scenario 05-formula-lifecycle --scenario 12-backup-consistency`，实际 WPF/WebView2 3/3 PASS、0 skip：run `20260909T012321Z`，S02 为 15357ms/18断言、S05 为 5946ms/7断言、S12 为 16963ms/22断言。
+
+四组件 fresh，没有启动替代浏览器；Node/Host exit 0，页面错误、异常 bridge 和 pending 均为 0。S02/S12 各有1条已确认预期失败。三场景退出后成员/后代进程均为0，端口、owner lease 和最终清理通过。报告 `build/qa/product-e2e/20260909T012321Z/product-e2e-report.json`，日志 `build/qa/computation-dependency-graph/product-e2e.log`。这些场景验证实际消费者仍可用；混合环诊断及事务回滚由前述真实 PocketBase 回归验证，不声称 UI 场景直接覆盖所有混合环。
+
+候选 fresh CI、squash merge 与合并后 main CI/CD 尚待完成。
