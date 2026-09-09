@@ -1,0 +1,2590 @@
+{
+  "producerCommit": "38098da214a0fb33bb6df1fd0707b1ba0b4ac754",
+  "boundary": "Fixed Python dispatcher and adapter; scripted authority HTTP, not mutation domain or product qualification",
+  "cases": [
+    {
+      "name": "mutation.preview:omitted-optionals",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:omitted-optionals",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:omitted-optionals",
+        "result": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:null-optionals",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:null-optionals",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedRevision": null,
+          "expectedDigest": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ],
+            "expectedRevision": null,
+            "expectedDigest": null
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:null-optionals",
+        "result": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:explicit-optionals",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:explicit-optionals",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedRevision": "revision-1",
+          "expectedDigest": "scripted-digest"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ],
+            "expectedRevision": "revision-1",
+            "expectedDigest": "scripted-digest"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:explicit-optionals",
+        "result": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:empty-operations-actor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:empty-operations-actor",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {},
+          "operations": []
+        }
+      },
+      "authorityFixture": {
+        "response": {},
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {},
+            "operations": []
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:empty-operations-actor",
+        "result": {}
+      }
+    },
+    {
+      "name": "mutation.preview:missing-required",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:missing-required",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:missing-required",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:null-operations",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:null-operations",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:null-operations",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:numeric-revision",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:numeric-revision",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedRevision": 1
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:numeric-revision",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:empty-digest",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:empty-digest",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedDigest": ""
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:empty-digest",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:unknown-param",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "extra": false
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:nested-credential",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:nested-credential",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "password": "oracle-only"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:nested-credential",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:nonobject-params",
+        "method": "mutation.preview",
+        "params": []
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:public-domain-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:public-domain-error",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:public-domain-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "mutation revision is stale",
+            "code": "mutation.revision_conflict",
+            "path": "expectedRevision",
+            "details": {
+              "reason": "stale_revision"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:transport-error",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "mutation unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:null-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:null-response",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:null-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:array-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:array-response",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:array-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:omitted-optionals",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:omitted-optionals",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:omitted-optionals",
+        "result": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:null-optionals",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:null-optionals",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedRevision": null,
+          "expectedDigest": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ],
+            "expectedRevision": null,
+            "expectedDigest": null
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:null-optionals",
+        "result": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:explicit-optionals",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:explicit-optionals",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedRevision": "revision-1",
+          "expectedDigest": "scripted-digest"
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ],
+            "expectedRevision": "revision-1",
+            "expectedDigest": "scripted-digest"
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:explicit-optionals",
+        "result": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:empty-operations-actor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:empty-operations-actor",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {},
+          "operations": []
+        }
+      },
+      "authorityFixture": {
+        "response": {},
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {},
+            "operations": []
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:empty-operations-actor",
+        "result": {}
+      }
+    },
+    {
+      "name": "mutation.apply:missing-required",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:missing-required",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          }
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:missing-required",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:null-operations",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:null-operations",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": null
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:null-operations",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:numeric-revision",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:numeric-revision",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedRevision": 1
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:numeric-revision",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:empty-digest",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:empty-digest",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "expectedDigest": ""
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:empty-digest",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:unknown-param",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ],
+          "extra": false
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:nested-credential",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:nested-credential",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "password": "oracle-only"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:nested-credential",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:nonobject-params",
+        "method": "mutation.apply",
+        "params": []
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:public-domain-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:public-domain-error",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:public-domain-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "mutation revision is stale",
+            "code": "mutation.revision_conflict",
+            "path": "expectedRevision",
+            "details": {
+              "reason": "stale_revision"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:transport-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:transport-error",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "scripted",
+          "extension": [
+            null,
+            false,
+            0,
+            1.25,
+            "",
+            "中文"
+          ]
+        },
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:transport-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "mutation unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:null-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:null-response",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": null,
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:null-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:array-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:array-response",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-oracle",
+          "idempotencyKey": "operation-oracle",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "actor": {
+            "id": "local-user",
+            "kind": "user"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "title": "Café 中文 👩🏽‍💻",
+                "amount": 1.25,
+                "count": 9007199254740991,
+                "empty": "",
+                "absent": null,
+                "enabled": false,
+                "tags": []
+              }
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-oracle",
+            "idempotencyKey": "operation-oracle",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "actor": {
+              "id": "local-user",
+              "kind": "user"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "title": "Café 中文 👩🏽‍💻",
+                  "amount": 1.25,
+                  "count": 9007199254740991,
+                  "empty": "",
+                  "absent": null,
+                  "enabled": false,
+                  "tags": []
+                }
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:array-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "mutation.preview:typed-complete",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:typed-complete",
+        "method": "mutation.preview",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-typed",
+          "idempotencyKey": "operation-typed",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "expectedRevision": null,
+          "expectedDigest": null,
+          "actor": {
+            "type": "user",
+            "id": "local-user",
+            "displayName": "本地用户"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "f_01jabcde": 12.5
+              },
+              "expectedRevision": "row_0003",
+              "expectedDigest": null
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "Definition": {
+            "Snapshot": {
+              "contract": "vibetable.schema.v2",
+              "tableId": "orders",
+              "displayName": "订单",
+              "kind": "base",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "archivePolicy": {
+                "mode": "none",
+                "fieldId": null,
+                "archivedValue": null
+              },
+              "fields": [
+                {
+                  "contract": "vibetable.schema.v2",
+                  "identity": {
+                    "fieldId": "fld_01JABCDE",
+                    "physicalName": "f_01jabcde",
+                    "providerFieldId": "pb_01JABCDE"
+                  },
+                  "displayName": "金额",
+                  "help": "",
+                  "logicalType": "number",
+                  "lifecycle": {
+                    "state": "active",
+                    "retiredAt": null
+                  },
+                  "value": {
+                    "required": false,
+                    "default": {
+                      "enabled": false,
+                      "value": null,
+                      "source": "recommended",
+                      "defaultsVersion": 1
+                    },
+                    "presence": {
+                      "mode": "companion",
+                      "providerFieldId": "pb_01JPRESEN",
+                      "physicalName": "__vt_has_f_01jabcde"
+                    }
+                  },
+                  "constraints": {
+                    "unique": {
+                      "enabled": false,
+                      "blankPolicy": "ignoreMissing"
+                    },
+                    "range": {
+                      "min": null,
+                      "max": null
+                    },
+                    "length": {
+                      "min": null,
+                      "max": null
+                    },
+                    "pattern": {
+                      "enabled": false,
+                      "value": ""
+                    },
+                    "domains": {
+                      "only": [],
+                      "except": []
+                    },
+                    "selection": {
+                      "min": 0,
+                      "max": null
+                    }
+                  },
+                  "storage": {
+                    "kind": "pocketbase-number",
+                    "options": {
+                      "onlyInt": false,
+                      "maxSize": 0,
+                      "convertURLs": false,
+                      "presentable": false
+                    }
+                  },
+                  "display": {
+                    "kind": "number",
+                    "preset": "number",
+                    "displayScale": 2,
+                    "scaleMode": "max",
+                    "trimTrailingZeros": true,
+                    "useGrouping": true,
+                    "currency": "CNY",
+                    "percentStorage": "ratio",
+                    "unit": null,
+                    "precision": "minute",
+                    "timezone": "system",
+                    "mode": "default",
+                    "indent": 0,
+                    "trueLabel": "是",
+                    "falseLabel": "否"
+                  }
+                }
+              ],
+              "capabilities": []
+            },
+            "PhysicalName": "orders",
+            "Kind": "base",
+            "ViewSourceTableID": "",
+            "PrimaryDisplayFieldID": "fld_01JABCDE",
+            "ArchivePolicy": {
+              "mode": "none",
+              "fieldId": null,
+              "archivedValue": null
+            },
+            "FormulaRuntime": {}
+          },
+          "Operations": [
+            {
+              "Kind": "update",
+              "RecordID": "abcdefghijklmno",
+              "Values": {
+                "f_01jabcde": 12.5
+              },
+              "ExpectedRevision": "row_0003",
+              "ExpectedDigest": null,
+              "Attachment": null
+            }
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/preview",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-typed",
+            "idempotencyKey": "operation-typed",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "expectedRevision": null,
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": "本地用户"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "f_01jabcde": 12.5
+                },
+                "expectedRevision": "row_0003",
+                "expectedDigest": null
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.preview:typed-complete",
+        "result": {
+          "Definition": {
+            "Snapshot": {
+              "contract": "vibetable.schema.v2",
+              "tableId": "orders",
+              "displayName": "订单",
+              "kind": "base",
+              "schemaRevision": "schema_1",
+              "dataRevision": 7,
+              "archivePolicy": {
+                "mode": "none",
+                "fieldId": null,
+                "archivedValue": null
+              },
+              "fields": [
+                {
+                  "contract": "vibetable.schema.v2",
+                  "identity": {
+                    "fieldId": "fld_01JABCDE",
+                    "physicalName": "f_01jabcde",
+                    "providerFieldId": "pb_01JABCDE"
+                  },
+                  "displayName": "金额",
+                  "help": "",
+                  "logicalType": "number",
+                  "lifecycle": {
+                    "state": "active",
+                    "retiredAt": null
+                  },
+                  "value": {
+                    "required": false,
+                    "default": {
+                      "enabled": false,
+                      "value": null,
+                      "source": "recommended",
+                      "defaultsVersion": 1
+                    },
+                    "presence": {
+                      "mode": "companion",
+                      "providerFieldId": "pb_01JPRESEN",
+                      "physicalName": "__vt_has_f_01jabcde"
+                    }
+                  },
+                  "constraints": {
+                    "unique": {
+                      "enabled": false,
+                      "blankPolicy": "ignoreMissing"
+                    },
+                    "range": {
+                      "min": null,
+                      "max": null
+                    },
+                    "length": {
+                      "min": null,
+                      "max": null
+                    },
+                    "pattern": {
+                      "enabled": false,
+                      "value": ""
+                    },
+                    "domains": {
+                      "only": [],
+                      "except": []
+                    },
+                    "selection": {
+                      "min": 0,
+                      "max": null
+                    }
+                  },
+                  "storage": {
+                    "kind": "pocketbase-number",
+                    "options": {
+                      "onlyInt": false,
+                      "maxSize": 0,
+                      "convertURLs": false,
+                      "presentable": false
+                    }
+                  },
+                  "display": {
+                    "kind": "number",
+                    "preset": "number",
+                    "displayScale": 2,
+                    "scaleMode": "max",
+                    "trimTrailingZeros": true,
+                    "useGrouping": true,
+                    "currency": "CNY",
+                    "percentStorage": "ratio",
+                    "unit": null,
+                    "precision": "minute",
+                    "timezone": "system",
+                    "mode": "default",
+                    "indent": 0,
+                    "trueLabel": "是",
+                    "falseLabel": "否"
+                  }
+                }
+              ],
+              "capabilities": []
+            },
+            "PhysicalName": "orders",
+            "Kind": "base",
+            "ViewSourceTableID": "",
+            "PrimaryDisplayFieldID": "fld_01JABCDE",
+            "ArchivePolicy": {
+              "mode": "none",
+              "fieldId": null,
+              "archivedValue": null
+            },
+            "FormulaRuntime": {}
+          },
+          "Operations": [
+            {
+              "Kind": "update",
+              "RecordID": "abcdefghijklmno",
+              "Values": {
+                "f_01jabcde": 12.5
+              },
+              "ExpectedRevision": "row_0003",
+              "ExpectedDigest": null,
+              "Attachment": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "mutation.apply:typed-complete",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:typed-complete",
+        "method": "mutation.apply",
+        "params": {
+          "contractVersion": "2.0",
+          "requestId": "request-typed",
+          "idempotencyKey": "operation-typed",
+          "tableId": "orders",
+          "schemaRevision": "schema_1",
+          "expectedRevision": null,
+          "expectedDigest": null,
+          "actor": {
+            "type": "user",
+            "id": "local-user",
+            "displayName": "本地用户"
+          },
+          "operations": [
+            {
+              "kind": "update",
+              "recordId": "abcdefghijklmno",
+              "values": {
+                "f_01jabcde": 12.5
+              },
+              "expectedRevision": "row_0003",
+              "expectedDigest": null
+            }
+          ]
+        }
+      },
+      "authorityFixture": {
+        "response": {
+          "contractVersion": "2.0",
+          "status": "applied",
+          "changeSetId": "chg_01HZX",
+          "affectedRows": [
+            {
+              "recordId": "abcdefghijklmno",
+              "operation": "update",
+              "revision": "row_0004",
+              "digest": "sha256:78dbae"
+            }
+          ],
+          "computedFields": {},
+          "newRevision": "data_0008",
+          "emittedEvents": [
+            "evt_data_0008"
+          ],
+          "warnings": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/mutations/apply",
+          "query": null,
+          "body": {
+            "contractVersion": "2.0",
+            "requestId": "request-typed",
+            "idempotencyKey": "operation-typed",
+            "tableId": "orders",
+            "schemaRevision": "schema_1",
+            "expectedRevision": null,
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": "本地用户"
+            },
+            "operations": [
+              {
+                "kind": "update",
+                "recordId": "abcdefghijklmno",
+                "values": {
+                  "f_01jabcde": 12.5
+                },
+                "expectedRevision": "row_0003",
+                "expectedDigest": null
+              }
+            ]
+          },
+          "expectedStatus": [
+            200
+          ]
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "mutation.apply:typed-complete",
+        "result": {
+          "contractVersion": "2.0",
+          "status": "applied",
+          "changeSetId": "chg_01HZX",
+          "affectedRows": [
+            {
+              "recordId": "abcdefghijklmno",
+              "operation": "update",
+              "revision": "row_0004",
+              "digest": "sha256:78dbae"
+            }
+          ],
+          "computedFields": {},
+          "newRevision": "data_0008",
+          "emittedEvents": [
+            "evt_data_0008"
+          ],
+          "warnings": []
+        }
+      }
+    }
+  ]
+}
