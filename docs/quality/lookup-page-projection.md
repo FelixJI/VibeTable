@@ -1,6 +1,6 @@
 # Lookup 页面批量投影资格
 
-状态：在 main `3bf03bc6f47399bacbdb1305a9b110c8d3b11ae5` 上增量移植，相关 Go 回归及独立 Standards / Spec 审查通过；本候选尚未执行完整 `go test ./...`、完整产品构建、真实产品场景或 fresh PR CI。整体 Relation / Lookup / Formula 资格不因此改为 Closed。
+状态：在 main `3bf03bc6f47399bacbdb1305a9b110c8d3b11ae5` 上增量移植，相关 Go 回归及独立 Standards / Spec 审查通过；本候选完整构建和真实产品场景已通过；完整 Go 因既有目录清理失败未通过，fresh PR CI 待完成。整体 Relation / Lookup / Formula 资格不因此改为 Closed。
 
 ## 单一意图与边界
 
@@ -54,4 +54,18 @@ go test ./tests/integration -run '^TestLookupQueryPageSharesTargetReads$' -count
 
 首轮 `core-race.log` 的失败来自新增 `materialization_keeps_values_beyond_grid_page` 子测试：它复用了仅提供内存 schema 的游标 fixture，而完整 `Calculate` 会权威读取目标 schema，因而返回 `mutation.lookup.schema_invalid: lookup target schema is unavailable`。已将该边界回归移到同范围集成测试中的真实持久化 schema，未修改生产来适配测试。原失败日志保留；大范围 40.745 秒通过结果未盲目重跑，后续只运行受测试修正影响的 Lookup 全包与新增精准集成回归。
 
-本地证据覆盖上述具体页面、路径与错误边界，不代表 100k 数据规模、全部 GUI 场景或完整产品 CI 已通过。后续 main 同步、产品构建与远端资格单独记录。
+本地证据覆盖上述具体页面、路径与错误边界，不代表 100k 数据规模、全部 GUI 场景或完整产品 CI 已通过。后续实际 main 同步与产品构建证据见下节，远端资格仍待取得。
+
+## 当前实际 main 的打包资格
+
+正常同步实际 main `cadf5153` 后候选为 `7d29bca20e6b5001661163e84e7035e9becea117`；同步仅包含已审 #307 gateway 测试夹具，无 Lookup 生产变更。`uv run --frozen --no-sync python scripts/build_next.py` 完整构建 PASS，无 skip、无重试，复用 lock 一致的现有环境；日志 `build/qa/lookup-page-projection/product-build.log`。
+
+`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 02-all-field-schema --scenario 26-lookup-definition-read --scenario 29-lookup-source-pagination`：run `20260909T002057Z`，3/3 PASS、0 skip。S02 13.773s/18断言，S26 5.080s/6断言，S29 9.371s/9断言；实际覆盖字段创建、持久 Lookup 定义读取和101条来源的分页。
+
+四组件 fresh，连接真实桌面 WebView2，未另启浏览器。Node/Host退出0，pageErrors、未确认bridge failures、pending均0；S02有1条已确认预期失败。各场景进程成员/后代为空，端口释放、lease和最终清理均通过。原始报告 `build/qa/product-e2e/20260909T002057Z/product-e2e-report.json`，入口日志 `build/qa/lookup-page-projection/product-e2e.log`。
+
+## 完整 Go 未通过
+
+同一固定源码执行一次 `go test ./...`：EXIT1，未重试；日志 `build/qa/lookup-page-projection/go-all.log`。唯一失败包 workspacev2（81.122s），4处 `testing.go:1617: TempDir RemoveAll cleanup` 目录非空：`TestSnapshotRestoreValidatesWindowsStorageKeysBeforeAttachmentStaging` 的 control_character、reserved_com_port（coordination）和 reserved_superscript_printer_port（snapshots），以及 `TestSnapshotRestoreCommitsAuthorityAndRecoversFailedSearchRebuildAfterRestart`（coordination）。
+
+同次 lookup/relation/query/app/cmd-vibetable-pb/integration/objectrepo 分别PASS4.715/2.334/2.726/22.221/12.033/39.935/18.640s。该局部通过不改变完整命令失败；另有 retention.inventory_unsafe 后台日志，当前没有证据把它与清理失败关联，也没有确定目录持有者或晚写来源。产品场景通过不能替代完整 Go、fresh required 或合并后 CI/CD，清理策略和门禁保持不变。
