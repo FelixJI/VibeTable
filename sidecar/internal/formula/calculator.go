@@ -2,15 +2,12 @@ package formula
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -25,15 +22,13 @@ const relationMaterializationBytes = 32 << 20
 // dependency from the formula runtime back to the mutation kernel.
 type Calculator struct {
 	compiler *Compiler
-	mu       sync.RWMutex
-	cache    map[string]*Plan
 }
 
 func NewCalculator(compiler *Compiler) *Calculator {
 	if compiler == nil {
 		compiler = NewCompiler(DefaultLimits())
 	}
-	return &Calculator{compiler: compiler, cache: map[string]*Plan{}}
+	return &Calculator{compiler: compiler}
 }
 
 func (calculator *Calculator) Calculate(
@@ -406,28 +401,9 @@ func relationRecordIDs(value any) []string {
 }
 
 func (calculator *Calculator) plan(definition schemaexecution.Table) (*Plan, error) {
-	raw, marshalErr := json.Marshal(definition)
-	if marshalErr != nil {
-		return nil, fmt.Errorf("hash formula definition: %w", marshalErr)
-	}
-	sum := sha256.Sum256(raw)
-	key := definition.Snapshot.TableID + "\x00" + definition.Snapshot.SchemaRevision + "\x00" + hex.EncodeToString(sum[:])
-	calculator.mu.RLock()
-	plan := calculator.cache[key]
-	calculator.mu.RUnlock()
-	if plan != nil {
-		return plan, nil
-	}
-	compiled, err := calculator.compiler.CompileExecutionTable(definition)
+	plan, err := calculator.compiler.CompileExecutionTable(definition)
 	if err != nil {
 		return nil, err
 	}
-	calculator.mu.Lock()
-	if existing := calculator.cache[key]; existing != nil {
-		compiled = existing
-	} else {
-		calculator.cache[key] = compiled
-	}
-	calculator.mu.Unlock()
-	return compiled, nil
+	return plan, nil
 }

@@ -115,3 +115,54 @@ func TestWalkLookupPageHonorsCancellationBeforeStorage(t *testing.T) {
 		t.Fatalf("cancelled traversal error = %#v", err)
 	}
 }
+
+func TestCalculateCellsBatchSharesPathAndKeepsOrderedDuplicateSources(t *testing.T) {
+	definition := schemaexecution.Table{
+		PhysicalName: "lookup_rows",
+		Snapshot: v2.SchemaSnapshot{TableID: "rows", Fields: []v2.FieldDefinition{
+			{Identity: v2.FieldIdentity{FieldID: "links", PhysicalName: "links"}, Relation: &v2.RelationSpec{TargetTableID: "rows"}},
+			{Identity: v2.FieldIdentity{FieldID: "name", PhysicalName: "name"}},
+			{Identity: v2.FieldIdentity{FieldID: "score", PhysicalName: "score"}},
+			{Identity: v2.FieldIdentity{FieldID: "lookup_name", PhysicalName: "f_lookup_name"}, LogicalType: v2.LogicalLookup, Lookup: &v2.LookupSpec{Path: []v2.LookupPathStep{{RelationFieldID: "links"}, {RelationFieldID: "links"}}, TargetFieldID: "name"}},
+			{Identity: v2.FieldIdentity{FieldID: "lookup_score", PhysicalName: "f_lookup_score"}, LogicalType: v2.LogicalLookup, Lookup: &v2.LookupSpec{Path: []v2.LookupPathStep{{RelationFieldID: "links"}, {RelationFieldID: "links"}}, TargetFieldID: "score"}},
+		}},
+	}
+	collection := core.NewBaseCollection("lookup_rows")
+	var records []*core.Record
+	for _, id := range []string{"root", "a", "b", "one", "two"} {
+		record := core.NewRecord(collection)
+		record.Id = id
+		record.Set("name", id)
+		record.Set("score", len(id))
+		records = append(records, record)
+	}
+	records[0].Set("links", []string{"b", "a"})
+	records[1].Set("links", []string{"one", "two"})
+	records[2].Set("links", []string{"two", "one"})
+	got, err := NewCalculator().CalculateCellsBatch(context.Background(), nil, definition, records, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := got["root"]["f_lookup_name"]
+	if !reflect.DeepEqual(cell.Value, []any{"two", "one", "one", "two"}) || cell.ProvenanceTotal != 4 || !cell.ProvenanceTotalKnown {
+		t.Fatalf("ordered duplicate projection = %#v", cell)
+	}
+	for i, id := range []string{"two", "one", "one", "two"} {
+		if cell.Provenance[i].ItemID != id || got["root"]["f_lookup_score"].Provenance[i].ItemID != id {
+			t.Fatalf("source order diverged at %d", i)
+		}
+	}
+	selected, err := NewCalculator().CalculateCellsBatch(context.Background(), nil, definition, records, map[string]bool{"lookup_score": true})
+	if err != nil || len(selected["root"]) != 1 || selected["root"]["f_lookup_score"].State != "ok" {
+		t.Fatalf("stable field selection = %#v, %v", selected, err)
+	}
+}
+
+func TestCalculateCellsBatchHonorsCancellationBeforeStorage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := NewCalculator().CalculateCellsBatch(ctx, nil, schemaexecution.Table{}, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled page error = %#v", err)
+	}
+}

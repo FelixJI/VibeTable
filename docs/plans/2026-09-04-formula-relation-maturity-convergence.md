@@ -40,7 +40,8 @@ workspace Relation 或 Decimal。条件能力只有在资格证据触发时立�
 | 2 | `feat(contract): 增加公式作者文档与统一计算状态` | closed schema、四语言生成物、UTF-16 range、状态闭集 | 1 |
 | 3 | `refactor(formula): 建立服务端作者 token 与 source map` | 同名/改名/粘贴/`#REF!`/往返测试 | 2 |
 | 4 | `refactor(rpc): 原子迁移公式与关系 Product RPC owner` | Go producer、Host allowlist、Python 注销、inventory | 2；避开在途 RPC PR |
-| 5 | `perf(formula): 冻结 CEL 语义与有界编译缓存` | golden、LRU/singleflight、失效、fuzz | 3 |
+| 5a | `fix(formula): 修正 CEL 数值边界与错误分类` | 独立 golden、数值错误、短路与预算；见[资格记录](../quality/formula-numeric-semantics.md) | 3 |
+| 5b | `perf(formula): 增加有界编译缓存` | LRU/singleflight、提交后失效、草稿与回滚、fuzz；与数值修复独立回滚 | 3 |
 | 6 | `feat(formula-ui): 引入结构化 Formula Workbench` | token、补全、诊断、键盘、stale preview | 3 |
 | 7 | `feat(relation): 完成 pair 更新与完整性模型` | patch、基数预检、immutable target、inspect/repair | 2 |
 | 8 | `feat(relation-ui): 完成分页选择与冲突恢复` | cursor、键盘、多选、canonical refs、显式重载 | 7 |
@@ -100,6 +101,12 @@ CI/CD 状态监控只读，不重跑、触发、取消或批准 run。主线程�
 ```
 
 每次 merge 后重新基于 main 和在途 PR 检查路线，不让本计划中的旧文件清单覆盖当前仓库事实。
+
+## 2026-09-09 Relation pair 实施进度
+
+PR 7 按回滚边界拆为 RR1（pair 原子更新）和 RR2（完整性 inspect/repair）。RR1 已有双端配置、many→one 预检、不可变身份/目标、revision 冲突和真实表头编辑/重开证据，见 [本地资格](../quality/relation-pair-update.md)。前置字段设置修复 #299 由已分别通过 CI 的修复集成 PR #302 收尾，反向 presence 独立修复为 #301；均须以实际 main 合并结果为准。
+
+当前 S06 从旧 cascade 预览扩展为 pair 更新及公开策略拒绝，历史 main 的旧场景结果不充当新场景资格。RR1 尚待最终 fresh CI 和合并闭环；RR2 未完成。最初仅验证DisplayField配置保存；后续e7ab2b13集成#303并通过真实S06/S27/S28，补充双方Grid标签消费。仍不能据此标记Relation或完整产品链Closed。Picker 继续遵守 ADR 0009 的表主显示字段契约。
 
 ## 2026-09-09 Relation 标签消费进度
 

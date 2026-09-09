@@ -360,6 +360,16 @@ type RelationPairDraft struct {
 	SourceDisplayFieldId  string `json:"sourceDisplayFieldId"`
 }
 
+type RelationPairPatch struct {
+	SourceDisplayName        *string `json:"sourceDisplayName,omitempty"`
+	ReciprocalDisplayName    *string `json:"reciprocalDisplayName,omitempty"`
+	SourceCardinality        *string `json:"sourceCardinality,omitempty"`
+	ReciprocalCardinality    *string `json:"reciprocalCardinality,omitempty"`
+	SourceDisplayFieldId     *string `json:"sourceDisplayFieldId,omitempty"`
+	ReciprocalDisplayFieldId *string `json:"reciprocalDisplayFieldId,omitempty"`
+	DeletePolicy             *string `json:"deletePolicy,omitempty"`
+}
+
 type FieldChangeIntent struct {
 	Action                 string             `json:"action"`
 	TableId                string             `json:"tableId"`
@@ -372,6 +382,7 @@ type FieldChangeIntent struct {
 	Confirmation           string             `json:"confirmation"`
 	BackupReceipt          string             `json:"backupReceipt"`
 	RelationPair           *RelationPairDraft `json:"relationPair,omitempty"`
+	RelationPairPatch      *RelationPairPatch `json:"relationPairPatch,omitempty"`
 }
 
 type Diagnostic struct {
@@ -411,6 +422,7 @@ type RelatedFieldChange struct {
 	Before                 *FieldDefinition `json:"before"`
 	After                  *FieldDefinition `json:"after"`
 	ExpectedSchemaRevision string           `json:"expectedSchemaRevision"`
+	ExpectedDataRevision   *int64           `json:"expectedDataRevision,omitempty"`
 }
 
 type FieldChangePlan struct {

@@ -10,6 +10,9 @@
 - 结果：23/23 passed、0 failed、0 skipped。
 - 当前 manifest gap：5（`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`）。
 - 当前 manifest surplus：无。
+- 当前 manifest changed：1（`06-relation-fanout`）。
+
+同编号场景 "06-relation-fanout" 已从公共 cascade 预览改为两端关系字段的真实 UI 编辑、冻结计划与应用，并保留公共 cascade 拒绝边界。上述历史 source/run 的结果只覆盖当时语义，不证明当前 S06 资格；该项待正式 main 打包报告重新验收。本机局部验证不能关闭此证据缺口。gap、surplus 和 changed 均为空才满足发布证据闭合要求。
 
 场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview"、"29-lookup-source-pagination" 和 "30-query-snapshot-validation" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这五项新增场景，也不证明新的关系、来源分页与快照校验资格。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与

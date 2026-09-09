@@ -387,6 +387,16 @@ class RelationPairDraft(SchemaV2WireModel):
     source_display_field_id: Annotated[str, Field(min_length=1)]
 
 
+class RelationPairPatch(SchemaV2WireModel):
+    source_display_name: Annotated[str, Field(min_length=1)] | None = None
+    reciprocal_display_name: Annotated[str, Field(min_length=1)] | None = None
+    source_cardinality: Literal["one", "many"] | None = None
+    reciprocal_cardinality: Literal["one", "many"] | None = None
+    source_display_field_id: Annotated[str, Field(min_length=1)] | None = None
+    reciprocal_display_field_id: Annotated[str, Field(min_length=1)] | None = None
+    delete_policy: Literal["setNull", "restrict"] | None = None
+
+
 class FieldChangeIntent(SchemaV2WireModel):
     action: Literal["create", "update", "retire", "restore", "purge", "convert", "backfill"]
     table_id: Annotated[str, Field(min_length=1)]
@@ -399,6 +409,7 @@ class FieldChangeIntent(SchemaV2WireModel):
     confirmation: str
     backup_receipt: str
     relation_pair: RelationPairDraft | None = None
+    relation_pair_patch: RelationPairPatch | None = None
 
 
 class Diagnostic(SchemaV2WireModel):
@@ -438,6 +449,7 @@ class RelatedFieldChange(SchemaV2WireModel):
     before: FieldDefinition | None
     after: FieldDefinition | None
     expected_schema_revision: Annotated[str, Field(min_length=1)]
+    expected_data_revision: Annotated[int, Field(ge=0)] | None = None
 
 
 class FieldChangePlan(SchemaV2WireModel):

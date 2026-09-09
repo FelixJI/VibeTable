@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
@@ -61,7 +62,7 @@ func (calculator *Calculator) Calculate(
 	definition schemaexecution.Table,
 	record *core.Record,
 ) (map[string]any, error) {
-	cells, err := calculator.calculateCells(ctx, app, definition, record, false)
+	cells, err := calculator.calculateCells(ctx, app, definition, record)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +79,11 @@ func (calculator *Calculator) CalculateCells(
 	definition schemaexecution.Table,
 	record *core.Record,
 ) (map[string]CellValue, error) {
-	return calculator.calculateCells(ctx, app, definition, record, true)
+	result, err := calculator.CalculateCellsBatch(ctx, app, definition, []*core.Record{record}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return result[record.Id], nil
 }
 
 func (calculator *Calculator) calculateCells(
@@ -86,7 +91,6 @@ func (calculator *Calculator) calculateCells(
 	app core.App,
 	definition schemaexecution.Table,
 	record *core.Record,
-	pageValues bool,
 ) (map[string]CellValue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -96,19 +100,7 @@ func (calculator *Calculator) calculateCells(
 		if field.LogicalType != v2.LogicalLookup || field.Lookup == nil {
 			continue
 		}
-		var resolved []lookupPathValue
-		var total int
-		var totalKnown bool
-		var err error
-		if pageValues {
-			resolved, total, totalKnown, err = lookupPathValuesPage(
-				ctx, app, definition, record, field, 0, cellProvenancePageSize,
-			)
-		} else {
-			resolved, err = lookupPathValues(ctx, app, definition, record, field)
-			total = len(resolved)
-			totalKnown = true
-		}
+		resolved, err := lookupPathValues(ctx, app, definition, record, field)
 		if err != nil {
 			if isMissingLookupSource(err) {
 				result[field.Identity.PhysicalName] = missingLookupSourceCell()
@@ -133,9 +125,9 @@ func (calculator *Calculator) calculateCells(
 		}
 		result[field.Identity.PhysicalName] = CellValue{
 			State: "ok", Value: value, Provenance: visibleProvenance,
-			ProvenanceTotal: total, ProvenanceTotalKnown: totalKnown, ProvenanceOffset: 0,
+			ProvenanceTotal: len(resolved), ProvenanceTotalKnown: true, ProvenanceOffset: 0,
 			ProvenanceLimit:   cellProvenancePageSize,
-			ProvenanceHasMore: !totalKnown || total > len(visibleProvenance),
+			ProvenanceHasMore: len(resolved) > len(visibleProvenance),
 		}
 	}
 	return result, nil
@@ -156,23 +148,13 @@ func (calculator *Calculator) CalculateFieldPage(
 			"lookup.request.invalid", "lookup value page request is invalid",
 		)
 	}
-	resolved, total, totalKnown, err := lookupPathValuesPage(
-		ctx, app, definition, record, field, offset, limit,
+	result, err := calculateLookupGroups(
+		ctx, app, definition, []*core.Record{record}, [][]v2.FieldDefinition{{field}}, offset, limit,
 	)
 	if err != nil {
-		if isMissingLookupSource(err) {
-			return missingLookupSourceCell(), nil
-		}
 		return CellValue{}, err
 	}
-	values, provenance := resolvedValues(resolved)
-	value := canonicalLookupValue(values)
-	return CellValue{
-		State: "ok", Value: value, Provenance: provenance,
-		ProvenanceTotal: total, ProvenanceTotalKnown: totalKnown,
-		ProvenanceOffset: offset, ProvenanceLimit: limit,
-		ProvenanceHasMore: !totalKnown || offset+len(provenance) < total,
-	}, nil
+	return result[record.Id][field.Identity.PhysicalName], nil
 }
 
 func isMissingLookupSource(err error) bool {
@@ -276,65 +258,6 @@ func (budget *materializationBudget) consume(value any) error {
 	}
 	budget.remainingBytes -= cost
 	return nil
-}
-
-func lookupPathValuesPage(
-	ctx context.Context,
-	app core.App,
-	sourceDefinition schemaexecution.Table,
-	record *core.Record,
-	lookupField v2.FieldDefinition,
-	offset int,
-	limit int,
-) ([]lookupPathValue, int, bool, error) {
-	path := lookupField.Lookup.Path
-	if len(path) == 0 {
-		return nil, 0, false, lookupError(
-			"mutation.lookup.schema_invalid", "lookup path metadata is unavailable",
-		)
-	}
-	if len(path) == 1 {
-		relation, found := fieldByID(sourceDefinition, path[0].RelationFieldID)
-		if !found || relation.Relation == nil {
-			return nil, 0, false, lookupError(
-				"mutation.lookup.schema_invalid", "lookup path relation metadata is unavailable",
-			)
-		}
-		ids := relationIDs(record.GetRaw(relation.Identity.PhysicalName))
-		total := len(ids)
-		target, err := describeLookupTable(
-			ctx, app, relation.Relation.TargetTableID, map[string]schemaexecution.Table{},
-		)
-		if err != nil {
-			return nil, 0, false, err
-		}
-		nodes, err := loadLookupRecords(ctx, app, target, sliceStrings(ids, offset, limit))
-		if err != nil {
-			return nil, 0, false, err
-		}
-		values, err := projectLookupNodes(nodes, lookupField)
-		return values, total, true, err
-	}
-	collector := lookupPageCollector{offset: offset, limit: limit}
-	err := walkLookupPage(
-		ctx, app, traversalNode{definition: sourceDefinition, record: record},
-		lookupField, path, 0, map[string]schemaexecution.Table{}, &collector,
-	)
-	if errors.Is(err, errLookupPageComplete) {
-		return collector.values, collector.total, false, nil
-	}
-	return collector.values, collector.total, err == nil, err
-}
-
-func sliceStrings(values []string, offset int, limit int) []string {
-	if offset >= len(values) {
-		return []string{}
-	}
-	end := offset + limit
-	if end > len(values) {
-		end = len(values)
-	}
-	return values[offset:end]
 }
 
 type lookupPageCollector struct {
@@ -515,11 +438,17 @@ func describeLookupTable(
 	tableID string,
 	cache map[string]schemaexecution.Table,
 ) (schemaexecution.Table, error) {
+	if err := ctx.Err(); err != nil {
+		return schemaexecution.Table{}, err
+	}
 	if target, found := cache[tableID]; found {
 		return target, nil
 	}
 	target, err := schemaexecution.Describe(ctx, app, tableID)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return schemaexecution.Table{}, err
+		}
 		return schemaexecution.Table{}, lookupError(
 			"mutation.lookup.schema_invalid",
 			"lookup target schema is unavailable",
@@ -538,20 +467,17 @@ func loadLookupRecords(
 	if len(recordIDs) == 0 {
 		return []traversalNode{}, nil
 	}
-	collection, err := app.FindCollectionByNameOrId(target.PhysicalName)
+	loaded, err := queryLookupRecords(ctx, app, target, recordIDs)
 	if err != nil {
-		return nil, lookupError(
-			"mutation.lookup.storage_failed",
-			"lookup target storage is unavailable",
-		)
+		return nil, err
 	}
 	values := make([]traversalNode, 0, len(recordIDs))
 	for _, recordID := range recordIDs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		targetRecord, err := app.FindRecordById(collection, recordID)
-		if err != nil {
+		targetRecord := loaded[recordID]
+		if targetRecord == nil {
 			return nil, lookupError(
 				"mutation.lookup.target_not_found",
 				"lookup relation references a missing record",
@@ -563,6 +489,45 @@ func loadLookupRecords(
 		})
 	}
 	return values, nil
+}
+
+func queryLookupRecords(
+	ctx context.Context, app core.App, target schemaexecution.Table, recordIDs []string,
+) (map[string]*core.Record, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	result := map[string]*core.Record{}
+	if len(recordIDs) == 0 {
+		return result, nil
+	}
+	collection, err := app.FindCollectionByNameOrId(target.PhysicalName)
+	if err != nil {
+		return nil, lookupError("mutation.lookup.storage_failed", "lookup target storage is unavailable")
+	}
+	seen := map[string]bool{}
+	ids := make([]any, 0, len(recordIDs))
+	for _, id := range recordIDs {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	for start := 0; start < len(ids); start += lookupTraversalBatch {
+		var records []*core.Record
+		err := app.RecordQuery(collection).WithContext(ctx).
+			AndWhere(dbx.In("id", ids[start:min(start+lookupTraversalBatch, len(ids))]...)).All(&records)
+		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, lookupError("mutation.lookup.storage_failed", "lookup target records could not be loaded")
+		}
+		for _, record := range records {
+			result[record.Id] = record
+		}
+	}
+	return result, nil
 }
 
 func relationIDs(value any) []string {
