@@ -823,6 +823,7 @@ func classify(
 	if !reflect.DeepEqual(beforeStorage, afterStorage) ||
 		!reflect.DeepEqual(before.Select, after.Select) ||
 		!reflect.DeepEqual(before.Relation, after.Relation) ||
+		!reflect.DeepEqual(before.Lookup, after.Lookup) ||
 		!reflect.DeepEqual(before.File, after.File) ||
 		!reflect.DeepEqual(before.JSON, after.JSON) {
 		classes[v2.ClassSchema] = struct{}{}
