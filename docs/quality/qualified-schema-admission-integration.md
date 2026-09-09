@@ -42,3 +42,15 @@ app 失败均为 TempDir RemoveAll 目录非空：`TestHistoryReadProductHTTPRet
 相对初始端点只增加 schemaapi 测试夹具、其资格文档与计划文档。`git diff --quiet 0508a6415b7204357f46e01f0d255bc1a6d0a404 HEAD -- backend desktop contracts sidecar ':!sidecar/internal/schemaapi/catalog_lifecycle_test.go'` 为 EXIT 0：生产源码未变，因此保留并复用上述0508完整产品包及实际四场景资格，无需重建可执行文件。该证据不把旧构建 source SHA 改写为新提交。
 
 对改变的测试集合执行一次 `go test -race ./internal/schemaapi -count=1`：PASS 9.135s；`go vet ./internal/schemaapi`：EXIT 0。日志 `five-source-schemaapi-race.log` 与 `five-source-schemaapi-vet.log`。Standards/Spec 实际交界无确定问题。原 app 包三项 TempDir 失败仍为失败，不能由不同包的测试修复与通过解释或覆盖。更新后的新 head 必须重新取得完整 fresh required，初始端点的未完成 CI 不充当最终门禁。
+
+## 同步已合并的关系检查 main
+
+#319 已 squash 合并为最新 main `25b260394a0a01e8432d23fa3d1a6e8b9b65922f`。本分支从旧端点 `f158cd5836a76c2586846e48354173af76ff91f5` 正常无冲突合入 main，得到 `b9984c931a6e042f142e293be2dd07a36c939558`。五项来源范围不变；新增关系检查属于已合并 main 的依赖，未把其他待合并 owner 或稳定性修复混入本 PR。
+
+上节“生产源码未变”仅适用于追加 #316/#317 的旧端点。本次 main 同步包含 RR2 生产代码，不能把旧 `0508` 的完整构建和四场景结果归为当前源码资格。复用现有依赖与工具缓存，运行以下交界验证（日志仍位于 `build/qa/qualified-schema-admission/`）：
+
+- `go test -race ./internal/app -run 'Test(RelationInspectProduct|ClassifyFieldErrorPreservesComputationCycle)' -count=1`：PASS，1.777s；`main-319-app-race.log`。
+- `go test -race ./internal/schemaapi ./internal/computationplan ./internal/fieldchange -count=1`：三包 PASS，9.110s/1.663s/30.636s；`main-319-core-race.log`。
+- Web `npm run test -- --run src/relation-inspection/RelationInspectionPanel.test.ts src/relation-inspection/type.test.ts src/field-settings/service.test.ts`：71 PASS，3 文件，2.65s；`main-319-web.log`。
+
+Standards 与独立 Spec 交界审查无确定代码问题：计算依赖校验、pair 基数顺序、schema 元数据替换前复核、Lookup 分类和 Provisional 准入均保留，新增 inspection 接线与 main 一致。本地未再次构建或运行完整产品场景；最新源码的完整 build/E2E 与最终 required 由新 head 的 fresh CI 验证，尚待终态。旧 CI `34307773041` 不能替代新 head 门禁；旧完整 app race 失败记录同样保留。
