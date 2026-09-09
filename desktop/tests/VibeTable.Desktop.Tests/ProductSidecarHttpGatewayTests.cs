@@ -632,14 +632,13 @@ public sealed class ProductSidecarHttpGatewayTests
     [TestMethod]
     public async Task DisposeCannotBeOverwrittenByLateHandshakeSuccess()
     {
-        var response = new TaskCompletionSource<HttpResponseMessage>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<HttpResponseMessage>();
         var started = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = new RecordingHandler(async (_, _) =>
+        var handler = new RecordingHandler((_, _) =>
         {
             started.TrySetResult();
-            return await response.Task;
+            return response.Task;
         });
         var gateway = Gateway(handler);
         Task<ProductSidecarCapabilities> handshake =
@@ -658,16 +657,15 @@ public sealed class ProductSidecarHttpGatewayTests
     [TestMethod]
     public async Task DisposeWinsWhenSentRpcCompletesSuccessfullyLater()
     {
-        var response = new TaskCompletionSource<HttpResponseMessage>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<HttpResponseMessage>();
         var started = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = new RecordingHandler(async (request, _) =>
+        var handler = new RecordingHandler((request, _) =>
         {
             if (request.RequestUri!.AbsolutePath.EndsWith("/capabilities"))
-                return Json(ProductCapabilities());
+                return Task.FromResult(Json(ProductCapabilities()));
             started.TrySetResult();
-            return await response.Task;
+            return response.Task;
         });
         var gateway = await ReadyGatewayAsync(handler);
         Task<ProductSidecarForwardResult> forward = ForwardAsync(gateway, "late");
