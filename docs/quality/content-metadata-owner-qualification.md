@@ -1,6 +1,6 @@
 # ContentProfile / RecordDocumentLink 迁移资格记录
 
-状态：源码与聚焦契约已通过审查和相关验证；最终发布构建失败，最终 S18 尚未运行。本记录不声明本批交付完成、可合并、L5 完成或 PR #140 整体完成。
+状态：源码与聚焦契约已通过审查和相关验证；最终发布构建失败，保留 staging 的 S18 功能验证已通过，但完整构建及其后产品资格仍未完成。本记录不声明本批交付完成、可合并、L5 完成或 PR #140 整体完成。
 
 ## 来源与完整范围
 
@@ -63,4 +63,21 @@ session 86345 EXIT1，run `20260909T144121Z`，0/1 PASS、0 skip、15.331s。新
 
 ## 当前资格缺口
 
-最终 e8af runtime staging 与失败现场保持在仓库固定目录，未盲目重跑构建。`dist/VibeTable.Next` 仍是此前 ee27 包，不能拿它运行所谓最终 S18。需在完成回滚问题处置并恢复完整构建资格后，以同一最终新包运行 S18，核对 profile、broken link→repair、sidecar restart 后持久状态、bridge 及清理。最终 S18 为 pending；本记录不授予合并或发布资格。
+最终 e8af runtime staging 与失败现场保持在仓库固定目录，未盲目重跑构建。`dist/VibeTable.Next` 仍是此前 ee27 包，不能拿它运行所谓最终 S18。需在完成回滚问题处置并恢复完整构建资格后，以同一最终新包运行 S18，核对 profile、broken link→repair、sidecar restart 后持久状态、bridge 及清理。完整构建后的最终 S18 资格为 pending；下述 staging 功能证据不授予合并或发布资格。
+
+## 保留 staging 的独立 S18 功能证据
+
+在未改变、未 atomic publish 的 e8af staging 上，运行原产品入口：
+
+```powershell
+uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next.staging --scenario 18-workspace-search --evidence-root build/qa/content-metadata/staging-product-e2e
+```
+
+run `20260909T150507Z` / session 41605 EXIT0：1/1 PASS，21 项断言，19.554s；
+四组件 freshness 通过，bridge 未确认失败与 pending 均为 0，4 项预期故障已确认。
+真实 UI 的 profile 编辑、显式关联、broken link 修复和 sidecar 重启后持久状态均通过；
+正常退出 Host 0，成员、后代、端口、owner lease 与最终清理通过。
+
+该测试使用构建已完成组件与 manifest 的原 staging，未换组件、未运行旧 ee27 包、未跳过
+产品 runner 的 freshness。它证明 Host 错误投影修复在真实包中有效；自更新 smoke 的
+原构建失败仍未解决，不能把此局部成功改写成完整发布构建成功。
