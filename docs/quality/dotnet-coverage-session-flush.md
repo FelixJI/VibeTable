@@ -1,6 +1,6 @@
 # .NET 会话内覆盖率收集资格
 
-基线为 `3cd6f83202ea0977d690ad71cf7dff25595e4f02`，本页记录该基线上的 collector 候选。当前尚未执行最新 main 同步后的完整资格或 fresh PR CI，不能据以下范围化通过宣称完整门禁通过。
+基线为 `3cd6f83202ea0977d690ad71cf7dff25595e4f02`，本页记录该基线上的 collector 候选。下文先保留该基线上的范围化运行与历史失败，最后一节记录同步 main 后的完整 .NET 覆盖率通过；fresh PR CI 尚未执行。
 
 ## 问题与边界
 
@@ -50,4 +50,33 @@ uv run --frozen --no-sync python -m qa.dotnet_coverage --dotnet <fixed-sdk>/dotn
 | Infrastructure | `run-mrfm4yid` | 2512/3132 | 788/1158 | 74/64 |
 | DocumentDiff.OpenXml | `run-mrfm4yid` | 295/363 | 156/194 | 78/79 |
 
-此表是同一生产候选的分程序集证据，Contracts 后补测试的运行独立列出，没有拼成一次完整 solution 成功。最终同步 main 后完整 solution、完整 Python 质量入口、完整产品 build/E2E 和 fresh CI 尚未执行。本片没有修改共享 automation core 或其他程序集生产行为；实际 Windows CI 仍需验证 collector 会话链与全门禁。
+此表是同一生产候选的分程序集证据，Contracts 后补测试的运行独立列出，没有拼成一次完整 solution 成功。该阶段尚未执行同步 main 后完整 solution；其后验证见下节。完整 Python 质量入口、完整产品 build/E2E 和 fresh CI 尚未执行。本片没有修改共享 automation core 或其他程序集生产行为；实际 Windows CI 仍需验证 collector 会话链与全门禁。
+
+## 同步 main 后的完整 .NET 资格
+
+单意图提交 `8999f9d127534eb491e0f33e07ab1c68e7f9217b` 正常执行 Ruff format/check、版本与包契约四个 hooks，全部通过。随后正常无冲突合并实际 main `25b260394a0a01e8432d23fa3d1a6e8b9b65922f`，固定测试候选为 `4f5ba25f6043a44030399ca57510d375925f838a`，覆盖率入口及门槛没有合并改动。
+
+在此候选运行一次无 `--project` 的上述完整 `qa.dotnet_coverage` 命令，终态 **EXIT 0：1349 PASS、1 个既有权限 skip**。Desktop 1102 PASS/1 skip（24 秒）、Contracts 61 PASS（173 ms）、PreviewHost 14 PASS（165 ms）、Workspace 27 PASS（159 ms）、Infrastructure 128 PASS（7 秒）、OpenXml 17 PASS（321 ms）。跳过项为既有 `ActivationPointerLinkIsRejectedAndRetained`，没有新增跳过。
+
+本次唯一结果目录 `build/qa/dotnet-coverage/run-sjw42_dx/` 的六份项目 TRX/附件均通过校验，生成 `coverage-summary.json`。原始输出为 `build/qa/dotnet-coverage-session-flush/solution-main.log`：
+
+| 程序集 | line covered/valid | branch covered/valid | 原 line/branch 门槛 |
+|---|---|---|---|
+| Desktop | 18191/25566 | 6839/11584 | 63/53 |
+| Contracts | 890/1679 | 502/860 | 49/56 |
+| PreviewHost | 71/161 | 30/56 | 41/50 |
+| Workspace | 578/590 | 218/228 | 92/85 |
+| Infrastructure | 2512/3132 | 788/1158 | 74/64 |
+| DocumentDiff.OpenXml | 295/363 | 156/194 | 78/79 |
+
+六组原门槛全部通过。本次验证没有重跑旧失败 CI，也不证明旧 CI 的具体 shutdown 时序；完整 Python 质量入口、完整产品 build/E2E、fresh PR CI 仍未执行。
+
+## 接续完整 Python 质量与独立复核
+
+在固定 `4f5ba25f` 上，独立 Standards / Spec 两轴审查均无确定问题。没有修改生产实现或降低任何程序集门槛。
+
+首次执行 `uv run --frozen --no-sync python scripts/automation_project.py python-quality`，Ruff format/check、backend Pyright/mypy 通过；测试为 1829 PASS、1 个既有 skip、3 FAIL，后端覆盖率 91.43%。失败分别是 generator 子进程通过共享虚拟环境的 editable 安装导入另一工作区代码，以及两个 Node 入口找不到本 worktree 的 Web 依赖，详见 `python-quality-main.log`。这些失败保留，不记为产品断言通过。
+
+确认共享来源的 Web package/lock 与当前源码一致后，通过本地 junction 复用已有 `node_modules`，命令级 `PYTHONPATH` 固定到当前 worktree；共享环境未重建或修改。三项失败复验 3 PASS、7.45s，`environment-correction.log`。随后同一完整 Python 质量入口 EXIT 0：Ruff format/check、backend Pyright/mypy 全部通过，1832 PASS、1 个既有 skip、78.70s，后端覆盖率 91.43%，满足原 85% 门槛；日志 `python-quality-correct-environment.log`。早期 QA 模块范围化 mypy 的传递导入错误记录仍保留，不由 backend-only 检查覆盖。
+
+最新源码的完整产品构建/E2E 与 fresh PR CI 尚待执行。本片只改变质量收集路径和直接相关测试，不为此重复生成本地可执行包；完整 CI 的 release build/smoke 与产品分片仍是合并门禁。
