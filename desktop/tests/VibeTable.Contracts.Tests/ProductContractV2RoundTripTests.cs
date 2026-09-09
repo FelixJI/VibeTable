@@ -265,6 +265,30 @@ public sealed class ProductContractV2RoundTripTests
     }
 
     [TestMethod]
+    public void RelationPairPatchPlanKeepsOptionalFieldsAndRejectsUnknownIdentity()
+    {
+        JsonObject plan = ReadSchemaV2Node("field-change-plan.json").AsObject();
+        JsonObject intent = plan["intent"]!.AsObject();
+        intent["action"] = "update";
+        intent["draft"] = null;
+        intent["relationPairPatch"] = new JsonObject
+        {
+            ["sourceCardinality"] = "one", ["reciprocalDisplayName"] = "订单",
+        };
+        plan["relatedChanges"] = new JsonArray(new JsonObject
+        {
+            ["tableId"] = "targets", ["fieldId"] = "fld_reverse",
+            ["before"] = null, ["after"] = null,
+            ["expectedSchemaRevision"] = "schema_1", ["expectedDataRevision"] = 7,
+        });
+        FieldChangePlanV2 decoded = JsonSerializer.Deserialize<FieldChangePlanV2>(plan.ToJsonString())!;
+        Assert.AreEqual("订单", decoded.Intent.RelationPairPatch!.ReciprocalDisplayName);
+        Assert.AreEqual(7L, decoded.RelatedChanges![0].ExpectedDataRevision);
+        intent["relationPairPatch"]!["pairId"] = "replacement";
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<FieldChangePlanV2>(plan.ToJsonString()));
+    }
+
+    [TestMethod]
     public void SchemaSnapshotRejectsUnsupportedNestedFieldContract()
     {
         JsonObject catalog = ReadObject("product-rpc-catalog.json");

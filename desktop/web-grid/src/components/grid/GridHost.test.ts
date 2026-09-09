@@ -192,7 +192,7 @@ describe("GridHost history selection", () => {
     const wrapper = mount(GridHost);
     const header = document.createElement("div");
     header.className = "tabulator-col";
-    header.dataset.field = "status";
+    header.setAttribute("tabulator-field", "status");
     const title = document.createElement("span");
     title.textContent = "Status";
     header.append(title);

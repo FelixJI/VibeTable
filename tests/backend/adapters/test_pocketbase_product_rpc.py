@@ -181,6 +181,16 @@ def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed
     assert accepted.root["draft"] == {}
     assert accepted.root["relationPair"]["sourceDisplayFieldId"] == "fld_order_number"
 
+    patch_request = accepted.root | {
+        "action": "update",
+        "fieldId": "fld_orders_customer",
+        "draft": None,
+        "relationPairPatch": {"reciprocalDisplayName": "购买记录"},
+    }
+    patch_request.pop("relationPair")
+    patch = PRODUCT_RPC_REGISTRY["field.change.plan"].model_validate(patch_request)
+    assert patch.root == patch_request
+
     with pytest.raises(ValidationError):
         PRODUCT_RPC_REGISTRY["field.change.plan"].model_validate(
             {

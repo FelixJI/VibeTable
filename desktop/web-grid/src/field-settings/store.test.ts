@@ -62,6 +62,38 @@ describe("field settings store", () => {
     setActivePinia(createPinia());
   });
 
+  it("tracks reciprocal-only edits and blocks planning until pair metadata is ready", () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load({
+      ...described(), definition: {
+        ...definition(), logicalType: "relation",
+        relation: {
+          targetTableId: "tbl_customers", pairId: "pair_1", reciprocalFieldId: "fld_orders",
+          cardinality: "many", displayFieldId: "fld_name", deletePolicy: "setNull",
+        },
+      },
+    });
+    expect(store.canPlan).toBe(false);
+    const pair = {
+      reciprocalDisplayName: "订单", reciprocalCardinality: "many" as const,
+      sourceDisplayFieldId: "fld_number",
+    };
+    store.loadRelationPair(pair);
+    expect(store.dirty).toBe(false);
+    store.patchRelationPair({ reciprocalDisplayName: "所有订单" });
+    expect(store.dirty).toBe(true);
+    expect(store.canPlan).toBe(true);
+    store.setPlan(plan());
+    store.patchRelationPair({ reciprocalCardinality: "one" });
+    expect(store.plan).toBeNull();
+    store.failRelationCatalog(new Error("另一端不可用"));
+    expect(store.canPlan).toBe(false);
+    store.close();
+    expect(store.relationPair).toBeNull();
+    expect(store.originalRelationPair).toBeNull();
+  });
+
   it("keeps editor state when planning while clearing only the previous plan outcome", () => {
     const store = useFieldSettingsStore();
     store.load(described());

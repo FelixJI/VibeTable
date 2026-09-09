@@ -9,7 +9,7 @@
 
 - 场景：28
 - 唯一能力：46
-- 场景—能力关联：59
+- 场景—能力关联：61
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -21,7 +21,7 @@
 | `audit.ledger` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `calendar.lifecycle` | <code>21-calendar-date-move</code>（Calendar 日期拖动持久化） |
 | `content.record` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
-| `contract.diagnostics` | <code>03-schema-errors</code>（前端与服务端 typed diagnostic） |
+| `contract.diagnostics` | <code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
 | `dashboard.conflict` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `dashboard.drilldown` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `dashboard.filtering` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
@@ -48,13 +48,13 @@
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
-| `relation.fanout` | <code>06-relation-fanout</code>（关系 cascade 方向与影响预览） |
+| `relation.pair-edit` | <code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
 | `relation.preview` | <code>28-relation-delta-preview</code>（多值关系预览与取消） |
 | `relation.search` | <code>27-relation-target-search</code>（关系目标搜索） |
 | `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `replica.recovery` | <code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复） |
 | `schema.query` | <code>30-query-snapshot-validation</code>（查询快照只读校验） |
-| `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
+| `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
 | `snapshot.package` | <code>15-workspace-snapshot-package</code>（工作区切换与快照包） |
 | `snapshot.restore` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `timeline.lifecycle` | <code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
@@ -72,7 +72,7 @@
 | <code>03-schema-errors</code> | 前端与服务端 typed diagnostic | 统一字段抽屉在本地阻止无效草稿；服务端拒绝无效 v2 字段意图并返回稳定错误码；旧 schema.validate 路由在 renderer 边界不可达。 | `schema.v2`、`contract.diagnostics` |
 | <code>04-json-round-trip</code> | JSON 编辑、筛选、粘贴、导入与导出不变 | JSON 值经结构化编辑、剪贴板粘贴、host picker 导入和导出后，与权威查询做规范化深比较并保持完全一致。 | `data.json`、`data-io.round-trip` |
 | <code>05-formula-lifecycle</code> | 空表转换与非空迁移故障回滚 | 空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。 | `schema.v2`、`formula.recalculation` |
-| <code>06-relation-fanout</code> | 关系 cascade 方向与影响预览 | 关系字段切换 cascade 前，冻结计划明确标记危险级别，并返回受影响记录与依赖信息。 | `relation.fanout` |
+| <code>06-relation-fanout</code> | 双向关联字段编辑、冻结计划与重开 | 从真实字段设置修改两端名称、基数、显示字段与共享 setNull/restrict 策略，冻结计划展示两端并原子应用；重开后定义和链接身份保持。many→one 多链接冲突及公共 cascade 输入明确拒绝且不改变两端权威状态；内部迁移 cascade 能力保留。 | `schema.v2`、`relation.pair-edit`、`contract.diagnostics` |
 | <code>07-attachment-history</code> | 附件全生命周期与历史恢复 | 通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256，并从历史恢复旧版本。 | `attachment.history` |
 | <code>08-stale-conflict</code> | 两次过期编辑显示明确冲突 | 两个基于同一旧版本的编辑中，后提交者看到可操作的显式冲突，且不会静默覆盖。 | `mutation.conflict`、`release.smoke` |
 | <code>09-atomic-import-scale</code> | 粘贴或导入中途失败无半提交 | 1,000 行单事务导入在中途故障后，业务记录、审计、幂等键和 outbox 均严格为零。 | `data-import.atomic` |

@@ -13,6 +13,7 @@ import {
   draftsEqual,
   initialDraft,
   replaceDraftType,
+  relationPairPatchFromDrafts,
 } from "./model";
 
 const fixturePath = resolve(
@@ -27,6 +28,50 @@ const capabilityFixturePath = resolve(
 function field(): FieldDefinitionV2 {
   return JSON.parse(readFileSync(fixturePath, "utf8")) as FieldDefinitionV2;
 }
+
+describe("paired relation drafts", () => {
+  const pair = {
+    reciprocalDisplayName: "订单", reciprocalCardinality: "many" as const,
+    sourceDisplayFieldId: "fld_order_number",
+  };
+  function original() {
+    return draftFromDefinition({
+      ...field(), logicalType: "relation",
+      relation: {
+        targetTableId: "tbl_customers", pairId: "pair_1", reciprocalFieldId: "fld_orders",
+        cardinality: "many", displayFieldId: "fld_name", deletePolicy: "setNull",
+      },
+    });
+  }
+
+  it("maps both endpoint settings without sending immutable pair identity", () => {
+    const before = original();
+    const patch = relationPairPatchFromDrafts(before, {
+      ...before, displayName: "客户",
+      relation: { ...before.relation!, cardinality: "one", displayFieldId: "fld_alias", deletePolicy: "restrict" },
+    }, pair, {
+      reciprocalDisplayName: "客户订单", reciprocalCardinality: "one",
+      sourceDisplayFieldId: "fld_order_title",
+    });
+    expect(patch).toEqual({
+      sourceDisplayName: "客户", sourceCardinality: "one", sourceDisplayFieldId: "fld_alias",
+      reciprocalDisplayName: "客户订单", reciprocalCardinality: "one",
+      reciprocalDisplayFieldId: "fld_order_title", deletePolicy: "restrict",
+    });
+    expect(relationPairPatchFromDrafts(before, before, pair, pair)).toBeUndefined();
+  });
+
+  it("does not discard other edits or permit cascade in a pair patch", () => {
+    const before = original();
+    expect(() => relationPairPatchFromDrafts(before, {
+      ...before, help: "需要保留的说明", displayName: "客户",
+    }, pair, pair)).toThrow("分别保存");
+    expect(() => relationPairPatchFromDrafts(before, {
+      ...before, relation: { ...before.relation!, deletePolicy: "cascade" },
+    }, pair, pair)).toThrow("仅允许");
+    expect(relationPairPatchFromDrafts(before, { ...before, help: "说明" }, pair, pair)).toBeUndefined();
+  });
+});
 
 function capability(definition: FieldDefinitionV2): CapabilityV2 {
   return {

@@ -421,6 +421,9 @@ func (catalog *Catalog) Check(
 	if before != nil && after != nil && relationCascadeIntroduced(before, after) {
 		return catalog.checkCascadeImpact(ctx, intent, *before, *after, impact)
 	}
+	if intent.RelationPairPatch != nil && before != nil && after != nil {
+		return catalog.checkPairCardinality(ctx, intent.TableID, before, after, impact)
+	}
 	if before == nil || after == nil ||
 		(!containsClass(classes, v2.ClassConstraint) &&
 			!containsClass(classes, v2.ClassMigration)) {
