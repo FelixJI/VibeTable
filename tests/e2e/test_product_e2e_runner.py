@@ -481,7 +481,11 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("interface-save")' in interface
     assert 'getByTestId("interface-run")' in interface
     assert 'getByTestId("nav-search")' in search
-    assert 'getByTestId("workspace-search-submit")' in source
+    search_submit = runner.NODE_RUNNER.with_name("workspace_search_submit.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert 'import { submitWorkspaceSearch } from "./workspace_search_submit.mjs";' in source
+    assert 'getByTestId("workspace-search-submit")' in search_submit
     assert 'getByTestId("view-create")' in kanban
     assert 'getByTestId("view-kind-kanban")' in kanban
     assert 'getByTestId("field-display-name")' in kanban
@@ -3129,6 +3133,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
         runner.NODE_RUNNER.with_name("table_mutation_receipt_capture.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_search_submit.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),
