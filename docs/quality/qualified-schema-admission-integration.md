@@ -54,3 +54,11 @@ app 失败均为 TempDir RemoveAll 目录非空：`TestHistoryReadProductHTTPRet
 - Web `npm run test -- --run src/relation-inspection/RelationInspectionPanel.test.ts src/relation-inspection/type.test.ts src/field-settings/service.test.ts`：71 PASS，3 文件，2.65s；`main-319-web.log`。
 
 Standards 与独立 Spec 交界审查无确定代码问题：计算依赖校验、pair 基数顺序、schema 元数据替换前复核、Lookup 分类和 Provisional 准入均保留，新增 inspection 接线与 main 一致。本地未再次构建或运行完整产品场景；最新源码的完整 build/E2E 与最终 required 由新 head 的 fresh CI 验证，尚待终态。旧 CI `34307773041` 不能替代新 head 门禁；旧完整 app race 失败记录同样保留。
+
+## Fresh CI 视口超时与诊断补全
+
+head `0fde466d141e8b3872b2f7381de98728b203232d` 的 CI34349172860，core job102463248877 于2026-09-09 12:41 UTC失败：既有 Lookup 来源视口 Node 测试超过15秒限制，实际报告19.226s，Node合约220 PASS / 1 cancelled、Python入口1805 PASS / 1 FAIL。测试与基线main25b无diff，旧日志没有活动阶段，无法确定阻塞在截图、页面创建、清理还是其他未记录步骤；不据此断言运行器慢或产品缺陷已修复。
+
+本次仅为该失败补齐未记录await的既有phase观察，覆盖页面创建、截图、取样、后续点击和清理。保留所有原断言、15秒整体限制及2秒点击限制，没有重试或吞错。独立Standards/Spec均0确定问题。
+
+独立诊断工作树原样测试1 PASS（1641ms），补阶段后1 PASS（1551ms）。固定Node24.19.0的本地负控通过build目录临时preloader使截图不返回：既有15秒超时仍失败（进程exit1），日志明确记录pending phase `capture initial screenshot`及此前阶段耗时。它证明诊断能区分截图阻塞，不证明原CI即为截图问题。未重建产品包。当前候选仍须新的完整fresh CI，旧FAIL继续保留。

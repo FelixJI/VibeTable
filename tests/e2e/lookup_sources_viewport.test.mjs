@@ -40,9 +40,9 @@ function sampleLayout() {
 test("lookup source pagination keeps header and load-more inside the viewport", { timeout: 15_000 }, async (t) => {
   const phases = observeTestPhases(t);
   const browser = await phases.phase("launch Edge", () => chromium.launch({ channel: "msedge", headless: true }));
-  t.after(async () => { await browser.close(); phases.close(); });
-  await mkdir(output, { recursive: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  t.after(async () => { await phases.phase("close Edge", () => browser.close()); phases.close(); });
+  await phases.phase("create evidence directory", () => mkdir(output, { recursive: true }));
+  const page = await phases.phase("create Edge page", () => browser.newPage({ viewport: { width: 1280, height: 720 } }));
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await phases.phase("mount real lookup modal template and scoped styles", async () => {
@@ -82,31 +82,31 @@ test("lookup source pagination keeps header and load-more inside the viewport", 
     // The production after-enter focus is readiness; do not wait for good geometry.
     await page.waitForFunction(() => document.activeElement?.matches(".lookup-sources-panel"));
   });
-  const evidence = await page.evaluate(sampleLayout);
-  await writeFile(new URL("layout.json", output), JSON.stringify(evidence, null, 2));
-  await page.screenshot({ path: fileURLToPath(new URL("panel.png", output)) });
+  const evidence = await phases.phase("sample layout", () => page.evaluate(sampleLayout));
+  await phases.phase("write initial layout", () => writeFile(new URL("layout.json", output), JSON.stringify(evidence, null, 2)));
+  await phases.phase("capture initial screenshot", () => page.screenshot({ path: fileURLToPath(new URL("panel.png", output)) }));
 
   await phases.phase("ordinary load-more click", () => page.locator(".lookup-sources-panel > footer button").click({ timeout: 2_000 }));
-  assert.equal(await page.evaluate(() => window.lookupLoadMoreCalls), 1);
+  assert.equal(await phases.phase("read load-more count", () => page.evaluate(() => window.lookupLoadMoreCalls)), 1);
   for (const region of [evidence.header, evidence.footer]) {
     assert.ok(region.top >= 0 && region.bottom <= evidence.viewport.height, JSON.stringify(evidence));
   }
   assert.ok(evidence.list.scrollHeight > evidence.list.clientHeight, JSON.stringify(evidence));
-  await page.locator(".lookup-sources-panel li").nth(199).waitFor({ state: "attached" });
+  await phases.phase("wait for appended sources", () => page.locator(".lookup-sources-panel li").nth(199).waitFor({ state: "attached" }));
   await phases.phase("resize and scroll appended sources", async () => {
     await page.setViewportSize({ width: 800, height: 600 });
     await page.locator(".lookup-sources-panel li button").last().scrollIntoViewIfNeeded();
   });
-  const scrolled = await page.evaluate(sampleLayout);
-  await writeFile(new URL("scrolled-layout.json", output), JSON.stringify(scrolled, null, 2));
-  await page.screenshot({ path: fileURLToPath(new URL("scrolled-panel.png", output)) });
+  const scrolled = await phases.phase("sample layout", () => page.evaluate(sampleLayout));
+  await phases.phase("write scrolled layout", () => writeFile(new URL("scrolled-layout.json", output), JSON.stringify(scrolled, null, 2)));
+  await phases.phase("capture scrolled screenshot", () => page.screenshot({ path: fileURLToPath(new URL("scrolled-panel.png", output)) }));
   for (const region of [scrolled.panel, scrolled.header, scrolled.footer]) {
     assert.ok(region.top >= 0 && region.bottom <= scrolled.viewport.height, JSON.stringify(scrolled));
   }
   assert.ok(scrolled.list.scrollTop > 0, JSON.stringify(scrolled));
-  await page.locator(".lookup-sources-panel > footer button").click({ timeout: 2_000 });
-  assert.equal(await page.evaluate(() => window.lookupLoadMoreCalls), 2);
-  await page.locator(".lookup-sources-panel > header button").click({ timeout: 2_000 });
-  await page.locator(".lookup-sources-panel").waitFor({ state: "hidden" });
+  await phases.phase("second load-more click", () => page.locator(".lookup-sources-panel > footer button").click({ timeout: 2_000 }));
+  assert.equal(await phases.phase("read load-more count", () => page.evaluate(() => window.lookupLoadMoreCalls)), 2);
+  await phases.phase("close modal", () => page.locator(".lookup-sources-panel > header button").click({ timeout: 2_000 }));
+  await phases.phase("wait for closed modal", () => page.locator(".lookup-sources-panel").waitFor({ state: "hidden" }));
   assert.deepEqual(pageErrors, []);
 });
