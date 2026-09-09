@@ -519,9 +519,9 @@ flowchart LR
 - 每次只迁一个可回滚能力组；
 - 旧 Python route 在切换 PR 内删除或明确标记为下一紧邻 PR 的删除项，不长期双轨。
 
-当前 Mutation preview/apply 已形成完整本地纵切：21 Go / 80 Python / 2 Host，历史 Python oracle 原件保留并停止重新捕获；根 DTO、领域错误和 workspace 写门禁继续分层。最新 `9d6af2ef` 构建的真实 S02/S04/S08/S11 4/4 通过，完整 Python quality 1800 passed、1 skipped、coverage91.36%。该记录不是 L5 全部完成声明。
+Mutation preview/apply 的早期本地纵切保留历史 Python oracle 原件并停止重新捕获，根 DTO、领域错误和 workspace 写门禁继续分层。历史源码 `9d6af2ef` 构建的真实 S02/S04/S08/S11 4/4 通过；该阶段完整 Python quality 为 1800 passed、1 skipped、coverage91.36%。这些结果仅归属当时的源码与验证阶段，不代表当前候选或 L5 全部完成。
 
-迁移验证发现现有 REST 同键重放会重复写 proof，已作为独立 runtime 修复 PR298 处理；Mutation 远端交付依赖该修复、PR297 Go 恢复 producer 和完整 Host 消费者的实际 main 合并结果。当前不提前宣称 fresh CI 或 squash 完成。详见 [Mutation Go owner 资格](../quality/mutation-product-go-owner.md) 与 [独立重放资格](../quality/workspace-mutation-replay.md)。
+迁移早期发现的 REST 同键重放重复写 proof 问题曾由独立 runtime 修复 PR298 处理；当时的交付还依赖 PR297 Go 恢复 producer 和完整 Host 消费者进入实际 main。当前 owner 分布、源码同步、验证及远端交付状态统一以 [Mutation Go owner 资格](../quality/mutation-product-go-owner.md) 为准；重放修复证据见 [独立重放资格](../quality/workspace-mutation-replay.md)。
 ### L6：Host-native 能力归 C#
 
 从 Python composition root 中识别并迁移：
