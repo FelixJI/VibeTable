@@ -65,4 +65,4 @@
 
 场景 `23-directory-replica-recovery` 已进入可信 main 的打包报告，见[已通过的产品 E2E 样本](../e2e-performance.md#当前产品-e2e-证据)。公开释放活动缓存后同 UUID 重开，再经精确 sidecar 终止和替代进程 readiness，记录、revision 与 replica 状态保持；退出清理亦通过。
 
-这补齐了目录副本恢复的首次通过记录；后续 CI34026490000 的场景 23 失败仍未关闭，当前稳定性待验收。V-02 所述手动 `replica.synchronize` 保持 Internal only，不以内部协调成功替代公开手动同步、跨设备 reconnect、冲突或 exclusive-writer 资格。
+这补齐了目录副本恢复的首次通过记录。2026-09-09 后继主干的完整打包样本再次通过 S23，精确出处见上方规范证据链接；CI34026490000 的历史失败仍未归因，不能由新样本注销，也不将它描述为本次主干失败。V-02 所述手动 `replica.synchronize` 保持 Internal only，不以内部协调成功替代公开手动同步、跨设备 reconnect、冲突或 exclusive-writer 资格。
