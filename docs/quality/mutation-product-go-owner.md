@@ -80,3 +80,7 @@ CI run `34282769151` 的 core 与 race-b 同在 `TestSidecarWorkspaceV2HTTPFails
 新一轮 CI `34285984850` 的 core 已推进到 .NET，暴露4处 Host 精确 owner/scope 期望未同步及1处旧 Python 写入夹具仍使用已迁移的 mutation 方法。仅更新4个测试文件：两 mutation 方法精确加入 Go/workspace 闭集；原 disposed Python 写回归改用仍属 Python 的合法 `field.change.apply`，并验证零传输写入；新增 Go mutation 在首 forwarder disposed 后即使替代端已安装也只调用原端一次、替代端零次、Python零次，并发出唯一 BACKEND_UNAVAILABLE。
 
 聚焦4类测试旧5 FAIL/93 PASS（480ms），修复后99 PASS（482ms）；命令为 `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceRequestDispatcherQueryTests'`。去掉filter运行整个Desktop.Tests：1099 PASS、1 skip（27s），skip为原有符号链接权限相关用例，未改其行为。日志 `build/qa/mutation-host-owners/{red,green,desktop-full}.log`；双轴增量审查0问题。生产代码与已有打包资格不变；后续 fresh CI 仍待完成。
+
+已将 #307 的实际 main squash `cadf5153` 正常同步为 `e871bf1c`，无冲突；仅包含已独立审查的 gateway 测试夹具改动，产品源码未变。合并交界 Standards/Spec 复核无确定问题。
+
+`dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter FullyQualifiedName~ProductSidecarHttpGatewayTests`：27 PASS、0 skip，116ms；日志 `build/qa/mutation-main-sync.log`。最新实际 main 端点的 fresh PR CI 尚待取得，不复用旧 head 的通过状态。
