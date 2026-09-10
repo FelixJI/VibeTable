@@ -1,11 +1,39 @@
 import { describe, expect, it, vi } from "vitest";
+import { TabulatorFull } from "tabulator-tables";
 import {
   applyDataSourceView,
   captureDataSourceView,
+  createTabulatorDataSourceViewAdapter,
   type DataSourceViewGrid,
 } from "./dataSourceViewState";
 
 describe("dataSourceViewState", () => {
+  it("restores sorting through the real Tabulator input contract", async () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const warnings = vi.spyOn(console, "warn");
+    const table = new TabulatorFull(element, {
+      columns: [{ field: "name", title: "Name", width: 160 }],
+      data: [{ name: "B" }, { name: "A" }],
+      sortMode: "local",
+    });
+    try {
+      const grid = createTabulatorDataSourceViewAdapter(table);
+      expect(grid).not.toBeNull();
+      await vi.waitFor(() => expect(grid?.initialized).toBe(true));
+      await applyDataSourceView(grid, {
+        layout: "table", search: "", filters: [],
+        columns: [{ name: "name", order: 0, width: 160, visible: true }],
+        sorts: [{ field: "name", direction: "desc" }],
+      });
+      expect(captureDataSourceView(grid).sorts).toEqual([{ field: "name", direction: "desc" }]);
+      expect(warnings).not.toHaveBeenCalled();
+    } finally {
+      table.destroy?.();
+      element.remove();
+      warnings.mockRestore();
+    }
+  });
   it("restores explicitly ordered columns before unordered saved and newly added columns", async () => {
     const setColumnLayout = vi.fn();
     await applyDataSourceView({
@@ -80,7 +108,7 @@ describe("dataSourceViewState", () => {
     expect(setColumnLayout).toHaveBeenCalledWith([
       { field: "name", width: 180, visible: true, frozen: false },
     ]);
-    expect(setSort).toHaveBeenCalledWith([{ field: "name", dir: "desc" }]);
+    expect(setSort).toHaveBeenCalledWith([{ column: "name", dir: "desc" }]);
     expect(clearHeaderFilter).toHaveBeenCalled();
     expect(setHeaderFilterValue).toHaveBeenCalledWith("name", "A");
   });

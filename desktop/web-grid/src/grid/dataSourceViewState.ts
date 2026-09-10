@@ -39,7 +39,7 @@ export interface DataSourceViewGrid {
     visible: boolean;
     frozen: boolean;
   }[]): void | Promise<void>;
-  setSort?(sorters: readonly { field: string; dir: "asc" | "desc" }[]): void | Promise<void>;
+  setSort?(sorters: readonly { column: string; dir: "asc" | "desc" }[]): void | Promise<void>;
   clearHeaderFilter?(): void;
   setHeaderFilterValue?(field: string, value: unknown): void;
 }
@@ -174,10 +174,10 @@ export async function applyDataSourceView(
       frozen: column.frozen ?? false,
     })));
   }
-  const sorters: Array<{ field: string; dir: "asc" | "desc" }> = view.sorts.map((sort) => ({
-    field: typeof sort.field === "string" ? sort.field : "",
+  const sorters: Array<{ column: string; dir: "asc" | "desc" }> = view.sorts.map((sort) => ({
+    column: typeof sort.field === "string" ? sort.field : "",
     dir: sort.direction === "desc" ? "desc" as const : "asc" as const,
-  })).filter((sort) => currentFields.has(sort.field));
+  })).filter((sort) => currentFields.has(sort.column));
   await grid.setSort?.(sorters);
   grid.clearHeaderFilter?.();
   for (const filter of headerFilterConditions(view.filters)) {

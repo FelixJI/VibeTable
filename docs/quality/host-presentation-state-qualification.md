@@ -129,3 +129,9 @@ S33 最后一轮独立 Standards 与 Spec 均0项剩余确定发现；Spec独立
 完整 trace 表明最后已完成的 `gridState.save` 属于列宽 resize，而不是列移动的回执。MoveColumns 出现后，header/body 的同步横向位置从 179.42857 变回0，Second 的目标点 `x=1150.57` 超出 1011px viewport；原来的 mouseup 落在视口外，30秒后 First 仍带 `tabulator-moving`，placeholder 仍存在，因而没有新的保存请求。MoveColumns 只监听 `document.body.mouseup`，这构成确定根因，不归因于 bridge capture。
 
 场景现在以一个小的可见目标 helper 在按下前和 `.tabulator-moving` 出现后各检查一次：需要时仅对真实 body 执行水平 wheel，重新读取目标边界，要求 header/body scroll 同步、目标完整位于 viewport 内，并用 `elementFromPoint` 验证落点命中真实 Second header。鼠标在该有效落点释放；finally 在失败路径也在有效 body 内释放，但保留错误。释放后先等待 moving marker 和 placeholder 消失，再使用原30秒等待保存回执。未使用 force、直接赋 scroll、扩大窗口、固定 sleep、盲重试或放宽 Host/DOM 顺序断言。修改后的真实 GUI、独立复审和完整资格仍 pending。
+
+## 真实 Tabulator 排序输入回归
+
+第四轮S33（固定d7eb7044，build/qa/host-presentation/product-e2e-drop-completion/20260910T094720Z/product-e2e-report.json）seed18 PASS/1 FAIL，实际列移动及First5/Second4顺序、DOM检查已通过，resume未启动。失败来自非范围行号冻结列与range组合告警、以及Sort field undefined告警；bridge failures/pending/acknowledged为0，Host exit0与端口/lease/finalCleanup全部通过。原失败保留，不以局部通过冒充双Host资格。
+
+排序问题是把Tabulator getSorters输出的field误当setSort输入；锁定6.5.2实际读取column。新增真实TabulatorFull实例经现有createTabulatorDataSourceViewAdapter、apply/capture公开seam的回归，旧代码1 FAIL/6 PASS：相同undefined告警且读取sorts为空（sort-contract-red.log）。输入类型和映射改用column，输出继续保留field。相关dataSourceViewState、presetViewController、gridPresentationController三组20 PASS（sort-contract-green.log），vue-tsc通过，无mock替代实际Sort实现。冻结与范围选择兼容性另有真实库几何调查，尚未解决，不能过滤告警后放行；完整新包和双HostS33仍pending。
