@@ -33,6 +33,9 @@ func TestDispatchSuccessEchoesRawWireAndAllowsZeroSequence(t *testing.T) {
 			return nil
 		},
 		Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("handler must receive the validated wire identity")
+			}
 			if err := ctx.Err(); err != nil {
 				t.Fatalf("handler context = %v", err)
 			}
@@ -40,7 +43,8 @@ func TestDispatchSuccessEchoesRawWireAndAllowsZeroSequence(t *testing.T) {
 		},
 	})
 
-	response := dispatcher.Dispatch(context.Background(), []byte(
+	callerContext := context.WithValue(context.Background(), operationIDContextKey{}, "caller-supplied")
+	response := dispatcher.Dispatch(callerContext, []byte(
 		`{"jsonrpc":"2.0","id":"request-1","method":"test.read","wire":`+
 			wire+`,"params":{"value":3}}`,
 	))
@@ -96,7 +100,10 @@ func TestDispatchGlobalScopeAllowsZeroSequenceAndRejectsWorkspaceWire(t *testing
 	}}, Registration{
 		Method: "test.global", Scope: productcapabilities.GlobalScope,
 		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler: func(context.Context, json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("global handler must receive the validated wire identity")
+			}
 			calls++
 			return map[string]any{"ok": true}, nil
 		},

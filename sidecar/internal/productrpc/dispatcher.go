@@ -182,7 +182,8 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, raw []byte) Response
 	if !ok {
 		return errorResponse(request.ID, request.Wire, CodeMethodNotFound, "Method not found", nil)
 	}
-	if !dispatcher.scopeIsCurrent(registration.Scope, request.Wire) {
+	operationID, current := dispatcher.validateWireIdentity(registration.Scope, request.Wire)
+	if !current {
 		return errorResponse(request.ID, request.Wire, CodeInvalidRequest, "Invalid Request", nil)
 	}
 	validationError, panicked := callValidator(registration.ValidateParams, request.Params)
@@ -192,14 +193,7 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, raw []byte) Response
 	if validationError != nil {
 		return errorResponse(request.ID, request.Wire, CodeInvalidParams, "Invalid params", nil)
 	}
-	var wireIdentity struct {
-		OperationID string `json:"operationId"`
-	}
-	// scopeIsCurrent has already strictly validated the wire and session.
-	if err := json.Unmarshal(request.Wire, &wireIdentity); err != nil {
-		return errorResponse(request.ID, request.Wire, CodeInvalidRequest, "Invalid Request", nil)
-	}
-	ctx = context.WithValue(ctx, operationIDContextKey{}, wireIdentity.OperationID)
+	ctx = context.WithValue(ctx, operationIDContextKey{}, operationID)
 	result, err, panicked := callHandler(ctx, registration.Handler, request.Params)
 	if panicked {
 		return errorResponse(request.ID, request.Wire, CodeInternalError, "Internal error", nil)
@@ -344,24 +338,30 @@ func decodeTopLevelFields(
 	return fields, duplicates, nil
 }
 
-func (dispatcher *Dispatcher) scopeIsCurrent(
+// validateWireIdentity retains the operation identity from the strict scope decode.
+func (dispatcher *Dispatcher) validateWireIdentity(
 	scope productcapabilities.Scope,
 	wire json.RawMessage,
-) bool {
+) (string, bool) {
 	switch scope {
 	case productcapabilities.GlobalScope:
-		_, err := contractsv2.DecodeStrict[contractsv2.GlobalWireScope](wire)
-		return err == nil
+		global, err := contractsv2.DecodeStrict[contractsv2.GlobalWireScope](wire)
+		if err != nil {
+			return "", false
+		}
+		return global.OperationID, true
 	case productcapabilities.WorkspaceScope:
 		workspace, err := contractsv2.DecodeStrict[contractsv2.WorkspaceWireScope](wire)
 		if err != nil {
-			return false
+			return "", false
 		}
 		current := dispatcher.identity
-		return workspace.WorkspaceID == current.WorkspaceID &&
-			workspace.SessionEpoch == current.SessionEpoch
+		if workspace.WorkspaceID != current.WorkspaceID || workspace.SessionEpoch != current.SessionEpoch {
+			return "", false
+		}
+		return workspace.OperationID, true
 	default:
-		return false
+		return "", false
 	}
 }
 
