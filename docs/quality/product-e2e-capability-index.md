@@ -35,15 +35,15 @@
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
 | `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性） |
-| `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
-| `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
+| `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
+| `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `kanban.lifecycle` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化） |
 | `lookup.definition-read` | <code>26-lookup-definition-read</code>（Lookup 持久定义读取） |
 | `lookup.source-pagination` | <code>29-lookup-source-pagination</code>（Lookup 来源分页读取） |
 | `mutation.authority` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化）、<code>21-calendar-date-move</code>（Calendar 日期拖动持久化）、<code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
-| `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
+| `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `plugin.mutation` | <code>11-plugin-mutation</code>（插件 mutation plan 与越权拒绝） |
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
@@ -84,7 +84,7 @@
 | <code>14-document-diff</code> | 真实文件历史版本比较 | 通过 host-only picker 导入真实 TXT 历史版本，以真实 restore revision 建立当前版本后，从 FileRevisionTree 的“与当前版本比较”执行 closed document.diffRequested；验证本地化 identical 结果、两阶段 effective CAS 的 stale 失败，以及 renderer 原始 fileHistory.materializeDiffPair 请求被拒绝。 | `file-history.diff` |
 | <code>15-workspace-snapshot-package</code> | 工作区切换与快照包 | 通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。 | `workspace.lifecycle`、`snapshot.package` |
 | <code>16-dashboard-lifecycle</code> | Dashboard 可视化、筛选与冲突闭环 | 通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision；随后真实重启 sidecar，fresh 公开 list/workspace 验证完整面板、配置、绑定与 revision 持久，源记录保持不变。 | `dashboard.lifecycle`、`dashboard.visualization`、`dashboard.filtering`、`dashboard.drilldown`、`dashboard.conflict`、`release.smoke` |
-| <code>17-interface-lifecycle</code> | Interface 构建、运行与重开 | 通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，证明构建器和运行时消费同一原子定义及既有插件任务生命周期。 | `interface.lifecycle`、`interface.runtime`、`plugin.action.lifecycle` |
+| <code>17-interface-lifecycle</code> | Interface 构建、运行、重启与删除 | 通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，精确重启 sidecar 后以 fresh list/load 验证完整定义和 revision 持久，最后真实 UI 删除并验证 list 缺失与 load not_found；证明构建器和运行时消费同一原子定义及既有插件任务生命周期。 | `interface.lifecycle`、`interface.runtime`、`plugin.action.lifecycle` |
 | <code>18-workspace-search</code> | 内容、文件关联与统一搜索闭环 | 通过真实内容 UI 配置并编辑 ContentProfile 记录，经 host picker 导入 Markdown/JSON 文件并验证 FileDocument 元数据 AND/OR；建立显式 RecordDocumentLink，unlink 后显示 broken 并修复到另一文档，精确重启 sidecar 后重开仍一致；统一搜索重建后由键盘查询 records/files/attachments、metadata/content/current/history，并对 stale open 显式重解析。 | `workspace-search.query`、`workspace-search.rebuild`、`content.record`、`file-history.query`、`record-document-link.lifecycle`、`attachment.search` |
 | <code>19-gallery-lifecycle</code> | Gallery 创建、重开与冲突恢复 | 通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。 | `gallery.lifecycle`、`preset.conflict` |
 | <code>20-kanban-lane-drag</code> | Kanban 单选泳道拖拽持久化 | 通过真实 Tables UI 创建并配置以单选字段分组的 Kanban；泳道显示 label 但拖拽只提交稳定 optionId，host 权威提交后移动卡片；刷新以及离开 Tables 后重开仍保持移动结果。 | `kanban.lifecycle`、`mutation.authority` |

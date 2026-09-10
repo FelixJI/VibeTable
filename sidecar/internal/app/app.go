@@ -427,6 +427,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
 			dashboardService := metadata.NewDashboard(pb, queryPort)
+			surfaces := metadata.NewSurface(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
@@ -440,6 +441,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				dashboardRegistration("insights.panelManifest", dashboardService, businessGate),
 				dashboardRegistration("insights.readDashboardWorkspace", dashboardService, businessGate),
 				dashboardRegistration("insights.saveDashboardDraft", dashboardService, businessGate),
+				surfaceListRegistration(surfaces),
+				surfaceLoadRegistration(surfaces),
+				surfaceCommitRegistration(surfaces, businessGate),
+				surfaceDeleteRegistration(surfaces, businessGate),
 				mutationPreviewRegistration(mutationKernel),
 				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),

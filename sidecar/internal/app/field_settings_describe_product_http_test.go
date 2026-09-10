@@ -55,6 +55,10 @@ func fieldSettingsDescribeHTTPMux(t *testing.T, pb *pocketbase.PocketBase, regis
 		unrelatedDashboardRegistration(t, "insights.panelManifest"),
 		unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
 		unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))

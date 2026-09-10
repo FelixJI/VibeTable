@@ -32,6 +32,10 @@ from backend.contracts.grid_state import GridStateResult
 from backend.contracts.generated_workbench import (
     ContentProfileDeleteResult,
     ContentProfileSnapshot,
+    InterfaceDeleteRequest,
+    InterfaceCommitRequest,
+    InterfaceListRequest,
+    InterfaceLoadRequest,
     InterfaceDeleteResult,
     InterfaceListResult,
     InterfaceSnapshot,
@@ -330,6 +334,14 @@ def _registered_models() -> dict[str, type[BaseModel]]:
         }
     )
     result.update(PRODUCT_PARAM_MODELS)
+    result.update(
+        {
+            "interface.list": InterfaceListRequest,
+            "interface.load": InterfaceLoadRequest,
+            "interface.commit": InterfaceCommitRequest,
+            "interface.delete": InterfaceDeleteRequest,
+        }
+    )
     # Host-owned methods retain their full public parameter contract after
     # their Python dispatcher registrations are removed.
     result.update(

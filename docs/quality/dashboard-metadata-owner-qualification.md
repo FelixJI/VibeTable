@@ -58,3 +58,15 @@ Go 使用仓库固定 Go 1.27.0；下列 Go 命令 cwd 为 sidecar。Python 使�
 运行时 Web 已变更，必须重新完整构建并重跑 S16；当前尚未宣称通过重启旅程。
 
 395842bd 的独立 Standards/Spec 均0。完整构建 scripts/build_next.py --release EXIT0（build-release-drawer.log，session66412）；同新包 S16 EXIT0，22项断言、31.557s，报告 product-e2e-fixed-drawer/20260910T054308Z/product-e2e-report.json。已通过原完整Dashboard旅程、真实关闭按钮及sidecar终止恢复后fresh公开list/read和源表数据验证；Host正常退出0，生命周期清理通过。前两次S16 FAIL保留，不由最终通过抹去。远端fresh CI尚待创建PR。
+
+### 合入 Surface 主干后的相邻资格
+
+本次将 main `5ff28ac03d91fc3973223dad8e1ab13945550ce2` 正常合入 Dashboard `ef870037814512ebf101d6aa657c4a450e2b309f`。解决共享注册、Host 错误、metadata 写封闭及闭集断言冲突，保留 Dashboard 七方法与 Surface 四方法；Go owner 共 35 方法、Python owner 共 67 方法。双方冻结 oracle 原件不改。生成 catalog、capability 与 E2E index 均由原脚本重生，check 通过；旧性能样本的 changed 同时列出 S07、S16、S17，不将旧样本声明为新语义资格。
+
+- Python：`pytest tests/contract/test_product_contracts.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_surface_python_oracle.py tests/e2e/test_product_e2e_runner.py -q --no-cov`，151 passed。
+- Host：ProductSidecarHttpGatewayTests、ProductRpcCapabilityManifestTests、JsonRpcProductSurfaceGatewayTests、HostProductRpcInvokerTests、ProductDataRequestControllerTests，Release/no-restore 定向运行 61 passed。
+- Web：vue-tsc --noEmit 通过；hostBridge 35 passed；DashboardWorkspaceView、InterfaceWorkspaceView、dashboardService、surfaceService 四文件 47 passed。首轮用了不存在的复数 View 路径，只执行 bridge，不将其计为界面覆盖。
+- Go：productrpc、productcapabilities、metadata 的 Dashboard/Surface/New/Generated/Metadata 定向测试通过。两侧真实 HTTP fixture 初次缺少另一 owner 方法导致闭集拒绝，补齐独立枚举后，app 的 Dashboard/Surface 定向测试通过（3.779s）；上述四包 go vet 通过。
+- 完整 internal/app 包仍有 TestQueryCursorProductHTTPConsumesTypedPythonOracle 与 TestSchemaListProductHTTPMatchesRealCatalogREST 两项 TempDir cleanup 失败（24.317s）；未修改清理、未重跑这些失败组，不宣称完整 Go 包通过。
+
+此次同步不重建 GUI、不运行新包、不改 compiler 算术告警代码，不代表新 head 的完整质量、独立双轴或 fresh CI 已通过；由主代理继续完成交付门禁。

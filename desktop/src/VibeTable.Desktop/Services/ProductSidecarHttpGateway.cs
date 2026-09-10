@@ -398,7 +398,8 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
     private static ProductSidecarForwardResult ParseResponse(
         byte[] raw,
         string requestId,
-        JsonElement requestWire, string method)
+        JsonElement requestWire,
+        string method)
     {
         using JsonDocument document = JsonDocument.Parse(raw);
         JsonElement root = document.RootElement;
@@ -443,11 +444,13 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || string.IsNullOrWhiteSpace(messageElement.GetString()))
             throw InvalidResponse();
         string message = messageElement.GetString()!;
-        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32080)
-            || (code == -32150 && !hasData))
+        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32170 or -32080)
+            || (code is -32150 or -32170 && !hasData))
             throw InvalidResponse();
         if (code == -32150)
             ValidateProductErrorData(data);
+        if (code == -32170 && !SurfaceRpcErrorContract.IsValid(method, data))
+            throw InvalidResponse();
         if (code == -32080 && !IsValidDashboardErrorData(method, message, data))
             throw InvalidResponse();
         return new ProductSidecarRpcError(

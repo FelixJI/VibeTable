@@ -56,6 +56,10 @@ func registerMetadataRoutes(
 		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
 		}
+
+		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
+		}
 		var body metadataUpsertBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -86,6 +90,10 @@ func registerMetadataRoutes(
 	) error {
 		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
+		}
+
+		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
 		}
 		var body metadataDeleteBody
 		if err := decodeMetadataBody(
