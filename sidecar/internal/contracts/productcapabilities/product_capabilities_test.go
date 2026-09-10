@@ -23,7 +23,7 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 	if !HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
 		t.Fatal("L3A must route schema.getTable through goSidecar")
 	}
-	for _, method := range []string{"settings.readDevice", "settings.saveDevice"} {
+	for _, method := range []string{"gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"} {
 		if HasCurrentOwnerRPCMethod(PythonBff, method) {
 			t.Fatalf("%s must not remain on pythonBff after L6", method)
 		}
@@ -81,19 +81,20 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}) {
 		t.Fatalf("schema.getTable descriptor = %#v", schema)
 	}
-	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 24 ||
+	if got := CurrentOwnerRPCDescriptors(GoSidecar); len(got) != 28 ||
 		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
 		got[3] != (RPCDescriptor{Method: "history.applyRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: WriteEffect}) || got[4] != (RPCDescriptor{Method: "history.previewRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect}) || got[5] != (RPCDescriptor{
 		Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
 		CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
-	}) || got[6].Method != "lookup.list" || got[7] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[8] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[9] != (RPCDescriptor{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: WriteEffect}) || got[10] != (RPCDescriptor{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: ReadEffect}) || got[11].Method != "query.cursorFetch" || got[12].Method != "query.cursorOpen" || got[13].Method != "query.page" || got[14].Method != "query.readRows" ||
-		got[15].Method != "query.selectionOpen" || got[16] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[17].Method != "query.view" || got[18] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[19].Method != "relation.previewDelta" || got[20] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[21].Method != "schema.describe" ||
-		got[22].Method != "schema.getTable" || got[23].Method != "schema.list" {
+	}) || got[6] != (RPCDescriptor{Method: "interface.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[7] != (RPCDescriptor{Method: "interface.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[8] != (RPCDescriptor{Method: "interface.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[9] != (RPCDescriptor{Method: "interface.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[10].Method != "lookup.list" || got[11] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[12] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[13] != (RPCDescriptor{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: WriteEffect}) || got[14] != (RPCDescriptor{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: ReadEffect}) || got[15].Method != "query.cursorFetch" || got[16].Method != "query.cursorOpen" || got[17].Method != "query.page" || got[18].Method != "query.readRows" ||
+		got[19].Method != "query.selectionOpen" || got[20] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[21].Method != "query.view" || got[22] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[23].Method != "relation.previewDelta" || got[24] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[25].Method != "schema.describe" ||
+		got[26].Method != "schema.getTable" || got[27].Method != "schema.list" {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
-	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||
-		got[0].Method != "settings.readDevice" || got[1].Method != "settings.saveDevice" {
-		t.Fatalf("wpfHost descriptors = %#v, want settings.readDevice and settings.saveDevice", got)
+	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 4 ||
+		got[0].Method != "gridState.get" || got[1].Method != "gridState.save" ||
+		got[2].Method != "settings.readDevice" || got[3].Method != "settings.saveDevice" {
+		t.Fatalf("wpfHost descriptors = %#v, want gridState.get, gridState.save, settings.readDevice and settings.saveDevice", got)
 	}
 
 	descriptors[0].Method = "mutated"

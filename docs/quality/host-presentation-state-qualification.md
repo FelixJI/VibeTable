@@ -68,3 +68,18 @@ Web 作者正在同一分支接统一 Preset/schema/Host 恢复序列、实际�
 Web 接线最终：178文件1603测试PASS，vue-tsc EXIT0，diff --check通过。真实回归先证明复合filter丢失/拖列未启用，以及快速连续修改后同步切表返回只读到旧状态；修复后CAS队列按workspace epoch+table隔离，同epoch切表保留旧表待写队列，真正epoch变化才废弃；返回原表前等待该队列完成。Preset与Host统一恢复、旧preset revision不覆盖新基线、cozy保真、实际keyword/冻结/密度控件、每次setColumns重施布局已覆盖。尚未独立审查完整Host分支或新包GUI。
 
 独立审查修复：Host出站漏get/save实际2RED，补两精确类型后70HostPASS。Web复现旧Preset等待后污染新表、runtime事件改OR/空eq/nullsLast与大整数舍入；作者补captured table/generation复核、完整查询与表头投影分离、局部lossless codec（能力不足明确拒绝）及筛选编辑器处理，并统一实际布局排序。最后Web178文件1607PASS、sidebar77PASS、typecheck/diff通过。新增S33真实控件/resize/order/filter OR+empty/sort/冻结隐藏/切表/workspace重开/CAS；node语法与索引检查通过，尚未执行新包GUI，完整Host进程重启资格仍缺。
+
+## 同步指定 main（2026-09-10，待后续独立验收）
+
+从干净的 `4de80f10132c0f32609dc1013cb02906a969acb9` 正常合入指定 `f88e856eea3b830c8f910acc3dbc9eae842eb5d1`，未继续追取其他 main。两处文本冲突是 Go 生成 owner 集合与 Python owner 数量：保留 Host 的 gridState.get/save 和 main 的四个 Go Surface 方法，Python owner 数量因此为 72。owner/catalog 均由原生成脚本重生；catalog 方法覆盖测试使用独立列举的 Host 四方法与 Surface 四方法，Go Host 测试也固定四方法闭集，不从生成集合反推期望。
+
+Python gridState 和 Surface 均未恢复生产注册；旧 grid-state producer 文件保持原样，main 的 Surface frozen producer 和具名 closed errors 完整保留。Host 入站/出站两侧 gridState 白名单未改变，MainWindow 同时保留 HostGridStateStore composition 与 main 的 Product Surface gateway。S33 与 main 新 S17 均保留；生成索引检查通过，`docs/e2e-performance.md` 仍如实记录 gap 1（S33）、changed 2（S07/S17）。本次未运行新包 GUI，也未获得完整 Host 进程重启资格；历史 Web 1607/Host 70 不能替代合并后的独立 Standards/Spec、新包、fresh CI 与完整交付。
+
+本次合并验证（均使用固定隔离 Python 环境、`UV_NO_SYNC=1`、`PYTHONPATH` 指向当前 worktree）：
+
+- `uv run --frozen --no-sync python -m pytest tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_product_contracts.py tests/contract/test_grid_state_python_oracle.py tests/contract/test_surface_python_oracle.py tests/backend/rpc/test_error_registry.py tests/backend/application/test_grid_state_service.py --no-cov -q`：53 PASS，3.67s；日志 `build/qa/host-presentation/merge-main-python.log`。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~GridPresentation|FullyQualifiedName~HostGridStateStore|FullyQualifiedName~WebMessageRouter|FullyQualifiedName~ProductRpcCapabilityManifest|FullyQualifiedName~HostProductRpcInvoker|FullyQualifiedName~JsonRpcProductSurfaceGateway|FullyQualifiedName~SurfaceError'`：104 PASS，0 SKIP，218ms；日志 `build/qa/host-presentation/merge-main-host.log`。
+- 固定 Go 工具链执行 `go -C sidecar test ./internal/contracts/productcapabilities ./internal/productrpc`：两个包 PASS；日志 `build/qa/host-presentation/merge-main-go.log`。修改的 Go 测试已 gofmt。
+- `uv run --frozen --no-sync python contracts/v2/product_rpc_capability_policy.py --check`、`contracts/v2/generate_product_rpc_catalog.py --check`、`contracts/v2/product_runtime_inventory.py --check` 与 `scripts/generate_product_e2e_capability_index.py --check`：EXIT0。固定 Node 执行 `node --check tests/e2e/webview_product_scenarios.mjs`：EXIT0。
+- `uv run --frozen --no-sync python -m pyright backend`：0 errors（工具提示本 worktree 无本地 .venv，执行环境为指定隔离环境）；日志 `build/qa/host-presentation/merge-main-pyright-backend.log`。相关四文件 Ruff check 通过；独立 Host 方法预期触发一次 Ruff format 检查失败后，已按 formatter 修正。
+- 额外将 Pyright 扩至 `contracts/v2/generate_product_rpc_catalog.py` 时出现四项诊断：412 行可空 model name、489/575 行字典不变性、816 行 event_type Literal。指定 Python 解释器后诊断相同；对应实现与两侧提交均未因本次同步修改。该文件不在 adapter 的 `pyright backend` 入口范围，本次记录额外检查失败，不用 ignore 或扩大业务修改掩盖它。

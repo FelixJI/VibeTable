@@ -526,15 +526,36 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		t.Fatal(err)
 	}
 	response.Body.Close()
+	// Independent complete public capability expectation, not a generated owner list.
 	expectedProductMethods := []string{
-		"events.reconcile", "field.settings.describe", "file.list",
-		"history.applyRestore", "history.previewRestore", "history.read",
-		"lookup.list", "lookup.query", "lookup.valuePage",
-		"mutation.apply", "mutation.preview",
-		"query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows",
-		"query.selectionOpen", "query.validateSnapshot", "query.view",
-		"relation.inspectPair", "relation.previewDelta", "relation.searchTargets",
-		"schema.describe", "schema.getTable", "schema.list",
+		"events.reconcile",
+		"field.settings.describe",
+		"file.list",
+		"history.applyRestore",
+		"history.previewRestore",
+		"history.read",
+		"interface.commit",
+		"interface.delete",
+		"interface.list",
+		"interface.load",
+		"lookup.list",
+		"lookup.query",
+		"lookup.valuePage",
+		"mutation.apply",
+		"mutation.preview",
+		"query.cursorFetch",
+		"query.cursorOpen",
+		"query.page",
+		"query.readRows",
+		"query.selectionOpen",
+		"query.validateSnapshot",
+		"query.view",
+		"relation.inspectPair",
+		"relation.previewDelta",
+		"relation.searchTargets",
+		"schema.describe",
+		"schema.getTable",
+		"schema.list",
 	}
 	if productCapabilities.ContractVersion != "2.0" ||
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
@@ -544,11 +565,9 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		len(productCapabilities.Registrations) != len(expectedProductMethods) {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
-	for index, method := range expectedProductMethods {
-		if productCapabilities.RPCMethods[index] != method ||
-			productCapabilities.Registrations[index].Method != method ||
-			productCapabilities.Registrations[index].Scope != "workspace" {
-			t.Fatalf("Product capability %d: want %q with workspace scope, got %#v", index, method, productCapabilities)
+	for i, method := range expectedProductMethods {
+		if productCapabilities.RPCMethods[i] != method || productCapabilities.Registrations[i].Method != method || productCapabilities.Registrations[i].Scope != "workspace" {
+			t.Fatalf("Product capability[%d] differs: %#v", i, productCapabilities)
 		}
 	}
 

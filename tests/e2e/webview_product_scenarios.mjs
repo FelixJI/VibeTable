@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { isDeepStrictEqual } from "node:util";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
@@ -6346,6 +6347,73 @@ async function scenario17(page, recorder, _network, runtime) {
     path: path.join(runtime.evidenceDir, "17-interface-lifecycle.png"),
     fullPage: true,
   });
+
+  await page.getByTestId("nav-tables").click();
+  const tableName = page.getByTestId("sidebar-table-name").filter({ hasText: "E2E Interface Data" });
+  await tableName.locator("xpath=ancestor::button").click();
+  const beforeRestart = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("Interface authoring and approved runtime actions persist three records",
+    beforeRestart.type === "query.page" && beforeRestart.payload?.rows?.length === 3,
+    { beforeRestart });
+  const quiet = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("Interface restart begins from a quiescent bridge",
+    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
+  const recoveryOwner = `interface-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
+    ownerToken: recoveryOwner, tableId: seeded.tableId,
+  });
+  let recoveryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify Interface aggregate survives sidecar restart");
+    recorder.check("Interface restart terminates only the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(page, "E2E Interface Data", seeded.tableId, 3, 60_000, recoveryOwner);
+  } catch (error) {
+    recoveryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(recoveryError, cleanupError, "Interface recovery window cleanup also failed")) {
+        throw cleanupError;
+      }
+    }
+  }
+  await beginBridgeMessageCapture(page, ["interface.listLoaded"]);
+  await page.getByTestId("nav-interfaces").click();
+  const freshList = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("fresh Interface list after restart contains the committed revision",
+    freshList.payload?.items?.some(item => item.interfaceId === interfaceId
+      && item.revision === committed.payload.revision), { freshList });
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await beginBridgeMessageCapture(page, ["interface.loaded"]);
+  await persisted.click();
+  const freshLoad = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("fresh public Interface load preserves the complete pages, bindings and actions after restart",
+    isDeepStrictEqual(freshLoad.payload, committed.payload), { committed, freshLoad });
+  await page.getByTestId("interface-run").click();
+  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "17-interface-restarted.png"), fullPage: true });
+
+  await beginBridgeMessageCapture(page, ["interface.deleted"]);
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "删除界面", exact: true }).click();
+  const deleted = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("real Interface delete acknowledges exactly the selected aggregate",
+    deleted.payload?.interfaceId === interfaceId, { deleted });
+  await persisted.waitFor({ state: "hidden", timeout: 30_000 });
+  const afterDelete = await rawBridgeRequest(page, "interface.listRequested", {}, 20_000, ["interface.listLoaded"]);
+  recorder.check("fresh public Interface list omits the deleted aggregate",
+    Array.isArray(afterDelete.payload?.items)
+      && !afterDelete.payload.items.some(item => item.interfaceId === interfaceId), { afterDelete });
+  const missing = await rawBridgeRequest(page, "interface.loadRequested", { interfaceId }, 20_000, ["operation.failed"]);
+  const expectedMissing = missing.type === "operation.failed" && missing.payload?.code === "surface.not_found";
+  recorder.check("deleted Interface cannot be loaded through the real Host Product path", expectedMissing, { missing });
+  if (!expectedMissing) throw new Error(`Unexpected deleted Interface response: ${JSON.stringify(missing)}`);
+  await acknowledgeExpectedBridgeFailure(page, missing);
 }
 
 async function scenario18(page, recorder, _network, runtime) {

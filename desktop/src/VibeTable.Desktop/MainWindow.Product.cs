@@ -621,7 +621,7 @@ public partial class MainWindow : Window
         _dispatcher.SetDashboardGateway(
             new JsonRpcDashboardGateway(client),
             _session.Token);
-        _dispatcher.SetSurfaceGateway(new JsonRpcSurfaceGateway(client));
+        _dispatcher.SetSurfaceGateway(_productGateway);
 
         IPluginRpcGateway? previousPluginGateway = _pluginGateway;
         _pluginGateway = new JsonRpcPluginGateway(client);
