@@ -87,6 +87,12 @@ type VerifiedRemote interface {
 	ListPublications(context.Context, string) ([]Publication, error)
 }
 
+// RecoveryPublisher durably publishes a verified foreign source in the local
+// snapshot authority before a conflict can outlive its temporary protection.
+type RecoveryPublisher interface {
+	PreserveRecoverySnapshot(context.Context, snapshot.Record) error
+}
+
 type SnapshotCatalog interface {
 	List(context.Context, string) ([]snapshot.Record, error)
 }
@@ -157,6 +163,7 @@ type ManagerOptions struct {
 	StatePath           string
 	Remote              VerifiedRemote
 	Catalog             SnapshotCatalog
+	RecoveryPublisher   RecoveryPublisher
 	Repository          objectrepo.Repository
 	Authority           AuthorityTransfer
 	ProvisionalAcceptor ProvisionalPublicationAcceptor
@@ -179,6 +186,7 @@ type Manager struct {
 	identity            RemoteIdentity
 	remote              VerifiedRemote
 	catalog             SnapshotCatalog
+	recoveryPublisher   RecoveryPublisher
 	repository          objectrepo.Repository
 	authority           AuthorityTransfer
 	provisionalAcceptor ProvisionalPublicationAcceptor
@@ -224,6 +232,7 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		identity:            identity,
 		remote:              options.Remote,
 		catalog:             options.Catalog,
+		recoveryPublisher:   options.RecoveryPublisher,
 		repository:          options.Repository,
 		authority:           options.Authority,
 		provisionalAcceptor: options.ProvisionalAcceptor,
@@ -344,6 +353,9 @@ func (manager *Manager) queuePublishedSnapshots(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
+		if !record.IsLocalHead() {
+			continue
+		}
 		synced, err := manager.state.isVerified(
 			ctx, record.SnapshotID, record.CatalogRevision,
 		)
@@ -426,14 +438,10 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(records) == 0 {
+	local, found := snapshot.LatestLocalRecord(records)
+	if !found {
 		return nil
 	}
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].SnapshotSequence <
-			records[j].SnapshotSequence
-	})
-	local := records[len(records)-1]
 	incoming, err := manager.conflictRemote.DiscoverConflicts(
 		ctx,
 		ConflictScan{
@@ -558,6 +566,15 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 		); err != nil {
 			return err
 		}
+		if manager.recoveryPublisher != nil {
+			for _, source := range []snapshot.Record{local, candidate.ReplicaSnapshot} {
+				if err := manager.recoveryPublisher.PreserveRecoverySnapshot(ctx, source); err != nil {
+					return err
+				}
+			}
+		} else if _, localSource := known[candidate.ReplicaSnapshot.SnapshotID]; !localSource {
+			return errors.New("replica.recovery_publisher_required")
+		}
 		baseRoots, err := snapshot.ReachabilityObjectIDs(
 			ctx,
 			manager.repository,
@@ -614,8 +631,8 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 			append(set.RootPinIDs, pin.PinID),
 		)
 		if err := manager.conflicts.Add(ctx, set); err != nil {
-			// The published recovery snapshot owns the same pin, so retain
-			// it on conflict-store failure rather than risking data loss.
+			// Retain the temporary pin on an uncertain conflict-store failure;
+			// the independently published recovery snapshot has its own pin.
 			return err
 		}
 	}
@@ -857,6 +874,9 @@ func (manager *Manager) Sync(ctx context.Context, task SyncTask) error {
 	record, err := manager.snapshot(ctx, task.SnapshotID)
 	if err != nil {
 		return err
+	}
+	if !record.IsLocalHead() {
+		return errors.New("replica.recovery_snapshot_not_publishable")
 	}
 	if err := validateSnapshotClosure(
 		ctx,

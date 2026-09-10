@@ -66,6 +66,7 @@ type WorkspaceRepository interface {
 }
 
 type Runtime struct {
+	recoverySnapshotMu       sync.Mutex
 	app                      core.App
 	paths                    workspacePaths
 	manifest                 contractsv2.WorkspaceManifest

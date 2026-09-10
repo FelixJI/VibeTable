@@ -115,6 +115,7 @@ func openProductionReplicaConflict(
 		StatePath:           replicaStatePath,
 		Remote:              options.ReplicaRemote,
 		Catalog:             runtime.catalog,
+		RecoveryPublisher:   runtime,
 		Repository:          runtime.repository,
 		Authority:           runtimeReplicaAuthority{runtime: runtime},
 		ProvisionalAcceptor: runtimeProvisionalAcceptor{runtime: runtime},
@@ -1341,10 +1342,10 @@ func (appender *workspaceConflictAppender) Stage(
 			occupiedPaths[strings.ToLower(copyPath)] = struct{}{}
 		}
 	}
-	recoveryIDs := uniqueStrings([]string{
-		plan.LocalSnapshot,
-		plan.ReplicaSnapshot,
-	})
+	recoveryIDs, err := appender.owner.runtime.conflictRecoveryIDs(ctx, plan.LocalSnapshot, plan.ReplicaSnapshot)
+	if err != nil {
+		return conflictresolution.ApplyStage{}, err
+	}
 	result := map[string]any{
 		"operationId":         operationID,
 		"state":               "applied",

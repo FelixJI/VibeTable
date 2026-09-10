@@ -231,6 +231,27 @@ func TestTableOnlyFilesystemRemoteAndManagerConflictCandidates(t *testing.T) {
 			check(t, candidate, record)
 		}
 	})
+	t.Run("recovery_publication_failure_never_adds_conflict_or_pin", func(t *testing.T) {
+		before, err := repository.ListPins(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		publisher := options.RecoveryPublisher.(*productionRecoveryPublisher)
+		fault := errors.New("recovery catalog unavailable")
+		publisher.err = fault
+		if err := manager.discoverConflicts(ctx); !errors.Is(err, fault) {
+			t.Fatalf("publication failure: %v", err)
+		}
+		publisher.err = nil
+		after, err := repository.ListPins(ctx)
+		if err != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("failed discovery leaked pins: %#v %v", after, err)
+		}
+		sets, _, err := engine.List(ctx, options.WorkspaceID, nil, 100)
+		if err != nil || len(sets) != 0 {
+			t.Fatalf("failed recovery published conflict: %#v %v", sets, err)
+		}
+	})
 	t.Run("manager_discovery_persists_three_candidates", func(t *testing.T) {
 		if err := manager.discoverConflicts(ctx); err != nil {
 			t.Fatal(err)

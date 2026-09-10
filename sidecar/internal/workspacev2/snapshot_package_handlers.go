@@ -979,16 +979,6 @@ func decodeImportedSnapshot(
 			return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
 		}
 	}
-	files := map[string][]byte{}
-	attachments := map[string][]byte{}
-	for name, raw := range objects {
-		if strings.HasPrefix(name, "file:") {
-			files[strings.TrimPrefix(name, "file:")] = raw
-		}
-		if strings.HasPrefix(name, "attachment:") {
-			attachments[strings.TrimPrefix(name, "attachment:")] = raw
-		}
-	}
 	topologyPayload := entries["roots/topology-head.json"]
 	filePayload := entries["roots/file-state-head.json"]
 	if len(topologyPayload) == 0 || len(filePayload) == 0 {
@@ -1108,22 +1098,52 @@ func decodeImportedSnapshot(
 		}
 		return importedSnapshotSource{}, snapshotpkg.ErrInvalidPackage
 	}
+	return importedSourceFromBundle(bundle)
+}
+
+// Both package import and directory-conflict recovery use the same verified
+// bundle-to-capture source. The caller must first validate the complete bundle.
+func importedSourceFromBundle(bundle snapshot.SnapshotBundle) (importedSnapshotSource, error) {
+	record := bundle.Record
+	manifest, err := decodeStrict[snapshot.Manifest](bundle.Manifest.Payload)
+	if err != nil {
+		return importedSnapshotSource{}, err
+	}
+	var topology struct {
+		BusinessSchemaVersion uint64 `json:"businessSchemaVersion"`
+	}
+	if err := json.Unmarshal(bundle.TopologyHead.Payload, &topology); err != nil || topology.BusinessSchemaVersion == 0 {
+		return importedSnapshotSource{}, snapshot.ErrBundleInvalid
+	}
+	files, attachments := map[string][]byte{}, map[string][]byte{}
+	for name, raw := range bundle.Objects {
+		if strings.HasPrefix(name, "file:") {
+			files[strings.TrimPrefix(name, "file:")] = raw
+		}
+		if strings.HasPrefix(name, "attachment:") {
+			attachments[strings.TrimPrefix(name, "attachment:")] = raw
+		}
+	}
+	var history []byte
+	if bundle.HistoryRoot != nil {
+		history = bundle.HistoryRoot.Payload
+	}
 	return importedSnapshotSource{
 		workspaceID:           record.WorkspaceID,
-		sourceWorkspaceID:     inspection.Manifest.Metadata.WorkspaceID,
-		sourceSnapshotID:      inspection.Manifest.Metadata.SnapshotID,
+		sourceWorkspaceID:     record.WorkspaceID,
+		sourceSnapshotID:      record.SnapshotID,
 		record:                record,
 		manifest:              manifest,
-		database:              objects["database"],
+		database:              bundle.Objects["database"],
 		files:                 files,
 		attachments:           attachments,
-		settings:              objects["workspace-settings"],
-		auditPrefix:           objects["audit-prefix"],
-		topologyPayload:       topologyPayload,
-		businessSchemaVersion: topologyHead.BusinessSchemaVersion,
-		filePayload:           filePayload,
-		historyPayload:        historyPayload,
-		historyObjects:        historyObjects,
+		settings:              bundle.Objects["workspace-settings"],
+		auditPrefix:           bundle.Objects["audit-prefix"],
+		topologyPayload:       bundle.TopologyHead.Payload,
+		businessSchemaVersion: topology.BusinessSchemaVersion,
+		filePayload:           bundle.FileStateHead.Payload,
+		historyPayload:        history,
+		historyObjects:        bundle.HistoryObjects,
 	}, nil
 }
 

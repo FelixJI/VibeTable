@@ -1,6 +1,6 @@
 # S24 目录副本冲突资格
 
-当前状态：081fa 空历史修复已独立双轴通过并完成新包构建；第三次真实 S24 已越过副本发布，但因公开冲突投影使用物理表身份、整库恢复对象被计入表相等及重复发现而失败。本轮修复完整冲突投影／选择／应用，真实 PocketBase 公共链和 conflict／replica 包通过；Workspace 相邻组合保留一项既有 TempDir 清理 FAIL。当前修复仍待独立双轴、完整新包、同包 S24 与 fresh CI；不声明已取得产品通过资格。
+当前状态：业务冲突投影修复及主干同步后的 `3cfafc674f287fcee2d17b9addf634a964d06a1e` 已完成新包构建，但同包 S24 在第二个 recoverySnapshotId 的公开可恢复性断言失败。此次补齐远端来源的本地快照发布、持久 pin／身份映射和全部本地 head 判定；snapshot／replica 包及三包 vet 通过，Workspace 相邻组合仅保留两项 TempDir 清理 FAIL。本次生产修复仍待独立双轴、完整新包、同包 S24 与 fresh CI，不声明产品资格通过。
 
 ## 完整意图与来源
 
@@ -119,3 +119,33 @@ resolve 截图 `product-e2e-navigation/20260910T041637Z/24-directory-replica-con
 - `go vet ./internal/conflict ./internal/replica ./internal/workspacev2 ./internal/metadata`：**EXIT0**，`business-vet.log`；gofmt 和 `git diff --check` 通过。
 
 本轮未修改 Web／Python／公开 DTO 生成器，未重复完整 Python／Node、完整 Go、发布构建或真实 GUI；原 1916 Python／1 skip 仍只属于04ab。旧 WIP、三次真实失败及各包现场不动；本轮 Go runtime 修复必须新包资格，081fa 包不能覆盖。交回 root 独立双轴后，再以原 runner 完整 S24 证明唯一冲突、胜方重开持久值、败方恢复预览、fresh／bridge／cleanup；本页不把源码通过写成产品通过。
+
+
+## 业务投影修复后新包失败与恢复快照公开发布修复
+
+root 将业务投影修复正常同步到 main `9fa626a13840830037bcb82eaddc0adf8617075b`，固定源码 `3cfafc674f287fcee2d17b9addf634a964d06a1e`，完整构建 session28465 **EXIT0**。同包原 runner 的 S24 session11828 **EXIT1**，报告保留在 `build/qa/s24-business-projection/20260910T055137Z/product-e2e-report.json`。resolve 的 22 项断言中，业务 tableId／唯一 choice、preview／apply／胜方值，以及第一个恢复来源的公开 verified 列表和真实 UI preview 均通过；第二个返回的 `ba668aaf-86b7-4676-a8ae-77761d8561b7` 未公开列出，verify-resolved 未取得通过资格。前三轮真实失败、包、截图、trace、stage-result 与本轮现场均未覆盖或重跑。
+
+只读重放 `24-directory-replica-conflict/resolve/hosts/left/stage-result.json` 精确核对两个返回 ID：公开 snapshot.list 的 nextCursor 为 null、共5项，只有 `80488238-9907-4db1-abd7-93e99f1d323b` 存在且 verified。关闭现场确认无 WAL 后，以 SQLite `mode=ro&immutable=1` 读取 catalog／conflicts：远端 ba668 来源未登记到本地 catalog；已应用冲突仍指向该远端来源，但临时 RootPinIDs 已清空。这不是分页、integrity 过滤或 UI 选择器错误。
+
+生产根因是 `Manager.installRecoveryBundle` 只导入远端对象和 manifest；发现过程没有向本地 snapshot catalog 发布远端恢复来源，apply 却直接返回 plan 中的原远端 SnapshotID。远端 snapshotSequence=3 还与本地 sequence=3 碰撞，因此不能直接把原 Record 插入有本地序号唯一约束的目录，或篡改原 manifest／seal。
+
+本轮实现保持公开 DTO 和场景门禁：
+
+- `RecoveryPublisher` 具名依赖接入实际 Runtime。在候选验证后、冲突临时 pin／记录建立前，保护本地及远端两个来源。通过既有 `snapshot.Coordinator`、协调 capture 与导入冻结源发布新的本地 pinned protection snapshot；原远端身份／内容不改，本地 catalog 保存 SourceWorkspaceID／SourceSnapshotID 以及原 source ManifestID 的精确绑定，不增加摘要算法或第二目录权威。
+- 同一 catalog 持久化 `localRecovery`。`Record.IsLocalHead`／`LatestLocalRecord` 是统一判定，应用到 Durable／Memory Last、自动捕获及启动高水位、Manager 发现／排队／队列消费、selected-files 基线和 one-shot 空目录判断；公开 List、verified、previewRestore 与 retention 保留这些恢复副本。恢复副本不成为新的本地分叉或同步 publication。
+- apply 从持久目录解析实际可见、verified 且有无到期时间 pin 的恢复 ID。未发布、已删除、未保护或无效来源均拒绝，不再返回任意远端 ID。相同来源重启后复用实际本地 ID，不依赖内存映射；不同来源不折叠。永久保护由已发布的目录记录拥有，冲突临时 pin 释放不影响恢复。发布失败沿既有 Coordinator 释放未发布 pin；若恢复记录已经发布而后续冲突存储失败，该可公开恢复记录仍是可重用的持久状态。
+- package import 与目录恢复共用验证后 bundle→importedSnapshotSource 转换；现有 package 输入校验、workspace 重写与 receipt 行为不放宽。没有改 UI selector、等待时间、bridge／cleanup、transport 或恢复验收范围。
+
+新增回归的传输端仅提供已经物化的外部 checkpoint；实际独立 DurableCatalog 捕获与本地 sequence 碰撞、Manager、PocketBase 表／设置选择与应用、公开 Dispatcher snapshot.list／previewRestore、Runtime 重开均运行真实实现。既有真实 FilesystemRemote 三方运输回归同时保留，增加 publication 失败不写冲突／不泄露临时 pin 的边界。已有 PB receipt 重启夹具原用字符串 local／replica 充当快照 ID，现改为真实受保护快照，原进程丢失、PB receipt、同 revision 恢复断言全部保留。
+
+固定 Go1.27.0，在 `sidecar` 执行；本轮证据目录为 `build/qa/s24-recovery-publication/`：
+
+- `go test ./internal/workspacev2 -run '^TestConflictBusinessAndSharedSettingsPublicApplyPreservesRecovery/foreign-catalog$' -count=1 -timeout 120s`：旧生产代码真实 **EXIT1，3.844s**，唯一功能失败为 returned recovery snapshot 未公开列出且 verified，`red.log`。
+- 首次修复已使全部公开 list／preview 通过，但旧测试仍要求原远端 ID，**EXIT1，6.815s**，`first-fix.log`。测试随后改为精确验证两个实际公开 ID、源 workspace／snapshot／manifest／database 绑定及本地 ID 唯一性，未改成数量或任选项检查。
+- `go test ./internal/workspacev2 -run '^TestConflictBusinessAndSharedSettingsPublicApplyPreservesRecovery' -count=1 -timeout 120s`：首次双 ID／重启完整回归 **EXIT0，7.266s**，`restart.log`。后续补不同 source、自动捕获、selected-files 和失败 pin 负控，以最终组合为准。
+- 中间 `snapshot-replica-initial.log`／`workspace-initial.log` 保留 Trigger 枚举与 string 比较的编译失败；`snapshot-replica-second.log` 保留工作目录写错导致修正未生效的失败。修正后 `snapshot-replica-third.log` 暴露两个 Manager 夹具缺新 publisher 接线；`workspace-second.log` 暴露旧公开 apply 重启夹具伪 snapshot ID，均已按真实接口修正，没有将这些失败当作根因 RED。
+- `go test ./internal/snapshot ./internal/replica -count=1 -timeout 120s`：**EXIT0**，snapshot **0.757s**、replica **2.061s**，`snapshot-replica-final.log`。包含原真实 FilesystemRemote、恢复发布失败 pin 清理及既有副本契约。
+- `go test ./internal/workspacev2 -run 'Conflict|Replica|Snapshot.*(Import|Package)|Import.*Snapshot' -count=1 -timeout 180s`：**EXIT1，25.895s**，`workspace-final.log`。所有功能断言通过；失败仅为新 foreign-catalog 回归及既有 `TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision` 的 TempDir RemoveAll 报 coordination 目录非空。两者均保留正常关闭路径；没有加 retry、删除检查或重复该组合求绿，也不把该入口写成 PASS。
+- `go vet ./internal/snapshot ./internal/replica ./internal/workspacev2`：**EXIT0**，`vet.log`；gofmt 与 `git diff --check` 通过。除随后纯排版外未更改生产行为。
+
+本轮未执行完整 Python／Go、完整构建、GUI 或真实目录副本操作，未 push／建 PR。以上源码结果不能覆盖原包真实 FAIL，也不证明败方实际 restore 执行或双端最终收敛；本场要求的双恢复来源公开列表、真实预览与 resolve 重启证据，仍须后续新包 S24 完整验证。此次普通 hooks 结果由提交日志记录，原 TempDir 失败边界保留供独立审查。
