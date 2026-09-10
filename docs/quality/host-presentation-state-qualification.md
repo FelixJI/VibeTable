@@ -121,3 +121,11 @@ S33 最后一轮独立 Standards 与 Spec 均0项剩余确定发现；Spec独立
 锁定 `MoveColumns` 以250ms按住期区分点击和拖动，只有进入移动状态后才注册目标mousemove处理。场景改为真实鼠标按下后等待 `.tabulator-moving` 可见，再将First拖至Second右半部的内部位置并释放；水平滚动后的这个向右交换同时避开边缘手柄和该版本对左半部落点额外叠加scrollLeft的计算。最终仍严格要求Host保存的 `secondOrder < firstOrder`，且可见DOM同时包含两列、Second位于First之前；未使用force、固定sleep、额外重试或放宽断言。鼠标释放位于finally，失败也会结束按住状态。
 
 本次固定Node24.19.0执行 `node --check tests/e2e/webview_product_scenarios.mjs` EXIT0、`node --test tests/e2e/host_presentation_restart.test.mjs` 19 PASS / 0 FAIL / 0 SKIP，`git diff --check`通过。现有19项行为测试覆盖恢复验收断言，不能替代新鼠标交互的真实WebView2验证；本次未重跑GUI、build、commit或push，修改后的S33及独立复审仍pending。
+
+## 第三次 S33 新包结果与移动释放修正
+
+复用同一完整包的第三次运行仍为失败，证据位于 `build/qa/host-presentation/product-e2e-real-column-move/20260910T093307Z/`。seed 已通过9项真实 UI/Host 断言，之后 `captured bridge response timed out`，resume 未启动。顶层 `product-e2e-report.json` 的 `scenarios[0].phases.seed.lifecycle` 完整通过：normal exit、Host exit 0、ports released、owner lease cleanup 和 final cleanup 均为通过；这次失败不是资源清理失败。bridge diagnostics 的 failures、acknowledged failures 和 pending 均为零，唯一 console 项仍为 autofocus info，不能把它当作错误。
+
+完整 trace 表明最后已完成的 `gridState.save` 属于列宽 resize，而不是列移动的回执。MoveColumns 出现后，header/body 的同步横向位置从 179.42857 变回0，Second 的目标点 `x=1150.57` 超出 1011px viewport；原来的 mouseup 落在视口外，30秒后 First 仍带 `tabulator-moving`，placeholder 仍存在，因而没有新的保存请求。MoveColumns 只监听 `document.body.mouseup`，这构成确定根因，不归因于 bridge capture。
+
+场景现在以一个小的可见目标 helper 在按下前和 `.tabulator-moving` 出现后各检查一次：需要时仅对真实 body 执行水平 wheel，重新读取目标边界，要求 header/body scroll 同步、目标完整位于 viewport 内，并用 `elementFromPoint` 验证落点命中真实 Second header。鼠标在该有效落点释放；finally 在失败路径也在有效 body 内释放，但保留错误。释放后先等待 moving marker 和 placeholder 消失，再使用原30秒等待保存回执。未使用 force、直接赋 scroll、扩大窗口、固定 sleep、盲重试或放宽 Host/DOM 顺序断言。修改后的真实 GUI、独立复审和完整资格仍 pending。
