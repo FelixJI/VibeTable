@@ -682,6 +682,14 @@
       "effect": "write"
     },
     {
+      "method": "settings.commitWorkCalendar",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "workspace.calendar",
+      "owner": "goSidecar",
+      "effect": "write"
+    },
+    {
       "method": "settings.readDevice",
       "scope": "global",
       "audience": "rendererPublic",
@@ -690,11 +698,11 @@
       "effect": "read"
     },
     {
-      "method": "settings.readShared",
+      "method": "settings.readWorkCalendar",
       "scope": "workspace",
       "audience": "rendererPublic",
-      "capabilityId": "insights",
-      "owner": "pythonBff",
+      "capabilityId": "workspace.calendar",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {

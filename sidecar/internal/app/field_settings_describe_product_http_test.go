@@ -65,7 +65,8 @@ func fieldSettingsDescribeHTTPMux(t *testing.T, pb *pocketbase.PocketBase, regis
 		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
-		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -50,6 +50,8 @@ func presetProductMux(t *testing.T, pb *pocketbase.PocketBase, gates ...business
 		presetRegistration("preset.list", metadata.NewPreset(pb), gates...),
 		presetRegistration("preset.save", metadata.NewPreset(pb), gates...),
 		presetRegistration("preset.delete", metadata.NewPreset(pb), gates...),
+		unrelatedPresetRegistration(t, "settings.commitWorkCalendar"),
+		unrelatedPresetRegistration(t, "settings.readWorkCalendar"),
 		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		productrpc.ReconcileRegistration(catalog),

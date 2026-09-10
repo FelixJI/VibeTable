@@ -431,6 +431,8 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
     registered.update(current_owner_methods("wpfHost"))
     registered.update(
         {
+            "settings.readWorkCalendar",
+            "settings.commitWorkCalendar",
             "contentProfile.load",
             "contentProfile.commit",
             "contentProfile.delete",
