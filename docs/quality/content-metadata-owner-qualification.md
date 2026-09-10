@@ -181,3 +181,13 @@ receipt 写入，其他 callback/事务错误不被吞掉。公共 Runtime/coord
 
 本次未同步 main、push、构建或运行 S18，不声称已完成独立审查或远端资格。原完整构建
 与 S18 仍只是旧 source 证据；新生产源码需要主任务安排必要新构建及产品验证。
+
+## Runtime 重放修复后的新包资格
+
+当前生产 source `6f1164678560c56668b93f44263b8abc8b601da0` 已正常合入 main `58032b97043c2bba80a8eb1f65ae2906797e3251`；修复及同步增量 Standards/Spec 均无新增确定问题。
+
+- `uv run --frozen --no-sync python scripts/build_next.py --release` 完整入口退出 0，含 self-update smoke 与原子发布包目录；日志 `build/qa/content-metadata/build-release-runtime-replay.log`。
+- 使用同一新包执行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --evidence-root build/qa/content-metadata/product-e2e-runtime-replay --scenario 18-workspace-search`：1 passed、0 failed、0 skipped，21 项断言通过，19.923s。
+- 报告 `build/qa/content-metadata/product-e2e-runtime-replay/20260910T031721Z/product-e2e-report.json`：包审计及四组件 freshness 通过，未预期 bridge failure 与 pending 均为 0；正常退出码 0，进程及后代为空，端口与 owner lease/final cleanup 通过。
+
+这组新包结果覆盖上文 Runtime 修复；历史失败记录仍保留，不把本地 TempDir 整组失败改记为通过。新的远端 head 仍需 fresh CI、严格同步、squash 及合并后 CI/CD。
