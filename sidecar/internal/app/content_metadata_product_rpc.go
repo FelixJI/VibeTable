@@ -68,7 +68,7 @@ func contentMetadataRegistration(method string, service *metadata.ContentService
 				if strings.HasSuffix(method, ".delete") {
 					operation = "delete"
 				}
-				err = runIdempotentBusinessWrite(ctx, gates, "metadata."+namespace+"."+operation, key, apply)
+				err = runBusinessWrite(ctx, gates, "metadata."+namespace+"."+operation, key, apply)
 			}
 			if err != nil {
 				var domain *metadata.ContentError

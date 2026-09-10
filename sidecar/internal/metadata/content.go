@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 // ContentService owns profile and record/document link validation, CAS and durable
@@ -70,10 +72,14 @@ func (service *ContentService) CommitProfile(ctx context.Context, request workbe
 		}
 		return service.replace(tx, NamespaceContentProfiles, request.Profile.TableId, request.Profile, optionalRevision(request.ExpectedRevision), "content_profile.edit_conflict")
 	})
-	if err != nil {
+	if err != nil && err != writecoordinator.ErrBusinessReplay {
 		return workbench.ContentProfileSnapshot{}, err
 	}
-	return profileSnapshot(receipt.Item)
+	snapshot, projectionErr := profileSnapshot(receipt.Item)
+	if projectionErr != nil {
+		return workbench.ContentProfileSnapshot{}, projectionErr
+	}
+	return snapshot, err
 }
 
 func (service *ContentService) DeleteProfile(ctx context.Context, request workbench.ContentProfileDeleteRequest) (workbench.ContentProfileDeleteResult, error) {
@@ -126,10 +132,14 @@ func (service *ContentService) CommitLink(ctx context.Context, request workbench
 		}
 		return service.replace(tx, NamespaceRecordDocumentLinks, request.Link.LinkId, request.Link, optionalRevision(request.ExpectedRevision), "record_document_link.edit_conflict")
 	})
-	if err != nil {
+	if err != nil && err != writecoordinator.ErrBusinessReplay {
 		return workbench.RecordDocumentLinkSnapshot{}, err
 	}
-	return linkSnapshot(receipt.Item)
+	snapshot, projectionErr := linkSnapshot(receipt.Item)
+	if projectionErr != nil {
+		return workbench.RecordDocumentLinkSnapshot{}, projectionErr
+	}
+	return snapshot, err
 }
 
 func (service *ContentService) RepairLink(ctx context.Context, request workbench.RecordDocumentLinkRepairRequest) (workbench.RecordDocumentLinkSnapshot, error) {
@@ -151,10 +161,14 @@ func (service *ContentService) RepairLink(ctx context.Context, request workbench
 		snapshot.Link.DocumentId = request.DocumentId
 		return service.replace(tx, NamespaceRecordDocumentLinks, request.LinkId, snapshot.Link, request.ExpectedRevision, "record_document_link.edit_conflict")
 	})
-	if err != nil {
+	if err != nil && err != writecoordinator.ErrBusinessReplay {
 		return workbench.RecordDocumentLinkSnapshot{}, err
 	}
-	return linkSnapshot(receipt.Item)
+	snapshot, projectionErr := linkSnapshot(receipt.Item)
+	if projectionErr != nil {
+		return workbench.RecordDocumentLinkSnapshot{}, projectionErr
+	}
+	return snapshot, err
 }
 
 func (service *ContentService) DeleteLink(ctx context.Context, request workbench.RecordDocumentLinkDeleteRequest) (workbench.RecordDocumentLinkDeleteResult, error) {
@@ -218,7 +232,7 @@ func (service *ContentService) write(ctx context.Context, method, key string, re
 	}, func(receipt *MutationReceipt, id string, events []string) {
 		receipt.ChangeSetID = id
 		receipt.EmittedEvents = events
-	}, func(receipt *MutationReceipt) { receipt.Status = StatusReplayed })
+	}, func(receipt *MutationReceipt) { receipt.Status = StatusReplayed }, func() error { return contentBusinessReplay(ctx, method, key) })
 	return receipt, contentPersistenceError(err, false)
 }
 
@@ -252,13 +266,13 @@ func (service *ContentService) remove(ctx context.Context, method string, namesp
 	}, func(receipt *DeleteReceipt, id string, events []string) {
 		receipt.ChangeSetID = id
 		receipt.EmittedEvents = events
-	}, func(receipt *DeleteReceipt) { receipt.Status = StatusReplayed })
+	}, func(receipt *DeleteReceipt) { receipt.Status = StatusReplayed }, func() error { return contentBusinessReplay(ctx, method, key) })
 	return contentPersistenceError(err, true)
 }
 
 func contentPersistenceError(err error, deleting bool) error {
-	if err == nil {
-		return nil
+	if err == nil || err == writecoordinator.ErrBusinessReplay {
+		return err
 	}
 	var domain *ContentError
 	if errors.As(err, &domain) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -348,4 +362,16 @@ func optionalRevision(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// Only an exact, validated replay may abort the outer workspace write intent.
+func contentBusinessReplay(ctx context.Context, method, key string) error {
+	namespace, operation := "content_profiles", "upsert"
+	if strings.HasPrefix(method, "recordDocumentLink.") {
+		namespace = "record_document_links"
+	}
+	if strings.HasSuffix(method, ".delete") {
+		operation = "delete"
+	}
+	return writecoordinator.ReplayedBusinessWrite(ctx, "metadata."+namespace+"."+operation, key)
 }

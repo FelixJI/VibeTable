@@ -130,7 +130,7 @@ func TestContentProductWriteGateReceivesCallerKeyAndCancellation(t *testing.T) {
 		return apply(canceled)
 	}
 	// A nil store proves cancellation is checked before any transaction.
-	registration := contentMetadataRegistration("contentProfile.commit", metadata.NewContentService(nil, nil), nil, gate)
+	registration := contentMetadataRegistration("contentProfile.commit", metadata.NewContentService(nil, nil), gate)
 	raw := json.RawMessage(`{"profile":{"contractVersion":"1.0","tableId":"t","titleFieldId":"a","bodyFieldId":"b","summaryFieldId":null,"searchableFieldIds":["a"]},"expectedRevision":null,"idempotencyKey":"same-request"}`)
 	_, err := registration.Handler(context.Background(), raw)
 	if !called || !errors.Is(err, context.Canceled) {

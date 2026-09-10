@@ -1,6 +1,6 @@
 # ContentProfile / RecordDocumentLink 迁移资格记录
 
-状态：同步主干后的本批源码已通过最终双轴审查，新源码完整发布构建与同包 S18 均通过。旧 1175 失败及其证据仍保留，未声称根因已修复。远端 required 门禁尚未执行；本记录不声明已可合并、L5 完成或 PR #140 整体完成。
+状态：真实 Runtime gate 回归发现并修正 Content 写重放缺陷，当前生产源码已变化，待独立双轴尾审及主任务安排新包验证。下文旧源码的完整构建、S18、Python 结果仅归属各自固定 source，不覆盖本次修复；旧失败及远端门禁边界保留。
 
 ## 来源与完整范围
 
@@ -152,3 +152,32 @@ dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj
 `build/content-main-host-contracts-correction.log`，TRX位于上述results目录。
 这些测试修正及文档相对实际构建source3ef的production runtime diff为零，不重建相同包，
 当前分支仍需完整fresh CI。此处不覆盖或改变之前Go TempDir清理失败的结论。
+
+## 真实 Runtime gate 的结果回放修复
+
+以 `10b4d4afdf79fabc4f703fc10f1c4264a62f8c8f` 为基线。旧生产组合向 Content 同时
+注入普通与 background-idempotent gate，而 handler 选择后者。已有 workspace receipt
+使 Runtime 在调用 apply 前直接成功返回，五项写操作的 result 因而为 null；同键异请求
+也未进入 metadata 请求摘要校验。旧无 Runtime gate 的 fixture 无法发现这一差异。
+
+新增真实 PocketBase、Workspace v2 Runtime 和 Product HTTP 回归，在同一注册中保留
+两个真实 gate。原实现 RED（`build/content-runtime-replay-red.log`）：五项写全部出现
+null replay，修改 expectedRevision 的同键请求也未冲突。修复后普通 gate 执行回调，
+metadata 先核验请求摘要并恢复持久 receipt，再通过既有 `ReplayedBusinessWrite` 返回
+exact replay signal；Runtime 完成 prepared intent abort 后才消费该信号。
+Content 同时保留恢复后的 snapshot/delete result，不把 signal 投影为领域失败。
+
+`metadata.executeIdempotent` 只增加与并行 Preset/Surface 约定一致的可选 replay callback。
+旧调用没有 callback 时行为不变；只有 exact `ErrBusinessReplay` 跳过重复 workspace
+receipt 写入，其他 callback/事务错误不被吞掉。公共 Runtime/coordinator 未改。
+生产 Content 注册仅注入普通 gate；kind/key、workspace epoch、写准入及事务审计不变。
+
+使用既有 Go 1.27.0，在 sidecar 目录执行：
+
+- `go test ./internal/app -run '^TestContentProductRuntimeGateRestoresResultsAndRejectsChangedReplay$' -count=1`：首轮修复 GREEN 1.371s（`build/content-runtime-replay-green.log`）；随后补充两个 Content 集合不变断言，最终 PASS 1.389s（`build/content-runtime-replay-final.log`）。覆盖五写原结果、同键异请求冲突、删除后重放、旧 epoch 拒绝、Runtime 关闭后拒绝，以及 mutationRevision、workspace proof、审计/outbox/幂等记录和 Content 数据均不重复变更。
+- `go test ./internal/metadata ./internal/app -run 'TestContent|TestRecordDocument|TestGenericContent|TestMetadata' -count=1`：整体 EXIT 1。metadata PASS 3.744s；app 无业务断言失败，但新增 Runtime 测试的 TempDir coordination 清理非空。原日志 `build/content-runtime-related.log` 保留，不记为通过；最终单项通过不覆盖此整组失败。
+- `go test ./internal/metadata -count=1`：完整 metadata 包 PASS 3.774s，用于共享内部 seam 的旧调用兼容检查；`build/content-runtime-metadata-all.log`。
+- `go vet ./internal/metadata ./internal/app`：EXIT 0；`build/content-runtime-vet.log`。
+
+本次未同步 main、push、构建或运行 S18，不声称已完成独立审查或远端资格。原完整构建
+与 S18 仍只是旧 source 证据；新生产源码需要主任务安排必要新构建及产品验证。
