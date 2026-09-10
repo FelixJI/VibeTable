@@ -5,13 +5,22 @@ import {
   isStateConflict,
   reconcileState,
 } from "./gridState";
-import type { ColumnSchema, GridState } from "@/contracts";
+import type { ColumnSchema, GridState, FilterExpression } from "@/contracts";
 
 function col(name: string): ColumnSchema {
   return { name, title: name, dataType: "text", editable: false, nullable: true };
 }
 
 describe("reconcileState", () => {
+  it("preserves compound filter logic and values instead of treating groups as columns", () => {
+    const filters: FilterExpression[] = [{ groupLogic: "OR", filters: [
+      { field: "amount", operator: "gt", value: 0 },
+      { field: "name", operator: "eq", value: "" },
+    ] }];
+    const restored = reconcileState({ filters }, [col("amount"), col("name")]);
+    expect(restored.filters).toEqual(filters);
+    expect(buildRestorePlan(restored).headerFilters).toEqual([]);
+  });
   it("prunes saved columns no longer in the schema", () => {
     const saved: GridState = {
       columns: [
@@ -53,7 +62,7 @@ describe("reconcileState", () => {
     };
     const reconciled = reconcileState(saved, [col("amount")]);
     expect(reconciled.filters).toHaveLength(1);
-    expect(reconciled.filters[0].field).toBe("amount");
+    expect(reconciled.filters[0]).toMatchObject({ field: "amount" });
   });
 
   it("normalizes a whitespace keyword to null", () => {

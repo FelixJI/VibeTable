@@ -62,3 +62,7 @@ Python 不再注册 gridState.get/save；inventory、capability policy 和脚本
 本次验证：Python owner/oracle/product contracts 31 PASS；Ruff PASS，Pyright 0 errors。递归状态与 Preset 绑定先真实丢失 RED，修复后相关 Host 测试通过。solution --no-restore 命令中 Host 55 项通过，但整体 EXIT1（未还原的 OpenXml.Tests 缺 project.assets.json），不计完整 solution 通过。精确运行已还原的 Desktop.Tests 项目、筛选 GridPresentation/HostGridStateStore/WebMessageRouter 后 68 PASS，EXIT0（owner-routing-project-green.log）。较早四层拒绝用例误构造为合法三层，已修正测试输入为实际四层而不改变生产预算。
 
 Web 作者正在同一分支接统一 Preset/schema/Host 恢复序列、实际网格事件、串行 CAS 与跨 epoch 废弃；当前 104 项聚焦测试通过，完整 Web/typecheck、独立双轴、新包及真实重开场景尚待完成。不得据此写整个 PR 验收通过。
+
+完整 Python 回归：在 cc187f12 后端状态下执行 uv run --frozen --no-sync python -m pytest -q，1873 PASS / 1 SKIP，131.80s，coverage 91.39% 达到既有85%门禁，EXIT0（build/qa/host-presentation/full-python.log）。此时 Web 仍在修复同workspace快速切表保存队列，Python通过不代表Web/新包资格。
+
+Web 接线最终：178文件1603测试PASS，vue-tsc EXIT0，diff --check通过。真实回归先证明复合filter丢失/拖列未启用，以及快速连续修改后同步切表返回只读到旧状态；修复后CAS队列按workspace epoch+table隔离，同epoch切表保留旧表待写队列，真正epoch变化才废弃；返回原表前等待该队列完成。Preset与Host统一恢复、旧preset revision不覆盖新基线、cozy保真、实际keyword/冻结/密度控件、每次setColumns重施布局已覆盖。尚未独立审查完整Host分支或新包GUI。

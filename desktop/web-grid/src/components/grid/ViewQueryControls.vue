@@ -13,6 +13,7 @@ import type {
 } from "@/contracts";
 import FilterTreeEditor from "./FilterTreeEditor.vue";
 import { cloneFilterExpressions } from "@/stores/viewQueryStore";
+import { t } from "@/i18n";
 
 const props = defineProps<{
   columns: readonly ColumnSchema[];
@@ -20,6 +21,11 @@ const props = defineProps<{
   groups: readonly GroupCondition[];
   summaries: readonly SummaryCondition[];
   visibleFields: readonly string[];
+  keyword?: string;
+  frozenFields?: readonly string[];
+  presentationError?: string;
+  disabled?: boolean;
+  density?: "compact" | "comfortable";
   relations?: readonly NormalizedRelationDescriptor[];
   lookups?: readonly LookupDefinition[];
   searchRelationTargets?: (relationId: string, query: string) => Promise<readonly RelationTargetRef[]>;
@@ -29,7 +35,8 @@ const emit = defineEmits<{ change: [value: {
   groups: GroupCondition[];
   summaries: SummaryCondition[];
   visibleFields: string[];
-}] }>();
+}]; keywordChange: [keyword: string]; freeze: [field: string, frozen: boolean];
+  densityChange: [density: "compact" | "comfortable"]; reloadPresentation: [] }>();
 
 const draftFilters = ref<FilterExpression[]>([]);
 const draftGroups = ref<GroupCondition[]>([]);
@@ -117,7 +124,20 @@ function isNumericField(field: string): boolean {
 </script>
 
 <template>
-  <div class="view-controls" aria-label="视图查询工具" data-testid="view-query-controls">
+  <div class="view-controls" aria-label="视图查询工具" data-testid="view-query-controls" :inert="disabled" :aria-busy="disabled">
+    <NInput :value="keyword ?? ''" size="small" clearable :maxlength="256"
+      :placeholder="t('grid.presentation.search')" :aria-label="t('grid.presentation.search')"
+      data-testid="view-keyword" class="view-keyword"
+      @update:value="value => emit('keywordChange', value)" />
+    <NSelect :value="density ?? 'comfortable'" size="small" class="view-density" data-testid="view-density"
+      :aria-label="t('grid.presentation.density')"
+      :options="[{ label: t('settings.density.compact'), value: 'compact' }, { label: t('settings.density.comfortable'), value: 'comfortable' }]"
+      @update:value="value => emit('densityChange', value)" />
+    <NPopover v-if="presentationError" trigger="click">
+      <template #trigger><NButton size="tiny" type="warning" data-testid="grid-state-error">{{ t('grid.presentation.error') }}</NButton></template>
+      <p>{{ presentationError }}</p>
+      <NButton size="small" data-testid="grid-state-reload" @click="emit('reloadPresentation')">{{ t('grid.presentation.reload') }}</NButton>
+    </NPopover>
     <NPopover trigger="click" placement="bottom-start" :show-arrow="false">
       <template #trigger>
         <NButton size="tiny" quaternary data-testid="view-filter-trigger">
@@ -197,6 +217,9 @@ function isNumericField(field: string): boolean {
         <label v-for="column in filteredFields" :key="column.name">
           <NCheckbox :checked="draftVisible.includes(column.name)" @update:checked="checked => toggleField(column.name, checked)" />
           <span>{{ column.title }}</span>
+          <NCheckbox :checked="frozenFields?.includes(column.name) ?? false"
+            :data-testid="`view-freeze-${column.name}`"
+            @update:checked="checked => emit('freeze', column.name, checked)">{{ t('grid.presentation.freeze') }}</NCheckbox>
         </label>
         <footer><NButton size="small" type="primary" data-testid="view-hidden-apply" @click="commit">应用</NButton></footer>
       </div>
@@ -206,6 +229,8 @@ function isNumericField(field: string): boolean {
 
 <style scoped>
 .view-controls { display: flex; min-height: 34px; align-items: center; gap: 2px; padding: 3px 10px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
+.view-keyword { width: 180px; flex: 0 0 180px; }
+.view-density { width: 95px; flex: 0 0 95px; }
 .view-controls b { min-width: 17px; padding: 0 5px; border-radius: 999px; color: var(--vt-fg-accent-strong); background: var(--vt-color-primary-50); font-size: 10px; line-height: 17px; }
 .control-card { display: grid; width: 390px; gap: 10px; padding: 3px; }
 .control-card--wide { width: min(560px, calc(100vw - 36px)); }

@@ -790,6 +790,7 @@ export function buildOptions(
     // the host/Lookup authoritative full-dataset query pipeline.
     sortMode: "remote",
     filterMode: "remote",
+    movableColumns: true,
   };
 
   // Strip the undefined keys so the object is clean for assertion & wire.

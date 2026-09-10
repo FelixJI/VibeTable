@@ -44,7 +44,8 @@ import RecordTimelineView from "@/components/grid/RecordTimelineView.vue";
 import RelationEditorPanel from "@/components/grid/RelationEditorPanel.vue";
 import FieldSettingsDrawer from "@/field-settings/FieldSettingsDrawer.vue";
 import { useFieldSettingsService } from "@/field-settings/service";
-import { TABULATOR_INJECTION_KEY } from "@/components/grid/tabulatorInjection";
+import { TABULATOR_INJECTION_KEY, GRID_PRESENTATION_KEY } from "@/components/grid/tabulatorInjection";
+import { useGridPresentationService } from "@/services/gridPresentationService";
 import PastePanel from "@/components/panels/PastePanel.vue";
 import ImportPreviewPanel from "@/components/panels/ImportPreviewPanel.vue";
 import CreateTableModal from "@/components/panels/CreateTableModal.vue";
@@ -511,6 +512,12 @@ watch(
  * instance (useTabulator rebuilds it on table switch).
  */
 const presetViewController = createPresetViewController({
+  presentation: {
+    service: useGridPresentationService(),
+    identity: computed(() => workspaceSession.hasOpenWorkspace && !workspaceSession.isTransitioning
+      && workspaceSession.activeWorkspaceId
+      ? `${workspaceSession.activeWorkspaceId}:${workspaceSession.sessionEpoch}` : null),
+  },
   workspace,
   table: tableStore,
   ui,
@@ -525,6 +532,10 @@ const presetViewController = createPresetViewController({
   refreshLookups: () => { void authoritativeLookups.refresh(); },
   reportError: error => message.error(error instanceof Error ? error.message : String(error)),
   defaultCompensationError: () => new Error(t("views.defaultCompensationFailed")),
+});
+provide(GRID_PRESENTATION_KEY, {
+  restoreGrid: () => presetViewController.restoreGrid(),
+  changed: () => { void presetViewController.dispatch({ type: "presentation.changed" }); },
 });
 const activePresetView = presetViewController.activeView;
 const activeViewKind = presetViewController.activeKind;
@@ -835,7 +846,8 @@ function onValidationError(
 }
 
 /** Sidebar: select a table from the list. */
-function onSelect(name: string) {
+async function onSelect(name: string) {
+  await presetViewController.flush();
   // history.clear() now happens inside tableService.selectTable so EVERY table
   // context reset clears the stack (select + refresh + any future caller).
   tableService.selectTable(name);
@@ -1067,6 +1079,15 @@ useKeyboard({
               :groups="viewQuery.groups"
               :summaries="viewQuery.summaries"
               :visible-fields="viewQuery.visibleFields"
+              :keyword="viewQuery.search"
+              :density="ui.density"
+              @density-change="density => presetViewController.dispatch({ type: 'density.changed', density })"
+              :frozen-fields="presetViewController.frozenFields.value"
+              :presentation-error="presetViewController.presentationError.value"
+              :disabled="presetViewController.presentationLoading.value"
+              @keyword-change="keyword => presetViewController.dispatch({ type: 'keyword.changed', keyword })"
+              @freeze="(field, frozen) => presetViewController.dispatch({ type: 'column.frozen', field, frozen })"
+              @reload-presentation="presetViewController.dispatch({ type: 'presentation.reload' })"
               :relations="relationLookup.schema?.normalizedRelations ?? []"
               :lookups="relationLookup.lookups"
               :search-relation-targets="relationEditorController.searchFilterTargets"

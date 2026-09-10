@@ -168,6 +168,7 @@ describe("presetViewController", () => {
     deps.workspace.selectTable("orders");
     await flushPromises();
 
+    deps.presets.markDirty();
     const switching = controller.dispatch({ type: "view.switch", view: target });
     expect(deps.presets.activePresetId).toBe("current");
 
@@ -198,6 +199,7 @@ describe("presetViewController", () => {
 
     deps.workspace.selectTable("orders");
     await flushPromises();
+    deps.presets.markDirty();
     await controller.dispatch({ type: "view.switch", view: target });
 
     expect(deps.presets.activePresetId).toBe("current");

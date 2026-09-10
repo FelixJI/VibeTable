@@ -293,6 +293,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "version.compare",
   "version.promote",
   "version.delete",
+  "gridState.get",
+  "gridState.save",
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
@@ -413,6 +415,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "table.queryRequested",
   "table.cursorRequested",
   "gridState.saveRequested",
+  "gridState.get",
+  "gridState.save",
   // B2 paste preview + apply requests.
   "table.previewPasteRequested",
   "table.applyPasteRequested",

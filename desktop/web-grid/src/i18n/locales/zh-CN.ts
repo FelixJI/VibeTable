@@ -1,4 +1,9 @@
 export const messages: Record<string, string> = {
+  "grid.presentation.search": "搜索记录",
+  "grid.presentation.freeze": "冻结",
+  "grid.presentation.density": "行密度",
+  "grid.presentation.error": "布局未保存",
+  "grid.presentation.reload": "重新加载已保存布局",
   "grid.formula.updating": "计算中",
   "grid.formula.failed": "计算失败",
   "grid.formula.cancelled": "计算已取消",

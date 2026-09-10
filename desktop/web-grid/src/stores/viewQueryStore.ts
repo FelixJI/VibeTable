@@ -82,7 +82,8 @@ export const useViewQueryStore = defineStore("view-query", {
       const saved = view.visibleFields.filter((field) => available.has(field));
       this.visibleFields = allFields.length === 0
         ? [...view.visibleFields]
-        : saved.length > 0 ? saved : [...allFields];
+        : saved.length > 0 || view.columns?.some(column => column.visible === false)
+          ? saved : [...allFields];
     },
     updateRuntime(query: {
       readonly headerFilters: readonly FilterExpression[];
@@ -114,7 +115,7 @@ export const useViewQueryStore = defineStore("view-query", {
     },
     toQuery(groupOffset = 0): TableQuery {
       return {
-        ...(this.search ? { keyword: this.search } : {}),
+        ...(this.search.trim() ? { keyword: this.search.trim() } : {}),
         filters: cloneFilterExpressions(this.filters),
         sorts: [...this.sorts],
         ...(this.groups.length ? { groups: [...this.groups] } : {}),

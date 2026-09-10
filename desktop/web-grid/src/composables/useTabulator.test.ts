@@ -257,6 +257,30 @@ describe("useTabulator", () => {
     vi.restoreAllMocks();
   });
 
+  it("restores presentation after tableBuilt and after every serialized column rebuild", async () => {
+    const table = useTableStore();
+    useWorkspaceStore().selectTable("users");
+    table.appendPage(makePage([{ rowKey: "a" }], [makeColumn("id")]));
+    const restored = vi.fn(async () => {});
+    const changed = vi.fn();
+    const wrapper = mountHost(ref(document.createElement("div")), {
+      onPresentationRestore: restored, onPresentationChanged: changed,
+    });
+    await flushPromises();
+    const built = lastMock!.on.mock.calls.find(([event]) => event === "tableBuilt")![1];
+    built(); await flushPromises();
+    expect(restored).toHaveBeenCalledTimes(1);
+    table.schema = [makeColumn("id"), makeColumn("added")];
+    await flushPromises();
+    expect(lastMock!.setColumns).toHaveBeenCalledOnce();
+    expect(restored).toHaveBeenCalledTimes(2);
+    expect(lastMock!.setColumns.mock.invocationCallOrder[0]).toBeLessThan(restored.mock.invocationCallOrder[1]!);
+    const moved = lastMock!.on.mock.calls.find(([event]) => event === "columnMoved")![1];
+    moved(); expect(changed).toHaveBeenCalledOnce();
+    wrapper.unmount();
+    expect(lastMock!.off).toHaveBeenCalledWith("columnMoved", moved);
+  });
+
   it("retains cell ranges through an empty loading window and consecutive column rebuilds", async () => {
     const table = useTableStore();
     useWorkspaceStore().selectTable("users");
