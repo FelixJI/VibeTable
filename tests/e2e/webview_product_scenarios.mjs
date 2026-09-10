@@ -37,6 +37,8 @@ import {
 } from "./bridge_capture_wait.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
+import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
+  from "./directory_replica_conflict_ui.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 import { waitForWorkspaceSearchRebuildTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
@@ -7536,6 +7538,319 @@ async function scenario23(page, recorder, _network, runtime) {
   });
 }
 
+async function replicaUiMethod(page, recorder, method, action) {
+  // Observe the user's outbound request; never manufacture a UI mutation.
+  await page.evaluate((expected) => {
+    const webview = window.chrome.webview;
+    const original = webview.postMessage;
+    const observation = { request: null, original };
+    observation.wrapper = function (message) {
+      const value = typeof message === "string" ? JSON.parse(message) : message;
+      if (value?.type === "workspace.v2.request" && value.payload?.method === expected) {
+        observation.request = structuredClone(value);
+      }
+      return original.call(this, message);
+    };
+    window.__replicaUiObservation = observation;
+    webview.postMessage = observation.wrapper;
+  }, method);
+  try {
+    await beginWorkspaceV2MethodCapture(page, method);
+    await action();
+    const terminal = await waitForCapturedBridgeMessage(page, 90_000);
+    const request = await page.evaluate(() => window.__replicaUiObservation.request);
+    recorder.check(`${method} has its exact successful UI request terminal`,
+      terminal.type === "workspace.v2.response" && terminal.payload?.ok === true
+        && terminal.payload.method === method && request?.requestId === terminal.requestId,
+    { request, terminal });
+    return { request, terminal, result: terminal.payload.result };
+  } finally {
+    await page.evaluate(() => {
+      const observation = window.__replicaUiObservation;
+      window.__vibetableE2EBridgeCapture?.release?.();
+      if (window.chrome.webview.postMessage === observation.wrapper) {
+        window.chrome.webview.postMessage = observation.original;
+      }
+      delete window.__replicaUiObservation;
+    });
+  }
+}
+
+async function waitForPublishedReplicaUi(page, recorder) {
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-storage").click();
+  // The existing replica.changed event enables this control only for verified,
+  // non-pending replicas. Observe readiness without requesting cache release.
+  await page.getByTestId("workspace-storage-release-cache-preview").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector(
+    '[data-testid="workspace-storage-release-cache-preview"]',
+  )?.disabled === false, null, { timeout: 60_000 });
+  const replica = await rawWorkspaceV2Request(page, "replica.status", {});
+  recorder.check("replicated UI readiness agrees with one exact public status checkpoint",
+    replica.result?.coordinationStrength === "advisory"
+      && replica.result.pendingSync === false && replica.result.syncState === "replicated",
+  { replica });
+}
+
+async function replicaEditRow(page, recorder, state, value, session) {
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, state.tableName);
+  const cell = page.locator(
+    `.tabulator-cell.tabulator-editable[tabulator-field="${state.column}"]`,
+  ).first();
+  await cell.waitFor({ state: "visible", timeout: 30_000 });
+  await cell.dblclick();
+  const editor = cell.locator("input, textarea").first();
+  await editor.fill(value);
+  const capture = await page.evaluate(installTableMutationReceiptCaptureInPage,
+    { requestType: "table.updateCellRequested" });
+  await editor.press("Enter");
+  const receipt = await waitForCapturedBridgeMessage(page, 30_000, capture);
+  recorder.check("isolated public edit commits exactly the seeded row and branch marker",
+    receipt.type === "table.editCommitted"
+      && receipt.owner?.workspaceId === state.workspaceId
+      && receipt.owner?.sessionEpoch === session.sessionEpoch
+      && receipt.owner?.table === state.tableId && receipt.owner?.rowKey === state.rowId
+      && receipt.owner?.column === state.column && receipt.payload?.rowKey === state.rowId
+      && receipt.payload?.storedValue === value
+      && receipt.payload?.currentRow?.[state.column] === value,
+  { receipt, value });
+  const checkpoint = await readDirectoryReplicaCheckpoint(page, state.tableId);
+  recorder.check("query observes the exact branch value under the same public table identity",
+    checkpoint.query.type === "query.page" && checkpoint.query.payload?.rows?.length === 1
+      && checkpoint.query.payload.rows[0].id === state.rowId
+      && checkpoint.query.payload.rows[0][state.column] === value
+      && checkpoint.query.payload.snapshot?.table === state.tableId
+      && checkpoint.query.payload.snapshot.schemaRevision === receipt.payload.revision?.schemaRevision
+      && checkpoint.query.payload.snapshot.dataRevision === receipt.payload.revision?.dataRevision,
+  { checkpoint });
+  // Workspace close awaits a foreground protection snapshot, unlike window exit.
+  // Reopen retains local authority and lets its worker finish publishing that snapshot.
+  const beforeClose = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+  const priorIds = new Set(beforeClose.result.snapshots.map((snapshot) => snapshot.snapshotId));
+  const priorRevision = Math.max(0, ...beforeClose.result.snapshots.map(
+    (snapshot) => snapshot.catalogRevision,
+  ));
+  await openWorkspaceCenterFromSwitcher(page);
+  const center = page.getByTestId("workspace-center");
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    center.getByRole("button", { name: /关闭当前工作区|Close current workspace/ }).click());
+  recorder.check("public workspace close completes protection for the provisional session",
+    closed.result.state === "closed" && closed.result.workspaceId === null
+      && closed.result.sessionEpoch === session.sessionEpoch, { closed });
+  const reopened = await activateDirectoryReplicaWorkspace(page, {
+    method: "workspace.open",
+    activate: () => center.getByRole("button", { name: new RegExp(state.workspaceName) }).click(),
+  });
+  recorder.check("protected workspace reopens the same cache with a fresh provisional epoch",
+    reopened.session.workspaceId === state.workspaceId
+      && reopened.session.sessionEpoch > session.sessionEpoch
+      && reopened.session.provisional === true, { reopened });
+  await waitForPublishedReplicaUi(page, recorder);
+  const afterClose = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+  const protections = afterClose.result.snapshots.filter((snapshot) =>
+    snapshot.trigger === "protection" && !priorIds.has(snapshot.snapshotId)
+      && snapshot.catalogRevision > priorRevision);
+  recorder.check("the close after this edit published a new, verified protection snapshot",
+    beforeClose.result.nextCursor === null && afterClose.result.nextCursor === null
+      && protections.length === 1 && protections[0].state === "ready"
+      && protections[0].integrity === "verified" && protections[0].syncState === "replicated",
+  { beforeClose, afterClose, protections });
+  const protectedRow = await rawBridgeRequest(page, "query.page", {
+    tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  recorder.check("the published protection belongs to the unchanged branch row and revisions",
+    protectedRow.type === "query.page" && protectedRow.payload?.rows?.length === 1
+      && protectedRow.payload.rows[0].id === state.rowId
+      && protectedRow.payload.rows[0][state.column] === value
+      && protectedRow.payload.snapshot?.table === state.tableId
+      && protectedRow.payload.snapshot.schemaRevision === receipt.payload.revision.schemaRevision
+      && protectedRow.payload.snapshot.dataRevision === receipt.payload.revision.dataRevision,
+  { protectedRow, protection: protections[0] });
+}
+
+async function verifyReplicaRecoveryPreviews(page, recorder, recoverySnapshotIds, runtime) {
+  const uuid = (value) => typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+  const listed = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-versions").click();
+  recorder.check("recovery identities are nonempty, unique and fully publicly listed",
+    Array.isArray(recoverySnapshotIds) && recoverySnapshotIds.length > 0
+      && new Set(recoverySnapshotIds).size === recoverySnapshotIds.length
+      && listed.result.nextCursor === null, { recoverySnapshotIds, listed });
+  for (const snapshotId of recoverySnapshotIds) {
+    const snapshot = listed.result?.snapshots?.find((entry) => entry.snapshotId === snapshotId);
+    recorder.check("each returned recovery snapshot is publicly listed and verified",
+      snapshot?.integrity === "verified" && snapshot.state === "ready", { snapshotId, snapshot });
+    const row = page.locator(`[id="snapshot-${snapshotId}"]`);
+    await row.click();
+    await page.getByTestId("snapshot-restore-open").click();
+    const recovery = await replicaUiMethod(page, recorder, "snapshot.previewRestore",
+      () => page.getByTestId("snapshot-restore-preview").click());
+    recorder.check("loser recovery is reachable through its actual UI restore preview",
+      recovery.request.payload.params.snapshotId === snapshotId
+        && recovery.request.payload.params.targetMode === "currentWorkspace"
+        && uuid(recovery.result.planId) && Array.isArray(recovery.result.changes), { recovery });
+    await page.locator(".snapshot-restore-modal .plan-summary").waitFor({ state: "visible" });
+    await page.screenshot({ path: path.join(runtime.evidenceDir, `recovery-${snapshotId}.png`),
+      fullPage: true });
+    await page.locator(".snapshot-restore-modal .modal-actions button").first().click();
+  }
+}
+
+async function scenario24(page, recorder, _network, runtime) {
+  const stage = runtime.replicaStage;
+  const uuid = (value) => typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+  await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
+  const center = page.getByTestId("workspace-center");
+  await center.waitFor({ state: "visible", timeout: 60_000 });
+  let state;
+  if (stage === "seed") {
+    state = { workspaceName: "E2E Forked Replica", tableName: "E2E Forked Records",
+      seed: "common seed", left: "left isolated edit", right: "right isolated edit" };
+    await page.getByTestId("workspace-create").click();
+    const modal = page.getByTestId("workspace-flow-modal");
+    await modal.locator("input").first().fill(state.workspaceName);
+    await modal.locator('.n-radio-button:has(input[value="other"])').click();
+    await modal.locator('.n-radio-button:has(input[value="mirrored"])').click();
+    const syncMark = page.getByTestId("workspace-user-marked-sync");
+    await syncMark.click();
+    const created = await replicaUiMethod(page, recorder, "workspace.create",
+      () => page.getByTestId("workspace-flow-confirm").click());
+    state.workspaceId = created.result.workspaceId;
+    recorder.check("seed explicitly creates an advisory mirrored directory workspace",
+      uuid(state.workspaceId) && created.result.status === "created"
+        && created.request.payload.params.locationPolicy === "other"
+        && created.request.payload.params.storageMode === "mirrored"
+        && created.request.payload.params.userMarkedSync === true,
+    { created });
+  } else {
+    if (!["fork-left", "fork-right", "resolve", "verify-resolved"].includes(stage)) {
+      throw new Error(`unknown directory replica stage: ${stage}`);
+    }
+    state = JSON.parse(await fs.readFile(runtime.replicaState, "utf8"));
+    if (stage === "fork-right") {
+      await page.getByTestId("workspace-connect").click();
+      const registered = await replicaUiMethod(page, recorder, "workspace.register",
+        () => page.getByTestId("workspace-flow-confirm").click());
+      recorder.check("second device registers the common published UUID through the picker",
+        registered.result.workspaceId === state.workspaceId
+          && registered.result.status === "registered", { registered });
+    }
+  }
+  const opened = await activateDirectoryReplicaWorkspace(page, {
+    method: "workspace.open",
+    activate: () => center.getByRole("button", { name: new RegExp(state.workspaceName) }).click(),
+  });
+  const identity = state.workspaceId.replaceAll("-", "");
+  recorder.check("stable host opens the same provisional workspace and hydrated database",
+    opened.session.workspaceId === state.workspaceId && opened.session.provisional === true
+      && opened.session.state === "openedProvisional"
+      && opened.databaseOpened.payload?.projectKey === `local:${identity}`
+      && opened.databaseOpened.payload?.projectRevision
+        === `${identity}:${opened.session.sessionEpoch}`, { opened });
+  if (stage === "verify-resolved") {
+    const persisted = await readDirectoryReplicaCheckpoint(page, state.tableId);
+    recorder.check("normal Host restart preserves the resolved row and authority revisions",
+      persisted.query.type === "query.page" && persisted.query.payload?.rows?.length === 1
+        && persisted.query.payload.rows[0].id === state.rowId
+        && persisted.query.payload.rows[0][state.column] === state.right
+        && persisted.query.payload.snapshot?.table === state.tableId
+        && persisted.query.payload.snapshot.schemaRevision === state.resolution.schemaRevision
+        && persisted.query.payload.snapshot.dataRevision === state.resolution.dataRevision,
+    { persisted, resolution: state.resolution });
+    await page.getByTestId("nav-conflicts").click();
+    const center = page.getByTestId("conflict-center");
+    const listed = await replicaUiMethod(page, recorder, "conflict.list", () =>
+      center.locator(":scope > header button").click());
+    const inspected = await replicaUiMethod(page, recorder, "conflict.inspect", () =>
+      center.locator(`[data-conflict-id="${state.resolution.conflictId}"]`).click());
+    requireResolvedReplicaConflict(listed.result, inspected.result,
+      state.resolution.conflictId, state.tableId);
+    recorder.check("the exact resolved conflict remains ready after normal Host restart",
+      inspected.request.payload.params.conflictId === state.resolution.conflictId,
+    { listed, inspected });
+    await verifyReplicaRecoveryPreviews(page, recorder, state.resolution.recoverySnapshotIds, runtime);
+    return;
+  }
+  if (stage === "seed") {
+    await page.getByTestId("nav-tables").click();
+    const table = await createSimpleTable(page, state.tableName, "Value");
+    state.tableId = table.tableId;
+    state.column = table.field.physicalName;
+    await selectTable(page, state.tableName);
+    const capture = await page.evaluate(installTableMutationReceiptCaptureInPage,
+      { requestType: "table.insertRowRequested" });
+    await page.getByTestId("toolbar-insert-row").click();
+    const inserted = await waitForCapturedBridgeMessage(page, 30_000, capture);
+    state.rowId = inserted.payload?.rowKey;
+    recorder.check("seed has exactly one publicly inserted row",
+      inserted.type === "table.rowsInserted" && inserted.owner?.table === state.tableId
+        && inserted.owner?.workspaceId === state.workspaceId && Boolean(state.rowId), { inserted });
+    await replicaEditRow(page, recorder, state, state.seed, opened.session);
+    await fs.writeFile(runtime.replicaState, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    return;
+  }
+  if (stage.startsWith("fork-")) {
+    const seed = await readDirectoryReplicaCheckpoint(page, state.tableId);
+    recorder.check("each isolated host forks the same seeded row before any remote exchange",
+      seed.query.payload?.rows?.length === 1 && seed.query.payload.rows[0].id === state.rowId
+        && seed.query.payload.rows[0][state.column] === state.seed, { seed, stage });
+    await replicaEditRow(page, recorder, state, state[stage.slice(5)], opened.session);
+    return;
+  }
+  await waitForPublishedReplicaUi(page, recorder);
+  await page.getByTestId("nav-conflicts").click();
+  const conflictCenter = page.getByTestId("conflict-center");
+  const conflicts = await replicaUiMethod(page, recorder, "conflict.list", () =>
+    conflictCenter.locator(":scope > header button").click());
+  const inspected = await selectSeededReplicaConflict(conflicts.result, state, async (conflictId) => {
+    const selected = await replicaUiMethod(page, recorder, "conflict.inspect", () =>
+      conflictCenter.locator(`[data-conflict-id="${conflictId}"]`).click());
+    recorder.check("inspect consumes the exact conflict row selected through UI",
+      selected.request.payload.params.conflictId === conflictId, { selected });
+    return selected.result;
+  });
+  const tableItem = inspected.items[0];
+  recorder.check("the selected pending conflict contains exactly the seeded table",
+    uuid(inspected.conflictId) && tableItem.itemId === state.tableId
+      && tableItem.path === state.tableName, { inspected });
+  const item = conflictCenter.locator(".conflict-item").filter({ hasText: state.tableName });
+  await item.locator('.n-radio-button:has(input[value="replica"])').click();
+  const preview = await replicaUiMethod(page, recorder, "conflict.preview",
+    () => page.getByTestId("conflict-preview").click());
+  recorder.check("public preview freezes exactly the selected remote table choice",
+    preview.result.valid === true && uuid(preview.result.planId)
+      && preview.request.payload.params.conflictId === inspected.conflictId
+      && preview.request.payload.params.choices.length === 1
+      && preview.request.payload.params.choices[0].itemId === tableItem.itemId
+      && preview.request.payload.params.choices[0].kind === "table"
+      && preview.request.payload.params.choices[0].side === "replica", { preview });
+  const applied = await replicaUiMethod(page, recorder, "conflict.apply",
+    () => page.getByTestId("conflict-apply").click());
+  recorder.check("apply consumes that exact valid plan and preserves recovery snapshots",
+    applied.request.payload.params.planId === preview.result.planId
+      && applied.result.state === "applied"
+      && applied.result.operationId === applied.terminal.wire.operationId
+      && applied.result.recoverySnapshotIds?.length > 0, { applied });
+  const resolved = await readDirectoryReplicaCheckpoint(page, state.tableId);
+  recorder.check("selected replica wins without changing the seeded table or row identity",
+    resolved.query.type === "query.page" && resolved.query.payload?.rows?.length === 1
+      && resolved.query.payload.rows[0].id === state.rowId
+      && resolved.query.payload.rows[0][state.column] === state.right
+      && resolved.query.payload.snapshot?.table === state.tableId, { resolved });
+  state.resolution = {
+    conflictId: inspected.conflictId, recoverySnapshotIds: applied.result.recoverySnapshotIds,
+    schemaRevision: resolved.query.payload.snapshot.schemaRevision,
+    dataRevision: resolved.query.payload.snapshot.dataRevision,
+  };
+  await verifyReplicaRecoveryPreviews(page, recorder, state.resolution.recoverySnapshotIds, runtime);
+  await fs.writeFile(runtime.replicaState, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -7560,6 +7875,7 @@ const scenarios = {
   "21-calendar-date-move": scenario21,
   "22-timeline-date-move": scenario22,
   "23-directory-replica-recovery": scenario23,
+  "24-directory-replica-conflict": scenario24,
   "26-lookup-definition-read": scenario26,
   "27-relation-target-search": scenario27,
   "28-relation-delta-preview": scenario28,
@@ -7786,6 +8102,7 @@ async function main() {
   const pageErrors = [];
   const result = {
     scenario: args.scenario,
+    stage: args["replica-stage"] ?? null,
     status: "failed",
     startedAt: new Date().toISOString(),
     transport: "playwright-core.connectOverCDP",
@@ -7845,6 +8162,8 @@ async function main() {
         evidenceDir,
         controlsDir: path.resolve(args["controls-dir"]),
         dataRoot: path.resolve(args["data-root"]),
+        replicaStage: args["replica-stage"],
+        replicaState: args["replica-state"],
         recordUiTiming(name, durationMs, details = {}) {
           result.uiTimings.push({
             name,

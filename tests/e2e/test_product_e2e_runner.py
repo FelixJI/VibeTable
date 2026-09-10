@@ -27,6 +27,267 @@ from tests.e2e.windows_tcp_listener_owner import (
 )
 
 
+def _deny_final_replica_report(monkeypatch: pytest.MonkeyPatch, evidence_root: Path) -> None:
+    target = (
+        evidence_root / "24-directory-replica-conflict/24-directory-replica-conflict-result.json"
+    )
+    original = Path.write_text
+
+    def write_text(path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("final report denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+
+@pytest.mark.parametrize("with_node_result", [False, True])
+@pytest.mark.parametrize("binary_output", [False, True])
+@pytest.mark.parametrize(
+    ("close_error", "report_denied"), [(False, False), (True, False), (True, True)]
+)
+def test_replica_timeout_retains_partial_output_stage_and_primary_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    with_node_result: bool,
+    binary_output: bool,
+    close_error: bool,
+    report_denied: bool,
+) -> None:
+    from tests.e2e import directory_replica_conflict
+    from tests.e2e.test_packaged_replica_hosts import _install_host_test_doubles, _package
+
+    scopes, owners = [], []
+    controls = _install_host_test_doubles(monkeypatch, scopes, owners, close_error=close_error)
+    evidence_root = tmp_path / "evidence"
+    if report_denied:
+        _deny_final_replica_report(monkeypatch, evidence_root)
+    partial_stdout, partial_stderr = "partial 阶段 output\n", "renderer stalled\n"
+
+    def node_run(command, **kwargs):
+        assert kwargs["timeout"] == 180
+        if with_node_result:
+            evidence = Path(command[command.index("--evidence-dir") + 1])
+            (evidence / f"{directory_replica_conflict.SCENARIO_ID}-result.json").write_text(
+                json.dumps(
+                    {
+                        "scenario": directory_replica_conflict.SCENARIO_ID,
+                        "stage": "seed",
+                        "status": "failed",
+                        "error": {"code": "REPLICA_STAGE_DEADLINE"},
+                        "bridgeDiagnostics": {
+                            "roundTrips": [],
+                            "failures": [],
+                            "pending": [{"requestType": "workspace.open"}],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        error = subprocess.TimeoutExpired(
+            command,
+            180,
+            output=partial_stdout.encode() if binary_output else partial_stdout,
+            stderr=partial_stderr.encode() if binary_output else partial_stderr,
+        )
+        error.add_note("primary node timeout")
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", node_run)
+    result = directory_replica_conflict.run_directory_replica_conflict(
+        package_root=_package(tmp_path / "package"), evidence_root=evidence_root, node="node"
+    )
+    stage_dir = evidence_root / directory_replica_conflict.SCENARIO_ID / "seed/hosts/left"
+    assert (stage_dir / "runner-stdout.log").read_text(encoding="utf-8") == partial_stdout
+    assert (stage_dir / "runner-stderr.log").read_text(encoding="utf-8") == partial_stderr
+    assert result["status"] == "failed"
+    assert result["error"]["name"] == "TimeoutExpired"
+    assert "primary node timeout" in result["error"]["notes"]
+    if report_denied:
+        assert any("final report denied" in note for note in result["error"]["notes"])
+    if close_error:
+        assert any("close denied" in note for note in result["error"]["notes"])
+    else:
+        assert all((control / runner.NORMAL_CLOSE_CONTROL_FILE).is_file() for control in controls)
+    assert len(result["stages"]) == 1
+    stage = result["stages"][0]
+    assert stage["stage"] == "seed"
+    assert stage["status"] == "failed"
+    assert stage["error"]["code"] == "NODE_RUNNER_TIMEOUT"
+    assert stage["error"]["timeoutSeconds"] == 180
+    assert json.loads((stage_dir / "stage-result.json").read_text(encoding="utf-8")) == stage
+    if with_node_result:
+        assert result["bridgeDiagnostics"]["pending"] == [{"requestType": "workspace.open"}]
+        assert result["bridgeDiagnosticsUnavailableStages"] == []
+    else:
+        assert stage["bridgeDiagnosticsError"]
+        assert result["bridgeDiagnosticsUnavailableStages"] == ["seed"]
+    assert len(scopes) == 2
+    assert all(scope.closed >= 1 for scope in scopes)
+    assert not (evidence_root / directory_replica_conflict.SCENARIO_ID / "fork").exists()
+
+
+def test_replica_conflict_failed_node_never_seeds_or_reopens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.e2e import directory_replica_conflict
+    from tests.e2e.test_packaged_replica_hosts import _install_host_test_doubles, _package
+
+    scopes, owners = [], []
+    controls = _install_host_test_doubles(monkeypatch, scopes, owners)
+
+    def node_run(command, **kwargs):
+        del kwargs
+        evidence = Path(command[command.index("--evidence-dir") + 1])
+        (evidence / "24-directory-replica-conflict-result.json").write_text(
+            json.dumps(
+                {"scenario": "24-directory-replica-conflict", "status": "passed", "stage": "seed"}
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 7, "", "node crashed")
+
+    monkeypatch.setattr(subprocess, "run", node_run)
+    result = directory_replica_conflict.run_directory_replica_conflict(
+        package_root=_package(tmp_path / "package"),
+        evidence_root=tmp_path / "evidence",
+        node="node",
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "REPLICA_STAGE_FAILED"
+    assert len(scopes) == 2
+    assert all(scope.closed >= 1 for scope in scopes)
+    assert not (tmp_path / "evidence/_runtime/24/selected-right/.vibetable").exists()
+    assert all((control / runner.NORMAL_CLOSE_CONTROL_FILE).exists() for control in controls)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "missing",
+        "mismatch",
+        "failed",
+        "timeout",
+        "close",
+        "exchange",
+        "copy",
+        "report",
+        "resolve",
+        "resolve-close",
+        "reopen",
+    ],
+)
+def test_replica_conflict_transports_only_closed_successful_stages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str | None
+) -> None:
+    from tests.e2e import directory_replica_conflict
+    from tests.e2e.test_directory_replica_payloads import REMOTE, _replica, _write
+    from tests.e2e.test_packaged_replica_hosts import _install_host_test_doubles, _package
+
+    scopes, owners = [], []
+    controls = _install_host_test_doubles(monkeypatch, scopes, owners)
+    ports = iter(range(9200, 9210))
+    monkeypatch.setattr(runner, "_reserve_port", lambda: next(ports))
+    observed = []
+    evidence_root = tmp_path / "evidence"
+    if failure == "report":
+        _deny_final_replica_report(monkeypatch, evidence_root)
+    roots = evidence_root / "_runtime/24"
+    left, right = roots / "selected-left", roots / "selected-right"
+
+    def node_run(command, **kwargs):
+        assert kwargs["timeout"] == 180
+        stage = command[command.index("--replica-stage") + 1]
+        evidence = Path(command[command.index("--evidence-dir") + 1])
+        observed.append(stage)
+        if stage == "seed":
+            _replica(left)
+        elif stage == "fork-left":
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(command, 180)
+            assert all(scope.closed >= 1 for scope in scopes[:2])
+            assert (right / REMOTE / "publications/base.json").is_file()
+            _write(left, REMOTE / "publications/left.json", b"left branch")
+        elif stage == "fork-right":
+            assert not (right / REMOTE / "publications/left.json").exists()
+            _write(right, REMOTE / "publications/right.json", b"right branch")
+            if failure == "close":
+                scopes[-1].root.exit_code = 1
+            if failure == "exchange":
+                _write(right, REMOTE / "publications/base.json", b"collision")
+            if failure == "copy":
+                original_open = Path.open
+
+                def open_payload(target, mode="r", *args, **kwargs):
+                    if target == left / REMOTE / "publications/right.json" and mode == "xb":
+                        raise PermissionError("replica payload destination denied")
+                    return original_open(target, mode, *args, **kwargs)
+
+                monkeypatch.setattr(Path, "open", open_payload)
+        elif stage == "verify-resolved":
+            assert all(scope.closed >= 1 for scope in scopes[:6])
+            assert (left / REMOTE / "publications/right.json").read_bytes() == b"right branch"
+        elif stage == "resolve":
+            if failure == "resolve-close":
+                scopes[-2].root.exit_code = 1
+            assert all(scope.closed >= 1 for scope in scopes[:4])
+            assert (left / REMOTE / "publications/right.json").read_bytes() == b"right branch"
+            assert (right / REMOTE / "publications/left.json").read_bytes() == b"left branch"
+        if stage != "fork-left" or failure != "missing":
+            result = {
+                "scenario": directory_replica_conflict.SCENARIO_ID,
+                "status": "failed"
+                if (stage, failure)
+                in {("fork-left", "failed"), ("resolve", "resolve"), ("verify-resolved", "reopen")}
+                else "passed",
+                "stage": "seed" if stage == "fork-left" and failure == "mismatch" else stage,
+                "bridgeDiagnostics": {"roundTrips": [], "failures": [], "pending": []},
+            }
+            (evidence / f"{directory_replica_conflict.SCENARIO_ID}-result.json").write_text(
+                json.dumps(result), encoding="utf-8"
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", node_run)
+    result = runner.run_scenario(
+        runner.Scenario(directory_replica_conflict.SCENARIO_ID, "双端冲突", "关闭后运输"),
+        package_root=_package(tmp_path / "package"),
+        evidence_root=evidence_root,
+        node="node",
+    )
+
+    assert result["status"] == ("passed" if failure is None else "failed")
+    expected = ["seed", "fork-left", "fork-right", "resolve", "verify-resolved"]
+    if failure in {"missing", "mismatch", "failed", "timeout"}:
+        expected = expected[:2]
+    elif failure in {"close", "exchange", "copy"}:
+        expected = expected[:3]
+    elif failure in {"resolve", "resolve-close"}:
+        expected = expected[:4]
+    assert observed == expected
+    expected_scopes = 8 if len(expected) == 5 else 6 if len(expected) == 4 else 4
+    assert len(scopes) == expected_scopes
+    assert all(scope.closed >= 1 for scope in scopes)
+    assert len(set(controls)) == len(controls)
+    if failure == "close":
+        # The right host close fails first; ExitStack aborts the remaining left host.
+        assert all(
+            (control / runner.NORMAL_CLOSE_CONTROL_FILE).is_file() for control in controls[:2]
+        )
+        assert (controls[-1] / runner.NORMAL_CLOSE_CONTROL_FILE).is_file()
+        assert not (controls[-2] / runner.NORMAL_CLOSE_CONTROL_FILE).exists()
+    else:
+        assert all((control / runner.NORMAL_CLOSE_CONTROL_FILE).is_file() for control in controls)
+    if failure in {"missing", "mismatch", "failed", "timeout", "close", "exchange", "copy"}:
+        assert not (left / REMOTE / "publications/right.json").exists()
+    if failure == "report":
+        assert result["error"]["code"] == "REPLICA_INFRASTRUCTURE_FAILED"
+        assert result["error"]["name"] == "PermissionError"
+        assert "final report denied" in result["error"]["message"]
+
+
 class _FakeRoot:
     pid = 42
 
@@ -401,6 +662,8 @@ def test_manifest_has_unique_capability_tagged_product_scenarios() -> None:
     assert "同一 workspace UUID" in by_id["23-directory-replica-recovery"]
     assert "database.opened" in by_id["23-directory-replica-recovery"]
     assert "replica.status" in by_id["23-directory-replica-recovery"]
+    assert "独立 local-data" in by_id["24-directory-replica-conflict"]
+    assert "败方 recoverySnapshotIds" in by_id["24-directory-replica-conflict"]
 
 
 def test_node_runner_inventory_matches_the_product_scenario_manifest() -> None:
@@ -548,7 +811,9 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
 def test_directory_replica_recovery_uses_one_public_observation_per_checkpoint() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     recovery = source[
-        source.index("function hasExactWorkspaceWire") : source.index("const scenarios")
+        source.index("function hasExactWorkspaceWire") : source.index(
+            "async function replicaUiMethod"
+        )
     ]
 
     # Behavioral receipt and revision assertions run in the real scenario;
@@ -3134,6 +3399,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),
         runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
+        runner.NODE_RUNNER.with_name("directory_replica_conflict_ui.test.mjs"),
     ]
     try:
         completed = subprocess.run(
@@ -3414,3 +3680,47 @@ def test_recovery_summary_does_not_claim_unscheduled_recovery() -> None:
         "runs": [],
         "unmeasuredRuns": 0,
     }
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        None,
+        {},
+        {"roundTrips": [], "failures": []},
+        {"roundTrips": [], "failures": [], "pending": "invalid"},
+        {"roundTrips": [], "failures": [], "pending": [{"requestId": "pending"}]},
+        {"roundTrips": [], "failures": [{"code": "unexpected"}], "pending": []},
+    ],
+)
+def test_replica_success_requires_complete_clean_bridge_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    diagnostics: object,
+) -> None:
+    from tests.e2e import directory_replica_conflict as replica
+
+    host = SimpleNamespace(
+        cdp_url="http://localhost:9123",
+        evidence_dir=tmp_path,
+        controls_dir=tmp_path / "controls",
+        local_data_root=tmp_path / "data",
+    )
+    result = {
+        "scenario": replica.SCENARIO_ID,
+        "stage": "seed",
+        "status": "passed",
+        "bridgeDiagnostics": diagnostics,
+    }
+    (tmp_path / f"{replica.SCENARIO_ID}-result.json").write_text(
+        json.dumps(result), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", "")
+    )
+    stages = []
+    with pytest.raises(replica._StageError, match="bridge diagnostics"):
+        replica._run_stage("node", "seed", host, tmp_path / "state.json", stages)
+    retained = json.loads((tmp_path / "stage-result.json").read_text(encoding="utf-8"))
+    assert retained["status"] == "failed"
+    assert retained["bridgeDiagnostics"] == diagnostics
