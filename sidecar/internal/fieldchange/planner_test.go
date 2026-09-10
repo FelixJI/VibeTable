@@ -466,6 +466,54 @@ func TestNoopUpdateAndRestoreAreRejected(t *testing.T) {
 	}
 }
 
+func TestLookupConfigurationUpdateIsSchemaChange(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, relationID, targetID string
+		unchanged                  bool
+	}{
+		{name: "target only", relationID: "fld_relation", targetID: "fld_next_value"},
+		{name: "path only", relationID: "fld_other_relation", targetID: "fld_value"},
+		{name: "unchanged", relationID: "fld_relation", targetID: "fld_value", unchanged: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			existing := definitionFor(v2.LogicalLookup)
+			existing.Value.Presence = v2.PresenceSpec{Mode: v2.PresenceComputed}
+			existing.Lookup = &v2.LookupSpec{
+				Path: []v2.LookupPathStep{{RelationFieldID: "fld_relation"}}, TargetFieldID: "fld_value",
+			}
+			draft := draftFrom(existing)
+			draft.Lookup = &v2.LookupSpec{
+				Path: []v2.LookupPathStep{{RelationFieldID: test.relationID}}, TargetFieldID: test.targetID,
+			}
+			planner := fieldchange.NewPlanner(sourceStub{
+				revisions: fieldchange.Revisions{Schema: "schema_2"},
+				fields:    map[string]v2.FieldDefinition{existing.Identity.FieldID: existing},
+			}, nil, nil, nil)
+			plan, err := planner.Plan(context.Background(), v2.FieldChangeIntent{
+				Action: v2.ActionUpdate, TableID: "tbl_orders", FieldID: existing.Identity.FieldID,
+				ExpectedSchemaRev: "schema_2", Draft: &draft,
+				Actor: v2.Actor{ID: "user_local", Kind: "user"},
+			})
+			if test.unchanged {
+				var productErr *fieldchange.ProductError
+				if !errors.As(err, &productErr) || productErr.Code != "field.change.noop" {
+					t.Fatalf("unchanged lookup = %#v, %v", plan, err)
+				}
+				return
+			}
+			if err != nil || !plan.CanApply || plan.CreatesMigration ||
+				len(plan.Classes) != 1 || plan.Classes[0] != v2.ClassSchema || plan.After == nil {
+				t.Fatalf("lookup configuration plan = %#v, %v", plan, err)
+			}
+			if plan.After.Identity != existing.Identity || plan.After.Lookup.TargetFieldID != test.targetID ||
+				plan.After.Lookup.Path[0].RelationFieldID != test.relationID {
+				t.Fatalf("lookup update changed identity or lost configuration: %#v", plan.After)
+			}
+		})
+	}
+}
+
 func TestEnabledDefaultsAreValidatedAgainstTheFieldKernel(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
