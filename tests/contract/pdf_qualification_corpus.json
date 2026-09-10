@@ -421,6 +421,60 @@
       "expectedCodePoints": 0,
       "expectedErrorCode": "extract.password_required",
       "reason": "pypdf 6.10.0 以空用户密码和非空 owner password 生成的 AES PDF；不得静默绕过。"
+    },
+    {
+      "file": "structure-object-stream.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": ["indexed", "unsupported"],
+      "requiredTokensWhenIndexed": ["A6 STRUCTURE VISIBLE"],
+      "forbiddenTokens": ["A6 UNREACHABLE POISON"],
+      "emptyTextOnRejection": true,
+      "reason": "type-2 xref 指向 ObjStm 内压缩的 Pages/Page/Font；未引用 poison stream 不得进入正文。"
+    },
+    {
+      "file": "structure-predictor12-valid.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": ["indexed", "unsupported"],
+      "requiredTokensWhenIndexed": ["A6 STRUCTURE VISIBLE"],
+      "forbiddenTokens": ["A6 UNREACHABLE POISON"],
+      "emptyTextOnRejection": true,
+      "reason": "合法 PNG Up Predictor 12 xref stream，Columns=7、Colors=1、BitsPerComponent=8。"
+    },
+    {
+      "file": "structure-predictor12-bad-filter.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": ["failed", "unsupported", "resourceLimited"],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": ["A6 UNREACHABLE POISON"],
+      "emptyTextOnRejection": true,
+      "reason": "与合法 Predictor 12 逻辑 xref 相同，但首行 filter byte 为非法的 9；不得报 noTextLayer 或输出正文。"
+    },
+    {
+      "file": "structure-predictor1-identity.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": ["indexed", "unsupported"],
+      "requiredTokensWhenIndexed": ["A6 STRUCTURE VISIBLE"],
+      "forbiddenTokens": ["A6 UNREACHABLE POISON"],
+      "emptyTextOnRejection": true,
+      "reason": "显式 Predictor=1 的 identity xref stream；膨胀字节直接为 xref rows。"
+    },
+    {
+      "file": "structure-deep-page-tree.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": ["indexed", "unsupported"],
+      "requiredTokensWhenIndexed": ["A6 STRUCTURE VISIBLE"],
+      "forbiddenTokens": ["A6 UNREACHABLE POISON"],
+      "emptyTextOnRejection": true,
+      "reason": "64 个有限 Pages 节点、一个可达 Page 及未引用 poison stream。"
+    },
+    {
+      "file": "structure-cyclic-page-tree.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": ["failed", "unsupported", "resourceLimited"],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": ["A6 UNREACHABLE POISON"],
+      "emptyTextOnRejection": true,
+      "reason": "仅将最后一个 Kids edge 改回根 Pages，形成 64 节点 cycle；不得报 noTextLayer 或输出正文。"
     }
   ],
   "remainingCoverage": [
@@ -428,7 +482,7 @@
     "object streams and predictors",
     "input/output exact-edge and deadline/cancellation boundaries",
     "加密覆盖目前仅限两份自有 AES 小样本；真实复杂加密生产者和安全 handler 组合仍缺失",
-    "deep/cyclic objects",
+    "对象流、Predictor 及深层/循环页树目前各限一份自有结构样本；真实复杂生产者组合仍缺失",
     "product status mapping and generation transaction"
   ]
 }

@@ -31,8 +31,10 @@ internal sealed class QualificationFilterProvider : IFilterProvider
 {
     private readonly DecodeBudget _budget = new();
 
+    public bool UnsupportedDecodeEncountered { get; private set; }
+
     private IFilter Wrap(IFilter filter) => filter is FlateFilter
-        ? new StrictFlateFilter(_budget)
+        ? new StrictFlateFilter(_budget, () => UnsupportedDecodeEncountered = true)
         : new CountedFilter(filter, _budget);
 
     public IReadOnlyList<IFilter> GetFilters(DictionaryToken dictionary)
@@ -59,7 +61,7 @@ internal sealed class CountedFilter(IFilter inner, DecodeBudget budget) : IFilte
     }
 }
 
-internal sealed class StrictFlateFilter(DecodeBudget budget) : IFilter
+internal sealed class StrictFlateFilter(DecodeBudget budget, Action onUnsupported) : IFilter
 {
     public bool IsSupported => true;
 
@@ -80,7 +82,7 @@ internal sealed class StrictFlateFilter(DecodeBudget budget) : IFilter
         }
         var parameters = DecodeParameterResolver.GetFilterParameters(dictionary, filterIndex);
         if (parameters.Data.Count != 0)
-            throw new NotSupportedException("Predictor qualification is not complete.");
+            throw Unsupported("Predictor qualification is not complete.");
         if (input.Length < 2 || (input.Span[0] & 15) != 8 || (input.Span[0] >> 4) > 7)
             throw new PdfStreamException();
         var inflater = new Inflater(false);
@@ -102,7 +104,7 @@ internal sealed class StrictFlateFilter(DecodeBudget budget) : IFilter
             {
                 if (inflater.IsFinished) break;
                 if (inflater.IsNeedingDictionary)
-                    throw new NotSupportedException("Preset dictionaries are unsupported.");
+                    throw Unsupported("Preset dictionaries are unsupported.");
                 throw new PdfStreamException();
             }
             budget.Add(output.Length, count);
@@ -111,6 +113,13 @@ internal sealed class StrictFlateFilter(DecodeBudget budget) : IFilter
         if (inflater.RemainingInput != 0)
             throw new PdfStreamException();
         return output.ToArray();
+    }
+
+    private NotSupportedException Unsupported(string message)
+    {
+        // PdfPig can discard this exception while recovering a cross-reference table.
+        onUnsupported();
+        return new NotSupportedException(message);
     }
 }
 

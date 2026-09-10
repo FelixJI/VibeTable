@@ -1,6 +1,6 @@
 # A6 PDF 候选的隔离运行资格
 
-当前结论：固定 PdfPig 0.1.16 与 SharpZipLib 1.4.2 的实验工具在 32 项自有语料（含独立生产者）上与冻结预期一致。
+当前结论：固定 PdfPig 0.1.16 与 SharpZipLib 1.4.2 的实验工具在 38 项自有语料（含独立生产者和有限结构 DISCOVERY）上与冻结预期一致。
 这使候选可重复观察，不批准 ADR 0014，也不替换产品 Go adapter 或改变现有发布门禁。
 
 ## 接口与边界
@@ -31,9 +31,9 @@ Job 限制 commit 和 user CPU；另采样总 CPU，并使用墙钟 deadline。s
 dotnet build qa/pdf-adapter/PdfAdapterQualification.csproj --configuration Release --artifacts-path build/qa/pdf-adapter/artifacts -p:RestoreLockedMode=true
 build/qa/pdf-adapter/artifacts/bin/PdfAdapterQualification/release/PdfAdapterQualification.exe --check-process-boundary
 uv run --frozen --no-sync python tests/contract/generate_pdf_qualification_corpus.py
-uv run --frozen --no-sync python qa/pdf_adapter_qualification.py tests/contract/pdf_qualification_corpus.json build/qa/pdf-qualification/v1 build/qa/pdf-adapter/artifacts/bin/PdfAdapterQualification/release/PdfAdapterQualification.exe --memory-mib 1024 --output build/qa/pdf-adapter/observations-final-1g.json
+uv run --frozen --no-sync python qa/pdf_adapter_qualification.py tests/contract/pdf_qualification_corpus.json build/qa/pdf-qualification/v1 build/qa/pdf-adapter/artifacts/bin/PdfAdapterQualification/release/PdfAdapterQualification.exe --memory-mib 1024 --output build/qa/pdf-adapter/observations-structure-38.json
 go -C sidecar build -o ../build/qa/pdf-adapter/pdf-qualification.exe ./cmd/pdf-qualification
-build/qa/pdf-adapter/pdf-qualification.exe --observations tests/contract/pdf_qualification_corpus.json build/qa/pdf-adapter/observations-final-1g.json
+build/qa/pdf-adapter/pdf-qualification.exe --observations tests/contract/pdf_qualification_corpus.json build/qa/pdf-adapter/observations-structure-38.json
 ```
 
 12 项进程检查包含成功、deadline、取消、创建前取消、CPU、托管/原生内存、两类输出上限、后代进程、
@@ -49,14 +49,16 @@ build/qa/pdf-adapter/pdf-qualification.exe --observations tests/contract/pdf_qua
 - 初始比较器将毫秒声明为整数，拒绝实际 296.875ms；现接受有限非负小数，保留原始测量，增加小数和非法测量回归。
 - 单独运行首次进程 pytest 是 1 passed，但命令因未运行 backend 覆盖率为 0 而 exit 1；不记作完整质量通过。
 
-对象流/predictor、独立可再分发生产者、加密和深层循环、warning 误拒绝、完整 generation/授权/发布集成、
+真实复杂对象流/predictor、独立可再分发生产者、加密和深层循环、warning 校准、完整 generation/授权/发布集成、
 NOTICE/SBOM 与产品 adapter 决策仍未完成。此工具的包引用仅用于资格 executable，不进入当前产品包。
 
-完整质量补充：`uv run --frozen --no-sync python scripts/automation_project.py python-quality`
-首次 1897 passed / 1 skipped / 2 failed，覆盖率 91.88%；两个失败均为该新 worktree 缺少 Web 依赖。
-确认锁文件一致并复用本机既有 Web 环境后，重跑 exit 0，1899 passed / 1 skipped、覆盖率 91.88%，
-其中新增三项 PDF 集成回归全部通过。唯一 skip 为既有 Windows symlink 特权不足场景。
-日志分别为 `build/qa/pdf-adapter/python-quality.log` 和 `python-quality-reused-web.log`。
+完整质量历史记录：`uv run --frozen --no-sync python scripts/automation_project.py python-quality` 首次为
+1897 passed / 1 skipped / 2 failed、覆盖率 91.88%；两个失败来自该新 worktree 缺少 Web 依赖。确认 lock 一致并复用
+既有 Web 环境后，重跑为 1899 passed / 1 skipped、覆盖率 91.88%，日志分别为
+`build/qa/pdf-adapter/python-quality.log` 和 `python-quality-reused-web.log`。本 worktree 后续首次 Pyright 曾报告
+49 个缺失依赖；以 frozen/offline 同步已有 `.venv` 后恢复质量入口，不变更 lock 或依赖来源。当前结构增量的最终
+质量入口 exit 0：1913 passed / 1 skipped、覆盖率 91.88%，并含 13 项 PDF 集成测试及 12 项进程检查；唯一 skip 为
+既有 Windows symlink 特权不足场景，日志为 `build/qa/pdf-adapter/python-quality-structure-restored-venv.log`。
 `go test ./cmd/pdf-qualification` 通过；相关 Python Ruff 与 Pyright 通过。
 
 ## 独立生产者与加密发现
@@ -86,3 +88,32 @@ uv run --frozen --no-sync -- $env:A6_PRODUCER_PYTHON -B tests/contract/generate_
 生成器在导入时不加载工具包；执行时核对三个版本，不匹配即失败，只写四个固定路径且不清理目录。
 本次使用现有工具bundle，不安装额外依赖或将bundle路径写入产品配置。ReportLab压缩样本采用ASCII85与Flate链，
 不能将其当作单一Flate filter或一般复杂filter链已通过的证据。
+
+## 结构 DISCOVERY 的 38 项观察
+
+原 28 项和独立生产者增量后的 32 项证据保留不改。随后只用标准库在现有语料生成器中加入六份自有结构样本：
+ObjStm/type-2 xref、合法与坏 filter 的 Predictor 12、Predictor 1 identity、64 层有限页树及回边 cycle。它们是
+预先声明的 DISCOVERY 构造，不代表一般结构支持；合法样本只允许 `indexed` 或 `unsupported`，坏结构只允许
+`failed`、`unsupported` 或 `resourceLimited`，并且所有拒绝都必须为空正文且不得是 `noTextLayer`。
+
+当前复现产物为 `build/qa/pdf-adapter/observations-structure-38.json`，Go 比较报告为
+`build/qa/pdf-adapter/comparison-structure-38.json`：exit 0、failed=0。六项的实测状态如下（毫秒保留收集器原值）：
+
+- ObjStm：`indexed`、20 code points，291ms wall / 250ms CPU，Job peak 34,607,104、worker working set 62,189,568 bytes。
+- Predictor 12 合法、坏 filter 和 Predictor 1：均为 `unsupported / extract.unsupported`、零正文；wall 分别为 140、143、144ms，CPU 为 109.375、93.75、93.75ms。
+- 64 层有限页树：`indexed`、20 code points，287ms wall / 250ms CPU。
+- 64 节点 cycle：`failed / extract.pdf_invalid`、零正文，240ms wall / 218.75ms CPU。
+
+全部六项均为 `Succeeded`，且 `allProcessesExited=true`；记录的 process limits 是 1 GiB Job commit、30 秒 CPU 和
+30 秒 deadline。每项也保留独立的 Job peak commit 与 root worker peak working set，不能将任一数值外推为覆盖所有
+资源路径。四个合法样本的 PDFium+pypdf oracle 位于
+`build/qa/a6-structure-discovery/final-structured-oracles.json`，均 PASS：一页、可见 token、无 poison；
+旧候选对两份合法 predictor 样本的预期不匹配记录仍保留为反证。
+
+诊断证据 `build/qa/a6-structure-discovery/diagnostic` 显示本地 `StrictFlate` 的 `NotSupported` 可被 PdfPig 吞掉，
+随后 `Open` 抛 `PdfDocumentFormatException` 且 `InnerException` 为 null。资格 provider 因此按显式结构证据将每份
+此类文档标记为 `unsupported` 拒绝，保留 typed failure 的优先顺序和全部既有预算；这不是把 warning 当作成功或扩大
+PdfPig 的 Predictor 支持声明。
+
+这一轮只完成有限 DISCOVERY 构造的可复现观察。真实复杂生产者、一般 Predictor 支持、warning 分类校准，以及产品
+adapter 接入、generation 事务、授权和发布资格仍开放；本报告不采纳候选或关闭 A6。

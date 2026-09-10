@@ -17,6 +17,7 @@ internal static class PdfWorker
     {
         int pages = 0;
         var log = new QualificationLog();
+        var filters = new QualificationFilterProvider();
         try
         {
             using var stream = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -26,11 +27,13 @@ internal static class PdfWorker
             {
                 UseLenientParsing = false,
                 Logger = log,
-                FilterProvider = new QualificationFilterProvider(),
+                FilterProvider = filters,
             };
             using var document = PdfDocument.Open(stream, options);
             if (document.IsEncrypted)
                 return Reject("passwordProtected", "extract.password_required", pages, log);
+            if (filters.UnsupportedDecodeEncountered)
+                return Reject("unsupported", "extract.unsupported", pages, log);
             var text = new StringBuilder();
             int remaining = TextLimit;
             bool truncated = false;
@@ -49,7 +52,7 @@ internal static class PdfWorker
                 }
                 // Exhausting output does not end validation of later reachable pages.
             }
-            if (log.WarningCount != 0)
+            if (filters.UnsupportedDecodeEncountered || log.WarningCount != 0)
                 return Reject("unsupported", "extract.unsupported", pages, log);
             if (text.Length == 0)
                 return Reject("noTextLayer", "extract.pdf_no_text", pages, log);
@@ -80,7 +83,9 @@ internal static class PdfWorker
         }
         catch (Exception)
         {
-            return Reject("failed", "extract.pdf_invalid", pages, log);
+            return filters.UnsupportedDecodeEncountered
+                ? Reject("unsupported", "extract.unsupported", pages, log)
+                : Reject("failed", "extract.pdf_invalid", pages, log);
         }
     }
 

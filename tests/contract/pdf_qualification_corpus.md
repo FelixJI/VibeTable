@@ -1,6 +1,6 @@
 # A6 自有 PDF 决策语料 v1
 
-`pdf_qualification_corpus.json` 冻结 32 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
+`pdf_qualification_corpus.json` 冻结 38 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
 `generate_pdf_qualification_corpus.py` 用标准库构造结构样本并读取固定的自有生产者 fixtures，不复制字体或外部文档。
 
 ```text
@@ -101,5 +101,24 @@ ReportLab 4.4.9 普通页和 ASCII85Decode + FlateDecode 压缩页，以及 pypd
 零正文，包括空 user password 但非空 owner password。旧候选在后一项返回 indexed，修复后在页面读取前检查
 PdfDocument.IsEncrypted。最终 fixtures 的普通正文由 PDFium 核对，加密正文通过已知测试密码验证。
 
-2026-09-10 最终32项比较 failed=0、exit0，原28项预期未改；该结果仍不替代真实复杂生产者、其他security handler、
-对象流/predictor及产品generation事务资格。
+2026-09-10 的独立生产者增量为 32 项、比较 failed=0、exit0，原 28 项预期未改；该历史结果不替代真实复杂生产者、
+其他 security handler、对象流/predictor 及产品 generation 事务资格。
+
+## 结构 DISCOVERY 增量
+
+在 32 项历史语料基础上，标准库生成器新增六个自有结构样本，总数为 38：type-2 xref 指向 ObjStm 压缩的
+Pages/Page/Font、合法和坏 filter 的 PNG Up Predictor 12 xref、显式 Predictor=1 identity xref、64 层有限页树，
+以及仅改最后一条 Kids edge 的 64 节点页树 cycle。它们不带外部内容或 oracle/CLI 实验框架。
+
+合法的四项是 DISCOVERY `indexed`（必须保留 `A6 STRUCTURE VISIBLE`）或显式 `unsupported`；全部必须排除
+`A6 UNREACHABLE POISON`。坏 filter 与 cycle 只允许 `failed`、`unsupported` 或 `resourceLimited`，正文必须为空，
+不允许把已知坏结构归类为 `noTextLayer`。这是一组有限构造事实，不代表一般 ObjStm、Predictor 或深图支持。
+
+当前隔离候选的 38 项比较为 failed=0、exit 0。六项中 ObjStm 和有限深链 indexed（各 20 code points）；三个
+Predictor 样本均为 `unsupported / extract.unsupported`、零正文；cycle 为 `failed / extract.pdf_invalid`、零正文。
+所有 worker 都 `Succeeded` 且确认无存活进程。四个合法结构样本另经 PDFium 与 pypdf 核对 token、页数和 poison 排除，
+报告为 PASS；旧候选对两份合法 predictor 样本的预期不匹配记录仍保留为反证。实测只记录本机一次的 wall/CPU/Job commit/worker working set，
+不构成性能或资源覆盖声明。
+
+结构 DISCOVERY 仍只覆盖这六份自有小样本。复杂真实生产者组合、一般 Predictor 支持与 warning 分类校准，以及产品
+adapter、generation 事务和发布集成仍开放，不能因为本比较为零差异而关闭。

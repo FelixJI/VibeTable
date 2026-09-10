@@ -146,3 +146,58 @@ def test_independent_producer_pdf_fixtures(
         assert token in result["text"]
     else:
         assert result["text"] == ""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("filename", "allowed_statuses", "token"),
+    [
+        ("structure-object-stream.pdf", {"indexed", "unsupported"}, "A6 STRUCTURE VISIBLE"),
+        ("structure-predictor12-valid.pdf", {"indexed", "unsupported"}, "A6 STRUCTURE VISIBLE"),
+        (
+            "structure-predictor12-bad-filter.pdf",
+            {"failed", "unsupported", "resourceLimited"},
+            "",
+        ),
+        ("structure-predictor1-identity.pdf", {"indexed", "unsupported"}, "A6 STRUCTURE VISIBLE"),
+        ("structure-deep-page-tree.pdf", {"indexed", "unsupported"}, "A6 STRUCTURE VISIBLE"),
+        (
+            "structure-cyclic-page-tree.pdf",
+            {"failed", "unsupported", "resourceLimited"},
+            "",
+        ),
+    ],
+)
+def test_structure_discovery_pdf_fixtures(
+    qualification_executable: Path,
+    pdf_corpus: Path,
+    filename: str,
+    allowed_statuses: set[str],
+    token: str,
+) -> None:
+    completed = subprocess.run(
+        [
+            str(qualification_executable),
+            "--run",
+            str(pdf_corpus / filename),
+            "--memory-mib",
+            "1024",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    observation = json.loads(completed.stdout)
+    assert observation["allProcessesExited"] is True
+    assert observation["workerReason"] == "Succeeded"
+    result = observation["result"]
+    assert result["status"] in allowed_statuses
+    if result["status"] == "unsupported":
+        assert result["errorCode"] == "extract.unsupported"
+    assert "A6 UNREACHABLE POISON" not in result["text"]
+    if result["status"] == "indexed":
+        assert token in result["text"]
+    else:
+        assert result["text"] == ""
