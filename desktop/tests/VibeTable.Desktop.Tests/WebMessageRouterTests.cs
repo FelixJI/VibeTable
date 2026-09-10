@@ -663,7 +663,7 @@ public sealed class WebMessageRouterTests
                 ["requestId"] = $"request-{type}",
                 ["payload"] = new { },
             };
-            if (type is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable")
+            if (type is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable")
             {
                 request["scope"] = new
                 {
@@ -1148,6 +1148,50 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    [DataRow("preset.list")]
+    [DataRow("preset.save")]
+    [DataRow("preset.delete")]
+    public void PresetGoRoutesRequireScopeAndPreservePayloadAndWire(string method)
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            ProductRpcCapabilityManifest.Default)
+        {
+            IsReady = true,
+        };
+        JsonElement payload = JsonSerializer.Deserialize<JsonElement>(
+            "{}");
+        HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+        {
+            type = method, requestId = "preset-go", payload,
+        }));
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        string scoped = JsonSerializer.Serialize(new
+        {
+            type = method, requestId = "preset-go", payload,
+            scope = new
+            {
+                scope = "workspace",
+                workspaceId = "11111111-1111-4111-8111-111111111111",
+                sessionEpoch = 7,
+                operationId = "22222222-2222-4222-8222-222222222222",
+                sequence = 1,
+            },
+        });
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        RoutedWebRequest request = dispatched.Single();
+        Assert.AreEqual(method, request.Type);
+        Assert.AreEqual("preset-go", request.RequestId);
+        Assert.IsTrue(JsonElement.DeepEquals(payload, request.Payload));
+        Assert.IsTrue(JsonElement.DeepEquals(document.RootElement.GetProperty("scope"), request.Wire));
+    }
+
+    [TestMethod]
     [DataRow("{}", false)]
     [DataRow("{\"snapshot\":null}", false)]
     [DataRow("{\"snapshot\":[]}", false)]
@@ -1245,7 +1289,7 @@ public sealed class WebMessageRouterTests
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
             Assert.AreEqual(
-                route is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable"
+                route is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable"
                     ? "goSidecar"
                     : "pythonBff",
                 capability.Owner,
