@@ -38,6 +38,7 @@ import {
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
+import { submitWorkspaceSearch } from "./workspace_search_submit.mjs";
 import { waitForWorkspaceSearchRebuildTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 import {
@@ -4643,24 +4644,6 @@ async function scenario11(page, recorder, _network, runtime) {
       && await page.getByTestId("plugin-install-plan").isHidden()
       && (await page.locator(".status-strip").innerText()).includes("1.0.0"),
   { message: await upgradeFailure.innerText() });
-}
-
-async function submitWorkspaceSearch(page, { keyboard = false } = {}) {
-  const submit = page.getByTestId("workspace-search-submit");
-  await submit.waitFor({ state: "visible" });
-  await beginWorkspaceV2MethodCapture(page, "workspaceSearch.query");
-  if (keyboard) {
-    const input = page.getByTestId("workspace-search-input").locator("input");
-    await input.focus();
-    await input.press("Enter");
-  } else {
-    await submit.click();
-  }
-  const response = await waitForCapturedBridgeMessage(page, 30_000);
-  if (response.payload?.ok !== true) {
-    throw new Error(`WorkspaceSearch query failed: ${JSON.stringify(response)}`);
-  }
-  return response.payload.result;
 }
 
 async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000) {
