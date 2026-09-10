@@ -20,6 +20,30 @@ public sealed class PendingUpdateActivationJournalTests
     }
 
     [TestMethod]
+    public async Task ConcurrentRecoveryReadsDoNotLoseTheJournalLockPath()
+    {
+        UpdateApplyPlan plan = CreatePendingPlan("concurrent-recovery-reads", '8');
+        var watchdog = new UpdateProcessIdentity(
+            123,
+            new DateTimeOffset(2026, 9, 6, 5, 0, 0, TimeSpan.Zero));
+        PendingUpdateActivationJournal.Publish(plan, watchdog);
+        PendingUpdateActivationJournal.RecordUpdatedLaunch(
+            plan, watchdog, "owned-group", new string('9', 64));
+        using var start = new Barrier(2);
+        Task[] readers = Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
+        {
+            Assert.IsTrue(start.SignalAndWait(TimeSpan.FromSeconds(5)));
+            for (int index = 0; index < 128; index++)
+            {
+                Assert.AreEqual(
+                    UpdateRecoveryState.LaunchingUpdatedApp,
+                    PendingUpdateActivationJournal.ReadRecoveryState(plan, watchdog));
+                Thread.Yield();
+            }
+        })).ToArray();
+        await Task.WhenAll(readers);
+    }
+    [TestMethod]
     public async Task RecoveryReadWaitsForJournalWriterBeforeReadingState()
     {
         UpdateApplyPlan plan = CreatePendingPlan("recovery-read-lock", '0');
