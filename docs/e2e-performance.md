@@ -11,7 +11,7 @@
 - 当前 manifest gap：3（`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`）。
 - S33 两真实 Host 的本地新包资格见对应资格记录；本节旧 main 样本没有这些结果，因此保留该样本的 gap。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：2（`07-attachment-history`、`17-interface-lifecycle`）。
+- 当前 manifest changed：3（`07-attachment-history`、`16-dashboard-lifecycle`、`17-interface-lifecycle`）。
 
 同一 main 候选覆盖该样本当时登记的 29 个场景：01–23、26–31，累计 382 项断言通过。S06 两端关系字段的真实 UI 编辑、冻结计划与应用，以及 S26–S31 的 Lookup 描述、关系搜索与预览、来源分页、查询快照与关系完整性检查，均获得本次打包报告；不再沿用旧 S06 语义或六场缺口。
 

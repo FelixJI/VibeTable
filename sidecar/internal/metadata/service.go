@@ -584,8 +584,13 @@ func executeIdempotent[T any](
 				raw, marshalErr := json.Marshal(
 					stored.GetRaw("receipt_json"),
 				)
-				if marshalErr != nil ||
-					json.Unmarshal(raw, &result) != nil {
+				if marshalErr != nil {
+					return storageError()
+				}
+				// Dynamic receipt values retain JSON number precision and spelling.
+				decoder := json.NewDecoder(bytes.NewReader(raw))
+				decoder.UseNumber()
+				if decoder.Decode(&result) != nil {
 					return storageError()
 				}
 				markReplayed(&result)

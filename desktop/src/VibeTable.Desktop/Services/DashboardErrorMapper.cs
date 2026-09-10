@@ -30,6 +30,13 @@ public static class DashboardErrorMapper
             ["dashboard_panel_membership_invalid"] = "面板不属于当前仪表盘。",
             ["dashboard_panel_limit_exceeded"] = "仪表盘面板数量已达到上限。",
             ["dashboard_panel_options_too_large"] = "面板配置内容过大。",
+            ["dashboard_panel_type_unknown"] = "该面板类型不受支持。",
+            ["dashboard_panel_size_invalid"] = "面板尺寸小于允许的最小值。",
+            ["dashboard_panel_options_invalid"] = "面板配置无效。",
+            ["dashboard_manifest_invalid"] = "仪表盘面板清单无效。",
+            ["dashboard_storage_invalid"] = "仪表盘存储内容无效。",
+            ["dashboard_persistence_failed"] = "仪表盘保存失败，请稍后重试。",
+            ["dashboard_idempotency_conflict"] = "该操作已使用不同内容提交，请重新加载。",
             ["panel_type_unknown"] = "该面板类型不受支持。",
         };
 
