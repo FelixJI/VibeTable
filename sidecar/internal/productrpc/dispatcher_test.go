@@ -471,31 +471,15 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	allMethods := dispatcher.Methods()
-	if len(allMethods) != 40 {
-		t.Fatalf("production method count = %d", len(allMethods))
-	}
-	oldMethods := []Method{}
-	for _, method := range allMethods {
-		if strings.HasPrefix(method.Method, "contentProfile.") || strings.HasPrefix(method.Method, "recordDocumentLink.") {
-			if method.Scope != productcapabilities.WorkspaceScope {
-				t.Fatalf("content scope = %#v", method)
-			}
-		} else {
-			oldMethods = append(oldMethods, method)
-		}
-	}
-	if methods := oldMethods; len(methods) != 33 ||
-		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
-		methods[3] != (Method{Method: "history.applyRestore", Scope: productcapabilities.WorkspaceScope}) || methods[4] != (Method{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope}) || methods[5] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[6] != (Method{Method: "interface.commit", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[7] != (Method{Method: "interface.delete", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[8] != (Method{Method: "interface.list", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[9] != (Method{Method: "interface.load", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[10].Method != "lookup.list" || methods[11] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[12] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[13] != (Method{Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope}) || methods[14] != (Method{Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope}) || methods[15].Method != "preset.delete" || methods[16].Method != "preset.list" || methods[17].Method != "preset.save" || methods[18].Method != "query.cursorFetch" || methods[19].Method != "query.cursorOpen" || methods[20].Method != "query.page" || methods[21].Method != "query.readRows" ||
-		methods[22].Method != "query.selectionOpen" || methods[23] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[24].Method != "query.view" || methods[25] != (Method{Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope}) || methods[26].Method != "relation.previewDelta" || methods[27] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[28].Method != "schema.describe" ||
-		methods[29].Method != "schema.getTable" || methods[30].Method != "schema.list" || methods[31] != (Method{Method: "settings.commitWorkCalendar", Scope: productcapabilities.WorkspaceScope}) || methods[32] != (Method{Method: "settings.readWorkCalendar", Scope: productcapabilities.WorkspaceScope}) {
+	expectedMethods := []string{"contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.settings.describe", "file.list", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.describe", "schema.getTable", "schema.list", "settings.commitWorkCalendar", "settings.readWorkCalendar"}
+	if methods := dispatcher.Methods(); len(methods) != len(expectedMethods) {
 		t.Fatalf("production registrations = %#v", methods)
+	} else {
+		for index, expected := range expectedMethods {
+			if methods[index] != (Method{Method: expected, Scope: productcapabilities.WorkspaceScope}) {
+				t.Fatalf("production registration[%d] = %#v, want %q", index, methods[index], expected)
+			}
+		}
 	}
 	_, err = New(identity, registrations[1:]...)
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
@@ -555,6 +539,13 @@ func generatedGoSidecarRegistrations() []Registration {
 			Method: "history.read", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
+		{Method: "insights.dashboardQueryLimits", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.deleteDashboardWorkspace", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.executeDashboardQuery", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.listDashboards", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.panelManifest", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.readDashboardWorkspace", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.saveDashboardDraft", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "interface.commit", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,

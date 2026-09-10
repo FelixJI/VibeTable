@@ -346,6 +346,10 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 call.args[2].id,
             )
     from backend.contracts.presets_versions_dashboards import (
+        DashboardWorkspaceParams,
+        ExecuteDashboardQueryParams,
+        ListDashboardsParams,
+        SaveDashboardDraftParams,
         ListPresetsParams,
         SavePresetParams,
         DeletePresetParams,
@@ -353,6 +357,13 @@ def _registered_models() -> dict[str, type[BaseModel]]:
 
     result.update(
         {
+            "insights.listDashboards": ListDashboardsParams,
+            "insights.readDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.saveDashboardDraft": SaveDashboardDraftParams,
+            "insights.deleteDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.executeDashboardQuery": ExecuteDashboardQueryParams,
+            "insights.dashboardQueryLimits": ListDashboardsParams,
+            "insights.panelManifest": ListDashboardsParams,
             "preset.list": ListPresetsParams,
             "preset.save": SavePresetParams,
             "preset.delete": DeletePresetParams,
