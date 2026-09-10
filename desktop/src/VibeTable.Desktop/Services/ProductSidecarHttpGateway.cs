@@ -447,8 +447,8 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
         if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32080)
             || (code == -32150 && !hasData))
             throw InvalidResponse();
-        if (code == -32080)
-            ValidatePresetErrorData(method, message, data);
+        if (code == -32080 && !IsValidPresetErrorData(method, message, data))
+            throw InvalidResponse();
         if (code == -32150)
             ValidateProductErrorData(data);
         return new ProductSidecarRpcError(
@@ -457,7 +457,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             hasData ? data.Clone() : null);
     }
 
-    private static void ValidatePresetErrorData(string method, string message, JsonElement data)
+    internal static bool IsValidPresetErrorData(string method, string message, JsonElement data)
     {
         if (method is not ("preset.save" or "preset.delete")
             || message != "Insights error"
@@ -467,12 +467,13 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || data.GetProperty("code").ValueKind != JsonValueKind.String
             || data.GetProperty("field").ValueKind != JsonValueKind.String
             || data.GetProperty("message").ValueKind != JsonValueKind.String)
-            throw InvalidResponse();
+            return false;
         var projection = (data.GetProperty("code").GetString(),
             data.GetProperty("field").GetString(), data.GetProperty("message").GetString());
         if (projection is not ("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.")
             and not ("preset_idempotency_conflict", "operationId", "Operation was used for another Preset request."))
-            throw InvalidResponse();
+            return false;
+        return true;
     }
 
     private static void ValidateProductErrorData(JsonElement data)

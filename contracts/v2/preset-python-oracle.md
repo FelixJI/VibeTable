@@ -189,3 +189,35 @@ build/preset-number-runtime-green.log。此后补充数字 key 收窄及 trace �
 最终全部 `TestPreset` 整组 EXIT 1（2.013s），唯一失败是
 TestPresetProductHTTPLifecycleReplayCASAndRestart 的 TempDir 清理目录非空；数字、
 真实 gate、排序及业务断言无失败。保留此最终失败，不把先前聚焦 GREEN 写成整组通过。
+
+## 同包 Gallery 冲突暴露的 Host 二次投影修复
+
+主任务在 source `8f50f64e2f7391c111c77d791efd599f3c6b9474` 首次完整构建 EXIT 0，
+同包 S19–S22 为3 PASS、1 FAIL，报告
+`build/qa/preset-metadata/product-e2e/20260910T031255Z/product-e2e-report.json`，
+原日志 `build/qa/preset-metadata/product-e2e.log`。S20/S21/S22 含新重启旅程通过；
+S19 的 Gallery stale rename 返回 operation.failed / PRODUCT_DATA_FAILED，未到达原
+preset_edit_conflict typed terminal。该原失败保持不变，不延长等待或修改场景断言。
+
+根因在 ProductDataRequestController.PostSidecarFailure：HTTP parser 已按固定方法、
+-32080、Insights error、精确data字段和两组code/field/message验证Preset冲突，但controller
+只投影-32150，丢弃了已验证的Preset错误。ProductRpcErrorMapper本身已有field→path能力。
+修复将原HTTP封闭验证提为内部predicate，parser继续拒绝不匹配输入，controller复用同一
+predicate才投影-32080；不开放其他Insights方法、未知码或额外字段，不复制Content分支。
+
+新增真实 ProductDataRequestController→ProductSidecarHttpGateway HTTP parser 回归，
+覆盖save/delete的revision/idempotency两种冲突，核对typed终态、requestId、path/message、
+单次HTTP请求和Python零调用；未知码、错误field、额外private字段继续拒绝。
+首次7项为4 FAIL / 3 PASS（合法冲突全部得到operation.failed），日志
+`build/preset-controller-red.log`、TRX `build/qa/preset-controller/preset-controller-red.trx`。
+
+修复后执行：
+
+```text
+dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release -p:RestoreLockedMode=true --filter 'FullyQualifiedName~ProductSidecarHttpGatewayTests|FullyQualifiedName~ProductDataSidecarRoutingTests|FullyQualifiedName~ProductRpcErrorMapperTests|FullyQualifiedName~HostProductRpcInvokerTests' --logger 'trx;LogFileName=preset-controller-green.trx' --results-directory build/qa/preset-controller --verbosity quiet
+```
+
+101 PASS / 0 FAIL / 0 skip，197ms；包括同7项回归。日志 `build/preset-controller-green.log`，
+GREEN TRX在同results目录。未改冻结53例oracle或Go authority，未构建/重跑产品场景。
+Host runtime已变，旧包S20–S22通过也不归为当前源码资格；主任务需要安排新包与必要产品
+验证。此次源码测试通过不证明S19已经在真实包恢复，也不替代独立审查或远端required。
