@@ -21,13 +21,13 @@ Host 原先在进入错误处理前读取文件元数据；无效选择可绕过
 
 ## 本地验证记录
 
-使用冻结 Python 环境及同一主干源码构建的 sidecar，未修改锁文件或依赖来源。
+使用冻结 Python 环境。首次在 d060 主干源码构建 sidecar；合入 Calendar 主干 90eaf375 后，针对新源码构建一次候选并复用于本轮集成测试，未修改锁文件或依赖来源。
 
 - 原实现授权拒绝：3 项失败，能观察到不应发生的行和 revision 变化。
 - 修复后路径授权集成：6 项通过；系统字段集成：2 项通过。首次组合运行暴露系统字段 fixture 未导入，6 通过、2 error；显式注册共享 fixture 后，保留仓库严格选项的组合运行 8 项通过。
 - Python 后端测试：750 项通过，覆盖率 88.91%，高于 85% 门禁。
 - Host 文件请求 controller：22 项通过。
-- 全仓 Ruff、后端 Pyright/mypy 通过。后续计划绑定回归、项目质量入口及包级验证结果仍需补入，pending 不计为通过。
+- 计划绑定回归所在测试文件 25 项通过；全仓 Ruff、后端 Pyright/mypy 通过。`uv run --frozen --no-sync python scripts/automation_project.py python-quality`：1910 项通过、1 项跳过，覆盖率 91.92%，入口退出 0。唯一跳过为既有符号链接测试，Windows 返回 WinError 1314，未修改测试或跳过配置。`uv run --frozen --no-sync python scripts/build_next.py --release` 完整构建退出 0；当前 5114d083 源码包的 S09/S34 在 20260910T135345Z 运行中 2/2 通过（分别 10/19 个断言）。包审计与四组件 freshness 通过，两次 Host 正常退出 0，bridge failures/pending/pageErrors 为 0，端口、lease 和最终清理均通过。
 
 本次不声称解决任务通知失败、进程崩溃后的幂等恢复或完整 Host 任务所有权；这些仍由 L7 后续纵向变更处理。
-- 项目 Python 质量入口已运行：1910 passed、1 skipped，但全套覆盖率为 73.77%，未达到 85%，入口失败；不能以单独 backend 的 88.91% 替代。本地覆盖差异正在诊断。原格式检查失败日志亦保留；新增计划目标/模式回归 25 项通过。
+首次全套质量入口为 1910 passed、1 skipped，但覆盖率 73.77%，门禁失败。原因是本地候选复用插件在 pytest-cov 启动前导入后端，漏记模块定义；只将本地插件导入推迟到 `pytest_sessionstart` 后，后端 752 项覆盖率恢复 88.71%，完整入口达到上述 91.92%。没有追加旧覆盖数据、改生产代码或降低门禁。原格式检查、fixture 注册和覆盖失败日志均保留。
