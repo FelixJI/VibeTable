@@ -1388,7 +1388,8 @@ public sealed class WorkspaceRequestDispatcherQueryTests
     [TestMethod]
     public async Task ProductWrite_IsNotRetriedWhenGatewayWasDisposed()
     {
-        await using var staleClient = new JsonRpcClient(new QueryTransport());
+        var transport = new CountingQueryTransport();
+        await using var staleClient = new JsonRpcClient(transport);
         using var staleGateway = new JsonRpcProductDataGateway(staleClient);
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(sink);
@@ -1396,18 +1397,69 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         staleGateway.Dispose();
 
         using var document = JsonDocument.Parse(
-            """{"tableId":"tbl_records","operations":[]}""");
+            """
+            {
+              "planId": "plan-1",
+              "planHash": "hash-1",
+              "operationId": "operation-1",
+              "actor": {"id": "tester", "kind": "user"},
+              "confirmations": []
+            }
+            """);
         await controller.DispatchAsync(new RoutedWebRequest(
-            "mutation.apply",
+            "field.change.apply",
             "unsafe-write",
             document.RootElement.Clone(),
             string.Empty));
 
-        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
-        Assert.IsNotNull(failure);
-        string payload = JsonSerializer.Serialize(failure.Payload);
-        StringAssert.Contains(payload, @"""code"":""BACKEND_UNAVAILABLE""");
-        Assert.IsFalse(sink.Replies.Any(item => item.Type == "mutation.apply"));
+        FakeWebReplySink.Reply failure = sink.Replies.Single();
+        Assert.AreEqual("operation.failed", failure.Type);
+        Assert.AreEqual("unsafe-write", failure.RequestId);
+        Assert.AreEqual("BACKEND_UNAVAILABLE",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task GoMutationWrite_IsNotRetriedWhenForwarderWasDisposed()
+    {
+        var python = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(python);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(gateway);
+        var replacement = new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("Disposed writes must not be replayed"));
+        var disposed = new ControlledProductSidecarForwarder((_, _) =>
+        {
+            controller.SetProductSidecarForwarder(replacement);
+            throw new ObjectDisposedException(nameof(ProductSidecarHttpGateway));
+        });
+        controller.SetProductSidecarForwarder(disposed);
+        RoutedWebRequest request = GoPageRequest("disposed-go-write") with
+        {
+            Type = "mutation.apply",
+            Payload = JsonSerializer.SerializeToElement(new
+            {
+                tableId = "tbl_records",
+                operations = Array.Empty<object>(),
+            }),
+        };
+
+        await controller.DispatchAsync(request);
+
+        FakeWebReplySink.Reply failure = sink.Replies.Single();
+        Assert.AreEqual("operation.failed", failure.Type);
+        Assert.AreEqual("disposed-go-write", failure.RequestId);
+        Assert.AreEqual("BACKEND_UNAVAILABLE",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
+        Assert.AreEqual(1, disposed.CallCount);
+        Assert.AreEqual("mutation.apply", disposed.Calls.Single().Method);
+        Assert.IsTrue(JsonElement.DeepEquals(request.Wire, disposed.Calls.Single().Wire));
+        Assert.IsTrue(JsonElement.DeepEquals(request.Payload, disposed.Calls.Single().Parameters));
+        Assert.AreEqual(0, replacement.CallCount);
+        Assert.AreEqual(0, python.WriteCount);
     }
 
     [TestMethod]
