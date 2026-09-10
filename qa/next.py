@@ -643,6 +643,25 @@ def _race_build_process_snapshot(pid: int) -> dict[str, object]:
     return snapshot
 
 
+def _persist_race_build_timeout(pid: int, events: list[str]) -> dict[str, object]:
+    """Save structured build observations locally before kill/drain; no raw output."""
+    try:
+        directory = RACE_BINARY_DIR / "timeouts"
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=directory,
+            prefix=f"build-{pid}-",
+            suffix=".json",
+            delete=False,
+        ) as output:
+            json.dump({"pid": pid, "events": events}, output, ensure_ascii=True)
+            return {"status": "saved", "path": output.name}
+    except OSError as error:
+        return {"status": "save_failed", "errorType": type(error).__name__}
+
+
 def _run_command(
     command: list[str],
     *,
@@ -699,7 +718,11 @@ def _run_command(
             timed_out_at = datetime.now(UTC).isoformat()
             snapshot_started = time.monotonic()
             try:
-                snapshot = _race_build_process_snapshot(process.pid)
+                snapshot = (
+                    {"status": "root_exited", "processes": []}
+                    if process.poll() is not None
+                    else _race_build_process_snapshot(process.pid)
+                )
             except (OSError, subprocess.SubprocessError, ValueError) as snapshot_error:
                 snapshot = {
                     "status": "collection_failed",
@@ -713,8 +736,21 @@ def _run_command(
                 elapsedSeconds=round(snapshot_started - started, 3),
                 snapshotSeconds=round(time.monotonic() - snapshot_started, 3),
             )
+            evidence = _persist_race_build_timeout(process.pid, events)
+            record("evidence", pid=process.pid, **evidence)
         _terminate_process_tree(process)
-        final_stdout, final_stderr = process.communicate()
+        if race_build:
+            try:
+                final_stdout, final_stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired as drain_error:
+                # A descendant may retain a pipe after the root exits. Do not chase
+                # historical PIDs or close a stream locked by a reader thread.
+                record("drain_timeout", pid=process.pid, timeoutSeconds=5)
+                final_stdout = _timeout_text(drain_error.output)
+                final_stderr = _timeout_text(drain_error.stderr)
+                final_stderr += "\noutput may be incomplete: pipe drain timed out after 5s\n"
+        else:
+            final_stdout, final_stderr = process.communicate()
         stdout = _timeout_text(exc.output) + (final_stdout or "")
         stderr = _timeout_text(exc.stderr) + (final_stderr or "")
         stderr += f"\nprocess tree timed out after {timeout}s and was terminated\n"

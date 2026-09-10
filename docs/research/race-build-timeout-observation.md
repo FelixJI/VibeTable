@@ -36,3 +36,18 @@ main `58032b97043c2bba80a8eb1f65ae2906797e3251` 的 Actions run `34430547220`、
 本地结果只验证观测和门禁行为。需正常可审查 PR 的真实 CI 才能取得原问题的构建步骤和进程状态，当前不作 CI 或包资格放行。
 
 额外类型检查：`uv run --frozen --no-sync python -m pyright --pythonpath <既有uv环境解释器> qa/next.py` 返回 EXIT 1，18 条错误均位于既有 `Popen(**popen_kwargs)` 的 `dict[str, object]` 展开。把 `58032b9:qa/next.py` 原文件只读导出到固定 build 证据目录的唯一文件，使用相同项目配置和解释器得到相同 18 条错误；没有将该扩展检查记为通过，也没有降低类型规则或混入基线修复。
+
+## 复审修正：根退出但后代持有输出管道
+
+复审指出原超时分支在终止后调用无期限 `communicate()`，而根已经退出时既有终止函数直接返回。后代持有 stdout/stderr 管道会让报告无限等待，之前内存中的观测无法交回。
+
+修正只作用于 race 编译超时：
+
+- 先在 `build/qa/race-tests/timeouts/` 创建唯一命名文件并关闭文件句柄，保存结构化阶段、PID、时间及白名单进程字段。没有保存原始 stdout/stderr，没有新增 CI 日志打印或上传。写入失败明确记录 `save_failed`，不覆盖旧证据或改变 124。
+- 根进程已退出时记录 `root_exited`，不再按历史 PID 采集，也不追杀后代或可能复用的 PID。活根仍走已有进程树终止流程。
+- race 超时后的 `communicate(timeout=5)` 到期记录 `drain_timeout` 和输出可能不完整，保留已知尾部并返回 124。不会关闭可能被读线程锁住的管道，避免把无限等待转移到 close；已存在的读线程可能在后代关闭管道前继续存活。
+- 本地落盘证据在 kill/drain 之前可读取；CI 可达性依靠有界返回后既有 lane report 的结构化事件，本次不声称新增本地文件会被 artifact 上传。
+
+受控回归在旧 `1b2da7da` 上 RED：1 failed，明确在无界 drain 调用处发现证据尚未保存。修正验证了退出根不触发 PID 查询/杀进程、5 秒 drain 参数、124 返回、缺口及阶段证据可达；另验证活根终止前文件已存在。保留 3 worker、420 秒及原测试集合。
+
+修正后最终验证：`uv run --frozen --no-sync python -m pytest tests/test_race_build_diagnostics.py tests/test_next_gate.py -q -o addopts=` 为 **84 passed，3.02 秒**；Ruff check 和 `git diff --check` PASS。没有重跑 CI、Go 编译或完整构建。
