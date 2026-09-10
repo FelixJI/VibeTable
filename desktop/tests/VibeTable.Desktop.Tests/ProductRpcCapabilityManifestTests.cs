@@ -88,6 +88,8 @@ public sealed class ProductRpcCapabilityManifestTests
                 "schema.describe:workspace",
                 "schema.getTable:workspace",
                 "schema.list:workspace",
+                "settings.commitWorkCalendar:workspace",
+                "settings.readWorkCalendar:workspace",
             },
             manifest.GetProductSidecarRegistrations()
                 .Select(item => $"{item.Method}:{item.Scope}").ToArray());

@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 104
+    assert len(manifest["rpcMethods"]) == 105
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -94,6 +94,8 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar",
         "settings.readDevice",
         "settings.saveDevice",
     }
@@ -192,7 +194,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 62
+    assert len(methods) == 61
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
@@ -233,6 +235,8 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar",
     )
     assert current_owner_methods("wpfHost") == (
         "gridState.get",

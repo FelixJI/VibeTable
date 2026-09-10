@@ -553,7 +553,7 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
 def test_directory_replica_recovery_uses_one_public_observation_per_checkpoint() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     recovery = source[
-        source.index("function hasExactWorkspaceWire") : source.index("const scenarios")
+        source.index("function hasExactWorkspaceWire") : source.index("async function scenario32")
     ]
 
     # Behavioral receipt and revision assertions run in the real scenario;

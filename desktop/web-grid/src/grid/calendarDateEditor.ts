@@ -6,7 +6,7 @@ import {
   shiftMonthKey,
 } from "@/calendar/workCalendar";
 import { getLocale } from "@/i18n";
-import { readStoredWorkCalendar } from "@/stores/workCalendarStore";
+import type { WorkCalendarOverride } from "@/calendar/workCalendar";
 import { replaceCalendarDateValue } from "./calendarDateValue";
 
 interface DateEditorCell {
@@ -70,6 +70,7 @@ function createTimeEditor(): CalendarDateEditor {
 
 export function createCalendarDateEditor(
   dateType: "date" | "datetime" | "time",
+  readOverrides: () => readonly WorkCalendarOverride[] | null = () => [],
 ): CalendarDateEditor {
   if (dateType === "time") return createTimeEditor();
   return (cell, onRendered, success, cancel) => {
@@ -145,8 +146,15 @@ export function createCalendarDateEditor(
 
       const days = document.createElement("div");
       days.className = "work-calendar__days";
-      for (const day of buildMonthDays(visibleMonth, readStoredWorkCalendar())) {
-        const dayButton = button(String(day.day), `work-calendar__day work-calendar__day--${day.kind}`, () => {
+      const calendarRules = readOverrides();
+      if (calendarRules === null) {
+        const warning = document.createElement("p");
+        warning.textContent = locale === "zh-CN" ? "共享工作日历暂不可用" : "Shared work calendar unavailable";
+        warning.setAttribute("role", "status");
+        calendar.append(warning);
+      }
+      for (const day of buildMonthDays(visibleMonth, calendarRules ?? [])) {
+        const dayButton = button(String(day.day), `work-calendar__day${calendarRules === null ? "" : ` work-calendar__day--${day.kind}`}`, () => {
           selectedDate = day.date;
           input.value = selectedValue();
           if (dateType === "date") finish(selectedDate);
@@ -163,7 +171,7 @@ export function createCalendarDateEditor(
         number.className = "work-calendar__number";
         number.textContent = String(day.day);
         dayButton.append(number);
-        if (day.marker && day.inCurrentMonth) {
+        if (calendarRules !== null && day.marker && day.inCurrentMonth) {
           const marker = document.createElement("span");
           marker.className = "work-calendar__marker";
           marker.textContent = day.marker;

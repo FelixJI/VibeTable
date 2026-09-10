@@ -53,6 +53,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
+		if request.Request.PathValue("namespace") == "shared_settings" {
+			return request.JSON(http.StatusForbidden, map[string]string{"code": "metadata.product_owner_required"})
+		}
 		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
 			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
 		}
@@ -91,6 +94,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
+		if request.Request.PathValue("namespace") == "shared_settings" {
+			return request.JSON(http.StatusForbidden, map[string]string{"code": "metadata.product_owner_required"})
+		}
 		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
 			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
 		}

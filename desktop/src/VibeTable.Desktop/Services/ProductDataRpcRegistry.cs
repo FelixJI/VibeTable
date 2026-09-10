@@ -181,6 +181,11 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.CreateFileTokenAsync(p, t)),
         new("events.reconcile", p => Safe(p) && HasStrings(p, "tableId", "schemaRevision", "dataRevision"),
             (g, p, t) => g.ReconcileAsync(p, t)),
+        new("settings.readWorkCalendar", WorkCalendarPayloadContract.IsValidRead,
+            (_, _, _) => Task.FromException<JsonElement>(new InvalidOperationException("Work calendar requires Go authority."))),
+        new("settings.commitWorkCalendar", WorkCalendarPayloadContract.IsValidCommit,
+            (_, _, _) => Task.FromException<JsonElement>(new InvalidOperationException("Work calendar requires Go authority.")),
+            MutatesWorkspace: true),
         new("preset.list", p => Safe(p) && HasString(p, "collection"),
             (g, p, t) => g.ListPresetsAsync(p, t)),
         new("preset.save", p => Safe(p)

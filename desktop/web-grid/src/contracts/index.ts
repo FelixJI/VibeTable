@@ -1,3 +1,8 @@
+import type { WorkCalendarOverride } from "@/calendar/workCalendar";
+
+export interface SharedWorkCalendarResult { readonly overrides: WorkCalendarOverride[]; readonly revision: string }
+export interface SharedWorkCalendarCommit { readonly overrides: WorkCalendarOverride[]; readonly expectedRevision: string; readonly idempotencyKey: string }
+
 import type { RelationInspectionRequest, RelationInspectionReport } from "@/relation-inspection/type";
 import type {
   LookupListResult,
@@ -1409,6 +1414,8 @@ export type WebMessageType =
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
+  | "settings.readWorkCalendar"
+  | "settings.commitWorkCalendar"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1553,6 +1560,8 @@ export type HostMessageType =
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
+  | "settings.readWorkCalendar"
+  | "settings.commitWorkCalendar"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1874,6 +1883,8 @@ export interface HostPayloadMap {
   "lookup.list": LookupListResult;
   "lookup.query": LookupQueryResult;
 	"lookup.valuePage": LookupCellValue;
+  "settings.readWorkCalendar": SharedWorkCalendarResult;
+  "settings.commitWorkCalendar": SharedWorkCalendarResult;
   "preset.list": PresetsResult;
   "preset.save": PresetEntry;
   "preset.delete": DeletePresetVersionResult;
@@ -1998,6 +2009,8 @@ export interface WebPayloadMap {
   "lookup.list": { readonly collection: string };
   "lookup.query": LookupQueryParams;
 	"lookup.valuePage": LookupValuePageParams;
+  "settings.readWorkCalendar": Record<string, never>;
+  "settings.commitWorkCalendar": SharedWorkCalendarCommit;
   "preset.list": { readonly collection: string };
   "preset.save": {
     readonly collection: string;

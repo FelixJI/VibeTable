@@ -566,6 +566,8 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"schema.describe",
 		"schema.getTable",
 		"schema.list",
+		"settings.commitWorkCalendar",
+		"settings.readWorkCalendar",
 	}
 	if productCapabilities.ContractVersion != "2.0" ||
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
