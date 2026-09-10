@@ -4912,6 +4912,33 @@ async function scenario12(page, recorder, _network, runtime) {
     "workspaceSearch.status",
     {},
   );
+  // Read diagnostics after freezing the original search result; these reads
+  // cannot turn an empty result into a passing restore assertion.
+  const restoredAuthorityDiagnostic = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const restoredAttachmentsDiagnostic = await rawBridgeRequest(
+    page, "file.list", attachmentParams,
+  );
+  const restoredSearchDiagnostic = {};
+  for (const query of ["backup-original", "backup-replacement"]) {
+    restoredSearchDiagnostic[query] = await rawWorkspaceV2Request(
+      page, "workspaceSearch.query", {
+        contractVersion: "1.0", query, logic: "and", filters: [],
+        sorts: [{ field: "score", direction: "desc" }],
+        scope: "current", cursor: null, limit: 50,
+      },
+    );
+  }
+  await fs.writeFile(
+    path.join(runtime.evidenceDir, "restored-search-diagnostic.json"),
+    JSON.stringify({
+      restoredSearch, restoredSearchStatus,
+      restoredAuthorityDiagnostic, restoredAttachmentsDiagnostic, restoredSearchDiagnostic,
+    }, null, 2),
+    "utf8",
+  );
   recorder.check("snapshot restore invalidates derived search and rebuilds a newer usable generation",
     ["building", "degraded", "ready"].includes(postRestoreInitialSearch.result?.state)
       && restoredSearchState === "ready"
