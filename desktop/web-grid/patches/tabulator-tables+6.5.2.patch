@@ -1,0 +1,243 @@
+diff --git a/node_modules/tabulator-tables/dist/js/tabulator.js b/node_modules/tabulator-tables/dist/js/tabulator.js
+index e7764c3..e8591c5 100644
+--- a/node_modules/tabulator-tables/dist/js/tabulator.js
++++ b/node_modules/tabulator-tables/dist/js/tabulator.js
+@@ -27058,7 +27058,7 @@
+ 			if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
+ 				frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
+ 
+-				if(frozenCols.length > 1 || (frozenCols.length === 1 && frozenCols[0] !== this.rowHeader)){
++				if((frozenCols.length > 1 || (frozenCols.length === 1 && frozenCols[0] !== this.rowHeader)) && (this.table.rtl || this.table.options.renderHorizontal === "virtual" || frozenCols.some(column => column.parent.isGroup))){
+ 					console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
+ 				}
+ 			}
+@@ -27429,7 +27429,8 @@
+ 					}
+ 				}
+ 
+-				if(!(columnRect.left >= columnManagerRect.left + this.getRowHeaderWidth() && columnRect.right <= columnManagerRect.right)){
++				var frozenInsets = this.getFrozenInsets();
++				if(!column.modules.frozen && !(columnRect.left >= rowManagerRect.left + frozenInsets.left && columnRect.right <= rowManagerRect.left + this.table.rowManager.element.clientWidth - frozenInsets.right)){
+ 					if(row.getElement().parentNode && column.getElement().parentNode){
+ 						// Use faster autoScroll when the elements are on the DOM
+ 						this.autoScroll(range, row.getElement(), column.getElement());
+@@ -27606,7 +27607,9 @@
+ 		
+ 		autoScroll(range, row, column) {
+ 			var tableHolder = this.table.rowManager.element,
+-			rect, view, withinHorizontalView, withinVerticalView;
++			rect, view, withinHorizontalView, withinVerticalView,
++			frozenInsets = this.getFrozenInsets(),
++			frozenTarget = this.getColumnByRangePos(range.end.col).modules.frozen;
+ 			
+ 			if (typeof row === 'undefined') {
+ 				row = this.getRowByRangePos(range.end.row).getElement();
+@@ -27624,21 +27627,21 @@
+ 			};
+ 			
+ 			view = {
+-				left: tableHolder.scrollLeft + this.getRowHeaderWidth(),
+-				right: Math.ceil(tableHolder.scrollLeft + tableHolder.clientWidth),
++				left: tableHolder.scrollLeft + frozenInsets.left,
++				right: Math.ceil(tableHolder.scrollLeft + tableHolder.clientWidth - frozenInsets.right),
+ 				top: tableHolder.scrollTop,
+ 				bottom:	tableHolder.scrollTop +	tableHolder.offsetHeight - this.table.rowManager.scrollbarWidth,
+ 			};
+ 			
+-			withinHorizontalView = view.left < rect.left &&	rect.left < view.right && view.left < rect.right &&	rect.right < view.right;
++			withinHorizontalView = frozenTarget || (rect.left >= view.left && rect.right <= view.right);
+ 			
+ 			withinVerticalView = view.top < rect.top &&	rect.top < view.bottom && view.top < rect.bottom &&	rect.bottom < view.bottom;
+ 			
+-			if (!withinHorizontalView) {
++			if (!withinHorizontalView && view.right > view.left) {
+ 				if (rect.left < view.left) {
+-					tableHolder.scrollLeft = rect.left - this.getRowHeaderWidth();
++					tableHolder.scrollLeft = rect.left - frozenInsets.left;
+ 				} else if (rect.right > view.right) {
+-					tableHolder.scrollLeft = Math.min(rect.right - tableHolder.clientWidth, rect.left - this.getRowHeaderWidth());
++					tableHolder.scrollLeft = Math.min(rect.right - tableHolder.clientWidth + frozenInsets.right, rect.left - frozenInsets.left);
+ 				}
+ 			}
+ 			
+@@ -27865,6 +27868,18 @@
+ 			return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
+ 		}
+ 
++		getFrozenInsets(){
++			var insets = {left: 0, right: 0};
++			if(this.table.modules.frozenColumns){
++				this.table.modules.frozenColumns.getFrozenColumns().forEach((column) => {
++					if(column.visible){
++						insets[column.modules.frozen.position] += column.getWidth();
++					}
++				});
++			}
++			return insets;
++		}
++		
+ 		getRowHeaderWidth(){
+ 			if(!this.rowHeader){
+ 				return 0;
+diff --git a/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs b/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
+index 7ee0ee7..6db400d 100644
+--- a/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
++++ b/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
+@@ -20721,7 +20721,7 @@ class SelectRange extends Module {
+ 		if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
+ 			frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
+ 
+-			if(frozenCols.length > 1 || (frozenCols.length === 1 && frozenCols[0] !== this.rowHeader)){
++			if((frozenCols.length > 1 || (frozenCols.length === 1 && frozenCols[0] !== this.rowHeader)) && (this.table.rtl || this.table.options.renderHorizontal === "virtual" || frozenCols.some(column => column.parent.isGroup))){
+ 				console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
+ 			}
+ 		}
+@@ -21092,7 +21092,8 @@ class SelectRange extends Module {
+ 				}
+ 			}
+ 
+-			if(!(columnRect.left >= columnManagerRect.left + this.getRowHeaderWidth() && columnRect.right <= columnManagerRect.right)){
++			var frozenInsets = this.getFrozenInsets();
++			if(!column.modules.frozen && !(columnRect.left >= rowManagerRect.left + frozenInsets.left && columnRect.right <= rowManagerRect.left + this.table.rowManager.element.clientWidth - frozenInsets.right)){
+ 				if(row.getElement().parentNode && column.getElement().parentNode){
+ 					// Use faster autoScroll when the elements are on the DOM
+ 					this.autoScroll(range, row.getElement(), column.getElement());
+@@ -21269,7 +21270,9 @@ class SelectRange extends Module {
+ 	
+ 	autoScroll(range, row, column) {
+ 		var tableHolder = this.table.rowManager.element,
+-		rect, view, withinHorizontalView, withinVerticalView;
++		rect, view, withinHorizontalView, withinVerticalView,
++		frozenInsets = this.getFrozenInsets(),
++		frozenTarget = this.getColumnByRangePos(range.end.col).modules.frozen;
+ 		
+ 		if (typeof row === 'undefined') {
+ 			row = this.getRowByRangePos(range.end.row).getElement();
+@@ -21287,21 +21290,21 @@ class SelectRange extends Module {
+ 		};
+ 		
+ 		view = {
+-			left: tableHolder.scrollLeft + this.getRowHeaderWidth(),
+-			right: Math.ceil(tableHolder.scrollLeft + tableHolder.clientWidth),
++			left: tableHolder.scrollLeft + frozenInsets.left,
++			right: Math.ceil(tableHolder.scrollLeft + tableHolder.clientWidth - frozenInsets.right),
+ 			top: tableHolder.scrollTop,
+ 			bottom:	tableHolder.scrollTop +	tableHolder.offsetHeight - this.table.rowManager.scrollbarWidth,
+ 		};
+ 		
+-		withinHorizontalView = view.left < rect.left &&	rect.left < view.right && view.left < rect.right &&	rect.right < view.right;
++		withinHorizontalView = frozenTarget || (rect.left >= view.left && rect.right <= view.right);
+ 		
+ 		withinVerticalView = view.top < rect.top &&	rect.top < view.bottom && view.top < rect.bottom &&	rect.bottom < view.bottom;
+ 		
+-		if (!withinHorizontalView) {
++		if (!withinHorizontalView && view.right > view.left) {
+ 			if (rect.left < view.left) {
+-				tableHolder.scrollLeft = rect.left - this.getRowHeaderWidth();
++				tableHolder.scrollLeft = rect.left - frozenInsets.left;
+ 			} else if (rect.right > view.right) {
+-				tableHolder.scrollLeft = Math.min(rect.right - tableHolder.clientWidth, rect.left - this.getRowHeaderWidth());
++				tableHolder.scrollLeft = Math.min(rect.right - tableHolder.clientWidth + frozenInsets.right, rect.left - frozenInsets.left);
+ 			}
+ 		}
+ 		
+@@ -21528,6 +21531,18 @@ class SelectRange extends Module {
+ 		return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
+ 	}
+ 
++	getFrozenInsets(){
++		var insets = {left: 0, right: 0};
++		if(this.table.modules.frozenColumns){
++			this.table.modules.frozenColumns.getFrozenColumns().forEach((column) => {
++				if(column.visible){
++					insets[column.modules.frozen.position] += column.getWidth();
++				}
++			});
++		}
++		return insets;
++	}
++	
+ 	getRowHeaderWidth(){
+ 		if(!this.rowHeader){
+ 			return 0;
+diff --git a/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js b/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js
+index cbf568d..a1be50e 100644
+--- a/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js
++++ b/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js
+@@ -173,7 +173,7 @@ export default class SelectRange extends Module {
+ 		if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
+ 			frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
+ 
+-			if(frozenCols.length > 1 || (frozenCols.length === 1 && frozenCols[0] !== this.rowHeader)){
++			if((frozenCols.length > 1 || (frozenCols.length === 1 && frozenCols[0] !== this.rowHeader)) && (this.table.rtl || this.table.options.renderHorizontal === "virtual" || frozenCols.some(column => column.parent.isGroup))){
+ 				console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
+ 			}
+ 		}
+@@ -544,7 +544,8 @@ export default class SelectRange extends Module {
+ 				}
+ 			}
+ 
+-			if(!(columnRect.left >= columnManagerRect.left + this.getRowHeaderWidth() && columnRect.right <= columnManagerRect.right)){
++			var frozenInsets = this.getFrozenInsets();
++			if(!column.modules.frozen && !(columnRect.left >= rowManagerRect.left + frozenInsets.left && columnRect.right <= rowManagerRect.left + this.table.rowManager.element.clientWidth - frozenInsets.right)){
+ 				if(row.getElement().parentNode && column.getElement().parentNode){
+ 					// Use faster autoScroll when the elements are on the DOM
+ 					this.autoScroll(range, row.getElement(), column.getElement());
+@@ -721,7 +722,9 @@ export default class SelectRange extends Module {
+ 	
+ 	autoScroll(range, row, column) {
+ 		var tableHolder = this.table.rowManager.element,
+-		rect, view, withinHorizontalView, withinVerticalView;
++		rect, view, withinHorizontalView, withinVerticalView,
++		frozenInsets = this.getFrozenInsets(),
++		frozenTarget = this.getColumnByRangePos(range.end.col).modules.frozen;
+ 		
+ 		if (typeof row === 'undefined') {
+ 			row = this.getRowByRangePos(range.end.row).getElement();
+@@ -739,21 +742,21 @@ export default class SelectRange extends Module {
+ 		};
+ 		
+ 		view = {
+-			left: tableHolder.scrollLeft + this.getRowHeaderWidth(),
+-			right: Math.ceil(tableHolder.scrollLeft + tableHolder.clientWidth),
++			left: tableHolder.scrollLeft + frozenInsets.left,
++			right: Math.ceil(tableHolder.scrollLeft + tableHolder.clientWidth - frozenInsets.right),
+ 			top: tableHolder.scrollTop,
+ 			bottom:	tableHolder.scrollTop +	tableHolder.offsetHeight - this.table.rowManager.scrollbarWidth,
+ 		};
+ 		
+-		withinHorizontalView = view.left < rect.left &&	rect.left < view.right && view.left < rect.right &&	rect.right < view.right;
++		withinHorizontalView = frozenTarget || (rect.left >= view.left && rect.right <= view.right);
+ 		
+ 		withinVerticalView = view.top < rect.top &&	rect.top < view.bottom && view.top < rect.bottom &&	rect.bottom < view.bottom;
+ 		
+-		if (!withinHorizontalView) {
++		if (!withinHorizontalView && view.right > view.left) {
+ 			if (rect.left < view.left) {
+-				tableHolder.scrollLeft = rect.left - this.getRowHeaderWidth();
++				tableHolder.scrollLeft = rect.left - frozenInsets.left;
+ 			} else if (rect.right > view.right) {
+-				tableHolder.scrollLeft = Math.min(rect.right - tableHolder.clientWidth, rect.left - this.getRowHeaderWidth());
++				tableHolder.scrollLeft = Math.min(rect.right - tableHolder.clientWidth + frozenInsets.right, rect.left - frozenInsets.left);
+ 			}
+ 		}
+ 		
+@@ -980,6 +983,18 @@ export default class SelectRange extends Module {
+ 		return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
+ 	}
+ 
++	getFrozenInsets(){
++		var insets = {left: 0, right: 0};
++		if(this.table.modules.frozenColumns){
++			this.table.modules.frozenColumns.getFrozenColumns().forEach((column) => {
++				if(column.visible){
++					insets[column.modules.frozen.position] += column.getWidth();
++				}
++			});
++		}
++		return insets;
++	}
++	
+ 	getRowHeaderWidth(){
+ 		if(!this.rowHeader){
+ 			return 0;

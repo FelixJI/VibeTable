@@ -135,3 +135,25 @@ S33 最后一轮独立 Standards 与 Spec 均0项剩余确定发现；Spec独立
 第四轮S33（固定d7eb7044，build/qa/host-presentation/product-e2e-drop-completion/20260910T094720Z/product-e2e-report.json）seed18 PASS/1 FAIL，实际列移动及First5/Second4顺序、DOM检查已通过，resume未启动。失败来自非范围行号冻结列与range组合告警、以及Sort field undefined告警；bridge failures/pending/acknowledged为0，Host exit0与端口/lease/finalCleanup全部通过。原失败保留，不以局部通过冒充双Host资格。
 
 排序问题是把Tabulator getSorters输出的field误当setSort输入；锁定6.5.2实际读取column。新增真实TabulatorFull实例经现有createTabulatorDataSourceViewAdapter、apply/capture公开seam的回归，旧代码1 FAIL/6 PASS：相同undefined告警且读取sorts为空（sort-contract-red.log）。输入类型和映射改用column，输出继续保留field。相关dataSourceViewState、presetViewController、gridPresentationController三组20 PASS（sort-contract-green.log），vue-tsc通过，无mock替代实际Sort实现。冻结与范围选择兼容性另有真实库几何调查，尚未解决，不能过滤告警后放行；完整新包和双HostS33仍pending。
+
+## 冻结列与范围选择兼容修复（2026-09-10，真实 GUI 待验证）
+
+真实锁定 Tabulator 加 jsdom 几何的调查得到左右两项失败：横滚后非冻结目标分别仍被左冻结区遮挡100px、右冻结区遮挡42px。`FrozenColumns` 遇到首个非冻结列后把后续冻结列归右侧，因此不能将业务列冻结一律视为左侧。原 `SelectRange` 只扣行号宽度，实际导航可见性判定及自动滚动均不考虑完整左右冻结区域。历史 `frozen-range-diagnostic.log` 保存两个原始 RED；选区数据和真实鼠标拖选处理器本身没有观察到丢字段问题。
+
+固定 `patch-package@8.0.1`，由 npm 生成依赖与 lock；postinstall 为 `patch-package --error-on-fail`。补丁同时修复锁定包的 src、实际 ESM/CJS：按可见冻结列的左右位置计算可见区，非冻结目标据此横滚，冻结目标保留水平位置但正常纵滚。仅对已覆盖的 LTR、普通水平渲染、非分组冻结组合解除原不支持诊断；RTL、水平虚拟渲染和冻结分组仍保留诊断。没有关闭 range、冻结或过滤 renderer console。
+
+Host 原 node_modules 是共享 Junction，已先仅移动链接本身，再建立独立普通依赖目录；共享目标未修改。恢复链接保存在本工作树被忽略的 `build/qa/host-presentation/frozen-range-shared-node_modules`。2026-09-10 18:10–18:19（Asia/Shanghai）的依赖操作窗口中，官方 npm 元数据用于生成官方 resolved 的 lock（镜像元数据会固化不同来源），实际包安装优先缓存并使用命令级 `https://registry.npmmirror.com`，未更改 registry 配置。生成完毕后已恢复镜像安装主路径。安装输出包含 patch-package 的 glob 传递依赖弃用提示，未为消除此提示改变仓库其他依赖版本。
+
+固定 Node24.19.0 执行独立 `npm ci --include=dev --registry=https://registry.npmmirror.com --prefer-offline --no-audit --no-fund`：EXIT0，postinstall 自动应用 `tabulator-tables@6.5.2` 补丁成功。`vue-tsc --noEmit --project desktop/web-grid/tsconfig.json` EXIT0；`vitest run --root desktop/web-grid src/grid/frozenRangeCompatibility.test.ts src/grid/dataSourceViewState.test.ts src/workspace/gridPresentationController.test.ts src/workspace/presetViewController.test.ts` 为33 PASS，日志 `build/qa/host-presentation/frozen-range-green.log`。冻结13项均调用真实库键盘/鼠标处理器，仅补足 jsdom 几何；两个原始失败已由实际补丁转绿，没有保留实验性后处理或替换导航算法。新增左右冻结目标纵滚不横滚、双向键盘、跨区拖选与无 warning 契约。尚未重跑产品 build、真实 WebView2 S33 seed/resume 或完整资格；这些局部结果不能替代 GUI 证据。
+
+## 冻结补丁审查缺口修复（2026-09-10）
+
+审查指出的两个缺口均已取得失败证据。真实 `TabulatorFull` 的 LTR/basic 单层与嵌套父级冻结分组，在旧补丁下均未发出不支持告警：新增4项诊断回归中2 FAIL，连同原13项共15 PASS（`build/qa/host-presentation/frozen-review-web-red.log`）。锁定6.5.2的 `FrozenColumns.initializeColumn` 只收集叶列，`frozenCheck` 从父组继承冻结，因此判断改为 `column.parent.isGroup`；单层及嵌套分组、RTL、水平虚拟渲染均保留原告警，已覆盖的普通冻结仍无告警。
+
+`qa/handoff_dependencies.json` 的既有发布输入扩展名加入 `.patch`。聚焦回归加载真实声明，仅把输入目录缩为隔离的 Web fixture，并修改安装补丁内容；旧配置下既有 `release_source_hash` 不变，1 FAIL（`frozen-review-handoff-red.log`），修正后整个 `tests/test_handoff_artifacts.py` 26 PASS（`frozen-review-handoff-green.log`）。没有新增摘要算法、存储或消费者，只补齐原交接输入契约。
+
+固定 Node24.19.0、`patch-package@8.0.1` 在命令级 npm 镜像 `https://registry.npmmirror.com` 下重生成补丁，实际覆盖包 exports 对应的 `dist/js/tabulator_esm.mjs`、`dist/js/tabulator.js` 及 `src/js/modules/SelectRange/SelectRange.js`（`frozen-review-patch-generate.log`）。随后 `node node_modules/patch-package/index.js --reverse` 与 `node node_modules/patch-package/index.js --error-on-fail` 均成功（`frozen-review-patch-reapply.log`），证明生成补丁可撤回和重放；共享 Junction 备份及其目标未修改。
+
+重放后 `node desktop/web-grid/node_modules/vitest/vitest.mjs run --root desktop/web-grid src/grid/frozenRangeCompatibility.test.ts src/grid/dataSourceViewState.test.ts src/workspace/gridPresentationController.test.ts src/workspace/presetViewController.test.ts` 为4文件37 PASS（`frozen-review-web-green.log`）。新增测试初次 typecheck 因引用仓库未导出的类型及可选 destroy 失败；修正后 `node desktop/web-grid/node_modules/vue-tsc/bin/vue-tsc.js --noEmit --project desktop/web-grid/tsconfig.json` EXIT0（`frozen-review-typecheck.log`）。指定既有隔离 uv 环境、`UV_NO_SYNC=1` 与当前 worktree `PYTHONPATH` 执行 `uv run --frozen --no-sync python -m pytest tests/test_handoff_artifacts.py --no-cov -q` 得26 PASS，相关 Python Ruff format/check及 `git diff --check` 通过。
+
+本轮未重新 npm ci、未执行完整产品 build、GUI S33、完整质量门禁、commit 或 push；补丁重放和局部回归不能替代固定新包的真实双Host验收。

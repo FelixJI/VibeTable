@@ -449,3 +449,17 @@ def test_artifact_hashes_fail_closed_on_missing_group_file(tmp_path: Path) -> No
     with pytest.raises(FileNotFoundError) as captured:
         handoff.artifact_hashes(deps, repo_root=tmp_path)
     assert "schema.json" in str(captured.value)
+
+
+def test_release_identity_includes_installed_dependency_patches(tmp_path: Path) -> None:
+    deps = handoff.load_dependencies()
+    deps["releaseIdentityInputs"] = ["desktop/web-grid"]
+    web = tmp_path / "desktop" / "web-grid"
+    patches = web / "patches"
+    patches.mkdir(parents=True)
+    (web / "package.json").write_text('{"scripts":{"postinstall":"patch-package"}}')
+    patch = patches / "tabulator-tables+6.5.2.patch"
+    patch.write_text("original dependency patch", encoding="utf-8")
+    before = handoff.release_source_hash(deps, repo_root=tmp_path)
+    patch.write_text("changed dependency patch", encoding="utf-8")
+    assert handoff.release_source_hash(deps, repo_root=tmp_path) != before
