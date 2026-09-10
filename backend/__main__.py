@@ -26,9 +26,7 @@ from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
 from backend.application.product_rpc import ProductRpc
-from backend.application.revisioned_metadata_port import RevisionedMetadataTransportAdapter
 from backend.application.settings_command_service import SettingsCommandService
-from backend.application.surface_service import SurfaceService
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
 from backend.contracts.data_io import (
@@ -36,15 +34,6 @@ from backend.contracts.data_io import (
     ExportParams,
     GenerateTemplateParams,
     PreviewImportParams,
-)
-from backend.contracts.generated_workbench import (
-    InterfaceCommitRequest,
-    InterfaceDeleteRequest,
-    InterfaceDeleteResult,
-    InterfaceListRequest,
-    InterfaceListResult,
-    InterfaceLoadRequest,
-    InterfaceSnapshot,
 )
 from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
@@ -184,34 +173,6 @@ def _register_pocketbase_product_methods(
     register_product_rpc_errors()
     for method, params_model in PYTHON_PRODUCT_RPC_REGISTRY.items():
         dispatcher.register(method, partial(service.invoke, method), params_model)
-
-
-def _register_surface_methods(
-    dispatcher: RpcDispatcher,
-    service: SurfaceService,
-) -> None:
-    register_application_errors(ErrorDomain.SURFACE)
-
-    async def list_interfaces(_params: InterfaceListRequest) -> InterfaceListResult:
-        return await service.list()
-
-    async def load_interface(params: InterfaceLoadRequest) -> InterfaceSnapshot:
-        return await service.load(params.interface_id)
-
-    async def commit_interface(params: InterfaceCommitRequest) -> InterfaceSnapshot:
-        return await service.commit(params)
-
-    async def delete_interface(params: InterfaceDeleteRequest) -> InterfaceDeleteResult:
-        return await service.delete(
-            params.interface_id,
-            params.expected_revision,
-            params.idempotency_key,
-        )
-
-    dispatcher.register("interface.list", list_interfaces, InterfaceListRequest)
-    dispatcher.register("interface.load", load_interface, InterfaceLoadRequest)
-    dispatcher.register("interface.commit", commit_interface, InterfaceCommitRequest)
-    dispatcher.register("interface.delete", delete_interface, InterfaceDeleteRequest)
 
 
 def _configure_pocketbase_data_io(
@@ -415,8 +376,6 @@ async def _build_server() -> tuple[
             task_service=task_service,
         )
         metadata_transport = PocketBaseInternalMetadataPort(client=client)
-        revisioned_metadata = RevisionedMetadataTransportAdapter(metadata_transport)
-        _register_surface_methods(dispatcher, SurfaceService(metadata_port=revisioned_metadata))
         state_root = Path(
             os.environ.get(
                 "VIBETABLE_STATE_DIR",

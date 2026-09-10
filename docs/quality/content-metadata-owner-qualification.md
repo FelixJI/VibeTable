@@ -221,3 +221,30 @@ receipt 写入，其他 callback/事务错误不被吞掉。公共 Runtime/coord
 现场 `build/self-update-smoke/updated-crash/` 保留：worker错误为System.IO.IOException/HResult0x80070005，journal为rollbackFailed/UPDATE_ROLLBACK_IO_FAILED，owned group已记quiesced，唯一resources ledger在isolatePlanned；target/resources与backup/resources存在、failed-package/resources不存在。证据将失败限定在隔离资源目录前后，尚未确定占用者或访问拒绝原因。不归因杀软、不移动/删除现场、不放宽重试或回滚门禁，亦不重跑求绿。
 
 CodeQL源码修复独立Standards/Spec均0，拟正常推送由fresh CI重新验证；远端安全告警关闭、新包S18及合并后CI/CD仍待完成。本地失败保持原结论。
+
+
+## 同步 Surface owner 与当前主干（2026-09-10）
+
+从 `ddaf39473aa6bc00c8b33806c9af0e2cebb3302d` 正常合入指定 main
+`f88e856eea3b830c8f910acc3dbc9eae842eb5d1`。保留 Content 七方法、Surface 四方法和
+History 恢复闭集，Go 35 方法、Python 67 方法。两套已迁移 Python handler/error domain
+均删除；inventory 的旧 shared-content 组已由各自独立 Go owner 分组替代。Content
+单 JSON 值 payload 解码、两类逐方法 Host 错误验证、两方 generic metadata 写禁及
+普通 Runtime gate/replay signal 全部保留。主干真实进程测试同时核对 RPCMethods、
+Registrations 和 workspace scope；未删除旧范围断言或从生成结果派生固定预期。
+Surface 自有 fixture 显式补入 Content 七项，Content 复用的既有 schema fixture 保留双方注册。
+
+证据目录为 `build/qa/content-surface-main/`，所有 Python 入口复用锁一致的 shared uv；
+Node 24.19.0、Go 1.27.0 和 .NET 10.0.401 均为已有工具，未修改 pin/lock。
+
+- `uv run --frozen --no-sync python -m pytest tests/backend/rpc/test_error_registry.py tests/contract/test_product_contracts.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_workspace_rpc_capability_manifest.py tests/contract/test_product_e2e_capability_index.py tests/contract/test_surface_python_oracle.py --no-cov -q`：113 PASS，3.68s，`python-contracts.log`。
+- `product_rpc_capability_policy.py --check`、`generate_product_rpc_catalog.py --check`、`contracts/workbench/generate_dtos.py --check`、两套 oracle `--check`、E2E capability index `--check`、固定 Node 的场景脚本语法检查及相关五文件 Ruff format/check 全部 EXIT0，精确命令在 `generation-checks.log`。Content checker 验证28例冻结请求输入；Surface checker真实重放78例原Python完整输出。两份冻结JSON均保持原件，没有把Content输入检查称为原producer重放。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~HostProductRpcInvokerTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~ProductSidecarHttpGatewayTests|FullyQualifiedName~ProductDataSidecarRoutingTests|FullyQualifiedName~JsonRpcProductSurfaceGatewayTests|FullyQualifiedName~SurfaceBridgeTests|FullyQualifiedName~ProductRpcErrorMapperTests' --logger 'trx;LogFileName=host.trx' --results-directory build/qa/content-surface-main/host --verbosity quiet`：174 PASS / 0 FAIL / 0 skip，334ms，`host.log` 与 `host/host.trx`。
+- `go test ./internal/metadata ./internal/productrpc ./internal/contracts/productcapabilities ./internal/app ./cmd/vibetable-pb -run 'Test(Content|RecordDocument|GenericContent|Surface|Generated|NewRequires|WorkspaceV2WriteBoundary|SidecarWorkspaceV2HTTP)' -count=1`：五包全部 PASS，分别5.829s/0.808s/0.233s/3.332s/1.778s，`go-focused.log`。含Content存储JSON边界、冻结样本、两方真实Runtime回放、错误边界、闭集和真实进程握手。
+- 从14个受影响既有app fixture提取47个顶层Test名称（`fixture-tests.txt`），加 `TestDashboardCommitUsesBusinessWriteGateAndReturnsTheAppliedReceipt`、`TestMetadataMutationUsesIdempotentBusinessWriteGate`，以 `go test ./internal/app -run '^(上述具名测试以|连接)$' -count=1` 执行：整体EXIT1，9.642s，`go-fixtures.log`。唯一失败为 `TestQueryCursorProductHTTPConsumesTypedPythonOracle` 的TempDir RemoveAll目录非空；未出现注册或业务断言失败，未重跑求绿，不称整组通过。
+- `go vet ./internal/metadata ./internal/productrpc ./internal/contracts/productcapabilities ./internal/app ./cmd/vibetable-pb` EXIT0，`go-vet.log`；冲突Go文件已gofmt。
+
+额外显式 Pyright 检查 `backend/__main__.py backend/rpc/error_registry.py contracts/v2/generate_product_rpc_catalog.py` 为EXIT1：catalog的 `model_name` nullable、两处dict值不变性、plugin event literal共4项类型错误，见 `generation-checks.log` 尾部。将指定main的原catalog用git show保存至build后，以相同解释器显式检查，`pyright-main-baseline.log` 复现同4项，原件保留为 `catalog-main-baseline.py`；main行406/483/569/810对应合并后422/499/585/826，均不在本次映射冲突逻辑内。不在同步任务混入无关类型修复，不将该检查记为通过。
+
+本次未push、完整build或产品E2E，未复制尚未合入主干的PR330 timer改动。
+历史CI、完整包和S18证据仅覆盖各自旧source；本次合并仍待独立双轴与fresh required。

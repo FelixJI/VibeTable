@@ -14,6 +14,7 @@ public static class SurfaceErrorMapper
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["surface.not_found"] = "界面不存在或已被删除。",
+            ["surface.idempotency_conflict"] = "该保存标识已用于其他界面请求，请重新操作。",
             ["surface.edit_conflict"] = "界面已在其他位置修改，请重新加载。",
             ["surface.definition_invalid"] = "界面定义无效，请检查编辑器提示。",
             ["surface.storage_invalid"] = "界面数据不完整，无法安全加载。",

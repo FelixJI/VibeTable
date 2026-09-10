@@ -427,6 +427,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
 			contentMetadata := metadata.NewContentService(pb, querySource)
+			surfaces := metadata.NewSurface(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
@@ -440,6 +441,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				contentMetadataRegistration("recordDocumentLink.commit", contentMetadata, businessGate),
 				contentMetadataRegistration("recordDocumentLink.repair", contentMetadata, businessGate),
 				contentMetadataRegistration("recordDocumentLink.delete", contentMetadata, businessGate),
+				surfaceListRegistration(surfaces),
+				surfaceLoadRegistration(surfaces),
+				surfaceCommitRegistration(surfaces, businessGate),
+				surfaceDeleteRegistration(surfaces, businessGate),
 				mutationPreviewRegistration(mutationKernel),
 				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),

@@ -63,6 +63,10 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "history.applyRestore",
         "history.previewRestore",
         "history.read",
+        "interface.commit",
+        "interface.delete",
+        "interface.list",
+        "interface.load",
         "lookup.list",
         "lookup.query",
         "lookup.valuePage",
@@ -183,7 +187,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 71
+    assert len(methods) == 67
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
@@ -195,6 +199,10 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "history.applyRestore",
         "history.previewRestore",
         "history.read",
+        "interface.commit",
+        "interface.delete",
+        "interface.list",
+        "interface.load",
         "lookup.list",
         "lookup.query",
         "lookup.valuePage",

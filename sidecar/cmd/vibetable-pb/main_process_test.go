@@ -526,6 +526,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		t.Fatal(err)
 	}
 	response.Body.Close()
+	// Independent complete public capability expectation, not a generated owner list.
 	expectedProductMethods := []string{
 		"contentProfile.commit",
 		"contentProfile.delete",
@@ -536,6 +537,10 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"history.applyRestore",
 		"history.previewRestore",
 		"history.read",
+		"interface.commit",
+		"interface.delete",
+		"interface.list",
+		"interface.load",
 		"lookup.list",
 		"lookup.query",
 		"lookup.valuePage",
@@ -567,10 +572,9 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		len(productCapabilities.Registrations) != len(expectedProductMethods) {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
-	for index, method := range expectedProductMethods {
-		registration := productCapabilities.Registrations[index]
-		if registration.Method != method || registration.Scope != "workspace" {
-			t.Fatalf("Product registration[%d] = %#v, want %s/workspace", index, registration, method)
+	for i, method := range expectedProductMethods {
+		if productCapabilities.RPCMethods[i] != method || productCapabilities.Registrations[i].Method != method || productCapabilities.Registrations[i].Scope != "workspace" {
+			t.Fatalf("Product capability[%d] differs: %#v", i, productCapabilities)
 		}
 	}
 

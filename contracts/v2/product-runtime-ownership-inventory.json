@@ -1216,7 +1216,7 @@
       "evidence": ["sidecar/internal/app/query_validate_snapshot_product_rpc.go", "sidecar/internal/app/query_routes.go", "sidecar/internal/query/port.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
-      "id": "rpc.shared-content-read",
+      "id": "rpc.surface-read",
       "kind": "rpc",
       "names": [
         "interface.list",
@@ -1224,11 +1224,10 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -1246,24 +1245,24 @@
         "pocketBase"
       ],
       "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
       "productScenarios": [
         "17-interface-lifecycle"
       ],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Go returns the public shared-content snapshots from authoritative metadata and Python content or surface orchestration has no production route.",
+      "deleteWhen": "Python SurfaceService and its dedicated Host gateway are removed; retain the four atomic public Interface methods and frozen DTO/domain contracts.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/adapters/pocketbase/internal_metadata.py",
-        "backend/application/surface_service.py",
-        "sidecar/internal/app/metadata_routes.go",
+        "sidecar/internal/metadata/surface.go",
+        "sidecar/internal/app/surface_product_rpc.go",
+        "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs",
+        "contracts/v2/surface-python-oracle.json",
         "tests/e2e/pocketbase_product_scenarios.json"
       ]
     },
     {
-      "id": "rpc.shared-content-write",
+      "id": "rpc.surface-write",
       "kind": "rpc",
       "names": [
         "interface.commit",
@@ -1271,11 +1270,10 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -1293,19 +1291,19 @@
         "pocketBase"
       ],
       "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
       "productScenarios": [
         "17-interface-lifecycle"
       ],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Go owns shared-content validation, revision, idempotency, and persistence and all corresponding Python write handlers are removed.",
+      "deleteWhen": "Python SurfaceService and its dedicated Host gateway are removed; retain the four atomic public Interface methods and frozen DTO/domain contracts.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/adapters/pocketbase/internal_metadata.py",
-        "backend/application/surface_service.py",
-        "sidecar/internal/app/metadata_routes.go",
+        "sidecar/internal/metadata/surface.go",
+        "sidecar/internal/app/surface_product_rpc.go",
+        "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs",
+        "contracts/v2/surface-python-oracle.json",
         "tests/e2e/pocketbase_product_scenarios.json"
       ]
     },

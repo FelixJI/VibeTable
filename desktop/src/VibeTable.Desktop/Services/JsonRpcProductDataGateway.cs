@@ -4,12 +4,13 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Contracts.Generated;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
 /// <summary>JSON-RPC adapter for the closed provider-neutral product surface.</summary>
-public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
+public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurfaceRpcGateway
 {
     private static readonly JsonSerializerOptions RequestOptions = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions JsonOptions =
@@ -37,6 +38,16 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
     }
 
     public event Action<JsonElement>? TaskChanged;
+
+    Task<InterfaceListResult> ISurfaceRpcGateway.ListAsync(CancellationToken token)
+        => InvokeStrict<InterfaceListRequest, InterfaceListResult>("interface.list", new(), token);
+    Task<InterfaceSnapshot> ISurfaceRpcGateway.LoadAsync(string interfaceId, CancellationToken token)
+        => InvokeStrict<InterfaceLoadRequest, InterfaceSnapshot>("interface.load", new() { InterfaceId = interfaceId }, token);
+    Task<InterfaceSnapshot> ISurfaceRpcGateway.CommitAsync(InterfaceCommitRequest parameters, CancellationToken token)
+        => InvokeStrict<InterfaceCommitRequest, InterfaceSnapshot>("interface.commit", parameters, token);
+    Task<InterfaceDeleteResult> ISurfaceRpcGateway.DeleteAsync(InterfaceDeleteRequest parameters, CancellationToken token)
+        => InvokeStrict<InterfaceDeleteRequest, InterfaceDeleteResult>("interface.delete", parameters, token);
+
 
     public Task<JsonElement> DescribeFieldSettingsAsync(JsonElement p, CancellationToken t)
         => InvokeStrictElement<FieldSettingsDescribeResultV2>("field.settings.describe", p, t);

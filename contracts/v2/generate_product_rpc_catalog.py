@@ -39,6 +39,10 @@ from backend.contracts.generated_workbench import (
     ContentProfileLoadRequest,
     ContentProfileDeleteResult,
     ContentProfileSnapshot,
+    InterfaceDeleteRequest,
+    InterfaceCommitRequest,
+    InterfaceListRequest,
+    InterfaceLoadRequest,
     InterfaceDeleteResult,
     InterfaceListResult,
     InterfaceSnapshot,
@@ -329,6 +333,10 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             "recordDocumentLink.commit": RecordDocumentLinkCommitRequest,
             "recordDocumentLink.repair": RecordDocumentLinkRepairRequest,
             "recordDocumentLink.delete": RecordDocumentLinkDeleteRequest,
+            "interface.list": InterfaceListRequest,
+            "interface.load": InterfaceLoadRequest,
+            "interface.commit": InterfaceCommitRequest,
+            "interface.delete": InterfaceDeleteRequest,
         }
     )
     # Host-owned methods retain their full public parameter contract after

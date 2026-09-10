@@ -111,7 +111,7 @@ func isCoordinatedMetadataMutationPath(path string) bool {
 		return false
 	}
 	for _, namespace := range metadata.Namespaces() {
-		if parts[0] == string(namespace) && genericMetadataWritable(parts[0]) {
+		if namespace != metadata.NamespaceInterfaces && parts[0] == string(namespace) && genericMetadataWritable(parts[0]) {
 			return true
 		}
 	}

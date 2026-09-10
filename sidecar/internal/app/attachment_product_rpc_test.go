@@ -352,6 +352,11 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(app, manager),
+
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
