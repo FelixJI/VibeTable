@@ -72,7 +72,8 @@ func lookupValuePageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
-		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

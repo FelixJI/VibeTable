@@ -225,7 +225,7 @@ function onSelectTable(key: string) {
           </NButton>
         </NDropdown>
       </NButtonGroup>
-      <NDropdown :options="moreOptions" placement="bottom-end" @select="onMore">
+      <NDropdown trigger="click" :options="moreOptions" placement="bottom-end" @select="onMore">
         <NTooltip placement="bottom" :delay="450">
           <template #trigger>
             <NButton

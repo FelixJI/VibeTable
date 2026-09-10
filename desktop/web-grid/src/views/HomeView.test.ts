@@ -1,3 +1,6 @@
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import type { HostBridge } from "@/bridge/hostBridge";
 import { nextTick } from "vue";
 import { beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -105,9 +108,15 @@ describe("HomeView", () => {
   });
 
   it("shows the shared holiday and adjusted-workday markers", async () => {
+    setHostBridgeForTesting({ request: vi.fn(async (type, payload) => type === "settings.readWorkCalendar" ? { overrides: [], revision: "" } : { ...payload, revision: "saved" }) } as unknown as HostBridge);
+    useWorkspaceStore().phase = "opened";
+    useWorkspaceSessionStore().activeWorkspaceId = "calendar-workspace";
+    useWorkspaceSessionStore().writable = true;
     const calendar = useWorkCalendarStore();
+    await flushPromises();
     const today = formatDateKey(new Date());
     calendar.setOverride(today, "workday", "调休上班");
+    await calendar.save();
     const wrapper = mount(HomeView);
     const cell = wrapper.get(`[data-date="${today}"]`);
     expect(cell.text()).toContain("班");

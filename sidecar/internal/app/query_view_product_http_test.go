@@ -63,7 +63,8 @@ func queryViewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
-		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -72,7 +72,6 @@ from backend.contracts.settings_commands import (
     LaunchActionParams,
     ListCommandsParams,
     ListShortcutsParams,
-    ReadSharedSettingsParams,
     RunCommandParams,
     SaveShortcutParams,
 )
@@ -201,7 +200,6 @@ def _register_settings_methods(
     service: SettingsCommandService,
 ) -> None:
     register_application_errors(ErrorDomain.SETTINGS_COMMAND)
-    dispatcher.register("settings.readShared", service.read_shared, ReadSharedSettingsParams)
     dispatcher.register(
         "command.list",
         lambda _params=None: service.list_commands(),

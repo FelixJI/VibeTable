@@ -1,3 +1,4 @@
+import { useWorkCalendarStore } from "@/stores/workCalendarStore";
 /**
  * Tabulator grid builder — read-only by default, editable per-column when an
  * `editSchema` is supplied (Task M3).
@@ -275,7 +276,7 @@ export function buildColumns(
     }
     const editable = !!edit?.editable && edit.editor.kind !== "json";
     if (editable && edit) {
-      const ed = tabulatorEditor(edit.editor);
+      const ed = tabulatorEditor(edit.editor, () => { const calendar = useWorkCalendarStore(); return calendar.available ? calendar.overrides : null; });
       return {
         ...def,
         editable: true,

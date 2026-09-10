@@ -1,3 +1,5 @@
+import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
@@ -18,6 +20,9 @@ describe("SettingsView", () => {
   beforeEach(() => {
     localStorage.clear();
     setActivePinia(createPinia());
+    useWorkspaceStore().phase = "opened";
+    useWorkspaceSessionStore().activeWorkspaceId = "calendar-workspace";
+    useWorkspaceSessionStore().writable = true;
     backupRequest.mockReset();
     let appPreferences = {
       minimizeToTrayOnClose: false,
@@ -26,6 +31,8 @@ describe("SettingsView", () => {
       customUpdateProxyUrl: "",
     };
     backupRequest.mockImplementation(async (type: string, payload: unknown) => {
+      if (type === "settings.readWorkCalendar") return { overrides: [], revision: "" };
+      if (type === "settings.commitWorkCalendar") return { ...(payload as object), revision: "confirmed" };
       if (type === "appPreferences.get") return appPreferences;
       if (type === "appPreferences.update") {
         appPreferences = { ...appPreferences, ...(payload as object) };
@@ -217,6 +224,8 @@ describe("SettingsView", () => {
     await wrapper.get(`[data-date="${today}"]`).trigger("click");
     const holiday = wrapper.get<HTMLInputElement>('.calendar-rule-options input[value="holiday"]');
     await holiday.setValue(true);
+    await wrapper.get('[data-testid="calendar-save"]').trigger("click");
+    await flushPromises();
     expect(useWorkCalendarStore().day(today).kind).toBe("holiday");
     expect(wrapper.get(`[data-date="${today}"]`).text()).toContain("休");
   });
@@ -283,7 +292,9 @@ describe("SettingsView", () => {
     await wrapper.get('[data-testid="settings-nav-calendar"]').trigger("click");
     const store = useWorkCalendarStore();
     // store.setOverride 签名为 (date, kind, name)——位置参数，非对象
+    await flushPromises();
     store.setOverride(formatDateKey(new Date()), "holiday", "测试假日");
+    await store.save();
     await wrapper.vm.$nextTick();
     expect(wrapper.text()).toContain("1 个特殊日期");
   });

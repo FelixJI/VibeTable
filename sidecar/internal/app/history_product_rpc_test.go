@@ -390,6 +390,7 @@ func historyRestoreProductFixture(
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 	)
 	if err != nil {
 		t.Fatal(err)
