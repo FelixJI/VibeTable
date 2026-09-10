@@ -29,7 +29,7 @@ func surfaceCommitRegistration(service *metadata.SurfaceService, gates ...busine
 			return nil, err
 		}
 		var result wb.InterfaceSnapshot
-		err := runIdempotentBusinessWrite(ctx, gates, "metadata.interfaces.upsert", request.IdempotencyKey, func(writeCtx context.Context) error {
+		err := runBusinessWrite(ctx, gates, "metadata.interfaces.upsert", request.IdempotencyKey, func(writeCtx context.Context) error {
 			var err error
 			result, err = service.Commit(writeCtx, request)
 			return err
@@ -44,7 +44,7 @@ func surfaceDeleteRegistration(service *metadata.SurfaceService, gates ...busine
 			return nil, err
 		}
 		var result wb.InterfaceDeleteResult
-		err := runIdempotentBusinessWrite(ctx, gates, "metadata.interfaces.delete", request.IdempotencyKey, func(writeCtx context.Context) error {
+		err := runBusinessWrite(ctx, gates, "metadata.interfaces.delete", request.IdempotencyKey, func(writeCtx context.Context) error {
 			var err error
 			result, err = service.Delete(writeCtx, request)
 			return err

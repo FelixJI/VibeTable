@@ -8,6 +8,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	wb "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 	"golang.org/x/text/cases"
 )
 
@@ -35,8 +36,8 @@ func surfaceConflict() error {
 	return surfaceError("surface.edit_conflict", "Interface changed elsewhere.", "expectedRevision")
 }
 func surfacePersistence(err error) error {
-	if err == nil {
-		return nil
+	if err == nil || err == writecoordinator.ErrBusinessReplay {
+		return err
 	}
 	var domain *SurfaceError
 	if errors.As(err, &domain) {
@@ -136,7 +137,9 @@ func (service *SurfaceService) Commit(ctx context.Context, request wb.InterfaceC
 			}
 			snapshot, err := surfaceSnapshot(item)
 			return snapshot, []metadataChange{change}, err
-		}, func(*wb.InterfaceSnapshot, string, []string) {}, func(*wb.InterfaceSnapshot) {})
+		}, func(*wb.InterfaceSnapshot, string, []string) {}, func(*wb.InterfaceSnapshot) {}, func() error {
+			return writecoordinator.ReplayedBusinessWrite(ctx, "metadata.interfaces.upsert", request.IdempotencyKey)
+		})
 	return result, surfacePersistence(err)
 }
 func (service *SurfaceService) Delete(ctx context.Context, request wb.InterfaceDeleteRequest) (wb.InterfaceDeleteResult, error) {
@@ -173,7 +176,9 @@ func (service *SurfaceService) Delete(ctx context.Context, request wb.InterfaceD
 			}
 			change, err := service.metadata.delete(tx, NamespaceInterfaces, ItemDelete{LogicalID: request.InterfaceId, ExpectedRevision: request.ExpectedRevision}, "", "")
 			return wb.InterfaceDeleteResult{InterfaceId: request.InterfaceId}, []metadataChange{change}, err
-		}, func(*wb.InterfaceDeleteResult, string, []string) {}, func(*wb.InterfaceDeleteResult) {})
+		}, func(*wb.InterfaceDeleteResult, string, []string) {}, func(*wb.InterfaceDeleteResult) {}, func() error {
+			return writecoordinator.ReplayedBusinessWrite(ctx, "metadata.interfaces.delete", request.IdempotencyKey)
+		})
 	return result, surfacePersistence(err)
 }
 func surfaceCurrent(app core.App, id string) (*Item, error) {

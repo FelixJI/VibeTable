@@ -1,13 +1,13 @@
 # Surface metadata owner 资格记录
 
-状态：**本批本地源码审查、完整发布构建与同包 S17 资格通过**。远端完整 required 门禁仍未执行，不据此宣称已可合并；未 push/创建 PR。
+状态：**旧源码完成过完整构建与同包 S17；后续审查发现真实 Runtime gate 重放缺陷，本次生产修复已取得聚焦 GREEN，待独立双轴及必要新包资格**。旧包不能覆盖本次 runtime 变更，当前 PR 的远端门禁须绑定最终 head；本次修复未 push。
 
 ## 固定源码与完整意图
 
 - 旧 Python producer：`12556e5db81dd49592d69b5af1780007ccd36c37`。
 - 不可变捕获提交：`86639eb5af956956e637fc142e62e10160118f35`，78 例、81 次公开调用；原始捕获来源保留；捕获器现随分支版本管理，检查不再依赖该 squash 前提交，JSON 未重新生成。
 - 同步：正常合入 main `146a9c2cac5998ee013daebc78eedff0bd4a7ca5`，同步提交 `19230d6455fd9711b46138c65bc9faa677aaa609`。
-- 实施源码：`4eb7f00348618a31a78e2434768f6b24629d2732`。本资格文档的后续提交只有文档，不改 runtime。
+- 初始实施源码：`4eb7f00348618a31a78e2434768f6b24629d2732`。首次构建使用其后文档提交 `3bd09a4e`；后续 Runtime gate 生产修复见末节，不能沿用旧包结论。
 
 这是一批完整 `interface.list/load/commit/delete` 迁移。Go `metadata.SurfaceService` 使用实际 logical_id，封装定义、树、DAG、动作、排序、存储投影与 CAS；Commit/Delete 沿用 metadata coordinator identity 及同事务 receipt/audit/outbox。成功重放先于 current CAS，不恢复已删除的 aggregate，不产生重复 audit。Generic interfaces HTTP upsert/delete 已收口；GET、内部 snapshot 读取、集合和其他 namespace 保留。
 
@@ -88,3 +88,21 @@ dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj
 `uv run --frozen --no-sync python contracts/v2/generate_surface_python_oracle.py --check` 最终 EXIT 0，日志 `build/qa/surface-metadata/oracle-replay-final.log`。`uv run --frozen --no-sync pytest tests/contract/test_surface_python_oracle.py --no-cov -q` 为 **10 PASS，2.33s**，日志 `oracle-replay-contract-final.log`（同目录）：真实旧 producer 重放一致，复制样本的 response 修改、数值 0 改为 false 均拒绝；八种非法归档成员拒绝，固定 producer 不存在时 fail closed。每次正常重放的 captured.json/stdout/stderr 保留在 build 隔离目录。首次 Ruff 曾报恢复捕获器的导入排序错误，修正后相关 format/check 全通过；原始工具输出与此前 9 PASS 日志保留。
 
 此批仅修改 oracle 工具、契约测试与说明；冻结 JSON 和 production diff 均为 0，没有同步 main、重建、重跑 S17 或 push。原源码包资格与本次校验工具资格分别保留；本次修改等待独立双轴审查。
+
+## 真实 Runtime gate 的幂等重放修复
+
+独立 Spec 在 oracle 修复源码 `a7bb52bb8ef0e36f17a25f8fc64627a153d162f3` 发现：生产 app 同时传普通/幂等 gate，而 Surface 写 handler 选中了为 background batch 设计的 CoordinateIdempotentBusinessWrite。该 gate 查到 workspace receipt 后直接成功返回，不执行领域 callback；因此 commit/delete 的局部 result 未赋值，且相同 key 的不同 payload/expectedRevision 绕过 metadata digest 校验。原 HTTP fixture 只用了 apply-through gate，此前零问题审查和包 S17 未覆盖这个生产配置。
+
+新增实际 PocketBase、Workspace Runtime、audit ledger 和公开 Product HTTP 回归，注入两种真实 gate。生产未改时的 `go test ./internal/app -run '^TestSurfaceProductRealRuntimeGate' -count=1 -v` 明确 RED：commit/delete 重放返回零值，相同 key 改 payload/expectedRevision 仍成功，关闭重开 Runtime/PB 后两方法重放仍为零值。日志 `build/qa/surface-metadata/runtime-gate-red-contract.log`。
+
+修复沿用现有 Mutation 约定：Surface registration 和 app composition 只选择普通 CoordinateBusinessWrite；metadata.executeIdempotent 在 request digest 验证、已存 receipt 解码之后执行必要内部 replay callback，调用现有 ReplayedBusinessWrite 对精确 kind/key 返回 ErrBusinessReplay。该 exact signal 使 metadata 跳过重复 workspace receipt 持久化，事务完成后交 Runtime 正常 abort prepared intent；handler 已恢复的原 result 保留。事务错误优先，只有 exact signal 原样通过 Surface 投影，joined/其他错误不冒充成功。无 callback 的旧 metadata 调用者行为不变；workspace admission、身份/epoch 验证、公共 coordinator、其他 namespace 写入和错误 allowlist 未改。
+
+验证结果及原失败：
+
+- 最终同命令 **EXIT 0，两项 PASS，1.950s**，日志 `runtime-gate-green-final.log`（下述日志均在 `build/qa/surface-metadata/`）。覆盖 commit/delete 原结果重放、不同 payload/expectedRevision 拒绝、aggregate/audit/outbox/idempotency 与 workspace receipt/mutationRevision 不变；重放后的新写入恰好推进一次；Runtime/PB 重开后仍重放且不复活已删 interface；关闭 gate 拒绝，错误 workspace/epoch 为真实 HTTP 400/InvalidRequest，取消不改变 authority。
+- 三包 `go test ./internal/metadata ./internal/productrpc ./internal/app -run 'TestSurface|TestWorkspaceV2WriteBoundary' -count=1 -v`：metadata PASS 10.301s、productrpc PASS 0.738s；app 的原 Surface/WriteBoundary 和新重放主测试通过，但新 scope 拒绝 fixture 误用了只允许 HTTP 200 的成功 helper，整体 EXIT 1。改为独立核对真实 HTTP 400/InvalidRequest 后取得上述两项 GREEN，未放宽原成功 helper。原日志 `runtime-gate-focused-final.log` 保留，不改写为整组 PASS。
+- `go test ./internal/metadata -count=1` EXIT 1，10.264s；仅 `TestSurfaceFrozenPythonOracle/blank-name` 的 TempDir 清理目录非空，无语义断言失败。日志 `runtime-gate-metadata-full.log` 保留，不添加 retry 或重复全包求绿。
+- `go vet ./internal/metadata ./internal/productrpc ./internal/app` EXIT 0，日志 `runtime-gate-vet.log`；相关文件已 gofmt。
+- 早期 fixture 曾用不存在的 auditledger.Store，随后曾把 coordination 目录传给要求数据库文件的读取器，分别保留 `runtime-gate-red.log`、`runtime-gate-red-semantic.log`。首修复语义全部通过但 TempDir snapshots 清理失败，日志 `runtime-gate-green.log` 保留。这些不替代真实 RED/GREEN。
+
+本次有生产 runtime 修改；未运行发布构建、S17、完整 Python 或全 Go suite，未同步 main/push。旧 3bd 完整构建及同包 S17 仅证明旧源码，修复需独立双轴后再决定新包资格；历史包和失败证据均保留。

@@ -86,7 +86,7 @@ func TestSurfaceProductHTTPAtomicCASReplayAndGenericWriteClosure(t *testing.T) {
 		gateKinds = append(gateKinds, kind)
 		return apply(ctx)
 	})
-	server := surfaceHTTPServer(t, pb, nil, gate)
+	server := surfaceHTTPServer(t, pb, gate)
 	create := `{"definition":` + surfaceHTTPDefinition + `,"expectedRevision":null,"idempotencyKey":"create"}`
 	first := surfaceHTTPRequest(t, server, "interface.commit", create)
 	revision := surfaceHTTPRevision(t, first)
@@ -132,7 +132,7 @@ func TestSurfaceProductHTTPAtomicCASReplayAndGenericWriteClosure(t *testing.T) {
 	if err := pb.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
-	server = surfaceHTTPServer(t, pb, nil, gate)
+	server = surfaceHTTPServer(t, pb, gate)
 	for _, item := range []struct {
 		method, params string
 		want           json.RawMessage
