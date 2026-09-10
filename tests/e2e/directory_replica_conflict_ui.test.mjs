@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
   from "./directory_replica_conflict_ui.mjs";
 
@@ -84,3 +86,90 @@ test("normal restart requires both public list and exact inspection to retain ap
   ]) assert.throws(() => requireResolvedReplicaConflict(changed.list, changed.detail,
     "seed", state.tableId), /did not survive/);
 });
+
+
+// Exercise the actual scenario startup and existing UI navigation helper without
+// starting the packaged Host. The saved fork-left screenshot is an already-open
+// workspace on Home: waiting for Home does not navigate to Workspace Center.
+const runnerSource = readFileSync(new URL("./webview_product_scenarios.mjs", import.meta.url), "utf8");
+const scenarioStartup = runnerSource.slice(runnerSource.indexOf("async function scenario24("),
+  runnerSource.indexOf("const scenarios ="));
+const centerNavigation = runnerSource.slice(
+  runnerSource.indexOf("async function openWorkspaceCenterFromSwitcher("),
+  runnerSource.indexOf("async function switchWorkspaceByName("));
+
+for (const stage of ["seed", "fork-left", "fork-right", "resolve", "verify-resolved"]) {
+  test(`scenario ${stage} enters Workspace Center through UI even after last-workspace startup`, async () => {
+    let activeWorkspace = !["seed", "fork-right"].includes(stage);
+    let centerVisible = !activeWorkspace;
+    let menuVisible = false;
+    let reachedAction = false;
+    const clicks = [];
+    const nextAction = () => {
+      assert.equal(centerVisible, true);
+      reachedAction = true;
+      throw new Error("scenario reached its next workspace action");
+    };
+    const page = {
+      getByTestId(id) {
+        if (id === "nav-home") return {
+          async waitFor() {},
+          async click() { clicks.push("home"); }, // Home alone keeps the active workspace open.
+        };
+        if (id === "workspace-center") return {
+          async waitFor(options) {
+            assert.ok(options.timeout <= 60_000);
+            if (!centerVisible) throw new Error("workspace-center hidden while Home has an active workspace");
+          },
+          getByRole(_role, options) {
+            if (options.name.test("关闭当前工作区")) return {
+              async isVisible() { return activeWorkspace; },
+              async click() {
+                assert.equal(activeWorkspace, true);
+                clicks.push("workspace.close");
+                activeWorkspace = false;
+              },
+            };
+            return { click() {
+              // The real UI controller returns to Home without an open request for this card.
+              if (activeWorkspace) throw new Error("current workspace card does not emit workspace.open");
+              nextAction();
+            } };
+          },
+        };
+        if (id === "workspace-switcher") return {
+          locator(selector) {
+            assert.equal(selector, ".switcher-trigger");
+            return { async click() { clicks.push("switcher"); menuVisible = true; } };
+          },
+        };
+        if (["workspace-create", "workspace-connect"].includes(id)) return { click: nextAction };
+        throw new Error(`unexpected UI control ${id}`);
+      },
+      locator(selector) {
+        assert.equal(selector, ".n-dropdown-option");
+        return { last() { return { async click() {
+          assert.equal(menuVisible, true);
+          clicks.push("workspace-center");
+          centerVisible = true;
+        } }; } };
+      },
+    };
+    const scenario = runInNewContext(`${centerNavigation}\n${scenarioStartup}\nscenario24`, {
+      fs: { async readFile() { return JSON.stringify({ workspaceName: "Seed", workspaceId: "seed-id" }); } },
+      async replicaUiMethod(_page, _recorder, method, action) {
+        assert.equal(method, "workspace.close");
+        await action();
+        return { request: { wire: { workspaceId: "seed-id", sessionEpoch: 7 } },
+          result: { state: "closed", workspaceId: null, sessionEpoch: 7 } };
+      },
+      async activateDirectoryReplicaWorkspace(_page, options) { await options.activate(); },
+    });
+    await assert.rejects(scenario(page, { check(_message, condition) { assert.equal(condition, true); } }, null,
+      { replicaStage: stage, replicaState: "saved-state" }),
+      /scenario reached its next workspace action/);
+    assert.equal(reachedAction, true);
+    assert.deepEqual(clicks, ["switcher", "workspace-center",
+      ...(!["seed", "fork-right"].includes(stage) ? ["workspace.close"] : [])]);
+  });
+}

@@ -7798,6 +7798,8 @@ async function scenario24(page, recorder, _network, runtime) {
   const uuid = (value) => typeof value === "string"
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
   await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
+  // Persistent hosts may already reopen their last workspace on Home.
+  await openWorkspaceCenterFromSwitcher(page);
   const center = page.getByTestId("workspace-center");
   await center.waitFor({ state: "visible", timeout: 60_000 });
   let state;
@@ -7833,6 +7835,16 @@ async function scenario24(page, recorder, _network, runtime) {
         registered.result.workspaceId === state.workspaceId
           && registered.result.status === "registered", { registered });
     }
+  }
+  const closeCurrent = center.getByRole("button", {
+    name: /关闭当前工作区|Close current workspace/,
+  });
+  if (await closeCurrent.isVisible()) {
+    const closed = await replicaUiMethod(page, recorder, "workspace.close", () => closeCurrent.click());
+    recorder.check("the resumed seeded session closes before requesting a fresh public open",
+      closed.request.wire.workspaceId === state.workspaceId
+        && closed.result.state === "closed" && closed.result.workspaceId === null
+        && closed.result.sessionEpoch === closed.request.wire.sessionEpoch, { closed });
   }
   const opened = await activateDirectoryReplicaWorkspace(page, {
     method: "workspace.open",
