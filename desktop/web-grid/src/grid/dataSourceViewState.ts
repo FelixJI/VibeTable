@@ -125,13 +125,18 @@ export function captureDataSourceView(
     ? grid.getColumns()
     : [];
   const columns: ColumnState[] = gridColumns
-    .map((column, order) => ({
-      name: column.getField(),
-      order,
-      width: column.getWidth?.() ?? null,
-      visible: column.isVisible?.() ?? true,
-      frozen: column.getDefinition?.().frozen ?? false,
-    }))
+    .map((column, order) => {
+      const width = column.getWidth?.();
+      return {
+        name: column.getField(),
+        order,
+        // fitColumns can assign a subpixel remainder to the final column.
+        // Persist layout in the whole CSS pixels required by ColumnState.
+        width: width == null ? null : Math.round(width),
+        visible: column.isVisible?.() ?? true,
+        frozen: column.getDefinition?.().frozen ?? false,
+      };
+    })
     .filter((column) => isDataField(column.name));
   const canReadRuntimeState = grid?.initialized !== false;
   const sorts = (canReadRuntimeState ? grid?.getSorters?.() ?? [] : [])

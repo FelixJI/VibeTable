@@ -72,6 +72,28 @@ public sealed class GridPresentationRequestControllerTests
         Assert.AreEqual(WorkspaceSessionState.Closed, fixture.Manager.Current.State);
     }
 
+    [TestMethod]
+    public async Task RendererWholePixelWidthIsAcceptedButSubpixelWidthDoesNotChangeState()
+    {
+        using var fixture = new Fixture();
+        await fixture.OpenAsync("first");
+        await fixture.RequestAsync("gridState.get", "{\"table\":\"tbl_one\"}");
+        string revision = fixture.Result.GetProperty("revision").GetString()!;
+        await fixture.RequestAsync("gridState.save", JsonSerializer.Serialize(new
+        {
+            table = "tbl_one", state = new { columns = new[] { new { name = "amount", width = 228.8571428571429 } } }, revision,
+        }));
+        Assert.AreEqual("BAD_PAYLOAD", fixture.Error);
+        await fixture.RequestAsync("gridState.get", "{\"table\":\"tbl_one\"}");
+        Assert.AreEqual(revision, fixture.Result.GetProperty("revision").GetString());
+        await fixture.RequestAsync("gridState.save", JsonSerializer.Serialize(new
+        {
+            table = "tbl_one", state = new { columns = new[] { new { name = "amount", width = 229 } } }, revision,
+        }));
+        Assert.IsNull(fixture.Error);
+        Assert.AreEqual(229, fixture.Result.GetProperty("state").GetProperty("columns")[0].GetProperty("width").GetInt32());
+    }
+
     private sealed class Fixture : IDisposable, IWebReplySink, IWorkspaceRuntimeFactory
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "vibetable-grid-controller-" + Guid.NewGuid().ToString("N"));

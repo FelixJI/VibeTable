@@ -3,7 +3,8 @@ import { createPinia, setActivePinia } from "pinia";
 import { effectScope, ref } from "vue";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { ColumnState, GridState, GridStateResult, PresetEntry, PresetsResult } from "@/contracts";
-import type { DataSourceViewGrid } from "@/grid/dataSourceViewState";
+import { createTabulatorDataSourceViewAdapter, type DataSourceViewGrid } from "@/grid/dataSourceViewState";
+import { TabulatorFull } from "tabulator-tables";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -19,7 +20,7 @@ const local: GridState = { columns: [{ name: "status", order: 0, width: 90, froz
   keyword: "local", density: "compact", forcedRemote: true, presetId: "default", presetRevision: "p1" };
 
 beforeEach(() => setActivePinia(createPinia()));
-function fixture() {
+function fixture(runtime?: DataSourceViewGrid) {
   const workspace = useWorkspaceStore();
   const table = useTableStore();
   const query = useViewQueryStore();
@@ -32,7 +33,7 @@ function fixture() {
   const layout = vi.fn((next: readonly { field: string; width?: number; visible: boolean; frozen: boolean }[]) => {
     columns = next.map((column, order) => ({ name: column.field, order, ...column }));
   });
-  const grid: DataSourceViewGrid = {
+  const grid: DataSourceViewGrid = runtime ?? {
     getColumns: () => columns.map(column => ({ getField: () => column.name, getWidth: () => column.width ?? 120,
       isVisible: () => column.visible !== false, getDefinition: () => ({ frozen: column.frozen }) })),
     applyPresentation: vi.fn(presentation => layout(presentation.columns)),
@@ -168,4 +169,45 @@ it("finishes the captured table's latest queued edit across synchronous table sw
   expect(f.query.search).toBe("latest");
   expect(f.savePreset).not.toHaveBeenCalled();
   f.lifetime.stop();
+});
+
+it("autosaves whole-pixel column widths when grouping a dynamically expanded fitColumns grid", async () => {
+  const element = document.createElement("div");
+  document.body.append(element);
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    .mockReturnValue({ width: 726 + 6 / 7, height: 300 } as DOMRect);
+  const runtime = new TabulatorFull(element, {
+    layout: "fitColumns", columns: [{ field: "title" }, { field: "status" }],
+    data: [], sortMode: "remote", filterMode: "remote",
+  });
+  let f: ReturnType<typeof fixture> | undefined;
+  try {
+    const grid = createTabulatorDataSourceViewAdapter(runtime)!;
+    await vi.waitFor(() => expect(grid.initialized).toBe(true));
+    f = fixture(grid);
+    f.hostRead.resolve({ state: {}, revision: "r1", conflict: false });
+    f.presetRead.resolve({ collection: "orders", presets: [preset] });
+    await flushPromises();
+    f.table.schema = [...f.table.schema!, { name: "amount", title: "Amount", dataType: "decimal", nullable: true, editable: false }];
+    await flushPromises();
+    runtime.setColumns([
+      { field: "__vt_row_number", width: 42 },
+      { field: "title", minWidth: 160 },
+      { field: "status", minWidth: 160 },
+      { field: "amount", minWidth: 120 },
+    ]);
+    expect(Number.isInteger(grid.getColumns().at(-1)?.getWidth?.())).toBe(false);
+    await f.controller.dispatch({ type: "definition.changed", definition: {
+      filters: [], groups: [{ field: "status" }], summaries: [], visibleFields: ["title", "status", "amount"],
+    } });
+    await f.controller.flush();
+    expect(f.save).toHaveBeenCalled();
+    const saved = f.save.mock.calls.at(-1)![1];
+    expect(saved.columns?.map(column => column.width)).toEqual([228, 228, 229]);
+    expect(saved).not.toHaveProperty("groups");
+    expect(f.query.groups).toEqual([{ field: "status" }]);
+    expect(f.controller.presentationError.value).toBe("");
+  } finally {
+    f?.lifetime.stop(); runtime.destroy?.(); element.remove(); geometry.mockRestore();
+  }
 });

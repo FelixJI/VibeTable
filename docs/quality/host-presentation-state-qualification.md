@@ -177,3 +177,11 @@ CI `34468066165` 的 release smoke 中 S02 编辑器未就绪、S08 等待超时
 现有固定 Tabulator 6.5.2 补丁增加 editor success 的归属检查，退休列及同列已替换输入框的回调不再生效；保留当前输入的默认 300ms、blur 与程序化筛选行为。四个真实交错回归在反向应用补丁时全部失败，重新应用补丁后完整 Web 180 文件/1651 项通过，类型检查通过。既有冻结列补丁正文保持不变，src/ESM/CJS 同步由 patch-package 生成。
 
 这些是组件和真实库验证；原 CI S02/S08 与 S33 两 Host 恢复的最终打包验证尚待新完整包完成。本地 `20260910T110857Z` 曾在 WebView2 初始化阶段出现 `COMException 0x80080005`，未进入界面断言；终局 readiness 原始错误现在会及时传播，不能据此宣称已修复其环境根因。
+
+## 2026-09-10：真实双 Host 恢复与小数列宽
+
+在组合 e789b6e8 的完整构建 EXIT0 后，真实包 run20260910T120408Z 的 S08 通过8项断言，S33 seed/resume 分别通过19/6项。四个包组件 freshness 均通过；三个通过阶段的 bridge failures/pending、pageErrors 均0，Host正常退出0、端口释放、owner lease与finalCleanup通过。S33现已有两个真实Host进程恢复同一workspace UUID的证据。
+
+该运行整体仍为 EXIT1：S02前16项业务断言通过，最终桥接门禁捕获一次 gridState.save BAD_PAYLOAD。真实trace显示动态扩列后末列宽228.857px；完整保存payload未被诊断保留，不宣称原请求逐字节回放。真实Tabulator fitColumns小数容器几何与动态schema回归复现相同类型缺陷：capture原样发送小数，而Host ColumnState.Width要求整数。
+
+生产capture现仅将持久化列宽四舍五入为整CSS像素，最多半像素布局误差；不改Host严格合同、精确数值筛选或E2E错误门禁。直接采集和实际控制器分组自动保存两个回归分别在旧实现失败；修复后相关Web41项、Host14项及Web类型检查通过。Host测试同时确认小数被拒且revision不变，整数被接受。精确命令和原失败日志保存在build/qa/host-presentation/grid-width-diagnosis.md。本次修复的新完整包复验仍待执行，不能用旧组合的S08/S33通过覆盖S02失败。

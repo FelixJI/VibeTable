@@ -272,3 +272,34 @@ describe("dataSourceViewState", () => {
     expect(applyPresentation).not.toHaveBeenCalled();
   });
 });
+
+it("captures fitColumns subpixel widths as whole CSS pixels after dynamic schema changes", async () => {
+  const element = document.createElement("div");
+  document.body.append(element);
+  const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    .mockReturnValue({ width: 726 + 6 / 7, height: 300 } as DOMRect);
+  const table = new TabulatorFull(element, {
+    layout: "fitColumns",
+    columns: [{ field: "__vt_row_number", width: 42 }, { field: "id", minWidth: 160 }],
+    data: [], sortMode: "remote", filterMode: "remote",
+  });
+  try {
+    const grid = createTabulatorDataSourceViewAdapter(table)!;
+    await vi.waitFor(() => expect(grid.initialized).toBe(true));
+    table.setColumns([
+      { field: "__vt_row_number", width: 42 },
+      { field: "id", minWidth: 160 },
+      { field: "group", minWidth: 160 },
+      { field: "amount", minWidth: 120 },
+    ]);
+    const runtimeWidths = grid.getColumns().map(column => column.getWidth?.());
+    expect(runtimeWidths.slice(0, 3)).toEqual([42, 228, 228]);
+    expect(runtimeWidths[3]).toBeCloseTo(228 + 6 / 7);
+    expect(Number.isInteger(runtimeWidths[3])).toBe(false);
+    const captured = captureDataSourceView(grid);
+    expect(captured.columns?.map(column => column.width)).toEqual([228, 228, 229]);
+    expect(captured.columns?.map(column => column.name)).toEqual(["id", "group", "amount"]);
+  } finally {
+    table.destroy?.(); element.remove(); geometry.mockRestore();
+  }
+});
