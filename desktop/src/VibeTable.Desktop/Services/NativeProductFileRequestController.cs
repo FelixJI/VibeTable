@@ -115,15 +115,18 @@ public sealed class NativeProductFileRequestController
             PostFailure(request, "Import cancelled.", "CANCELLED");
             return Task.CompletedTask;
         }
-        var info = new FileInfo(selectedPath);
         return RegisterPickedPathAsync(
             _gateway.RegisterImportSourceAsync,
             request,
-            new
+            () =>
             {
-                path = info.FullName,
-                sizeBytes = info.Length,
-                mimeType = (string?)null,
+                var info = new FileInfo(selectedPath);
+                return new
+                {
+                    path = info.FullName,
+                    sizeBytes = info.Length,
+                    mimeType = (string?)null,
+                };
             });
     }
 
@@ -143,7 +146,7 @@ public sealed class NativeProductFileRequestController
         return RegisterPickedPathAsync(
             _gateway.RegisterExportTargetAsync,
             request,
-            new { path = selectedPath });
+            () => new { path = selectedPath });
     }
 
     private Task UploadAttachmentsAsync(RoutedWebRequest request)
@@ -393,13 +396,13 @@ public sealed class NativeProductFileRequestController
     private async Task RegisterPickedPathAsync(
         Func<JsonElement, CancellationToken, Task<JsonElement>> register,
         RoutedWebRequest request,
-        object parameters)
+        Func<object> materializeParameters)
     {
         CancellationToken token = _sessionToken();
         try
         {
             JsonElement grant = await register(
-                JsonSerializer.SerializeToElement(parameters),
+                JsonSerializer.SerializeToElement(materializeParameters()),
                 token);
             _reply.PostResponse(request.Type, request.RequestId, grant);
         }

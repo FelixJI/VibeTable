@@ -1,0 +1,18 @@
+{
+  "$schema": "vibetable.a5-system-field-corpus.v1",
+  "forged": {
+    "id": "a5forged0000001",
+    "createdAt": "2001-02-03T04:05:06.007Z",
+    "updatedAt": "2002-03-04T05:06:07.008Z"
+  },
+  "inputs": [
+    {
+      "format": "csv",
+      "text": "legal CSV value"
+    },
+    {
+      "format": "xlsx",
+      "text": "legal XLSX value"
+    }
+  ]
+}
