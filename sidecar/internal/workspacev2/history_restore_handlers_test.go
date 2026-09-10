@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
@@ -86,7 +87,11 @@ func newHistoryRestoreTestRuntime(
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { app.ResetBootstrapState() })
+	t.Cleanup(func() {
+		if err := app.OnTerminate().Trigger(&core.TerminateEvent{App: app}, func(event *core.TerminateEvent) error { return event.App.ResetBootstrapState() }); err != nil {
+			t.Error(err)
+		}
+	})
 	ledger, err := auditledger.Open(filepath.Join(t.TempDir(), "audit"))
 	if err != nil {
 		t.Fatal(err)
@@ -318,25 +323,7 @@ func TestHistoryQueryV2IsStrictAndReturnsExistingHistoryPageShape(
 func TestHistoryApplyRestoreV2CoordinatesBusinessIntentAndRevision(
 	t *testing.T,
 ) {
-	dataDir := filepath.Join(t.TempDir(), "pb_data")
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir:  dataDir,
-		HideStartBanner: true,
-	})
-	migrations.Register(app)
-	if err := app.Bootstrap(); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.RunAllMigrations(); err != nil {
-		t.Fatal(err)
-	}
-	defer app.ResetBootstrapState()
-	if err := writecoordinator.EnsurePocketBaseReceiptTable(
-		context.Background(),
-		app,
-	); err != nil {
-		t.Fatal(err)
-	}
+	var runtime *Runtime
 	newRevision := "revision-2"
 	stub := &historyRestoreStub{
 		applied: audit.RestoreResult{
@@ -349,12 +336,15 @@ func TestHistoryApplyRestoreV2CoordinatesBusinessIntentAndRevision(
 		onApply: func(ctx context.Context) error {
 			return writecoordinator.PersistPocketBaseReceipt(
 				ctx,
-				app,
+				runtime.app,
 				time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC),
 			)
 		},
 	}
-	runtime := newHistoryRestoreTestRuntime(t, stub)
+	runtime = newHistoryRestoreTestRuntime(t, stub)
+	if err := writecoordinator.EnsurePocketBaseReceiptTable(context.Background(), runtime.app); err != nil {
+		t.Fatal(err)
+	}
 
 	response := dispatch(
 		t,
@@ -366,7 +356,7 @@ func TestHistoryApplyRestoreV2CoordinatesBusinessIntentAndRevision(
 	if response.Error != nil {
 		t.Fatalf("history apply failed: %#v", response.Error)
 	}
-	result, ok := response.Result.(applyHistoryRestoreResult)
+	result, ok := response.Result.(BusinessHistoryRestoreResult)
 	if !ok ||
 		result.Collection != "orders" ||
 		result.MutationRevision != 1 ||
@@ -379,7 +369,7 @@ func TestHistoryApplyRestoreV2CoordinatesBusinessIntentAndRevision(
 	}
 	found, err := writecoordinator.HasPocketBaseReceipt(
 		context.Background(),
-		app,
+		runtime.app,
 		token,
 		1,
 	)
