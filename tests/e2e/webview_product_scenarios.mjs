@@ -36,6 +36,7 @@ import {
   beginWorkspaceActivationCapture,
   waitForCapturedBridgeMessage,
 } from "./bridge_capture_wait.mjs";
+import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
@@ -7853,6 +7854,12 @@ const scenarios = {
   "30-query-snapshot-validation": scenario30,
   "31-relation-pair-inspection": scenario31,
   "32-shared-work-calendar": scenario32,
+  "34-relation-lookup-data-io": (page, recorder, _network, runtime) => runRelationLookupDataIo(
+    page, recorder, runtime, {
+      waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, applyProductMutation,
+      parseCsv, canonicalJsonText,
+    },
+  ),
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {
