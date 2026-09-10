@@ -253,3 +253,26 @@ uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root 
 旧sourcec673完整构建及四场景51断言仅代表旧组合；新head的fresh CI仍待完成。历史完整Python失败和旧S19失败保留原结论，本次定向测试不代替完整资格。
 
 旧远端head835bbdf6的CI34433711433/core102737079811后来报告FAIL：实际25方法已含Preset三项，但旧cmd断言仍按原22项下标检查，错误位于main_process_test.go:601。官方日志已保留。本次合入main后的完整27项独立字面量清单修正了这个期望错位，真实cmd测试PASS1.826s；没有将旧CI改写为通过。新组合e534bc2d的Standards/Spec独立复审均0，待推送后的fresh CI验证完整矩阵。
+
+## 官方 authority 差分覆盖率失败与错误边界回归
+
+官方 fresh CI `34435772369` / core job `102743087631`，源码 `fd58ec40f4f4cf7666d157a9f9542a7ee82865bd`：Go authority line **76.68%（4492/5858）**、branch **63.95%（2295/3589）** 达到既有门槛，diff **84.62%（11/13）** 低于90%，整体 FAIL。原官方日志保留为 root `build/preset327-current-core-failed.log`，不能改写成完整资格通过。
+
+本轮先正常合入最新 main `27e51198`，merge commit `c834934a`，无冲突。合并仅带入 Search 的5份文件；公共 scenario runner 的交界是将已有搜索 helper 替换为主干绑定真实 query 的模块，Preset S19–S22 场景保持。
+
+未修改生产、覆盖率阈值、cover_packages、test_packages 或统计 scope。固定 Go1.27.0，变更前按原 authority 的五个 cover_packages 和完整 `./...` 采集 profile，再以原 reporter（line73/branch61/diff90）和固定 base `a3ca78b9` 计算，精确重现 **76.68% / 63.95% / 84.62%（11/13）**。缺失两行是 `sidecar/internal/productrpc/preset.go:7` 的错误文本方法和 `:17` 的未知 code／不匹配 field 拒绝返回；`before-report.json` 保留精确未覆盖清单。这是 coverage gate 的 RED，不声称原生产错误投影存在已复现的功能错误。
+
+新相邻 `preset_test.go` 通过实际 Dispatcher.Dispatch 和合法 workspace wire 注入 handler 失败：包装的 Preset 冲突只能输出固定公开消息，不能泄漏 wrapper/domain 私有消息；未知 code、两类错误互换 field、typed-nil、普通私有错误及只读 preset.list 必须返回无 data 的 Internal error，并保留 request/wire 关联。测试直接断言公开响应，没有调用私有 mapper 来补计数，也没有改生产方法。
+
+本机采集的失败边界如实保留：首次 `-coverprofile` 参数未整体引用，PowerShell 将目标路径误作测试包，整体 EXIT1，`build/qa/preset-coverage/before-tests.log`；纠正参数后的完整测试仍有既有 TempDir 非空清理失败，整体 EXIT1，`before-corrected-tests.log`。其完整 profile 可以诊断缺失行，但不能据 reporter 结果将测试执行改写成 PASS。
+
+- `go test ./internal/productrpc -run '^TestDispatchPreset' -count=1 -v`：2个顶层测试、8个真实错误响应子例通过，0.689s。
+- `go test ./internal/productrpc -count=1`：PASS，0.775s。
+- `go vet ./internal/productrpc`：PASS；gofmt 已执行。
+
+补回归后的原完整 authority 采集及 reporter 结果见下文。未重新完整 build／GUI／产品场景，旧 c673 包仍不能代表本轮源码；新组合需 root 独立双轴与 fresh CI。
+
+最终覆盖统计：
+
+- `go test -count=1 -covermode=count '-coverpkg=./internal/filehistory,./internal/restore,./internal/query,./internal/mutation,./internal/productrpc' '-coverprofile=../build/qa/preset-coverage/after.out' ./...`：整体 **EXIT1**，`after-tests.log`；存在 E2EMutationBarrier、HistoryRestoreProductHTTP、KopiaRetention、HistoryQueryV2、SnapshotRestore 等既有 TempDir 非空清理失败，未扩大本任务去改变它们。
+- `go run ./cmd/go-coverage-report --group authority --profile ../build/qa/preset-coverage/after.out --repository-root .. --base-ref 27e51198 --report ../build/qa/preset-coverage/after-report.json --line-min 73 --branch-min 61 --diff-min 90 --scope sidecar/internal/filehistory --scope sidecar/internal/restore --scope sidecar/internal/query --scope sidecar/internal/mutation --scope sidecar/internal/productrpc`：reporter **EXIT0**，line **76.72%（4494/5858）**、branch **63.97%（2296/3589）**、diff **100.00%（13/13）**。没有修改 scope 或门槛；相对新 main 的 authority 生产差分仍是原13行。统计 GREEN 只表明缺少的两行已通过实际错误边界执行，不能抵消上一条完整测试 FAIL，也不能代替 fresh CI。
