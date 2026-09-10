@@ -177,7 +177,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
                 .ConfigureAwait(false);
             try
             {
-                return ParseResponse(raw, requestId, wire);
+                return ParseResponse(raw, requestId, wire, method);
             }
             catch (JsonException)
             {
@@ -398,7 +398,8 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
     private static ProductSidecarForwardResult ParseResponse(
         byte[] raw,
         string requestId,
-        JsonElement requestWire)
+        JsonElement requestWire,
+        string method)
     {
         using JsonDocument document = JsonDocument.Parse(raw);
         JsonElement root = document.RootElement;
@@ -423,11 +424,11 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             throw InvalidResponse();
         if (hasResult)
             return new ProductSidecarSuccess(wire.Clone(), result.Clone());
-        ProductSidecarRpcError parsedError = ParseError(error);
+        ProductSidecarRpcError parsedError = ParseError(error, method);
         return new ProductSidecarFailure(wire.Clone(), parsedError);
     }
 
-    private static ProductSidecarRpcError ParseError(JsonElement error)
+    private static ProductSidecarRpcError ParseError(JsonElement error, string method)
     {
         JsonElement data = default;
         bool hasData = error.ValueKind == JsonValueKind.Object
@@ -443,11 +444,13 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || string.IsNullOrWhiteSpace(messageElement.GetString()))
             throw InvalidResponse();
         string message = messageElement.GetString()!;
-        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150)
-            || (code == -32150 && !hasData))
+        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32170)
+            || (code is -32150 or -32170 && !hasData))
             throw InvalidResponse();
         if (code == -32150)
             ValidateProductErrorData(data);
+        if (code == -32170 && !SurfaceRpcErrorContract.IsValid(method, data))
+            throw InvalidResponse();
         return new ProductSidecarRpcError(
             code,
             message,

@@ -53,6 +53,10 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
+
+		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
+		}
 		var body metadataUpsertBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -81,6 +85,10 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
+
+		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
+		}
 		var body metadataDeleteBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
