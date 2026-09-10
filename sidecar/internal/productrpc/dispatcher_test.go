@@ -471,12 +471,16 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 26 ||
+	if methods := dispatcher.Methods(); len(methods) != 30 ||
 		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
-		methods[3].Method != "history.applyRestore" || methods[4].Method != "history.previewRestore" || methods[5] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[6].Method != "lookup.list" || methods[7] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[8] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[9] != (Method{Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope}) || methods[10] != (Method{Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope}) || methods[11].Method != "query.cursorFetch" || methods[12].Method != "query.cursorOpen" || methods[13].Method != "query.page" || methods[14].Method != "query.readRows" ||
-		methods[15].Method != "query.selectionOpen" || methods[16] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[17].Method != "query.view" || methods[18] != (Method{Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope}) || methods[19].Method != "relation.previewDelta" || methods[20] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[21].Method != "schema.describe" ||
-		methods[22].Method != "schema.getTable" || methods[23].Method != "schema.list" || methods[24] != (Method{Method: "settings.commitWorkCalendar", Scope: productcapabilities.WorkspaceScope}) || methods[25] != (Method{Method: "settings.readWorkCalendar", Scope: productcapabilities.WorkspaceScope}) {
+		methods[3] != (Method{Method: "history.applyRestore", Scope: productcapabilities.WorkspaceScope}) || methods[4] != (Method{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope}) || methods[5] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[6] != (Method{Method: "interface.commit", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[7] != (Method{Method: "interface.delete", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[8] != (Method{Method: "interface.list", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[9] != (Method{Method: "interface.load", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[10].Method != "lookup.list" || methods[11] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[12] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[13] != (Method{Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope}) || methods[14] != (Method{Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope}) || methods[15].Method != "query.cursorFetch" || methods[16].Method != "query.cursorOpen" || methods[17].Method != "query.page" || methods[18].Method != "query.readRows" ||
+		methods[19].Method != "query.selectionOpen" || methods[20] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[21].Method != "query.view" || methods[22] != (Method{Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope}) || methods[23].Method != "relation.previewDelta" || methods[24] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[25].Method != "schema.describe" ||
+		methods[26].Method != "schema.getTable" || methods[27].Method != "schema.list" || methods[28] != (Method{Method: "settings.commitWorkCalendar", Scope: productcapabilities.WorkspaceScope}) || methods[29] != (Method{Method: "settings.readWorkCalendar", Scope: productcapabilities.WorkspaceScope}) {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -528,6 +532,22 @@ func generatedGoSidecarRegistrations() []Registration {
 		{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "history.read", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.commit", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.delete", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.load", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const WorkCalendarID = "work-calendar"
@@ -165,5 +166,8 @@ func (service *Service) CommitWorkCalendar(ctx context.Context, request WorkCale
 			receipt.EmittedEvents = events
 		},
 		func(receipt *WorkCalendarReceipt) { receipt.Status = StatusReplayed },
+		func() error {
+			return writecoordinator.ReplayedBusinessWrite(ctx, "settings.workCalendar.commit", request.IdempotencyKey)
+		},
 	)
 }

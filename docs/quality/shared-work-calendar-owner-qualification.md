@@ -75,3 +75,22 @@ SettingsView 编辑 draft，通过明确保存提交完整 overrides；忙时禁
 - Go 工作日历 metadata、真实 PB 集成、Product HTTP 与生成注册定向测试通过。完整 internal/app 包运行仍有三项 TempDir cleanup 失败：TestHistoryReadProductHTTPReturnsFreshAuditedPage、TestMutationProductHTTPRejectsStaleRevisionEpochAndRetiredGate、TestWorkspaceMutationReplayCancellationDuringReceiptRead；没有将其归因杀软或修改清理规则，不宣称完整 Go 矩阵通过。
 - 新 S32 源码覆盖实际 A 保存、三个消费者、B 隔离、返回 A 重开与清空。尚未构建或运行 packaged GUI，S32 不能标为 passed。S24 场景来自另一未合分支，其日历副本消费追加须在主干合入后正常同步实施。
 - 尚未运行完整项目质量/覆盖率门禁、新包、独立双轴审查与远端 fresh CI。已有局部测试不替代这些资格。
+## 独立审查后的真实 Runtime 重放修正与主干合并
+
+独立 Standards/Spec 在 `51202c91` 发现生产 app 注入两个 gate，Calendar 选择背景批次用的 idempotent gate。该 gate 看到 workspace receipt 就直接返回，未执行 Calendar 闭包；因此同键重放返回零值 receipt，异载荷也跳过 metadata 摘要冲突。原直接 metadata 与单 fake gate 测试不能证明此生产链，前节局部 PASS 不覆盖该缺陷。
+
+为复用已合入的深模块，本次正常 merge `GitHub/main` 的 `5ff28ac0`（Surface #325），不 cherry-pick 未合实现。六个冲突文件保留 Calendar 两方法和 Surface 四方法：Go 30 / Python 73；shared_settings 与 interfaces generic 写各自封闭，原错误码保留；逐项独立 dispatcher/capability/Host/cmd 清单补两方，未从生成 manifest 派生预期。inventory 声明按既有 canonical id 排序，capability/catalog/index 用仓库生成器更新。全部 app 包执行未发现重复注册/遗漏业务断言；S17 主干新增路径与 S32 声明均保留。
+
+新增 `TestWorkCalendarRealRuntimeDurableReplayAndAdmission` 复用主干真实 PB+Runtime 生命周期 fixture，但独立构建 Calendar HTTP dispatcher、使用两条真实 production gates。修复前 `go test ./internal/app -run '^TestWorkCalendarRealRuntimeDurableReplayAndAdmission$' -count=1` **RED / EXIT 1**（build/calendar-runtime-red.log）：同键、新状态后、Runtime+PB 重开后三次零值 receipt，及异载荷未拒绝。首次写和新键写均实测正常推进一次。
+
+修复使用普通 business gate，metadata 在校验原 request_hash、解码完整 receipt 后调用主干已有 `ReplayedBusinessWrite` callback。保留既有 status=replayed 约定，其他字段均恢复原结果。exact replay signal 由 Runtime 消费，不补写第二 workspace receipt、不重复推进 mutation revision、不跳过准入；共享 metadata seam 与协调器不另改。真实回归随后 **GREEN / 1.487s**（calendar-runtime-green.log），覆盖原完整 trace/overrides/revision、异载荷、新写、较新状态与重开后原结果、旧 epoch HTTP400、取消和关闭 Runtime 拒绝。
+
+验证与明确失败：
+
+- `go vet ./internal/app ./internal/metadata ./internal/productrpc ./internal/contracts/productcapabilities` PASS；随后同四包完整 test **整体 EXIT 1**（build/calendar-merged-go.log）：Calendar Runtime 回归 snapshots TempDir 非空、Surface frozen oracle 两例 TempDir 非空；无业务断言/重复注册失败。productrpc、productcapabilities 完整通过，不把另外两包当 PASS。
+- `go test ./internal/app ./tests/integration ./cmd/vibetable-pb -run '^(TestWorkCalendar|TestSurfaceProductRealRuntime|TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart)' -count=1` **PASS**：app 2.927s、integration 1.223s、真实 cmd 30 方法+重启 1.815s（calendar-runtime-related.log）。局部通过不覆盖前述完整包失败。
+- Python capability/catalog/inventory/E2E runner 四文件首次 **140 PASS / 1 FAIL**（calendar-merged-contracts.log）；新增 Calendar owner 未加入独立 inventory 期待，按明确两方法补齐；该文件复验 **10 PASS / 0.72s**（calendar-merged-inventory-green.log），未重跑已通过 runner。
+- Host manifest/route/router/gateway/error mapper/registry 六组首次 **114 PASS / 2 FAIL**：Calendar owner 与 valid workspace scope 独立名单遗漏（calendar-merged-host.log、calendar-merge.trx）；补明确两方法后 **116 PASS / 0 FAIL / 0 SKIP**（calendar-merged-host-green.log、calendar-merge-green.trx）。原 closed/unknown 断言未改。
+- capability policy、Product catalog、E2E capability index 三个生成器 `--check` 与 `vue-tsc --noEmit` PASS。
+
+本节作者没有 push、PR 操作、完整 build、GUI 或删除迁移旧 Calendar 测试；主干 Surface 的既有删除仅随正常合并保留。固定旧 Calendar oracle 未改。S32、S24 后续拼接、全项目/coverage/fresh CI 与此修复后的新包仍未取得资格，待 root 安排独立双轴和后续验证。

@@ -88,7 +88,7 @@ func workCalendarCommitRegistration(port workCalendarPort, gates ...businessWrit
 				return nil, errors.New("calendar unavailable")
 			}
 			var result metadata.WorkCalendarReceipt
-			err = runIdempotentBusinessWrite(ctx, gates, "settings.workCalendar.commit", request.IdempotencyKey, func(writeContext context.Context) error {
+			err = runBusinessWrite(ctx, gates, "settings.workCalendar.commit", request.IdempotencyKey, func(writeContext context.Context) error {
 				var applyErr error
 				result, applyErr = port.CommitWorkCalendar(writeContext, request)
 				return applyErr
