@@ -34,3 +34,9 @@
 
 - 新增 resolve／重启失败夹具后，组合首次为 220 PASS、1 FAIL（9.53s，`fixtures-final-before-sync.log`）：测试错误要求右 Host 关闭失败后，剩余左 Host 仍正常关闭；实际 ExitStack 按既有规则中止清理左 Host。已改为精确验证右侧正常关闭失败、左侧 abort 清理和双方 scope 已关闭，未修改生产生命周期。
 - 旧 WIP 保存检查：完整 HEAD→工作树 patch、原 index patch、12 路径状态和四个未跟踪文件逐字节一致；`migration/preservation-result.txt` PASS。
+
+## History 主干同步
+
+首个完整场景提交为 `92c5e14e9e3253f3342251be482bc8cf6076d05c`。随后正常合入 main `a3ca78b9181a529d978f9fba46586fbb924ecada`（PR324），保留 History Go owner、真实 S07 Product 恢复断言及旧报告不覆盖新增 S07 的 changed 状态。冲突仅在两份文档：性能页同时保留 S24 gap 和 S07 changed；能力索引按合并后的 manifest 重生成。未改写或复制生产 History 路径。
+
+关闭失败夹具纠正后，`uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -k 'transports_only_closed_successful_stages or replica_success_requires_complete_clean_bridge_diagnostics' --no-cov -q`：18 PASS，1.55s，`late-close-focused.log`。同步后的组合验证另记；此处不替代真实产品 S24。

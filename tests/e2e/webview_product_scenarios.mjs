@@ -3560,6 +3560,17 @@ async function scenario07(page, recorder, _network, runtime) {
       `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
     );
   }
+  const replacementFile = replaced.payload.attachments[0];
+  const replacementRevision = attachmentHistoryProbe.changeSets.find((changeSet) =>
+    changeSet.scalarChanges?.some((change) =>
+      change.field === attachmentField
+        && String(change.after ?? "").includes(replacementFile.storedName)),
+  )?.rootRevisionId;
+  if (!replacementRevision || replacementRevision === originalRevision) {
+    throw new Error(
+      `replacement attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
+    );
+  }
   const attachmentProductHistoryReply = await rawBridgeRequest(
     page,
     "history.queryRequested",
@@ -3642,6 +3653,89 @@ async function scenario07(page, recorder, _network, runtime) {
     expectedOriginalHash,
     expectedSize: originalBytes.length,
   });
+
+  // The drawer uses the Workspace endpoint above. These existing public Host
+  // events independently qualify the Go Product owner and its five-field result.
+  const productPreviewReply = await rawBridgeRequest(
+    page,
+    "history.previewRestoreRequested",
+    {
+      collection: tableId,
+      itemId: recordId,
+      targetRevision: replacementRevision,
+      scope: "cell",
+      field: attachmentField,
+    },
+    20_000,
+    ["history.restorePreviewReady"],
+  );
+  const productPreview = productPreviewReply.payload;
+  recorder.check(
+    "public Product restore preview targets the replacement attachment revision",
+    productPreviewReply.type === "history.restorePreviewReady"
+      && productPreview?.collection === tableId
+      && productPreview?.itemId === recordId
+      && productPreview?.targetRevision === replacementRevision
+      && productPreview?.scope === "cell"
+      && productPreview?.field === attachmentField
+      && productPreview?.canApply === true
+      && typeof productPreview?.token === "string"
+      && productPreview.token.length > 0,
+    { productPreviewReply, replacementRevision },
+  );
+  const afterProductPreview = await rawBridgeRequest(page, "file.list", attachmentParams);
+  const unchangedFile = afterProductPreview.payload?.attachments?.[0];
+  recorder.check(
+    "public Product restore preview leaves the current attachment unchanged",
+    afterProductPreview.payload?.attachments?.length === 1
+      && unchangedFile?.storedName === restored.payload.attachments[0].storedName
+      && unchangedFile?.sha256 === expectedOriginalHash
+      && unchangedFile?.size === originalBytes.length,
+    { afterProductPreview, current: restored.payload.attachments[0] },
+  );
+  const productAppliedReply = await rawBridgeRequest(
+    page,
+    "history.applyRestoreRequested",
+    { collection: tableId, itemId: recordId, token: productPreview.token },
+    20_000,
+    ["history.restoreApplied"],
+  );
+  const productApplied = productAppliedReply.payload;
+  recorder.check(
+    "public Product restore returns its typed result without a Workspace receipt field",
+    productAppliedReply.type === "history.restoreApplied"
+      && productApplied?.collection === tableId
+      && productApplied?.itemId === recordId
+      && productApplied?.restoredToRevision === replacementRevision
+      && typeof productApplied?.newRevisionId === "string"
+      && productApplied.newRevisionId.length > 0
+      && productApplied.newRevisionId !== replacementRevision
+      && !Object.hasOwn(productApplied, "mutationRevision")
+      && typeof productApplied.item?.[attachmentField] === "string"
+      && productApplied.item[attachmentField].length > 0,
+    { productAppliedReply, replacementRevision, replacementFile },
+  );
+  // Restoring stages a fresh managed file. Its current stored name comes from
+  // the committed Product row, while table/record/field and content stay bound.
+  const productStoredName = productApplied.item[attachmentField];
+  const productRestored = await waitForAttachmentList(
+    page,
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.storedName === productStoredName,
+  );
+  const productRestoredFile = productRestored.payload.attachments[0];
+  recorder.check(
+    "public Product restore binds its committed row to authoritative attachment metadata",
+    productRestoredFile.tableId === tableId
+      && productRestoredFile.recordId === recordId
+      && productRestoredFile.fieldId === attachmentColumn.fieldId
+      && productRestoredFile.storedName === productStoredName
+      && productRestoredFile.originalName === replacementFile.originalName
+      && productRestoredFile.sha256 === expectedReplacementHash
+      && productRestoredFile.size === replacementBytes.length,
+    { productRestoredFile, replacementFile, expectedSize: replacementBytes.length },
+  );
 }
 
 async function scenario08(page, recorder) {
