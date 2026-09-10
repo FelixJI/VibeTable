@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -77,7 +78,10 @@ type Error struct {
 func (err *Error) Error() string { return err.Code }
 
 type Engine struct {
-	db *sql.DB
+	db         *sql.DB
+	operations sync.RWMutex
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // ProjectionCheckpoint binds one promoted search generation to the exact
@@ -120,13 +124,36 @@ func Open(path string) (*Engine, error) {
 	}
 	engine := &Engine{db: db}
 	if err := engine.initialize(context.Background()); err != nil {
-		db.Close()
-		return nil, err
+		return nil, errors.Join(err, engine.Close())
 	}
 	return engine, nil
 }
 
-func (engine *Engine) Close() error { return engine.db.Close() }
+func (engine *Engine) Close() error {
+	if engine == nil {
+		return nil
+	}
+	engine.closeOnce.Do(func() {
+		engine.operations.Lock()
+		defer engine.operations.Unlock()
+		if engine.db == nil {
+			return
+		}
+		var busy, logFrames, checkpointedFrames int
+		checkpointErr := engine.db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(
+			&busy, &logFrames, &checkpointedFrames,
+		)
+		if checkpointErr == nil && busy != 0 {
+			checkpointErr = fmt.Errorf(
+				"workspace_search.checkpoint_busy: log=%d checkpointed=%d",
+				logFrames,
+				checkpointedFrames,
+			)
+		}
+		engine.closeErr = errors.Join(checkpointErr, engine.db.Close())
+	})
+	return engine.closeErr
+}
 
 func (engine *Engine) initialize(ctx context.Context) error {
 	for _, statement := range []string{
@@ -172,6 +199,8 @@ func PublicErrorCode(err error) string {
 }
 
 func (engine *Engine) FTS5Enabled(ctx context.Context) (bool, error) {
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	var enabled int
 	err := engine.db.QueryRowContext(
 		ctx, `SELECT sqlite_compileoption_used('ENABLE_FTS5')`,
@@ -184,6 +213,8 @@ func Normalize(value string) string {
 }
 
 func (engine *Engine) Upsert(ctx context.Context, source SourceDocument) error {
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -283,6 +314,8 @@ func (engine *Engine) rebuildWithProgress(
 	checkpoint *ProjectionCheckpoint,
 	progress func(processed, total int),
 ) error {
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -341,6 +374,8 @@ func (engine *Engine) ApplyProjectionChanges(
 	if checkpoint.BusinessOutboxRowID < 0 {
 		return errors.New("workspace_search.checkpoint_invalid")
 	}
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -393,6 +428,8 @@ func (engine *Engine) ApplyProjectionChanges(
 func (engine *Engine) CurrentFileProjectionStates(
 	ctx context.Context,
 ) (map[string]FileProjectionState, error) {
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	rows, err := engine.db.QueryContext(ctx, `
 		SELECT document_id, source_revision, title, metadata_json,
 		       COALESCE(mime_type, ''), COALESCE(extension, ''),
@@ -439,6 +476,8 @@ func (engine *Engine) CurrentFileProjectionStates(
 func (engine *Engine) ProjectionCheckpoint(
 	ctx context.Context,
 ) (ProjectionCheckpoint, error) {
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	var businessRaw, fileRaw, mutationRaw string
 	if err := engine.db.QueryRowContext(
 		ctx,
@@ -534,6 +573,8 @@ func setRebuildRequired(ctx context.Context, tx *sql.Tx, required bool) error {
 }
 
 func (engine *Engine) Status(ctx context.Context) (contracts.SearchStatus, error) {
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	generation, err := engine.generation(ctx)
 	if err != nil {
 		return contracts.SearchStatus{}, err
@@ -577,6 +618,8 @@ func (engine *Engine) Tombstone(
 // Restore callers use it before background work resumes, so no SearchHit from
 // the pre-restore authority can be opened against the restored workspace.
 func (engine *Engine) Invalidate(ctx context.Context) error {
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -603,6 +646,8 @@ func (engine *Engine) Query(
 	if err := validateRequest(request); err != nil {
 		return Result{}, err
 	}
+	engine.operations.RLock()
+	defer engine.operations.RUnlock()
 	rebuildRequired, err := engine.rebuildRequired(ctx)
 	if err != nil {
 		return Result{}, err

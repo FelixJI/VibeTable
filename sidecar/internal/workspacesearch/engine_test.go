@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	contracts "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
@@ -317,6 +318,105 @@ func TestSearchHandlesLongSnippetsHistoricalRowsAndClosedStorage(t *testing.T) {
 	}
 	if _, err := engine.Query(context.Background(), search); err == nil {
 		t.Fatal("query on closed storage unexpectedly succeeded")
+	}
+}
+
+func TestSearchCloseCheckpointsWALAndReleasesStorage(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "workspace-search.db")
+	engine, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upsert(t, engine, source("record", "record-1", "rev-1", "Record", "alpha", true))
+
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); err != nil {
+			t.Fatalf("expected open WAL sidecar %q: %v", suffix, err)
+		}
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+			t.Fatalf("WAL sidecar %q remains after close: %v", suffix, err)
+		}
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("repeated close: %v", err)
+	}
+	var nilEngine *Engine
+	if err := nilEngine.Close(); err != nil {
+		t.Fatalf("nil close: %v", err)
+	}
+	if err := os.RemoveAll(parent); err != nil {
+		t.Fatalf("remove closed storage: %v", err)
+	}
+}
+
+func TestSearchCloseReportsBusyCheckpointAndStillCloses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workspace-search.db")
+	engine, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upsert(t, engine, source("record", "before", "rev-1", "Before", "alpha", true))
+	reader, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reader.Close() })
+	tx, err := reader.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM search_documents`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	upsert(t, engine, source("record", "after", "rev-1", "After", "beta", true))
+
+	closeErr := engine.Close()
+	if closeErr == nil || !strings.Contains(closeErr.Error(), "workspace_search.checkpoint_busy") {
+		t.Fatalf("close error = %v", closeErr)
+	}
+	if _, err := engine.Status(context.Background()); err == nil {
+		t.Fatal("status after busy checkpoint close unexpectedly succeeded")
+	}
+}
+
+func TestSearchCloseIsConcurrentSafe(t *testing.T) {
+	parent := t.TempDir()
+	engine, err := Open(filepath.Join(parent, "workspace-search.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { engine.Close() })
+	upsert(t, engine, source("record", "record-1", "rev-1", "Record", "alpha", true))
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	group.Add(3)
+	var closeErr error
+	for _, operation := range []func(){
+		func() { closeErr = engine.Close() },
+		func() { _, _ = engine.Status(context.Background()) },
+		func() { _, _ = engine.Query(context.Background(), request("alpha")) },
+	} {
+		go func() {
+			defer group.Done()
+			<-start
+			operation()
+		}()
+	}
+	close(start)
+	group.Wait()
+	if repeated := engine.Close(); repeated != closeErr {
+		t.Fatalf("repeated close error = %v, want cached %v", repeated, closeErr)
+	}
+	if err := os.RemoveAll(parent); err != nil {
+		t.Fatalf("remove concurrently closed storage: %v", err)
 	}
 }
 
@@ -1305,7 +1405,11 @@ func testEngine(t *testing.T) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { engine.Close() })
+	t.Cleanup(func() {
+		if err := engine.Close(); err != nil {
+			t.Errorf("close search engine: %v", err)
+		}
+	})
 	return engine
 }
 
