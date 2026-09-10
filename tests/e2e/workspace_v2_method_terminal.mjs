@@ -1,4 +1,10 @@
-export function installWorkspaceV2MethodTerminalCaptureInPage(expectedMethod) {
+export function installWorkspaceV2MethodTerminalCaptureInPage(target) {
+  const expectedMethod = typeof target === "string" ? target : target?.method;
+  const expectedQuery = typeof target === "string" ? undefined : target?.query;
+  if (expectedQuery !== undefined
+    && (expectedMethod !== "workspaceSearch.query" || typeof expectedQuery !== "string")) {
+    throw new Error("workspace search terminal capture requires a query string");
+  }
   if (typeof expectedMethod !== "string" || expectedMethod.length === 0) {
     throw new Error("workspace.v2 method terminal capture requires a method");
   }
@@ -167,7 +173,9 @@ export function installWorkspaceV2MethodTerminalCaptureInPage(expectedMethod) {
       );
     }
     const isTarget = isWorkspaceRequest && message?.payload?.method === expectedMethod;
-    if (isTarget && !capture.owner && !capture.error) {
+    const matchesQuery = expectedQuery === undefined
+      || message?.payload?.params?.query === expectedQuery;
+    if (isTarget && matchesQuery && !capture.owner && !capture.error) {
       if (
         typeof message.requestId !== "string"
         || message.requestId.trim().length === 0
