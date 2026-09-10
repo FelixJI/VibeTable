@@ -62,3 +62,23 @@ head `0fde466d141e8b3872b2f7381de98728b203232d` 的 CI34349172860，core job1024
 本次仅为该失败补齐未记录await的既有phase观察，覆盖页面创建、截图、取样、后续点击和清理。保留所有原断言、15秒整体限制及2秒点击限制，没有重试或吞错。独立Standards/Spec均0确定问题。
 
 独立诊断工作树原样测试1 PASS（1641ms），补阶段后1 PASS（1551ms）。固定Node24.19.0的本地负控通过build目录临时preloader使截图不返回：既有15秒超时仍失败（进程exit1），日志明确记录pending phase `capture initial screenshot`及此前阶段耗时。它证明诊断能区分截图阻塞，不证明原CI即为截图问题。未重建产品包。当前候选仍须新的完整fresh CI，旧FAIL继续保留。
+
+### 最新主干组合与 viewport 挂载诊断
+
+本分支正常合入主干 `146a9c2c`（Mutation 成对 owner）。上一 head `5f9594f4` 的
+CI `34361854095` 全部通过，但不能替代同步后新 head 的门禁。
+PR323 的 CI `34361844114` 显示同一 viewport 契约在挂载阶段超时：launch 741ms，
+mount pending 7793ms / total 15001ms，尚不能确定具体 await。
+
+在原外围 phase 基础上，将挂载的八个 await 分别计时，并在 abort 时同步输出已缓存
+pageerror；保留 15s、原操作顺序、真实组件、焦点 readiness 与全部断言，不增加 CDP 等待。
+相同测试与生产模板在固定 Node 24.19.0 的诊断工作树单次通过 2109.716ms；人为卡住焦点
+await 的单次负控按既有 15s 失败，准确报告 pending focus phase 与缓存 pageerror。
+负控仅验证诊断标签，不是原 CI 故障的复现，不能据此称根因已修复。
+
+主干 CI `34367794428` 的工作台查询取消测试也暴露了旧观察缺口：两次 RequestQuery
+均发生在 debounce 前，随后睡眠 350ms 并检查至少一次调用，既依赖调度，也未验证在途取消。
+本交付的工作台资格同时改为使用既有 ManualTimeProvider，等待首读开始后再 supersede，
+确认首 token 取消、第二读完成，严格断言两次调用与仅新版成功通知。生产逻辑不改，
+不通过增加 sleep 掩盖问题。相同测试在独立诊断工作树单次通过 32ms；锁定 restore 与
+warnings-as-errors 正常。该结果不代表主干原 CI 已通过，组合后仍需新 head 的完整 CI。
