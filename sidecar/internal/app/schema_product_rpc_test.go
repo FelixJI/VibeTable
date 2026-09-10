@@ -25,6 +25,7 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacev2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
 
@@ -39,6 +40,15 @@ func (reader unrelatedHistoryReadMustNotRun) ReadBusinessHistory(
 	reader.t.Helper()
 	reader.t.Fatal("unrelated Product fixture unexpectedly invoked history.read")
 	return audit.Page{}, errors.New("unexpected history.read invocation")
+}
+
+func (reader unrelatedHistoryReadMustNotRun) PreviewBusinessHistoryRestore(context.Context, audit.PreviewParams) (audit.Preview, error) {
+	reader.t.Fatal("unexpected history.previewRestore invocation")
+	return audit.Preview{}, errors.New("unexpected history restore")
+}
+func (reader unrelatedHistoryReadMustNotRun) ApplyBusinessHistoryRestore(context.Context, string, audit.ApplyParams) (workspacev2.BusinessHistoryRestoreResult, error) {
+	reader.t.Fatal("unexpected history.applyRestore invocation")
+	return workspacev2.BusinessHistoryRestoreResult{}, errors.New("unexpected history restore")
 }
 
 func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
@@ -691,6 +701,8 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		unrelatedSurfaceRegistration(t, "interface.commit"),
 		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {

@@ -117,3 +117,17 @@ dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj
 - 报告 `build/qa/surface-metadata/product-e2e-runtime-replay/20260910T031830Z/product-e2e-report.json`：包审计及四组件 freshness 通过，未预期 bridge failure 与 pending 均为 0；正常退出码 0，进程及后代为空，端口与 owner lease/final cleanup 通过。
 
 这组新包结果覆盖上文 Runtime 修复；历史失败记录仍保留，不把本地 TempDir 整组失败改记为通过。新的远端 head 仍需 fresh CI、严格同步、squash 及合并后 CI/CD。
+
+## 合入 History Product owner 后的组合边界
+
+从 `505cf87891458836293a066e4e991cf52e87e1db` 正常合入 main `a3ca78b9181a529d978f9fba46586fbb924ecada`，保留 Surface 四方法及 History 两个恢复方法：独立 Go owner 清单为 28、Python 为 74。18 处冲突保留双方能力、Scope/effect 和严格匹配断言；14 个既有 app fixture 的 Surface 四方法及 History read/preview/apply 均各注册一次。生成文件由 `uv run --frozen --no-sync python contracts/v2/product_rpc_capability_policy.py` 和 `uv run --frozen --no-sync python scripts/generate_product_e2e_capability_index.py --write` 重生，两者 `--check` 均退出 0。E2E 历史 29 场样本的 changed 明确为 S07、S17 两项。
+
+- `uv run --frozen --no-sync pytest tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_workspace_rpc_capability_manifest.py tests/contract/test_product_e2e_capability_index.py -q -o addopts=`：87 PASS，2.17s，日志 `build/surface-main-contracts.log`。
+- `go test ./internal/productrpc ./internal/contracts/productcapabilities -count=1`：两包 PASS（0.813s、0.234s），日志 `build/surface-main-go-policy.log`。
+- 逐文件提取 14 个受影响 fixture 的 47 个现有顶层 Test 名称（保留于 `build/surface-main-fixtures-tests.txt`），以 `go test ./internal/app -count=1 -run '^(名称以 | 连接)$'` 精确执行：整体 EXIT 1、9.523s，仅 `TestQueryPageProductHTTPReadsPersistedAuthorityAndSignedSnapshot` 的 TempDir 清理目录非空；没有重复注册或业务断言失败。原日志 `build/surface-main-fixtures.log` 保留，不写为整组通过。
+- `go test ./internal/app -count=1 -run '^(TestSurface|TestHistoryRestore)'` 首次 EXIT 1：Surface 自有 HTTP fixture 的独立无关方法清单遗漏 main 的两个 History 方法，导致五项 Surface 测试在严格注册检查处失败（`build/surface-main-owners.log`）。仅补入两个字面量后同命令 PASS、4.768s（`build/surface-main-owners-correction.log`），包括真实 Runtime 重放、CAS、事务回滚及 History 恢复；未放宽校验。
+- `go test ./cmd/vibetable-pb -count=1 -run '^TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart$'`：PASS，1.731s；真实进程验证独立 28 方法清单和重启，日志 `build/surface-main-process.log`。
+- `go vet ./internal/app ./internal/productrpc ./internal/contracts/productcapabilities ./cmd/vibetable-pb`：EXIT 0，日志 `build/surface-main-vet.log`；冲突 Go 文件已 gofmt。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~HostProductRpcCompositionTests|FullyQualifiedName~WorkspaceRequestDispatcherQueryTests' --logger 'trx;LogFileName=surface-main-host.trx' --results-directory build/qa/surface-main-host`：135 PASS，0 FAIL、0 skip，18s；日志 `build/surface-main-host.log` 及对应 TRX。
+
+本次没有发布构建、重跑 S07/S17、完整 suite 或远端 CI 资格。上节 `65be85ce` 的新包与 S17 PASS 仅覆盖该 source，不能替代本次 History/Surface 组合的 fresh CI。原失败和历史包证据均保留，组合提交交独立双轴审查。

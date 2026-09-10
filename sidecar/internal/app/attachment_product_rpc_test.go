@@ -351,6 +351,8 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		unrelatedSurfaceRegistration(t, "interface.commit"),
 		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {

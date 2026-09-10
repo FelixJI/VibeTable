@@ -26,7 +26,7 @@ func surfaceHTTPServer(t *testing.T, pb *pocketbase.PocketBase, gates ...busines
 	service := metadata.NewSurface(pb)
 	registrations := []productrpc.Registration{surfaceListRegistration(service), surfaceLoadRegistration(service), surfaceCommitRegistration(service, gates...), surfaceDeleteRegistration(service, gates...)}
 	// Independent unrelated capabilities: a call to any of them is a test failure.
-	for _, method := range []string{"events.reconcile", "field.settings.describe", "file.list", "history.read", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.describe", "schema.getTable", "schema.list"} {
+	for _, method := range []string{"events.reconcile", "field.settings.describe", "file.list", "history.applyRestore", "history.previewRestore", "history.read", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.describe", "schema.getTable", "schema.list"} {
 		registrations = append(registrations, productrpc.Registration{Method: method, Scope: productcapabilities.WorkspaceScope, ValidateParams: func(json.RawMessage) error { return nil }, Handler: func(context.Context, json.RawMessage) (any, error) {
 			t.Errorf("unrelated method %s ran", method)
 			return nil, errors.New("unrelated")

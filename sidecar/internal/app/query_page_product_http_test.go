@@ -51,7 +51,9 @@ func queryPageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration prod
 		unrelatedSurfaceRegistration(t, "interface.load"),
 		unrelatedSurfaceRegistration(t, "interface.commit"),
 		unrelatedSurfaceRegistration(t, "interface.delete"),
-		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {
 		t.Fatal(err)
 	}
