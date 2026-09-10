@@ -48,7 +48,7 @@ func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
 		{"coordinated dashboard commit", http.MethodPost, "/api/vibetable/v1/metadata/dashboards/commit", true},
 		{"product interface upsert required", http.MethodPost, "/api/vibetable/v1/metadata/interfaces/upsert", false},
 		{"product interface delete required", http.MethodPost, "/api/vibetable/v1/metadata/interfaces/delete", false},
-		{"coordinated content profile upsert", http.MethodPost, "/api/vibetable/v1/metadata/content_profiles/upsert", true},
+		{"removed generic content profile upsert", http.MethodPost, "/api/vibetable/v1/metadata/content_profiles/upsert", false},
 		{"metadata mutation with extra segment", http.MethodPost, "/api/vibetable/v1/metadata/interfaces/upsert/extra", false},
 		{"metadata upsert", http.MethodPost, "/api/vibetable/v1/metadata/grid/upsert", false},
 		{"job resume", http.MethodPost, "/api/vibetable/v1/jobs/id/resume", false},
