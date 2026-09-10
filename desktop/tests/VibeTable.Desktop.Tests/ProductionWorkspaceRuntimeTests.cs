@@ -198,6 +198,71 @@ public sealed class ProductionWorkspaceRuntimeTests
         }
     }
 
+    [TestMethod]
+    public async Task ActiveDetachedAuthorityBlocksOtherReservationsUntilCanceled()
+    {
+        string container = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-detached-authority-" + Guid.NewGuid().ToString("N"));
+        string selected = Path.Combine(container, "selected");
+        string activity = Path.Combine(container, "activity");
+        WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+            selected,
+            "Detached authority",
+            WorkspaceStorageMode.Mirrored,
+            WorkspaceEncryptionMode.None,
+            activity);
+        var entry = new WorkspaceRegistryEntryV2
+        {
+            ContractVersion = WorkspaceV2Json.ContractVersion,
+            WorkspaceId = layout.Manifest.WorkspaceId,
+            DisplayName = layout.Manifest.DisplayName,
+            SelectedRoot = selected,
+            ActivityRoot = activity,
+            StorageKind = WorkspaceStorageKind.Fixed,
+            CoordinationStrength = WorkspaceCoordinationStrength.Advisory,
+            LastOpenedAt = null,
+            LastKnownHealth = WorkspaceHealth.Healthy,
+            LastSnapshotAt = null,
+            LastSyncAt = null,
+            PendingSync = false,
+        };
+        Directory.Delete(activity, recursive: true);
+        try
+        {
+            await using var factory = Factory();
+            string staging = Path.Combine(container, ".activity.recovering-one");
+            using DesktopWorkspaceAuthorityStore.DetachedReservation first =
+                factory.PrepareDetachedRepositoryRecovery(entry, staging);
+
+            WorkspaceRegistryException createError =
+                Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                    factory.Create(entry, 1));
+            WorkspaceRegistryException detachedError =
+                Assert.ThrowsExactly<WorkspaceRegistryException>(() =>
+                    factory.PrepareDetachedRepositoryRecovery(
+                        entry,
+                        Path.Combine(container, ".activity.recovering-two")));
+            Assert.AreEqual(
+                "workspace.authority_detached_active",
+                createError.Code);
+            Assert.AreEqual(createError.Code, detachedError.Code);
+            Assert.IsFalse(Directory.Exists(activity));
+
+            first.Dispose();
+            first.Dispose();
+            using DesktopWorkspaceAuthorityStore.DetachedReservation retry =
+                factory.PrepareDetachedRepositoryRecovery(
+                    entry,
+                    Path.Combine(container, ".activity.recovering-retry"));
+            Assert.IsNull(factory.CaptureProductSidecarGeneration());
+        }
+        finally
+        {
+            TryDelete(container);
+        }
+    }
+
     private static ProductionWorkspaceRuntimeFactory Factory(
         IEnumerable<WorkspaceRegistryEntryV2>? entries = null)
         => new(

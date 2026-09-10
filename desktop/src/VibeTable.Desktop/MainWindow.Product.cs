@@ -217,7 +217,8 @@ public partial class MainWindow : Window
             _runtime.PrepareRepositoryOnboarding);
         _replicaRecovery = new WorkspaceReplicaRecoveryService(
             sidecarOptionsFactory,
-            _runtime.PrepareRepositoryOnboarding);
+            _runtime.PrepareRepositoryOnboarding,
+            _runtime.PrepareDetachedRepositoryRecovery);
         _repositoryRecoveryUi = new WorkspaceRepositoryRecoveryUi();
         _providerPolicy = WorkspaceProviderPolicy.Load(AppContext.BaseDirectory);
         _workspacePathGrants = new WorkspacePathGrantStore(

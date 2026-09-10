@@ -175,6 +175,15 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             authority.ClaimId);
     }
 
+    internal DesktopWorkspaceAuthorityStore.DetachedReservation
+        PrepareDetachedRepositoryRecovery(
+            WorkspaceRegistryEntryV2 workspace,
+            string stagingRoot)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        return _authority.Detach(workspace, stagingRoot);
+    }
+
     public IWorkspaceRuntime Create(
         WorkspaceRegistryEntryV2 workspace,
         ulong sessionEpoch)
@@ -599,12 +608,14 @@ internal sealed class DesktopWorkspaceAuthorityStore
 {
     private const int FormatVersion = 1;
     private readonly object _gate = new();
+    private readonly Dictionary<Guid, DetachedReservation> _activeDetached = [];
 
     public DesktopWorkspaceAuthority Prepare(
         WorkspaceRegistryEntryV2 workspace)
     {
         lock (_gate)
         {
+            EnsureNoDetached(workspace.WorkspaceId);
             DesktopWorkspaceAuthority? current = TryRead(workspace);
             if (current is not null)
                 return current;
@@ -638,6 +649,7 @@ internal sealed class DesktopWorkspaceAuthorityStore
                 "Workspace session epoch is invalid.");
         lock (_gate)
         {
+            EnsureNoDetached(workspace.WorkspaceId);
             DesktopWorkspaceAuthority? current = TryRead(workspace);
             if (current is not null
                 && sessionEpoch <= current.LastSessionEpoch)
@@ -671,6 +683,57 @@ internal sealed class DesktopWorkspaceAuthorityStore
         }
     }
 
+    public DetachedReservation Detach(
+        WorkspaceRegistryEntryV2 workspace,
+        string stagingRoot)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
+        string finalRoot =
+            ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace);
+        string staging = Path.GetFullPath(stagingRoot);
+        string? finalParent = Path.GetDirectoryName(finalRoot);
+        string? stagingParent = Path.GetDirectoryName(staging);
+        if (string.IsNullOrWhiteSpace(finalParent)
+            || string.IsNullOrWhiteSpace(stagingParent)
+            || !string.Equals(
+                finalParent,
+                stagingParent,
+                StringComparison.OrdinalIgnoreCase)
+            || string.Equals(
+                finalRoot,
+                staging,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw RecoveryTargetInvalid();
+        }
+        var reservation = new DetachedReservation(
+            this,
+            workspace.WorkspaceId,
+            finalRoot,
+            staging,
+            new DesktopWorkspaceAuthority(
+                FormatVersion,
+                workspace.WorkspaceId,
+                1,
+                Guid.NewGuid(),
+                0));
+        lock (_gate)
+        {
+            EnsureNoDetached(workspace.WorkspaceId);
+            _activeDetached.Add(workspace.WorkspaceId, reservation);
+        }
+        if (Directory.Exists(staging)
+            || File.Exists(staging)
+            || Directory.Exists(finalRoot)
+            || File.Exists(finalRoot))
+        {
+            Release(reservation, DetachedReservationState.Canceled);
+            throw RecoveryTargetInvalid();
+        }
+        return reservation;
+    }
+
     public DesktopWorkspaceAuthority? TryRead(
         WorkspaceRegistryEntryV2 workspace)
     {
@@ -679,20 +742,7 @@ internal sealed class DesktopWorkspaceAuthorityStore
             return null;
         try
         {
-            DesktopWorkspaceAuthority authority =
-                JsonSerializer.Deserialize<DesktopWorkspaceAuthority>(
-                    File.ReadAllText(path, Encoding.UTF8),
-                    WorkspaceV2Json.StrictOptions)
-                ?? throw new JsonException("Authority file is empty.");
-            if (authority.FormatVersion != FormatVersion
-                || authority.WorkspaceId != workspace.WorkspaceId
-                || authority.FenceEpoch == 0
-                || authority.ClaimId == Guid.Empty
-                )
-            {
-                throw new JsonException("Authority file is invalid.");
-            }
-            return authority;
+            return Read(path, workspace.WorkspaceId);
         }
         catch (Exception exception) when (
             exception is IOException
@@ -709,8 +759,18 @@ internal sealed class DesktopWorkspaceAuthorityStore
     private static void Write(
         WorkspaceRegistryEntryV2 workspace,
         DesktopWorkspaceAuthority authority)
+        => Write(PathFor(workspace), authority, overwrite: true);
+
+    private static void WriteNew(
+        string root,
+        DesktopWorkspaceAuthority authority)
+        => Write(PathForRoot(root), authority, overwrite: false);
+
+    private static void Write(
+        string path,
+        DesktopWorkspaceAuthority authority,
+        bool overwrite)
     {
-        string path = PathFor(workspace);
         string directory = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(directory);
         string temporary = Path.Combine(
@@ -732,7 +792,7 @@ internal sealed class DesktopWorkspaceAuthorityStore
                     WorkspaceV2Json.StrictOptions);
                 stream.Flush(flushToDisk: true);
             }
-            File.Move(temporary, path, overwrite: true);
+            File.Move(temporary, path, overwrite);
         }
         finally
         {
@@ -741,12 +801,247 @@ internal sealed class DesktopWorkspaceAuthorityStore
         }
     }
 
+    private void Publish(DetachedReservation reservation)
+    {
+        Transition(
+            reservation,
+            DetachedReservationState.Active,
+            DetachedReservationState.Publishing);
+        try
+        {
+            WorkspaceManifestV2 manifest =
+                WorkspaceLayout.ReadManifest(reservation._stagingRoot);
+            if (manifest.WorkspaceId != reservation._workspaceId
+                || manifest.StorageMode != WorkspaceStorageMode.Mirrored)
+            {
+                throw new WorkspaceRegistryException(
+                    "workspace.identity_mismatch",
+                    "Recovered activity root does not match the mirrored workspace.");
+            }
+
+            WriteNew(reservation._stagingRoot, reservation._authority);
+            Transition(
+                reservation,
+                DetachedReservationState.Publishing,
+                DetachedReservationState.AuthorityPublished);
+            if (Directory.Exists(reservation._finalRoot)
+                || File.Exists(reservation._finalRoot))
+            {
+                throw RecoveryTargetInvalid();
+            }
+            Directory.Move(
+                reservation._stagingRoot,
+                reservation._finalRoot);
+            Release(reservation, DetachedReservationState.Completed);
+        }
+        catch
+        {
+            MarkPublishFailed(reservation);
+            throw;
+        }
+    }
+
+    private void Transition(
+        DetachedReservation reservation,
+        DetachedReservationState expected,
+        DetachedReservationState next)
+    {
+        lock (_gate)
+        {
+            if (!Owns(reservation) || reservation._state != expected)
+                throw new InvalidOperationException(
+                    "Detached authority reservation is no longer active.");
+            reservation._state = next;
+        }
+    }
+
+    private void Cancel(DetachedReservation reservation)
+    {
+        bool authorityPublished;
+        lock (_gate)
+        {
+            if (reservation._state is DetachedReservationState.Completed
+                or DetachedReservationState.Canceled)
+                return;
+            if (!Owns(reservation)
+                || reservation._state == DetachedReservationState.Publishing)
+            {
+                throw new InvalidOperationException(
+                    "Detached authority reservation is being published.");
+            }
+            authorityPublished = reservation._state is
+                DetachedReservationState.AuthorityPublished or
+                DetachedReservationState.PublishFailedAfterAuthority;
+            reservation._state = DetachedReservationState.Canceling;
+            _activeDetached.Remove(reservation._workspaceId);
+        }
+        try
+        {
+            if (!Directory.Exists(reservation._stagingRoot))
+                return;
+            try
+            {
+                string authorityPath = PathForRoot(reservation._stagingRoot);
+                if (authorityPublished)
+                {
+                    DesktopWorkspaceAuthority authority = Read(
+                        authorityPath,
+                        reservation._workspaceId);
+                    if (authority != reservation._authority)
+                        return;
+                }
+                else
+                {
+                    if (File.Exists(authorityPath))
+                        return;
+                    WorkspaceManifestV2 manifest = WorkspaceLayout.ReadManifest(
+                        reservation._stagingRoot);
+                    if (manifest.WorkspaceId != reservation._workspaceId
+                        || manifest.StorageMode
+                            != WorkspaceStorageMode.Mirrored)
+                    {
+                        return;
+                    }
+                }
+                WorkspaceLayout.DeleteWorkspaceRoot(
+                    reservation._stagingRoot,
+                    reservation._workspaceId);
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or WorkspaceRegistryException)
+            {
+                // Staging without the reserved authority or a valid matching
+                // manifest is not proven to be ours. Preserve it.
+            }
+        }
+        finally
+        {
+            lock (_gate)
+                reservation._state = DetachedReservationState.Canceled;
+        }
+    }
+
+    private void MarkPublishFailed(DetachedReservation reservation)
+    {
+        lock (_gate)
+        {
+            if (!Owns(reservation))
+                return;
+            reservation._state = reservation._state ==
+                DetachedReservationState.AuthorityPublished
+                    ? DetachedReservationState.PublishFailedAfterAuthority
+                    : DetachedReservationState.PublishFailed;
+        }
+    }
+
+    private void Release(
+        DetachedReservation reservation,
+        DetachedReservationState finalState)
+    {
+        lock (_gate)
+        {
+            if (!Owns(reservation))
+                throw new InvalidOperationException(
+                    "Detached authority reservation has a different owner.");
+            reservation._state = finalState;
+            _activeDetached.Remove(reservation._workspaceId);
+        }
+    }
+
+    private bool Owns(DetachedReservation reservation)
+        => _activeDetached.TryGetValue(
+            reservation._workspaceId,
+            out DetachedReservation? current)
+            && ReferenceEquals(current, reservation);
+
+    private void EnsureNoDetached(Guid workspaceId)
+    {
+        if (_activeDetached.ContainsKey(workspaceId))
+            throw new WorkspaceRegistryException(
+                "workspace.authority_detached_active",
+                "Workspace authority is reserved by detached recovery.");
+    }
+
+    private static DesktopWorkspaceAuthority Read(
+        string path,
+        Guid workspaceId)
+    {
+        DesktopWorkspaceAuthority authority =
+            JsonSerializer.Deserialize<DesktopWorkspaceAuthority>(
+                File.ReadAllText(path, Encoding.UTF8),
+                WorkspaceV2Json.StrictOptions)
+            ?? throw new JsonException("Authority file is empty.");
+        if (authority.FormatVersion != FormatVersion
+            || authority.WorkspaceId != workspaceId
+            || authority.FenceEpoch == 0
+            || authority.ClaimId == Guid.Empty)
+        {
+            throw new JsonException("Authority file is invalid.");
+        }
+        return authority;
+    }
+
     private static string PathFor(WorkspaceRegistryEntryV2 workspace)
+        => PathForRoot(
+            ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace));
+
+    private static string PathForRoot(string root)
         => Path.Combine(
-            WorkspaceLayout.Paths(
-                ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace))
-                .Coordination,
+            WorkspaceLayout.Paths(root).Coordination,
             "desktop-runtime-authority.json");
+
+    private static WorkspaceRegistryException RecoveryTargetInvalid()
+        => new(
+            "replica.recovery_target_invalid",
+            "The local activity recovery target must be new or empty.");
+
+    internal sealed class DetachedReservation : IDisposable
+    {
+        private readonly DesktopWorkspaceAuthorityStore _owner;
+        internal readonly Guid _workspaceId;
+        internal readonly string _finalRoot;
+        internal readonly string _stagingRoot;
+        internal readonly DesktopWorkspaceAuthority _authority;
+        internal DetachedReservationState _state =
+            DetachedReservationState.Active;
+
+        internal DetachedReservation(
+            DesktopWorkspaceAuthorityStore owner,
+            Guid workspaceId,
+            string finalRoot,
+            string stagingRoot,
+            DesktopWorkspaceAuthority authority)
+        {
+            _owner = owner;
+            _workspaceId = workspaceId;
+            _finalRoot = finalRoot;
+            _stagingRoot = stagingRoot;
+            _authority = authority;
+            Authority = new WorkspaceRepositoryAuthority(
+                authority.FenceEpoch,
+                authority.ClaimId);
+        }
+
+        internal WorkspaceRepositoryAuthority Authority { get; }
+
+        internal void Publish() => _owner.Publish(this);
+
+        public void Dispose() => _owner.Cancel(this);
+    }
+
+    internal enum DetachedReservationState
+    {
+        Active,
+        Publishing,
+        AuthorityPublished,
+        PublishFailed,
+        PublishFailedAfterAuthority,
+        Canceling,
+        Completed,
+        Canceled,
+    }
 }
 
 internal sealed record DesktopWorkspaceAuthority(

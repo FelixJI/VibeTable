@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
 using VibeTable.Infrastructure.Workspace;
 
@@ -125,6 +126,87 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
     }
 
     [TestMethod]
+    public async Task RecoverWithProductionAuthorityKeepsFinalRootDetachedUntilPublish()
+    {
+        using var fixture = new ReplicaFixture(removeActivity: true);
+        ProductionWorkspaceRuntimeFactory factory = fixture.RuntimeFactory;
+        int currentChanged = 0;
+        int bindingChanged = 0;
+        int clientReady = 0;
+        IProductSidecarGenerationAuthority generations = factory;
+        generations.CurrentChanged += () => currentChanged++;
+        factory.BindingChanged += () => bindingChanged++;
+        factory.ClientReady += () => clientReady++;
+        fixture.Runner.Handler = start =>
+        {
+            Assert.IsFalse(
+                Directory.Exists(fixture.Workspace.ActivityRoot),
+                "Detached recovery must not publish into the final root before the one-shot succeeds.");
+            Assert.IsNull(factory.CaptureProductSidecarGeneration());
+            string staging = start.Environment["VIBETABLE_ACTIVITY_ROOT"]!;
+            CreateRecoveredLayout(
+                fixture.Workspace.SelectedRoot,
+                staging);
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                staging,
+                "restored");
+        };
+
+        WorkspaceReplicaReceipt receipt = await fixture.Service.RecoverAndPublishAsync(
+            fixture.Workspace,
+            CancellationToken.None);
+
+        Assert.AreEqual(
+            Path.GetFullPath(fixture.Workspace.ActivityRoot!),
+            receipt.ActivityRoot);
+        ProcessStartInfo start = fixture.Runner.StartInfo!;
+        string authorityPath = Path.Combine(
+            WorkspaceLayout.Paths(receipt.ActivityRoot!).Coordination,
+            "desktop-runtime-authority.json");
+        DesktopWorkspaceAuthority persisted =
+            JsonSerializer.Deserialize<DesktopWorkspaceAuthority>(
+                File.ReadAllText(authorityPath),
+                WorkspaceV2Json.StrictOptions)!;
+        Assert.AreEqual<ulong>(0, persisted.LastSessionEpoch);
+        Assert.AreEqual(
+            "1",
+            start.Environment["VIBETABLE_WORKSPACE_SESSION_EPOCH"]);
+        Assert.AreEqual(
+            persisted.FenceEpoch.ToString(),
+            start.Environment["VIBETABLE_WORKSPACE_FENCE_EPOCH"]);
+        Assert.AreEqual(
+            persisted.ClaimId.ToString("D").ToLowerInvariant(),
+            start.Environment["VIBETABLE_WORKSPACE_CLAIM_ID"]);
+        Assert.IsNull(factory.CaptureProductSidecarGeneration());
+        Assert.IsNull(factory.CurrentCapabilities);
+        Assert.AreEqual(0, currentChanged);
+        Assert.AreEqual(0, bindingChanged);
+        Assert.AreEqual(0, clientReady);
+
+        await using (var firstRuntime = (ProductionWorkspaceRuntime)
+                     factory.Create(fixture.Workspace, 1))
+            AssertRuntimeAuthority(firstRuntime, persisted);
+
+        await using var nextFactory = new ProductionWorkspaceRuntimeFactory(
+            fixture.Options(),
+            new BackendLaunchOptions
+            {
+                Command = Path.Combine(fixture.Root, "backend.exe"),
+            },
+            [fixture.Workspace]);
+        Assert.AreEqual<ulong>(1, nextFactory.InitialSessionEpoch);
+        await using var secondRuntime = (ProductionWorkspaceRuntime)
+            nextFactory.Create(fixture.Workspace, 2);
+        AssertRuntimeAuthority(secondRuntime, persisted);
+        persisted = JsonSerializer.Deserialize<DesktopWorkspaceAuthority>(
+            File.ReadAllText(authorityPath),
+            WorkspaceV2Json.StrictOptions)!;
+        Assert.AreEqual<ulong>(2, persisted.LastSessionEpoch);
+    }
+
+    [TestMethod]
     public async Task InvalidReceiptDoesNotPublishOrModifySelectedRoot()
     {
         using var fixture = new ReplicaFixture(removeActivity: true);
@@ -153,12 +235,7 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
 
         Assert.AreEqual("workspace.replica_response_invalid", error.Code);
         Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
-        Assert.AreEqual(
-            0,
-            Directory.GetDirectories(
-                fixture.Root,
-                ".activity.vibetable-recovering-*",
-                SearchOption.TopDirectoryOnly).Length);
+        AssertNoRecoveryStaging(fixture);
         Assert.AreEqual(
             before,
             File.ReadAllText(Path.Combine(
@@ -168,7 +245,7 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
     }
 
     [TestMethod]
-    public async Task FailedSidecarRemovesOwnedManifestStaging()
+    public async Task InvalidRecoveredLayoutDoesNotPublishAndRemovesOwnedStaging()
     {
         using var fixture = new ReplicaFixture(removeActivity: true);
         fixture.Runner.Handler = start =>
@@ -176,7 +253,15 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             CreateRecoveredLayout(
                 fixture.Workspace.SelectedRoot,
                 start.Environment["VIBETABLE_ACTIVITY_ROOT"]!);
-            return new TrustedSidecarProcessResult(2, string.Empty);
+            File.Delete(Path.Combine(
+                WorkspaceLayout.Paths(
+                    start.Environment["VIBETABLE_ACTIVITY_ROOT"]!).Data,
+                "data.db"));
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                start.Environment["VIBETABLE_ACTIVITY_ROOT"],
+                "restored");
         };
 
         WorkspaceRegistryException error =
@@ -185,18 +270,13 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
                     fixture.Workspace,
                     CancellationToken.None));
 
-        Assert.AreEqual("workspace.replica_request_invalid", error.Code);
+        Assert.AreEqual("replica.recovery_install_failed", error.Code);
         Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
-        Assert.AreEqual(
-            0,
-            Directory.GetDirectories(
-                fixture.Root,
-                ".activity.vibetable-recovering-*",
-                SearchOption.TopDirectoryOnly).Length);
+        AssertNoRecoveryStaging(fixture);
     }
 
     [TestMethod]
-    public async Task ForeignManifestStagingIsPreservedForDiagnosis()
+    public async Task InvalidRecoveredIdentityIsPreservedAndNotPublished()
     {
         using var fixture = new ReplicaFixture(removeActivity: true);
         Guid foreignWorkspaceId = Guid.NewGuid();
@@ -213,7 +293,11 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
                 JsonSerializer.Serialize(
                     selected with { WorkspaceId = foreignWorkspaceId },
                     WorkspaceV2Json.StrictOptions));
-            return new TrustedSidecarProcessResult(1, string.Empty);
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                staging,
+                "restored");
         };
 
         _ = await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(() =>
@@ -229,6 +313,104 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         Assert.AreEqual(
             foreignWorkspaceId,
             WorkspaceLayout.ReadManifest(retained[0]).WorkspaceId);
+        Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FinalCompetitorIsPreservedAndRecoveryCanRetry(
+        bool writeMarker)
+    {
+        using var fixture = new ReplicaFixture(removeActivity: true);
+        int attempts = 0;
+        fixture.Runner.Handler = start =>
+        {
+            string staging = start.Environment["VIBETABLE_ACTIVITY_ROOT"]!;
+            CreateRecoveredLayout(
+                fixture.Workspace.SelectedRoot,
+                staging);
+            if (attempts++ == 0)
+            {
+                Directory.CreateDirectory(fixture.Workspace.ActivityRoot!);
+                if (writeMarker)
+                    File.WriteAllText(
+                        Path.Combine(fixture.Workspace.ActivityRoot!, "owner.txt"),
+                        "foreign-final-owner");
+            }
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                staging,
+                "restored");
+        };
+
+        WorkspaceRegistryException error =
+            await Assert.ThrowsExactlyAsync<WorkspaceRegistryException>(() =>
+                fixture.Service.RecoverAndPublishAsync(
+                    fixture.Workspace,
+                    CancellationToken.None));
+
+        Assert.AreEqual("replica.recovery_target_invalid", error.Code);
+        Assert.IsTrue(Directory.Exists(fixture.Workspace.ActivityRoot));
+        if (writeMarker)
+            Assert.AreEqual(
+                "foreign-final-owner",
+                File.ReadAllText(Path.Combine(
+                    fixture.Workspace.ActivityRoot!,
+                    "owner.txt")));
+        else
+            Assert.IsFalse(Directory.EnumerateFileSystemEntries(
+                fixture.Workspace.ActivityRoot!).Any());
+        AssertNoRecoveryStaging(fixture);
+
+        Directory.Delete(fixture.Workspace.ActivityRoot!, recursive: true);
+        WorkspaceReplicaReceipt retried =
+            await fixture.Service.RecoverAndPublishAsync(
+                fixture.Workspace,
+                CancellationToken.None);
+        Assert.IsTrue(Directory.Exists(retried.ActivityRoot));
+    }
+
+    [TestMethod]
+    public async Task ForeignStagingAuthorityIsNeverOverwrittenOrDeleted()
+    {
+        using var fixture = new ReplicaFixture(removeActivity: true);
+        const string foreignAuthority = "foreign-authority-owner";
+        fixture.Runner.Handler = start =>
+        {
+            string staging = start.Environment["VIBETABLE_ACTIVITY_ROOT"]!;
+            CreateRecoveredLayout(
+                fixture.Workspace.SelectedRoot,
+                staging);
+            File.WriteAllText(
+                Path.Combine(
+                    WorkspaceLayout.Paths(staging).Coordination,
+                    "desktop-runtime-authority.json"),
+                foreignAuthority);
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                staging,
+                "restored");
+        };
+
+        _ = await Assert.ThrowsExactlyAsync<IOException>(() =>
+            fixture.Service.RecoverAndPublishAsync(
+                fixture.Workspace,
+                CancellationToken.None));
+
+        string[] retained = Directory.GetDirectories(
+            fixture.Root,
+            ".activity.vibetable-recovering-*",
+            SearchOption.TopDirectoryOnly);
+        Assert.AreEqual(1, retained.Length);
+        Assert.AreEqual(
+            foreignAuthority,
+            File.ReadAllText(Path.Combine(
+                WorkspaceLayout.Paths(retained[0]).Coordination,
+                "desktop-runtime-authority.json")));
+        Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
     }
 
     [TestMethod]
@@ -253,7 +435,8 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         var service = new WorkspaceReplicaRecoveryService(
             () => fixture.OptionsWithStartup(
                 TimeSpan.FromMilliseconds(1)),
-            _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+            fixture.RuntimeFactory.PrepareRepositoryOnboarding,
+            fixture.RuntimeFactory.PrepareDetachedRepositoryRecovery,
             fixture.Runner,
             replicaOperationTimeout: TimeSpan.FromSeconds(2));
 
@@ -272,31 +455,30 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
     }
 
     [TestMethod]
-    public async Task CallerCancellationStillStopsReplicaOperation()
+    public async Task CallerCancellationAfterOneShotStillStopsPublication()
     {
         using var fixture = new ReplicaFixture(removeActivity: true);
-        fixture.Runner.AsyncHandler = async (_, cancellationToken) =>
+        using var caller = new CancellationTokenSource();
+        fixture.Runner.Handler = start =>
         {
-            try
-            {
-                await Task.Delay(
-                    Timeout.InfiniteTimeSpan,
-                    cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                throw new OperationCanceledException(cancellationToken);
-            }
-            throw new InvalidOperationException("Unreachable.");
+            string staging = start.Environment["VIBETABLE_ACTIVITY_ROOT"]!;
+            CreateRecoveredLayout(
+                fixture.Workspace.SelectedRoot,
+                staging);
+            caller.Cancel();
+            return Success(
+                "recover",
+                fixture.Workspace.WorkspaceId,
+                staging,
+                "restored");
         };
         var service = new WorkspaceReplicaRecoveryService(
             () => fixture.OptionsWithStartup(
                 TimeSpan.FromMilliseconds(1)),
-            _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+            fixture.RuntimeFactory.PrepareRepositoryOnboarding,
+            fixture.RuntimeFactory.PrepareDetachedRepositoryRecovery,
             fixture.Runner,
             replicaOperationTimeout: TimeSpan.FromSeconds(2));
-        using var caller = new CancellationTokenSource(
-            TimeSpan.FromMilliseconds(25));
 
         try
         {
@@ -308,6 +490,8 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         catch (OperationCanceledException)
         {
             Assert.IsTrue(caller.IsCancellationRequested);
+            Assert.IsFalse(Directory.Exists(fixture.Workspace.ActivityRoot));
+            AssertNoRecoveryStaging(fixture);
         }
     }
 
@@ -439,6 +623,26 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
             JsonSerializer.Serialize(payload));
     }
 
+    private static void AssertRuntimeAuthority(
+        ProductionWorkspaceRuntime runtime,
+        DesktopWorkspaceAuthority authority)
+    {
+        Assert.AreEqual(
+            authority.FenceEpoch.ToString(),
+            runtime.SidecarEnvironment["VIBETABLE_WORKSPACE_FENCE_EPOCH"]);
+        Assert.AreEqual(
+            authority.ClaimId.ToString("D").ToLowerInvariant(),
+            runtime.SidecarEnvironment["VIBETABLE_WORKSPACE_CLAIM_ID"]);
+    }
+
+    private static void AssertNoRecoveryStaging(ReplicaFixture fixture)
+        => Assert.AreEqual(
+            0,
+            Directory.GetDirectories(
+                fixture.Root,
+                ".activity.vibetable-recovering-*",
+                SearchOption.TopDirectoryOnly).Length);
+
     private static void CreateRecoveredLayout(
         string selectedRoot,
         string activityRoot)
@@ -502,43 +706,62 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
                 LastSyncAt = null,
                 PendingSync = false,
             };
+            RuntimeFactory = new ProductionWorkspaceRuntimeFactory(
+                Options(),
+                new BackendLaunchOptions
+                {
+                    Command = Path.Combine(Root, "backend.exe"),
+                });
             if (removeActivity)
                 Directory.Delete(activity, recursive: true);
             else
+            {
+                _ = RuntimeFactory.PrepareRepositoryOnboarding(Workspace);
                 CreateRecoveredLayout(selected, activity);
+            }
             Runner = new FakeRunner();
             Service = new WorkspaceReplicaRecoveryService(
                 Options,
-                _ => new WorkspaceRepositoryAuthority(1, Guid.NewGuid()),
+                RuntimeFactory.PrepareRepositoryOnboarding,
+                RuntimeFactory.PrepareDetachedRepositoryRecovery,
                 Runner);
         }
 
         public string Root { get; }
         public WorkspaceRegistryEntryV2 Workspace { get; }
         public FakeRunner Runner { get; }
+        public ProductionWorkspaceRuntimeFactory RuntimeFactory { get; }
         public WorkspaceReplicaRecoveryService Service { get; }
 
         public PocketBaseLaunchOptions Options()
             => OptionsWithStartup(TimeSpan.FromSeconds(5));
 
         public PocketBaseLaunchOptions OptionsWithStartup(
-            TimeSpan startupTimeout) => new()
-        {
-            ExecutablePath = Path.Combine(Root, "sidecar.exe"),
-            WorkingDirectory = Root,
-            DataDirectory = Path.Combine(Root, "unused"),
-            LogPath = Path.Combine(Root, "unused.log"),
-            StartupTimeout = startupTimeout,
-            StopTimeout = TimeSpan.FromSeconds(1),
-            HealthPollInterval = TimeSpan.FromMilliseconds(10),
-            CrashRestartLimit = 0,
-            CrashRestartInitialDelay = TimeSpan.Zero,
-            CrashRestartMaximumDelay = TimeSpan.Zero,
-            Environment = new Dictionary<string, string>(),
-        };
+            TimeSpan startupTimeout)
+            => new()
+            {
+                ExecutablePath = Path.Combine(Root, "sidecar.exe"),
+                WorkingDirectory = Root,
+                DataDirectory = Path.Combine(Root, "unused"),
+                LogPath = Path.Combine(Root, "unused.log"),
+                StartupTimeout = startupTimeout,
+                StopTimeout = TimeSpan.FromSeconds(1),
+                HealthPollInterval = TimeSpan.FromMilliseconds(10),
+                CrashRestartLimit = 0,
+                CrashRestartInitialDelay = TimeSpan.Zero,
+                CrashRestartMaximumDelay = TimeSpan.Zero,
+                ExpectedIdentity = new PocketBaseExpectedIdentity(
+                    "vibetable.sidecar.ready.v1",
+                    "2.0",
+                    "0.40.1",
+                    "5",
+                    "hash"),
+                Environment = new Dictionary<string, string>(),
+            };
 
         public void Dispose()
         {
+            RuntimeFactory.DisposeAsync().AsTask().GetAwaiter().GetResult();
             try
             {
                 if (Directory.Exists(Root))
@@ -561,7 +784,12 @@ public sealed class WorkspaceReplicaRecoveryServiceTests
         public Func<
             ProcessStartInfo,
             CancellationToken,
-            Task<TrustedSidecarProcessResult>>? AsyncHandler { get; set; }
+            Task<TrustedSidecarProcessResult>>?
+            AsyncHandler
+        {
+            get;
+            set;
+        }
         public ProcessStartInfo? StartInfo { get; private set; }
         public string? StandardInput { get; private set; }
 
