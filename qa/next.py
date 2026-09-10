@@ -614,13 +614,79 @@ def _timeout_text(value: str | bytes | None) -> str:
     return value or ""
 
 
+def _race_build_process_snapshot(pid: int) -> dict[str, object]:
+    """Bounded Windows snapshot of this build tree; never collect command lines."""
+    if os.name != "nt":
+        return {"status": "unsupported_platform", "processes": []}
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(REPO_ROOT / "qa" / "race_build_process_snapshot.ps1"),
+            "-RootProcessId",
+            str(pid),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode:
+        return {"status": "collector_failed", "returncode": result.returncode}
+    snapshot = json.loads(result.stdout)
+    if not isinstance(snapshot, dict):
+        return {"status": "invalid_collector_result"}
+    return snapshot
+
+
+def _persist_race_build_timeout(pid: int, events: list[str]) -> dict[str, object]:
+    """Save structured build observations locally before kill/drain; no raw output."""
+    try:
+        directory = RACE_BINARY_DIR / "timeouts"
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=directory,
+            prefix=f"build-{pid}-",
+            suffix=".json",
+            delete=False,
+        ) as output:
+            json.dump({"pid": pid, "events": events}, output, ensure_ascii=True)
+            return {"status": "saved", "path": output.name}
+    except OSError as error:
+        return {"status": "save_failed", "errorType": type(error).__name__}
+
+
 def _run_command(
     command: list[str],
     *,
     cwd: str,
     environment: dict[str, str],
     timeout: int,
+    race_build: bool = False,
 ) -> tuple[int, str, str]:
+    events: list[str] = []
+    started = time.monotonic()
+
+    def record(phase: str, **fields: object) -> None:
+        events.append(
+            "RACE_BUILD "
+            + json.dumps(
+                {
+                    "phase": phase,
+                    "atUtc": datetime.now(UTC).isoformat(),
+                    "elapsedSeconds": round(time.monotonic() - started, 3),
+                    **fields,
+                },
+                sort_keys=True,
+            )
+        )
+
     popen_kwargs: dict[str, object] = {}
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -639,17 +705,69 @@ def _run_command(
             **popen_kwargs,
         )
     except OSError as exc:
-        return 127, "", str(exc)
+        if race_build:
+            record("start_failed", returncode=127, errorType=type(exc).__name__)
+        return 127, "\n".join(events), str(exc)
+    if race_build:
+        record("started", pid=process.pid)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
-        return process.returncode, stdout or "", stderr or ""
+        code = process.returncode
     except subprocess.TimeoutExpired as exc:
+        if race_build:
+            timed_out_at = datetime.now(UTC).isoformat()
+            snapshot_started = time.monotonic()
+            try:
+                snapshot = (
+                    {"status": "root_exited", "processes": []}
+                    if process.poll() is not None
+                    else _race_build_process_snapshot(process.pid)
+                )
+            except (OSError, subprocess.SubprocessError, ValueError) as snapshot_error:
+                snapshot = {
+                    "status": "collection_failed",
+                    "errorType": type(snapshot_error).__name__,
+                }
+            record(
+                "timeout",
+                pid=process.pid,
+                snapshot=snapshot,
+                atUtc=timed_out_at,
+                elapsedSeconds=round(snapshot_started - started, 3),
+                snapshotSeconds=round(time.monotonic() - snapshot_started, 3),
+            )
+            evidence = _persist_race_build_timeout(process.pid, events)
+            record("evidence", pid=process.pid, **evidence)
         _terminate_process_tree(process)
-        final_stdout, final_stderr = process.communicate()
+        if race_build:
+            try:
+                final_stdout, final_stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired as drain_error:
+                # A descendant may retain a pipe after the root exits. Do not chase
+                # historical PIDs or close a stream locked by a reader thread.
+                record("drain_timeout", pid=process.pid, timeoutSeconds=5)
+                final_stdout = _timeout_text(drain_error.output)
+                final_stderr = _timeout_text(drain_error.stderr)
+                final_stderr += "\noutput may be incomplete: pipe drain timed out after 5s\n"
+        else:
+            final_stdout, final_stderr = process.communicate()
         stdout = _timeout_text(exc.output) + (final_stdout or "")
         stderr = _timeout_text(exc.stderr) + (final_stderr or "")
         stderr += f"\nprocess tree timed out after {timeout}s and was terminated\n"
-        return TIMEOUT_RETURNCODE, stdout, stderr
+        code = TIMEOUT_RETURNCODE
+    if race_build:
+        # go -x is diagnostic only: retain a bounded tail, including the failing step.
+        record(
+            "finished",
+            pid=process.pid,
+            returncode=code,
+            stdoutCharacters=len(stdout or ""),
+            stderrCharacters=len(stderr or ""),
+            retainedTailCharacters=16384,
+        )
+        stdout = "\n".join(events) + "\n" + (stdout or "")[-16384:]
+        stderr = (stderr or "")[-16384:]
+    return code, stdout or "", stderr or ""
 
 
 def _run_race_package(
@@ -678,6 +796,7 @@ def _run_race_package(
                 cwd=compile_cwd,
                 environment=environment,
                 timeout=RACE_COMMAND_TIMEOUT_SECONDS,
+                race_build=True,
             )
             output.append(compile_stdout)
             errors.append(compile_stderr)
@@ -843,6 +962,7 @@ def _run_go_race(
             "test",
             "-c",
             "-race",
+            "-x",
             "-o",
             str(binary),
             package,

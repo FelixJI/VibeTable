@@ -439,7 +439,8 @@ def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
     package_dir.mkdir()
     monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         del environment
         observed.append((command, cwd, timeout))
         if command[1] == "list" and command[-1] == "./...":
@@ -458,6 +459,7 @@ def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
     compile_commands = [
         command for command, _cwd, _timeout in observed if command[1:4] == ["test", "-c", "-race"]
     ]
+    assert all("-x" in command for command in compile_commands)
     assert len(compile_commands) == 1
     assert compile_commands[0][-1] == "example/tests/integration"
 
@@ -488,7 +490,8 @@ def test_known_slow_race_tests_run_individually_with_long_timeout(
     package_dir.mkdir()
     monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         del cwd, environment
         observed.append((command, timeout))
         if command[1] == "list" and command[-1] == "./...":
@@ -545,7 +548,8 @@ def test_race_stage_isolates_named_tests_in_every_package(
     integration_dir.mkdir()
     monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         del environment, timeout
         observed.append((command, cwd))
         if command[1] == "list" and command[-1] == "./...":
@@ -619,7 +623,8 @@ def test_race_stage_runs_packages_in_parallel_but_tests_within_each_package_seri
     observed: list[tuple[list[str], str]] = []
     maximum_binaries = 0
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         nonlocal active, maximum_active, maximum_binaries
         del environment, timeout
         with lock:
@@ -801,7 +806,8 @@ def test_compiled_race_test_retries_only_the_known_windows_cleanup_flake(
         "The directory is not empty.\n"
     )
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         nonlocal calls
         del command, cwd, environment, timeout
         calls += 1
@@ -830,7 +836,8 @@ def test_compiled_race_test_never_retries_a_real_data_race(
     monkeypatch.setattr(next_gate.os, "name", "nt")
     calls = 0
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         nonlocal calls
         del command, cwd, environment, timeout
         calls += 1
