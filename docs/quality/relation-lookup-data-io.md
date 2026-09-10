@@ -1,6 +1,6 @@
 # A5：公开关系 ID 导入与 Lookup 文本导出
 
-本片修复合法公开 `relationId` 无法通过导入预检的问题，并以固定 corpus 验证单值 Relation 导入及 Lookup 只读导出。初始六文件候选基于 `main@3cd6f83202ea0977d690ad71cf7dff25595e4f02`；随后正常合入 `main@25b260394a0a01e8432d23fa3d1a6e8b9b65922f`，补充 S32 真实打包协议资格。fresh CI 结论仍以对应 PR 的最新 head 为准。
+本片修复合法公开 `relationId` 无法通过导入预检的问题，并以固定 corpus 验证单值 Relation 导入及 Lookup 只读导出。初始六文件候选基于 `main@3cd6f83202ea0977d690ad71cf7dff25595e4f02`；随后正常合入 `main@25b260394a0a01e8432d23fa3d1a6e8b9b65922f`，补充 S32 历史真实打包协议资格。当前场景注册为 S34；fresh CI 结论仍以对应 PR 的最新 head 为准。
 
 ## 范围与契约
 
@@ -58,11 +58,11 @@ Lookup 导出显式携带 `lookupIds` 与 `lookupRevision`，后者来自目录�
 
 初始六文件阶段未执行完整 Python 质量/覆盖率、完整 Go、桌面构建、真实 WPF/WebView2 操作或本候选 fresh CI；后续完整包资格见下节。本片不代表全部 A5 数据互操作验收完成。
 
-## S32 真实打包协议资格
+## S32 历史真实打包协议资格
 
 S32 复用同一 `a5-relation-lookup-corpus.json`，经真实 WPF/WebView2 的 Host 文件选择测试入口签发 grant，再调用公开 `data.previewImport`、`task.create`/`task.status`。测试不替换桥接处理器，也不直接写入数据库。两个目标及关系/Lookup 定义通过原有字段 plan/apply 和 mutation 建立。
 
-代表组合覆盖唯一 Code 匹配的两条非空关系与一条空关系、无匹配和非唯一字段拒绝、Lookup 计算列排除导入及 authority 直接写入拒绝；CSV 原关系列保留稳定目标 ID，Lookup 列精确输出中文和 `=文本`。预检不写入源表，导出及拒绝操作前后两端权威记录和 schema/data revision 不变。S32 独立注册为 `32-relation-lookup-data-io`；原有场景及门禁均保留。
+代表组合覆盖唯一 Code 匹配的两条非空关系与一条空关系、无匹配和非唯一字段拒绝、Lookup 计算列排除导入及 authority 直接写入拒绝；CSV 原关系列保留稳定目标 ID，Lookup 列精确输出中文和 `=文本`。预检不写入源表，导出及拒绝操作前后两端权威记录和 schema/data revision 不变。该历史运行注册为 `32-relation-lookup-data-io`；当前 manifest 与 dispatch 注册为 `34-relation-lookup-data-io`，原有场景及门禁均保留。
 
 当前 UI 的 `dataIoService` 固定发送 `columnMapping: []`、`lookupIds: []`，尚未提供关系匹配配置或 Lookup 导出选列。本场景证明这些公开桥接协议在真实完整包中可用，不证明对应 UI 已闭环。
 

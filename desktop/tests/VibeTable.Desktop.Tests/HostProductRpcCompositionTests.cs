@@ -256,6 +256,30 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task MutationUsesDefaultGoOwnerAndPreservesReceiptAndRemoteFailure(bool apply)
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        fixture.Http.Result = Json("""{"contractVersion":"2.0","requestId":"mutation-host","extension":[null,false,"中文"]}""");
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!.CreateGateway(fixture.Leases, fixture.Http);
+        JsonElement parameters = Json("""{"requestId":"mutation-host"}""");
+        Task<JsonElement> Invoke() => apply
+            ? gateway.ApplyMutationAsync(parameters, CancellationToken.None)
+            : gateway.PreviewMutationAsync(parameters, CancellationToken.None);
+        JsonElement result = await Invoke();
+        Assert.AreEqual("mutation-host", result.GetProperty("requestId").GetString());
+        Assert.AreEqual("中文", result.GetProperty("extension")[2].GetString());
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+        fixture.Http.Error = true;
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(Invoke);
+        Assert.AreEqual(-32602, error.Code);
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
     public async Task ReadyFactoryCapturesPairedClientAndUsesTypedSelectedRoute()
     {
         await using var fixture = await Fixture.OpenAsync();

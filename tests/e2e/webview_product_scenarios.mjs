@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { isDeepStrictEqual } from "node:util";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
@@ -39,6 +40,7 @@ import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
+import { submitWorkspaceSearch } from "./workspace_search_submit.mjs";
 import { waitForWorkspaceSearchRebuildTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 import {
@@ -3559,6 +3561,17 @@ async function scenario07(page, recorder, _network, runtime) {
       `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
     );
   }
+  const replacementFile = replaced.payload.attachments[0];
+  const replacementRevision = attachmentHistoryProbe.changeSets.find((changeSet) =>
+    changeSet.scalarChanges?.some((change) =>
+      change.field === attachmentField
+        && String(change.after ?? "").includes(replacementFile.storedName)),
+  )?.rootRevisionId;
+  if (!replacementRevision || replacementRevision === originalRevision) {
+    throw new Error(
+      `replacement attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
+    );
+  }
   const attachmentProductHistoryReply = await rawBridgeRequest(
     page,
     "history.queryRequested",
@@ -3641,6 +3654,89 @@ async function scenario07(page, recorder, _network, runtime) {
     expectedOriginalHash,
     expectedSize: originalBytes.length,
   });
+
+  // The drawer uses the Workspace endpoint above. These existing public Host
+  // events independently qualify the Go Product owner and its five-field result.
+  const productPreviewReply = await rawBridgeRequest(
+    page,
+    "history.previewRestoreRequested",
+    {
+      collection: tableId,
+      itemId: recordId,
+      targetRevision: replacementRevision,
+      scope: "cell",
+      field: attachmentField,
+    },
+    20_000,
+    ["history.restorePreviewReady"],
+  );
+  const productPreview = productPreviewReply.payload;
+  recorder.check(
+    "public Product restore preview targets the replacement attachment revision",
+    productPreviewReply.type === "history.restorePreviewReady"
+      && productPreview?.collection === tableId
+      && productPreview?.itemId === recordId
+      && productPreview?.targetRevision === replacementRevision
+      && productPreview?.scope === "cell"
+      && productPreview?.field === attachmentField
+      && productPreview?.canApply === true
+      && typeof productPreview?.token === "string"
+      && productPreview.token.length > 0,
+    { productPreviewReply, replacementRevision },
+  );
+  const afterProductPreview = await rawBridgeRequest(page, "file.list", attachmentParams);
+  const unchangedFile = afterProductPreview.payload?.attachments?.[0];
+  recorder.check(
+    "public Product restore preview leaves the current attachment unchanged",
+    afterProductPreview.payload?.attachments?.length === 1
+      && unchangedFile?.storedName === restored.payload.attachments[0].storedName
+      && unchangedFile?.sha256 === expectedOriginalHash
+      && unchangedFile?.size === originalBytes.length,
+    { afterProductPreview, current: restored.payload.attachments[0] },
+  );
+  const productAppliedReply = await rawBridgeRequest(
+    page,
+    "history.applyRestoreRequested",
+    { collection: tableId, itemId: recordId, token: productPreview.token },
+    20_000,
+    ["history.restoreApplied"],
+  );
+  const productApplied = productAppliedReply.payload;
+  recorder.check(
+    "public Product restore returns its typed result without a Workspace receipt field",
+    productAppliedReply.type === "history.restoreApplied"
+      && productApplied?.collection === tableId
+      && productApplied?.itemId === recordId
+      && productApplied?.restoredToRevision === replacementRevision
+      && typeof productApplied?.newRevisionId === "string"
+      && productApplied.newRevisionId.length > 0
+      && productApplied.newRevisionId !== replacementRevision
+      && !Object.hasOwn(productApplied, "mutationRevision")
+      && typeof productApplied.item?.[attachmentField] === "string"
+      && productApplied.item[attachmentField].length > 0,
+    { productAppliedReply, replacementRevision, replacementFile },
+  );
+  // Restoring stages a fresh managed file. Its current stored name comes from
+  // the committed Product row, while table/record/field and content stay bound.
+  const productStoredName = productApplied.item[attachmentField];
+  const productRestored = await waitForAttachmentList(
+    page,
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.storedName === productStoredName,
+  );
+  const productRestoredFile = productRestored.payload.attachments[0];
+  recorder.check(
+    "public Product restore binds its committed row to authoritative attachment metadata",
+    productRestoredFile.tableId === tableId
+      && productRestoredFile.recordId === recordId
+      && productRestoredFile.fieldId === attachmentColumn.fieldId
+      && productRestoredFile.storedName === productStoredName
+      && productRestoredFile.originalName === replacementFile.originalName
+      && productRestoredFile.sha256 === expectedReplacementHash
+      && productRestoredFile.size === replacementBytes.length,
+    { productRestoredFile, replacementFile, expectedSize: replacementBytes.length },
+  );
 }
 
 async function scenario08(page, recorder) {
@@ -4550,24 +4646,6 @@ async function scenario11(page, recorder, _network, runtime) {
       && await page.getByTestId("plugin-install-plan").isHidden()
       && (await page.locator(".status-strip").innerText()).includes("1.0.0"),
   { message: await upgradeFailure.innerText() });
-}
-
-async function submitWorkspaceSearch(page, { keyboard = false } = {}) {
-  const submit = page.getByTestId("workspace-search-submit");
-  await submit.waitFor({ state: "visible" });
-  await beginWorkspaceV2MethodCapture(page, "workspaceSearch.query");
-  if (keyboard) {
-    const input = page.getByTestId("workspace-search-input").locator("input");
-    await input.focus();
-    await input.press("Enter");
-  } else {
-    await submit.click();
-  }
-  const response = await waitForCapturedBridgeMessage(page, 30_000);
-  if (response.payload?.ok !== true) {
-    throw new Error(`WorkspaceSearch query failed: ${JSON.stringify(response)}`);
-  }
-  return response.payload.result;
 }
 
 async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000) {
@@ -6128,6 +6206,73 @@ async function scenario17(page, recorder, _network, runtime) {
     path: path.join(runtime.evidenceDir, "17-interface-lifecycle.png"),
     fullPage: true,
   });
+
+  await page.getByTestId("nav-tables").click();
+  const tableName = page.getByTestId("sidebar-table-name").filter({ hasText: "E2E Interface Data" });
+  await tableName.locator("xpath=ancestor::button").click();
+  const beforeRestart = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("Interface authoring and approved runtime actions persist three records",
+    beforeRestart.type === "query.page" && beforeRestart.payload?.rows?.length === 3,
+    { beforeRestart });
+  const quiet = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("Interface restart begins from a quiescent bridge",
+    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
+  const recoveryOwner = `interface-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
+    ownerToken: recoveryOwner, tableId: seeded.tableId,
+  });
+  let recoveryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify Interface aggregate survives sidecar restart");
+    recorder.check("Interface restart terminates only the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(page, "E2E Interface Data", seeded.tableId, 3, 60_000, recoveryOwner);
+  } catch (error) {
+    recoveryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(recoveryError, cleanupError, "Interface recovery window cleanup also failed")) {
+        throw cleanupError;
+      }
+    }
+  }
+  await beginBridgeMessageCapture(page, ["interface.listLoaded"]);
+  await page.getByTestId("nav-interfaces").click();
+  const freshList = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("fresh Interface list after restart contains the committed revision",
+    freshList.payload?.items?.some(item => item.interfaceId === interfaceId
+      && item.revision === committed.payload.revision), { freshList });
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await beginBridgeMessageCapture(page, ["interface.loaded"]);
+  await persisted.click();
+  const freshLoad = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("fresh public Interface load preserves the complete pages, bindings and actions after restart",
+    isDeepStrictEqual(freshLoad.payload, committed.payload), { committed, freshLoad });
+  await page.getByTestId("interface-run").click();
+  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "17-interface-restarted.png"), fullPage: true });
+
+  await beginBridgeMessageCapture(page, ["interface.deleted"]);
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "删除界面", exact: true }).click();
+  const deleted = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("real Interface delete acknowledges exactly the selected aggregate",
+    deleted.payload?.interfaceId === interfaceId, { deleted });
+  await persisted.waitFor({ state: "hidden", timeout: 30_000 });
+  const afterDelete = await rawBridgeRequest(page, "interface.listRequested", {}, 20_000, ["interface.listLoaded"]);
+  recorder.check("fresh public Interface list omits the deleted aggregate",
+    Array.isArray(afterDelete.payload?.items)
+      && !afterDelete.payload.items.some(item => item.interfaceId === interfaceId), { afterDelete });
+  const missing = await rawBridgeRequest(page, "interface.loadRequested", { interfaceId }, 20_000, ["operation.failed"]);
+  const expectedMissing = missing.type === "operation.failed" && missing.payload?.code === "surface.not_found";
+  recorder.check("deleted Interface cannot be loaded through the real Host Product path", expectedMissing, { missing });
+  if (!expectedMissing) throw new Error(`Unexpected deleted Interface response: ${JSON.stringify(missing)}`);
+  await acknowledgeExpectedBridgeFailure(page, missing);
 }
 
 async function scenario18(page, recorder, _network, runtime) {
@@ -7567,7 +7712,7 @@ const scenarios = {
   "29-lookup-source-pagination": scenario29,
   "30-query-snapshot-validation": scenario30,
   "31-relation-pair-inspection": scenario31,
-  "32-relation-lookup-data-io": (page, recorder, _network, runtime) => runRelationLookupDataIo(
+  "34-relation-lookup-data-io": (page, recorder, _network, runtime) => runRelationLookupDataIo(
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, applyProductMutation,
       parseCsv, canonicalJsonText,

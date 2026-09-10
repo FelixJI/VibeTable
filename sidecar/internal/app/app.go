@@ -426,12 +426,19 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			}
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
+			surfaces := metadata.NewSurface(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				surfaceListRegistration(surfaces),
+				surfaceLoadRegistration(surfaces),
+				surfaceCommitRegistration(surfaces, businessGate),
+				surfaceDeleteRegistration(surfaces, businessGate),
+				mutationPreviewRegistration(mutationKernel),
+				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),
 				productrpc.ReconcileRegistration(schemaCatalog),
 				lookupListRegistration(relationService),
@@ -450,6 +457,8 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				querySelectionOpenRegistration(queryPort),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
 				historyReadRegistration(workspaceRuntime),
+				historyPreviewRestoreRegistration(workspaceRuntime),
+				historyApplyRestoreRegistration(workspaceRuntime),
 				queryViewRegistration(queryPort),
 				relationPreviewDeltaRegistration(relationService),
 			)

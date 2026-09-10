@@ -7,14 +7,15 @@ using VibeTable.Infrastructure.Rpc;
 namespace VibeTable.Desktop.Tests;
 
 [TestClass]
-public sealed class JsonRpcSurfaceGatewayTests
+public sealed class JsonRpcProductSurfaceGatewayTests
 {
     [TestMethod]
     public async Task GatewayUsesOnlyClosedInterfaceMethodsAndGeneratedDtos()
     {
         var transport = new SurfaceTransport();
         await using var client = new JsonRpcClient(transport);
-        var gateway = new JsonRpcSurfaceGateway(client);
+        using var product = new JsonRpcProductDataGateway(client);
+        ISurfaceRpcGateway gateway = product;
 
         InterfaceListResult listed = await gateway.ListAsync(CancellationToken.None);
         AssertMethod(transport, "interface.list");

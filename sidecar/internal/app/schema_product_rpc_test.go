@@ -25,6 +25,7 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/workspacev2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
 
@@ -39,6 +40,15 @@ func (reader unrelatedHistoryReadMustNotRun) ReadBusinessHistory(
 	reader.t.Helper()
 	reader.t.Fatal("unrelated Product fixture unexpectedly invoked history.read")
 	return audit.Page{}, errors.New("unexpected history.read invocation")
+}
+
+func (reader unrelatedHistoryReadMustNotRun) PreviewBusinessHistoryRestore(context.Context, audit.PreviewParams) (audit.Preview, error) {
+	reader.t.Fatal("unexpected history.previewRestore invocation")
+	return audit.Preview{}, errors.New("unexpected history restore")
+}
+func (reader unrelatedHistoryReadMustNotRun) ApplyBusinessHistoryRestore(context.Context, string, audit.ApplyParams) (workspacev2.BusinessHistoryRestoreResult, error) {
+	reader.t.Fatal("unexpected history.applyRestore invocation")
+	return workspacev2.BusinessHistoryRestoreResult{}, errors.New("unexpected history restore")
 }
 
 func TestSchemaListProductHTTPMatchesRealCatalogREST(t *testing.T) {
@@ -665,6 +675,8 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		productrpc.ReconcileRegistration(catalog),
 		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
@@ -683,7 +695,14 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 	)
 	if err != nil {

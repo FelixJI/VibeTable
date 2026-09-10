@@ -229,7 +229,7 @@ async def test_public_invoke_rejects_non_finite_product_response(non_finite: flo
 
 
 @pytest.mark.asyncio
-async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_attachment() -> None:
+async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachment() -> None:
     service, transport = service_with(
         [
             {
@@ -239,8 +239,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
                 "displayName": "订单",
                 "schemaRevision": "schema_0001",
             },
-            {"canApply": True, "operations": []},
-            {"status": "applied", "receipt": {"id": "change-1"}},
             {"valid": True, "diagnostics": []},
             {"downloadCapability": "opaque", "contractVersion": "2.0"},
             {"status": "applied"},
@@ -267,12 +265,6 @@ async def test_closed_routes_cover_query_mutation_formula_file_and_remove_only_a
             ),
         )
     )["tableId"] == "tbl_orders"
-    assert (
-        await service.invoke("mutation.preview", ProductParams.model_validate({"operations": []}))
-    )["canApply"] is True
-    assert (
-        await service.invoke("mutation.apply", ProductParams.model_validate({"operations": []}))
-    )["status"] == "applied"
     assert (
         await service.invoke(
             "formula.validate",
@@ -404,7 +396,7 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
                 }
             ),
         )
-    with pytest.raises(ValueError, match="field"):
+    with pytest.raises(ValueError, match="unknown product RPC method"):
         await service.invoke(
             "history.previewRestore",
             ProductParams.model_validate(

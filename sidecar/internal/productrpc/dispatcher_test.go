@@ -33,6 +33,9 @@ func TestDispatchSuccessEchoesRawWireAndAllowsZeroSequence(t *testing.T) {
 			return nil
 		},
 		Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("handler must receive the validated wire identity")
+			}
 			if err := ctx.Err(); err != nil {
 				t.Fatalf("handler context = %v", err)
 			}
@@ -40,7 +43,8 @@ func TestDispatchSuccessEchoesRawWireAndAllowsZeroSequence(t *testing.T) {
 		},
 	})
 
-	response := dispatcher.Dispatch(context.Background(), []byte(
+	callerContext := context.WithValue(context.Background(), operationIDContextKey{}, "caller-supplied")
+	response := dispatcher.Dispatch(callerContext, []byte(
 		`{"jsonrpc":"2.0","id":"request-1","method":"test.read","wire":`+
 			wire+`,"params":{"value":3}}`,
 	))
@@ -65,6 +69,9 @@ func TestDispatchPassesCanceledContextToHandlerExactlyOnce(t *testing.T) {
 		ValidateParams: func(json.RawMessage) error { return nil },
 		Handler: func(ctx context.Context, _ json.RawMessage) (any, error) {
 			calls++
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("validated operation identity lost during cancellation")
+			}
 			if !errors.Is(ctx.Err(), context.Canceled) {
 				t.Fatalf("handler context error = %v, want context.Canceled", ctx.Err())
 			}
@@ -93,7 +100,10 @@ func TestDispatchGlobalScopeAllowsZeroSequenceAndRejectsWorkspaceWire(t *testing
 	}}, Registration{
 		Method: "test.global", Scope: productcapabilities.GlobalScope,
 		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler: func(context.Context, json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("global handler must receive the validated wire identity")
+			}
 			calls++
 			return map[string]any{"ok": true}, nil
 		},
@@ -461,12 +471,16 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 20 ||
+	if methods := dispatcher.Methods(); len(methods) != 28 ||
 		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
-		methods[3] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[4].Method != "lookup.list" || methods[5] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[6] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[7].Method != "query.cursorFetch" || methods[8].Method != "query.cursorOpen" || methods[9].Method != "query.page" || methods[10].Method != "query.readRows" ||
-		methods[11].Method != "query.selectionOpen" || methods[12] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[13].Method != "query.view" || methods[14] != (Method{Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope}) || methods[15].Method != "relation.previewDelta" || methods[16] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[17].Method != "schema.describe" ||
-		methods[18].Method != "schema.getTable" || methods[19].Method != "schema.list" {
+		methods[3] != (Method{Method: "history.applyRestore", Scope: productcapabilities.WorkspaceScope}) || methods[4] != (Method{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope}) || methods[5] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[6] != (Method{Method: "interface.commit", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[7] != (Method{Method: "interface.delete", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[8] != (Method{Method: "interface.list", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[9] != (Method{Method: "interface.load", Scope: productcapabilities.WorkspaceScope}) ||
+		methods[10].Method != "lookup.list" || methods[11] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[12] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[13] != (Method{Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope}) || methods[14] != (Method{Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope}) || methods[15].Method != "query.cursorFetch" || methods[16].Method != "query.cursorOpen" || methods[17].Method != "query.page" || methods[18].Method != "query.readRows" ||
+		methods[19].Method != "query.selectionOpen" || methods[20] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[21].Method != "query.view" || methods[22] != (Method{Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope}) || methods[23].Method != "relation.previewDelta" || methods[24] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[25].Method != "schema.describe" ||
+		methods[26].Method != "schema.getTable" || methods[27].Method != "schema.list" {
 		t.Fatalf("production registrations = %#v", methods)
 	}
 	_, err = New(identity, registrations[1:]...)
@@ -514,8 +528,26 @@ func generatedGoSidecarRegistrations() []Registration {
 			Method: "file.list", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
+		{Method: "history.applyRestore", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "history.read", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.commit", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.delete", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.load", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{
@@ -528,6 +560,14 @@ func generatedGoSidecarRegistrations() []Registration {
 		},
 		{
 			Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{
