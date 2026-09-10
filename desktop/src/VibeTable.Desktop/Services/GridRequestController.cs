@@ -79,14 +79,22 @@ public sealed class GridRequestController
                 "QUERY_INVALID");
         }
 
-        if (request.RequestId is not null)
-            return CompleteQueryAsync(request, table, query);
-        _coordinator.RequestQuery(table, query);
-        return Task.CompletedTask;
+        return CompleteReadAsync(
+            request,
+            async token => await _coordinator.RequestQueryAsync(table, query, token)
+                .ConfigureAwait(false),
+            "table.datasetReady", "query", correlate: true);
     }
 
-    private async Task CompleteQueryAsync(RoutedWebRequest request, string table, JsonElement query)
+    private async Task CompleteReadAsync(
+        RoutedWebRequest request,
+        Func<CancellationToken, Task<TablePage?>> read,
+        string notificationType,
+        string operation,
+        bool correlate)
     {
+        // Renderer notifications own the same epoch lifetime as correlated reads.
+        // Drain must cancel a query while it is still waiting for its debounce.
         WorkspaceRequestEpochLease? lease = null;
         if (_sessions is not null && !_sessions.TryCapture(request.Scope, out lease))
         {
@@ -101,20 +109,37 @@ public sealed class GridRequestController
                 && (_sessions is null || _sessions.IsCurrent(lease));
             try
             {
-                TablePage page = await _coordinator!.RequestQueryAsync(table, query, lifetime.Token)
-                    .ConfigureAwait(false);
-                if (IsCurrent()) _reply.PostResponse("table.pageLoaded", request.RequestId, page);
+                TablePage? page = await read(lifetime.Token).ConfigureAwait(false);
+                if (!IsCurrent() || page is null) return;
+                if (correlate && request.RequestId is not null)
+                    _reply.PostResponse("table.pageLoaded", request.RequestId, page);
+                else
+                    TableNotificationPresenter.Post(_reply, new TableNotification
+                    {
+                        Type = notificationType,
+                        Page = page,
+                    });
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException exception) when (
+                (correlate && request.RequestId is not null)
+                || lifetime.IsCancellationRequested
+                || exception.CancellationToken.IsCancellationRequested)
             {
-                if (IsCurrent())
+                if (IsCurrent() && correlate && request.RequestId is not null)
                     await RejectAsync(request, "Table query was cancelled.", "QUERY_CANCELLED");
             }
             catch (Exception exception)
             {
                 if (!IsCurrent()) return;
                 MutationError error = MutationErrorMapper.Map(exception);
-                await RejectAsync(request, error.Message, error.Code ?? "QUERY_FAILED");
+                if (correlate && request.RequestId is not null)
+                    await RejectAsync(request, error.Message, error.Code ?? "QUERY_FAILED");
+                else
+                    TableNotificationPresenter.Post(_reply, new TableNotification
+                    {
+                        Type = "operation.failed",
+                        MutationResult = new MutationOutcome(operation, false, error, null),
+                    });
             }
         }
     }
@@ -130,8 +155,10 @@ public sealed class GridRequestController
                 _coordinator is null ? "NOT_CONFIGURED" : "QUERY_INVALID");
         }
 
-        _coordinator.RequestNextWindow(cursor);
-        return Task.CompletedTask;
+        return CompleteReadAsync(
+            request,
+            token => _coordinator.RequestNextWindowAsync(cursor, token),
+            "table.windowLoaded", "query.cursor", correlate: false);
     }
 
     private Task SaveStateAsync(RoutedWebRequest request)
