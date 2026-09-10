@@ -51,3 +51,26 @@ main `58032b97043c2bba80a8eb1f65ae2906797e3251` 的 Actions run `34430547220`、
 受控回归在旧 `1b2da7da` 上 RED：1 failed，明确在无界 drain 调用处发现证据尚未保存。修正验证了退出根不触发 PID 查询/杀进程、5 秒 drain 参数、124 返回、缺口及阶段证据可达；另验证活根终止前文件已存在。保留 3 worker、420 秒及原测试集合。
 
 修正后最终验证：`uv run --frozen --no-sync python -m pytest tests/test_race_build_diagnostics.py tests/test_next_gate.py -q -o addopts=` 为 **84 passed，3.02 秒**；Ruff check 和 `git diff --check` PASS。没有重跑 CI、Go 编译或完整构建。
+
+## PR330：分离收集语义与诊断预算
+
+PR330 head `f7c9d532127d4d105e1b3f69206e3f11c818e897` 的 CI `34443408744` / core job `102766444544` 在 `tests/test_race_build_diagnostics.py::test_windows_snapshot_contains_only_requested_tree` 第143行失败，经 `qa/next.py:621` 的 `subprocess.run` 抛出 `TimeoutExpired`：PowerShell 执行同一采集脚本、目标 PID 3820，5秒到期。Python 汇总为1 failed、1870 passed；该阶段停止，不能宣称此次 CI 已通过后续 .NET 门禁。日志仅证明启动、CIM查询、输出整体调用超时，不能细分原因或归因为杀软、资源争用、Go运行期竞态。
+
+原5秒是终止前诊断的额外预算，既有契约明确允许采集超时后记录缺口。真实进程树功能测试却把这个预算同时当成每次必须成功的性能门槛。此次只调整测试：
+
+- 真实 Windows 测试直接执行原 `.ps1`，每次调用采用独立30秒上限，非零退出、超时或非法 JSON 均失败；仍严格验证 `captured`、根与子进程、每个进程的完整父链、无关进程排除、精确白名单字段及根退出后的 `root_missing`。子进程通过专属 stdin 等待父进程清理，不再与30秒采集预算共用30秒存活期限。
+- wrapper 契约通过受控 `subprocess.run` 核对精确脚本/根PID参数、5秒预算与输出捕获，验证成功解析及同一个 `TimeoutExpired` 向上抛出，每次只调用一次。
+- 原采集失败回归保留 `OSError` 并增加 `TimeoutExpired`，穿过真实 wrapper 到 `_run_command`；读取kill前已经关闭写入的证据文件，验证 `collection_failed` 及具体异常类型，随后终止并返回124，报告保留完整事件顺序。
+
+生产 `qa/next.py`、采集脚本、Go420秒预算、3 worker、完整测试集合及 required 均未修改；未添加重试、吞超时或 Windows 跳过逻辑。原非Windows平台分流保持。
+
+验证复用已有锁定 uv 环境并将导入路径绑定当前 worktree，没有安装依赖：
+
+- `uv run --frozen --no-sync python -m ruff format tests/test_race_build_diagnostics.py` 与 `uv run --frozen --no-sync python -m ruff check tests/test_race_build_diagnostics.py`：PASS。
+- `uv run --frozen --no-sync python -m pytest tests/test_race_build_diagnostics.py tests/test_next_gate.py -q -o addopts= --durations=5`：87 passed、0 skipped，3.28秒；真实 Windows 树检查2.30秒。日志：`build/qa/query-notification/snapshot-budget-tests.log`。
+- `uv run --frozen --no-sync python scripts/automation_project.py python-quality` 首次 EXIT1：2 failed、1871 passed、1 skipped，97.08秒，覆盖率91.42%。两个失败分别为 `test_node_runner_inventory_matches_the_product_scenario_manifest` 与 `test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime`，都是该 worktree 缺少 Web 依赖引发的 `ERR_MODULE_NOT_FOUND`（Vue compiler、Playwright），日志 `build/qa/query-notification/snapshot-budget-python-quality.log` 保留。主clone package/lock不同而未复用；改用与当前两个清单完全一致的已有worktree依赖目录建立本地junction，无依赖/lock/源码变更。
+- 修正依赖可达性后同一完整 Python 质量入口 EXIT0：Ruff format/check、backend Pyright/mypy均通过，1873 passed、1 skipped，75.93秒，覆盖率91.42%。唯一跳过是既有 `test_packaged_baseline_rejects_resolved_checksum_alias` 的符号链接平台条件，本次真实 Windows 快照测试通过。日志 `build/qa/query-notification/snapshot-budget-python-quality-ready.log`；固定Node24.19由仓库既有toolchain入口恢复，未改pin或来源。
+
+PR326 新 CI `34443371974` / core `102766143315` 再次在相同的 `GridStateCoordinatorTests.cs:301` 得到通知数0/预期1（Desktop 1 failed、1116 passed）。PR330既有 `7e3119f3` 已覆盖该等待边界：手动推进原250ms timer，已完成fake Task使revision拒绝通知在推进返回前完成，原业务断言不变。这与本次PowerShell诊断超时是两个故障。`5ff28ac0` 的界面迁移及 `7f440d90` 的激活锁修复未改相关路径。
+
+本次不重复运行未受影响的 .NET/Go/Web 完整构建、产品包或产品E2E；没有重跑旧CI。当前增量的独立双轴审查、最新主干同步及fresh完整CI仍待主代理执行，本地结果不代替required。
