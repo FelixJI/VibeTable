@@ -426,6 +426,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			}
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
+			presets := metadata.NewPreset(pb)
 			surfaces := metadata.NewSurface(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
@@ -433,6 +434,9 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				presetRegistration("preset.list", presets, businessGate),
+				presetRegistration("preset.save", presets, businessGate),
+				presetRegistration("preset.delete", presets, businessGate),
 				surfaceListRegistration(surfaces),
 				surfaceLoadRegistration(surfaces),
 				surfaceCommitRegistration(surfaces, businessGate),

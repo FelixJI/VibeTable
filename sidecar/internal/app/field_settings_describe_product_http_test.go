@@ -34,6 +34,9 @@ func fieldSettingsDescribeHTTPMux(t *testing.T, pb *pocketbase.PocketBase, regis
 	t.Helper()
 	catalog := schemaapi.New(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+		unrelatedPresetRegistration(t, "preset.list"),
+		unrelatedPresetRegistration(t, "preset.save"),
+		unrelatedPresetRegistration(t, "preset.delete"),
 		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		unrelatedRelationInspectRegistration(t),
