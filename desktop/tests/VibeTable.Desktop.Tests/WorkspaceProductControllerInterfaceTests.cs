@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using VibeTable.Contracts;
@@ -337,27 +338,219 @@ public sealed class WorkspaceProductControllerInterfaceTests
             HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);
     }
 
+    [TestMethod]
+    public async Task DispatchForwardsProvisionalReplicaForceTakeoverWithCurrentScope()
+    {
+        using var fixture = new Fixture();
+        fixture.Session.CaptureCurrentSession = true;
+        WorkspaceSessionV2 provisional = ProvisionalSession(Guid.NewGuid(), 42);
+        WorkspaceWireScope scope = ScopeFor(provisional, sequence: 7);
+        fixture.Session.CurrentSession = provisional;
+        fixture.Session.Capabilities = Capabilities(
+            provisional,
+            "replica.forceTakeover");
+        var handler = new RecordingHandler(request =>
+        {
+            Assert.AreEqual("/api/vibetable/v2/rpc", request.RequestUri!.AbsolutePath);
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            Assert.AreEqual("replica.forceTakeover", body.RootElement.GetProperty("method").GetString());
+            Assert.AreEqual("force-1", body.RootElement.GetProperty("id").GetString());
+            Assert.IsTrue(JsonElement.DeepEquals(
+                RequestWire(scope),
+                body.RootElement.GetProperty("wire")));
+            Assert.AreEqual("provisional", body.RootElement
+                .GetProperty("params").GetProperty("mode").GetString());
+            return JsonResponse(
+                "force-1",
+                body.RootElement.GetProperty("wire"),
+                "{\"fenceEpoch\":3,\"claimId\":\"22222222-2222-4222-8222-222222222222\",\"mode\":\"provisional\"}");
+        });
+        fixture.Session.Gateway = Gateway(handler);
+
+        await fixture.Controller.DispatchAsync(Request(
+            "replica.forceTakeover",
+            "force-1",
+            new { mode = "provisional" },
+            scope));
+
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.IsTrue(response.GetProperty("ok").GetBoolean());
+        JsonElement result = response.GetProperty("result");
+        Assert.AreEqual(3, result.GetProperty("fenceEpoch").GetInt32());
+        Assert.AreEqual("22222222-2222-4222-8222-222222222222", result
+            .GetProperty("claimId").GetString());
+        Assert.AreEqual("provisional", result.GetProperty("mode").GetString());
+    }
+
+    [TestMethod]
+    public async Task DispatchRelaysProvisionalConflictApplySidecarRejection()
+    {
+        using var fixture = new Fixture();
+        fixture.Session.CaptureCurrentSession = true;
+        WorkspaceSessionV2 provisional = ProvisionalSession(Guid.NewGuid(), 43);
+        WorkspaceWireScope scope = ScopeFor(provisional, sequence: 8);
+        fixture.Session.CurrentSession = provisional;
+        fixture.Session.Capabilities = Capabilities(provisional, "conflict.apply");
+        Guid planId = Guid.NewGuid();
+        fixture.Session.Gateway = Gateway(new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            Assert.AreEqual("conflict.apply", body.RootElement.GetProperty("method").GetString());
+            JsonElement parameters = body.RootElement.GetProperty("params");
+            Assert.AreEqual(1, parameters.EnumerateObject().Count());
+            Assert.AreEqual(planId.ToString("D"), parameters.GetProperty("planId").GetString());
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"jsonrpc\":\"2.0\",\"id\":\"conflict-1\",\"wire\":"
+                    + body.RootElement.GetProperty("wire").GetRawText()
+                    + ",\"error\":{\"code\":\"conflict.plan_stale\",\"message\":\"retry\",\"retryable\":false}}",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+        }));
+
+        await fixture.Controller.DispatchAsync(Request(
+            "conflict.apply", "conflict-1", new { planId = planId.ToString("D") }, scope));
+
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.IsFalse(response.GetProperty("ok").GetBoolean());
+        Assert.AreEqual("conflict.plan_stale", response.GetProperty("error")
+            .GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    [DataRow("replica.forceTakeover", "readOnly", "workspace.read_only")]
+    [DataRow("replica.forceTakeover", "transition", "workspace.session_stale")]
+    [DataRow("replica.forceTakeover", "stale", "workspace.session_stale")]
+    [DataRow("retention.apply", "provisional", "workspace.read_only")]
+    public async Task DispatchRetainsNarrowProvisionalAdmissionBoundaries(
+        string method,
+        string sessionKind,
+        string expectedCode)
+    {
+        using var fixture = new Fixture();
+        fixture.Session.CaptureCurrentSession = true;
+        WorkspaceSessionV2 provisional = ProvisionalSession(Guid.NewGuid(), 44);
+        fixture.Session.CurrentSession = sessionKind switch
+        {
+            "readOnly" => provisional with
+            {
+                State = WorkspaceSessionState.OpenedReadOnly,
+                OpenMode = WorkspaceOpenMode.ReadOnly,
+                Provisional = false,
+            },
+            "transition" => provisional with { Phase = WorkspaceSessionPhase.Verifying },
+            _ => provisional,
+        };
+        WorkspaceWireScope scope = ScopeFor(fixture.Session.CurrentSession, 9);
+        if (sessionKind == "stale")
+            scope = scope with { SessionEpoch = scope.SessionEpoch + 1 };
+        fixture.Session.Gateway = Gateway(new RecordingHandler(_ =>
+            throw new AssertFailedException("request must not reach sidecar")));
+
+        await fixture.Controller.DispatchAsync(Request(method, "reject-1", new { }, scope));
+
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.IsFalse(response.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(expectedCode, response.GetProperty("error")
+            .GetProperty("code").GetString());
+    }
+
     private static RoutedWebRequest Request(
         string method,
         string requestId,
-        object? parameters = null)
+        object? parameters = null,
+        WorkspaceWireScope? scope = null)
     {
         JsonElement payload = JsonSerializer.SerializeToElement(new
         {
             @params = parameters ?? new { },
         });
-        JsonElement wire = JsonSerializer.SerializeToElement(new
-        {
-            operationId = Guid.NewGuid().ToString("D"),
-        });
+        JsonElement wire = scope is null
+            ? JsonSerializer.SerializeToElement(new
+            {
+                operationId = Guid.NewGuid().ToString("D"),
+            })
+            : RequestWire(scope);
         return new RoutedWebRequest(
             "workspace.v2.request",
             requestId,
             payload,
             string.Empty,
+            scope,
             Wire: wire,
             V2Method: method);
     }
+
+    private static JsonElement RequestWire(WorkspaceWireScope scope) =>
+        JsonSerializer.SerializeToElement(new
+        {
+            scope = scope.Scope,
+            workspaceId = scope.WorkspaceId.ToString("D"),
+            sessionEpoch = scope.SessionEpoch,
+            operationId = scope.OperationId.ToString("D"),
+            sequence = scope.Sequence,
+        });
+
+    private static WorkspaceWireScope ScopeFor(
+        WorkspaceSessionV2 session,
+        ulong sequence) => new()
+        {
+            Scope = "workspace",
+            WorkspaceId = session.WorkspaceId!.Value,
+            SessionEpoch = session.SessionEpoch,
+            OperationId = Guid.NewGuid(),
+            Sequence = sequence,
+        };
+
+    private static WorkspaceSessionV2 ProvisionalSession(
+        Guid workspaceId,
+        ulong epoch) => new()
+        {
+            ContractVersion = WorkspaceV2Json.ContractVersion,
+            WorkspaceId = workspaceId,
+            SessionEpoch = epoch,
+            State = WorkspaceSessionState.OpenedProvisional,
+            OpenMode = WorkspaceOpenMode.Provisional,
+            Writable = false,
+            Provisional = true,
+            Phase = WorkspaceSessionPhase.Idle,
+            ErrorCode = null,
+        };
+
+    private static WorkspaceV2SidecarCapabilities Capabilities(
+        WorkspaceSessionV2 session,
+        params string[] methods) => new(
+        WorkspaceV2Json.ContractVersion,
+        session.WorkspaceId!.Value.ToString("D"),
+        session.SessionEpoch,
+        1,
+        Guid.NewGuid().ToString("D"),
+        methods);
+
+    private static WorkspaceV2HttpGateway Gateway(HttpMessageHandler handler) => new(
+        () => new PocketBaseAdminContext(
+            new Uri("http://127.0.0.1:43125/api/vibetable/v1/admin/bootstrap"),
+            new Uri("http://127.0.0.1:43125/"),
+            "X-VibeTable-Session",
+            "private-secret"),
+        handler);
+
+    private static HttpResponseMessage JsonResponse(
+        string requestId,
+        JsonElement wire,
+        string result) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                $"{{\"jsonrpc\":\"2.0\",\"id\":\"{requestId}\",\"wire\":"
+                + wire.GetRawText()
+                + $",\"result\":{result}}}",
+                Encoding.UTF8,
+                "application/json"),
+        };
 
     private static WorkspaceSessionV2 ClosedSession() => new()
     {
@@ -461,12 +654,31 @@ public sealed class WorkspaceProductControllerInterfaceTests
         public bool LeaseCurrent { get; set; } = true;
         public WorkspaceV2SidecarCapabilities? Capabilities { get; set; }
         public WorkspaceV2SidecarCapabilities? CurrentCapabilities => Capabilities;
+        public bool CaptureCurrentSession { get; set; }
         public bool TryCapture(
             WorkspaceWireScope? scope,
             out WorkspaceRequestEpochLease? lease)
         {
-            lease = Lease;
-            return lease is not null;
+            if (!CaptureCurrentSession)
+            {
+                lease = Lease;
+                return lease is not null;
+            }
+            lease = null;
+            if (scope is null || scope.Scope != "workspace" ||
+                CurrentSession.WorkspaceId != scope.WorkspaceId ||
+                CurrentSession.SessionEpoch != scope.SessionEpoch ||
+                CurrentSession.State is not (
+                    WorkspaceSessionState.OpenedReadOnly or
+                    WorkspaceSessionState.OpenedWritable or
+                    WorkspaceSessionState.OpenedProvisional) ||
+                CurrentSession.Phase != WorkspaceSessionPhase.Idle)
+                return false;
+            lease = new WorkspaceRequestEpochLease(
+                scope,
+                CancellationToken.None,
+                () => { });
+            return true;
         }
 
         public bool TryAdmitLifecycleRequest(WorkspaceWireScope? scope) => false;
@@ -601,5 +813,14 @@ public sealed class WorkspaceProductControllerInterfaceTests
         public IWorkspaceRuntime Create(
             WorkspaceRegistryEntryV2 workspace,
             ulong sessionEpoch) => throw new InvalidOperationException("unused runtime");
+    }
+
+    private sealed class RecordingHandler(
+        Func<HttpRequestMessage, HttpResponseMessage> responder)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) => Task.FromResult(responder(request));
     }
 }
