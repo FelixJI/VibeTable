@@ -54,6 +54,9 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "effect": "read",
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
+        "contentProfile.commit",
+        "contentProfile.delete",
+        "contentProfile.load",
         "events.reconcile",
         "field.settings.describe",
         "file.list",
@@ -79,6 +82,10 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "recordDocumentLink.commit",
+        "recordDocumentLink.delete",
+        "recordDocumentLink.list",
+        "recordDocumentLink.repair",
         "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
@@ -183,9 +190,12 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 71
+    assert len(methods) == 64
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
+        "contentProfile.commit",
+        "contentProfile.delete",
+        "contentProfile.load",
         "events.reconcile",
         "field.settings.describe",
         "file.list",
@@ -211,6 +221,10 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "recordDocumentLink.commit",
+        "recordDocumentLink.delete",
+        "recordDocumentLink.list",
+        "recordDocumentLink.repair",
         "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",

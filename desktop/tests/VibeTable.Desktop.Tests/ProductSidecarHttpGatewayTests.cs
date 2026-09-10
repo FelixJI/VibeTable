@@ -194,7 +194,7 @@ public sealed class ProductSidecarHttpGatewayTests
 
     [TestMethod]
     [DataRow('a', 1)]
-    [DataRow('é', 2)]
+    [DataRow('\u00e9', 2)]
     public async Task LookupControllerForwardsExactParameterBudgetThroughHttp(char character, int utf8Bytes)
     {
         int available = 1024 * 1024 - "{\"collection\":\"\"}".Length;
@@ -427,7 +427,7 @@ public sealed class ProductSidecarHttpGatewayTests
 
     [TestMethod]
     [DataRow('x', 1)]
-    [DataRow('é', 2)]
+    [DataRow('\u00e9', 2)]
     public async Task OneMiBSemanticParamsLeaveRoomForEnvelopeAndEscaping(char character, int bytesPerCharacter)
     {
         byte[]? body = null;
@@ -792,6 +792,50 @@ public sealed class ProductSidecarHttpGatewayTests
         Assert.ThrowsExactly<ArgumentException>(() =>
             new ProductSidecarHttpGateway(
                 Context("secret"), Identity(), [new("query.page", "process")]));
+    }
+
+    [TestMethod]
+    public async Task ContentErrorsKeepTheirClosedMethodAndCodeContract()
+    {
+        foreach (var sample in new[]
+        {
+            (Method: "contentProfile.load", Code: "content_profile.not_found", Accepted: true),
+            (Method: "contentProfile.load", Code: "content_model.idempotency_conflict", Accepted: true),
+            (Method: "contentProfile.load", Code: "content_model.future_error", Accepted: false),
+            (Method: "contentProfile.load", Code: "schema.invalid", Accepted: false),
+            (Method: "query.page", Code: "content_profile.not_found", Accepted: false),
+        })
+        {
+            string methods = JsonSerializer.Serialize(new[] { sample.Method });
+            string registrations = JsonSerializer.Serialize(new[] { new { method = sample.Method, scope = "workspace" } });
+            var replies = new Queue<HttpResponseMessage>([
+                Json(Capabilities(rpcMethods: methods, registrations: registrations)),
+                Json(JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0", id = "content", wire = new { },
+                    error = new
+                    {
+                        code = -32180, message = "Content model error",
+                        data = new { kind = "content_model_error", code = sample.Code, message = "Content metadata rejected.", path = "" },
+                    },
+                })),
+            ]);
+            using var gateway = Gateway(new RecordingHandler(_ => replies.Dequeue()),
+                expectedRegistrations: [new(sample.Method, "workspace")]);
+            await gateway.GetCapabilitiesAsync(CancellationToken.None);
+            JsonElement empty = JsonSerializer.SerializeToElement(new { });
+            if (sample.Accepted)
+            {
+                var result = (ProductSidecarFailure)await gateway.ForwardAsync("content", sample.Method, empty, empty, CancellationToken.None);
+                Assert.AreEqual(-32180, result.Error.Code);
+                Assert.AreEqual(sample.Code, result.Error.Data!.Value.GetProperty("code").GetString());
+                Assert.AreEqual("", result.Error.Data.Value.GetProperty("path").GetString());
+            }
+            else
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => gateway.ForwardAsync("content", sample.Method, empty, empty, CancellationToken.None));
+            }
+        }
     }
 
     private static ProductSidecarHttpGateway Gateway(

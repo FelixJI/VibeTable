@@ -536,6 +536,17 @@ flowchart LR
 - 每次只迁一个可回滚能力组；
 - 旧 Python route 在切换 PR 内删除或明确标记为下一紧邻 PR 的删除项，不长期双轨。
 
+L5 首批共享 metadata 实现范围为 ContentProfile 的 load/commit/delete 与
+RecordDocumentLink 的 list/commit/repair/delete。Go 在现有 metadata 事务内完成 SchemaCore
+字段校验、按业务主键查询 record、CAS、持久 receipt 和 audit/outbox；同请求 replay 先读取
+receipt，避免把已经成功的 commit/repair/delete 误报为 revision 冲突或不存在。broken document
+link 继续允许，Surface、Dashboard、Preset、Version 不在此批范围。
+
+同批删除七个旧 Python 生产 handler、ContentModelService 和这两个 namespace 的通用写入口，
+保留 snapshot/search 所需内部读取。Host 只接受七方法的明确 content 错误码与原 data 形状。
+公开输入输出基线见 [冻结契约说明](../../contracts/v2/content-metadata-python-oracle.md)；
+源码契约通过不代表 packaged 资格，本批仍须在最终源码统一构建后运行真实包 S18。
+
 Mutation preview/apply 的早期本地纵切保留历史 Python oracle 原件并停止重新捕获，根 DTO、领域错误和 workspace 写门禁继续分层。历史源码 `9d6af2ef` 构建的真实 S02/S04/S08/S11 4/4 通过；该阶段完整 Python quality 为 1800 passed、1 skipped、coverage91.36%。这些结果仅归属当时的源码与验证阶段，不代表当前候选或 L5 全部完成。
 
 迁移早期发现的 REST 同键重放重复写 proof 问题曾由独立 runtime 修复 PR298 处理；当时的交付还依赖 PR297 Go 恢复 producer 和完整 Host 消费者进入实际 main。当前 owner 分布、源码同步、验证及远端交付状态统一以 [Mutation Go owner 资格](../quality/mutation-product-go-owner.md) 为准；重放修复证据见 [独立重放资格](../quality/workspace-mutation-replay.md)。

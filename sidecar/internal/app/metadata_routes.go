@@ -53,6 +53,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
+		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
+			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
+		}
 		if request.Request.PathValue("namespace") == string(metadata.NamespacePresets) {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
 		}
@@ -88,6 +91,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
+		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
+			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
+		}
 		if request.Request.PathValue("namespace") == string(metadata.NamespacePresets) {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
 		}
@@ -265,4 +271,8 @@ func metadataHTTPStatus(err *metadata.Error) int {
 	default:
 		return http.StatusUnprocessableEntity
 	}
+}
+
+func genericMetadataWritable(namespace string) bool {
+	return namespace != string(metadata.NamespaceContentProfiles) && namespace != string(metadata.NamespaceRecordDocumentLinks)
 }
