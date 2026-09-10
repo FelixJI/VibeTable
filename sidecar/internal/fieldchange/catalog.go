@@ -11,11 +11,13 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/computationplan"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 type Catalog struct {
@@ -420,6 +422,11 @@ func (catalog *Catalog) Check(
 	}
 	if before != nil && after != nil && relationCascadeIntroduced(before, after) {
 		return catalog.checkCascadeImpact(ctx, intent, *before, *after, impact)
+	}
+	if after != nil {
+		if err := catalog.checkComputationDependencies(ctx, intent.TableID, *after); err != nil {
+			return impact, nil, nil, err
+		}
 	}
 	if intent.RelationPairPatch != nil && before != nil && after != nil {
 		return catalog.checkPairCardinality(ctx, intent.TableID, before, after, impact)
@@ -889,6 +896,33 @@ func storedInteger(value any) (int64, error) {
 	default:
 		return 0, errors.New("stored number is missing")
 	}
+}
+
+// Preflight uses one read transaction; the executor builds again in its existing
+// authority transaction, so a frozen field plan cannot commit a newly formed cycle.
+func (catalog *Catalog) checkComputationDependencies(ctx context.Context, tableID string, after v2.FieldDefinition) error {
+	return catalog.app.RunInTransaction(func(txApp core.App) error {
+		definition, err := schemaexecution.Describe(ctx, txApp, tableID)
+		if err != nil {
+			return err
+		}
+		fields := append([]v2.FieldDefinition(nil), definition.Snapshot.Fields...)
+		found := false
+		for index := range fields {
+			if fields[index].Identity.FieldID == after.Identity.FieldID {
+				fields[index] = after
+				found = true
+				break
+			}
+		}
+		if !found {
+			fields = append(fields, after)
+		}
+		definition.Snapshot.Fields = fields
+		return computationplan.Validate(ctx, definition, func(ctx context.Context, targetID string) (schemaexecution.Table, error) {
+			return schemaexecution.Describe(ctx, txApp, targetID)
+		})
+	})
 }
 
 func appendFailure(impact *v2.Impact, recordID string, reason string) {

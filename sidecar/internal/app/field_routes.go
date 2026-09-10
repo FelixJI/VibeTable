@@ -16,6 +16,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -333,6 +334,7 @@ func classifyFieldError(err error) fieldErrorResponse {
 	details := map[string]any{}
 	var productErr *fieldchange.ProductError
 	var contractErr *v2.ProductError
+	var schemaErr *schemaerror.ProductError
 	switch {
 	case errors.As(err, &productErr):
 		code, path, message = productErr.Code, productErr.Path, productErr.Message
@@ -343,6 +345,11 @@ func classifyFieldError(err error) fieldErrorResponse {
 		code, path, message = contractErr.Code, contractErr.Path, contractErr.Message
 		if contractErr.Details != nil {
 			details = contractErr.Details
+		}
+	case errors.As(err, &schemaErr):
+		code, path, message = schemaErr.Code, schemaErr.Path, schemaErr.Message
+		if schemaErr.Details != nil {
+			details = schemaErr.Details
 		}
 	case errors.Is(err, fieldchange.ErrFieldNotFound), errors.Is(err, sql.ErrNoRows):
 		status = http.StatusNotFound

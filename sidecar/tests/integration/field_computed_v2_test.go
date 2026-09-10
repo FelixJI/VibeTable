@@ -2,8 +2,10 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/pocketbase/dbx"
@@ -17,6 +19,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
@@ -55,6 +58,169 @@ func (scheduler *atomicFormulaScheduler) EnqueueFormulaBackfill(
 func (scheduler *atomicFormulaScheduler) Start(jobID string) bool {
 	scheduler.started = append(scheduler.started, jobID)
 	return true
+}
+
+func TestLookupConfigurationUpdatePersistsAndChangesQuery(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	source := createV2IntegrationTable(t, ctx, app, "Sources", "lookup_update_source")
+	target := createV2IntegrationTable(t, ctx, app, "Targets", "lookup_update_target")
+	name := createV2IntegrationField(t, ctx, app, source.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Name"), "lookup_update_name")
+	title := createV2IntegrationField(t, ctx, app, target.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Title"), "lookup_update_title")
+	code := createV2IntegrationField(t, ctx, app, target.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "Code"), "lookup_update_code")
+	first := createV2IntegrationRelation(t, ctx, app, source.TableID, name.FieldID,
+		target.TableID, title.FieldID, "First", "First sources", "one", "lookup_update_first")
+	second := createV2IntegrationRelation(t, ctx, app, source.TableID, name.FieldID,
+		target.TableID, title.FieldID, "Second", "Second sources", "one", "lookup_update_second")
+	draft := fieldDraftForIntegration(t, v2.LogicalLookup, "Selected value")
+	draft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{{RelationFieldID: first.FieldID}}, TargetFieldID: title.FieldID,
+	}
+	lookup := createV2IntegrationField(t, ctx, app, source.TableID, draft, "lookup_update_lookup")
+	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targets []*core.Record
+	for index := range 2 {
+		record := core.NewRecord(targetCollection)
+		record.Set(title.Definition.Identity.PhysicalName, fmt.Sprintf("Title %d", index+1))
+		record.Set(title.Definition.Value.Presence.PhysicalName, true)
+		record.Set(code.Definition.Identity.PhysicalName, fmt.Sprintf("CODE-%d", index+1))
+		record.Set(code.Definition.Value.Presence.PhysicalName, true)
+		if err := app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+		targets = append(targets, record)
+	}
+	sourceCollection, err := app.FindCollectionByNameOrId(source.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := core.NewRecord(sourceCollection)
+	for index, link := range []v2.ApplyReceipt{first, second} {
+		row.Set(link.Definition.Identity.PhysicalName, targets[index].Id)
+		row.Set(link.Definition.Value.Presence.PhysicalName, true)
+	}
+	if err := app.Save(row); err != nil {
+		t.Fatal(err)
+	}
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := relation.New(app, query.NewPort(app, querySource), mutation.New(app, mutation.MetadataSchemaSource{}))
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, nil)
+	executor := fieldchange.NewExecutor(app, store)
+	actor := v2.Actor{ID: "local-user", Kind: "user"}
+	check := func(link v2.ApplyReceipt, valueField v2.ApplyReceipt, want string, revision int) {
+		t.Helper()
+		execution, err := schemaapi.New(app).Describe(ctx, source.TableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		field := integrationFieldByID(execution, lookup.FieldID)
+		wantSpec := &v2.LookupSpec{Path: []v2.LookupPathStep{{RelationFieldID: link.FieldID}}, TargetFieldID: valueField.FieldID}
+		if field == nil || field.Identity != lookup.Definition.Identity || !reflect.DeepEqual(field.Lookup, wantSpec) {
+			t.Fatalf("stored lookup definition = %#v", field)
+		}
+		metadata, err := app.FindFirstRecordByFilter("vibetable_lookups",
+			"table_id={:table} && field_id={:field}", dbx.Params{"table": source.TableID, "field": lookup.FieldID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pathConfig struct {
+			RelationFieldID string              `json:"relationFieldId"`
+			TargetFieldID   string              `json:"targetFieldId"`
+			Path            []v2.LookupPathStep `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(metadata.GetString("path_json")), &pathConfig); err != nil {
+			t.Fatal(err)
+		}
+		if metadata.GetInt("revision") != revision || metadata.GetString("target_field_id") != valueField.FieldID ||
+			metadata.GetString("relation_field_id") != link.FieldID || pathConfig.RelationFieldID != link.FieldID ||
+			pathConfig.TargetFieldID != valueField.FieldID || !reflect.DeepEqual(pathConfig.Path, wantSpec.Path) {
+			t.Fatalf("lookup metadata revision=%d path=%#v", metadata.GetInt("revision"), pathConfig)
+		}
+		dependencies, err := app.FindRecordsByFilter("vibetable_computation_dependencies",
+			"source_table_id={:table} && computed_field_id={:field}", "", 0, 0,
+			dbx.Params{"table": source.TableID, "field": lookup.FieldID})
+		if err != nil || len(dependencies) != 1 {
+			t.Fatalf("lookup dependencies = %#v, %v", dependencies, err)
+		}
+		dependency := dependencies[0]
+		var dependencyPath []v2.LookupPathStep
+		if err := json.Unmarshal([]byte(dependency.GetString("path_json")), &dependencyPath); err != nil {
+			t.Fatal(err)
+		}
+		if dependency.GetString("target_table_id") != target.TableID || dependency.GetString("target_field_id") != valueField.FieldID ||
+			dependency.GetString("relation_field_id") != link.FieldID || dependency.GetInt("definition_version") != revision ||
+			!reflect.DeepEqual(dependencyPath, wantSpec.Path) {
+			t.Fatalf("lookup dependency = %#v", dependency.PublicExport())
+		}
+		page, err := service.QueryLookups(ctx, relation.LookupQueryRequest{
+			TableID: source.TableID, SchemaRevision: execution.Snapshot.SchemaRevision, Query: query.TableQuery{Limit: 50},
+		})
+		if err != nil || len(page.Rows) != 1 {
+			t.Fatalf("lookup query = %#v, %v", page, err)
+		}
+		cell, ok := page.Rows[0][lookup.Definition.Identity.PhysicalName].(lookuppkg.CellValue)
+		if !ok || cell.Value != want {
+			t.Fatalf("lookup query value = %#v, want %q", cell, want)
+		}
+	}
+	check(first, title, "Title 1", 1)
+	for index, link := range []v2.ApplyReceipt{first, second} {
+		draft.Lookup = &v2.LookupSpec{Path: []v2.LookupPathStep{{RelationFieldID: link.FieldID}}, TargetFieldID: code.FieldID}
+		before, err := catalog.Revisions(ctx, source.TableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+			Action: v2.ActionUpdate, TableID: source.TableID, FieldID: lookup.FieldID,
+			ExpectedSchemaRev: before.Schema, Draft: &draft, Actor: actor,
+		})
+		if err != nil || !plan.CanApply || len(plan.Classes) != 1 || plan.Classes[0] != v2.ClassSchema {
+			t.Fatalf("lookup update %d = %#v, %v", index, plan, err)
+		}
+		if _, err := executor.Apply(ctx, v2.ApplyRequest{
+			PlanID: plan.PlanID, PlanHash: plan.PlanHash, OperationID: fmt.Sprintf("lookup_update_apply_%d", index), Actor: actor,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := catalog.Revisions(ctx, source.TableID)
+		if err != nil || after.Schema == before.Schema {
+			t.Fatalf("lookup schema revision did not advance: %#v / %#v, %v", before, after, err)
+		}
+		check(link, code, fmt.Sprintf("CODE-%d", index+1), index+2)
+	}
+	revisions, err := catalog.Revisions(ctx, source.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := v2.FieldChangeIntent{Action: v2.ActionUpdate, TableID: source.TableID, FieldID: lookup.FieldID,
+		ExpectedSchemaRev: revisions.Schema, Draft: &draft, Actor: actor}
+	if _, err := planner.Plan(ctx, intent); err == nil {
+		t.Fatal("unchanged lookup was accepted")
+	} else {
+		var productErr *fieldchange.ProductError
+		if !errors.As(err, &productErr) || productErr.Code != "field.change.noop" {
+			t.Fatalf("unchanged lookup error = %v", err)
+		}
+	}
+	draft.Lookup = &v2.LookupSpec{Path: []v2.LookupPathStep{{RelationFieldID: second.FieldID}}, TargetFieldID: "fld_missing_target"}
+	invalid, err := planner.Plan(ctx, intent)
+	if err != nil || invalid.CanApply || len(invalid.Errors) != 1 ||
+		invalid.Errors[0].Code != "field.lookup.target_invalid" || invalid.Errors[0].Path != "draft.lookup.targetFieldId" {
+		t.Fatalf("invalid lookup target = %#v, %v", invalid, err)
+	}
+	check(second, code, "CODE-2", 3)
 }
 
 func TestFormulaPlanAcceptsFreshNumberPhysicalNameTimesFloatLiteral(t *testing.T) {
