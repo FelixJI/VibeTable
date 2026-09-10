@@ -15,6 +15,9 @@ public interface IPocketBaseSupervisor : IAsyncDisposable
     Task StopAsync(CancellationToken cancellationToken);
     Uri? GetAdminUri();
     PocketBaseAdminContext? GetAdminContext();
+    PocketBaseGenerationContext? CaptureCurrentGeneration();
+    /// <summary>Terminal validation for prepared caller state; it grants no lease.</summary>
+    bool IsCurrentGeneration(PocketBaseGenerationContext expected);
     void ConfigureBackendEnvironment(IDictionary<string, string> environment);
 }
 
@@ -22,4 +25,10 @@ public sealed record PocketBaseAdminContext(
     Uri BootstrapUri,
     Uri Origin,
     string SessionHeaderName,
-    string SessionSecret);
+    string SessionSecret)
+{
+    public override string ToString()
+        => $"{nameof(PocketBaseAdminContext)} {{ BootstrapUri = {BootstrapUri}, "
+            + $"Origin = {Origin}, SessionHeaderName = {SessionHeaderName}, "
+            + "SessionSecret = [REDACTED] }";
+}

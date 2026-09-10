@@ -10,4 +10,5 @@ public sealed record PocketBaseStatus(
     Uri? BaseAddress,
     bool AdminAvailable,
     int? ExitCode,
-    string? Error);
+    string? Error,
+    ulong? GenerationId = null);

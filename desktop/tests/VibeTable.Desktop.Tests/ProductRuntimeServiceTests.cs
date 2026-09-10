@@ -158,6 +158,10 @@ public sealed class ProductRuntimeServiceTests
         public Uri? GetAdminUri() => null;
         public PocketBaseAdminContext? GetAdminContext() => null;
 
+        public PocketBaseGenerationContext? CaptureCurrentGeneration() => null;
+
+        public bool IsCurrentGeneration(PocketBaseGenerationContext expected) => false;
+
         public void ConfigureBackendEnvironment(IDictionary<string, string> environment)
             => configure();
 

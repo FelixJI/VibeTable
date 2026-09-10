@@ -112,6 +112,10 @@ public sealed class LocalDataServiceTests
         public Uri? GetAdminUri() => AdminUri;
         public PocketBaseAdminContext? GetAdminContext() => null;
 
+        public PocketBaseGenerationContext? CaptureCurrentGeneration() => null;
+
+        public bool IsCurrentGeneration(PocketBaseGenerationContext expected) => false;
+
         public void ConfigureBackendEnvironment(
             IDictionary<string, string> environment)
         {

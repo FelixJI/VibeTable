@@ -82,6 +82,158 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
+    public async Task CapturedGenerationIsFixedAndRejectedAfterReplacement()
+    {
+        var firstProcess = FakePocketBaseProcess.Ready(ReadyRecord());
+        var secondProcess = FakePocketBaseProcess.Ready(ReadyRecord());
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(firstProcess, secondProcess),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+
+        PocketBaseGenerationContext first =
+            supervisor.CaptureCurrentGeneration()!;
+        Assert.AreSame(first, supervisor.CaptureCurrentGeneration());
+        Assert.AreSame(first.AdminContext, supervisor.GetAdminContext());
+        Assert.AreEqual(first.GenerationId, supervisor.GetStatus().GenerationId);
+        Assert.IsFalse(first.ToString().Contains(
+            first.AdminContext.SessionSecret,
+            StringComparison.Ordinal));
+        Assert.IsFalse(first.AdminContext.ToString().Contains(
+            first.AdminContext.SessionSecret,
+            StringComparison.Ordinal));
+
+        await supervisor.StopAsync(CancellationToken.None);
+        await supervisor.StartAsync(CancellationToken.None);
+        PocketBaseGenerationContext second =
+            supervisor.CaptureCurrentGeneration()!;
+        Assert.IsTrue(second.GenerationId > first.GenerationId);
+        Assert.AreNotSame(first, second);
+        Assert.AreNotSame(first.AdminContext, second.AdminContext);
+        Assert.IsFalse(supervisor.IsCurrentGeneration(first));
+        Assert.IsTrue(supervisor.IsCurrentGeneration(second));
+    }
+
+    [TestMethod]
+    public async Task StopAdmittedDuringStartupPreventsReadyPublication()
+    {
+        var healthEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHealth = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var stoppedPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var published = new System.Collections.Concurrent.ConcurrentQueue<PocketBaseState>();
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(
+                FakePocketBaseProcess.Ready(ReadyRecord())),
+            new FakePocketBaseHealthProbe(
+                getHealth: async token =>
+                {
+                    healthEntered.SetResult();
+                    await releaseHealth.Task.WaitAsync(
+                        TimeSpan.FromSeconds(5), token);
+                    return HealthyStatus();
+                }));
+        supervisor.StatusChanged += (_, status) =>
+        {
+            published.Enqueue(status.State);
+            if (status.State == PocketBaseState.Stopped)
+                stoppedPublished.TrySetResult();
+        };
+
+        Task starting = supervisor.StartAsync(CancellationToken.None);
+        await healthEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task stopping = supervisor.StopAsync(CancellationToken.None);
+        releaseHealth.SetResult();
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => starting);
+        await stopping.WaitAsync(TimeSpan.FromSeconds(5));
+        await stoppedPublished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        CollectionAssert.DoesNotContain(
+            published.ToArray(),
+            PocketBaseState.Ready);
+        Assert.AreEqual(PocketBaseState.Stopped, supervisor.GetStatus().State);
+        Assert.IsNull(supervisor.CaptureCurrentGeneration());
+    }
+
+    [TestMethod]
+    public async Task ConcurrentDisposeAndStopAwaitTheSameTeardown()
+    {
+        FakePocketBaseProcess process =
+            FakePocketBaseProcess.ReadyWithBlockedDispose(ReadyRecord());
+        var supervisor = new PocketBaseSupervisor(
+            Options(),
+            new FakePocketBaseProcessFactory(process),
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+
+        Task firstDispose = supervisor.DisposeAsync().AsTask();
+        await process.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task secondDispose = supervisor.DisposeAsync().AsTask();
+        Task concurrentStop = supervisor.StopAsync(CancellationToken.None);
+
+        Assert.IsFalse(firstDispose.IsCompleted);
+        Assert.IsFalse(secondDispose.IsCompleted);
+        Assert.IsFalse(concurrentStop.IsCompleted);
+        process.ReleaseDispose();
+        await Task.WhenAll(firstDispose, secondDispose, concurrentStop)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(1, process.DisposeCalls);
+    }
+
+    [TestMethod]
+    public Task LaterStopAdmissionPreventsReplacementPublication()
+        => AssertLaterRetirementAdmissionPreventsReplacement(dispose: false);
+
+    [TestMethod]
+    public Task LaterDisposeAdmissionPreventsReplacementPublication()
+        => AssertLaterRetirementAdmissionPreventsReplacement(dispose: true);
+
+    [TestMethod]
+    public async Task PreCancelledCommandsDoNotRetireStartupOrRecovery()
+    {
+        CancellationToken cancelled = new(canceled: true);
+        var healthEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHealth = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int healthCalls = 0;
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, recovered);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 1),
+            factory,
+            new FakePocketBaseHealthProbe(getHealth: async token =>
+            {
+                if (Interlocked.Increment(ref healthCalls) == 1)
+                {
+                    healthEntered.SetResult();
+                    await releaseHealth.Task.WaitAsync(token);
+                }
+                return HealthyStatus();
+            }));
+
+        Task starting = supervisor.StartAsync(CancellationToken.None);
+        await healthEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => supervisor.StopAsync(cancelled));
+        releaseHealth.SetResult();
+        await starting;
+
+        first.Crash(17);
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => supervisor.StartAsync(cancelled));
+        await WaitUntilAsync(() =>
+            factory.Requests.Count == 2
+                && supervisor.GetStatus().State == PocketBaseState.Ready);
+    }
+
+    [TestMethod]
     public async Task ConfigureBackendEnvironment_CopiesPrivateSessionWithoutChangingStatus()
     {
         var process = FakePocketBaseProcess.Ready(ReadyRecord());
@@ -259,29 +411,39 @@ public sealed class PocketBaseSupervisorTests
         var first = FakePocketBaseProcess.Ready(ReadyRecord());
         var second = FakePocketBaseProcess.Ready(ReadyRecord());
         var factory = new FakePocketBaseProcessFactory(first, second);
-        var published = new List<PocketBaseStatus>();
+        var published = new System.Collections.Concurrent.ConcurrentQueue<PocketBaseStatus>();
+        var recoveredPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         await using var supervisor = new PocketBaseSupervisor(
             Options(crashRestartLimit: 1),
             factory,
             new FakePocketBaseHealthProbe(isHealthy: true));
-        supervisor.StatusChanged += (_, status) => published.Add(status);
         await supervisor.StartAsync(CancellationToken.None);
+        supervisor.StatusChanged += (_, status) =>
+        {
+            published.Enqueue(status);
+            if (status.State == PocketBaseState.Ready
+                && status.GenerationId == 2)
+                recoveredPublished.TrySetResult();
+        };
 
         first.Crash(exitCode: 137);
         await WaitUntilAsync(
             () => factory.Requests.Count == 2
                 && supervisor.GetStatus().State == PocketBaseState.Ready);
+        await recoveredPublished.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        int degraded = published.FindIndex(status =>
+        List<PocketBaseStatus> ordered = published.ToList();
+        int degraded = ordered.FindIndex(status =>
             status.State == PocketBaseState.Faulted
             && status.ExitCode == 137
             && status.Error?.Contains(
                 "exited unexpectedly",
                 StringComparison.Ordinal) == true);
-        int restarting = published.FindIndex(
+        int restarting = ordered.FindIndex(
             Math.Max(0, degraded + 1),
             status => status.State == PocketBaseState.Starting);
-        int recovered = published.FindIndex(
+        int recovered = ordered.FindIndex(
             Math.Max(0, restarting + 1),
             status => status.State == PocketBaseState.Ready);
         Assert.IsTrue(
@@ -291,6 +453,127 @@ public sealed class PocketBaseSupervisorTests
             factory.Requests[0].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"],
             factory.Requests[1].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"],
             "Recovered generation must rotate the private session secret.");
+    }
+
+    [TestMethod]
+    public async Task BlockedReplacementFaultObserverDoesNotBlockRetryOrStop()
+    {
+        var replacementFaultObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFaultObserver = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var failedReplacement = FakePocketBaseProcess.Ready(
+            ReadyRecord(migrationHash: "wrong-hash"));
+        var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(
+            first,
+            failedReplacement,
+            recovered);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 2),
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        supervisor.StatusChanged += (_, status) =>
+        {
+            if (status.State != PocketBaseState.Faulted
+                || status.GenerationId != 2)
+            {
+                return;
+            }
+            replacementFaultObserved.TrySetResult();
+            releaseFaultObserver.Task.GetAwaiter().GetResult();
+        };
+        await supervisor.StartAsync(CancellationToken.None);
+
+        try
+        {
+            first.Crash(17);
+            await replacementFaultObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() =>
+                factory.Requests.Count == 3
+                    && supervisor.GetStatus().State == PocketBaseState.Ready);
+            await supervisor.StopAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsTrue(failedReplacement.Disposed);
+        }
+        finally
+        {
+            releaseFaultObserver.TrySetResult();
+        }
+    }
+
+    [TestMethod]
+    public async Task QueuedStatusUsesCommittedObserversAndIsolatesFailures()
+    {
+        var faultEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFault = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var retainedReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var retained = new System.Collections.Concurrent.ConcurrentQueue<
+            PocketBaseState>();
+        var late = new System.Collections.Concurrent.ConcurrentQueue<
+            PocketBaseState>();
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, recovered);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 1),
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+
+        void BlockFault(object? _, PocketBaseStatus status)
+        {
+            if (status.State != PocketBaseState.Faulted)
+                return;
+            faultEntered.TrySetResult();
+            releaseFault.Task.GetAwaiter().GetResult();
+        }
+        void ThrowingObserver(object? _, PocketBaseStatus status)
+            => throw new InvalidOperationException(status.State.ToString());
+        void RetainedObserver(object? _, PocketBaseStatus status)
+        {
+            retained.Enqueue(status.State);
+            if (status.State == PocketBaseState.Ready)
+                retainedReady.TrySetResult();
+        }
+        void LateObserver(object? _, PocketBaseStatus status)
+            => late.Enqueue(status.State);
+
+        supervisor.StatusChanged += BlockFault;
+        supervisor.StatusChanged += ThrowingObserver;
+        supervisor.StatusChanged += RetainedObserver;
+        Task crashing = Task.Run(() => first.Crash(17));
+        try
+        {
+            await faultEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() =>
+                factory.Requests.Count == 2
+                    && supervisor.GetStatus().State == PocketBaseState.Ready);
+            supervisor.StatusChanged -= RetainedObserver;
+            supervisor.StatusChanged += LateObserver;
+            releaseFault.TrySetResult();
+
+            await crashing.WaitAsync(TimeSpan.FromSeconds(5));
+            await retainedReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    PocketBaseState.Faulted,
+                    PocketBaseState.Starting,
+                    PocketBaseState.Ready,
+                },
+                retained.ToArray());
+            Assert.AreEqual(0, late.Count);
+        }
+        finally
+        {
+            releaseFault.TrySetResult();
+            await crashing.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [TestMethod]
@@ -441,7 +724,9 @@ public sealed class PocketBaseSupervisorTests
     public async Task ExitAtReadyBoundary_NeverPublishesReady()
     {
         var process = FakePocketBaseProcess.Ready(ReadyRecord());
-        var published = new List<PocketBaseState>();
+        var published = new System.Collections.Concurrent.ConcurrentQueue<PocketBaseState>();
+        var faultedPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var health = new FakePocketBaseHealthProbe(
             isHealthy: true,
             onHealth: () => process.Crash(31));
@@ -449,13 +734,47 @@ public sealed class PocketBaseSupervisorTests
             Options(),
             new FakePocketBaseProcessFactory(process),
             health);
-        supervisor.StatusChanged += (_, status) => published.Add(status.State);
+        supervisor.StatusChanged += (_, status) =>
+        {
+            published.Enqueue(status.State);
+            if (status.State == PocketBaseState.Faulted)
+                faultedPublished.TrySetResult();
+        };
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => supervisor.StartAsync(CancellationToken.None));
+        await faultedPublished.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        CollectionAssert.DoesNotContain(published, PocketBaseState.Ready);
+        CollectionAssert.DoesNotContain(published.ToArray(), PocketBaseState.Ready);
         Assert.AreEqual(PocketBaseState.Faulted, supervisor.GetStatus().State);
+    }
+
+    private static async Task AssertLaterRetirementAdmissionPreventsReplacement(
+        bool dispose)
+    {
+        var first = FakePocketBaseProcess.ReadyWithBlockedDispose(ReadyRecord());
+        var unused = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, unused);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(
+                crashRestartLimit: 1,
+                crashRestartDelay: TimeSpan.FromSeconds(10)),
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        first.Crash(17);
+
+        Task replacing = supervisor.StartAsync(CancellationToken.None);
+        await first.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task retiring = dispose
+            ? supervisor.DisposeAsync().AsTask()
+            : supervisor.StopAsync(CancellationToken.None);
+        first.ReleaseDispose();
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => replacing);
+        await retiring.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(1, factory.Requests.Count);
+        Assert.AreEqual(PocketBaseState.Stopped, supervisor.GetStatus().State);
     }
 
     private static PocketBaseLaunchOptions Options(
@@ -561,6 +880,9 @@ public sealed class PocketBaseSupervisorTests
         private readonly bool _shutdownAccepted;
         private readonly Action? _onShutdown;
         private readonly Action? _onHealth;
+        private readonly Func<
+            CancellationToken,
+            Task<PocketBaseHealthStatus?>>? _getHealth;
 
         public FakePocketBaseHealthProbe(
             bool isHealthy = false,
@@ -568,7 +890,8 @@ public sealed class PocketBaseSupervisorTests
             Exception? exception = null,
             bool shutdownAccepted = false,
             Action? onShutdown = null,
-            Action? onHealth = null)
+            Action? onHealth = null,
+            Func<CancellationToken, Task<PocketBaseHealthStatus?>>? getHealth = null)
         {
             _status = status ?? (isHealthy
                 ? HealthyStatus()
@@ -582,6 +905,7 @@ public sealed class PocketBaseSupervisorTests
             _shutdownAccepted = shutdownAccepted;
             _onShutdown = onShutdown;
             _onHealth = onHealth;
+            _getHealth = getHealth;
         }
 
         public List<(Uri Endpoint, string SessionSecret)> Requests { get; } = [];
@@ -594,6 +918,8 @@ public sealed class PocketBaseSupervisorTests
         {
             Requests.Add((endpoint, sessionSecret));
             _onHealth?.Invoke();
+            if (_getHealth is not null)
+                return _getHealth(cancellationToken);
             return _exception is null
                 ? Task.FromResult(_status)
                 : Task.FromException<PocketBaseHealthStatus?>(_exception);
@@ -616,10 +942,17 @@ public sealed class PocketBaseSupervisorTests
         private readonly TextReader _stderr;
         private int _exitCode;
 
-        private FakePocketBaseProcess(TextReader stdout, TextReader stderr)
+        private FakePocketBaseProcess(
+            TextReader stdout,
+            TextReader stderr,
+            bool blockDispose = false)
         {
             _stdout = stdout;
             _stderr = stderr;
+            ReleaseDisposeSource = blockDispose
+                ? new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously)
+                : null;
         }
 
         public static FakePocketBaseProcess Ready(string record, string stderr = "")
@@ -634,13 +967,23 @@ public sealed class PocketBaseSupervisorTests
                 new StringReader(record + Environment.NewLine),
                 new LateLineTextReader(lateStderr));
 
+        public static FakePocketBaseProcess ReadyWithBlockedDispose(string record)
+            => new(
+                new StringReader(record + Environment.NewLine),
+                new StringReader(Environment.NewLine),
+                blockDispose: true);
+
         public int Id => 42;
         public TextReader StandardOutput => _stdout;
         public TextReader StandardError => _stderr;
         public bool HasExited { get; private set; }
         public int? ExitCode => HasExited ? _exitCode : null;
         public int KillProcessTreeCalls { get; private set; }
+        public int DisposeCalls { get; private set; }
         public bool Disposed { get; private set; }
+        public TaskCompletionSource DisposeStarted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource? ReleaseDisposeSource { get; }
         public event EventHandler? Exited;
 
         public void KillProcessTree()
@@ -667,13 +1010,18 @@ public sealed class PocketBaseSupervisorTests
         public Task WaitForExitAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
+            DisposeCalls++;
+            DisposeStarted.TrySetResult();
+            if (ReleaseDisposeSource is not null)
+                await ReleaseDisposeSource.Task;
             Disposed = true;
             _stdout.Dispose();
             _stderr.Dispose();
-            return ValueTask.CompletedTask;
         }
+
+        public void ReleaseDispose() => ReleaseDisposeSource?.TrySetResult();
     }
 
     private sealed class LateLineTextReader(string lateLine) : TextReader
