@@ -168,17 +168,18 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_EmitsAuthoritativeDatasetReplacement()
+    public void RequestQuery_EmitsAuthoritativeDatasetReplacement()
     {
         var gateway = new FakeTableRpcGateway();
         gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 1, "server");
         TableNotification? captured = null;
-        var coordinator = NewCoordinator(gateway, notification => captured = notification);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notification => captured = notification, time);
 
         using var query = JsonDocument.Parse(
             """{"filters":[{"field":"payload","operator":"contains","value":"8"}],"sorts":[],"offset":0,"limit":100}""");
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.IsNotNull(captured);
         Assert.AreEqual(
@@ -189,11 +190,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_LoadsOnlyOneBoundedWindow_ForLargeFilteredDataset()
+    public void RequestQuery_LoadsOnlyOneBoundedWindow_ForLargeFilteredDataset()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         var allRows = Enumerable.Range(1, 1_201)
             .Select(id => new Dictionary<string, object?> { ["rowKey"] = id })
             .ToArray();
@@ -211,7 +213,7 @@ public sealed class GridStateCoordinatorTests
                 new Dictionary<string, object?>()));
 
         coordinator.RequestQuery("contracts", Query(limit: 500));
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 250);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
         Assert.AreEqual(1, notifications.Count);
@@ -221,11 +223,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestNextWindow_FetchesOpaqueCursorAndEmitsBoundedWindow()
+    public void RequestNextWindow_FetchesOpaqueCursorAndEmitsBoundedWindow()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         var snapshot = new QuerySnapshot(
             "snapshot", "digest", "db-identity", "contracts", "schema-1", 7,
             new Dictionary<string, object?>());
@@ -242,9 +245,9 @@ public sealed class GridStateCoordinatorTests
         using var query = JsonDocument.Parse("""{"filters":[],"sorts":[],"limit":500}""");
 
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
         coordinator.RequestNextWindow("opaque-2");
-        await Task.Delay(100);
+
 
         CollectionAssert.AreEqual(new[] { "opaque-2" }, gateway.CursorFetchCalls);
         Assert.AreEqual(2, notifications.Count);
@@ -254,11 +257,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_RejectsGroupedPagesWhenBothRevisionsAreMissing()
+    public void RequestQuery_RejectsGroupedPagesWhenBothRevisionsAreMissing()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1);
         gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 1) with
         {
@@ -267,7 +271,7 @@ public sealed class GridStateCoordinatorTests
         using var query = JsonDocument.Parse("""{"groups":[{"field":"status"}],"limit":100}""");
 
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.AreEqual(1, notifications.Count);
         Assert.AreEqual("operation.failed", notifications[0].Type);
@@ -275,11 +279,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_RejectsGroupedPagesFromDifferentRevisions()
+    public void RequestQuery_RejectsGroupedPagesFromDifferentRevisions()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1) with
         {
             QuerySnapshot = new QuerySnapshot(
@@ -296,7 +301,7 @@ public sealed class GridStateCoordinatorTests
         using var query = JsonDocument.Parse("""{"groups":[{"field":"status"}],"limit":100}""");
 
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.AreEqual(1, notifications.Count);
         Assert.AreEqual("operation.failed", notifications[0].Type);
