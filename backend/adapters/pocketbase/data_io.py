@@ -211,7 +211,7 @@ class ProductDataIoRuntime:
             bulk=bulk,
             profiles=self._profiles,
             resolve_path=task_service.resolve_path,
-            consume_grant=task_service.consume_grant,
+            reserve_grant=task_service.reserve_import_grant,
             relation_provider=PocketBaseRelationImportProvider(
                 client=client,
                 bulk=bulk,
