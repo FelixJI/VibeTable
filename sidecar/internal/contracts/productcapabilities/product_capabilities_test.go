@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 104 {
-		t.Fatalf("RPCDescriptors length = %d, want 104", len(descriptors))
+	if len(descriptors) != 105 {
+		t.Fatalf("RPCDescriptors length = %d, want 105", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 45 {
+	if len(allGo) != 47 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	otherGo := []RPCDescriptor{}
@@ -100,7 +100,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 			t.Fatalf("content descriptor = %#v", descriptor)
 		}
 	}
-	if got := otherGo; len(got) != 38 ||
+	if got := otherGo; len(got) != 40 ||
 		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
 		got[3] != (RPCDescriptor{Method: "history.applyRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: WriteEffect}) || got[4] != (RPCDescriptor{Method: "history.previewRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect}) || got[5] != (RPCDescriptor{
 		Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
@@ -115,7 +115,9 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		got[13] != (RPCDescriptor{Method: "interface.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[14] != (RPCDescriptor{Method: "interface.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[15] != (RPCDescriptor{Method: "interface.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[16] != (RPCDescriptor{Method: "interface.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[17].Method != "lookup.list" || got[18] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[19] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[20] != (RPCDescriptor{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: WriteEffect}) || got[21] != (RPCDescriptor{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: ReadEffect}) ||
 		got[22].Method != "preset.delete" || got[23].Method != "preset.list" || got[24].Method != "preset.save" || got[25].Method != "query.cursorFetch" || got[26].Method != "query.cursorOpen" || got[27].Method != "query.page" || got[28].Method != "query.readRows" ||
 		got[29].Method != "query.selectionOpen" || got[30] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[31].Method != "query.view" || got[32] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[33] != (RPCDescriptor{Method: "relation.previewDelta", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[34] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[35].Method != "schema.describe" ||
-		got[36].Method != "schema.getTable" || got[37].Method != "schema.list" {
+		got[36].Method != "schema.getTable" || got[37].Method != "schema.list" ||
+		got[38] != (RPCDescriptor{Method: "settings.commitWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[39] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||

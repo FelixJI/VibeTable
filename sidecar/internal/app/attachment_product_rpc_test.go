@@ -370,6 +370,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 	)
 	if err != nil {
 		t.Fatal(err)

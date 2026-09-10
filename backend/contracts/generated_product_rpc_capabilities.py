@@ -47,7 +47,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "relation.updateSingle",
         "schema.delete",
         "schema.table.create",
-        "settings.readShared",
         "shortcut.delete",
         "shortcut.launch",
         "shortcut.list",
@@ -111,6 +110,8 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar",
     ),
     "wpfHost": (
         "settings.readDevice",

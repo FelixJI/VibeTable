@@ -546,7 +546,6 @@
       "id": "rpc.insights-shared-read",
       "kind": "rpc",
       "names": [
-        "settings.readShared",
         "version.compare",
         "version.list"
       ],
@@ -562,7 +561,6 @@
       "authority": "GO_AUTHORITY",
       "effects": {
         "read": [
-          "settings.readShared",
           "version.compare",
           "version.list"
         ],
@@ -1358,6 +1356,50 @@
       "targetPr": null,
       "deleteWhen": "Python runtime route is removed; retain the public snapshot DTO, frozen Python wire corpus, and Go authoritative validation.",
       "evidence": ["sidecar/internal/app/query_validate_snapshot_product_rpc.go", "sidecar/internal/app/query_routes.go", "sidecar/internal/query/port.go", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.shared-work-calendar",
+      "kind": "rpc",
+      "names": [
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar"
+      ],
+      "currentPath": [
+        "renderer",
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "settings.readWorkCalendar"
+        ],
+        "write": [
+          "settings.commitWorkCalendar"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": ["32-shared-work-calendar"],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Go owns the shared calendar; all three renderer consumers use its confirmed workspace projection and Python readShared is removed.",
+      "evidence": [
+        "sidecar/internal/metadata/work_calendar.go",
+        "sidecar/internal/app/work_calendar_product_rpc.go",
+        "desktop/web-grid/src/stores/workCalendarStore.ts"
+      ]
     },
     {
       "id": "rpc.surface-read",

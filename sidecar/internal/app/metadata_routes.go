@@ -53,7 +53,7 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
-		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" {
+		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" || ns == "shared_settings" {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
 		}
 		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
@@ -94,7 +94,7 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
-		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" {
+		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" || ns == "shared_settings" {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
 		}
 		if !genericMetadataWritable(request.Request.PathValue("namespace")) {

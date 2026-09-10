@@ -471,7 +471,7 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedMethods := []string{"contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.settings.describe", "file.list", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.describe", "schema.getTable", "schema.list"}
+	expectedMethods := []string{"contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.settings.describe", "file.list", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.describe", "schema.getTable", "schema.list", "settings.commitWorkCalendar", "settings.readWorkCalendar"}
 	if methods := dispatcher.Methods(); len(methods) != len(expectedMethods) {
 		t.Fatalf("production registrations = %#v", methods)
 	} else {
@@ -637,6 +637,8 @@ func generatedGoSidecarRegistrations() []Registration {
 			Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
+		{Method: "settings.commitWorkCalendar", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "settings.readWorkCalendar", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 	}
 }
 
