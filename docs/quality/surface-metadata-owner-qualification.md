@@ -131,3 +131,15 @@ dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj
 - `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~HostProductRpcCompositionTests|FullyQualifiedName~WorkspaceRequestDispatcherQueryTests' --logger 'trx;LogFileName=surface-main-host.trx' --results-directory build/qa/surface-main-host`：135 PASS，0 FAIL、0 skip，18s；日志 `build/surface-main-host.log` 及对应 TRX。
 
 本次没有发布构建、重跑 S07/S17、完整 suite 或远端 CI 资格。上节 `65be85ce` 的新包与 S17 PASS 仅覆盖该 source，不能替代本次 History/Surface 组合的 fresh CI。原失败和历史包证据均保留，组合提交交独立双轴审查。
+### CI race 超时后的夹具修正（2026-09-10）
+
+head 7757d3d6 的 CI 34434998739 在 race-a 的 `TestSurfaceFrozenPythonOracle` 达到原 5 分钟预算而失败；其余 shards 与 CodeQL 成功，required 仍失败。原夹具对每个样本重复完整 migration，且只 ResetBootstrapState，没有触发正常 OnTerminate。
+
+本次仅调整测试夹具：空库完整迁移一次并正常终止、关闭连接后读取两个数据库文件；每个样本创建独立目录、文件和 PocketBase 生命周期。78 个冻结样本不变，11 个无 seed 的单 DTO 拒绝样本使用原调用首步 decoder。新增正常终止顺序和持久化隔离回归，不改变 5 分钟预算或生产实现。
+
+- 生命周期回归原实现 RED（未触发 OnTerminate）。首次普通组整体 FAIL，唯一 TempDir 目录非空清理错误，不能计为通过。
+- 首次 race 命令未启用 CGO，EXIT2、未执行测试；随后复用本机 Go 1.27/GCC，原预算运行 EXIT1/20.437s，仅新隔离夹具的空对象被 payload_json 拒绝。改为非空有效对象。
+- 修正夹具后 `go test -race ./internal/metadata -run '^TestSurface' -count=1 -timeout=5m` EXIT1/20.628s：oracle 8.43s，业务断言无失败，但三个 TempDir RemoveAll 目录非空错误；整体仍 FAIL。日志 `build/surface-fixture-race-fixed.log` 保留，不将清理错误归因为杀软或用重试掩盖。
+- `go vet ./internal/metadata` EXIT0。独立 Standards/Spec 审查均 0 项发现。
+
+本地结果证明原超时路径已缩短，不能替代 fresh CI 成功；推送后仍须等待当前 head 完整 required，失败不得合并。

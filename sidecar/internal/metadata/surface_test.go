@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -53,22 +54,60 @@ func surfaceOracle(t *testing.T) []surfaceOracleCase {
 	}
 	return corpus.Cases
 }
-func newSurfaceTestApp(t *testing.T) *pocketbase.PocketBase {
+func terminateSurfaceTestApp(t *testing.T, app *pocketbase.PocketBase) {
 	t.Helper()
-	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir(), HideStartBanner: true})
+	if !app.IsBootstrapped() {
+		return
+	}
+	event := &core.TerminateEvent{App: app}
+	if err := app.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
+		return event.App.ResetBootstrapState()
+	}); err != nil {
+		t.Fatalf("terminate fixture: %v", err)
+	}
+}
+func bootstrapSurfaceTestApp(t *testing.T, directory string) *pocketbase.PocketBase {
+	t.Helper()
+	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: directory, HideStartBanner: true})
 	migrations.Register(app)
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { terminateSurfaceTestApp(t, app) })
+	return app
+}
+func newSurfaceTestApp(t *testing.T) *pocketbase.PocketBase {
+	t.Helper()
+	app := bootstrapSurfaceTestApp(t, t.TempDir())
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatal(err)
 	}
 	return app
+}
+func surfaceOracleAppFactory(t *testing.T) func(*testing.T) *pocketbase.PocketBase {
+	t.Helper()
+	baseline := newSurfaceTestApp(t)
+	// Close both databases before capturing the migrated, empty fixture. Each
+	// sample gets separate database files and a fresh PocketBase lifecycle.
+	terminateSurfaceTestApp(t, baseline)
+	databases := make(map[string][]byte)
+	for _, name := range []string{"data.db", "auxiliary.db"} {
+		raw, err := os.ReadFile(filepath.Join(baseline.DataDir(), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		databases[name] = raw
+	}
+	return func(t *testing.T) *pocketbase.PocketBase {
+		t.Helper()
+		directory := t.TempDir()
+		for name, raw := range databases {
+			if err := os.WriteFile(filepath.Join(directory, name), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return bootstrapSurfaceTestApp(t, directory)
+	}
 }
 func seedSurface(t *testing.T, app core.App, id string, raw json.RawMessage) Item {
 	t.Helper()
@@ -114,6 +153,7 @@ func invokeSurfaceTest(ctx context.Context, s *SurfaceService, method string, ra
 	return nil, errors.New("unexpected oracle method")
 }
 func TestSurfaceFrozenPythonOracle(t *testing.T) {
+	newOracleApp := surfaceOracleAppFactory(t)
 	for _, sample := range surfaceOracle(t) {
 		t.Run(sample.Name, func(t *testing.T) {
 			// The old adapter's injected failures are not database fixtures. Check their
@@ -126,7 +166,13 @@ func TestSurfaceFrozenPythonOracle(t *testing.T) {
 				assertSurfaceOracleError(t, surfacePersistence(source), sample.Responses[0].Error.Data)
 				return
 			}
-			app := newSurfaceTestApp(t)
+			if len(sample.Seed) == 0 && len(sample.Calls) == 1 && len(sample.Responses) == 1 && sample.Responses[0].Error != nil && sample.Responses[0].Error.Code == -32602 {
+				if err := DecodeSurfaceParams(sample.Calls[0].Method, sample.Calls[0].Params, nil); !errors.Is(err, errSurfaceDTO) {
+					t.Fatalf("want invalid DTO before persistence; got %v", err)
+				}
+				return
+			}
+			app := newOracleApp(t)
 			service := NewSurface(app)
 			revisions := map[string]string{}
 			if sample.Name == "load-storage-duplicate-identities" {
@@ -265,9 +311,7 @@ func TestSurfaceDurableReplayAfterRestartAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.ResetBootstrapState(); err != nil {
-		t.Fatal(err)
-	}
+	terminateSurfaceTestApp(t, app)
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
@@ -370,5 +414,38 @@ func TestSurfaceMetadataKeyValidationFollowsCurrentCAS(t *testing.T) {
 	_, err = service.Commit(context.Background(), request)
 	if !errors.As(err, &domain) || domain.Code != "surface.edit_conflict" {
 		t.Fatalf("current CAS must precede generic key rejection = %v", err)
+	}
+}
+
+func TestSurfaceStoreTerminatesBeforeReset(t *testing.T) {
+	var app *pocketbase.PocketBase
+	terminated, bootstrappedAtTermination := false, false
+	t.Run("fixture", func(t *testing.T) {
+		app = newSurfaceTestApp(t)
+		app.OnTerminate().BindFunc(func(event *core.TerminateEvent) error {
+			terminated = true
+			bootstrappedAtTermination = event.App.IsBootstrapped()
+			return event.Next()
+		})
+	})
+	if !terminated || !bootstrappedAtTermination {
+		t.Errorf("termination before reset: called=%v bootstrapped=%v", terminated, bootstrappedAtTermination)
+	}
+	if app == nil || app.IsBootstrapped() {
+		t.Error("fixture did not reset bootstrap state")
+	}
+}
+
+func TestSurfaceOracleFixturesKeepIndependentPersistence(t *testing.T) {
+	newApp := surfaceOracleAppFactory(t)
+	first, second := newApp(t), newApp(t)
+	seedSurface(t, first, "independent", json.RawMessage(`{"id":"independent"}`))
+	collection, err := resolveCollection(second, NamespaceInterfaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := second.FindAllRecords(collection)
+	if err != nil || len(records) != 0 || first.DataDir() == second.DataDir() {
+		t.Fatalf("oracle fixtures share persistence: records=%d error=%v", len(records), err)
 	}
 }
