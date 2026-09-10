@@ -1,0 +1,876 @@
+{
+  "formatVersion": 1,
+  "methods": [
+    "history.previewRestore",
+    "history.applyRestore"
+  ],
+  "preview": {
+    "collection": "订单",
+    "itemId": "row_1",
+    "targetRevision": "revision_1",
+    "scope": "row",
+    "field": null,
+    "currentHash": "fixture-current",
+    "schemaRevision": "schema_7",
+    "scalarChanges": [
+      {
+        "field": "金额",
+        "before": 12.5,
+        "after": 7
+      }
+    ],
+    "relationChanges": [],
+    "diagnostics": [],
+    "canApply": true,
+    "restorableFields": [
+      "金额"
+    ],
+    "token": "restore-token",
+    "expiresAt": "2026-09-09T00:00:00Z"
+  },
+  "applied": {
+    "collection": "订单",
+    "itemId": "row_1",
+    "restoredToRevision": "revision_1",
+    "newRevisionId": "revision_2",
+    "item": {
+      "金额": 7
+    }
+  },
+  "cases": [
+    {
+      "name": "history.previewRestore/valid",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":\"row\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "targetRevision": "revision_1",
+          "scope": "row",
+          "field": null,
+          "currentHash": "fixture-current",
+          "schemaRevision": "schema_7",
+          "scalarChanges": [
+            {
+              "field": "金额",
+              "before": 12.5,
+              "after": 7
+            }
+          ],
+          "relationChanges": [],
+          "diagnostics": [],
+          "canApply": true,
+          "restorableFields": [
+            "金额"
+          ],
+          "token": "restore-token",
+          "expiresAt": "2026-09-09T00:00:00Z"
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/unknown",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":\"row\",\"extra\":1}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/empty-collection",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":\"row\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/null-item",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":null,\"targetRevision\":\"revision_1\",\"scope\":\"row\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/missing-item",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"targetRevision\":\"revision_1\",\"scope\":\"row\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/forbidden",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":{\"sessionSecret\":\"fixture\"},\"targetRevision\":\"revision_1\",\"scope\":\"row\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/missing-scope",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/empty-scope",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":\"\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "targetRevision": "revision_1",
+          "scope": "row",
+          "field": null,
+          "currentHash": "fixture-current",
+          "schemaRevision": "schema_7",
+          "scalarChanges": [
+            {
+              "field": "金额",
+              "before": 12.5,
+              "after": 7
+            }
+          ],
+          "relationChanges": [],
+          "diagnostics": [],
+          "canApply": true,
+          "restorableFields": [
+            "金额"
+          ],
+          "token": "restore-token",
+          "expiresAt": "2026-09-09T00:00:00Z"
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/null-scope",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":null}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/null-field",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":\"row\",\"field\":null}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "targetRevision": "revision_1",
+          "scope": "row",
+          "field": null,
+          "currentHash": "fixture-current",
+          "schemaRevision": "schema_7",
+          "scalarChanges": [
+            {
+              "field": "金额",
+              "before": 12.5,
+              "after": 7
+            }
+          ],
+          "relationChanges": [],
+          "diagnostics": [],
+          "canApply": true,
+          "restorableFields": [
+            "金额"
+          ],
+          "token": "restore-token",
+          "expiresAt": "2026-09-09T00:00:00Z"
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/empty-field",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":\"row\",\"field\":\"\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/cell",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":\"cell\",\"field\":\"金额\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "targetRevision": "revision_1",
+          "scope": "row",
+          "field": null,
+          "currentHash": "fixture-current",
+          "schemaRevision": "schema_7",
+          "scalarChanges": [
+            {
+              "field": "金额",
+              "before": 12.5,
+              "after": 7
+            }
+          ],
+          "relationChanges": [],
+          "diagnostics": [],
+          "canApply": true,
+          "restorableFields": [
+            "金额"
+          ],
+          "token": "restore-token",
+          "expiresAt": "2026-09-09T00:00:00Z"
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "cell",
+            "field": "金额"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/invalid-scope",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"targetRevision\":\"revision_1\",\"scope\":4}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.previewRestore/restore_token_unknown",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"targetRevision\": \"revision_1\", \"scope\": \"row\"}",
+      "sidecarStatus": 404,
+      "sidecarError": {
+        "code": "restore_token_unknown",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "restore_token_unknown",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/restore_token_expired",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"targetRevision\": \"revision_1\", \"scope\": \"row\"}",
+      "sidecarStatus": 410,
+      "sidecarError": {
+        "code": "restore_token_expired",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "restore_token_expired",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/restore_conflict",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"targetRevision\": \"revision_1\", \"scope\": \"row\"}",
+      "sidecarStatus": 409,
+      "sidecarError": {
+        "code": "restore_conflict",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "restore_conflict",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/schema_drift",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"targetRevision\": \"revision_1\", \"scope\": \"row\"}",
+      "sidecarStatus": 409,
+      "sidecarError": {
+        "code": "schema_drift",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "schema_drift",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.previewRestore/history.storage_failed",
+      "method": "history.previewRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"targetRevision\": \"revision_1\", \"scope\": \"row\"}",
+      "sidecarStatus": 500,
+      "sidecarError": {
+        "code": "history.storage_failed",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": true
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "history.storage_failed",
+            "path": null,
+            "details": {},
+            "retryable": true
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-preview",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "targetRevision": "revision_1",
+            "scope": "row"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.applyRestore/valid",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"token\":\"restore-token\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "result": {
+          "collection": "订单",
+          "itemId": "row_1",
+          "restoredToRevision": "revision_1",
+          "newRevisionId": "revision_2",
+          "item": {
+            "金额": 7
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-apply",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "token": "restore-token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.applyRestore/unknown",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"token\":\"restore-token\",\"extra\":1}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.applyRestore/empty-collection",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"\",\"itemId\":\"row_1\",\"token\":\"restore-token\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.applyRestore/null-item",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":null,\"token\":\"restore-token\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.applyRestore/missing-item",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"token\":\"restore-token\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.applyRestore/forbidden",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":{\"sessionSecret\":\"fixture\"},\"token\":\"restore-token\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.applyRestore/null-token",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"token\":null}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.applyRestore/empty-token",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\":\"订单\",\"itemId\":\"row_1\",\"token\":\"\"}",
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "pythonRequests": []
+    },
+    {
+      "name": "history.applyRestore/restore_token_unknown",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"token\": \"restore-token\"}",
+      "sidecarStatus": 404,
+      "sidecarError": {
+        "code": "restore_token_unknown",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "restore_token_unknown",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-apply",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "token": "restore-token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.applyRestore/restore_token_expired",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"token\": \"restore-token\"}",
+      "sidecarStatus": 410,
+      "sidecarError": {
+        "code": "restore_token_expired",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "restore_token_expired",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-apply",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "token": "restore-token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.applyRestore/restore_conflict",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"token\": \"restore-token\"}",
+      "sidecarStatus": 409,
+      "sidecarError": {
+        "code": "restore_conflict",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "restore_conflict",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-apply",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "token": "restore-token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.applyRestore/schema_drift",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"token\": \"restore-token\"}",
+      "sidecarStatus": 409,
+      "sidecarError": {
+        "code": "schema_drift",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": false
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "schema_drift",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-apply",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "token": "restore-token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history.applyRestore/history.storage_failed",
+      "method": "history.applyRestore",
+      "paramsJson": "{\"collection\": \"订单\", \"itemId\": \"row_1\", \"token\": \"restore-token\"}",
+      "sidecarStatus": 500,
+      "sidecarError": {
+        "code": "history.storage_failed",
+        "message": "history fixture error",
+        "details": {},
+        "retryable": true
+      },
+      "pythonResponse": {
+        "jsonrpc": "2.0",
+        "id": "parity",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "history fixture error",
+            "code": "history.storage_failed",
+            "path": null,
+            "details": {},
+            "retryable": true
+          }
+        }
+      },
+      "pythonRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/history/restore-apply",
+          "body": {
+            "collection": "订单",
+            "itemId": "row_1",
+            "token": "restore-token"
+          }
+        }
+      ]
+    }
+  ],
+  "producer": {
+    "commit": "9fc724786ca71f04bc551e5991a559f47d7a2c3a",
+    "route": "pythonBff",
+    "python": "3.13.12"
+  }
+}

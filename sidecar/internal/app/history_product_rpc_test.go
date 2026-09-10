@@ -238,9 +238,15 @@ func historyProductStore(t *testing.T, dataDir string) *pocketbase.PocketBase {
 	return pb
 }
 
-func historyReadProductFixture(
+func historyReadProductFixture(t *testing.T) (*workspacev2.Runtime, *auditledger.Ledger, http.Handler, string, string) {
+	runtime, ledger, mux, table, record, _ := historyRestoreProductFixture(t)
+	return runtime, ledger, mux, table, record
+}
+
+func historyRestoreProductFixture(
 	t *testing.T,
-) (*workspacev2.Runtime, *auditledger.Ledger, http.Handler, string, string) {
+	options ...audit.Option,
+) (*workspacev2.Runtime, *auditledger.Ledger, http.Handler, string, string, *pocketbase.PocketBase) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "workspace")
 	metadata := filepath.Join(root, ".vibetable")
@@ -300,7 +306,7 @@ func historyReadProductFixture(
 	}
 	t.Cleanup(func() { _ = ledger.Close() })
 	kernel := mutation.New(pb, mutation.MetadataSchemaSource{})
-	history, err := audit.New(pb, kernel, audit.WithLedgerHistory(ledger))
+	history, err := audit.New(pb, kernel, append(options, audit.WithLedgerHistory(ledger))...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,6 +367,8 @@ func historyReadProductFixture(
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(runtime),
+		historyPreviewRestoreRegistration(runtime),
+		historyApplyRestoreRegistration(runtime),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
@@ -382,7 +390,7 @@ func historyReadProductFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	return runtime, ledger, mux, table.TableID, recordID
+	return runtime, ledger, mux, table.TableID, recordID, pb
 }
 
 func productHistoryReadRequest(

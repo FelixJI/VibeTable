@@ -240,3 +240,14 @@ uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root 
 报告 `build/qa/preset-metadata/product-e2e-host-projection/20260910T032738Z/product-e2e-report.json` 的包审计及 freshness通过，四场景未预期bridge failure/pending均0、正常退出码均0、清理均通过。Gallery已证明typed冲突恢复、完整配置跨sidecar重启及公开删除；其他三场景保留原真实记录移动与新重启配置检查。
 
 该结果覆盖最新Host修复，原S19失败和升级复制/TempDir失败记录保留，不将其它整组EXIT1改写为成功。远端fresh CI、合并及合并后CI/CD仍是后续门禁。
+
+## 同步 History 恢复主干
+
+正常合入 main `a3ca78b9181a529d978f9fba46586fbb924ecada`，保留 Preset 三方法与 History 两方法。Go 独立能力清单27项、Python75项；真实cmd沿主干独立字面量列表补入三个Preset方法，Host独立列表保留双方。两生成器重生。
+
+- `uv run --frozen --no-sync python -m pytest tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/e2e/test_product_e2e_runner.py -q --no-cov`：129 passed，9.91s。
+- Go1.27 `go test ./internal/contracts/productcapabilities ./internal/productrpc ./internal/app ./cmd/vibetable-pb -run 'Test(Generated|NewRequires|Preset|HistoryRestore|SidecarWorkspaceV2HTTP)' -count=1`：前三者中policy/dispatcher PASS、cmd PASS1.826s，但app五个Preset测试因自有mux缺History新注册FAIL，整体EXIT1。失败分别为LifecycleReplayCASAndRestart、RollsBackAuditFailureAndClosesGenericWrites、KeepsLegacyProjectionAndExtensionPayload、PreservesLargeIntegersAcrossPersistenceAndReplay、RealWorkspaceGateReplaysAndRejectsChangedRequests，错误均为严格注册清单不匹配。
+- 仅向自有fixture补入 History preview/apply 两项后，`go test ./internal/app -run 'Test(Preset|HistoryRestore)' -count=1`：PASS4.478s；未放宽注册门禁或修改生产逻辑。
+- .NET Release实际五类 ProductRpcCapabilityManifestTests、ProductDataSidecarRoutingTests、JsonRpcProductDataGatewayTests、ProductRpcErrorMapperTests、ProductDataRpcRegistryTests：71 passed；TRX `build/test-results/preset-history-main/preset-history-main.trx`。
+
+旧sourcec673完整构建及四场景51断言仅代表旧组合；新head的fresh CI仍待完成。历史完整Python失败和旧S19失败保留原结论，本次定向测试不代替完整资格。
