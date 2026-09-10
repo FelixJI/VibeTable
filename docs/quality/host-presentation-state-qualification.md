@@ -53,3 +53,12 @@
 
 ## Host composition 与路由接入
 MainWindow以可信_productDataRoot/grid-presentation构造状态服务，HostRequestDispatcher将gridState.get/save交给新的scope控制器。WebMessageRouter显式允许两个名字，并要求wpfHost/workspace/rendererPublic capability及真实workspace scope；DeviceSettings的global规则保持原样。新真实router回归旧6 FAIL（UNKNOWN_TYPE），接线后router+controller+store相邻62 PASS/139ms，日志router-red.log/router-green.log。默认生成owner仍为旧Python，尚未切换；显式policy测试证明新路由边界，不能写生产默认renderer已可用。下一步必须同步inventory/policy/catalog、退出Python注册和旧saveRequested链，并接真正Web读写恢复。
+
+## 正式 owner 切换与递归状态（当前未提交整合）
+Python 不再注册 gridState.get/save；inventory、capability policy 和脚本生成 catalog 已切为 wpfHost/workspace。新 Host DTO 使用递归 FilterExpression、最多三层 group/50 条叶条件，保留大整数；PresetId/Revision 必须同时为空或同时有效，供 Web 判断本机覆盖是否仍属于当前共享基线。原 Python DTO、21 项服务测试和固定 producer 文件均保留。
+
+当前 MainWindow/dispatcher 已直接接 HostGridStateStore。旧 gridState.saveRequested 已从 renderer 白名单退出：真实回归先 FAIL（请求仍被分发），关闭后拒绝 UNKNOWN_TYPE 且不调用 dispatcher。内部历史 coordinator/gateway 方法及其测试暂留，生产新路由不经过它们；这不代表死代码清理或 L6 全部完成。
+
+本次验证：Python owner/oracle/product contracts 31 PASS；Ruff PASS，Pyright 0 errors。递归状态与 Preset 绑定先真实丢失 RED，修复后相关 Host 测试通过。solution --no-restore 命令中 Host 55 项通过，但整体 EXIT1（未还原的 OpenXml.Tests 缺 project.assets.json），不计完整 solution 通过。精确运行已还原的 Desktop.Tests 项目、筛选 GridPresentation/HostGridStateStore/WebMessageRouter 后 68 PASS，EXIT0（owner-routing-project-green.log）。较早四层拒绝用例误构造为合法三层，已修正测试输入为实际四层而不改变生产预算。
+
+Web 作者正在同一分支接统一 Preset/schema/Host 恢复序列、实际网格事件、串行 CAS 与跨 epoch 废弃；当前 104 项聚焦测试通过，完整 Web/typecheck、独立双轴、新包及真实重开场景尚待完成。不得据此写整个 PR 验收通过。

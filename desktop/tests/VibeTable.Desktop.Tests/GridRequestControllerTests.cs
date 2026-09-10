@@ -165,7 +165,7 @@ public sealed class GridRequestControllerTests
         var saved = gateway.SavedGridStates.Single();
         IReadOnlyList<ColumnState> columns = saved.State.Columns!;
         IReadOnlyList<SortCondition> sorts = saved.State.Sorts!;
-        IReadOnlyList<FilterCondition> filters = saved.State.Filters!;
+        IReadOnlyList<FilterExpression> filters = saved.State.Filters!;
         Assert.AreEqual("database-1", saved.DatabaseId);
         Assert.AreEqual("records", saved.Table);
         Assert.AreEqual("title", columns.Single().Name);

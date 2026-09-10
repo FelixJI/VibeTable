@@ -22,8 +22,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "formula.draft.validate",
         "formula.preview",
         "formula.validate",
-        "gridState.get",
-        "gridState.save",
         "insights.dashboardQueryLimits",
         "insights.deleteDashboardWorkspace",
         "insights.executeDashboardQuery",
@@ -113,6 +111,8 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "schema.list",
     ),
     "wpfHost": (
+        "gridState.get",
+        "gridState.save",
         "settings.readDevice",
         "settings.saveDevice",
     ),

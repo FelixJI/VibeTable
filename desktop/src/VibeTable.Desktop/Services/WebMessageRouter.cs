@@ -48,7 +48,7 @@ public sealed class WebMessageRouter
     /// The Phase A + B1 + B3 web request types (verbatim from
     /// <c>desktop/web-grid/src/contracts.ts</c>). B3 adds
     /// <c>table.queryRequested</c> (debounced remote query) and
-    /// <c>gridState.saveRequested</c> (debounced state save).
+    /// <c>gridState.get</c> / <c>gridState.save</c> (Host-owned presentation).
     /// </summary>
     private static readonly HashSet<string> WebRequestWhitelist = new(StringComparer.Ordinal)
     {
@@ -63,7 +63,6 @@ public sealed class WebMessageRouter
         "table.deleteRowsRequested",
         // B3 query + state requests.
         "table.queryRequested",
-        "gridState.saveRequested",
         "gridState.get",
         "gridState.save",
         // B2 paste preview + apply requests.

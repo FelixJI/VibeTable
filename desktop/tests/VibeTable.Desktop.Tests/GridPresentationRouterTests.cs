@@ -8,6 +8,16 @@ namespace VibeTable.Desktop.Tests;
 public sealed class GridPresentationRouterTests
 {
     [TestMethod]
+    public void RetiredPythonSaveNotificationCannotReachDispatcher()
+    {
+        List<RoutedWebRequest> requests = [];
+        var router = new WebMessageRouter(requests.Add) { IsReady = true };
+        var reply = router.Route("""{"type":"gridState.saveRequested","requestId":"legacy","payload":{"state":{}}}""");
+        Assert.AreEqual("UNKNOWN_TYPE", reply?.Payload?.Code);
+        Assert.HasCount(0, requests);
+    }
+
+    [TestMethod]
     [DataRow("gridState.get")]
     [DataRow("gridState.save")]
     public void HostGridRouteRequiresWorkspaceScopeAndPreservesIt(string method)

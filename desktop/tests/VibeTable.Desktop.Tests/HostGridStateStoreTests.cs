@@ -8,6 +8,48 @@ namespace VibeTable.Desktop.Tests;
 public sealed class HostGridStateStoreTests
 {
     [TestMethod]
+    [DataRow("{\"presetId\":\"preset-orders\"}")]
+    [DataRow("{\"sorts\":[{\"field\":\"amount\",\"direction\":\"sideways\"}]}")]
+    [DataRow("{\"filters\":[{\"field\":\"amount\",\"operator\":\"eq\",\"filters\":[{\"field\":\"title\",\"operator\":\"eq\"}]}]}")]
+    [DataRow("{\"filters\":[{\"filters\":[{\"filters\":[{\"filters\":[{\"filters\":[{\"field\":\"title\",\"operator\":\"eq\"}]}]}]}]}]}")]
+    public async Task InvalidPresetOrQueryTreeDoesNotReplaceConfirmedState(string json)
+    {
+        using var fixture = new Fixture();
+        var store = new HostGridStateStore(fixture.Root);
+        Guid workspace = Guid.NewGuid();
+        var before = await store.ReadAsync(workspace, "orders", CancellationToken.None);
+        var state = JsonSerializer.Deserialize<GridState>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        await Assert.ThrowsAsync<ArgumentException>(() => store.SaveAsync(workspace, "orders", state,
+            before.Revision, () => { }, CancellationToken.None));
+        var after = await store.ReadAsync(workspace, "orders", CancellationToken.None);
+        Assert.AreEqual(before.Revision, after.Revision);
+    }
+    [TestMethod]
+    public async Task RecursiveFiltersAndPresetBindingSurviveReopen()
+    {
+        using var fixture = new Fixture();
+        var store = new HostGridStateStore(fixture.Root);
+        Guid workspace = Guid.NewGuid();
+        var initial = await store.ReadAsync(workspace, "orders", CancellationToken.None);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var state = JsonSerializer.Deserialize<GridState>("""
+            {"filters":[{"groupLogic":"OR","filters":[
+                {"field":"amount","operator":"eq","value":9007199254740993},
+                {"groupLogic":"AND","filters":[{"field":"title","operator":"contains","value":"订单"}]}
+            ]}],"presetId":"preset-orders","presetRevision":"revision-1"}
+            """, options)!;
+        await store.SaveAsync(workspace, "orders", state, initial.Revision, () => { }, CancellationToken.None);
+        var reopened = await new HostGridStateStore(fixture.Root).ReadAsync(workspace, "orders", CancellationToken.None);
+        var wire = JsonSerializer.SerializeToElement(reopened.State, options);
+        Assert.IsTrue(wire.TryGetProperty("presetId", out var preset));
+        Assert.AreEqual("preset-orders", preset.GetString());
+        Assert.AreEqual("revision-1", wire.GetProperty("presetRevision").GetString());
+        var group = wire.GetProperty("filters")[0];
+        Assert.AreEqual("OR", group.GetProperty("groupLogic").GetString());
+        Assert.AreEqual(9007199254740993L, group.GetProperty("filters")[0].GetProperty("value").GetInt64());
+        Assert.AreEqual("AND", group.GetProperty("filters")[1].GetProperty("groupLogic").GetString());
+    }
+    [TestMethod]
     public async Task ReopenKeepsCompleteStateAndRejectsStaleRevision()
     {
         using var fixture = new Fixture();

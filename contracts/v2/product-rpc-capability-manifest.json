@@ -147,18 +147,18 @@
     },
     {
       "method": "gridState.get",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "grid.state",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
       "method": "gridState.save",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "grid.state",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {

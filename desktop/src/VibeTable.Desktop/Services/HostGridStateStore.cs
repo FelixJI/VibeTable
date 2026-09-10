@@ -93,9 +93,21 @@ internal sealed class HostGridStateStore(string stateDirectory)
 
     private static void Validate(GridState state)
     {
-        if (state.Columns?.Count > 512 || state.Sorts?.Count > 16 || state.Filters?.Count > 64
+        if (state.Columns?.Count > 512 || state.Sorts?.Count > 16 || state.Filters?.Count > 50
             || state.Keyword?.EnumerateRunes().Count() > 256 || state.Density is not ("compact" or "comfortable" or "cozy"))
             throw new ArgumentException("Grid-state bounds are invalid.", nameof(state));
+        if ((state.PresetId is null) != (state.PresetRevision is null)
+            || state.PresetId is { } preset && (preset.Length == 0 || preset.EnumerateRunes().Count() > 128)
+            || state.PresetRevision is { } version && (version.Length == 0 || version.EnumerateRunes().Count() > 256))
+            throw new ArgumentException("Grid preset binding is invalid.", nameof(state));
+        foreach (SortCondition sort in state.Sorts ?? [])
+        {
+            if (sort is null || string.IsNullOrEmpty(sort.Field) || sort.Field.EnumerateRunes().Count() > 128
+                || sort.Direction is not ("asc" or "desc"))
+                throw new ArgumentException("Grid sort is invalid.", nameof(state));
+        }
+        int conditions = 0;
+        foreach (FilterExpression filter in state.Filters ?? []) ValidateFilter(filter, 0, ref conditions);
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (ColumnState column in state.Columns ?? [])
         {
@@ -104,4 +116,23 @@ internal sealed class HostGridStateStore(string stateDirectory)
                 throw new ArgumentException("Grid column layout is invalid.", nameof(state));
         }
     }
-}
+
+    private static void ValidateFilter(FilterExpression filter, int depth, ref int conditions)
+    {
+        if (filter is null || filter.Logic is not (null or "AND" or "OR"))
+            throw new ArgumentException("Grid filter is invalid.");
+        if (filter.Filters is { } children)
+        {
+            if (depth >= 3 || children.Count is < 1 or > 50
+                || filter.Field is not null || filter.Operator is not null || filter.Value is not null
+                || filter.GroupLogic is not (null or "AND" or "OR"))
+                throw new ArgumentException("Grid filter group is invalid.");
+            foreach (FilterExpression child in children) ValidateFilter(child, depth + 1, ref conditions);
+            return;
+        }
+        if (++conditions > 50 || filter.GroupLogic is not null || string.IsNullOrEmpty(filter.Field)
+            || filter.Field.EnumerateRunes().Count() > 128
+            || filter.Operator is not ("contains" or "eq" or "ne" or "starts_with" or "ends_with"
+                or "gt" or "lt" or "gte" or "lte" or "between" or "in" or "is_null" or "is_not_null" or "regex"))
+            throw new ArgumentException("Grid filter condition is invalid.");
+    }}

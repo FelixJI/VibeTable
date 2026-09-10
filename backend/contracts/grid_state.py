@@ -2,11 +2,9 @@
 state (column widths, order, visibility, frozen columns, sort/filter/search,
 density and forced-remote preference).
 
-Grid state is stored through Python in the **local user-state database**
-(``%LOCALAPPDATA%/VibeTable/state/vibetable-state.db``), never in the business SQLite
-database and never solely in WebView localStorage. This keeps state durable
-across restarts and shareable across hosts, while leaving the business schema
-untouched.
+Production presentation state is owned by the WPF Host and scoped by workspace
+UUID and table. HostGridState models describe that boundary. The legacy Python
+models remain solely for historical service tests and the fixed producer oracle.
 
 Wire conventions
 ----------------
@@ -30,8 +28,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
+
+from backend.contracts.query import FilterExpression, SortCondition, TableQuery
 
 
 def _camel_config() -> ConfigDict:
@@ -143,3 +143,45 @@ class GridStateResult(CamelModel):
     state: GridState
     revision: str
     conflict: bool = False
+
+
+class HostGridState(CamelModel):
+    """Device presentation overlay; the shared preset remains the baseline authority."""
+
+    columns: list[ColumnState] = Field(default_factory=list, max_length=512)
+    sorts: list[SortCondition] = Field(default_factory=list, max_length=16)
+    filters: list[FilterExpression] = Field(default_factory=list, max_length=50)
+    keyword: str | None = Field(default=None, max_length=256)
+    density: Literal["compact", "comfortable", "cozy"] = "comfortable"
+    forced_remote: bool = False
+    revision: str | None = None
+    preset_id: str | None = Field(default=None, min_length=1, max_length=128)
+    preset_revision: str | None = Field(default=None, min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_presentation(self) -> HostGridState:
+        if (self.preset_id is None) != (self.preset_revision is None):
+            raise ValueError("preset identity and revision must be supplied together")
+        TableQuery(filters=self.filters, sorts=self.sorts, keyword=self.keyword)
+        return self
+
+
+class HostGridStateResult(CamelModel):
+    """Host-confirmed state and CAS outcome, never a Python-owned record."""
+
+    state: HostGridState
+    revision: str
+    conflict: bool = False
+
+
+class HostGridStateGetParams(CamelModel):
+    """Host-owned request; workspace identity comes from the trusted wire scope."""
+
+    table: str = Field(min_length=1, max_length=128)
+
+
+class HostGridStateSaveParams(HostGridStateGetParams):
+    """Complete presentation update with an explicitly supplied CAS revision."""
+
+    state: HostGridState
+    revision: str | None = Field(...)
