@@ -615,7 +615,7 @@ public partial class MainWindow : Window
         _dispatcher.SetProductDataGateway(_productGateway);
 
         _dispatcher.SetDashboardGateway(
-            new JsonRpcDashboardGateway(client),
+            new JsonRpcDashboardGateway(_productGateway),
             _session.Token);
         _dispatcher.SetSurfaceGateway(new JsonRpcSurfaceGateway(client));
 

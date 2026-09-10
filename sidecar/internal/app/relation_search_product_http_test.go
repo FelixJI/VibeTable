@@ -60,7 +60,14 @@ func relationSearchHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
-		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
+		unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
+		unrelatedDashboardRegistration(t, "insights.listDashboards"),
+		unrelatedDashboardRegistration(t, "insights.panelManifest"),
+		unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {

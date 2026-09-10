@@ -46,6 +46,13 @@ func queryViewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 		queryViewRegistration(port), lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}), queryPageRegistration(unrelatedPageForViewMustNotRun{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
+		unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
+		unrelatedDashboardRegistration(t, "insights.listDashboards"),
+		unrelatedDashboardRegistration(t, "insights.panelManifest"),
+		unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))

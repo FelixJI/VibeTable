@@ -528,7 +528,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	response.Body.Close()
 	expectedProductMethods := []string{
 		"events.reconcile", "field.settings.describe", "file.list",
-		"history.applyRestore", "history.previewRestore", "history.read",
+		"history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft",
 		"lookup.list", "lookup.query", "lookup.valuePage",
 		"mutation.apply", "mutation.preview",
 		"query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows",

@@ -53,6 +53,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
+		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
+		}
 		var body metadataUpsertBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -81,6 +84,9 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
+		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
+		}
 		var body metadataDeleteBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -105,25 +111,8 @@ func registerMetadataRoutes(
 		}
 		return request.JSON(http.StatusOK, receipt)
 	})
-	r.POST("/api/vibetable/v1/metadata/dashboards/commit", func(
-		request *core.RequestEvent,
-	) error {
-		var body metadata.DashboardCommitRequest
-		if err := decodeMetadataBody(
-			request.Request.Body, &body,
-		); err != nil {
-			return writeMetadataError(request, err)
-		}
-		receipt, err := commitDashboardWithGate(
-			request.Request.Context(),
-			body,
-			gates,
-			service.CommitDashboard,
-		)
-		if err != nil {
-			return writeMetadataError(request, err)
-		}
-		return request.JSON(http.StatusOK, receipt)
+	r.POST("/api/vibetable/v1/metadata/dashboards/commit", func(request *core.RequestEvent) error {
+		return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
 	})
 }
 

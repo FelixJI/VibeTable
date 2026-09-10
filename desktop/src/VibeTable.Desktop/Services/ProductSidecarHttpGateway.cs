@@ -177,7 +177,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
                 .ConfigureAwait(false);
             try
             {
-                return ParseResponse(raw, requestId, wire);
+                return ParseResponse(raw, requestId, wire, method);
             }
             catch (JsonException)
             {
@@ -398,7 +398,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
     private static ProductSidecarForwardResult ParseResponse(
         byte[] raw,
         string requestId,
-        JsonElement requestWire)
+        JsonElement requestWire, string method)
     {
         using JsonDocument document = JsonDocument.Parse(raw);
         JsonElement root = document.RootElement;
@@ -423,11 +423,11 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             throw InvalidResponse();
         if (hasResult)
             return new ProductSidecarSuccess(wire.Clone(), result.Clone());
-        ProductSidecarRpcError parsedError = ParseError(error);
+        ProductSidecarRpcError parsedError = ParseError(error, method);
         return new ProductSidecarFailure(wire.Clone(), parsedError);
     }
 
-    private static ProductSidecarRpcError ParseError(JsonElement error)
+    private static ProductSidecarRpcError ParseError(JsonElement error, string method)
     {
         JsonElement data = default;
         bool hasData = error.ValueKind == JsonValueKind.Object
@@ -443,17 +443,39 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || string.IsNullOrWhiteSpace(messageElement.GetString()))
             throw InvalidResponse();
         string message = messageElement.GetString()!;
-        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150)
+        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32080)
             || (code == -32150 && !hasData))
             throw InvalidResponse();
         if (code == -32150)
             ValidateProductErrorData(data);
+        if (code == -32080 && !IsValidDashboardErrorData(method, message, data))
+            throw InvalidResponse();
         return new ProductSidecarRpcError(
             code,
             message,
             hasData ? data.Clone() : null);
     }
 
+    internal static bool IsValidDashboardErrorData(string method, string message, JsonElement data)
+    {
+        if (method is not ("insights.listDashboards" or "insights.readDashboardWorkspace"
+            or "insights.saveDashboardDraft" or "insights.deleteDashboardWorkspace"
+            or "insights.executeDashboardQuery" or "insights.dashboardQueryLimits"
+            or "insights.panelManifest") || message != "Insights error"
+            || data.ValueKind != JsonValueKind.Object)
+            return false;
+        bool field = data.TryGetProperty("field", out JsonElement path);
+        return HasExactProperties(data, field ? ["kind", "message", "code", "field"] : ["kind", "message", "code"])
+            && data.GetProperty("kind").ValueKind == JsonValueKind.String
+            && data.GetProperty("kind").GetString() == "insights_error"
+            && IsNonEmptyString(data.GetProperty("message"))
+            && data.GetProperty("code").ValueKind == JsonValueKind.String
+            && data.GetProperty("code").GetString() is ("dashboard_not_found" or "dashboard_edit_conflict"
+                or "dashboard_panel_type_unknown" or "dashboard_panel_size_invalid" or "dashboard_panel_options_invalid"
+                or "dashboard_manifest_invalid" or "dashboard_panel_membership_invalid" or "dashboard_storage_invalid"
+                or "dashboard_persistence_failed" or "dashboard_idempotency_conflict" or "dashboard_query_invalid")
+            && (!field || IsNonEmptyString(path));
+    }
     private static void ValidateProductErrorData(JsonElement data)
     {
         if (!HasExactProperties(

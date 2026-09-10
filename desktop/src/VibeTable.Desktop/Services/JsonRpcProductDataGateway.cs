@@ -132,6 +132,18 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway
             ?? _client.InvokeAsync<JsonElement, JsonElement>(method, parameters, token);
     }
 
+    internal Task<TResult> InvokeDashboardAsync<TParams, TResult>(
+        string method, TParams parameters, CancellationToken token)
+        where TParams : notnull
+        where TResult : notnull
+    {
+        if (method is not ("insights.listDashboards" or "insights.readDashboardWorkspace"
+            or "insights.saveDashboardDraft" or "insights.deleteDashboardWorkspace"
+            or "insights.executeDashboardQuery" or "insights.dashboardQueryLimits"
+            or "insights.panelManifest"))
+            throw new ArgumentException("Unknown Dashboard method.", nameof(method));
+        return InvokeStrict<TParams, TResult>(method, parameters, token);
+    }
     private async Task<TResult> InvokeStrict<TParams, TResult>(
         string method,
         TParams parameters,

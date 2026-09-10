@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { isDeepStrictEqual } from "node:util";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
@@ -6050,6 +6051,62 @@ async function scenario16(page, recorder, _network, runtime) {
     path: path.join(runtime.evidenceDir, "16-dashboard-lifecycle.png"),
     fullPage: true,
   });
+  const committedDashboard = await rawBridgeRequest(page, "dashboard.readRequested", {
+    dashboardId,
+  }, 20_000, ["dashboard.loaded"]);
+  await page.getByTestId("nav-tables").click();
+  const dashboardTableName = page.getByTestId("sidebar-table-name")
+    .filter({ hasText: "E2E Dashboard Data" });
+  await dashboardTableName.locator("xpath=ancestor::button").click();
+  const beforeRestartData = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const quiet = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("Dashboard restart begins from a quiescent bridge",
+    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
+  const recoveryOwner = `dashboard-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
+    ownerToken: recoveryOwner, tableId: seeded.tableId,
+  });
+  let recoveryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify Dashboard aggregate and records survive sidecar restart");
+    recorder.check("Dashboard restart terminates only the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(page, "E2E Dashboard Data", seeded.tableId, 2, 60_000, recoveryOwner);
+  } catch (error) {
+    recoveryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(recoveryError, cleanupError, "Dashboard recovery window cleanup also failed")) {
+        throw cleanupError;
+      }
+    }
+  }
+  const afterRestartData = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("Dashboard source records survive sidecar restart unchanged",
+    beforeRestartData.payload?.rows?.length === 2
+      && isDeepStrictEqual(afterRestartData.payload?.rows, beforeRestartData.payload.rows),
+    { beforeRestartData, afterRestartData });
+  await page.getByTestId("nav-dashboard").click();
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  const freshList = await rawBridgeRequest(page, "dashboard.listRequested", {}, 20_000, ["dashboard.listLoaded"]);
+  recorder.check("fresh public Dashboard list retains the committed aggregate after restart",
+    freshList.payload?.dashboards?.some(item => item.id === dashboardId), { freshList });
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await persisted.click();
+  const freshWorkspace = await rawBridgeRequest(page, "dashboard.readRequested", {
+    dashboardId,
+  }, 20_000, ["dashboard.loaded"]);
+  recorder.check("fresh Dashboard workspace preserves complete panels, bindings, config and revision",
+    isDeepStrictEqual(freshWorkspace.payload, committedDashboard.payload),
+    { committedDashboard, freshWorkspace });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "16-dashboard-restarted.png"), fullPage: true });
 }
 
 async function scenario17(page, recorder, _network, runtime) {
