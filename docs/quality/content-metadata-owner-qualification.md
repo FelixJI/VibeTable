@@ -202,3 +202,15 @@ receipt 写入，其他 callback/事务错误不被吞掉。公共 Runtime/coord
 - .NET Release：ProductRpcCapabilityManifestTests 5 passed；ProductDataSidecarRoutingTests、JsonRpcProductDataGatewayTests、ProductRpcErrorMapperTests、ProductDataRpcRegistryTests共70 passed。TRX在 `build/test-results/content-history-main/`。首个过滤另含两个不存在的类，仅报告实际5项，不作为其它路由测试证据。
 
 旧source6f1164的完整构建/S18仍仅代表该旧组合；此合并交界定向验证不替代最新head的fresh CI。所有历史失败保持原结论。
+
+## CodeQL 存储快照 JSON 边界修复
+
+在 source `3df9c5e84e9df2b5fb95e54dd5d19999b823632a` 的 CodeQL check `102738495356` 中，`profileSnapshot` / `linkSnapshot` 的两处 `Potentially unsafe quoting` 指向把存储 payload 直接拼入 JSON 请求外壳。相邻快照 seam 回归确认实际错误接受：独立非法的 `合法对象,"expectedRevision":"injected"` 或 `合法对象,"idempotencyKey":"injected"` 片段在拼接后成为合法 JSON；重复外层键被解码合并，快照错误地返回成功。
+
+两个快照现共用仅内部 `decodeStoredContent`，通过 `json.Marshal` 将 `json.RawMessage` payload 编码为单一属性值，再调用原 `DecodeContentParams` 封闭 DTO 解码；编码或解码失败均沿原路径转为 `content_model.storage_invalid`。不修改公共解码器、合法投影、revision 或冻结 oracle JSON，不 ignore 告警。回归同时保留合法引号/反斜杠内容和 revision 全值，并检查非法外层字段片段、未闭合字符串、null、数组及缺失字段对象的拒绝。
+
+- RED：在原生产实现上运行 `go test ./internal/metadata -run '^TestContentStoredSnapshotsKeepPayloadInsideOneJSONValue$' -count=1`，EXIT 1、0.783s；profile/link 各两项非法独立 payload 被错误接受，共四项断言失败。日志 `build/content-json-wrapper-red.log`。
+- GREEN：修复后 `go test ./internal/metadata -run '^TestContent' -count=1`，EXIT 0、3.855s；包含新增回归、原冻结 Python corpus、CAS/回滚与重放等 Content 相邻测试。日志 `build/content-json-wrapper-green.log`。
+- `go vet ./internal/metadata` EXIT 0，日志 `build/content-json-wrapper-vet.log`；改动 Go 文件已 gofmt。
+
+本次未运行发布构建、GUI/E2E、完整 suite 或远端 CodeQL 复验；本地回归通过不代表告警已由远端确认关闭。生产修改后的包验证与 fresh CI 由独立双轴审查后安排，旧完整构建和 S18 证据仅覆盖其原 source，历史失败记录保留。

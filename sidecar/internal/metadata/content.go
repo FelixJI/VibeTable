@@ -343,15 +343,26 @@ func (service *ContentService) validateProfile(ctx context.Context, tx core.App,
 	return nil
 }
 
+func decodeStoredContent(method, field string, payload json.RawMessage) (any, error) {
+	request, err := json.Marshal(map[string]any{
+		field:              payload,
+		"expectedRevision": nil,
+		"idempotencyKey":   "read",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return DecodeContentParams(method, request)
+}
 func profileSnapshot(item Item) (workbench.ContentProfileSnapshot, error) {
-	value, err := DecodeContentParams("contentProfile.commit", json.RawMessage(`{"profile":`+string(item.Payload)+`,"expectedRevision":null,"idempotencyKey":"read"}`))
+	value, err := decodeStoredContent("contentProfile.commit", "profile", item.Payload)
 	if err != nil {
 		return workbench.ContentProfileSnapshot{}, contentError("content_model.storage_invalid", "Stored profile is invalid.")
 	}
 	return workbench.ContentProfileSnapshot{Profile: value.(workbench.ContentProfileCommitRequest).Profile, Revision: item.Revision}, nil
 }
 func linkSnapshot(item Item) (workbench.RecordDocumentLinkSnapshot, error) {
-	value, err := DecodeContentParams("recordDocumentLink.commit", json.RawMessage(`{"link":`+string(item.Payload)+`,"expectedRevision":null,"idempotencyKey":"read"}`))
+	value, err := decodeStoredContent("recordDocumentLink.commit", "link", item.Payload)
 	if err != nil {
 		return workbench.RecordDocumentLinkSnapshot{}, contentError("content_model.storage_invalid", "Stored link is invalid.")
 	}
