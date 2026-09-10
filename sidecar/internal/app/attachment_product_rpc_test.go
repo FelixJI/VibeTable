@@ -332,6 +332,8 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 		unrelatedContentRegistration(t, "recordDocumentLink.delete"),
 		unrelatedContentRegistration(t, "recordDocumentLink.list"),
 		unrelatedContentRegistration(t, "recordDocumentLink.repair"),
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		productrpc.ReconcileRegistration(schemaapi.New(app)),
 		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(app, nil, nil)),

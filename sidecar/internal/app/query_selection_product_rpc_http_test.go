@@ -50,6 +50,8 @@ func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port inter
 		unrelatedContentRegistration(t, "recordDocumentLink.delete"),
 		unrelatedContentRegistration(t, "recordDocumentLink.list"),
 		unrelatedContentRegistration(t, "recordDocumentLink.repair"), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		querySelectionOpenRegistration(port), queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),

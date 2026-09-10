@@ -440,6 +440,8 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				contentMetadataRegistration("recordDocumentLink.commit", contentMetadata, businessGate, idempotentBusinessGate),
 				contentMetadataRegistration("recordDocumentLink.repair", contentMetadata, businessGate, idempotentBusinessGate),
 				contentMetadataRegistration("recordDocumentLink.delete", contentMetadata, businessGate, idempotentBusinessGate),
+				mutationPreviewRegistration(mutationKernel),
+				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),
 				productrpc.ReconcileRegistration(schemaCatalog),
 				lookupListRegistration(relationService),

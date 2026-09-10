@@ -45,6 +45,8 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 		unrelatedContentRegistration(t, "recordDocumentLink.delete"),
 		unrelatedContentRegistration(t, "recordDocumentLink.list"),
 		unrelatedContentRegistration(t, "recordDocumentLink.repair"), registration, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}), registration, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),

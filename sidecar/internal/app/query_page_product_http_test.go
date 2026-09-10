@@ -37,6 +37,8 @@ func queryPageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration prod
 		unrelatedContentRegistration(t, "recordDocumentLink.delete"),
 		unrelatedContentRegistration(t, "recordDocumentLink.list"),
 		unrelatedContentRegistration(t, "recordDocumentLink.repair"), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		unrelatedRelationInspectRegistration(t),

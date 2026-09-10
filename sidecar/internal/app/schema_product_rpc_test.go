@@ -679,6 +679,8 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		contentMetadataRegistration("recordDocumentLink.commit", contentMetadata),
 		contentMetadataRegistration("recordDocumentLink.repair", contentMetadata),
 		contentMetadataRegistration("recordDocumentLink.delete", contentMetadata),
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		productrpc.ReconcileRegistration(catalog),
 		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),

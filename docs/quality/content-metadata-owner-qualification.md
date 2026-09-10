@@ -81,3 +81,25 @@ run `20260909T150507Z` / session 41605 EXIT0：1/1 PASS，21 项断言，19.554s
 该测试使用构建已完成组件与 manifest 的原 staging，未换组件、未运行旧 ee27 包、未跳过
 产品 runner 的 freshness。它证明 Host 错误投影修复在真实包中有效；自更新 smoke 的
 原构建失败仍未解决，不能把此局部成功改写成完整发布构建成功。
+## 同步 Mutation 主干后的边界
+
+本分支正常合并 main `146a9c2cac5998ee013daebc78eedff0bd4a7ca5`。生产与测试
+注册均保留 Content 七方法和 Mutation 两方法；生成映射由
+`uv run --frozen --no-sync python contracts/v2/product_rpc_capability_policy.py` 更新。
+独立清单现为 Go 29 方法、Python 73 方法，未按生成结果动态削弱预期。
+
+合并验证：`uv run --frozen --no-sync python -m pytest tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_workspace_rpc_capability_manifest.py -q --no-cov`
+为 32 passed（1.09s）；sidecar 目录使用既有 Go 1.27.0 执行
+`go test ./cmd/vibetable-pb -run TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart -count=1`
+通过（1.691s），真实进程严格核对29个方法和 registration scope。
+
+`go test ./internal/productrpc ./internal/contracts/productcapabilities ./internal/app -run 'TestContent|TestRecordDocument|TestMutation|TestNew|TestCapabilities|TestGenerated' -count=1`
+整体退出1：productrpc 与 productcapabilities 通过，app 中
+`TestMutationProductHTTPPreviewApplyAndIdempotentReplay` 在 TempDir 清理 snapshots 时
+报告目录非空。没有业务断言失败，不等于整个命令通过；不加入重试或忽略失败。
+日志为 `build/content-main-merge-python.log`、`build/content-main-merge-process.log` 与
+`build/content-main-merge-go.log`。
+
+主干同步改变 runtime，先前 e8af staging 的 S18 功能通过不能覆盖此次源码。
+原完整构建的自更新 smoke 失败、原 staging 和相关证据均保留；本次未重新构建，
+尚未取得最终包与完整远端 CI 资格。
