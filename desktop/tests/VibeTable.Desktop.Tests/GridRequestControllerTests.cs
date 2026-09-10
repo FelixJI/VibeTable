@@ -129,16 +129,19 @@ public sealed class GridRequestControllerTests
             100,
             0,
             "remote");
-        var coordinator = new GridStateCoordinator(gateway, _ => { });
+        var time = new ManualTimeProvider();
+        var coordinator = new GridStateCoordinator(gateway, _ => { }, time);
         coordinator.SetDatabase("database-1");
         var controller = new GridRequestController(coordinator, new FakeWebReplySink());
         using var query = JsonDocument.Parse(
             """{"table":"records","query":{"filters":[]}}""");
-        await controller.DispatchAsync(new RoutedWebRequest(
+        Task queryRequest = controller.DispatchAsync(new RoutedWebRequest(
             "table.queryRequested",
             "query-1",
             query.RootElement.Clone(),
             string.Empty));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await queryRequest.WaitAsync(TimeSpan.FromSeconds(2));
         using var save = JsonDocument.Parse("""
             {
               "state": {
@@ -160,7 +163,7 @@ public sealed class GridRequestControllerTests
             "save-1",
             save.RootElement.Clone(),
             string.Empty));
-        await Task.Delay(GridStateCoordinator.SaveDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.SaveDebounceMs));
 
         var saved = gateway.SavedGridStates.Single();
         IReadOnlyList<ColumnState> columns = saved.State.Columns!;
