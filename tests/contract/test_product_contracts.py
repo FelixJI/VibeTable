@@ -428,6 +428,17 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
     registered.update(PRODUCT_RPC_REGISTRY)
     registered.update(current_owner_methods("goSidecar"))
     registered.update(current_owner_methods("wpfHost"))
+    registered.update(
+        {
+            "contentProfile.load",
+            "contentProfile.commit",
+            "contentProfile.delete",
+            "recordDocumentLink.list",
+            "recordDocumentLink.commit",
+            "recordDocumentLink.repair",
+            "recordDocumentLink.delete",
+        }
+    )
 
     catalog = _load(FIXTURES / "product-rpc-catalog.json")
     workspace_catalog_methods = {

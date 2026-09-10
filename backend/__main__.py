@@ -20,14 +20,12 @@ from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMeta
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.content_model_service import ContentModelService
 from backend.application.grid_state_service import GridStateService
 from backend.application.insights_service import InsightsService
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
 from backend.application.product_rpc import ProductRpc
-from backend.application.revisioned_metadata_port import RevisionedMetadataTransportAdapter
 from backend.application.settings_command_service import SettingsCommandService
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
@@ -36,20 +34,6 @@ from backend.contracts.data_io import (
     ExportParams,
     GenerateTemplateParams,
     PreviewImportParams,
-)
-from backend.contracts.generated_workbench import (
-    ContentProfileCommitRequest,
-    ContentProfileDeleteRequest,
-    ContentProfileDeleteResult,
-    ContentProfileLoadRequest,
-    ContentProfileSnapshot,
-    RecordDocumentLinkCommitRequest,
-    RecordDocumentLinkDeleteRequest,
-    RecordDocumentLinkDeleteResult,
-    RecordDocumentLinkListRequest,
-    RecordDocumentLinkListResult,
-    RecordDocumentLinkRepairRequest,
-    RecordDocumentLinkSnapshot,
 )
 from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
@@ -182,48 +166,6 @@ def _register_pocketbase_product_methods(
     register_product_rpc_errors()
     for method, params_model in PYTHON_PRODUCT_RPC_REGISTRY.items():
         dispatcher.register(method, partial(service.invoke, method), params_model)
-
-
-def _register_content_model_methods(
-    dispatcher: RpcDispatcher,
-    service: ContentModelService,
-) -> None:
-    register_application_errors(ErrorDomain.CONTENT_MODEL)
-
-    async def load_profile(params: ContentProfileLoadRequest) -> ContentProfileSnapshot:
-        return await service.load_profile(params.table_id)
-
-    async def commit_profile(params: ContentProfileCommitRequest) -> ContentProfileSnapshot:
-        return await service.commit_profile(params)
-
-    async def delete_profile(params: ContentProfileDeleteRequest) -> ContentProfileDeleteResult:
-        return await service.delete_profile(
-            params.table_id, params.expected_revision, params.idempotency_key
-        )
-
-    async def list_links(params: RecordDocumentLinkListRequest) -> RecordDocumentLinkListResult:
-        return await service.list_links(params.table_id, params.record_id)
-
-    async def commit_link(params: RecordDocumentLinkCommitRequest) -> RecordDocumentLinkSnapshot:
-        return await service.commit_link(params)
-
-    async def repair_link(params: RecordDocumentLinkRepairRequest) -> RecordDocumentLinkSnapshot:
-        return await service.repair_link(params)
-
-    async def delete_link(
-        params: RecordDocumentLinkDeleteRequest,
-    ) -> RecordDocumentLinkDeleteResult:
-        return await service.delete_link(
-            params.link_id, params.expected_revision, params.idempotency_key
-        )
-
-    dispatcher.register("contentProfile.load", load_profile, ContentProfileLoadRequest)
-    dispatcher.register("contentProfile.commit", commit_profile, ContentProfileCommitRequest)
-    dispatcher.register("contentProfile.delete", delete_profile, ContentProfileDeleteRequest)
-    dispatcher.register("recordDocumentLink.list", list_links, RecordDocumentLinkListRequest)
-    dispatcher.register("recordDocumentLink.commit", commit_link, RecordDocumentLinkCommitRequest)
-    dispatcher.register("recordDocumentLink.repair", repair_link, RecordDocumentLinkRepairRequest)
-    dispatcher.register("recordDocumentLink.delete", delete_link, RecordDocumentLinkDeleteRequest)
 
 
 def _configure_pocketbase_data_io(
@@ -427,11 +369,6 @@ async def _build_server() -> tuple[
             task_service=task_service,
         )
         metadata_transport = PocketBaseInternalMetadataPort(client=client)
-        revisioned_metadata = RevisionedMetadataTransportAdapter(metadata_transport)
-        _register_content_model_methods(
-            dispatcher,
-            ContentModelService(metadata_port=revisioned_metadata, product_data=client),
-        )
         state_root = Path(
             os.environ.get(
                 "VIBETABLE_STATE_DIR",

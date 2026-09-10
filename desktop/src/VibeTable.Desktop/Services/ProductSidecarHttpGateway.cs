@@ -444,11 +444,13 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || string.IsNullOrWhiteSpace(messageElement.GetString()))
             throw InvalidResponse();
         string message = messageElement.GetString()!;
-        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32170 or -32080)
-            || (code is -32150 or -32170 && !hasData))
+        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32170 or -32180 or -32080)
+            || (code is -32150 or -32170 or -32180 && !hasData))
             throw InvalidResponse();
         if (code == -32150)
             ValidateProductErrorData(data);
+        if (code == -32180)
+            ValidateContentErrorData(data, method);
         if (code == -32170 && !SurfaceRpcErrorContract.IsValid(method, data))
             throw InvalidResponse();
         if (code == -32080 && !IsValidDashboardErrorData(method, message, data)
@@ -479,6 +481,12 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
                 or "dashboard_manifest_invalid" or "dashboard_panel_membership_invalid" or "dashboard_storage_invalid"
                 or "dashboard_persistence_failed" or "dashboard_idempotency_conflict" or "dashboard_query_invalid")
             && (!field || IsNonEmptyString(path));
+    }
+
+    private static void ValidateContentErrorData(JsonElement data, string method)
+    {
+        if (!ProductRpcErrorMapper.TryMapContent(method, data, out _))
+            throw InvalidResponse();
     }
     internal static bool IsValidPresetErrorData(string method, string message, JsonElement data)
     {

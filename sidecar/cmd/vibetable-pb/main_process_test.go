@@ -528,6 +528,9 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 	response.Body.Close()
 	// Independent complete public capability expectation, not a generated owner list.
 	expectedProductMethods := []string{
+		"contentProfile.commit",
+		"contentProfile.delete",
+		"contentProfile.load",
 		"events.reconcile",
 		"field.settings.describe",
 		"file.list",
@@ -560,6 +563,10 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"query.selectionOpen",
 		"query.validateSnapshot",
 		"query.view",
+		"recordDocumentLink.commit",
+		"recordDocumentLink.delete",
+		"recordDocumentLink.list",
+		"recordDocumentLink.repair",
 		"relation.inspectPair",
 		"relation.previewDelta",
 		"relation.searchTargets",
@@ -571,7 +578,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != len(expectedProductMethods) ||
+		!reflect.DeepEqual(productCapabilities.RPCMethods, expectedProductMethods) ||
 		len(productCapabilities.Registrations) != len(expectedProductMethods) {
 		t.Fatalf("Product capabilities = %#v", productCapabilities)
 	}
