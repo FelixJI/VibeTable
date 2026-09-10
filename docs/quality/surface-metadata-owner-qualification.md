@@ -67,3 +67,14 @@ Host 真实 `ISurfaceRpcGateway` 由现有 `JsonRpcProductDataGateway` 实现，
 - 上述源码与同包资格不改写前文原始 fixture/契约失败。没有重复完整 Python 入口、构建或 S17 求绿；本批完整构建和 S17 均首轮通过。
 - 未执行完整 Go 全仓/完整应用 suite、完整 Node 质量或全量 .NET suite，不拿聚焦结果替代它们；远端 PR required 门禁尚未开始。
 - [当前 E2E 汇总](../e2e-performance.md) 继续保留旧 main 的 29 场景结果，并明确 `17-interface-lifecycle` 语义已变。本记录补充该新语义的独立同包 S17 证据，不把旧 29 场景结果改写成当前分支全场景通过。
+## 发布包资格后的 Host 独立清单补漏
+
+对固定 `dc33e6f9798a395fd6a06818ec2790536973a49e` 运行以下五组入口，实际 RED 为 138 PASS / 1 FAIL / 0 skip；唯一失败 `GeneratedManifestProvidesClosedRouteLookupForCurrentOwners` 的独立 Go 清单缺少四个 Surface 方法。先前相关审查和聚焦 Host 子集没有发现这个测试预期遗漏，不将该 RED 改写成通过。
+
+```powershell
+dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release -p:RestoreLockedMode=true --filter "FullyQualifiedName~Composition|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceRequestDispatcherQuery" --logger "trx;LogFileName=surface-main-host-contracts-green.trx" --results-directory build/qa/surface-metadata/host-owner-green --verbosity quiet
+```
+
+修正只在 `ProductRpcCapabilityManifestTests` 独立排序清单增加 `interface.commit/delete/list/load:workspace`，保持精确集合断言，不从生产 manifest 生成预期。Surface 四方法不在 `ProductDataRpcRegistry.RequestTypes`：renderer 使用 `interface.*Requested` 经 Surface controller、ISurfaceRpcGateway 与 Host Product 生命周期调用，workspace wire 由 Host 绑定。因此 RouteSelector、WebMessageRouter 的通用 owner/Whitelist 循环本次没有同类 RED，不向其中伪造 Surface generic 请求或绕过 scope validator。
+
+同一五组 GREEN 为 **139 PASS / 0 FAIL / 0 skip，18s，EXIT 0**。RED handle `68891`，日志 `build/qa/surface-metadata/host-owner-red.log`、TRX `host-owner-red/surface-main-host-contracts-red.trx`；GREEN handle `85395`，日志 `host-owner-green.log`、TRX `host-owner-green/surface-main-host-contracts-green.trx`（后三者同在 `build/qa/surface-metadata/`）。仅测试及本记录变化，production diff 为 0，未重建或重跑 S17；等待此补漏的独立尾审，不宣称五组等于全量 .NET suite。
