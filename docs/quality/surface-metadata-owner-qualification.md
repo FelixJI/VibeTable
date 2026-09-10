@@ -106,3 +106,14 @@ dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj
 - 早期 fixture 曾用不存在的 auditledger.Store，随后曾把 coordination 目录传给要求数据库文件的读取器，分别保留 `runtime-gate-red.log`、`runtime-gate-red-semantic.log`。首修复语义全部通过但 TempDir snapshots 清理失败，日志 `runtime-gate-green.log` 保留。这些不替代真实 RED/GREEN。
 
 本次有生产 runtime 修改；未运行发布构建、S17、完整 Python 或全 Go suite，未同步 main/push。旧 3bd 完整构建及同包 S17 仅证明旧源码，修复需独立双轴后再决定新包资格；历史包和失败证据均保留。
+
+
+## Runtime 重放修复后的新包资格
+
+当前生产 source `65be85ce3d5727dc95cf3723ab0fd4795fb2016e` 已正常合入 main `58032b97043c2bba80a8eb1f65ae2906797e3251`；修复及同步增量 Standards/Spec 均无新增确定问题。
+
+- `uv run --frozen --no-sync python scripts/build_next.py --release` 完整入口退出 0，含 self-update smoke 与原子发布包目录；日志 `build/qa/surface-metadata/build-release-runtime-replay.log`。
+- 使用同一新包执行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --evidence-root build/qa/surface-metadata/product-e2e-runtime-replay --scenario 17-interface-lifecycle`：1 passed、0 failed、0 skipped，22 项断言通过，8.852s。
+- 报告 `build/qa/surface-metadata/product-e2e-runtime-replay/20260910T031830Z/product-e2e-report.json`：包审计及四组件 freshness 通过，未预期 bridge failure 与 pending 均为 0；正常退出码 0，进程及后代为空，端口与 owner lease/final cleanup 通过。
+
+这组新包结果覆盖上文 Runtime 修复；历史失败记录仍保留，不把本地 TempDir 整组失败改记为通过。新的远端 head 仍需 fresh CI、严格同步、squash 及合并后 CI/CD。
