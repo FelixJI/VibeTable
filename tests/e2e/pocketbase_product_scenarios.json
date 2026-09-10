@@ -174,5 +174,11 @@
     "title": "关系完整性只读分页检查",
     "requirement": "通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。",
     "capabilities": ["relation.integrity-inspection"]
+  },
+  {
+    "id": "34-relation-lookup-data-io",
+    "title": "Relation 导入与 Lookup 文本导出",
+    "requirement": "复用固定 corpus，通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。当前 UI 尚无匹配配置和 Lookup 导出选列，本场景验证打包协议。",
+    "capabilities": ["relation.import", "lookup.export"]
   }
 ]

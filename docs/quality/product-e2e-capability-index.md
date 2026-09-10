@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：29
-- 唯一能力：47
-- 场景—能力关联：63
+- 场景：30
+- 唯一能力：49
+- 场景—能力关联：65
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -39,6 +39,7 @@
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `kanban.lifecycle` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化） |
 | `lookup.definition-read` | <code>26-lookup-definition-read</code>（Lookup 持久定义读取） |
+| `lookup.export` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出） |
 | `lookup.source-pagination` | <code>29-lookup-source-pagination</code>（Lookup 来源分页读取） |
 | `mutation.authority` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化）、<code>21-calendar-date-move</code>（Calendar 日期拖动持久化）、<code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
@@ -48,6 +49,7 @@
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
+| `relation.import` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出） |
 | `relation.integrity-inspection` | <code>31-relation-pair-inspection</code>（关系完整性只读分页检查） |
 | `relation.pair-edit` | <code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
 | `relation.preview` | <code>28-relation-delta-preview</code>（多值关系预览与取消） |
@@ -97,3 +99,4 @@
 | <code>29-lookup-source-pagination</code> | Lookup 来源分页读取 | 通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。 | `lookup.source-pagination` |
 | <code>30-query-snapshot-validation</code> | 查询快照只读校验 | 真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。 | `schema.query` |
 | <code>31-relation-pair-inspection</code> | 关系完整性只读分页检查 | 通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。 | `relation.integrity-inspection` |
+| <code>34-relation-lookup-data-io</code> | Relation 导入与 Lookup 文本导出 | 复用固定 corpus，通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。当前 UI 尚无匹配配置和 Lookup 导出选列，本场景验证打包协议。 | `relation.import`、`lookup.export` |
