@@ -79,7 +79,7 @@ SettingsView 编辑 draft，通过明确保存提交完整 overrides；忙时禁
 
 独立 Standards/Spec 在 `51202c91` 发现生产 app 注入两个 gate，Calendar 选择背景批次用的 idempotent gate。该 gate 看到 workspace receipt 就直接返回，未执行 Calendar 闭包；因此同键重放返回零值 receipt，异载荷也跳过 metadata 摘要冲突。原直接 metadata 与单 fake gate 测试不能证明此生产链，前节局部 PASS 不覆盖该缺陷。
 
-为复用已合入的深模块，本次正常 merge `GitHub/main` 的 `5ff28ac0`（Surface #325），不 cherry-pick 未合实现。六个冲突文件保留 Calendar 两方法和 Surface 四方法：Go 30 / Python 73；shared_settings 与 interfaces generic 写各自封闭，原错误码保留；逐项独立 dispatcher/capability/Host/cmd 清单补两方，未从生成 manifest 派生预期。inventory 声明按既有 canonical id 排序，capability/catalog/index 用仓库生成器更新。全部 app 包执行未发现重复注册/遗漏业务断言；S17 主干新增路径与 S32 声明均保留。
+为复用已合入的深模块，本次正常 merge `GitHub/main` 的 `5ff28ac0`（Surface #325），不 cherry-pick 未合实现。五个冲突文件保留 Calendar 两方法和 Surface 四方法：Go 30 / Python 73；shared_settings 与 interfaces generic 写各自封闭，原错误码保留；逐项独立 dispatcher/capability/Host/cmd 清单补两方，未从生成 manifest 派生预期。inventory 声明按既有 canonical id 排序，capability/catalog/index 用仓库生成器更新。全部 app 包执行未发现重复注册/遗漏业务断言；S17 主干新增路径与 S32 声明均保留。
 
 新增 `TestWorkCalendarRealRuntimeDurableReplayAndAdmission` 复用主干真实 PB+Runtime 生命周期 fixture，但独立构建 Calendar HTTP dispatcher、使用两条真实 production gates。修复前 `go test ./internal/app -run '^TestWorkCalendarRealRuntimeDurableReplayAndAdmission$' -count=1` **RED / EXIT 1**（build/calendar-runtime-red.log）：同键、新状态后、Runtime+PB 重开后三次零值 receipt，及异载荷未拒绝。首次写和新键写均实测正常推进一次。
 
