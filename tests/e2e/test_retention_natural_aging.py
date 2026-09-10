@@ -470,8 +470,8 @@ def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
     monkeypatch.setattr(product_e2e_runner, "ensure_node", lambda _root: "node")
 
     def run_shared_scenario(_scenario: object, **kwargs: object) -> dict[str, object]:
-        context = kwargs["natural_aging"]
-        assert isinstance(context, product_e2e_runner._NaturalAgingRun)
+        context = kwargs["persistent_run"]
+        assert isinstance(context, product_e2e_runner._PersistentScenarioRun)
         assert context.workspace_root == workspace
         assert context.workspace_root.is_dir()
         (workspace / ".vibetable").mkdir(parents=True)

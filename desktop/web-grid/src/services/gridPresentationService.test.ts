@@ -16,7 +16,10 @@ function deferred<T>() {
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => setHostBridgeForTesting(null));
 
-it("uses the real correlated Host bridge with workspace scope and complete state", async () => {
+it.each([
+  "9007199254740993", "0.1234567890123456789", "1.0000000000000001",
+  "1e400", "1e-400", "-0.1234567890123456789", "-1e400", "1e9007199254740993",
+])("uses the real correlated Host bridge and preserves numeric token %s", async (numericToken) => {
   const session = useWorkspaceSessionStore();
   session.configureCapabilities(["workspace.session.v2"]);
   session.setWorkspaces([{ contractVersion: "2.0", workspaceId: "11111111-1111-4111-8111-111111111111",
@@ -58,11 +61,12 @@ it("uses the real correlated Host bridge with workspace scope and complete state
     const opening = persistence.open("orders");
     await Promise.resolve();
     const request = posted.at(-1)!;
-    listener!({ data: `{"type":"gridState.get","requestId":"${request.requestId}","payload":{"state":{"filters":[{"field":"total","operator":"eq","value":9007199254740993}]},"revision":"r2","conflict":false}}` });
+    listener!({ data: `{"type":"gridState.get","requestId":"${request.requestId}","payload":{"state":{"columns":[{"name":"total","width":220.50,"order":0e0}],"filters":[{"field":"total","operator":"eq","value":${numericToken}}]},"revision":"r2","conflict":false}}` });
     const restored = (await opening)!;
+    expect(restored.columns).toEqual([{ name: "total", width: 220.5, order: 0 }]);
     const reactiveState = reactive({ ...restored, filters: cloneFilterExpressions(restored.filters ?? []) });
     persistence.save(reactiveState);
-    expect(JSON.stringify(posted.at(-1))).toContain('"value":9007199254740993');
+    expect(JSON.stringify(posted.at(-1))).toContain(`"value":${numericToken}`);
     respond({ state: reactiveState, revision: "r3", conflict: false });
     await persistence.flush();
 
@@ -81,7 +85,7 @@ it("uses the real correlated Host bridge with workspace scope and complete state
         const failedOpen = unsupported.open("orders");
         await Promise.resolve();
         const failedRequest = posted.at(-1)!;
-        listener!({ data: `{"type":"gridState.get","requestId":"${failedRequest.requestId}","payload":{"state":{"filters":[{"field":"total","operator":"eq","value":9007199254740993}]},"revision":"r3","conflict":false}}` });
+        listener!({ data: `{"type":"gridState.get","requestId":"${failedRequest.requestId}","payload":{"state":{"columns":[{"name":"total","width":220.50,"order":0e0}],"filters":[{"field":"total","operator":"eq","value":${numericToken}}]},"revision":"r3","conflict":false}}` });
         expect(await failedOpen).toBeNull();
         expect(report).toHaveBeenCalledWith(expect.objectContaining({ name: "GridStateNumberError" }));
         const sent = posted.length;

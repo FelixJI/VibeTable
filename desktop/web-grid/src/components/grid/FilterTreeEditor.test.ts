@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
-import { NButton, NDatePicker, NDynamicTags, NInputNumber, NSelect } from "naive-ui";
+import { NButton, NDatePicker, NDynamicTags, NSelect } from "naive-ui";
 import type { ColumnSchema, FilterExpression, NormalizedRelationDescriptor } from "@/contracts";
 import FilterTreeEditor from "./FilterTreeEditor.vue";
 import { parseGridStateJson } from "@/contracts/gridStateJson";
@@ -17,6 +17,47 @@ const columns = [
 ] satisfies ColumnSchema[];
 
 describe("FilterTreeEditor", () => {
+  it.each(["0.1234567890123456789", "1.0000000000000001", "1e400", "1e-400"])(
+    "renders and edits numeric token %s without coercion, including initially ordinary values",
+    async (token) => {
+      for (const initial of [token, "12"]) {
+        const nodes = parseGridStateJson(`[{"field":"amount","operator":"eq","value":${initial}}]`) as FilterExpression[];
+        const wrapper = mount(FilterTreeEditor, { props: {
+          nodes, columns: [{ ...columns[0], filterInput: "number" }],
+        } });
+        const input = wrapper.get('[aria-label="筛选值"] input');
+        expect((input.element as HTMLInputElement).value).toBe(initial);
+        await input.setValue(`-${token}`);
+        expect(JSON.stringify(wrapper.emitted("update")?.at(-1)?.[0]))
+          .toBe(`[{"field":"amount","operator":"eq","value":-${token}}]`);
+        wrapper.unmount();
+      }
+    },
+  );
+
+  it("preserves exact numeric tokens when editing ranges and discrete numeric lists", async () => {
+    const nodes = parseGridStateJson('[{"field":"amount","operator":"between","value":[0.1234567890123456789,1e400]}]') as FilterExpression[];
+    const wrapper = mount(FilterTreeEditor, { props: {
+      nodes, columns: [{ ...columns[0], filterInput: "number" }],
+    } });
+    expect((wrapper.get('[aria-label="筛选起始值"] input').element as HTMLInputElement).value)
+      .toBe("0.1234567890123456789");
+    const end = wrapper.get('[aria-label="筛选结束值"] input');
+    expect((end.element as HTMLInputElement).value).toBe("1e400");
+    await end.setValue("1.0000000000000001");
+    expect(JSON.stringify(wrapper.emitted("update")?.at(-1)?.[0]))
+      .toBe('[{"field":"amount","operator":"between","value":[0.1234567890123456789,1.0000000000000001]}]');
+    wrapper.unmount();
+
+    const list = mount(FilterTreeEditor, { props: {
+      nodes: [{ field: "amount", operator: "in", value: [] }], columns,
+    } });
+    list.findComponent(NDynamicTags).vm.$emit("update:value", ["0.1234567890123456789", "1e400"]);
+    await list.vm.$nextTick();
+    expect(JSON.stringify(list.emitted("update")?.at(-1)?.[0]))
+      .toBe('[{"field":"amount","operator":"in","value":[0.1234567890123456789,1e400]}]');
+    list.unmount();
+  });
   it("renders and edits an exact Host integer without Number coercion", async () => {
     const nodes = parseGridStateJson('[{"field":"amount","operator":"eq","value":9007199254740993}]') as FilterExpression[];
     const wrapper = mount(FilterTreeEditor, { props: {
@@ -133,7 +174,7 @@ describe("FilterTreeEditor", () => {
     const numeric = mount(FilterTreeEditor, {
       props: { nodes: [{ field: "amount", operator: "eq", value: 12 }], columns: typedColumns },
     });
-    expect(numeric.findComponent(NInputNumber).exists()).toBe(true);
+    expect((numeric.get('[aria-label="筛选值"] input').element as HTMLInputElement).value).toBe("12");
 
     const selected = mount(FilterTreeEditor, {
       props: { nodes: [{ field: "status", operator: "in", value: ["open"] }], columns: typedColumns },

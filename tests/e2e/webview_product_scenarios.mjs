@@ -5260,9 +5260,12 @@ async function scenario33(page, recorder) {
   const tableId = await createEmptyTable(page, "E2E Host Presentation");
   const title = await createV2Field(page, tableId, "Title", "text");
   const status = await createV2Field(page, tableId, "Status", "text");
+  const first = await createV2Field(page, tableId, "First", "text");
+  const second = await createV2Field(page, tableId, "Second", "text");
   await closeFieldSettingsDrawer(page);
   await applyProductMutation(page, tableId, [{ kind: "insert", recordId: null,
-    values: { [title.physicalName]: "preserved", [status.physicalName]: "open" } }], "presentation-seed");
+    values: { [title.physicalName]: "preserved", [status.physicalName]: "open",
+      [first.physicalName]: "first", [second.physicalName]: "second" } }], "presentation-seed");
   await createEmptyTable(page, "E2E Other Presentation");
   await closeFieldSettingsDrawer(page);
   await selectTable(page, "E2E Host Presentation");
@@ -5329,15 +5332,20 @@ async function scenario33(page, recorder) {
   recorder.check("dragging the actual header persists its changed width",
     resized.type === "gridState.save" && Number.isFinite(width) && width > before.width + 30,
     { before: before.width, width });
-  const statusHeader = page.locator(`.tabulator-col[tabulator-field="${status.physicalName}"]`).first();
+  const firstHeader = page.locator(`.tabulator-col[tabulator-field="${first.physicalName}"]`).first();
+  const secondHeader = page.locator(`.tabulator-col[tabulator-field="${second.physicalName}"]`).first();
   await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
-  await statusHeader.dragTo(header, { sourcePosition: { x: 20, y: 10 }, targetPosition: { x: 2, y: 10 } });
+  await secondHeader.dragTo(firstHeader, { sourcePosition: { x: 20, y: 10 }, targetPosition: { x: 2, y: 10 } });
   const reordered = await waitForCapturedBridgeMessage(page, 30_000);
-  const titleOrder = reordered.payload?.state?.columns?.find(column => column.name === title.physicalName)?.order;
-  const statusOrder = reordered.payload?.state?.columns?.find(column => column.name === status.physicalName)?.order;
-  recorder.check("dragging a real header persists the changed column order",
-    Number.isInteger(titleOrder) && Number.isInteger(statusOrder) && statusOrder < titleOrder,
-    { titleOrder, statusOrder });
+  const firstOrder = reordered.payload?.state?.columns?.find(column => column.name === first.physicalName)?.order;
+  const secondOrder = reordered.payload?.state?.columns?.find(column => column.name === second.physicalName)?.order;
+  const visibleOrder = await page.locator(".tabulator-header .tabulator-col[tabulator-field]:visible")
+    .evaluateAll(columns => columns.map(column => column.getAttribute("tabulator-field")));
+  recorder.check("dragging two visible unfrozen headers changes their persisted and DOM order",
+    Number.isInteger(firstOrder) && Number.isInteger(secondOrder) && secondOrder < firstOrder
+      && visibleOrder.includes(second.physicalName) && visibleOrder.includes(first.physicalName)
+      && visibleOrder.indexOf(second.physicalName) < visibleOrder.indexOf(first.physicalName),
+    { firstOrder, secondOrder, visibleOrder });
   await page.getByTestId("view-hidden-trigger").click();
   await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
   await page.getByTestId(`view-freeze-${title.physicalName}`).click();
@@ -5395,6 +5403,142 @@ async function scenario33(page, recorder) {
       && returned.payload.session.sessionEpoch > targetSession.sessionEpoch
       && reopened.payload?.state?.keyword === "preserved" && reopened.payload?.state?.density === "compact"
       && await page.getByTestId("view-keyword").locator("input").inputValue() === "preserved", reopened);
+  return {
+    workspaceId: originalSession.workspaceId,
+    tableId,
+    fields: { title: title.physicalName, status: status.physicalName,
+      first: first.physicalName, second: second.physicalName },
+    state: reopened.payload.state,
+    revision: reopened.payload.revision,
+  };
+}
+
+async function resumeHostPresentation(page, recorder, statePath) {
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  const session = await activateHostPresentationWorkspace(page, recorder, state.workspaceId);
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Host Presentation");
+  const keyword = page.getByTestId("view-keyword").locator("input");
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="view-keyword"] input')?.value === "preserved",
+    undefined,
+    { timeout: 30_000 },
+  );
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="view-query-controls"]')?.getAttribute("aria-busy") === "false"
+      && document.querySelector(".grid-wrapper")?.getAttribute("aria-busy") === "false",
+    undefined, { timeout: 30_000 });
+  const restored = await rawBridgeRequest(page, "gridState.get", { table: state.tableId });
+  recorder.check("second Host reads the saved authoritative presentation state",
+    restored.type === "gridState.get" && restored.payload?.revision === state.revision
+      && equivalentPresentationState(restored.payload?.state, state.state),
+    { restored: restored.payload, expected: state });
+  const expectedTitle = state.state?.columns?.find(column => column.name === state.fields?.title);
+  const expectedVisibleOrder = state.state.columns.filter(column => column.visible
+    && [state.fields.first, state.fields.second].includes(column.name))
+    .sort((left, right) => left.order - right.order).map(column => column.name);
+  const density = await page.getByTestId("view-density").innerText();
+  const layout = await page.evaluate(() => {
+    const columns = [...document.querySelectorAll(".tabulator-header .tabulator-col[tabulator-field]")]
+      .map(column => {
+        const rect = column.getBoundingClientRect();
+        const style = getComputedStyle(column);
+        return {
+          name: column.getAttribute("tabulator-field"), width: rect.width,
+          visible: rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden",
+          frozen: column.classList.contains("tabulator-frozen"),
+          sort: column.getAttribute("aria-sort"),
+        };
+      });
+    return { columns, compact: document.querySelector(".grid-wrapper")?.classList.contains("density-compact") };
+  });
+  const title = layout.columns.find(column => column.name === state.fields.title);
+  const actualVisibleOrder = layout.columns.filter(column => column.visible
+    && [state.fields.first, state.fields.second].includes(column.name)).map(column => column.name);
+  const expectedSort = state.state.sorts.find(sort => sort.field === state.fields.title);
+  recorder.check("second Host restores actual column width, frozen state, visible order, hidden state, density and sort",
+    title?.visible && title.frozen && Number.isFinite(expectedTitle?.width)
+      // Tabulator writes a numeric CSS px width; browser geometry can be fractional.
+      // Keep the allowance to one CSS pixel, not a percentage of the column width.
+      && Math.abs(title.width - expectedTitle.width) <= 1
+      && expectedVisibleOrder.length === 2
+      && equivalentPresentationState(actualVisibleOrder, expectedVisibleOrder)
+      && layout.columns.filter(column => actualVisibleOrder.includes(column.name)).every(column => !column.frozen)
+      && !(layout.columns.find(column => column.name === state.fields.status)?.visible)
+      && density.includes("紧凑") && layout.compact
+      && ["asc", "desc"].includes(expectedSort?.direction)
+      && title.sort === (expectedSort.direction === "asc" ? "ascending" : "descending"),
+    { layout, expectedTitle, expectedVisibleOrder, actualVisibleOrder, density, expectedSort });
+  await page.getByTestId("view-filter-trigger").click();
+  const filterNodes = page.locator(".control-card--wide:visible .filter-node");
+  const filterUi = await filterNodes.evaluateAll(nodes => nodes.map(node => ({
+    field: node.querySelector(".field-select")?.textContent?.trim(),
+    operator: node.querySelector(".operator-select")?.textContent?.trim(),
+    logic: node.querySelector(".joiner-select")?.textContent?.trim() ?? null,
+    value: node.querySelector(".value-input input")?.value,
+  })));
+  recorder.check("second Host restores the real keyword and OR empty-equality filter UI",
+    await keyword.inputValue() === state.state?.keyword
+      && equivalentPresentationState(filterUi, [
+        { field: "Title", operator: "等于", logic: null, value: "preserved" },
+        { field: "Status", operator: "等于", logic: "或", value: "" },
+      ]),
+    { keyword: await keyword.inputValue(), filterUi });
+  return { workspaceId: session.workspaceId, tableId: state.tableId, state: restored.payload?.state, revision: restored.payload?.revision };
+}
+
+async function activateHostPresentationWorkspace(page, recorder, workspaceId) {
+  const active = () => page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null);
+  const targetTestId = `workspace-delete-${workspaceId}`;
+  const targetSession = page.waitForFunction(
+    (workspaceId) => window.__vibetableE2EBridgeDiagnostics?.workspaceSession?.workspaceId === workspaceId,
+    workspaceId,
+    { timeout: 60_000 },
+  );
+  const targetCard = page.getByTestId(targetTestId);
+  const cardReady = targetCard.waitFor({ state: "visible", timeout: 60_000 }).then(() =>
+    page.waitForFunction(
+      (testId) => {
+        const card = document.querySelector(`[data-testid="${testId}"]`)?.closest(".workspace-card");
+        const button = card?.querySelector("button[aria-label]");
+        return button instanceof HTMLButtonElement && !button.disabled;
+      },
+      targetTestId,
+      { timeout: 60_000 },
+    ),
+  );
+  const activation = await Promise.race([
+    targetSession.then(() => "session"),
+    cardReady.then(() => "card"),
+  ]);
+  let session = await active();
+  if (activation === "card" && session?.workspaceId !== workspaceId) {
+    const opened = await page.evaluate(openNaturalAgingWorkspaceInPage, targetTestId);
+    if (!opened) {
+      // Auto-open can finish after the preceding read, or disable the button
+      // while still pending. Recheck identity, then await the same target wait.
+      session = await active();
+      recorder.check("restarted Host does not substitute another active workspace",
+        session == null || session.workspaceId === workspaceId,
+        { expectedWorkspaceId: workspaceId, opened, session });
+    }
+  }
+  await targetSession;
+  session = await active();
+  recorder.check("restarted Host resumes the seeded workspace UUID",
+    session?.workspaceId === workspaceId, { expected: workspaceId, session });
+  return session;
+}
+
+function equivalentPresentationState(actual, expected) {
+  const normalize = (value) => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object") return Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, normalize(item)]),
+    );
+    return value;
+  };
+  return JSON.stringify(normalize(actual)) === JSON.stringify(normalize(expected));
 }
 async function scenario13(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
@@ -8123,10 +8267,14 @@ async function main() {
     page = await locateProductPage(browser);
     observePage(page);
     await installBridgeDiagnostics(page);
-    const implementation = args["natural-aging-phase"] === "seed"
-      ? (candidate, checks) => seedNaturalRetentionAging(candidate, checks)
-      : args["natural-aging-phase"] === "resume"
-        ? (candidate, checks) => resumeNaturalRetentionAging(candidate, checks, args.state)
+    const implementation = args["persistent-phase"] === "seed"
+      ? (candidate, checks, network, runtime) => args.scenario === "33-host-grid-presentation"
+        ? scenario33(candidate, checks, network, runtime)
+        : seedNaturalRetentionAging(candidate, checks)
+      : args["persistent-phase"] === "resume"
+        ? (candidate, checks) => args.scenario === "33-host-grid-presentation"
+          ? resumeHostPresentation(candidate, checks, args.state)
+          : resumeNaturalRetentionAging(candidate, checks, args.state)
         : scenarios[args.scenario];
     if (implementation) {
       const phaseResult = await implementation(page, recorder, network, {
@@ -8141,7 +8289,7 @@ async function main() {
           });
         },
       });
-      if (phaseResult && args["natural-aging-phase"]) Object.assign(result, phaseResult);
+      if (phaseResult && args["persistent-phase"]) Object.assign(result, phaseResult);
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
     result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);

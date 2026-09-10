@@ -9,6 +9,7 @@
 - 报告契约：`contractVersion=2.0`
 - 结果：29/29 passed、0 failed、0 skipped。
 - 当前 manifest gap：1（`33-host-grid-presentation`）。
+- S33 现已具备两真实 Host phase 编排；本报告尚无新包运行结果，因此保留样本的 gap 记录。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：2（`07-attachment-history`、`17-interface-lifecycle`）。
 

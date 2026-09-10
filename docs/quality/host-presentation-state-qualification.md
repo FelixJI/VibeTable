@@ -73,7 +73,11 @@ Web 接线最终：178文件1603测试PASS，vue-tsc EXIT0，diff --check通过�
 
 从干净的 `4de80f10132c0f32609dc1013cb02906a969acb9` 正常合入指定 `f88e856eea3b830c8f910acc3dbc9eae842eb5d1`，未继续追取其他 main。两处文本冲突是 Go 生成 owner 集合与 Python owner 数量：保留 Host 的 gridState.get/save 和 main 的四个 Go Surface 方法，Python owner 数量因此为 72。owner/catalog 均由原生成脚本重生；catalog 方法覆盖测试使用独立列举的 Host 四方法与 Surface 四方法，Go Host 测试也固定四方法闭集，不从生成集合反推期望。
 
-Python gridState 和 Surface 均未恢复生产注册；旧 grid-state producer 文件保持原样，main 的 Surface frozen producer 和具名 closed errors 完整保留。Host 入站/出站两侧 gridState 白名单未改变，MainWindow 同时保留 HostGridStateStore composition 与 main 的 Product Surface gateway。S33 与 main 新 S17 均保留；生成索引检查通过，`docs/e2e-performance.md` 仍如实记录 gap 1（S33）、changed 2（S07/S17）。本次未运行新包 GUI，也未获得完整 Host 进程重启资格；历史 Web 1607/Host 70 不能替代合并后的独立 Standards/Spec、新包、fresh CI 与完整交付。
+Python gridState 和 Surface 均未恢复生产注册；旧 grid-state producer 文件保持原样，main 的 Surface frozen producer 和具名 closed errors 完整保留。Host 入站/出站两侧 gridState 白名单未改变，MainWindow 同时保留 HostGridStateStore composition 与 main 的 Product Surface gateway。S33 与 main 新 S17 均保留；生成索引检查通过，`docs/e2e-performance.md` 仍如实记录当时的 gap 1（S33）、changed 2（S07/S17）。本次未运行新包 GUI，历史 Web 1607/Host 70 不能替代合并后的独立 Standards/Spec、新包、fresh CI 与完整交付。
+
+## S33 两进程资格编排（待运行）
+
+`run_product_acceptance` 对 S33 现在固定为一个顶层场景、两个真实 Host phase。seed 从真实 UI 保存后必须先通过原有 normal-close、owner lease、端口和进程作用域检查；失败时不会启动 resume。runner 随后只读校验真实 workspace manifest 与 Host 写入的 registry，保存 Node 返回的 workspace UUID、table ID、字段名、完整 state 和 revision；不会直接写 Host 存储或后端。删除旧 readiness 文件后，resume 以相同 `local-data` 和 workspace root 启动另一 Host，从 UUID 绑定的现有卡片进入原工作区并选择原表，不调用 `waitForShell` 创建新工作区。两 phase 各有独立 evidence、controls、CDP 与 lifecycle，持久路径固定在 `build/qa` 下。此编排与聚焦 harness 契约不构成新包 GUI 的通过证据。
 
 本次合并验证（均使用固定隔离 Python 环境、`UV_NO_SYNC=1`、`PYTHONPATH` 指向当前 worktree）：
 
@@ -83,3 +87,21 @@ Python gridState 和 Surface 均未恢复生产注册；旧 grid-state producer 
 - `uv run --frozen --no-sync python contracts/v2/product_rpc_capability_policy.py --check`、`contracts/v2/generate_product_rpc_catalog.py --check`、`contracts/v2/product_runtime_inventory.py --check` 与 `scripts/generate_product_e2e_capability_index.py --check`：EXIT0。固定 Node 执行 `node --check tests/e2e/webview_product_scenarios.mjs`：EXIT0。
 - `uv run --frozen --no-sync python -m pyright backend`：0 errors（工具提示本 worktree 无本地 .venv，执行环境为指定隔离环境）；日志 `build/qa/host-presentation/merge-main-pyright-backend.log`。相关四文件 Ruff check 通过；独立 Host 方法预期触发一次 Ruff format 检查失败后，已按 formatter 修正。
 - 额外将 Pyright 扩至 `contracts/v2/generate_product_rpc_catalog.py` 时出现四项诊断：412 行可空 model name、489/575 行字典不变性、816 行 event_type Literal。指定 Python 解释器后诊断相同；对应实现与两侧提交均未因本次同步修改。该文件不在 adapter 的 `pyright backend` 入口范围，本次记录额外检查失败，不用 ignore 或扩大业务修改掩盖它。
+
+## S33 恢复验收断言修复（2026-09-10，尚未运行新包）
+
+恢复导航提取为 `activateHostPresentationWorkspace`，使用原 UUID 卡片和目标会话等待。一次打开尝试返回 false 后重新读取会话：已有其他 UUID 立即拒绝，目标自动打开已完成或仍在进行则等待同一个目标条件；不重复点击，不 sleep，不创建替代工作区。可控 page 行为测试复现“卡片先 ready、读会话为 null、自动打开完成、按钮回调返回 false”及按钮禁用期间仍在打开两种交错，旧逻辑 2 FAIL / 3 PASS，修复后 5 PASS（`build/qa/host-presentation/restart-activation-red.log`、`restart-activation-green.log`）。
+
+seed 增加 First/Second 两列，真实拖动 Second 到 First 前，并保留两列可见且非冻结；Title 冻结与 Status 隐藏另行验证。resume 在呈现控件和网格结束 busy 后，读取实际 header DOM 的宽度、`tabulator-frozen`、可见列顺序、隐藏状态、`aria-sort` 及网格密度 class，再读取筛选编辑器每条条件的字段、操作符、连接词和值。保留完整 Host state/revision 比较，恢复断言前不重新应用 Host state。Tabulator 将数值宽度写为 CSS px，DOM 几何允许最多 1 CSS 像素的舍入；测试接受 0.5px 差异、拒绝 2px 差异。
+
+锁定 JSDOM 提供 DOM 语义，测试替身只补充其不实现的布局几何。在 Host state 完全正确时故意破坏 DOM，旧断言错误接受 width/frozen/order/sort/density/filter operator/field，得到 7 FAIL / 8 PASS（`restart-dom-red.log`）；修改后首次 15 PASS（`restart-dom-green.log`）。随后补充像素容差、冻结的排序列和空等式值回归，19 项 Node 行为测试经相关 Python 入口通过。此替身测试验证验收断言，不构成真实 WebView2 渲染证据。
+
+使用指定隔离 uv 环境、`UV_NO_SYNC=1`、当前 worktree 的 `PYTHONPATH` 与固定 Node 执行：`uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py tests/e2e/test_retention_natural_aging.py --no-cov -q`，130 PASS / 9.35s（`restart-focused-python.log`，包含新增 Node 行为契约）；三个相关 Python 文件的 Ruff format/check、两个修改 Node 文件的 `node --check`、`uv run --frozen --no-sync python scripts/generate_product_e2e_capability_index.py --check` 通过。本阶段未 commit/push、未运行完整包或 GUI；独立复审、固定 source 的新包 S33 和完整发布门禁仍 pending。
+
+## 完整数值保真与独立复审
+
+此前仅保护大整数的 codec 不能保留高精度小数、舍入为整数的小数、上溢和下溢。实际 bridge → reactive → clone → persistence → outbound 链先取得 13 FAIL / 16 PASS；现按源 token 和 Number 序列化值的精确十进制语义比较，仅对有损数字保留 raw JSON，普通 width/order 仍为 Number。缺少源 token 或必要 rawJSON 能力时明确拒绝并阻断覆盖保存。筛选标量、范围和列表的数值输入使用保留文本的控件，通过同一 codec 解析。
+
+固定 Node 24.19.0 执行 `desktop/web-grid/node_modules/vitest/vitest.mjs run --config desktop/web-grid/vite.config.ts src/services/gridPresentationService.test.ts src/components/grid/FilterTreeEditor.test.ts src/contracts/gridStateJson.test.ts src/bridge/hostBridge.test.ts`：71 PASS；`desktop/web-grid/node_modules/vue-tsc/bin/vue-tsc.js --noEmit --project desktop/web-grid/tsconfig.json` EXIT0。独立 Spec 复审另运行三文件36测试及12种数字边界，均通过，原数字P2已修复。
+
+S33 最后一轮独立 Standards 与 Spec 均0项剩余确定发现；Spec独立用固定Node执行 `--test tests/e2e/host_presentation_restart.test.mjs`：19 PASS / 0 FAIL / 0 SKIP。此前两轮复审失败不视为通过，最终修复已用实际异步交错和DOM破坏回归证明。完整release build和真实双Host S33仍待当前固定提交执行。

@@ -3141,6 +3141,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),
+        runner.NODE_RUNNER.with_name("host_presentation_restart.test.mjs"),
         runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
     ]
@@ -3423,3 +3424,110 @@ def test_recovery_summary_does_not_claim_unscheduled_recovery() -> None:
         "runs": [],
         "unmeasuredRuns": 0,
     }
+
+
+def test_host_presentation_seed_failure_does_not_launch_resume(monkeypatch, tmp_path: Path) -> None:
+    scenario = runner.Scenario("33-host-grid-presentation", "presentation", "restart")
+    calls: list[object] = []
+
+    def fail_seed(*_args: object, **kwargs: object) -> dict[str, object]:
+        calls.append(kwargs["persistent_run"])
+        return {"status": "failed", "lifecycle": {"status": "failed"}}
+
+    monkeypatch.setattr(runner, "run_scenario", fail_seed)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "HOST_PRESENTATION_SEED_FAILED"
+    assert len(calls) == 1
+
+
+def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario("33-host-grid-presentation", "presentation", "restart")
+    workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    calls: list[runner._PersistentScenarioRun] = []
+
+    def two_phases(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent)
+        if persistent.phase == "seed":
+            manifest = persistent.workspace_root / ".vibetable" / "workspace.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
+            registry = (
+                persistent.readiness_dir
+                / "local-data"
+                / "VibeTable"
+                / "shell"
+                / "workspace-registry-v2.json"
+            )
+            registry.parent.mkdir(parents=True)
+            registry.write_text(
+                json.dumps(
+                    {
+                        "workspaces": [
+                            {
+                                "workspaceId": workspace_id,
+                                "selectedRoot": str(persistent.workspace_root),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "status": "passed",
+                "lifecycle": {"status": "passed"},
+                "workspaceId": workspace_id,
+                "tableId": "table-1",
+                "fields": {"title": "Title", "status": "Status"},
+                "state": {"keyword": "preserved"},
+                "revision": "revision-1",
+            }
+        return {"status": "failed", "lifecycle": {"status": "passed"}}
+
+    monkeypatch.setattr(runner, "run_scenario", two_phases)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["error"]["code"] == "HOST_PRESENTATION_RESUME_FAILED"
+    assert [run.phase for run in calls] == ["seed", "resume"]
+    assert calls[0].readiness_dir == calls[1].readiness_dir
+    assert calls[0].scenario_dir != calls[1].scenario_dir
+    assert result["phases"]["resume"]["status"] == "failed"
+
+
+def test_host_presentation_resume_state_comparison_is_structural_and_complete() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    resume = source[
+        source.index("async function resumeHostPresentation") : source.index(
+            "async function scenario13"
+        )
+    ]
+    helper = resume[resume.index("function equivalentPresentationState") :]
+    completed = subprocess.run(
+        [
+            str(ensure_node(runner.ROOT)),
+            "--eval",
+            (
+                f"{helper}\n"
+                "const expected={sorts:[{field:'Title',direction:'asc'}],filters:[{logic:'AND',value:''}],columns:[{name:'Title',order:1,frozen:true}]};\n"
+                "const reorderedKeys={columns:[{frozen:true,order:1,name:'Title'}],filters:[{value:'',logic:'AND'}],sorts:[{direction:'asc',field:'Title'}]};\n"
+                "const changedSort={...reorderedKeys,sorts:[{direction:'desc',field:'Title'}]};\n"
+                "if (!equivalentPresentationState(reorderedKeys, expected) || equivalentPresentationState(changedSort, expected)) process.exit(1);"
+            ),
+        ],
+        cwd=runner.ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "waitForShell" not in resume

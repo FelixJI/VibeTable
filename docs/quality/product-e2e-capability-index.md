@@ -98,4 +98,4 @@
 | <code>29-lookup-source-pagination</code> | Lookup 来源分页读取 | 通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。 | `lookup.source-pagination` |
 | <code>30-query-snapshot-validation</code> | 查询快照只读校验 | 真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。 | `schema.query` |
 | <code>31-relation-pair-inspection</code> | 关系完整性只读分页检查 | 通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。 | `relation.integrity-inspection` |
-| <code>33-host-grid-presentation</code> | Host 网格呈现保存与恢复 | 实际关键词、密度、列宽拖动、冻结及隐藏控件经Host应答持久化，切表返回恢复真实界面，并验证旧CAS无法覆盖当前状态；真实创建并切换工作区验证隔离，切回原工作区验证持久状态与界面恢复；完整进程重启资格另行补齐。 | `grid.state` |
+| <code>33-host-grid-presentation</code> | Host 网格呈现保存与恢复 | 第一真实 Host 通过关键词、密度、列宽拖动、排序、冻结、隐藏和完整 OR/空值过滤控件保存，经正常退出后第二真实 Host 使用相同 local-data 与 workspace UUID 从既有工作区卡片选择原表；两阶段分别保留 CDP、control、readiness 和 lifecycle 证据，并由 Host get 与真实 UI 核对完整呈现状态恢复。 | `grid.state` |

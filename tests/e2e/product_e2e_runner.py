@@ -66,8 +66,8 @@ DEFAULT_PACKAGE = RepoPaths.default(ROOT).publish_root
 
 
 @dataclass(frozen=True)
-class _NaturalAgingRun:
-    """Persistent data paths for the dedicated two-phase manual acceptance."""
+class _PersistentScenarioRun:
+    """Persistent data paths shared by a two-phase product acceptance."""
 
     phase: str
     state_path: Path
@@ -1312,26 +1312,26 @@ def run_scenario(
     package_root: Path,
     evidence_root: Path,
     node: str,
-    natural_aging: _NaturalAgingRun | None = None,
+    persistent_run: _PersistentScenarioRun | None = None,
 ) -> dict[str, Any]:
     # The packaged host runs with the package as its working directory. Keep
     # every test-mode file protocol absolute so WPF and the orchestrator refer
     # to the same isolated evidence/data tree.
     scenario_dir = (
-        natural_aging.scenario_dir.resolve()
-        if natural_aging is not None
+        persistent_run.scenario_dir.resolve()
+        if persistent_run is not None
         else (evidence_root / scenario.id).resolve()
     )
     scenario_dir.mkdir(parents=True, exist_ok=True)
     runtime_dir = (
         scenario_dir / "_runtime"
-        if natural_aging is not None
+        if persistent_run is not None
         else _scenario_runtime_directory(evidence_root, scenario)
     )
     readiness_dir = (
-        natural_aging.readiness_dir if natural_aging is not None else runtime_dir / "host"
+        persistent_run.readiness_dir if persistent_run is not None else runtime_dir / "host"
     )
-    readiness_dir.mkdir(parents=True, exist_ok=natural_aging is not None)
+    readiness_dir.mkdir(parents=True, exist_ok=persistent_run is not None)
     controls_dir = runtime_dir / "controls"
     controls_dir.mkdir(parents=True)
     import_source = controls_dir / "import-source.csv"
@@ -1401,11 +1401,11 @@ def run_scenario(
         encoding="utf-8",
     )
     workspace_root = (
-        natural_aging.workspace_root
-        if natural_aging is not None
+        persistent_run.workspace_root
+        if persistent_run is not None
         else controls_dir / "workspace-root"
     )
-    if natural_aging is None:
+    if persistent_run is None:
         workspace_root.mkdir()
     snapshot_package = controls_dir / "workspace-snapshot.vtsnapshot"
     snapshot_extract = controls_dir / "snapshot-extract.bin"
@@ -1429,7 +1429,7 @@ def run_scenario(
     )
     environment["VIBETABLE_E2E_WEBVIEW2_USER_DATA_ROOT"] = str(
         (
-            (runtime_dir if natural_aging is not None else readiness_dir) / "webview2-user-data"
+            (runtime_dir if persistent_run is not None else readiness_dir) / "webview2-user-data"
         ).resolve()
     )
     if scenario.id == "05-formula-lifecycle":
@@ -1530,13 +1530,13 @@ def run_scenario(
                 "--data-root",
                 str(readiness_dir / "local-data"),
             ]
-            if natural_aging is not None:
+            if persistent_run is not None:
                 node_command.extend(
                     [
-                        "--natural-aging-phase",
-                        natural_aging.phase,
+                        "--persistent-phase",
+                        persistent_run.phase,
                         "--state",
-                        str(natural_aging.state_path),
+                        str(persistent_run.state_path),
                     ]
                 )
             node_returncode, node_stdout, node_stderr = _run_node_runner(
@@ -1747,7 +1747,14 @@ def run_product_acceptance(
         ]
         return 1, write_aggregate(report_path, audit=audit, results=results)
     results = [
-        run_scenario(
+        _run_host_presentation_restart_acceptance(
+            scenario,
+            package_root=package_root.resolve(),
+            run_root=run_root,
+            node=node,
+        )
+        if scenario.id == "33-host-grid-presentation"
+        else run_scenario(
             scenario,
             package_root=package_root.resolve(),
             evidence_root=run_root,
@@ -1757,6 +1764,106 @@ def run_product_acceptance(
     ]
     report = write_aggregate(report_path, audit=audit, results=results)
     return (0 if report["status"] == "passed" else 1), report
+
+
+def _run_host_presentation_restart_acceptance(
+    scenario: Scenario,
+    *,
+    package_root: Path,
+    run_root: Path,
+    node: str,
+) -> dict[str, Any]:
+    """Run S33 in two real Host processes sharing only the approved data paths."""
+    persistent_root = (run_root / scenario.id / "persistent").resolve()
+    state_path = persistent_root / "seed-state.json"
+    readiness_dir = persistent_root / "host"
+    workspace_root = persistent_root / "workspace"
+    seed_dir = run_root / scenario.id / "seed" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    persistent_root.mkdir(parents=True, exist_ok=True)
+    workspace_root.mkdir()
+    seed = run_scenario(
+        scenario,
+        package_root=package_root,
+        evidence_root=run_root,
+        node=node,
+        persistent_run=_PersistentScenarioRun(
+            phase="seed",
+            state_path=state_path,
+            scenario_dir=seed_dir,
+            readiness_dir=readiness_dir,
+            workspace_root=workspace_root,
+        ),
+    )
+    phase_results: dict[str, Any] = {"seed": seed}
+    if seed.get("status") != "passed" or seed.get("lifecycle", {}).get("status") != "passed":
+        return _host_presentation_phase_failure(
+            scenario, phase_results, "HOST_PRESENTATION_SEED_FAILED"
+        )
+    required = ("workspaceId", "tableId", "fields", "state", "revision")
+    if not all(
+        seed.get(name) is not None for name in required
+    ) or not _natural_aging_workspace_matches(
+        workspace_root, readiness_dir, seed.get("workspaceId")
+    ):
+        return _host_presentation_phase_failure(
+            scenario, phase_results, "HOST_PRESENTATION_SEED_INVALID"
+        )
+    try:
+        _write_json_atomic(
+            state_path,
+            {
+                "formatVersion": 1,
+                "workspaceRoot": str(workspace_root),
+                "localData": str((readiness_dir / "local-data").resolve()),
+                **{name: seed[name] for name in required},
+            },
+        )
+    except OSError:
+        return _host_presentation_phase_failure(
+            scenario, phase_results, "HOST_PRESENTATION_STATE_WRITE_FAILED"
+        )
+    # The first host has proven normal close before the second is allowed to
+    # consume its local data. Its old readiness is deliberately not evidence of
+    # the second launch.
+    (readiness_dir / "vibetable-readiness.json").unlink(missing_ok=True)
+    resume_dir = run_root / scenario.id / "resume" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    resume = run_scenario(
+        scenario,
+        package_root=package_root,
+        evidence_root=run_root,
+        node=node,
+        persistent_run=_PersistentScenarioRun(
+            phase="resume",
+            state_path=state_path,
+            scenario_dir=resume_dir,
+            readiness_dir=readiness_dir,
+            workspace_root=workspace_root,
+        ),
+    )
+    phase_results["resume"] = resume
+    if resume.get("status") != "passed" or resume.get("lifecycle", {}).get("status") != "passed":
+        return _host_presentation_phase_failure(
+            scenario, phase_results, "HOST_PRESENTATION_RESUME_FAILED"
+        )
+    return {
+        **resume,
+        "scenario": scenario.id,
+        "title": scenario.title,
+        "requirement": scenario.requirement,
+        "phases": phase_results,
+        "persistentState": str(state_path),
+    }
+
+
+def _host_presentation_phase_failure(
+    scenario: Scenario,
+    phases: Mapping[str, Any],
+    code: str,
+) -> dict[str, Any]:
+    return {
+        **_failure_result(scenario, code=code, message="S33 两阶段真实 Host 持久化资格未完成。"),
+        "phases": dict(phases),
+    }
 
 
 def run_natural_aging_phase(
@@ -1805,7 +1912,7 @@ def run_natural_aging_phase(
         package_root=package_root.resolve(),
         evidence_root=evidence_root.resolve(),
         node=str(ensure_node(ROOT)),
-        natural_aging=_NaturalAgingRun(
+        persistent_run=_PersistentScenarioRun(
             phase=phase,
             state_path=state_path,
             scenario_dir=run_dir,
