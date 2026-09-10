@@ -164,6 +164,56 @@ func TestPDFQualificationCorpusUsesValidCrossReferenceTables(t *testing.T) {
 	}
 }
 
+func TestPDFExtractorIndexesOnlyReachablePageContents(t *testing.T) {
+	payload := pdfQualificationReachabilityDocument(t)
+	assertValidPDFCrossReferences(t, payload)
+	if repeated := pdfQualificationReachabilityDocument(t); !bytes.Equal(payload, repeated) {
+		t.Fatal("PDF reachability corpus generation is not deterministic")
+	}
+
+	result := Extract(
+		context.Background(), "reachability.pdf", "application/pdf",
+		bytes.NewReader(payload), DefaultExtractionLimits,
+	)
+	if result.Status != ExtractionIndexed || !strings.Contains(result.Text, "reachable page token") {
+		t.Fatalf("Extract() = %#v", result)
+	}
+	for _, forbidden := range []string{
+		"unreachable page forbidden",
+		"unreferenced object forbidden",
+		"metadata forbidden",
+		"embedded file forbidden",
+		"annotation forbidden",
+	} {
+		if strings.Contains(result.Text, forbidden) {
+			t.Fatalf("non-page token %q was indexed: %q", forbidden, result.Text)
+		}
+	}
+}
+
+func TestPDFExtractorDoesNotMisreportUnsupportedFilterBytes(t *testing.T) {
+	payload := pdfQualificationUnsupportedFilterDocument(t)
+	assertValidPDFCrossReferences(t, payload)
+	if repeated := pdfQualificationUnsupportedFilterDocument(t); !bytes.Equal(payload, repeated) {
+		t.Fatal("unsupported-filter corpus generation is not deterministic")
+	}
+
+	result := Extract(
+		context.Background(), "ascii-hex.pdf", "application/pdf",
+		bytes.NewReader(payload), DefaultExtractionLimits,
+	)
+	if result.Status == ExtractionIndexed {
+		if result.Text != "unsupported filter forbidden" {
+			t.Fatalf("decoded page text = %q", result.Text)
+		}
+		return
+	}
+	assertExtractionCode(t, result, ExtractionUnsupported, "extract.unsupported")
+	if result.Text != "" {
+		t.Fatalf("unsupported filter returned partial text: %#v", result)
+	}
+}
+
 func TestPDFExtractorRejectsCorruptFlateAndDecodedStreamLimit(t *testing.T) {
 	corrupt := pdfQualificationDocument(t, []byte(`BT /F1 12 Tf (corrupt) Tj ET`), true)
 	streamMarker := []byte("\nstream\n")

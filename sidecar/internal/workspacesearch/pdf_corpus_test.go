@@ -63,6 +63,63 @@ end`)
 	return pdfQualificationObjects(objects)
 }
 
+func pdfQualificationReachabilityDocument(t testing.TB) []byte {
+	t.Helper()
+	objects := [][]byte{
+		[]byte("<< /Type /Catalog /Pages 2 0 R /Metadata 10 0 R " +
+			"/Names << /EmbeddedFiles << /Names [(note) 12 0 R] >> >> >>"),
+		[]byte("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+		[]byte("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+			"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R /Annots [11 0 R] >>"),
+		[]byte("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+		pdfQualificationStream(t, []byte(`BT /F1 12 Tf (reachable page token) Tj ET`), false),
+		[]byte("<< /Type /Page /Parent 7 0 R /MediaBox [0 0 612 792] " +
+			"/Resources << /Font << /F1 4 0 R >> >> /Contents 8 0 R >>"),
+		[]byte("<< /Type /Pages /Kids [6 0 R] /Count 1 >>"),
+		pdfQualificationStream(t, []byte(`BT (unreachable page forbidden) Tj ET`), false),
+		pdfQualificationStream(t, []byte(`BT (unreferenced object forbidden) Tj ET`), false),
+		pdfQualificationTypedStream(
+			"/Type /Metadata /Subtype /XML",
+			[]byte(`<xmp>BT (metadata forbidden) Tj ET</xmp>`),
+		),
+		[]byte("<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] /AP << /N 13 0 R >> >>"),
+		pdfQualificationTypedStream(
+			"/Type /EmbeddedFile", []byte(`BT (embedded file forbidden) Tj ET`),
+		),
+		pdfQualificationTypedStream(
+			"/Type /XObject /Subtype /Form /BBox [0 0 10 10] "+
+				"/Resources << /Font << /F1 4 0 R >> >>",
+			[]byte(`BT /F1 8 Tf (annotation forbidden) Tj ET`),
+		),
+	}
+	return pdfQualificationObjects(objects)
+}
+
+func pdfQualificationTypedStream(dictionary string, content []byte) []byte {
+	return append(
+		[]byte(fmt.Sprintf("<< %s /Length %d >>\nstream\n", dictionary, len(content))),
+		append(content, []byte("\nendstream")...)...,
+	)
+}
+
+func pdfQualificationUnsupportedFilterDocument(t testing.TB) []byte {
+	t.Helper()
+	content := []byte(`BT /F1 12 Tf (unsupported filter forbidden) Tj ET`)
+	encoded := []byte(strings.ToUpper(fmt.Sprintf("%x>", content)))
+	objects := [][]byte{
+		[]byte("<< /Type /Catalog /Pages 2 0 R >>"),
+		[]byte("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+		[]byte("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+			"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"),
+		[]byte("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+		append(
+			[]byte(fmt.Sprintf("<< /Length %d /Filter /ASCIIHexDecode >>\nstream\n", len(encoded))),
+			append(encoded, []byte("\nendstream")...)...,
+		),
+	}
+	return pdfQualificationObjects(objects)
+}
+
 func pdfQualificationStream(t testing.TB, content []byte, flate bool) []byte {
 	t.Helper()
 	stream := append([]byte(nil), content...)
