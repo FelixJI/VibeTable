@@ -1,12 +1,12 @@
 # ContentProfile / RecordDocumentLink 迁移资格记录
 
-状态：源码与聚焦契约已通过审查和相关验证；最终发布构建失败，保留 staging 的 S18 功能验证已通过，但完整构建及其后产品资格仍未完成。本记录不声明本批交付完成、可合并、L5 完成或 PR #140 整体完成。
+状态：同步主干后的本批源码已通过最终双轴审查，新源码完整发布构建与同包 S18 均通过。旧 1175 失败及其证据仍保留，未声称根因已修复。远端 required 门禁尚未执行；本记录不声明已可合并、L5 完成或 PR #140 整体完成。
 
 ## 来源与完整范围
 
 - 原公开行为 producer：`79c2ce4faa53d65af1fa9ee297655739d5407a2e`；冻结提交 `357d70e4` 捕获 28 例真实 Python 注册/编排/DTO 输入输出，见[原契约说明](../../contracts/v2/content-metadata-python-oracle.md)。metadata/schema 查询 adapter 的边界明确，不能把该 corpus 当作真实包证据。
 - 完整迁移提交：`caecfeb5d76508679721e18816d51f3ff74f6f2e`。正常同步 main `12556e5db81dd49592d69b5af1780007ccd36c37` 后源码为 `ee27eb0584f6f3de888909b079a7407e3b25287b`；同步只涉及五份文档。
-- 真实 S18 暴露的 Host 错误投影修复：`e8af1501f21303b80ccc6c6250ab4c72c3d63c63`，为当前最终 runtime 源码。
+- 真实 S18 暴露的 Host 错误投影修复：`e8af1501f21303b80ccc6c6250ab4c72c3d63c63`，为当时修复后的 runtime 源码；后续主干同步的固定源码见末节。
 - 后续提交 `dedbf2ae8461fee0b1cb60add3f34d4b02a507ce` 仅修改 `sidecar/cmd/vibetable-pb/main_process_test.go` 的独立精确预期；相对 e8af 的 runtime diff 为 0，不产生另一个包源码结论。
 
 本批完整迁移七方法：ContentProfile 的 load/commit/delete，RecordDocumentLink 的 list/commit/repair/delete。Go 在现有 metadata 事务中完成领域校验、CAS、durable receipt 和 audit/outbox；record 查询使用业务主键，broken document link 保持允许。同请求 replay 先读取 receipt，避免成功后的 commit/repair/delete 被当前 revision 或不存在检查拒绝。
@@ -39,7 +39,7 @@
 - 扩展 Go 测试先发现旧静态 20 方法 fixture 未收录七方法，修正对应独立预期后消除这些断言失败；本次真实 cmd 进程清单遗漏也已由 dedbf 修正。
 - 完整相关 Go 包命令 `go test ./internal/metadata ./internal/productrpc ./internal/app ./internal/contracts/productcapabilities -count=1` 中 metadata/productrpc/productcapabilities 通过，但 app 仍有三项 `TempDir cleanup: directory not empty`：`TestHistoryReadProductHTTPReturnsFreshAuditedPage`、`TestWorkspaceMutationReplaySerializesConcurrentSameKey`、`TestSchemaGetTableProductHTTPRejectsInvalidFieldWireShape/negative-number`。无语义断言失败，根因尚未确定；未加 retry、未放宽检查、未重复全包求绿，不能记录为完整 Go 入口通过。
 
-## 三次构建尝试与首次 S18
+## 历史三次构建尝试与首次 S18
 
 三次均使用完整命令 `uv run --frozen --no-sync python scripts/build_next.py --release`，无 skip stage，未手工替换组件。日志根目录为 `build/qa/content-metadata/`。
 
@@ -61,9 +61,9 @@ session 86345 EXIT1，run `20260909T144121Z`，0/1 PASS、0 skip、15.331s。新
 
 尝试 3 的回滚 journal 为 rollbackFailed / UPDATE_ROLLBACK_IO_FAILED；worker 记录 System.IO.IOException / HRESULT 0x80070497，本机 Win32 1175 消息为“无法删除要被替换的文件”。ledger 中 resources 已 restored，release.json 为 isolatePlanned。证据不足以证明最终具体调用，未归因 Content，未在本批混入 Updater 生产修改；独立调查处理中。
 
-## 当前资格缺口
+## 尝试 3 后的历史资格缺口
 
-最终 e8af runtime staging 与失败现场保持在仓库固定目录，未盲目重跑构建。`dist/VibeTable.Next` 仍是此前 ee27 包，不能拿它运行所谓最终 S18。需在完成回滚问题处置并恢复完整构建资格后，以同一最终新包运行 S18，核对 profile、broken link→repair、sidecar restart 后持久状态、bridge 及清理。完整构建后的最终 S18 资格为 pending；下述 staging 功能证据不授予合并或发布资格。
+尝试 3 失败时，e8af runtime staging 与失败现场保留在仓库固定目录，未盲目重跑构建；当时 `dist/VibeTable.Next` 仍是此前 ee27 包，不能作为最终 S18。其后下述 staging 功能证据没有补齐完整构建资格。本次主干同步后的必要新构建及同包结果见末节，旧日志不改写。
 
 ## 保留 staging 的独立 S18 功能证据
 
@@ -80,7 +80,7 @@ run `20260909T150507Z` / session 41605 EXIT0：1/1 PASS，21 项断言，19.554s
 
 该测试使用构建已完成组件与 manifest 的原 staging，未换组件、未运行旧 ee27 包、未跳过
 产品 runner 的 freshness。它证明 Host 错误投影修复在真实包中有效；自更新 smoke 的
-原构建失败仍未解决，不能把此局部成功改写成完整发布构建成功。
+原构建失败的根因仍未确认，不能把此局部成功改写成历史完整发布构建成功。
 ## 同步 Mutation 主干后的边界
 
 本分支正常合并 main `146a9c2cac5998ee013daebc78eedff0bd4a7ca5`。生产与测试
@@ -119,3 +119,17 @@ run `20260909T150507Z` / session 41605 EXIT0：1/1 PASS，21 项断言，19.554s
 原字段设置 RED/GREEN 日志分别为 `build/content-main-field-settings-red.log` 与
 `build/content-main-field-settings-green.log`。审查早先未逐一核对 fixture 的零问题结论
 已撤回，以全部修正后的尾审为准。
+## 同步后的最终源码与新包资格
+
+固定源码 `3ef2da8c09725cbf63cc43fc5eb7ff07a62d5b97`，已同步 main 146a 并修正上述八个重复 fixture；最终独立 Standards 与 Spec 均为 0 findings。构建前工作树干净。本节只追加真实新源码资格，不撤销历史失败或把原 1175 根因归于 Content。
+
+旧现场在启动新构建前原样归档：核实 `build/self-update-smoke` 与拟目标 `build/self-update-smoke-failed-e8af-20260909` 的绝对解析均在本 worktree 的 build 内，目标不存在、源非 reparse point，进程枚举中该目录所属活跃进程为 0；用同一 PowerShell `Move-Item -LiteralPath` 整体移动。未复制 exe、递归删除或改写 journal，journal 内绝对路径引用仍指原目录。检查和归档记录为 `build/content-e8af-smoke-archive.txt`；原诊断 probe、日志及失败目录均保留，未触碰 AV 隔离区。
+
+- 新源码完整命令 `uv run --frozen --no-sync python scripts/build_next.py --release`，handle `62767`，**EXIT 0**。这是总第 4 次完整构建尝试、本次主干同步后新源码的第 1 次；没有失败重跑。Go 1.27.0、Node 24.19.0、.NET 10.0.401（global.json 10.0.400/latestFeature）和共享 uv 均为现有工具链，仅补本 worktree 的 Go/.NET junction，未改依赖或 lock。
+- 完整阶段包含 sidecar、recovery tools、Web、PyInstaller、Host publish、产物 verify、manifest、self-update smoke、atomic publish，固定产物为 `dist/VibeTable.Next`。命令/source/终态记录 `build/qa/content-metadata/build-release-main-command.txt`，完整日志 `build/qa/content-metadata/build-release-main.log`。本次 self-update 通过不证明旧 1175 的根因已解决。
+- 同一新包运行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 18-workspace-search --evidence-root build/qa/content-metadata/product-e2e-main`，handle `91707`，**EXIT 0，1/1 PASS，0 FAIL，0 skip**。21 项断言全部通过，20602ms；未重建、替换组件或跳过原 runner 检查。
+- 报告 `build/qa/content-metadata/product-e2e-main/20260910T021430Z/product-e2e-report.json`；原日志 `build/qa/content-metadata/s18-main.log`、命令记录 `s18-main-command.txt`。场景目录保留 result、trace、截图、Host/runner 日志与精确 sidecar fault request/result。
+- Package audit 与 desktop-host、web-grid、python-backend、pocketbase-sidecar 四组件 freshness 全通过。真实 UI 的 ContentProfile、显式 link、unlink 后 broken、repair 到第二 authority document 均通过；精确 sidecar child kill 后记录与 repaired link 在重开时持久。原搜索、历史范围、stale hit 重新解析旅程同时通过。
+- Bridge failures 0、pending 0；重启窗口仅有 5 项原机制精确确认的 BACKEND_UNAVAILABLE，未吞意外失败。Renderer 无 page error、意外 console 或外部 HTTP 请求；Host 正常 exit 0，membersAfterExit、descendantsAfterExit、final remainingPids 均空，portsReleased、ownerLeaseCleanup 和 finalCleanup 全通过。
+
+最新组合的完整 Python 入口 `uv run --frozen --no-sync python scripts/automation_project.py python-quality` 由主任务运行，handle `10769`，**EXIT 0：1851 PASS / 1 skip，78.90s，coverage 91.60%**；Ruff、Pyright、mypy 均通过，日志 `build/content-python-quality-main.log`。这是当前 3ef 与 main 146a 组合的完整结果，旧 ee27 的 1823 PASS 仍单独保留。上述本地通过不覆盖旧 Go TempDir 清理失败，也不替代尚未执行的远端完整 required 门禁。
