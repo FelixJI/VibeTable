@@ -8,16 +8,26 @@
 - GitHub run：[main CI 33975773081](https://github.com/FelixJI/VibeTable/actions/runs/33975773081)
 - 报告契约：`contractVersion=2.0`
 - 结果：23/23 passed、0 failed、0 skipped。
-- 当前 manifest gap：5（`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`）。
+- 当前 manifest gap：6（`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`）。
 - 当前 manifest surplus：无。
 
-场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview"、"29-lookup-source-pagination" 和 "30-query-snapshot-validation" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这五项新增场景，也不证明新的关系、来源分页与快照校验资格。
+场景 "24-directory-replica-conflict"、"26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview"、"29-lookup-source-pagination" 和 "30-query-snapshot-validation" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这六项新增场景，也不证明新的冲突处理、关系、来源分页与快照校验资格。
 - 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与
   `history.drawer.initialLoad` 均为 `within-budget`。
 
 目录镜像工作区的公开创建、表与记录写入、释放活动缓存、同 UUID 重开，以及精确终止 sidecar 后的替代进程恢复，均已在同一 main 打包候选的场景 23 通过。16 项断言包含单次 `query.page` 与 `replica.status` 观察、精确终态、记录及 revision 保持。全部场景均附着真实 WebView2；正常退出后 Host exit code 为 0、进程组及后代为空、端口已释放。
 
 本结论仅覆盖场景声明的目录副本恢复，不扩展为手动同步、跨设备 offline/reconnect、冲突处理或 exclusive-writer 资格。手动 `replica.synchronize` 继续 Internal only。
+
+场景 24 的准备使用两个独立 local-data、WebView 数据目录与目录副本，从同一公开 seed 分叉。
+每次编辑后通过 Workspace Center 关闭工作区，等待 protection snapshot，再重开同一缓存，
+经 UI 就绪和单次公开查询检查 marker 与 revision。双方正常关闭后只交换不可变副本 payload，
+再通过 Conflict Center preview/apply 与 Snapshot UI previewRestore 检查选中版本和败方恢复可达性。
+三个双 Host 阶段分别保留日志、readiness、退出证据、Node trace、截图和结果；任一阶段失败
+阻止后续运输或重开。每个 Node 阶段上限仍为 180s，硬超时不保证 Node finally 能采集全部诊断，
+Python 保留已捕获输出、部分结果及失败信息，并尝试正常关闭 Host，不补造成功证据。
+该场景尚未运行当前产品包；其 provisional 准入前置修复尚未进入上述 main 基线，
+夹具单元测试不证明真实冲突或双端恢复闭环完成。
 
 后续 CI 的场景 23 按钮超时与场景 14 桥接失败尚未查明根因，详见[历史失败记录](quality/product-e2e-failure-notes.md)。因此本节记录的是一份已通过样本，不代表最新 main 的全场景零失败结论。后续局部测试通过不能替代失败根因确认及当前提交的完整 CI。
 

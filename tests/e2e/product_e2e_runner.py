@@ -1314,6 +1314,12 @@ def run_scenario(
     node: str,
     natural_aging: _NaturalAgingRun | None = None,
 ) -> dict[str, Any]:
+    if scenario.id == "24-directory-replica-conflict":
+        from tests.e2e.directory_replica_conflict import run_directory_replica_conflict
+
+        return run_directory_replica_conflict(
+            package_root=package_root, evidence_root=evidence_root, node=node
+        ) | {"title": scenario.title, "requirement": scenario.requirement}
     # The packaged host runs with the package as its working directory. Keep
     # every test-mode file protocol absolute so WPF and the orchestrator refer
     # to the same isolated evidence/data tree.

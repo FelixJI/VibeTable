@@ -138,6 +138,12 @@
     "capabilities": ["workspace.lifecycle", "workspace.protection", "replica.recovery"]
   },
   {
+    "id": "24-directory-replica-conflict",
+    "title": "双端目录副本冲突与败方恢复",
+    "requirement": "两个真实 packaged Host 使用独立 local-data 与目录副本，从同一表行 seed 分叉；正常关闭后仅交换公开副本 payload，稳定重开后在 Conflict Center 选择 replica，preview 有效计划并 apply 同一 planId；query.page 验证选中的远端 marker，公开 snapshot.list 与 UI previewRestore 证明败方 recoverySnapshotIds 可达。",
+    "capabilities": ["replica.conflict", "replica.recovery", "workspace.protection"]
+  },
+  {
     "id": "26-lookup-definition-read",
     "title": "Lookup 持久定义读取",
     "requirement": "通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。",
