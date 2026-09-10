@@ -5,7 +5,7 @@
 ## 固定源码与完整意图
 
 - 旧 Python producer：`12556e5db81dd49592d69b5af1780007ccd36c37`。
-- 不可变捕获提交：`86639eb5af956956e637fc142e62e10160118f35`，78 例、81 次公开调用；原捕获器保留在该提交，JSON 未重新生成。
+- 不可变捕获提交：`86639eb5af956956e637fc142e62e10160118f35`，78 例、81 次公开调用；原始捕获来源保留；捕获器现随分支版本管理，检查不再依赖该 squash 前提交，JSON 未重新生成。
 - 同步：正常合入 main `146a9c2cac5998ee013daebc78eedff0bd4a7ca5`，同步提交 `19230d6455fd9711b46138c65bc9faa677aaa609`。
 - 实施源码：`4eb7f00348618a31a78e2434768f6b24629d2732`。本资格文档的后续提交只有文档，不改 runtime。
 
@@ -78,3 +78,13 @@ dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj
 修正只在 `ProductRpcCapabilityManifestTests` 独立排序清单增加 `interface.commit/delete/list/load:workspace`，保持精确集合断言，不从生产 manifest 生成预期。Surface 四方法不在 `ProductDataRpcRegistry.RequestTypes`：renderer 使用 `interface.*Requested` 经 Surface controller、ISurfaceRpcGateway 与 Host Product 生命周期调用，workspace wire 由 Host 绑定。因此 RouteSelector、WebMessageRouter 的通用 owner/Whitelist 循环本次没有同类 RED，不向其中伪造 Surface generic 请求或绕过 scope validator。
 
 同一五组 GREEN 为 **139 PASS / 0 FAIL / 0 skip，18s，EXIT 0**。RED handle `68891`，日志 `build/qa/surface-metadata/host-owner-red.log`、TRX `host-owner-red/surface-main-host-contracts-red.trx`；GREEN handle `85395`，日志 `host-owner-green.log`、TRX `host-owner-green/surface-main-host-contracts-green.trx`（后三者同在 `build/qa/surface-metadata/`）。仅测试及本记录变化，production diff 为 0，未重建或重跑 S17；等待此补漏的独立尾审，不宣称五组等于全量 .NET suite。
+
+## Oracle 校验去除 squash 前提交依赖
+
+此前 checker 使用 `git show 86639eb5:...json`，该分支捕获提交在 squash 后不保证可达。此修正恢复原 capture 工具为受版本管理的 `contracts/v2/capture_surface_python_oracle.py`；原 cases/helper/ScriptedMetadata 的 AST 与原捕获工具逐项对照一致，冻结 JSON 无改动。
+
+新 `--check` 只读取可从 main 到达的 producer `12556e5db81dd49592d69b5af1780007ccd36c37` 的 backend Git archive。只接受 backend 下普通文件/目录，拒绝路径越界、绝对路径、Windows 流路径、符号/硬链接与特殊成员；解出位置为固定 `build/contract-oracles/surface-python/` 下独立 run 目录，不删除或覆盖既有目录。隔离子进程忽略继承的 PYTHONPATH/user site，从旧 backend 注册四个方法并通过原 dispatcher/DTO/SurfaceService 重放全部 78 例、81 次请求；捕获结果与冻结 JSON 全值比较，保留数组顺序和数值/布尔类型差异，不依赖 Go 输出或新的业务 hash。
+
+`uv run --frozen --no-sync python contracts/v2/generate_surface_python_oracle.py --check` 最终 EXIT 0，日志 `build/qa/surface-metadata/oracle-replay-final.log`。`uv run --frozen --no-sync pytest tests/contract/test_surface_python_oracle.py --no-cov -q` 为 **10 PASS，2.33s**，日志 `oracle-replay-contract-final.log`（同目录）：真实旧 producer 重放一致，复制样本的 response 修改、数值 0 改为 false 均拒绝；八种非法归档成员拒绝，固定 producer 不存在时 fail closed。每次正常重放的 captured.json/stdout/stderr 保留在 build 隔离目录。首次 Ruff 曾报恢复捕获器的导入排序错误，修正后相关 format/check 全通过；原始工具输出与此前 9 PASS 日志保留。
+
+此批仅修改 oracle 工具、契约测试与说明；冻结 JSON 和 production diff 均为 0，没有同步 main、重建、重跑 S17 或 push。原源码包资格与本次校验工具资格分别保留；本次修改等待独立双轴审查。

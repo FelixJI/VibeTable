@@ -1,16 +1,16 @@
 # Surface / Interface 四方法迁移：固定公开基线与设计
 
-状态：四方法纵切源码已实施，待独立审查、完整质量与真实包 S17 资格。冻结提交 `86639eb5` 保留原 Python 捕获工具与 JSON；本分支是同一完整迁移 PR，不单独发起 oracle PR。
+状态：四方法纵切源码已实施，待独立审查、完整质量与真实包 S17 资格。冻结提交 `86639eb5` 记录原始捕获来源；捕获工具现随本分支版本管理，检查不依赖该 squash 前 Git 对象；本分支是同一完整迁移 PR，不单独发起 oracle PR。
 
 ## 固定生产者与证据边界
 
 producer 为 `12556e5db81dd49592d69b5af1780007ccd36c37`，创建独立分支时已实际 fetch 验证。之后主干新合入的 Mutation owner 不改写此基线；实施前已正常合入 main `146a9c2`，同步提交为 `19230d6`。
 
-`generate_surface_python_oracle.py` 调用原 `_register_surface_methods`、RpcDispatcher、SurfaceService 和生成的 Pydantic DTO，捕获 `interface.list/load/commit/delete` 的 78 组、81 次公开请求响应。四方法预期由捕获脚本独立列明，不从将来的 Go 注册或生成 owner 清单反推。脚本核对八个 producer 源文件与固定 Git tree 一致，并核对实际 import 文件来自本工作树。
+`generate_surface_python_oracle.py` 调用原 `_register_surface_methods`、RpcDispatcher、SurfaceService 和生成的 Pydantic DTO，捕获 `interface.list/load/commit/delete` 的 78 组、81 次公开请求响应。四方法预期由捕获脚本独立列明，不从将来的 Go 注册或生成 owner 清单反推。检查入口仅从固定 producer Git tree 归档 backend，安全解入本工作树 build 下独立目录；隔离子进程核对实际 import 的 SurfaceService、注册入口和 RpcDispatcher 来自该旧 backend。
 
 metadata 依赖是明确的 ScriptedMetadata adapter：返回 `fixture-revision-N`，按 seed 指定行和顺序，模拟写入冲突或存储异常。它不模拟 PB revision 算法，不计算新增 hash，也不证明真实数据库、并发或 durable replay。本 JSON 的 revision 只说明领域结果透传 metadata 返回值；未来真实 Go 测试须先用权威写入建立 fixture，再将固定 revision token 与真实 revision 对应，不能要求 Go 输出 fixture 字符串。
 
-冻结时脚本拒绝覆盖 JSON，`--check` 经旧 producer 重放逐值比较。现已删除 Python handler；原捕获器保留在 `86639eb5`，当前 checker 只比较不可变冻结 JSON 与 producer，不用新 Go 输出刷新原件。
+冻结时脚本拒绝覆盖 JSON。当前 `generate_surface_python_oracle.py --check` 在 `build/contract-oracles/surface-python/replay-*` 隔离目录重放 `capture_surface_python_oracle.py` 中保留的原 cases/ScriptedMetadata，使用可从 main 到达的固定 `12556e5` backend。全部 JSON 内容经保持数组顺序与值类型的规范序列化精确比较；不是只查结构、计数或新 Go 输出。样本不修改，缺 producer、归档异常、捕获失败或任何样本差异均失败。
 
 已捕获的区分性边界：
 
