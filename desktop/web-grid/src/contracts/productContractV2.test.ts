@@ -1,3 +1,4 @@
+import { parseRelationInspectionReport } from "@/relation-inspection/type";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -254,5 +255,16 @@ describe("product contract v2 golden fixtures", () => {
         manifest: expect.any(Object),
       }),
     ]);
+  });
+});
+
+it("the generated relation inspection example is consumable by the product parser", () => {
+  const catalog = readFixture("product-rpc-catalog.json") as {
+    rpcCases: { method: string; success: { result: unknown } }[];
+  };
+  const entry = catalog.rpcCases.find(item => item.method === "relation.inspectPair");
+  expect(entry).toBeDefined();
+  expect(parseRelationInspectionReport(entry!.success.result)).toMatchObject({
+    finished: true, complete: true, counts: {}, samples: [],
   });
 });

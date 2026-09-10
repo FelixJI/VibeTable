@@ -181,6 +181,16 @@ def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed
     assert accepted.root["draft"] == {}
     assert accepted.root["relationPair"]["sourceDisplayFieldId"] == "fld_order_number"
 
+    patch_request = accepted.root | {
+        "action": "update",
+        "fieldId": "fld_orders_customer",
+        "draft": None,
+        "relationPairPatch": {"reciprocalDisplayName": "购买记录"},
+    }
+    patch_request.pop("relationPair")
+    patch = PRODUCT_RPC_REGISTRY["field.change.plan"].model_validate(patch_request)
+    assert patch.root == patch_request
+
     with pytest.raises(ValidationError):
         PRODUCT_RPC_REGISTRY["field.change.plan"].model_validate(
             {
@@ -372,33 +382,12 @@ async def test_reconcile_has_no_python_transport_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_restore_uses_closed_product_routes() -> None:
-    service, transport = _service(
-        [
-            {"token": "restore-token", "canApply": True},
-            {"restoredToRevision": "rev-1"},
-        ]
-    )
-
-    await service.invoke(
-        "history.previewRestore",
-        ProductParams.model_validate(
-            {
-                "collection": "orders",
-                "itemId": "order-1",
-                "targetRevision": "rev-1",
-                "scope": "row",
-            }
-        ),
-    )
-    await service.invoke(
-        "history.applyRestore",
-        ProductParams.model_validate(
-            {"collection": "orders", "itemId": "order-1", "token": "restore-token"}
-        ),
-    )
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/history/restore-preview"
-    assert transport.requests[1]["path"] == "/api/vibetable/v1/history/restore-apply"
+@pytest.mark.parametrize("method", ["history.previewRestore", "history.applyRestore"])
+async def test_history_restore_has_no_python_transport_fallback(method: str) -> None:
+    service, transport = _service([])
+    with pytest.raises(ValueError, match="unknown product RPC method"):
+        await service.invoke(method, ProductParams.model_validate({}))
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

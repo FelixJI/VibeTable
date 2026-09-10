@@ -265,6 +265,144 @@ public sealed class ProductContractV2RoundTripTests
     }
 
     [TestMethod]
+    [DataRow("field-settings-describe.json")]
+    [DataRow("field-change-plan.json")]
+    [DataRow("apply-receipt.json")]
+    [DataRow("migration-status.json")]
+    [DataRow("field-recycle-bin.json")]
+    public void FieldOperationResultsRejectUnsupportedOuterContract(string fixture)
+    {
+        JsonObject result = ReadSchemaV2Node(fixture).AsObject();
+        AssertSchemaValidation(DeserializeFieldResult(fixture, result), "");
+        result["contract"] = "vibetable.schema.v1";
+        AssertSchemaValidation(DeserializeFieldResult(fixture, result), "unsupported contract");
+    }
+
+    [TestMethod]
+    public void FieldDescriptionValidatesExistingDefinitionAndAllowsNewField()
+    {
+        var described = ReadSchemaV2Node("field-settings-describe.json")
+            .Deserialize<FieldSettingsDescribeResultV2>()!;
+        FieldDefinitionV2 field = ReadSchemaV2Node("field-definition.json")
+            .Deserialize<FieldDefinitionV2>()!;
+        AssertSchemaValidation(described with { Definition = field }, "");
+        AssertSchemaValidation(described with { Definition = null }, "");
+        AssertSchemaValidation(
+            described with { Definition = field with { Contract = "vibetable.schema.v1" } },
+            "unsupported field contract");
+    }
+
+    [TestMethod]
+    public void FieldPlanValidatesBothSidesOfSourceAndReciprocalChanges()
+    {
+        var plan = ReadSchemaV2Node("field-change-plan.json")
+            .Deserialize<FieldChangePlanV2>()!;
+        FieldDefinitionV2 field = ReadSchemaV2Node("field-definition.json")
+            .Deserialize<FieldDefinitionV2>()!;
+        FieldDefinitionV2 invalid = field with { Contract = "vibetable.schema.v1" };
+        var related = new RelatedFieldChangeV2
+        {
+            TableId = "targets", FieldId = "fld_reverse", Before = field, After = field,
+            ExpectedSchemaRevision = "schema_1",
+        };
+        plan = plan with { Before = field, After = field, RelatedChanges = [related] };
+        AssertSchemaValidation(plan, "");
+        AssertSchemaValidation(plan with { Before = invalid }, "unsupported field contract");
+        AssertSchemaValidation(plan with { After = invalid }, "unsupported field contract");
+        AssertSchemaValidation(
+            plan with { RelatedChanges = [related with { Before = invalid }] },
+            "unsupported field contract");
+        AssertSchemaValidation(
+            plan with { RelatedChanges = [related with { After = invalid }] },
+            "unsupported field contract");
+        AssertSchemaValidation(plan with
+        {
+            Before = null, After = null,
+            RelatedChanges = [related with { Before = null, After = null }],
+        }, "");
+    }
+
+    [TestMethod]
+    public void FieldApplyReceiptValidatesReciprocalDefinitionAndAllowsDeletedFields()
+    {
+        var receipt = ReadSchemaV2Node("apply-receipt.json")
+            .Deserialize<FieldApplyReceiptV2>()!;
+        FieldDefinitionV2 field = ReadSchemaV2Node("field-definition.json")
+            .Deserialize<FieldDefinitionV2>()!;
+        FieldDefinitionV2 invalid = field with { Contract = "vibetable.schema.v1" };
+        var related = new RelatedFieldApplyReceiptV2
+        {
+            TableId = "targets", FieldId = "fld_reverse", SchemaRevision = "schema_2",
+            Definition = field,
+        };
+        receipt = receipt with { Definition = field, Related = [related] };
+        AssertSchemaValidation(receipt, "");
+        AssertSchemaValidation(receipt with { Definition = invalid }, "unsupported field contract");
+        AssertSchemaValidation(
+            receipt with { Related = [related with { Definition = invalid }] },
+            "unsupported field contract");
+        AssertSchemaValidation(receipt with
+        {
+            Definition = null, Related = [related with { Definition = null }],
+        }, "");
+    }
+
+    [TestMethod]
+    public void RecycleBinRejectsUnsupportedRetiredFieldContract()
+    {
+        var recycle = ReadSchemaV2Node("field-recycle-bin.json")
+            .Deserialize<FieldRecycleBinResultV2>()!;
+        FieldDefinitionV2 field = ReadSchemaV2Node("field-definition.json")
+            .Deserialize<FieldDefinitionV2>()!;
+        field = field with { Lifecycle = field.Lifecycle with { State = "retired" } };
+        AssertSchemaValidation(recycle with { Fields = [field] }, "");
+        AssertSchemaValidation(
+            recycle with { Fields = [field with { Contract = "vibetable.schema.v1" }] },
+            "unsupported field contract");
+    }
+
+    private static void AssertSchemaValidation(object result, string expectedReason)
+    {
+        Assert.AreEqual(expectedReason.Length == 0, SchemaV2Contract.ValidateResult(result, out string reason));
+        Assert.AreEqual(expectedReason, reason);
+    }
+
+    private static object DeserializeFieldResult(string fixture, JsonObject result)
+        => fixture switch
+        {
+            "field-settings-describe.json" => result.Deserialize<FieldSettingsDescribeResultV2>()!,
+            "field-change-plan.json" => result.Deserialize<FieldChangePlanV2>()!,
+            "apply-receipt.json" => result.Deserialize<FieldApplyReceiptV2>()!,
+            "migration-status.json" => result.Deserialize<FieldMigrationStatusV2>()!,
+            "field-recycle-bin.json" => result.Deserialize<FieldRecycleBinResultV2>()!,
+            _ => throw new ArgumentOutOfRangeException(nameof(fixture), fixture, null),
+        };
+
+    [TestMethod]
+    public void RelationPairPatchPlanKeepsOptionalFieldsAndRejectsUnknownIdentity()
+    {
+        JsonObject plan = ReadSchemaV2Node("field-change-plan.json").AsObject();
+        JsonObject intent = plan["intent"]!.AsObject();
+        intent["action"] = "update";
+        intent["draft"] = null;
+        intent["relationPairPatch"] = new JsonObject
+        {
+            ["sourceCardinality"] = "one", ["reciprocalDisplayName"] = "订单",
+        };
+        plan["relatedChanges"] = new JsonArray(new JsonObject
+        {
+            ["tableId"] = "targets", ["fieldId"] = "fld_reverse",
+            ["before"] = null, ["after"] = null,
+            ["expectedSchemaRevision"] = "schema_1", ["expectedDataRevision"] = 7,
+        });
+        FieldChangePlanV2 decoded = JsonSerializer.Deserialize<FieldChangePlanV2>(plan.ToJsonString())!;
+        Assert.AreEqual("订单", decoded.Intent.RelationPairPatch!.ReciprocalDisplayName);
+        Assert.AreEqual(7L, decoded.RelatedChanges![0].ExpectedDataRevision);
+        intent["relationPairPatch"]!["pairId"] = "replacement";
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<FieldChangePlanV2>(plan.ToJsonString()));
+    }
+
+    [TestMethod]
     public void SchemaSnapshotRejectsUnsupportedNestedFieldContract()
     {
         JsonObject catalog = ReadObject("product-rpc-catalog.json");

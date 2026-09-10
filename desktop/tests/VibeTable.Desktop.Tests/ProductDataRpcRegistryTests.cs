@@ -12,13 +12,36 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductDataRpcRegistryTests
 {
     [TestMethod]
+    public void WorkCalendarCommitUsesItsOwnBoundedTypedPayloadAndWriteProtection()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("settings.commitWorkCalendar", out var commit));
+        Assert.IsTrue(commit.MutatesWorkspace);
+        JsonElement valid = JsonSerializer.SerializeToElement(new
+        {
+            overrides = Enumerable.Range(0, 3660).Select(_ => new { date = "2026-09-10", kind = "holiday", name = "" }).ToArray(),
+            expectedRevision = "", idempotencyKey = "calendar",
+        });
+        Assert.IsTrue(commit.IsValidPayload(valid));
+        Assert.IsFalse(commit.IsValidPayload(JsonSerializer.SerializeToElement(new
+        {
+            overrides = new[] { new { date = "2026-09-10", kind = "holiday", name = "", unknown = true } },
+            expectedRevision = "", idempotencyKey = "calendar",
+        })));
+        Assert.IsFalse(commit.IsValidPayload(JsonSerializer.SerializeToElement(new
+        {
+            overrides = new[] { new { date = "2026-09-10", kind = "holiday", name = new string('x', 41) } },
+            expectedRevision = "", idempotencyKey = "calendar",
+        })));
+    }
+
+    [TestMethod]
     public void RegistryIsClosedAndContainsEveryUiProductCapability()
     {
         string[] expected =
         [
             "field.settings.describe", "field.change.plan", "field.change.apply",
             "field.change.status", "field.change.cancel", "field.recycleBin.list",
-            "lookup.list", "schema.describe", "schema.getTable", "query.page", "query.cursorOpen", "query.cursorFetch", "query.validateSnapshot", "query.view",
+            "relation.inspectPair", "lookup.list", "schema.describe", "schema.getTable", "query.page", "query.cursorOpen", "query.cursorFetch", "query.validateSnapshot", "query.view",
             "contentProfile.load", "contentProfile.commit", "contentProfile.delete",
             "recordDocumentLink.list", "recordDocumentLink.commit",
             "recordDocumentLink.repair", "recordDocumentLink.delete",
@@ -27,6 +50,7 @@ public sealed class ProductDataRpcRegistryTests
             "task.create", "task.cancel", "task.status",
             "formula.validate", "formula.draft.validate", "formula.preview",
             "file.list", "file.token", "events.reconcile",
+            "settings.readWorkCalendar", "settings.commitWorkCalendar",
             "preset.list", "preset.save", "preset.delete",
             "version.list", "version.create", "version.save", "version.compare",
             "version.promote", "version.delete",

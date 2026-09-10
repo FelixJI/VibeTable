@@ -462,6 +462,12 @@ func (service *Service) attachLookupCells(
 	page query.Page,
 	selected map[string]bool,
 ) (query.Page, error) {
+	if err := ctx.Err(); err != nil {
+		return query.Page{}, err
+	}
+	if len(page.Rows) == 0 {
+		return page, nil
+	}
 	meta, err := service.app.FindFirstRecordByFilter(
 		"vibetable_tables", "table_id={:table}",
 		dbx.Params{"table": definition.Snapshot.TableID},
@@ -477,7 +483,7 @@ func (service *Service) attachLookupCells(
 			"lookup.storage_failed", "lookup source storage is unavailable",
 		)
 	}
-	calculator := lookupcalc.NewCalculator()
+	recordIDs := make([]string, 0, len(page.Rows))
 	for _, row := range page.Rows {
 		recordID, ok := row["id"].(string)
 		if !ok || recordID == "" {
@@ -485,24 +491,49 @@ func (service *Service) attachLookupCells(
 				"lookup.storage_failed", "lookup source row has no id",
 			)
 		}
-		record, findErr := service.app.FindRecordById(collection, recordID)
+		recordIDs = append(recordIDs, recordID)
+	}
+	records := make([]*core.Record, 0, len(recordIDs))
+	for start := 0; start < len(recordIDs); start += 256 {
+		if err := ctx.Err(); err != nil {
+			return query.Page{}, err
+		}
+		batch, findErr := service.app.FindRecordsByIds(
+			collection, recordIDs[start:min(start+256, len(recordIDs))],
+			func(statement *dbx.SelectQuery) error {
+				statement.WithContext(ctx)
+				return nil
+			},
+		)
 		if findErr != nil {
+			if err := ctx.Err(); err != nil {
+				return query.Page{}, err
+			}
 			return query.Page{}, relationError(
 				"lookup.storage_failed", "lookup source row could not be read",
 			)
 		}
-		values, calculateErr := calculator.CalculateCells(
-			ctx, service.app, definition, record,
-		)
-		if calculateErr != nil {
-			return query.Page{}, calculateErr
+		records = append(records, batch...)
+	}
+	values, calculateErr := lookupcalc.NewCalculator().CalculateCellsBatch(
+		ctx, service.app, definition, records, selected,
+	)
+	if calculateErr != nil {
+		return query.Page{}, calculateErr
+	}
+	for _, row := range page.Rows {
+		cells, found := values[row["id"].(string)]
+		if !found {
+			return query.Page{}, relationError(
+				"lookup.storage_failed", "lookup source row could not be read",
+			)
 		}
 		for _, field := range definition.Snapshot.Fields {
 			if field.Lookup == nil ||
 				(selected != nil && !selected[field.Identity.FieldID]) {
 				continue
 			}
-			row[field.Identity.PhysicalName] = values[field.Identity.PhysicalName]
+			row[field.Identity.PhysicalName] = cells[field.Identity.PhysicalName]
 		}
 	}
 	return page, nil

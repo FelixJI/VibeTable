@@ -1,3 +1,9 @@
+import type { WorkCalendarOverride } from "@/calendar/workCalendar";
+
+export interface SharedWorkCalendarResult { readonly overrides: WorkCalendarOverride[]; readonly revision: string }
+export interface SharedWorkCalendarCommit { readonly overrides: WorkCalendarOverride[]; readonly expectedRevision: string; readonly idempotencyKey: string }
+
+import type { RelationInspectionRequest, RelationInspectionReport } from "@/relation-inspection/type";
 import type {
   LookupListResult,
 	LookupCellValue,
@@ -1397,6 +1403,7 @@ export type WebMessageType =
   | "file.downloadRequested"
   | "events.reconcile"
   | "schema.describe"
+  | "relation.inspectPair"
   | "relation.searchTargets"
   | "relation.createTarget"
   | "relation.updateSingle"
@@ -1405,6 +1412,8 @@ export type WebMessageType =
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
+  | "settings.readWorkCalendar"
+  | "settings.commitWorkCalendar"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1536,6 +1545,7 @@ export type HostMessageType =
   | "file.downloadRequested"
   | "events.reconcile"
   | "schema.describe"
+  | "relation.inspectPair"
   | "relation.searchTargets"
   | "relation.createTarget"
   | "relation.updateSingle"
@@ -1544,6 +1554,8 @@ export type HostMessageType =
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
+  | "settings.readWorkCalendar"
+  | "settings.commitWorkCalendar"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1854,6 +1866,7 @@ export interface HostPayloadMap {
   "file.downloadRequested": AttachmentDownloadResult;
   "events.reconcile": Readonly<Record<string, unknown>>;
   "schema.describe": SchemaDescribeResult;
+  "relation.inspectPair": RelationInspectionReport;
   "relation.searchTargets": RelationSearchResult;
   "relation.createTarget": RelationCreateTargetResult;
   "relation.updateSingle": RelationSingleUpdateResult;
@@ -1862,6 +1875,8 @@ export interface HostPayloadMap {
   "lookup.list": LookupListResult;
   "lookup.query": LookupQueryResult;
 	"lookup.valuePage": LookupCellValue;
+  "settings.readWorkCalendar": SharedWorkCalendarResult;
+  "settings.commitWorkCalendar": SharedWorkCalendarResult;
   "preset.list": PresetsResult;
   "preset.save": PresetEntry;
   "preset.delete": DeletePresetVersionResult;
@@ -1977,6 +1992,7 @@ export interface WebPayloadMap {
     readonly dataRevision: string;
   };
   "schema.describe": SchemaDescribeParams;
+  "relation.inspectPair": RelationInspectionRequest;
   "relation.searchTargets": RelationSearchParams;
   "relation.createTarget": RelationCreateTargetParams;
   "relation.updateSingle": RelationUpdateSingleParams;
@@ -1985,6 +2001,8 @@ export interface WebPayloadMap {
   "lookup.list": { readonly collection: string };
   "lookup.query": LookupQueryParams;
 	"lookup.valuePage": LookupValuePageParams;
+  "settings.readWorkCalendar": Record<string, never>;
+  "settings.commitWorkCalendar": SharedWorkCalendarCommit;
   "preset.list": { readonly collection: string };
   "preset.save": {
     readonly collection: string;

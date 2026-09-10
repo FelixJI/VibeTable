@@ -481,7 +481,11 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("interface-save")' in interface
     assert 'getByTestId("interface-run")' in interface
     assert 'getByTestId("nav-search")' in search
-    assert 'getByTestId("workspace-search-submit")' in source
+    search_submit = runner.NODE_RUNNER.with_name("workspace_search_submit.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert 'import { submitWorkspaceSearch } from "./workspace_search_submit.mjs";' in source
+    assert 'getByTestId("workspace-search-submit")' in search_submit
     assert 'getByTestId("view-create")' in kanban
     assert 'getByTestId("view-kind-kanban")' in kanban
     assert 'getByTestId("field-display-name")' in kanban
@@ -548,7 +552,7 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
 def test_directory_replica_recovery_uses_one_public_observation_per_checkpoint() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     recovery = source[
-        source.index("function hasExactWorkspaceWire") : source.index("const scenarios")
+        source.index("function hasExactWorkspaceWire") : source.index("async function scenario32")
     ]
 
     # Behavioral receipt and revision assertions run in the real scenario;
@@ -2450,6 +2454,10 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert "rawWorkspaceV2Request(" in source
     assert 'rawBridgeRequest(\n    page,\n    "history.queryRequested"' in source
     assert '"history.pageLoaded"' in source
+    assert 'rawBridgeRequest(\n    page,\n    "history.previewRestoreRequested"' in source
+    assert 'rawBridgeRequest(\n    page,\n    "history.applyRestoreRequested"' in source
+    assert '["history.restorePreviewReady"]' in source
+    assert '["history.restoreApplied"]' in source
     assert "externalRequests.length === 0" in source
     assert 'url.hostname === "app.vibetable.local"' in source
     assert '["127.0.0.1", "::1", "localhost"]' in source
@@ -3012,6 +3020,58 @@ def test_process_network_report_rejects_listener_and_remote_non_loopback() -> No
     ]
 
 
+def test_relation_pair_scenario_keeps_public_policy_and_existing_search_contract() -> None:
+    scenario = next(item for item in runner.load_scenarios() if item.id == "06-relation-fanout")
+    assert "setNull/restrict" in scenario.requirement
+    assert "many→one" in scenario.requirement
+    assert "内部迁移 cascade 能力保留" in scenario.requirement
+    assert set(scenario.capabilities) == {"schema.v2", "relation.pair-edit", "contract.diagnostics"}
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    shared = source[
+        source.index("async function runRelationScenario") : source.index(
+            "async function scenario28"
+        )
+    ]
+    assert "await editRelationPairScenario(" in shared
+    assert "await rejectPublicRelationCascade(" in shared
+    assert 'draft.relation.deletePolicy = "cascade"' not in shared
+    assert "relation search next page preserves all targets without duplicates" in shared
+    assert "relation search preserves the matching Unicode label" in shared
+
+
+def test_relation_pair_scenario_edits_visible_controls_and_reads_both_authorities() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function readRelationPairAuthority") : source.index(
+            "async function runRelationScenario"
+        )
+    ]
+    assert "useFieldSettingsStore" not in scenario
+    assert 'await header.locator(".tabulator-col-title").click({ button: "right" })' in scenario
+    for control in (
+        "field-display-name",
+        "relation-reciprocal-name",
+        "relation-source-cardinality",
+        "relation-reciprocal-cardinality",
+        "relation-target-display-field",
+        "relation-source-display-field",
+        "relation-delete-policy",
+        "field-plan-source-change",
+        "field-plan-reciprocal-change",
+    ):
+        assert f'"{control}"' in scenario
+    assert 'getByTestId("field-plan-button").click()' in scenario
+    assert 'getByTestId("field-apply-button").click()' in scenario
+    assert "definition.relation.reciprocalFieldId" in scenario
+    assert '"query.page"' in scenario
+    assert "relationPairIdentitiesAndLinks(committed)" in scenario
+    assert "relationPairIdentitiesAndLinks(clearedPolicy)" in scenario
+    assert 'error.code === "relation.cardinality.conflict"' in scenario
+    assert 'relationPairPatch: { deletePolicy: "cascade" }' in scenario
+    assert 'rejected.payload?.error?.code === "field.contract.invalid"' in scenario
+    assert "canonicalJsonText(conflictBefore)" in scenario
+
+
 def test_schema_scenario_uses_authoritative_capabilities_and_stable_identities() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
@@ -3077,6 +3137,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("scenario18_recovery_boundary.test.mjs"),
         runner.NODE_RUNNER.with_name("table_mutation_receipt_capture.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_activation_readiness.test.mjs"),
+        runner.NODE_RUNNER.with_name("workspace_search_submit.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),

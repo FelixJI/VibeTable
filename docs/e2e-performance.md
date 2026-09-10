@@ -4,58 +4,70 @@
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@ede74ab2d9880052beb7532f039cd3ac3420611b`
-- GitHub run：[main CI 33975773081](https://github.com/FelixJI/VibeTable/actions/runs/33975773081)
+- source SHA：`GitHub/main@25b260394a0a01e8432d23fa3d1a6e8b9b65922f`
+- GitHub run：[main CI 34309394462](https://github.com/FelixJI/VibeTable/actions/runs/34309394462)
 - 报告契约：`contractVersion=2.0`
-- 结果：23/23 passed、0 failed、0 skipped。
-- 当前 manifest gap：5（`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`）。
+- 结果：29/29 passed、0 failed、0 skipped。
+- 当前 manifest gap：2（`32-shared-work-calendar`、`34-relation-lookup-data-io`）。
 - 当前 manifest surplus：无。
+- 当前 manifest changed：3（`07-attachment-history`、`16-dashboard-lifecycle`、`17-interface-lifecycle`）。
 
-场景 "26-lookup-definition-read"、"27-relation-target-search"、"28-relation-delta-preview"、"29-lookup-source-pagination" 和 "30-query-snapshot-validation" 已进入 manifest，尚无覆盖它们的正式 main 打包报告；上述 23/23 历史样本不包含这五项新增场景，也不证明新的关系、来源分页与快照校验资格。
-- 诊断：0 个未确认 bridge failure、0 个 pending request；诊断记录另有 21 个已确认事件（含预期取消），与性能汇总的 16 次失败统计口径不同。`history.query` 与
-  `history.drawer.initialLoad` 均为 `within-budget`。
+同一 main 候选覆盖该样本当时登记的 29 个场景：01–23、26–31，累计 382 项断言通过。S06 两端关系字段的真实 UI 编辑、冻结计划与应用，以及 S26–S31 的 Lookup 描述、关系搜索与预览、来源分页、查询快照与关系完整性检查，均获得本次打包报告；不再沿用旧 S06 语义或六场缺口。
 
-目录镜像工作区的公开创建、表与记录写入、释放活动缓存、同 UUID 重开，以及精确终止 sidecar 后的替代进程恢复，均已在同一 main 打包候选的场景 23 通过。16 项断言包含单次 `query.page` 与 `replica.status` 观察、精确终态、记录及 revision 保持。全部场景均附着真实 WebView2；正常退出后 Host exit code 为 0、进程组及后代为空、端口已释放。
+同编号场景 "07-attachment-history" 现在保留历史抽屉的 Workspace V2 恢复，并新增公开 `history.previewRestoreRequested` / `history.applyRestoreRequested` 桥接闭环，独立验证 Go Product owner。旧 main 报告中的 S07 没有这些 Product 断言；即使场景编号相同，也不能用旧报告证明新增恢复入口。新增段验证预览不改变当前附件、Product 五字段结果不含 `mutationRevision`，以及返回行中的当前存储名与附件权威列表、表/记录/字段身份、原名、既有内容 checksum 和长度一致。恢复会重新生成托管存储名，不要求沿用历史名称。本候选同包局部验证已通过（见[本地资格记录](quality/history-restore-local-validation.md)），正式 main 报告仍待验收；S12 的快照恢复结果不能替代它。
 
-本结论仅覆盖场景声明的目录副本恢复，不扩展为手动同步、跨设备 offline/reconnect、冲突处理或 exclusive-writer 资格。手动 `replica.synchronize` 继续 Internal only。
+当前分支的 S17 新增 sidecar 重启后的 fresh Interface list/load、完整定义及 revision 持久和真实 UI 删除断言。source `65be85ce3d5727dc95cf3723ab0fd4795fb2016e` 的同包 S17 已通过，证据见 [Surface 资格记录](quality/surface-metadata-owner-qualification.md)；这只覆盖该 source，不能将旧 main 29 场样本或该局部新包结果归为本次 History/Surface 合并后的完整资格。
 
-后续 CI 的场景 23 按钮超时与场景 14 桥接失败尚未查明根因，详见[历史失败记录](quality/product-e2e-failure-notes.md)。因此本节记录的是一份已通过样本，不代表最新 main 的全场景零失败结论。后续局部测试通过不能替代失败根因确认及当前提交的完整 CI。
+新场景 S34 不在上述主干样本中，仍待正式 main 打包报告验收。本候选的历史 S32 局部资格记录见[关系与 Lookup 数据互操作](quality/relation-lookup-data-io.md)，不能用旧 29/29 报告或该旧包记录关闭当前缺口。
 
-该结论来自 run 的 `ci-lane-resilience` 中 `product-e2e-report.json`。lane artifact 按 CI 策略短期
-保留，长期出处使用上面的 source SHA、run URL 与报告契约版本；不能用本机临时报告路径替代。
+四组件 desktop-host、web-grid、python-backend、pocketbase-sidecar freshness 全部通过。所有场景附着真实 WPF/WebView2，Node/Host 正常退出，进程组及后代为空、端口与 owner lease 清理通过。诊断为 0 个未确认 bridge failure、0 个 pending request，另有 33 个已确认事件（含预期取消）；性能汇总的 28 次失败使用不同口径，不能称为全程没有拒绝响应。
 
-### 该样本的 23 场景耗时（2026-09-06）
+
+S23 证明目录副本的公开创建、读写、释放活动缓存、同 UUID 重开与 sidecar 替代进程恢复。此范围不扩展为手动同步、跨设备 offline/reconnect、冲突处理或 exclusive-writer 资格；手动 `replica.synchronize` 保持 Internal only。S12/S14/S23 本次均通过；[历史失败记录](quality/product-e2e-failure-notes.md)继续保留原始出处与未归因状态，本次通过不替代历史根因分析。
+
+报告来自该 run 的 `ci-lane-resilience`，内部路径 `lane-evidence/resilience/20260909T042302Z/product-e2e-report.json`。artifact 按 CI 策略短期保留，长期出处为上述 source、run 与报告契约。这里只声明该固定主干样本，不代表后续所有提交均通过，也不以一次样本宣称性能改善。
+
+### 该样本的 29 场景耗时（2026-09-09）
 
 | 场景 | 耗时 |
 |---|---:|
-| `01-offline-first-start` | 6.421s |
-| `02-all-field-schema` | 48.319s |
-| `03-schema-errors` | 34.583s |
-| `04-json-round-trip` | 35.900s |
-| `05-formula-lifecycle` | 30.614s |
-| `06-relation-fanout` | 16.260s |
-| `07-attachment-history` | 23.165s |
-| `08-stale-conflict` | 16.044s |
-| `09-atomic-import-scale` | 19.081s |
-| `10-sse-reconnect` | 28.551s |
-| `11-plugin-mutation` | 17.088s |
-| `12-backup-consistency` | 53.705s |
-| `13-protection-policy` | 8.534s |
-| `14-document-diff` | 9.413s |
-| `15-workspace-snapshot-package` | 64.465s |
-| `16-dashboard-lifecycle` | 47.677s |
-| `17-interface-lifecycle` | 28.134s |
-| `18-workspace-search` | 55.800s |
-| `19-gallery-lifecycle` | 25.694s |
-| `20-kanban-lane-drag` | 45.762s |
-| `21-calendar-date-move` | 45.006s |
-| `22-timeline-date-move` | 36.335s |
-| `23-directory-replica-recovery` | 50.376s |
+| `01-offline-first-start` | 6.372s |
+| `02-all-field-schema` | 44.045s |
+| `03-schema-errors` | 18.778s |
+| `04-json-round-trip` | 20.407s |
+| `05-formula-lifecycle` | 17.019s |
+| `06-relation-fanout` | 45.013s |
+| `07-attachment-history` | 18.967s |
+| `08-stale-conflict` | 10.573s |
+| `09-atomic-import-scale` | 17.381s |
+| `10-sse-reconnect` | 23.927s |
+| `11-plugin-mutation` | 17.492s |
+| `12-backup-consistency` | 31.838s |
+| `13-protection-policy` | 15.919s |
+| `14-document-diff` | 8.890s |
+| `15-workspace-snapshot-package` | 64.214s |
+| `16-dashboard-lifecycle` | 49.004s |
+| `17-interface-lifecycle` | 23.415s |
+| `18-workspace-search` | 37.245s |
+| `19-gallery-lifecycle` | 26.677s |
+| `20-kanban-lane-drag` | 24.571s |
+| `21-calendar-date-move` | 23.357s |
+| `22-timeline-date-move` | 21.501s |
+| `23-directory-replica-recovery` | 39.018s |
+| `26-lookup-definition-read` | 14.025s |
+| `27-relation-target-search` | 19.262s |
+| `28-relation-delta-preview` | 15.967s |
+| `29-lookup-source-pagination` | 15.794s |
+| `30-query-snapshot-validation` | 10.212s |
+| `31-relation-pair-inspection` | 23.119s |
 
-该样本 `history.query` 共 8 次，p50 31.1ms、p95/max 352.6ms，低于 500ms 告警线；
-`history.drawer.initialLoad` 共 2 次，p50 140.41ms、p95/max 355.38ms，低于 750ms 告警线。
-场景耗时范围为 6.421s–64.465s，均低于 180s 防挂死上限；这些耗时包含应用启动与 fixture
-准备，不能解释为单次用户交互延迟，也不据单次样本宣称性能改善。
+`history.query` 8 次，p50 19.7ms、p95/max 157.3ms；`history.drawer.initialLoad` 2 次，p50 115.34ms、p95/max 247.41ms，均在既有预算内。场景耗时为 6.372s–64.214s，包含启动与 fixture 准备，不能解释为单次用户交互延迟。
+
+S10 恢复测量使用 Node 单调时钟：sidecar kill→可读表 2273.97ms，backend 退出后关闭工作区 2664.85ms、重开 2590.33ms，backend kill→可写 session 5747.57ms。它们是本次故障注入样本，不是普通 RPC 延迟或新增性能门槛。
+
+## 本次主干 CI/CD 归属
+
+上述 main CI 的 `required` 成功，core、resilience、release lane 均成功，固定候选构建与 package contract 通过。关联 CD `34312545249` 成功：Stage release 执行，正式 Publish/attestation 步骤跳过，普通合并未发布。先前 main312 的覆盖率收集失败仍为历史失败，不能改写为该 SHA 通过；本次是后继主干的完整资格。
 
 ## 测量口径
 

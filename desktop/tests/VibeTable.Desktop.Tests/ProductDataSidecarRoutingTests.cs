@@ -262,6 +262,44 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
+    [DataRow("contentProfile.load", "content_profile.not_found", true)]
+    [DataRow("contentProfile.load", "content_profile.field_missing", true)]
+    [DataRow("contentProfile.load", "content_model.future_error", false)]
+    [DataRow("query.page", "content_profile.not_found", false)]
+    public async Task ContentGoErrorsReachRendererWithoutBroadeningOtherMethods(
+        string method, string code, bool accepted)
+    {
+        JsonElement errorData = JsonSerializer.SerializeToElement(new
+        {
+            kind = "content_model_error", code, message = "Content profile not found.", path = "",
+        });
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetProductSidecarForwarder(FailureForwarder(
+            new ProductSidecarRpcError(-32180, "Content model error", errorData)));
+        RoutedWebRequest request = QueryRequest("content-error") with
+        {
+            Type = method,
+            Payload = method == "contentProfile.load"
+                ? JsonSerializer.SerializeToElement(new { tableId = "records" })
+                : QueryRequest("content-error").Payload,
+        };
+        await controller.DispatchAsync(request);
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual(accepted ? method : "operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        if (accepted)
+        {
+            Assert.AreEqual(code, payload.GetProperty("error").GetProperty("code").GetString());
+            Assert.AreEqual("", payload.GetProperty("error").GetProperty("path").GetString());
+        }
+        else
+        {
+            Assert.AreEqual("PRODUCT_DATA_FAILED", payload.GetProperty("code").GetString());
+        }
+    }
+
+    [TestMethod]
     public async Task GoProductErrorUsesExistingSafeRendererMapper()
     {
         JsonElement errorData = JsonSerializer.SerializeToElement(new

@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 103
+    assert len(manifest["rpcMethods"]) == 105
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -54,13 +54,34 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "effect": "read",
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
+        "contentProfile.commit",
+        "contentProfile.delete",
+        "contentProfile.load",
         "events.reconcile",
         "field.settings.describe",
         "file.list",
+        "history.applyRestore",
+        "history.previewRestore",
         "history.read",
+        "insights.dashboardQueryLimits",
+        "insights.deleteDashboardWorkspace",
+        "insights.executeDashboardQuery",
+        "insights.listDashboards",
+        "insights.panelManifest",
+        "insights.readDashboardWorkspace",
+        "insights.saveDashboardDraft",
+        "interface.commit",
+        "interface.delete",
+        "interface.list",
+        "interface.load",
         "lookup.list",
         "lookup.query",
         "lookup.valuePage",
+        "mutation.apply",
+        "mutation.preview",
+        "preset.delete",
+        "preset.list",
+        "preset.save",
         "query.cursorFetch",
         "query.cursorOpen",
         "query.page",
@@ -68,11 +89,18 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "recordDocumentLink.commit",
+        "recordDocumentLink.delete",
+        "recordDocumentLink.list",
+        "recordDocumentLink.repair",
+        "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar",
         "settings.readDevice",
         "settings.saveDevice",
     }
@@ -171,16 +199,37 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 82
+    assert len(methods) == 56
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
+        "contentProfile.commit",
+        "contentProfile.delete",
+        "contentProfile.load",
         "events.reconcile",
         "field.settings.describe",
         "file.list",
+        "history.applyRestore",
+        "history.previewRestore",
         "history.read",
+        "insights.dashboardQueryLimits",
+        "insights.deleteDashboardWorkspace",
+        "insights.executeDashboardQuery",
+        "insights.listDashboards",
+        "insights.panelManifest",
+        "insights.readDashboardWorkspace",
+        "insights.saveDashboardDraft",
+        "interface.commit",
+        "interface.delete",
+        "interface.list",
+        "interface.load",
         "lookup.list",
         "lookup.query",
         "lookup.valuePage",
+        "mutation.apply",
+        "mutation.preview",
+        "preset.delete",
+        "preset.list",
+        "preset.save",
         "query.cursorFetch",
         "query.cursorOpen",
         "query.page",
@@ -188,11 +237,18 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "query.selectionOpen",
         "query.validateSnapshot",
         "query.view",
+        "recordDocumentLink.commit",
+        "recordDocumentLink.delete",
+        "recordDocumentLink.list",
+        "recordDocumentLink.repair",
+        "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar",
     )
     assert current_owner_methods("wpfHost") == (
         "settings.readDevice",

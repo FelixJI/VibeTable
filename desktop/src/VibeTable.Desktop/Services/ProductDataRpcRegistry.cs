@@ -64,6 +64,16 @@ internal static class ProductDataRpcRegistry
             && HasString(p, "tableId"),
             (g, p, t) => g.ListRecycledFieldsAsync(p, t),
             CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+        new("relation.inspectPair", p => Safe(p)
+            && HasOnlyProperties(p, "tableId", "fieldId", "limit", "cursor")
+            && HasStrings(p, "tableId", "fieldId")
+            && (!p.TryGetProperty("limit", out var limit)
+                || limit.ValueKind == JsonValueKind.Number
+                && limit.TryGetInt32(out int count) && count is >= 1 and <= 200)
+            && (!p.TryGetProperty("cursor", out var cursor)
+                || cursor.ValueKind is JsonValueKind.Object or JsonValueKind.Null),
+            (_, _, _) => Task.FromException<JsonElement>(
+                new InvalidOperationException("Relation inspection requires the Go authority route."))),
         new("lookup.list", p => Safe(p)
             && HasExactProperties(p, "collection") && HasString(p, "collection"),
             (g, p, t) => g.ListLookupsAsync(p, t)),
@@ -171,6 +181,11 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.CreateFileTokenAsync(p, t)),
         new("events.reconcile", p => Safe(p) && HasStrings(p, "tableId", "schemaRevision", "dataRevision"),
             (g, p, t) => g.ReconcileAsync(p, t)),
+        new("settings.readWorkCalendar", WorkCalendarPayloadContract.IsValidRead,
+            (_, _, _) => Task.FromException<JsonElement>(new InvalidOperationException("Work calendar requires Go authority."))),
+        new("settings.commitWorkCalendar", WorkCalendarPayloadContract.IsValidCommit,
+            (_, _, _) => Task.FromException<JsonElement>(new InvalidOperationException("Work calendar requires Go authority.")),
+            MutatesWorkspace: true),
         new("preset.list", p => Safe(p) && HasString(p, "collection"),
             (g, p, t) => g.ListPresetsAsync(p, t)),
         new("preset.save", p => Safe(p)

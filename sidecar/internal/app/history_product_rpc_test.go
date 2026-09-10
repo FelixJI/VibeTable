@@ -238,9 +238,15 @@ func historyProductStore(t *testing.T, dataDir string) *pocketbase.PocketBase {
 	return pb
 }
 
-func historyReadProductFixture(
+func historyReadProductFixture(t *testing.T) (*workspacev2.Runtime, *auditledger.Ledger, http.Handler, string, string) {
+	runtime, ledger, mux, table, record, _ := historyRestoreProductFixture(t)
+	return runtime, ledger, mux, table, record
+}
+
+func historyRestoreProductFixture(
 	t *testing.T,
-) (*workspacev2.Runtime, *auditledger.Ledger, http.Handler, string, string) {
+	options ...audit.Option,
+) (*workspacev2.Runtime, *auditledger.Ledger, http.Handler, string, string, *pocketbase.PocketBase) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "workspace")
 	metadata := filepath.Join(root, ".vibetable")
@@ -300,7 +306,7 @@ func historyReadProductFixture(
 	}
 	t.Cleanup(func() { _ = ledger.Close() })
 	kernel := mutation.New(pb, mutation.MetadataSchemaSource{})
-	history, err := audit.New(pb, kernel, audit.WithLedgerHistory(ledger))
+	history, err := audit.New(pb, kernel, append(options, audit.WithLedgerHistory(ledger))...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +351,18 @@ func historyReadProductFixture(
 		WorkspaceID: capabilities.WorkspaceID, SessionEpoch: capabilities.SessionEpoch,
 		FenceEpoch: capabilities.FenceEpoch, ClaimID: capabilities.ClaimID,
 	},
+		unrelatedContentRegistration(t, "contentProfile.commit"),
+		unrelatedContentRegistration(t, "contentProfile.delete"),
+		unrelatedContentRegistration(t, "contentProfile.load"),
+		unrelatedContentRegistration(t, "recordDocumentLink.commit"),
+		unrelatedContentRegistration(t, "recordDocumentLink.delete"),
+		unrelatedContentRegistration(t, "recordDocumentLink.list"),
+		unrelatedContentRegistration(t, "recordDocumentLink.repair"),
+		unrelatedPresetRegistration(t, "preset.list"),
+		unrelatedPresetRegistration(t, "preset.save"),
+		unrelatedPresetRegistration(t, "preset.delete"),
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		productrpc.ReconcileRegistration(schemaapi.New(pb)),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
 		schemaGetTableRegistration(pb),
@@ -355,15 +373,30 @@ func historyReadProductFixture(
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
+		unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
+		unrelatedDashboardRegistration(t, "insights.listDashboards"),
+		unrelatedDashboardRegistration(t, "insights.panelManifest"),
+		unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(runtime),
+		historyPreviewRestoreRegistration(runtime),
+		historyApplyRestoreRegistration(runtime),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+		unrelatedRelationInspectRegistration(t),
 		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +409,7 @@ func historyReadProductFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	return runtime, ledger, mux, table.TableID, recordID
+	return runtime, ledger, mux, table.TableID, recordID, pb
 }
 
 func productHistoryReadRequest(

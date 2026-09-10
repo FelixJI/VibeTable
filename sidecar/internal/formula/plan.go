@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -29,6 +30,18 @@ type Plan struct {
 }
 
 func (compiler *Compiler) CompileExecutionTable(definition schemaexecution.Table) (*Plan, *Error) {
+	plan, err := compiler.cache.get(definition)
+	if err == nil {
+		return plan, nil
+	}
+	var compileErr *Error
+	if errors.As(err, &compileErr) {
+		return nil, compileErr
+	}
+	return nil, formulaError("formula.runtime", "formula compilation failed", map[string]any{"reason": err.Error()})
+}
+
+func (compiler *Compiler) compileExecutionTable(definition schemaexecution.Table) (*Plan, *Error) {
 	formulas := make([]*CompiledFormula, 0)
 	for index, field := range definition.Snapshot.Fields {
 		if field.LogicalType != v2.LogicalFormula {
@@ -258,9 +271,6 @@ func (formula *CompiledFormula) validateRuntimeResult(value any) *Error {
 		}
 		number, ok := value.(float64)
 		if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
-			if ok && math.IsInf(number, 0) && formula.hasDivision {
-				return formulaError("formula.divide_by_zero", "formula divided by zero", nil)
-			}
 			return formulaError("formula.overflow", "formula returned a non-finite number", nil)
 		}
 	case v2.LogicalDate, v2.LogicalDateTime, v2.LogicalAutoDate:
@@ -307,12 +317,13 @@ func normalizeInput(
 	switch valueType.LogicalType {
 	case v2.LogicalNumber:
 		if !valueType.OnlyInt {
+			if number, ok := value.(float32); ok {
+				value = float64(number)
+			}
 			switch typed := value.(type) {
 			case int:
 				return float64(typed), nil
 			case int64:
-				return float64(typed), nil
-			case float32:
 				return float64(typed), nil
 			case float64:
 				if math.IsNaN(typed) || math.IsInf(typed, 0) {
@@ -334,7 +345,7 @@ func normalizeInput(
 		case int64:
 			return typed, nil
 		case float64:
-			if math.Trunc(typed) != typed || typed > math.MaxInt64 || typed < math.MinInt64 {
+			if math.Trunc(typed) != typed || typed >= 0x1p63 || typed < -0x1p63 {
 				return nil, formulaError("formula.type", "integer input is invalid", map[string]any{"fieldId": field.Identity.FieldID})
 			}
 			return int64(typed), nil

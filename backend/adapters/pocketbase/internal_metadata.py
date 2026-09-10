@@ -54,8 +54,6 @@ _NAMESPACES = frozenset(
         "presets",
         "content_versions",
         "interfaces",
-        "content_profiles",
-        "record_document_links",
     }
 )
 

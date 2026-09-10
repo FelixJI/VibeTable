@@ -168,17 +168,18 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_EmitsAuthoritativeDatasetReplacement()
+    public void RequestQuery_EmitsAuthoritativeDatasetReplacement()
     {
         var gateway = new FakeTableRpcGateway();
         gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 1, "server");
         TableNotification? captured = null;
-        var coordinator = NewCoordinator(gateway, notification => captured = notification);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notification => captured = notification, time);
 
         using var query = JsonDocument.Parse(
             """{"filters":[{"field":"payload","operator":"contains","value":"8"}],"sorts":[],"offset":0,"limit":100}""");
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.IsNotNull(captured);
         Assert.AreEqual(
@@ -189,11 +190,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_LoadsOnlyOneBoundedWindow_ForLargeFilteredDataset()
+    public void RequestQuery_LoadsOnlyOneBoundedWindow_ForLargeFilteredDataset()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         var allRows = Enumerable.Range(1, 1_201)
             .Select(id => new Dictionary<string, object?> { ["rowKey"] = id })
             .ToArray();
@@ -211,7 +213,7 @@ public sealed class GridStateCoordinatorTests
                 new Dictionary<string, object?>()));
 
         coordinator.RequestQuery("contracts", Query(limit: 500));
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 250);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
         Assert.AreEqual(1, notifications.Count);
@@ -221,11 +223,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestNextWindow_FetchesOpaqueCursorAndEmitsBoundedWindow()
+    public void RequestNextWindow_FetchesOpaqueCursorAndEmitsBoundedWindow()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         var snapshot = new QuerySnapshot(
             "snapshot", "digest", "db-identity", "contracts", "schema-1", 7,
             new Dictionary<string, object?>());
@@ -242,9 +245,9 @@ public sealed class GridStateCoordinatorTests
         using var query = JsonDocument.Parse("""{"filters":[],"sorts":[],"limit":500}""");
 
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
         coordinator.RequestNextWindow("opaque-2");
-        await Task.Delay(100);
+
 
         CollectionAssert.AreEqual(new[] { "opaque-2" }, gateway.CursorFetchCalls);
         Assert.AreEqual(2, notifications.Count);
@@ -254,11 +257,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_RejectsGroupedPagesWhenBothRevisionsAreMissing()
+    public void RequestQuery_RejectsGroupedPagesWhenBothRevisionsAreMissing()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1);
         gateway.QueryWindowResults["contracts"] = SamplePage("contracts", 1) with
         {
@@ -267,7 +271,7 @@ public sealed class GridStateCoordinatorTests
         using var query = JsonDocument.Parse("""{"groups":[{"field":"status"}],"limit":100}""");
 
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.AreEqual(1, notifications.Count);
         Assert.AreEqual("operation.failed", notifications[0].Type);
@@ -275,11 +279,12 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task RequestQuery_RejectsGroupedPagesFromDifferentRevisions()
+    public void RequestQuery_RejectsGroupedPagesFromDifferentRevisions()
     {
         var gateway = new FakeTableRpcGateway();
         var notifications = new List<TableNotification>();
-        var coordinator = NewCoordinator(gateway, notifications.Add);
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
         gateway.CursorOpenResults["contracts"] = SamplePage("contracts", 1) with
         {
             QuerySnapshot = new QuerySnapshot(
@@ -296,7 +301,7 @@ public sealed class GridStateCoordinatorTests
         using var query = JsonDocument.Parse("""{"groups":[{"field":"status"}],"limit":100}""");
 
         coordinator.RequestQuery("contracts", query.RootElement);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
 
         Assert.AreEqual(1, notifications.Count);
         Assert.AreEqual("operation.failed", notifications[0].Type);
@@ -306,26 +311,54 @@ public sealed class GridStateCoordinatorTests
     [TestMethod]
     public async Task RequestQuery_Cancels_SupersededRead()
     {
-        var gateway = new FakeTableRpcGateway();
-        gateway.DatabaseOpenResults["db"] =
-            new DatabaseOpenResult(
-                new[] { "contracts" },
-                Array.Empty<string>(),
-                TestDisplayNames.For("contracts"));
-        // Gate the first table so we can supersede it.
-        var tcs = new TaskCompletionSource<bool>();
-        gateway.SetWindowReadGate("contracts", tcs.Task);
-        var coordinator = NewCoordinator(gateway);
+        var firstStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCancelled = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstResponse = new TaskCompletionSource<TablePage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentCompleted = new TaskCompletionSource<TableNotification>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var current = SamplePage("contracts", 2);
+        int reads = 0;
+        var gateway = new FakeTableRpcGateway
+        {
+            CursorOpenOverride = async (_, _, token) =>
+            {
+                if (++reads != 1) return current;
+                firstStarted.SetResult();
+                try
+                {
+                    return await firstResponse.Task.WaitAsync(token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    firstCancelled.SetResult();
+                    throw;
+                }
+            },
+        };
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notification =>
+        {
+            notifications.Add(notification);
+            currentCompleted.TrySetResult(notification);
+        }, time);
 
         coordinator.RequestQuery("contracts", Query());
-        // Supersede before the first read completes.
-        coordinator.RequestQuery("contracts", Query());
-        // Release the gate; the first read's result must be dropped.
-        tcs.TrySetResult(true);
-        await Task.Delay(GridStateCoordinator.QueryDebounceMs + 100);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        // At least one request was made; no exception propagated.
-        Assert.IsTrue(gateway.QueryWindowCalls.Count >= 1);
+        coordinator.RequestQuery("contracts", Query());
+        await firstCancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        TableNotification completed = await currentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual(2, gateway.QueryWindowCalls.Count);
+        Assert.AreEqual(1, notifications.Count);
+        Assert.AreEqual("table.datasetReady", completed.Type);
+        Assert.AreSame(current, completed.Page);
     }
 
     [TestMethod]

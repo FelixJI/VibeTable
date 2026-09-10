@@ -42,6 +42,8 @@ class FakeProductService:
         ),
         ("field.settings.describe", {"tableId": "orders"}),
         ("field.settings.describe", {"extra": True}),
+        ("mutation.apply", {}),
+        ("mutation.preview", {}),
         ("schema.list", {}),
         ("query.page", {"tableId": "orders", "query": {}}),
         ("query.page", {"extra": True}),
@@ -54,6 +56,7 @@ class FakeProductService:
         ("query.validateSnapshot", {"snapshot": {}}),
         ("query.validateSnapshot", {"snapshot": {}, "extra": True}),
         ("lookup.valuePage", {"extra": True}),
+        ("relation.inspectPair", {"tableId": "orders", "fieldId": "fld_link"}),
         ("relation.previewDelta", {"extra": True}),
         ("lookup.query", {"extra": True}),
         ("schema.list", {"extra": True}),
@@ -112,6 +115,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "query.validateSnapshot",
         "relation.applyDelta",
         "relation.createTarget",
+        "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
         "relation.updateSingle",
@@ -126,6 +130,8 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
+        "mutation.apply",
+        "mutation.preview",
         "field.settings.describe",
         "relation.searchTargets",
         "query.selectionOpen",
@@ -138,9 +144,12 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "query.readRows",
         "query.view",
         "query.validateSnapshot",
+        "relation.inspectPair",
         "relation.previewDelta",
         "schema.describe",
         "file.list",
+        "history.applyRestore",
+        "history.previewRestore",
         "history.read",
         "events.reconcile",
         "schema.getTable",
@@ -151,9 +160,13 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
         WORKSPACE_CATALOG_METHODS
         | {
+            "mutation.apply",
+            "mutation.preview",
             "events.reconcile",
             "field.settings.describe",
             "file.list",
+            "history.applyRestore",
+            "history.previewRestore",
             "history.read",
             "lookup.list",
             "lookup.query",
@@ -165,6 +178,7 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "query.selectionOpen",
             "query.validateSnapshot",
             "query.view",
+            "relation.inspectPair",
             "relation.previewDelta",
             "relation.searchTargets",
             "schema.describe",

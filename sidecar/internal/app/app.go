@@ -103,9 +103,6 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 	if err != nil {
 		return nil, err
 	}
-	formulaCompiler := formula.NewCompiler(formula.DefaultLimits())
-	formulaCalculator := formula.NewCalculator(formulaCompiler)
-
 	pocketbase.Version = buildinfo.PocketBaseVersion
 	pb := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir:  options.DataDir,
@@ -113,6 +110,8 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		HideStartBanner: true,
 	})
 	migrations.Register(pb)
+	formulaCompiler := formula.NewAppCompiler(pb)
+	formulaCalculator := formula.NewCalculator(formulaCompiler)
 	queryPort := query.NewPort(pb, querySource)
 	realtimeHub := realtime.New(pb)
 	jobService := jobs.New(
@@ -427,18 +426,46 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			}
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
+			dashboardService := metadata.NewDashboard(pb, queryPort)
+			contentMetadata := metadata.NewContentService(pb, querySource)
+			presets := metadata.NewPreset(pb)
+			surfaces := metadata.NewSurface(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				dashboardRegistration("insights.dashboardQueryLimits", dashboardService, businessGate),
+				dashboardRegistration("insights.deleteDashboardWorkspace", dashboardService, businessGate),
+				dashboardRegistration("insights.executeDashboardQuery", dashboardService, businessGate),
+				dashboardRegistration("insights.listDashboards", dashboardService, businessGate),
+				dashboardRegistration("insights.panelManifest", dashboardService, businessGate),
+				dashboardRegistration("insights.readDashboardWorkspace", dashboardService, businessGate),
+				dashboardRegistration("insights.saveDashboardDraft", dashboardService, businessGate),
+				contentMetadataRegistration("contentProfile.load", contentMetadata, businessGate),
+				contentMetadataRegistration("contentProfile.commit", contentMetadata, businessGate),
+				contentMetadataRegistration("contentProfile.delete", contentMetadata, businessGate),
+				contentMetadataRegistration("recordDocumentLink.list", contentMetadata, businessGate),
+				contentMetadataRegistration("recordDocumentLink.commit", contentMetadata, businessGate),
+				contentMetadataRegistration("recordDocumentLink.repair", contentMetadata, businessGate),
+				contentMetadataRegistration("recordDocumentLink.delete", contentMetadata, businessGate),
+				presetRegistration("preset.list", presets, businessGate),
+				presetRegistration("preset.save", presets, businessGate),
+				presetRegistration("preset.delete", presets, businessGate),
+				surfaceListRegistration(surfaces),
+				surfaceLoadRegistration(surfaces),
+				surfaceCommitRegistration(surfaces, businessGate),
+				surfaceDeleteRegistration(surfaces, businessGate),
+				mutationPreviewRegistration(mutationKernel),
+				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),
 				productrpc.ReconcileRegistration(schemaCatalog),
 				lookupListRegistration(relationService),
 				lookupQueryRegistration(relationService),
 				lookupValuePageRegistration(relationService),
 				relationSearchTargetsRegistration(relationService),
+				relationInspectPairRegistration(pb),
 				queryReadRowsRegistration(queryPort),
 				queryPageRegistration(queryPort),
 				queryValidateSnapshotRegistration(queryPort),
@@ -450,7 +477,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				querySelectionOpenRegistration(queryPort),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
 				historyReadRegistration(workspaceRuntime),
+				historyPreviewRestoreRegistration(workspaceRuntime),
+				historyApplyRestoreRegistration(workspaceRuntime),
 				queryViewRegistration(queryPort),
+				workCalendarReadRegistration(metadata.New(pb)),
+				workCalendarCommitRegistration(metadata.New(pb), businessGate),
 				relationPreviewDeltaRegistration(relationService),
 			)
 			if err != nil {

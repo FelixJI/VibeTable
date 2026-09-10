@@ -315,6 +315,18 @@ type RelationPairDraft struct {
 	SourceDisplayFieldID  string `json:"sourceDisplayFieldId"`
 }
 
+// RelationPairPatch changes endpoint settings, never pair or field identities.
+// Each display field is resolved in that endpoint's target table.
+type RelationPairPatch struct {
+	SourceDisplayName        *string `json:"sourceDisplayName,omitempty"`
+	ReciprocalDisplayName    *string `json:"reciprocalDisplayName,omitempty"`
+	SourceCardinality        *string `json:"sourceCardinality,omitempty"`
+	ReciprocalCardinality    *string `json:"reciprocalCardinality,omitempty"`
+	SourceDisplayFieldID     *string `json:"sourceDisplayFieldId,omitempty"`
+	ReciprocalDisplayFieldID *string `json:"reciprocalDisplayFieldId,omitempty"`
+	DeletePolicy             *string `json:"deletePolicy,omitempty"`
+}
+
 type FileSpec struct {
 	MaxFiles         int      `json:"maxFiles"`
 	MaxBytesPerFile  int64    `json:"maxBytesPerFile"`
@@ -472,6 +484,7 @@ type FieldChangeIntent struct {
 	Confirmation         string             `json:"confirmation"`
 	BackupReceipt        string             `json:"backupReceipt"`
 	RelationPair         *RelationPairDraft `json:"relationPair,omitempty"`
+	RelationPairPatch    *RelationPairPatch `json:"relationPairPatch,omitempty"`
 }
 
 type RelatedFieldChange struct {
@@ -480,6 +493,7 @@ type RelatedFieldChange struct {
 	Before                 *FieldDefinition `json:"before"`
 	After                  *FieldDefinition `json:"after"`
 	ExpectedSchemaRevision string           `json:"expectedSchemaRevision"`
+	ExpectedDataRevision   *int64           `json:"expectedDataRevision,omitempty"`
 }
 
 type ChangeClass string

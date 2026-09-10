@@ -36,6 +36,27 @@ function mutableObject(value: unknown): MutableJsonObject {
 }
 
 describe("Schema v2 contracts", () => {
+  it("accepts pair patch plans and frozen reciprocal data revisions", () => {
+    const plan = mutableObject(fixture("field-change-plan.json"));
+    const intent = mutableObject(plan.intent);
+    intent.action = "update";
+    intent.draft = null;
+    intent.relationPairPatch = { sourceCardinality: "one", reciprocalDisplayName: "订单" };
+    plan.relatedChanges = [{
+      tableId: "targets", fieldId: "fld_reverse", before: null, after: null,
+      expectedSchemaRevision: "schema_1", expectedDataRevision: 7,
+    }];
+    expect(parseFieldChangePlanV2(plan).intent.relationPairPatch).toEqual(intent.relationPairPatch);
+    const invalidPatches: MutableJsonObject[] = [
+      { targetTableId: "other" }, { pairId: "other" },
+      { sourceCardinality: "first" }, { deletePolicy: "cascade" },
+    ];
+    for (const patch of invalidPatches) {
+      intent.relationPairPatch = patch;
+      expect(() => parseFieldChangePlanV2(plan)).toThrow("field.contract.invalid");
+    }
+  });
+
   it("strictly parses the shared field fixture", () => {
     const field: FieldDefinitionV2 = parseFieldDefinitionV2(fixture());
     expect(field.contract).toBe("vibetable.schema.v2");

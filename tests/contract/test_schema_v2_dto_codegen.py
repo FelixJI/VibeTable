@@ -58,7 +58,7 @@ def test_schema_v2_generated_dtos_are_current_and_cover_every_wire_shape() -> No
     generator = _load_generator()
     schema = json.loads((SCHEMA_ROOT / "schema.schema.json").read_text(encoding="utf-8"))
     selected = generator._select_wire_definitions(schema)
-    assert len(selected) == 59
+    assert len(selected) == 60
     assert {name for name, _ in selected} >= {
         "FieldDefinition",
         "FieldDraft",

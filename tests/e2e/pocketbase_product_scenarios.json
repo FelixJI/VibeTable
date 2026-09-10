@@ -31,15 +31,15 @@
   },
   {
     "id": "06-relation-fanout",
-    "title": "关系 cascade 方向与影响预览",
-    "requirement": "关系字段切换 cascade 前，冻结计划明确标记危险级别，并返回受影响记录与依赖信息。",
-    "capabilities": ["relation.fanout"]
+    "title": "双向关联字段编辑、冻结计划与重开",
+    "requirement": "从真实字段设置修改两端名称、基数、显示字段与共享 setNull/restrict 策略，冻结计划展示两端并原子应用；重开后定义和链接身份保持。many→one 多链接冲突及公共 cascade 输入明确拒绝且不改变两端权威状态；内部迁移 cascade 能力保留。",
+    "capabilities": ["schema.v2", "relation.pair-edit", "contract.diagnostics"]
   },
   {
     "id": "07-attachment-history",
     "title": "附件全生命周期与历史恢复",
-    "requirement": "通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256，并从历史恢复旧版本。",
-    "capabilities": ["attachment.history"]
+    "requirement": "通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256；保留历史抽屉的 Workspace 恢复，并经公开 Product 桥接预览和应用另一修订，核对预览不改当前附件、五字段返回及恢复后的附件身份和长度。",
+    "capabilities": ["attachment.history", "history.restore"]
   },
   {
     "id": "08-stale-conflict",
@@ -92,13 +92,13 @@
   {
     "id": "16-dashboard-lifecycle",
     "title": "Dashboard 可视化、筛选与冲突闭环",
-    "requirement": "通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision。",
+    "requirement": "通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision；随后真实重启 sidecar，fresh 公开 list/workspace 验证完整面板、配置、绑定与 revision 持久，源记录保持不变。",
     "capabilities": ["dashboard.lifecycle", "dashboard.visualization", "dashboard.filtering", "dashboard.drilldown", "dashboard.conflict", "release.smoke"]
   },
   {
     "id": "17-interface-lifecycle",
-    "title": "Interface 构建、运行与重开",
-    "requirement": "通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，证明构建器和运行时消费同一原子定义及既有插件任务生命周期。",
+    "title": "Interface 构建、运行、重启与删除",
+    "requirement": "通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，精确重启 sidecar 后以 fresh list/load 验证完整定义和 revision 持久，最后真实 UI 删除并验证 list 缺失与 load not_found；证明构建器和运行时消费同一原子定义及既有插件任务生命周期。",
     "capabilities": ["interface.lifecycle", "interface.runtime", "plugin.action.lifecycle"]
   },
   {
@@ -168,5 +168,25 @@
     "title": "查询快照只读校验",
     "requirement": "真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。",
     "capabilities": ["schema.query"]
+  },
+  {
+    "id": "31-relation-pair-inspection",
+    "title": "关系完整性只读分页检查",
+    "requirement": "通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。",
+    "capabilities": ["relation.integrity-inspection"]
+  },
+{
+  "id": "32-shared-work-calendar",
+  "title": "工作区共享工作日历",
+  "requirement": "通过真实设置页保存工作区假日，首页和实际网格日期编辑器显示相同已确认规则；创建并打开B证明隔离，再正常重开A证明PB持久化，清除规则仍推进revision。S24目录副本消费证据待独立实现合入后追加。",
+  "capabilities": [
+    "workspace.calendar"
+  ]
+},
+  {
+    "id": "34-relation-lookup-data-io",
+    "title": "Relation 导入与 Lookup 文本导出",
+    "requirement": "复用固定 corpus，通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。当前 UI 尚无匹配配置和 Lookup 导出选列，本场景验证打包协议。",
+    "capabilities": ["relation.import", "lookup.export"]
   }
 ]

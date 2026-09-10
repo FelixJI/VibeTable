@@ -298,6 +298,192 @@ public sealed class HostProductRpcInvokerTests
         Assert.AreEqual(fixture.Session.SessionEpoch, wire.GetProperty("sessionEpoch").GetUInt64());
     }
 
+
+    [TestMethod]
+    public async Task PresetLifecycleUsesGeneratedGoOwnerWithoutPython()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Result = Json("{}");
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        await gateway.ListPresetsAsync(Json("{\"collection\":\"orders\"}"), CancellationToken.None);
+        await gateway.SavePresetAsync(Json("{\"collection\":\"orders\",\"name\":\"saved\",\"view\":{},\"presetId\":null,\"expectedRevision\":null,\"operationId\":\"public-operation\"}"), CancellationToken.None);
+        await gateway.DeletePresetAsync(Json("{\"presetId\":\"saved\",\"expectedRevision\":\"revision\",\"operationId\":\"delete\"}"), CancellationToken.None);
+        CollectionAssert.AreEqual(new[] { "preset.list", "preset.save", "preset.delete" },
+            fixture.Http.Calls.Select(call => call.GetProperty("method").GetString()).ToArray());
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        Assert.AreEqual(1, fixture.Http.Handshakes);
+        Assert.AreEqual("public-operation", fixture.Http.Calls[1].GetProperty("params").GetProperty("operationId").GetString());
+    }
+
+    [TestMethod]
+    [DataRow("preset.save", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.")]
+    [DataRow("preset.delete", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.")]
+    [DataRow("preset.save", "preset_idempotency_conflict", "operationId", "Operation was used for another Preset request.")]
+    public async Task PresetConflictRetainsItsClosedPublicProjection(string method, string code, string field, string message)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Error = JsonSerializer.SerializeToElement(new { code = -32080, message = "Insights error",
+            data = new { kind = "insights_error", message, code, field } });
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+            method == "preset.save" ? gateway.SavePresetAsync(Json("{}"), CancellationToken.None)
+                : gateway.DeletePresetAsync(Json("{}"), CancellationToken.None));
+        Assert.AreEqual(-32080, error.Code);
+        Assert.AreEqual(field, error.ErrorData!.Value.GetProperty("field").GetString());
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task PresetErrorCannotEscapeToOtherMethodsOrAddPrivateFields()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Error = Json("""{"code":-32080,"message":"Insights error","data":{"kind":"insights_error","code":"preset_edit_conflict","field":"expectedRevision","message":"Preset changed elsewhere."}}""");
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => gateway.ListTablesAsync(Json("{}"), CancellationToken.None));
+        fixture.Http.Error = Json("""{"code":-32080,"message":"Insights error","data":{"kind":"insights_error","code":"preset_edit_conflict","field":"expectedRevision","message":"Preset changed elsewhere.","private":"not public"}}""");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => gateway.SavePresetAsync(Json("{}"), CancellationToken.None));
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    private const string SurfaceSnapshotJson = """{"definition":{"contractVersion":"1.0","interfaceId":"if-orders","name":"Orders","bindings":[{"bindingId":"orders","query":{"contractVersion":"1.0","tableId":"orders","fields":["title"],"filters":[],"sorts":[],"cursor":null,"pageSize":50},"variables":[]}],"actions":[{"actionId":"navigate","kind":"navigate","bindingId":null,"targetPageId":"main","pluginId":null,"pluginActionId":null,"requiresConfirmation":false}],"pages":[{"pageId":"main","title":"Orders","elements":[{"elementId":"nav","kind":"navigation","bindingId":null,"actionId":"navigate","text":null,"width":"full","children":[]}]}]},"revision":"stored-revision"}""";
+
+    [TestMethod]
+    public async Task SurfaceControllerUsesFourTypedProductMethodsAndRegularResponses()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        var sink = new SurfaceReplySink();
+        var controller = new SurfaceRequestController(sink, TimeSpan.FromSeconds(5));
+        controller.SetGateway(gateway);
+        (string Method, string Request, string Response, string Parameters, string Result)[] cases =
+        [
+            ("interface.list", "interface.listRequested", "interface.listLoaded", "{}", """{"items":[{"interfaceId":"if-orders","name":"Orders","revision":"stored-revision"}]}"""),
+            ("interface.load", "interface.loadRequested", "interface.loaded", """{"interfaceId":"if-orders"}""", SurfaceSnapshotJson),
+            ("interface.commit", "interface.commitRequested", "interface.committed", $$"""{"definition":{{Json(SurfaceSnapshotJson).GetProperty("definition")}},"expectedRevision":null,"idempotencyKey":"commit-key"}""", SurfaceSnapshotJson),
+            ("interface.delete", "interface.deleteRequested", "interface.deleted", """{"interfaceId":"if-orders","expectedRevision":"stored-revision","idempotencyKey":"delete-key"}""", """{"interfaceId":"if-orders"}"""),
+        ];
+        foreach (var item in cases)
+        {
+            fixture.Http.Result = Json(item.Result);
+            await controller.DispatchAsync(new(item.Request, item.Method, Json(item.Parameters), ""));
+            Assert.AreEqual(item.Response, sink.Type);
+            Assert.AreEqual(item.Method, sink.RequestId);
+            Assert.IsNull(sink.ErrorCode);
+            Assert.IsTrue(JsonElement.DeepEquals(Json(item.Result), sink.Payload));
+            JsonElement call = fixture.Http.Calls.Last();
+            Assert.AreEqual(item.Method, call.GetProperty("method").GetString());
+            Assert.IsTrue(JsonElement.DeepEquals(Json(item.Parameters), call.GetProperty("params")));
+        }
+        Assert.AreEqual(1, fixture.Http.Handshakes);
+        Assert.AreEqual(4, fixture.Http.Calls.Count);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
+    [DataRow("surface.not_found", null, "surface.not_found")]
+    [DataRow("surface.edit_conflict", "expectedRevision", "surface.edit_conflict")]
+    [DataRow("surface.idempotency_conflict", "idempotencyKey", "surface.idempotency_conflict")]
+    [DataRow("surface.name_required", "", "SURFACE_OPERATION_FAILED")]
+    [DataRow("surface.future_error", null, "SURFACE_OPERATION_FAILED")]
+    [DataRow("contentProfile.not_found", null, "SURFACE_OPERATION_FAILED")]
+    public async Task SurfaceControllerMapsOnlyItsKnownSafeFailures(string code, string? path, string expected)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Error = SurfaceError(code, path);
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        var sink = new SurfaceReplySink();
+        var controller = new SurfaceRequestController(sink, TimeSpan.FromSeconds(5));
+        controller.SetGateway(gateway);
+        await controller.DispatchAsync(new("interface.loadRequested", "surface-error", Json("""{"interfaceId":"if-orders"}"""), ""));
+        Assert.AreEqual("operation.failed", sink.Type);
+        Assert.AreEqual("surface-error", sink.RequestId);
+        Assert.AreEqual(expected, sink.ErrorCode);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task SurfaceErrorRetainsExplicitEmptyPathAndCannotCrossMethods()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Error = SurfaceError("surface.name_required", "");
+        using JsonRpcProductDataGateway product = fixture.Gateway(useGeneratedPolicy: true);
+        ISurfaceRpcGateway surface = product;
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() => surface.LoadAsync("if-orders", CancellationToken.None));
+        Assert.AreEqual(-32170, error.Code);
+        Assert.AreEqual("", error.ErrorData!.Value.GetProperty("path").GetString());
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => product.ListTablesAsync(Json("{}"), CancellationToken.None));
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SurfaceControllerCannotPublishAfterCancellationOrRetirement(bool retire)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Result = Json(SurfaceSnapshotJson);
+        using var cancellation = new CancellationTokenSource();
+        fixture.Http.BeforeReply = (_, _) =>
+        {
+            if (retire) fixture.Current = false;
+            else cancellation.Cancel();
+            return Task.CompletedTask;
+        };
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        var sink = new SurfaceReplySink();
+        var controller = new SurfaceRequestController(sink, TimeSpan.FromSeconds(5), () => cancellation.Token);
+        controller.SetGateway(gateway);
+        await controller.DispatchAsync(new("interface.loadRequested", "retired", Json("""{"interfaceId":"if-orders"}"""), ""));
+        Assert.AreEqual("operation.failed", sink.Type);
+        Assert.AreEqual(retire ? "SURFACE_BACKEND_UNAVAILABLE" : "SURFACE_CANCELLED", sink.ErrorCode);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task SurfaceProductParserRejectsMalformedDomainDataWithoutPythonFallback()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        using JsonRpcProductDataGateway product = fixture.Gateway(useGeneratedPolicy: true);
+        ISurfaceRpcGateway surface = product;
+        foreach (string data in new[]
+        {
+            """{"kind":"surface_error","message":"missing","code":"surface.not_found","path":null}""",
+            """{"kind":"surface_error","message":"missing","code":"surface.not_found","extra":true}""",
+            """{"kind":"surface_error","message":"missing"}""",
+            """{"kind":"product_data_error","message":"missing","code":"surface.not_found"}""",
+        })
+        {
+            fixture.Http.Error = Json($$"""{"code":-32170,"message":"Interface error","data":{{data}}}""");
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => surface.LoadAsync("if-orders", CancellationToken.None));
+        }
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    private static JsonElement SurfaceError(string code, string? path)
+    {
+        var data = new Dictionary<string, object> { ["kind"] = "surface_error", ["message"] = "Interface rejected.", ["code"] = code };
+        if (path is not null) data["path"] = path;
+        return JsonSerializer.SerializeToElement(new { code = -32170, message = "Interface error", data });
+    }
+
+    private sealed class SurfaceReplySink : IWebReplySink
+    {
+        internal string? Type { get; private set; }
+        internal string? RequestId { get; private set; }
+        internal string? ErrorCode { get; private set; }
+        internal JsonElement Payload { get; private set; }
+        public void PostNotification(string type, object? payload) => Assert.Fail("Unexpected notification.");
+        public void PostResponse(string type, string? requestId, object? payload)
+        {
+            Type = type; RequestId = requestId; ErrorCode = null;
+            Payload = JsonSerializer.SerializeToElement(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        public void PostOperationFailed(string? requestId, string message, string? code = null, string? operation = null, string? operationId = null)
+        {
+            Type = "operation.failed"; RequestId = requestId; ErrorCode = code;
+        }
+    }
+
     private sealed class HostFixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(),
@@ -350,7 +536,7 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }

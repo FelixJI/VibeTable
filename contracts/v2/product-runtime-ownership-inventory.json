@@ -123,6 +123,133 @@
       "evidence": ["desktop/src/VibeTable.Desktop/Services/ProductRealtimeSession.cs", "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs", "backend/__main__.py", "backend/application/task_runtime.py", "backend/application/task_service.py", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
+      "id": "rpc.content-metadata-read",
+      "kind": "rpc",
+      "names": [
+        "contentProfile.load",
+        "recordDocumentLink.list"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "contentProfile.load",
+          "recordDocumentLink.list"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "18-workspace-search"
+      ],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Python content handlers are removed. Go owns validation, CAS and durable replay; packaged S18 qualification remains required.",
+      "evidence": [
+        "sidecar/internal/metadata/content.go",
+        "sidecar/internal/app/content_metadata_product_rpc.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
+      "id": "rpc.content-metadata-write",
+      "kind": "rpc",
+      "names": [
+        "contentProfile.commit",
+        "contentProfile.delete",
+        "recordDocumentLink.commit",
+        "recordDocumentLink.delete",
+        "recordDocumentLink.repair"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [],
+        "write": [
+          "contentProfile.commit",
+          "contentProfile.delete",
+          "recordDocumentLink.commit",
+          "recordDocumentLink.delete",
+          "recordDocumentLink.repair"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "18-workspace-search"
+      ],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Python content handlers are removed. Go owns validation, CAS and durable replay; packaged S18 qualification remains required.",
+      "evidence": [
+        "sidecar/internal/metadata/content.go",
+        "sidecar/internal/app/content_metadata_product_rpc.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
+      "id": "rpc.dashboard-product",
+      "kind": "rpc",
+      "names": [
+        "insights.dashboardQueryLimits",
+        "insights.deleteDashboardWorkspace",
+        "insights.executeDashboardQuery",
+        "insights.listDashboards",
+        "insights.panelManifest",
+        "insights.readDashboardWorkspace",
+        "insights.saveDashboardDraft"
+      ],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": ["insights.dashboardQueryLimits", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace"],
+        "write": ["insights.deleteDashboardWorkspace", "insights.saveDashboardDraft"],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": ["16-dashboard-lifecycle"],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Dashboard Product owner serves all seven aggregate methods; Python Dashboard handlers and generic Dashboard/Panel writes are retired.",
+      "evidence": ["sidecar/internal/app/dashboard_product_rpc.go", "sidecar/internal/metadata/dashboard.go", "desktop/src/VibeTable.Desktop/Services/JsonRpcDashboardGateway.cs", "contracts/v2/dashboard-python-oracle.json"]
+    },
+    {
       "id": "rpc.data-format",
       "kind": "rpc",
       "names": ["data.generateTemplate", "data.previewImport"],
@@ -364,48 +491,165 @@
       "productScenarios": ["07-attachment-history", "12-backup-consistency"],
       "targetSlice": "L3B",
       "targetPr": null,
-      "deleteWhen": "The Go Product Adapter drains business audit history and returns the authoritative public history page; Python keeps only preview until L5 pairs it with apply.",
+      "deleteWhen": "The Go Product Adapter drains business audit history and returns the authoritative public history page.",
       "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/history_product_rpc.go", "sidecar/internal/workspacev2/history_restore_handlers.go", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.history-restore",
+      "kind": "rpc",
+      "names": [
+        "history.applyRestore",
+        "history.previewRestore"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "history.previewRestore"
+        ],
+        "write": [
+          "history.applyRestore"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "06-relation-fanout",
+        "07-attachment-history",
+        "12-backup-consistency"
+      ],
+      "targetSlice": "L3B",
+      "targetPr": null,
+      "deleteWhen": "Product preview and apply share the Go restore token owner and the single workspace business write coordinator.",
+      "evidence": [
+        "sidecar/internal/app/history_restore_product_rpc.go",
+        "sidecar/internal/workspacev2/history_restore_handlers.go",
+        "sidecar/internal/app/history_restore_product_rpc_test.go",
+        "contracts/v2/fixtures/history-restore-python-parity.json"
+      ]
     },
     {
       "id": "rpc.insights-shared-read",
       "kind": "rpc",
-      "names": ["insights.dashboardQueryLimits", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "preset.list", "settings.readShared", "version.compare", "version.list"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
+      "names": [
+        "version.compare",
+        "version.list"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "pythonBff",
+        "goSidecar",
+        "pocketBase"
+      ],
       "currentRoute": "pythonBff",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["insights.dashboardQueryLimits", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "preset.list", "settings.readShared", "version.compare", "version.list"], "write": [], "notification": [], "state": []},
-      "stateHolders": ["goSidecar", "pocketBase", "pythonBff"],
+      "effects": {
+        "read": [
+          "version.compare",
+          "version.list"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase",
+        "pythonBff"
+      ],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
       "timeout": "perHopBounded",
-      "productScenarios": ["16-dashboard-lifecycle", "19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "productScenarios": [
+        "16-dashboard-lifecycle",
+        "19-gallery-lifecycle",
+        "20-kanban-lane-drag",
+        "21-calendar-date-move",
+        "22-timeline-date-move"
+      ],
       "targetSlice": "L5",
       "targetPr": null,
       "deleteWhen": "The Go Product Adapter owns shared metadata, query projection, and history reads; Python dashboard and version orchestration has no production route.",
-      "evidence": ["backend/__main__.py", "backend/adapters/pocketbase/internal_metadata.py", "backend/application/insights_service.py", "backend/application/settings_command_service.py", "sidecar/internal/app/metadata_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "evidence": [
+        "backend/__main__.py",
+        "backend/adapters/pocketbase/internal_metadata.py",
+        "backend/application/insights_service.py",
+        "backend/application/settings_command_service.py",
+        "sidecar/internal/app/metadata_routes.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
     },
     {
       "id": "rpc.insights-shared-write",
       "kind": "rpc",
-      "names": ["insights.deleteDashboardWorkspace", "insights.saveDashboardDraft", "preset.delete", "preset.save", "version.create", "version.delete", "version.promote", "version.save"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
+      "names": [
+        "version.create",
+        "version.delete",
+        "version.promote",
+        "version.save"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "pythonBff",
+        "goSidecar",
+        "pocketBase"
+      ],
       "currentRoute": "pythonBff",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": [], "write": ["insights.deleteDashboardWorkspace", "insights.saveDashboardDraft", "preset.delete", "preset.save", "version.create", "version.delete", "version.promote", "version.save"], "notification": [], "state": []},
-      "stateHolders": ["goSidecar", "pocketBase", "pythonBff"],
+      "effects": {
+        "read": [],
+        "write": [
+          "version.create",
+          "version.delete",
+          "version.promote",
+          "version.save"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase",
+        "pythonBff"
+      ],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
       "timeout": "perHopBounded",
-      "productScenarios": ["16-dashboard-lifecycle", "19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "productScenarios": [
+        "16-dashboard-lifecycle",
+        "19-gallery-lifecycle",
+        "20-kanban-lane-drag",
+        "21-calendar-date-move",
+        "22-timeline-date-move"
+      ],
       "targetSlice": "L5",
       "targetPr": null,
       "deleteWhen": "Go owns the complete shared-metadata capability including CAS, revision, idempotency, and history restore, and the Python write routes are deleted.",
-      "evidence": ["backend/__main__.py", "backend/adapters/pocketbase/internal_metadata.py", "backend/application/insights_service.py", "sidecar/internal/app/metadata_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "evidence": [
+        "backend/__main__.py",
+        "backend/adapters/pocketbase/internal_metadata.py",
+        "backend/application/insights_service.py",
+        "sidecar/internal/app/metadata_routes.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
     },
     {
       "id": "rpc.lookup-list",
@@ -512,6 +756,54 @@
       ]
     },
     {
+      "id": "rpc.mutation",
+      "kind": "rpc",
+      "names": [
+        "mutation.apply",
+        "mutation.preview"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "mutation.preview"
+        ],
+        "write": [
+          "mutation.apply"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "02-all-field-schema",
+        "08-stale-conflict",
+        "10-sse-reconnect",
+        "11-plugin-mutation"
+      ],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Python Product mutation routes are removed; Go preserves the existing mutation kernel, write admission, idempotency, revision and audit receipt.",
+      "evidence": [
+        "sidecar/internal/app/mutation_product_rpc.go",
+        "contracts/v2/mutation-product-python-oracle.json",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
       "id": "rpc.path-grants",
       "kind": "rpc",
       "names": ["path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant"],
@@ -610,6 +902,46 @@
       "targetPr": null,
       "deleteWhen": "The on-demand Worker owns package and Node execution only, Go owns shared catalog, audit, and mutation state, WPF owns task settlement, and the persistent BFF lifecycle route is removed.",
       "evidence": ["backend/__main__.py", "backend/application/plugin_execution_runtime.py", "backend/application/plugin_platform_service.py", "backend/infrastructure/plugin_package_lifecycle.py", "backend/infrastructure/plugin_worker.py", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.preset-read",
+      "kind": "rpc",
+      "names": ["preset.list"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": ["preset.list"], "write": [], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "clientPendingOnly",
+      "timeout": "perHopBounded",
+      "productScenarios": ["19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Preset Python handlers are removed; the Go aggregate owns normalized views, CAS and durable replay.",
+      "evidence": ["sidecar/internal/metadata/preset.go", "sidecar/internal/app/preset_product_rpc.go", "contracts/v2/preset-python-oracle.json"]
+    },
+    {
+      "id": "rpc.preset-write",
+      "kind": "rpc",
+      "names": ["preset.delete", "preset.save"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": [], "write": ["preset.delete", "preset.save"], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "clientPendingOnly",
+      "timeout": "perHopBounded",
+      "productScenarios": ["19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Preset Python handlers are removed; the Go aggregate owns normalized views, CAS and durable replay.",
+      "evidence": ["sidecar/internal/metadata/preset.go", "sidecar/internal/app/preset_product_rpc.go", "contracts/v2/preset-python-oracle.json"]
     },
     {
       "id": "rpc.query-cursor-window",
@@ -781,13 +1113,13 @@
     {
       "id": "rpc.relation-history-write",
       "kind": "rpc",
-      "names": ["history.applyRestore", "relation.applyDelta", "relation.createTarget", "relation.updateSingle"],
+      "names": ["relation.applyDelta", "relation.createTarget", "relation.updateSingle"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": [], "write": ["history.applyRestore", "relation.applyDelta", "relation.createTarget", "relation.updateSingle"], "notification": [], "state": []},
+      "effects": {"read": [], "write": ["relation.applyDelta", "relation.createTarget", "relation.updateSingle"], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
@@ -799,24 +1131,24 @@
       "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/audit_routes.go", "sidecar/internal/app/relation_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
-      "id": "rpc.relation-lookup-history-read",
+      "id": "rpc.relation-inspect",
       "kind": "rpc",
-      "names": ["history.previewRestore"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
-      "currentRoute": "pythonBff",
-      "classification": "TEMPORARY_BFF",
+      "names": ["relation.inspectPair"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["history.previewRestore"], "write": [], "notification": [], "state": []},
+      "effects": {"read": ["relation.inspectPair"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase"],
       "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
-      "productScenarios": ["06-relation-fanout", "07-attachment-history", "12-backup-consistency"],
+      "productScenarios": ["31-relation-pair-inspection"],
       "targetSlice": "L3B",
       "targetPr": null,
-      "deleteWhen": "The Go Product Adapter returns the public relation, Lookup, and history projections and the Python projection module is deleted.",
-      "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/audit_routes.go", "sidecar/internal/app/relation_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "deleteWhen": "Read-only pair diagnostics remain Go-owned; cursors never authorize repair.",
+      "evidence": ["sidecar/internal/app/relation_inspect_product_rpc.go", "sidecar/internal/relationpair/inspect.go", "sidecar/tests/integration/relation_pair_inspect_test.go"]
     },
     {
       "id": "rpc.relation-preview",
@@ -903,22 +1235,67 @@
     {
       "id": "rpc.schema-formula-mutation",
       "kind": "rpc",
-      "names": ["formula.draft.validate", "formula.preview", "formula.validate", "mutation.apply", "mutation.preview", "schema.delete", "schema.table.create"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
+      "names": [
+        "formula.draft.validate",
+        "formula.preview",
+        "formula.validate",
+        "schema.delete",
+        "schema.table.create"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "pythonBff",
+        "goSidecar",
+        "pocketBase"
+      ],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["formula.draft.validate", "formula.preview", "formula.validate", "mutation.preview"], "write": ["mutation.apply", "schema.delete", "schema.table.create"], "notification": [], "state": []},
-      "stateHolders": ["goSidecar", "pocketBase"],
+      "effects": {
+        "read": [
+          "formula.draft.validate",
+          "formula.preview",
+          "formula.validate"
+        ],
+        "write": [
+          "schema.delete",
+          "schema.table.create"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
       "timeout": "perHopBounded",
-      "productScenarios": ["02-all-field-schema", "03-schema-errors", "05-formula-lifecycle", "08-stale-conflict", "10-sse-reconnect", "11-plugin-mutation", "12-backup-consistency", "18-workspace-search", "19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "productScenarios": [
+        "02-all-field-schema",
+        "03-schema-errors",
+        "05-formula-lifecycle",
+        "08-stale-conflict",
+        "10-sse-reconnect",
+        "11-plugin-mutation",
+        "12-backup-consistency",
+        "18-workspace-search",
+        "19-gallery-lifecycle",
+        "20-kanban-lane-drag",
+        "21-calendar-date-move",
+        "22-timeline-date-move"
+      ],
       "targetSlice": "L5",
       "targetPr": null,
       "deleteWhen": "Go owns formula computation and every schema or mutation write invariant, and Python validation, projection, and duplicate error mapping are removed.",
-      "evidence": ["backend/adapters/pocketbase/product_query_schema_rpc.py", "sidecar/internal/app/formula_routes.go", "sidecar/internal/app/mutation_routes.go", "sidecar/internal/app/schema_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "evidence": [
+        "backend/adapters/pocketbase/product_query_schema_rpc.py",
+        "sidecar/internal/app/formula_routes.go",
+        "sidecar/internal/app/mutation_routes.go",
+        "sidecar/internal/app/schema_routes.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
     },
     {
 	  "id": "rpc.schema-get-table",
@@ -981,44 +1358,140 @@
       "evidence": ["sidecar/internal/app/query_validate_snapshot_product_rpc.go", "sidecar/internal/app/query_routes.go", "sidecar/internal/query/port.go", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
-      "id": "rpc.shared-content-read",
+      "id": "rpc.shared-work-calendar",
       "kind": "rpc",
-      "names": ["contentProfile.load", "interface.list", "interface.load", "recordDocumentLink.list"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
-      "currentRoute": "pythonBff",
+      "names": [
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar"
+      ],
+      "currentPath": [
+        "renderer",
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["contentProfile.load", "interface.list", "interface.load", "recordDocumentLink.list"], "write": [], "notification": [], "state": []},
-      "stateHolders": ["goSidecar", "pocketBase"],
+      "effects": {
+        "read": [
+          "settings.readWorkCalendar"
+        ],
+        "write": [
+          "settings.commitWorkCalendar"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
       "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
-      "productScenarios": ["17-interface-lifecycle", "18-workspace-search"],
+      "productScenarios": ["32-shared-work-calendar"],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Go returns the public shared-content snapshots from authoritative metadata and Python content or surface orchestration has no production route.",
-      "evidence": ["backend/__main__.py", "backend/adapters/pocketbase/internal_metadata.py", "backend/application/content_model_service.py", "backend/application/surface_service.py", "sidecar/internal/app/metadata_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "deleteWhen": "Go owns the shared calendar; all three renderer consumers use its confirmed workspace projection and Python readShared is removed.",
+      "evidence": [
+        "sidecar/internal/metadata/work_calendar.go",
+        "sidecar/internal/app/work_calendar_product_rpc.go",
+        "desktop/web-grid/src/stores/workCalendarStore.ts"
+      ]
     },
     {
-      "id": "rpc.shared-content-write",
+      "id": "rpc.surface-read",
       "kind": "rpc",
-      "names": ["contentProfile.commit", "contentProfile.delete", "interface.commit", "interface.delete", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.repair"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
-      "currentRoute": "pythonBff",
+      "names": [
+        "interface.list",
+        "interface.load"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": [], "write": ["contentProfile.commit", "contentProfile.delete", "interface.commit", "interface.delete", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.repair"], "notification": [], "state": []},
-      "stateHolders": ["goSidecar", "pocketBase"],
+      "effects": {
+        "read": [
+          "interface.list",
+          "interface.load"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
       "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
-      "productScenarios": ["17-interface-lifecycle", "18-workspace-search"],
+      "productScenarios": [
+        "17-interface-lifecycle"
+      ],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Go owns shared-content validation, revision, idempotency, and persistence and all corresponding Python write handlers are removed.",
-      "evidence": ["backend/__main__.py", "backend/adapters/pocketbase/internal_metadata.py", "backend/application/content_model_service.py", "backend/application/surface_service.py", "sidecar/internal/app/metadata_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "deleteWhen": "Python SurfaceService and its dedicated Host gateway are removed; retain the four atomic public Interface methods and frozen DTO/domain contracts.",
+      "evidence": [
+        "sidecar/internal/metadata/surface.go",
+        "sidecar/internal/app/surface_product_rpc.go",
+        "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs",
+        "contracts/v2/surface-python-oracle.json",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
+      "id": "rpc.surface-write",
+      "kind": "rpc",
+      "names": [
+        "interface.commit",
+        "interface.delete"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [],
+        "write": [
+          "interface.commit",
+          "interface.delete"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "17-interface-lifecycle"
+      ],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Python SurfaceService and its dedicated Host gateway are removed; retain the four atomic public Interface methods and frozen DTO/domain contracts.",
+      "evidence": [
+        "sidecar/internal/metadata/surface.go",
+        "sidecar/internal/app/surface_product_rpc.go",
+        "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs",
+        "contracts/v2/surface-python-oracle.json",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
     },
     {
       "id": "rpc.system-handshake",

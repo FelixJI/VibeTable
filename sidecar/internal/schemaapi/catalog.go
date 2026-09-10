@@ -14,6 +14,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/computationplan"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
@@ -290,9 +291,7 @@ func (catalog *Catalog) validateFormulaReferences(
 	ctx context.Context,
 	definition schemaexecution.Table,
 ) error {
-	plan, formulaErr := formula.NewCompiler(
-		formula.DefaultLimits(),
-	).CompileExecutionTable(definition)
+	plan, formulaErr := formula.CompilerFor(catalog.app).CompileExecutionTable(definition)
 	if formulaErr != nil {
 		return formulaErr
 	}
@@ -742,6 +741,9 @@ func (catalog *Catalog) SyncComputedMetadata(
 	if err := catalog.validateLookupReferences(ctx, definition); err != nil {
 		return err
 	}
+	if err := computationplan.Validate(ctx, definition, catalog.Describe); err != nil {
+		return err
+	}
 	prepared, plan, formulaErr := catalog.prepareFormulaState(
 		catalog.app,
 		definition,
@@ -816,7 +818,7 @@ func (catalog *Catalog) prepareFormulaState(
 	app core.App,
 	definition schemaexecution.Table,
 ) (schemaexecution.Table, *formula.Plan, error) {
-	plan, formulaErr := formula.NewCompiler(formula.DefaultLimits()).CompileExecutionTable(definition)
+	plan, formulaErr := formula.CompilerFor(app).CompileExecutionTable(definition)
 	if formulaErr != nil {
 		return schemaexecution.Table{}, nil, formulaErr
 	}

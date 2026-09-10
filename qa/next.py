@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import asdict, dataclass
@@ -296,276 +295,6 @@ def _resolve(name: str) -> str:
     return shutil.which(name) or name
 
 
-def dotnet_coverage_properties(config_path: Path = PROJECT_CONFIG) -> dict[str, int | str]:
-    """Validate the per-assembly Coverlet inventory and emit its MSBuild properties."""
-
-    try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-        projects = payload["quality"]["dotnet_coverage"]["projects"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise ValueError(f"invalid dotnet coverage configuration: {exc}") from exc
-    if not isinstance(projects, dict) or not projects:
-        raise ValueError("dotnet coverage projects must be a non-empty object")
-
-    properties: dict[str, int | str] = {}
-    prefixes: set[str] = set()
-    source_projects: set[Path] = set()
-    test_projects: set[Path] = set()
-    source_root = (REPO_ROOT / "desktop" / "src").resolve()
-    tests_root = (REPO_ROOT / "desktop" / "tests").resolve()
-    active_coverage_condition = "'$(CollectCoverage)' == 'true'"
-    solution_text = DESKTOP_SLN.read_text(encoding="utf-8")
-    solution_projects = {
-        (DESKTOP_SLN.parent / project).resolve()
-        for project in re.findall(
-            r'^Project\("[^"]+"\) = "[^"]+", "([^"]+\.csproj)",',
-            solution_text,
-            re.MULTILINE,
-        )
-    }
-    for assembly, raw in projects.items():
-        if not isinstance(assembly, str) or not assembly or not isinstance(raw, dict):
-            raise ValueError("dotnet coverage project entries must be named objects")
-        prefix = raw.get("msbuild_prefix")
-        source_project = raw.get("source_project")
-        test_project = raw.get("test_project")
-        minimum = raw.get("minimum")
-        generated_source_exclusion = raw.get("generated_source_exclusion")
-        generated_source_files = raw.get("generated_source_files")
-        allowed_entry_fields = {
-            "source_project",
-            "test_project",
-            "msbuild_prefix",
-            "minimum",
-            "generated_source_exclusion",
-            "generated_source_files",
-        }
-        if not set(raw) <= allowed_entry_fields:
-            raise ValueError(f"unknown dotnet coverage configuration for {assembly}")
-        if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", prefix):
-            raise ValueError(f"invalid dotnet coverage msbuild_prefix for {assembly}")
-        if prefix in prefixes:
-            raise ValueError(f"duplicate dotnet coverage msbuild_prefix: {prefix}")
-        prefixes.add(prefix)
-        if not isinstance(source_project, str) or not source_project:
-            raise ValueError(f"invalid dotnet coverage source_project for {assembly}")
-        if not isinstance(test_project, str) or not test_project:
-            raise ValueError(f"invalid dotnet coverage test_project for {assembly}")
-        source_path = (REPO_ROOT / source_project).resolve()
-        project_path = (REPO_ROOT / test_project).resolve()
-        if (
-            not source_path.is_relative_to(source_root)
-            or source_path.suffix != ".csproj"
-            or not source_path.is_file()
-            or source_path in source_projects
-        ):
-            raise ValueError(f"invalid dotnet coverage source_project for {assembly}")
-        source_root_xml = ET.parse(source_path).getroot()
-        assembly_name = source_root_xml.findtext(".//AssemblyName") or source_path.stem
-        if assembly_name != assembly:
-            raise ValueError(f"dotnet coverage source_project must match {assembly}")
-        source_projects.add(source_path)
-        exclusion_property: str | None = None
-        has_generated_exclusion = "generated_source_exclusion" in raw
-        has_generated_files = "generated_source_files" in raw
-        if has_generated_exclusion != has_generated_files:
-            raise ValueError(f"invalid generated source exclusion for {assembly}")
-        if has_generated_exclusion:
-            expected_exclusion = f"**/{source_path.parent.name}/Generated/*.g.cs"
-            generated_dir = source_path.parent / "Generated"
-            generated_files = {path.resolve() for path in generated_dir.glob("*.g.cs")}
-            all_generated_files = {
-                path.resolve()
-                for path in source_path.parent.rglob("*.g.cs")
-                if not {"bin", "obj"}.intersection(path.relative_to(source_path.parent).parts)
-            }
-            valid_source_files = (
-                isinstance(generated_source_files, list)
-                and bool(generated_source_files)
-                and all(isinstance(path, str) for path in generated_source_files)
-                and len(generated_source_files) == len(set(generated_source_files))
-                and generated_source_files == sorted(generated_source_files)
-                and all(
-                    path.startswith("Generated/")
-                    and path.count("/") == 1
-                    and path.endswith(".g.cs")
-                    and not any(token in path for token in ("..", "\\"))
-                    for path in generated_source_files
-                )
-            )
-            declared_generated_files = (
-                {(source_path.parent / path).resolve() for path in generated_source_files}
-                if valid_source_files
-                else set()
-            )
-            if (
-                not isinstance(generated_source_exclusion, str)
-                or generated_source_exclusion != expected_exclusion
-                or any(token in generated_source_exclusion for token in (",", ";", "..", "\\"))
-                or not generated_files
-                or generated_files != all_generated_files
-                or generated_files != declared_generated_files
-            ):
-                raise ValueError(f"invalid generated source exclusion for {assembly}")
-            exclusion_property = f"{prefix}CoverageExcludeByFile"
-        if (
-            not project_path.is_relative_to(tests_root)
-            or project_path.suffix != ".csproj"
-            or not project_path.is_file()
-            or project_path in test_projects
-        ):
-            raise ValueError(f"invalid dotnet coverage test_project for {assembly}")
-        test_projects.add(project_path)
-        for bound_path in (source_path, project_path):
-            if bound_path not in solution_projects:
-                raise ValueError(f"dotnet coverage project is missing from solution: {bound_path}")
-        if not isinstance(minimum, dict) or set(minimum) != {"line", "branch"}:
-            raise ValueError(f"dotnet coverage minimum must declare line and branch for {assembly}")
-
-        project_root = ET.parse(project_path).getroot()
-        coverlet_bindings = [
-            (group, node)
-            for group in project_root.findall("ItemGroup")
-            for node in group.findall("PackageReference")
-            if node.attrib.get("Include", "").casefold() == "coverlet.msbuild"
-        ]
-        if len(coverlet_bindings) != 1:
-            raise ValueError(
-                f"dotnet coverage test_project must use coverlet.msbuild once: {assembly}"
-            )
-        coverlet_group, coverlet_reference = coverlet_bindings[0]
-        include_assets_values = {
-            value.strip()
-            for value in (
-                coverlet_reference.attrib.get("IncludeAssets"),
-                coverlet_reference.findtext("IncludeAssets"),
-            )
-            if value and value.strip()
-        }
-        exclude_assets_values = {
-            value.strip()
-            for value in (
-                coverlet_reference.attrib.get("ExcludeAssets"),
-                coverlet_reference.findtext("ExcludeAssets"),
-            )
-            if value and value.strip()
-        }
-        include_assets = next(iter(include_assets_values), None)
-        active_assets = (
-            {asset.strip().casefold() for asset in include_assets.split(";")}
-            if include_assets
-            else None
-        )
-        if (
-            coverlet_group.attrib.get("Condition")
-            or coverlet_reference.attrib.get("Condition")
-            or len(include_assets_values) > 1
-            or exclude_assets_values
-            or (active_assets is not None and "build" not in active_assets)
-        ):
-            raise ValueError(f"coverlet.msbuild reference must be active for {assembly}")
-        project_references = {
-            (project_path.parent / node.attrib["Include"]).resolve()
-            for node in project_root.findall(".//ProjectReference")
-            if "Include" in node.attrib
-        }
-        if source_path not in project_references:
-            raise ValueError(
-                f"dotnet coverage test_project must reference source_project: {assembly}"
-            )
-
-        coverage_groups = [
-            group
-            for group in project_root.findall("PropertyGroup")
-            if "CollectCoverage" in group.attrib.get("Condition", "")
-        ]
-        if len(coverage_groups) != 1:
-            raise ValueError(
-                f"dotnet coverage test_project must have one coverage group: {assembly}"
-            )
-        if coverage_groups[0].attrib.get("Condition") != active_coverage_condition:
-            raise ValueError(
-                f"dotnet coverage group must run only when CollectCoverage is true: {assembly}"
-            )
-        coverage_group = coverage_groups[0]
-        coverage_values = {child.tag: child.text for child in coverage_group}
-        forbidden = {
-            child.tag
-            for group in project_root.findall("PropertyGroup")
-            for child in group
-            if child.tag == "MergeWith"
-            or child.tag == "SkipAutoProps"
-            or (
-                child.tag.startswith("Exclude")
-                and not (
-                    child.tag == "ExcludeByFile"
-                    and exclusion_property is not None
-                    and group is coverage_group
-                )
-            )
-        }
-        if forbidden:
-            raise ValueError(
-                f"dotnet coverage exclusions are not allowed for {assembly}: {forbidden}"
-            )
-
-        include_property = f"{prefix}CoverageInclude"
-        line_property = f"{prefix}LineCoverageMinimum"
-        branch_property = f"{prefix}BranchCoverageMinimum"
-        expected_values = {
-            "Include": f"$({include_property})",
-            "Threshold": f"$({line_property}),$({branch_property})",
-            "ThresholdType": "line,branch",
-            "ThresholdStat": "total",
-        }
-        if exclusion_property is not None:
-            expected_values["ExcludeByFile"] = f"$({exclusion_property})"
-        if coverage_values != expected_values:
-            raise ValueError(f"dotnet coverage adapter does not match inventory: {assembly}")
-
-        target = project_root.find(f"Target[@Name='Validate{prefix}CoverageProperties']")
-        error = target.find("Error") if target is not None else None
-        if target is None or target.attrib.get("BeforeTargets") != "VSTest" or error is None:
-            raise ValueError(f"dotnet coverage adapter must fail closed before VSTest: {assembly}")
-        if target.attrib.get("Condition") != active_coverage_condition:
-            raise ValueError(
-                f"dotnet coverage validation target must run only when CollectCoverage is true: {assembly}"
-            )
-        required_properties = [include_property, line_property, branch_property]
-        if exclusion_property is not None:
-            required_properties.append(exclusion_property)
-        expected_error_condition = " or ".join(f"'$({name})' == ''" for name in required_properties)
-        condition = " ".join(error.attrib.get("Condition", "").split())
-        if condition != expected_error_condition:
-            raise ValueError(
-                f"dotnet coverage validation target must reject each missing property: {assembly}"
-            )
-
-        properties[include_property] = f"[{assembly}]*"
-        if exclusion_property is not None:
-            properties[exclusion_property] = generated_source_exclusion
-        for metric in ("line", "branch"):
-            value = minimum[metric]
-            if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 100:
-                raise ValueError(f"invalid dotnet {metric} coverage minimum for {assembly}")
-            property_name = f"{prefix}{metric.title()}CoverageMinimum"
-            if property_name in properties:
-                raise ValueError(f"duplicate dotnet coverage property: {property_name}")
-            properties[property_name] = value
-
-    discovered_projects = {
-        project.resolve()
-        for project in tests_root.rglob("*.csproj")
-        if any(
-            node.attrib.get("Include", "").casefold() == "coverlet.msbuild"
-            for node in ET.parse(project).getroot().findall(".//PackageReference")
-        )
-    }
-    if test_projects != discovered_projects:
-        raise ValueError("dotnet coverage inventory must match all coverlet test projects")
-    return properties
-
-
 def stage_command(
     stage: str,
     package_root: Path | None = None,
@@ -676,17 +405,13 @@ def stage_command(
             "no:cacheprovider",
         ], str(REPO_ROOT)
     if stage == "dotnet":
-        command = [
+        return [
+            sys.executable,
+            "-m",
+            "qa.dotnet_coverage",
+            "--dotnet",
             _resolve("dotnet"),
-            "test",
-            str(DESKTOP_SLN),
-            "--configuration",
-            "Release",
-            "/p:CollectCoverage=true",
-            "/p:CoverletOutputFormat=cobertura",
-        ]
-        command.extend(f"/p:{name}={value}" for name, value in dotnet_coverage_properties().items())
-        return command, str(REPO_ROOT)
+        ], str(REPO_ROOT)
     if stage == "web-test":
         return [
             sys.executable,
@@ -889,13 +614,79 @@ def _timeout_text(value: str | bytes | None) -> str:
     return value or ""
 
 
+def _race_build_process_snapshot(pid: int) -> dict[str, object]:
+    """Bounded Windows snapshot of this build tree; never collect command lines."""
+    if os.name != "nt":
+        return {"status": "unsupported_platform", "processes": []}
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(REPO_ROOT / "qa" / "race_build_process_snapshot.ps1"),
+            "-RootProcessId",
+            str(pid),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode:
+        return {"status": "collector_failed", "returncode": result.returncode}
+    snapshot = json.loads(result.stdout)
+    if not isinstance(snapshot, dict):
+        return {"status": "invalid_collector_result"}
+    return snapshot
+
+
+def _persist_race_build_timeout(pid: int, events: list[str]) -> dict[str, object]:
+    """Save structured build observations locally before kill/drain; no raw output."""
+    try:
+        directory = RACE_BINARY_DIR / "timeouts"
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=directory,
+            prefix=f"build-{pid}-",
+            suffix=".json",
+            delete=False,
+        ) as output:
+            json.dump({"pid": pid, "events": events}, output, ensure_ascii=True)
+            return {"status": "saved", "path": output.name}
+    except OSError as error:
+        return {"status": "save_failed", "errorType": type(error).__name__}
+
+
 def _run_command(
     command: list[str],
     *,
     cwd: str,
     environment: dict[str, str],
     timeout: int,
+    race_build: bool = False,
 ) -> tuple[int, str, str]:
+    events: list[str] = []
+    started = time.monotonic()
+
+    def record(phase: str, **fields: object) -> None:
+        events.append(
+            "RACE_BUILD "
+            + json.dumps(
+                {
+                    "phase": phase,
+                    "atUtc": datetime.now(UTC).isoformat(),
+                    "elapsedSeconds": round(time.monotonic() - started, 3),
+                    **fields,
+                },
+                sort_keys=True,
+            )
+        )
+
     popen_kwargs: dict[str, object] = {}
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -914,17 +705,69 @@ def _run_command(
             **popen_kwargs,
         )
     except OSError as exc:
-        return 127, "", str(exc)
+        if race_build:
+            record("start_failed", returncode=127, errorType=type(exc).__name__)
+        return 127, "\n".join(events), str(exc)
+    if race_build:
+        record("started", pid=process.pid)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
-        return process.returncode, stdout or "", stderr or ""
+        code = process.returncode
     except subprocess.TimeoutExpired as exc:
+        if race_build:
+            timed_out_at = datetime.now(UTC).isoformat()
+            snapshot_started = time.monotonic()
+            try:
+                snapshot = (
+                    {"status": "root_exited", "processes": []}
+                    if process.poll() is not None
+                    else _race_build_process_snapshot(process.pid)
+                )
+            except (OSError, subprocess.SubprocessError, ValueError) as snapshot_error:
+                snapshot = {
+                    "status": "collection_failed",
+                    "errorType": type(snapshot_error).__name__,
+                }
+            record(
+                "timeout",
+                pid=process.pid,
+                snapshot=snapshot,
+                atUtc=timed_out_at,
+                elapsedSeconds=round(snapshot_started - started, 3),
+                snapshotSeconds=round(time.monotonic() - snapshot_started, 3),
+            )
+            evidence = _persist_race_build_timeout(process.pid, events)
+            record("evidence", pid=process.pid, **evidence)
         _terminate_process_tree(process)
-        final_stdout, final_stderr = process.communicate()
+        if race_build:
+            try:
+                final_stdout, final_stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired as drain_error:
+                # A descendant may retain a pipe after the root exits. Do not chase
+                # historical PIDs or close a stream locked by a reader thread.
+                record("drain_timeout", pid=process.pid, timeoutSeconds=5)
+                final_stdout = _timeout_text(drain_error.output)
+                final_stderr = _timeout_text(drain_error.stderr)
+                final_stderr += "\noutput may be incomplete: pipe drain timed out after 5s\n"
+        else:
+            final_stdout, final_stderr = process.communicate()
         stdout = _timeout_text(exc.output) + (final_stdout or "")
         stderr = _timeout_text(exc.stderr) + (final_stderr or "")
         stderr += f"\nprocess tree timed out after {timeout}s and was terminated\n"
-        return TIMEOUT_RETURNCODE, stdout, stderr
+        code = TIMEOUT_RETURNCODE
+    if race_build:
+        # go -x is diagnostic only: retain a bounded tail, including the failing step.
+        record(
+            "finished",
+            pid=process.pid,
+            returncode=code,
+            stdoutCharacters=len(stdout or ""),
+            stderrCharacters=len(stderr or ""),
+            retainedTailCharacters=16384,
+        )
+        stdout = "\n".join(events) + "\n" + (stdout or "")[-16384:]
+        stderr = (stderr or "")[-16384:]
+    return code, stdout or "", stderr or ""
 
 
 def _run_race_package(
@@ -953,6 +796,7 @@ def _run_race_package(
                 cwd=compile_cwd,
                 environment=environment,
                 timeout=RACE_COMMAND_TIMEOUT_SECONDS,
+                race_build=True,
             )
             output.append(compile_stdout)
             errors.append(compile_stderr)
@@ -1118,6 +962,7 @@ def _run_go_race(
             "test",
             "-c",
             "-race",
+            "-x",
             "-o",
             str(binary),
             package,

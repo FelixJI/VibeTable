@@ -539,11 +539,13 @@ func executeIdempotent[T any](
 	apply func(core.App) (T, []metadataChange, error),
 	decorate func(*T, string, []string),
 	markReplayed func(*T),
+	replay ...func() error,
 ) (T, error) {
 	var result T
+	var replaySignal error
 	err := service.app.RunInTransaction(func(txApp core.App) (transactionErr error) {
 		defer func() {
-			if transactionErr == nil {
+			if transactionErr == nil && replaySignal != writecoordinator.ErrBusinessReplay {
 				transactionErr = writecoordinator.PersistPocketBaseReceipt(
 					ctx,
 					txApp,
@@ -582,11 +584,22 @@ func executeIdempotent[T any](
 				raw, marshalErr := json.Marshal(
 					stored.GetRaw("receipt_json"),
 				)
-				if marshalErr != nil ||
-					json.Unmarshal(raw, &result) != nil {
+				if marshalErr != nil {
+					return storageError()
+				}
+				// Dynamic receipt values retain JSON number precision and spelling.
+				decoder := json.NewDecoder(bytes.NewReader(raw))
+				decoder.UseNumber()
+				if decoder.Decode(&result) != nil {
 					return storageError()
 				}
 				markReplayed(&result)
+				if len(replay) > 0 && replay[0] != nil {
+					replaySignal = replay[0]()
+					if replaySignal != nil && replaySignal != writecoordinator.ErrBusinessReplay {
+						return replaySignal
+					}
+				}
 				return nil
 			}
 		}
@@ -630,7 +643,10 @@ func executeIdempotent[T any](
 		}
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	return result, replaySignal
 }
 
 func (service *Service) saveTrace(

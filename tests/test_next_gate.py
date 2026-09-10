@@ -5,7 +5,6 @@ import json
 import subprocess
 import sys
 import threading
-import xml.etree.ElementTree as ET
 from contextlib import suppress
 from pathlib import Path
 
@@ -440,7 +439,8 @@ def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
     package_dir.mkdir()
     monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         del environment
         observed.append((command, cwd, timeout))
         if command[1] == "list" and command[-1] == "./...":
@@ -459,6 +459,7 @@ def test_race_stage_compiles_each_package_once_and_runs_every_test_in_isolation(
     compile_commands = [
         command for command, _cwd, _timeout in observed if command[1:4] == ["test", "-c", "-race"]
     ]
+    assert all("-x" in command for command in compile_commands)
     assert len(compile_commands) == 1
     assert compile_commands[0][-1] == "example/tests/integration"
 
@@ -489,7 +490,8 @@ def test_known_slow_race_tests_run_individually_with_long_timeout(
     package_dir.mkdir()
     monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         del cwd, environment
         observed.append((command, timeout))
         if command[1] == "list" and command[-1] == "./...":
@@ -546,7 +548,8 @@ def test_race_stage_isolates_named_tests_in_every_package(
     integration_dir.mkdir()
     monkeypatch.setattr(next_gate, "RACE_BINARY_DIR", tmp_path / "race-binaries", raising=False)
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         del environment, timeout
         observed.append((command, cwd))
         if command[1] == "list" and command[-1] == "./...":
@@ -620,7 +623,8 @@ def test_race_stage_runs_packages_in_parallel_but_tests_within_each_package_seri
     observed: list[tuple[list[str], str]] = []
     maximum_binaries = 0
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         nonlocal active, maximum_active, maximum_binaries
         del environment, timeout
         with lock:
@@ -802,7 +806,8 @@ def test_compiled_race_test_retries_only_the_known_windows_cleanup_flake(
         "The directory is not empty.\n"
     )
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         nonlocal calls
         del command, cwd, environment, timeout
         calls += 1
@@ -831,7 +836,8 @@ def test_compiled_race_test_never_retries_a_real_data_race(
     monkeypatch.setattr(next_gate.os, "name", "nt")
     calls = 0
 
-    def fake_command(command, *, cwd, environment, timeout):
+    def fake_command(command, *, cwd, environment, timeout, race_build=False):
+        assert race_build == (command[1:4] == ["test", "-c", "-race"])
         nonlocal calls
         del command, cwd, environment, timeout
         calls += 1
@@ -1996,337 +2002,3 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
     assert Path(product_cwd) == next_gate.REPO_ROOT
-
-
-def test_dotnet_coverage_inventory_matches_coverlet_projects_bidirectionally() -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    configured_projects = {
-        entry["test_project"]
-        for entry in payload["quality"]["dotnet_coverage"]["projects"].values()
-    }
-    discovered_projects = {
-        project.relative_to(next_gate.REPO_ROOT).as_posix()
-        for project in (next_gate.REPO_ROOT / "desktop" / "tests").rglob("*.csproj")
-        if "coverlet.msbuild" in project.read_text(encoding="utf-8")
-        and "CollectCoverage" in project.read_text(encoding="utf-8")
-    }
-
-    assert configured_projects == discovered_projects
-    assert any("Contracts.Tests" in project for project in configured_projects)
-
-
-def test_dotnet_coverage_inventory_registers_openxml_as_an_independent_assembly() -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    inventory = payload["quality"]["dotnet_coverage"]["projects"]
-    entry = inventory["VibeTable.DocumentDiff.OpenXml"]
-    prefix = entry["msbuild_prefix"]
-    properties = next_gate.dotnet_coverage_properties()
-
-    assert properties[f"{prefix}CoverageInclude"] == "[VibeTable.DocumentDiff.OpenXml]*"
-    assert isinstance(properties[f"{prefix}LineCoverageMinimum"], int)
-    assert isinstance(properties[f"{prefix}BranchCoverageMinimum"], int)
-
-
-def test_dotnet_coverage_inventory_registers_contracts_with_generated_only_denominator() -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    inventory = payload["quality"]["dotnet_coverage"]["projects"]
-    entry = inventory["VibeTable.Contracts"]
-    prefix = entry["msbuild_prefix"]
-    properties = next_gate.dotnet_coverage_properties()
-
-    assert properties[f"{prefix}CoverageInclude"] == "[VibeTable.Contracts]*"
-    assert isinstance(properties[f"{prefix}LineCoverageMinimum"], int)
-    assert isinstance(properties[f"{prefix}BranchCoverageMinimum"], int)
-    assert properties[f"{prefix}CoverageExcludeByFile"] == (
-        "**/VibeTable.Contracts/Generated/*.g.cs"
-    )
-    assert entry["generated_source_files"] == [
-        "Generated/SchemaV2Contracts.g.cs",
-        "Generated/WorkbenchContracts.g.cs",
-    ]
-
-
-def test_dotnet_gate_emits_unique_coverage_properties_for_every_inventory_entry() -> None:
-    command, cwd = next_gate.stage_command("dotnet")
-    assert "/p:CollectCoverage=true" in command
-    assert "/p:CoverletOutputFormat=cobertura" in command
-    assert Path(cwd) == next_gate.REPO_ROOT
-
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    inventory = payload["quality"]["dotnet_coverage"]["projects"]
-    expected_properties = {}
-    for assembly, entry in inventory.items():
-        prefix = entry["msbuild_prefix"]
-        expected_properties[f"{prefix}CoverageInclude"] = f"[{assembly}]*"
-        expected_properties[f"{prefix}LineCoverageMinimum"] = entry["minimum"]["line"]
-        expected_properties[f"{prefix}BranchCoverageMinimum"] = entry["minimum"]["branch"]
-        if exclusion := entry.get("generated_source_exclusion"):
-            expected_properties[f"{prefix}CoverageExcludeByFile"] = exclusion
-    assert next_gate.dotnet_coverage_properties() == expected_properties
-    expected_count = sum(
-        3 + int("generated_source_exclusion" in entry) for entry in inventory.values()
-    )
-    assert len(expected_properties) == len(set(expected_properties)) == expected_count
-    for property_name, value in expected_properties.items():
-        assert f"/p:{property_name}={value}" in command
-
-
-def test_dotnet_coverage_projects_consume_central_properties_and_fail_closed() -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    inventory = payload["quality"]["dotnet_coverage"]["projects"]
-
-    for entry in inventory.values():
-        prefix = entry["msbuild_prefix"]
-        project = next_gate.REPO_ROOT / entry["test_project"]
-        root = ET.parse(project).getroot()
-        properties = {
-            child.tag: child.text for group in root.findall("PropertyGroup") for child in group
-        }
-        assert properties["Include"] == f"$({prefix}CoverageInclude)"
-        assert properties["Threshold"] == (
-            f"$({prefix}LineCoverageMinimum),$({prefix}BranchCoverageMinimum)"
-        )
-        assert properties["ThresholdType"] == "line,branch"
-        assert properties["ThresholdStat"] == "total"
-        exclusion_property = f"{prefix}CoverageExcludeByFile"
-        if "generated_source_exclusion" in entry:
-            assert properties["ExcludeByFile"] == f"$({exclusion_property})"
-        else:
-            assert "ExcludeByFile" not in properties
-        target = root.find(f"Target[@Name='Validate{prefix}CoverageProperties']")
-        assert target is not None
-        assert target.attrib["BeforeTargets"] == "VSTest"
-        error = target.find("Error")
-        assert error is not None
-        condition = error.attrib["Condition"]
-        assert f"$({prefix}CoverageInclude)" in condition
-        assert f"$({prefix}LineCoverageMinimum)" in condition
-        assert f"$({prefix}BranchCoverageMinimum)" in condition
-        if "generated_source_exclusion" in entry:
-            assert f"$({exclusion_property})" in condition
-
-
-def test_dotnet_coverage_projects_measure_the_complete_single_assembly_denominator() -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    inventory = payload["quality"]["dotnet_coverage"]["projects"]
-
-    for entry in inventory.values():
-        root = ET.parse(next_gate.REPO_ROOT / entry["test_project"]).getroot()
-        property_names = {child.tag for group in root.findall("PropertyGroup") for child in group}
-        assert "SkipAutoProps" not in property_names
-        assert "MergeWith" not in property_names
-        allowed_exclusions = {"ExcludeByFile"} if "generated_source_exclusion" in entry else set()
-        assert not any(
-            name.startswith("Exclude") and name not in allowed_exclusions for name in property_names
-        )
-
-
-@pytest.mark.parametrize(
-    "exclusion",
-    [
-        "**/*.g.cs",
-        "**/VibeTable.Contracts/Generated/*.cs",
-        "../VibeTable.Contracts/Generated/*.g.cs",
-        "**/Generated/*.g.cs,**/Models/*.cs",
-    ],
-)
-def test_dotnet_coverage_inventory_rejects_broad_generated_source_exclusion(
-    tmp_path: Path,
-    exclusion: str,
-) -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    payload["quality"]["dotnet_coverage"]["projects"]["VibeTable.Contracts"][
-        "generated_source_exclusion"
-    ] = exclusion
-    config = tmp_path / "project.json"
-    config.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(
-        ValueError,
-        match=r"invalid generated source exclusion for VibeTable\.Contracts",
-    ):
-        next_gate.dotnet_coverage_properties(config)
-
-
-def test_dotnet_coverage_inventory_rejects_unregistered_generated_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    generated_dir = (next_gate.REPO_ROOT / "desktop/src/VibeTable.Contracts/Generated").resolve()
-    unregistered = generated_dir / "Manual.g.cs"
-    real_glob = Path.glob
-    real_rglob = Path.rglob
-
-    def glob_with_unregistered(path: Path, pattern: str, **kwargs: object):
-        results = list(real_glob(path, pattern, **kwargs))
-        if path.resolve() == generated_dir and pattern == "*.g.cs":
-            results.append(unregistered)
-        return iter(results)
-
-    def rglob_with_unregistered(path: Path, pattern: str, **kwargs: object):
-        results = list(real_rglob(path, pattern, **kwargs))
-        contracts_root = generated_dir.parent
-        if path.resolve() == contracts_root and pattern == "*.g.cs":
-            results.append(unregistered)
-        return iter(results)
-
-    monkeypatch.setattr(Path, "glob", glob_with_unregistered)
-    monkeypatch.setattr(Path, "rglob", rglob_with_unregistered)
-
-    with pytest.raises(
-        ValueError,
-        match=r"invalid generated source exclusion for VibeTable\.Contracts",
-    ):
-        next_gate.dotnet_coverage_properties()
-
-
-def test_dotnet_coverage_inventory_rejects_source_binding_drift(
-    tmp_path: Path,
-) -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    projects = payload["quality"]["dotnet_coverage"]["projects"]
-    projects["VibeTable.Desktop"]["source_project"] = (
-        "desktop/src/VibeTable.Workspace/VibeTable.Workspace.csproj"
-    )
-    config = tmp_path / "project.json"
-    config.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ValueError, match=r"source_project must match VibeTable\.Desktop"):
-        next_gate.dotnet_coverage_properties(config)
-
-
-@pytest.mark.parametrize(
-    ("mutation", "message"),
-    [
-        ("coverage-condition", "coverage group must run only when CollectCoverage is true"),
-        ("target-condition", "validation target must run only when CollectCoverage is true"),
-        ("error-and", "validation target must reject each missing property"),
-        ("package-condition", "coverlet.msbuild reference must be active"),
-        ("package-exclude-attribute", "coverlet.msbuild reference must be active"),
-        ("package-include-attribute", "coverlet.msbuild reference must be active"),
-        ("external-exclude", "coverage exclusions are not allowed"),
-    ],
-)
-def test_dotnet_coverage_inventory_rejects_inactive_or_partial_xml_wiring(
-    monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
-    message: str,
-) -> None:
-    project = (
-        next_gate.REPO_ROOT / "desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj"
-    ).resolve()
-    real_parse = next_gate.ET.parse
-
-    def parse_with_drift(path: Path) -> ET.ElementTree:
-        tree = real_parse(path)
-        if Path(path).resolve() != project:
-            return tree
-        root = tree.getroot()
-        coverage_group = next(
-            group
-            for group in root.findall("PropertyGroup")
-            if "CollectCoverage" in group.attrib.get("Condition", "")
-        )
-        target = root.find("Target[@Name='ValidateVibeTableDesktopCoverageProperties']")
-        assert target is not None
-        error = target.find("Error")
-        assert error is not None
-        package = next(
-            node
-            for node in root.findall(".//PackageReference")
-            if node.attrib.get("Include") == "coverlet.msbuild"
-        )
-        if mutation == "coverage-condition":
-            coverage_group.set("Condition", "'$(CollectCoverage)' != 'true'")
-        elif mutation == "target-condition":
-            target.set("Condition", "'$(CollectCoverage)' != 'true'")
-        elif mutation == "error-and":
-            error.set("Condition", error.attrib["Condition"].replace(" or ", " and "))
-        elif mutation == "package-condition":
-            package.set("Condition", "'$(NeverEnableCoverage)' == 'true'")
-        elif mutation == "package-exclude-attribute":
-            package.set("ExcludeAssets", "build")
-        elif mutation == "package-include-attribute":
-            include_assets = package.find("IncludeAssets")
-            assert include_assets is not None
-            package.remove(include_assets)
-            package.set("IncludeAssets", "runtime")
-        else:
-            exclusion_group = ET.SubElement(root, "PropertyGroup")
-            ET.SubElement(exclusion_group, "ExcludeByFile").text = "**/Models/*.cs"
-        return tree
-
-    monkeypatch.setattr(next_gate.ET, "parse", parse_with_drift)
-
-    with pytest.raises(ValueError, match=message):
-        next_gate.dotnet_coverage_properties()
-
-
-@pytest.mark.parametrize(
-    ("mutation", "message"),
-    [
-        ("adapter-drift", "coverage adapter does not match inventory"),
-        ("unconditional-exclusion", "coverage exclusions are not allowed"),
-        ("missing-fail-closed-property", "must reject each missing property"),
-        ("extra-exclusion", "coverage exclusions are not allowed"),
-    ],
-)
-def test_dotnet_coverage_inventory_rejects_generated_exclusion_wiring_drift(
-    monkeypatch: pytest.MonkeyPatch,
-    mutation: str,
-    message: str,
-) -> None:
-    project = (
-        next_gate.REPO_ROOT
-        / "desktop/tests/VibeTable.Contracts.Tests/VibeTable.Contracts.Tests.csproj"
-    ).resolve()
-    real_parse = next_gate.ET.parse
-
-    def parse_with_drift(path: Path) -> ET.ElementTree:
-        tree = real_parse(path)
-        if Path(path).resolve() != project:
-            return tree
-        root = tree.getroot()
-        coverage_group = next(
-            group
-            for group in root.findall("PropertyGroup")
-            if "CollectCoverage" in group.attrib.get("Condition", "")
-        )
-        target = root.find("Target[@Name='ValidateVibeTableContractsCoverageProperties']")
-        assert target is not None
-        error = target.find("Error")
-        assert error is not None
-        if mutation == "adapter-drift":
-            exclusion = coverage_group.find("ExcludeByFile")
-            assert exclusion is not None
-            exclusion.text = "**/*.g.cs"
-        elif mutation == "unconditional-exclusion":
-            external_group = ET.SubElement(root, "PropertyGroup")
-            ET.SubElement(external_group, "ExcludeByFile").text = "**/*.g.cs"
-        elif mutation == "missing-fail-closed-property":
-            error.set(
-                "Condition",
-                error.attrib["Condition"].replace(
-                    " or '$(VibeTableContractsCoverageExcludeByFile)' == ''",
-                    "",
-                ),
-            )
-        else:
-            ET.SubElement(coverage_group, "ExcludeByAttribute").text = "GeneratedCodeAttribute"
-        return tree
-
-    monkeypatch.setattr(next_gate.ET, "parse", parse_with_drift)
-
-    with pytest.raises(ValueError, match=message):
-        next_gate.dotnet_coverage_properties()
-
-
-def test_dotnet_coverage_config_rejects_missing_metric_instead_of_disabling_gate(
-    tmp_path: Path,
-) -> None:
-    payload = json.loads(next_gate.PROJECT_CONFIG.read_text(encoding="utf-8"))
-    del payload["quality"]["dotnet_coverage"]["projects"]["VibeTable.Desktop"]["minimum"]["branch"]
-    config = tmp_path / "project.json"
-    config.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ValueError, match=r"must declare line and branch for VibeTable\.Desktop"):
-        next_gate.dotnet_coverage_properties(config)

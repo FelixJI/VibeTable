@@ -37,7 +37,19 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 	catalog := schemaapi.New(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-	}, registration, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+	},
+		unrelatedContentRegistration(t, "contentProfile.commit"),
+		unrelatedContentRegistration(t, "contentProfile.delete"),
+		unrelatedContentRegistration(t, "contentProfile.load"),
+		unrelatedContentRegistration(t, "recordDocumentLink.commit"),
+		unrelatedContentRegistration(t, "recordDocumentLink.delete"),
+		unrelatedContentRegistration(t, "recordDocumentLink.list"),
+		unrelatedContentRegistration(t, "recordDocumentLink.repair"), registration, productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+		unrelatedPresetRegistration(t, "preset.list"),
+		unrelatedPresetRegistration(t, "preset.save"),
+		unrelatedPresetRegistration(t, "preset.delete"),
+		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
@@ -47,9 +59,24 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 		queryPageRegistration(unrelatedPageForViewMustNotRun{t: t}), queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+		unrelatedRelationInspectRegistration(t),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
-		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
+		unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
+		unrelatedDashboardRegistration(t, "insights.listDashboards"),
+		unrelatedDashboardRegistration(t, "insights.panelManifest"),
+		unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

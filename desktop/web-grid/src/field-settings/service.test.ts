@@ -45,13 +45,49 @@ function migration(phase: string): Record<string, unknown> {
   return { ...fixture<Record<string, unknown>>("migration-status.json"), phase };
 }
 
+function pairedDescription(reciprocal = false): FieldSettingsDescribeResultV2 {
+  const fieldId = reciprocal ? "fld_orders" : "fld_customer";
+  return {
+    ...describeResult(), tableId: reciprocal ? "tbl_customers" : "tbl_opaque", fieldId,
+    definition: {
+      ...definition(), logicalType: "relation", displayName: reciprocal ? "订单" : "客户",
+      identity: { fieldId, physicalName: `f_${fieldId}`, providerFieldId: `pb_${fieldId}` },
+      relation: {
+        targetTableId: reciprocal ? "tbl_opaque" : "tbl_customers",
+        cardinality: "many", deletePolicy: "setNull", pairId: "pair_1",
+        reciprocalFieldId: reciprocal ? "fld_customer" : "fld_orders",
+        displayFieldId: reciprocal ? "fld_number" : "fld_alias",
+      },
+    },
+  };
+}
+
+function relationSchema(collection: string) {
+  return {
+    contract: "vibetable.schema-describe.v1", collection, requestGeneration: 0,
+    schema: {
+      collection, primaryKey: "id", primaryDisplayFieldId: "fld_primary", columns: [],
+      normalizedRelations: [], schemaRevision: "schema_7", permissionRevision: "schema_7",
+      capabilityHash: "cap", lookupRevision: "lookup",
+    },
+    capabilities: {
+      contract: "vibetable.relation-capabilities.v1",
+      relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+    },
+  };
+}
+
 describe("field settings service", () => {
   const request = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
+    request.mockReset();
     vi.useFakeTimers();
     setActivePinia(createPinia());
+    useWorkspaceStore().setOpened([
+      { collection: "tbl_opaque" }, { collection: "tbl_customers" },
+    ], { tbl_opaque: "订单", tbl_customers: "客户" });
     setHostBridgeForTesting({ request } as unknown as HostBridge);
   });
 
@@ -59,6 +95,92 @@ describe("field settings service", () => {
     setHostBridgeForTesting(null);
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps the requested diagnosis identity after describe fails and clears it for create/close", async () => {
+    request.mockResolvedValueOnce(describeResult(true));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("old_table", "old_field");
+    request.mockRejectedValueOnce(new Error("invalid relation metadata"));
+    await service.openEdit("broken_table", "broken_field");
+    expect(store.inspectionTarget).toEqual({ tableId: "broken_table", fieldId: "broken_field" });
+    expect(store.result).toBeNull();
+    expect(store.draft).toBeNull();
+    expect(store.phase).toBe("failed");
+    service.requestClose();
+    expect(store.inspectionTarget).toBeNull();
+    request.mockResolvedValueOnce(describeResult(false));
+    await service.openCreate("new_table");
+    expect(store.inspectionTarget).toBeNull();
+    service.dispose();
+  });
+  it("loads existing reciprocal metadata without changing display selection, then plans and applies a pair patch", async () => {
+    request
+      .mockResolvedValueOnce(pairedDescription())
+      .mockResolvedValueOnce(relationSchema("tbl_opaque"))
+      .mockResolvedValueOnce(relationSchema("tbl_customers"))
+      .mockResolvedValueOnce(pairedDescription(true))
+      .mockResolvedValueOnce(plan())
+      .mockResolvedValueOnce(receipt())
+      .mockResolvedValueOnce(pairedDescription());
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", "fld_customer");
+    await service.loadRelationCatalog();
+    expect(store.draft?.relation?.displayFieldId).toBe("fld_alias");
+    expect(store.relationPair).toEqual({
+      reciprocalDisplayName: "订单", reciprocalCardinality: "many", sourceDisplayFieldId: "fld_number",
+    });
+    expect(store.dirty).toBe(false);
+    expect(request.mock.calls[3]).toEqual([
+      "field.settings.describe", { tableId: "tbl_customers", fieldId: "fld_orders" },
+    ]);
+    await service.selectRelationTarget("tbl_other");
+    expect(request).toHaveBeenCalledTimes(4);
+    store.patchRelationPair({ reciprocalDisplayName: "关联订单", reciprocalCardinality: "one" });
+    await service.plan();
+    expect(request.mock.calls[4]).toEqual(["field.change.plan", expect.objectContaining({
+      action: "update", draft: null, expectedSchemaRevision: "schema_7", expectedDataRevision: 12,
+      relationPairPatch: { reciprocalDisplayName: "关联订单", reciprocalCardinality: "one" },
+    })]);
+    await service.apply();
+    expect(request.mock.calls[5]?.[0]).toBe("field.change.apply");
+    expect(request.mock.calls[6]?.[0]).toBe("field.settings.describe");
+    expect(store.dirty).toBe(false);
+  });
+
+  it("rejects mismatched reciprocal identity and does not plan a partial pair", async () => {
+    request
+      .mockResolvedValueOnce(pairedDescription())
+      .mockResolvedValueOnce(relationSchema("tbl_opaque"))
+      .mockResolvedValueOnce(relationSchema("tbl_customers"))
+      .mockResolvedValueOnce(pairedDescription());
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", "fld_customer");
+    await service.loadRelationCatalog();
+    expect(store.relationCatalogError).toContain("另一端关联字段不可用");
+    expect(store.canPlan).toBe(false);
+    await service.plan();
+    expect(request).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not attach a late relation catalog to a different editor", async () => {
+    let resolveSchema!: (value: unknown) => void;
+    request.mockResolvedValueOnce(pairedDescription())
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSchema = resolve; }))
+      .mockResolvedValueOnce(describeResult());
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", "fld_customer");
+    const loading = service.loadRelationCatalog();
+    await service.openEdit("tbl_opaque", "fld_amount");
+    resolveSchema(relationSchema("tbl_opaque"));
+    await loading;
+    expect(store.relationSourceSchema).toBeNull();
+    expect(store.relationPair).toBeNull();
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it("uses closed v2 RPCs to create, plan, apply, and refresh an edited field", async () => {

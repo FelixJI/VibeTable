@@ -33,6 +33,9 @@ func TestDispatchSuccessEchoesRawWireAndAllowsZeroSequence(t *testing.T) {
 			return nil
 		},
 		Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("handler must receive the validated wire identity")
+			}
 			if err := ctx.Err(); err != nil {
 				t.Fatalf("handler context = %v", err)
 			}
@@ -40,7 +43,8 @@ func TestDispatchSuccessEchoesRawWireAndAllowsZeroSequence(t *testing.T) {
 		},
 	})
 
-	response := dispatcher.Dispatch(context.Background(), []byte(
+	callerContext := context.WithValue(context.Background(), operationIDContextKey{}, "caller-supplied")
+	response := dispatcher.Dispatch(callerContext, []byte(
 		`{"jsonrpc":"2.0","id":"request-1","method":"test.read","wire":`+
 			wire+`,"params":{"value":3}}`,
 	))
@@ -65,6 +69,9 @@ func TestDispatchPassesCanceledContextToHandlerExactlyOnce(t *testing.T) {
 		ValidateParams: func(json.RawMessage) error { return nil },
 		Handler: func(ctx context.Context, _ json.RawMessage) (any, error) {
 			calls++
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("validated operation identity lost during cancellation")
+			}
 			if !errors.Is(ctx.Err(), context.Canceled) {
 				t.Fatalf("handler context error = %v, want context.Canceled", ctx.Err())
 			}
@@ -93,7 +100,10 @@ func TestDispatchGlobalScopeAllowsZeroSequenceAndRejectsWorkspaceWire(t *testing
 	}}, Registration{
 		Method: "test.global", Scope: productcapabilities.GlobalScope,
 		ValidateParams: func(json.RawMessage) error { return nil },
-		Handler: func(context.Context, json.RawMessage) (any, error) {
+		Handler: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			if id, ok := OperationID(ctx); !ok || id != testOperationID {
+				t.Fatal("global handler must receive the validated wire identity")
+			}
 			calls++
 			return map[string]any{"ok": true}, nil
 		},
@@ -175,7 +185,7 @@ func TestDispatchMapsOnlyExplicitPublicErrorsAndRedactsDetails(t *testing.T) {
 			return nil, fmt.Errorf("wrapped: %w", &PublicError{
 				Code:      "schema.field.invalid_constraint",
 				Path:      &path,
-				Message:   "scale 不能大于 precision",
+				Message:   "scale 涓嶈兘澶т簬 precision",
 				Retryable: false,
 				Details: map[string]any{
 					"precision": 8,
@@ -200,7 +210,7 @@ func TestDispatchMapsOnlyExplicitPublicErrorsAndRedactsDetails(t *testing.T) {
 	}
 	wantData := map[string]any{
 		"kind":      "product_data_error",
-		"message":   "scale 不能大于 precision",
+		"message":   "scale 涓嶈兘澶т簬 precision",
 		"code":      "schema.field.invalid_constraint",
 		"path":      path,
 		"details":   map[string]any{"precision": json.Number("8"), "nested": []any{map[string]any{"safe": true}}},
@@ -461,13 +471,15 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if methods := dispatcher.Methods(); len(methods) != 19 ||
-		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
-		methods[3] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-		methods[4].Method != "lookup.list" || methods[5] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[6] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[7].Method != "query.cursorFetch" || methods[8].Method != "query.cursorOpen" || methods[9].Method != "query.page" || methods[10].Method != "query.readRows" ||
-		methods[11].Method != "query.selectionOpen" || methods[12] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[13].Method != "query.view" || methods[14].Method != "relation.previewDelta" || methods[15] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[16].Method != "schema.describe" ||
-		methods[17].Method != "schema.getTable" || methods[18].Method != "schema.list" {
+	expectedMethods := []string{"contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.settings.describe", "file.list", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.describe", "schema.getTable", "schema.list", "settings.commitWorkCalendar", "settings.readWorkCalendar"}
+	if methods := dispatcher.Methods(); len(methods) != len(expectedMethods) {
 		t.Fatalf("production registrations = %#v", methods)
+	} else {
+		for index, expected := range expectedMethods {
+			if methods[index] != (Method{Method: expected, Scope: productcapabilities.WorkspaceScope}) {
+				t.Fatalf("production registration[%d] = %#v, want %q", index, methods[index], expected)
+			}
+		}
 	}
 	_, err = New(identity, registrations[1:]...)
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
@@ -502,6 +514,13 @@ func generatedGoSidecarRegistrations() []Registration {
 	validator := func(json.RawMessage) error { return nil }
 	handler := func(context.Context, json.RawMessage) (any, error) { return nil, nil }
 	return []Registration{
+		{Method: "contentProfile.commit", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "contentProfile.delete", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "contentProfile.load", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.commit", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.delete", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.list", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "recordDocumentLink.repair", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "events.reconcile", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
@@ -514,8 +533,33 @@ func generatedGoSidecarRegistrations() []Registration {
 			Method: "file.list", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
+		{Method: "history.applyRestore", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "history.read", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{Method: "insights.dashboardQueryLimits", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.deleteDashboardWorkspace", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.executeDashboardQuery", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.listDashboards", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.panelManifest", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.readDashboardWorkspace", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "insights.saveDashboardDraft", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{
+			Method: "interface.commit", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.delete", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.list", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "interface.load", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
 		{
@@ -530,6 +574,17 @@ func generatedGoSidecarRegistrations() []Registration {
 			Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
+		{
+			Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
+			Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{Method: "preset.delete", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "preset.list", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "preset.save", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "query.cursorFetch", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
@@ -559,6 +614,10 @@ func generatedGoSidecarRegistrations() []Registration {
 			ValidateParams: validator, Handler: handler,
 		},
 		{
+			Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope,
+			ValidateParams: validator, Handler: handler,
+		},
+		{
 			Method: "relation.previewDelta", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
@@ -578,6 +637,8 @@ func generatedGoSidecarRegistrations() []Registration {
 			Method: "schema.list", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
+		{Method: "settings.commitWorkCalendar", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "settings.readWorkCalendar", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 	}
 }
 

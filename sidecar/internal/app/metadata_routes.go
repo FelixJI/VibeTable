@@ -53,6 +53,19 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/upsert", func(
 		request *core.RequestEvent,
 	) error {
+		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" || ns == "shared_settings" {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
+		}
+		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
+			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
+		}
+		if request.Request.PathValue("namespace") == string(metadata.NamespacePresets) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
+		}
+
+		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
+		}
 		var body metadataUpsertBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -81,6 +94,19 @@ func registerMetadataRoutes(
 	r.POST("/api/vibetable/v1/metadata/{namespace}/delete", func(
 		request *core.RequestEvent,
 	) error {
+		if ns := request.Request.PathValue("namespace"); ns == "dashboards" || ns == "panels" || ns == "shared_settings" {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
+		}
+		if !genericMetadataWritable(request.Request.PathValue("namespace")) {
+			return writeMetadataError(request, &metadata.Error{Code: "metadata.namespace.invalid", Message: "content metadata requires the public content command"})
+		}
+		if request.Request.PathValue("namespace") == string(metadata.NamespacePresets) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
+		}
+
+		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
+		}
 		var body metadataDeleteBody
 		if err := decodeMetadataBody(
 			request.Request.Body, &body,
@@ -105,25 +131,8 @@ func registerMetadataRoutes(
 		}
 		return request.JSON(http.StatusOK, receipt)
 	})
-	r.POST("/api/vibetable/v1/metadata/dashboards/commit", func(
-		request *core.RequestEvent,
-	) error {
-		var body metadata.DashboardCommitRequest
-		if err := decodeMetadataBody(
-			request.Request.Body, &body,
-		); err != nil {
-			return writeMetadataError(request, err)
-		}
-		receipt, err := commitDashboardWithGate(
-			request.Request.Context(),
-			body,
-			gates,
-			service.CommitDashboard,
-		)
-		if err != nil {
-			return writeMetadataError(request, err)
-		}
-		return request.JSON(http.StatusOK, receipt)
+	r.POST("/api/vibetable/v1/metadata/dashboards/commit", func(request *core.RequestEvent) error {
+		return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_owner_required"})
 	})
 }
 
@@ -251,4 +260,8 @@ func metadataHTTPStatus(err *metadata.Error) int {
 	default:
 		return http.StatusUnprocessableEntity
 	}
+}
+
+func genericMetadataWritable(namespace string) bool {
+	return namespace != string(metadata.NamespaceContentProfiles) && namespace != string(metadata.NamespaceRecordDocumentLinks)
 }

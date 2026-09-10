@@ -256,6 +256,30 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task MutationUsesDefaultGoOwnerAndPreservesReceiptAndRemoteFailure(bool apply)
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        fixture.Http.Result = Json("""{"contractVersion":"2.0","requestId":"mutation-host","extension":[null,false,"中文"]}""");
+        using var gateway = fixture.Factory.CaptureHostProductRpcBinding()!.CreateGateway(fixture.Leases, fixture.Http);
+        JsonElement parameters = Json("""{"requestId":"mutation-host"}""");
+        Task<JsonElement> Invoke() => apply
+            ? gateway.ApplyMutationAsync(parameters, CancellationToken.None)
+            : gateway.PreviewMutationAsync(parameters, CancellationToken.None);
+        JsonElement result = await Invoke();
+        Assert.AreEqual("mutation-host", result.GetProperty("requestId").GetString());
+        Assert.AreEqual("中文", result.GetProperty("extension")[2].GetString());
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+        fixture.Http.Error = true;
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(Invoke);
+        Assert.AreEqual(-32602, error.Code);
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
     public async Task ReadyFactoryCapturesPairedClientAndUsesTypedSelectedRoute()
     {
         await using var fixture = await Fixture.OpenAsync();
@@ -537,6 +561,44 @@ public sealed class HostProductRpcCompositionTests
         return document.RootElement.Clone();
     }
 
+    [TestMethod]
+    public async Task DashboardControllerUsesSharedProductOwnerAndKeepsTypedConflict()
+    {
+        await using var fixture = await Fixture.OpenAsync(false);
+        using var product = fixture.Factory.CaptureHostProductRpcBinding()!.CreateGateway(fixture.Leases, fixture.Http);
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardRequestController(sink, TimeSpan.FromSeconds(5));
+        controller.SetGateway(new JsonRpcDashboardGateway(product));
+        fixture.Http.Result = Json("""{"dashboards":[]}""");
+        await controller.DispatchAsync(new RoutedWebRequest("dashboard.listRequested", "dashboard-list", Json("{}"), string.Empty));
+        Assert.AreEqual("dashboard.listLoaded", sink.Replies.Single().Type);
+        fixture.Http.DomainError = Json("""{"code":-32080,"message":"Insights error","data":{"kind":"insights_error","message":"dashboard revision does not match","code":"dashboard_edit_conflict"}}""");
+        await controller.DispatchAsync(new RoutedWebRequest("dashboard.saveRequested", "dashboard-conflict", Json("""{"name":"Sales","note":"","panels":[],"deletedPanelIds":[],"config":{},"idempotencyKey":"44444444-4444-4444-8444-444444444444"}"""), string.Empty));
+        JsonElement error = JsonSerializer.SerializeToElement(sink.Replies.Last().Payload);
+        Assert.AreEqual("dashboard_edit_conflict", error.GetProperty("code").GetString());
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+    }
+
+    [TestMethod]
+    [DataRow("unknown")]
+    [DataRow("private")]
+    public async Task DashboardControllerRejectsUnclassifiedSidecarErrors(string variation)
+    {
+        await using var fixture = await Fixture.OpenAsync(false);
+        using var product = fixture.Factory.CaptureHostProductRpcBinding()!.CreateGateway(fixture.Leases, fixture.Http);
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardRequestController(sink, TimeSpan.FromSeconds(5));
+        controller.SetGateway(new JsonRpcDashboardGateway(product));
+        fixture.Http.DomainError = variation == "unknown"
+            ? Json("""{"code":-32080,"message":"Insights error","data":{"kind":"insights_error","message":"hidden","code":"unknown"}}""")
+            : Json("""{"code":-32080,"message":"Insights error","data":{"kind":"insights_error","message":"hidden","code":"dashboard_edit_conflict","private":"hidden"}}""");
+        await controller.DispatchAsync(new RoutedWebRequest("dashboard.listRequested", "rejected", Json("{}"), string.Empty));
+        JsonElement error = JsonSerializer.SerializeToElement(sink.Replies.Single().Payload);
+        Assert.AreEqual("DASHBOARD_OPERATION_FAILED", error.GetProperty("code").GetString());
+        Assert.IsFalse(error.GetRawText().Contains("hidden", StringComparison.Ordinal));
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "vibetable-binding-" + Guid.NewGuid().ToString("N"));
@@ -648,6 +710,7 @@ public sealed class HostProductRpcCompositionTests
         internal TaskCompletionSource RpcEntered { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? ReplyGate { get; set; }
         internal bool Error { get; set; }
+        internal JsonElement? DomainError { get; set; }
         internal JsonElement Result { get; set; } = Json("""{"tables":["orders"]}""");
         internal JsonElement LastWire { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -683,6 +746,8 @@ public sealed class HostProductRpcCompositionTests
             LastWire = call.GetProperty("wire").Clone();
             RpcEntered.TrySetResult();
             if (ReplyGate is not null) await ReplyGate.Task.WaitAsync(token);
+            if (DomainError is JsonElement domainError)
+                return Reply(JsonSerializer.SerializeToElement(new {jsonrpc = "2.0", id = call.GetProperty("id"), wire = LastWire, error = domainError}));
             if (Error)
                 return Reply(JsonSerializer.SerializeToElement(new
                 {

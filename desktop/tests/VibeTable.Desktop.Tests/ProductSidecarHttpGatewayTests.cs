@@ -14,6 +14,70 @@ public sealed class ProductSidecarHttpGatewayTests
         "11111111-1111-4111-8111-111111111111";
     private const string ClaimId =
         "22222222-2222-4222-8222-222222222222";
+    [TestMethod]
+    [DataRow("preset.save", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", false, true)]
+    [DataRow("preset.delete", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", false, true)]
+    [DataRow("preset.save", "preset_idempotency_conflict", "operationId", "Operation was used for another Preset request.", false, true)]
+    [DataRow("preset.delete", "preset_idempotency_conflict", "operationId", "Operation was used for another Preset request.", false, true)]
+    [DataRow("preset.save", "preset_unknown", "expectedRevision", "Preset changed elsewhere.", false, false)]
+    [DataRow("preset.save", "preset_edit_conflict", "wrongField", "Preset changed elsewhere.", false, false)]
+    [DataRow("preset.save", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", true, false)]
+    public async Task PresetControllerPreservesOnlyClosedHttpConflicts(
+        string method, string code, string field, string message, bool extra, bool accepted)
+    {
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = "workspace", workspaceId = WorkspaceId, sessionEpoch = 7,
+            operationId = ClaimId, sequence = 0,
+        });
+        JsonElement parameters = JsonDocument.Parse(method == "preset.save"
+            ? """{"collection":"orders","name":"Gallery","view":{},"presetId":"view-1","expectedRevision":"stale","operationId":"save-conflict"}"""
+            : """{"presetId":"view-1","expectedRevision":"stale","operationId":"delete-conflict"}""").RootElement.Clone();
+        var data = new Dictionary<string, object?> { ["kind"] = "insights_error", ["code"] = code, ["field"] = field, ["message"] = message };
+        if (extra) data["private"] = "must not cross";
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+                return Json(Capabilities(rpcMethods: JsonSerializer.Serialize(new[] { method }),
+                    registrations: JsonSerializer.Serialize(new[] { new { method, scope = "workspace" } })));
+            using JsonDocument sent = JsonDocument.Parse(request.Content!.ReadAsStream());
+            Assert.AreEqual(method, sent.RootElement.GetProperty("method").GetString());
+            Assert.IsTrue(JsonElement.DeepEquals(parameters, sent.RootElement.GetProperty("params")));
+            return Json(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0", id = "preset-conflict", wire,
+                error = new { code = -32080, message = "Insights error", data },
+            }));
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new(method, "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        var pythonTransport = new CountingQueryTransport();
+        await using var pythonClient = new JsonRpcClient(pythonTransport);
+        using var pythonGateway = new JsonRpcProductDataGateway(pythonClient);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(pythonGateway);
+        controller.SetProductSidecarForwarder(gateway);
+        await controller.DispatchAsync(new RoutedWebRequest(method, "preset-conflict", parameters, string.Empty, Wire: wire));
+        Assert.AreEqual(0, pythonTransport.WriteCount);
+        Assert.AreEqual(2, handler.SendCount);
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("preset-conflict", reply.RequestId);
+        Assert.AreEqual(accepted ? method : "operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        if (accepted)
+        {
+            JsonElement error = payload.GetProperty("error");
+            Assert.AreEqual(code, error.GetProperty("code").GetString());
+            Assert.AreEqual(field, error.GetProperty("path").GetString());
+            Assert.AreEqual(message, error.GetProperty("message").GetString());
+        }
+        else
+        {
+            Assert.IsFalse(payload.GetRawText().Contains(code, StringComparison.Ordinal));
+            Assert.IsFalse(payload.GetRawText().Contains("must not cross", StringComparison.Ordinal));
+        }
+    }
     private static readonly ProductSidecarRegistration[] ProductCatalog =
         [new("query.page", "workspace")];
 
@@ -130,7 +194,7 @@ public sealed class ProductSidecarHttpGatewayTests
 
     [TestMethod]
     [DataRow('a', 1)]
-    [DataRow('é', 2)]
+    [DataRow('\u00e9', 2)]
     public async Task LookupControllerForwardsExactParameterBudgetThroughHttp(char character, int utf8Bytes)
     {
         int available = 1024 * 1024 - "{\"collection\":\"\"}".Length;
@@ -220,6 +284,54 @@ public sealed class ProductSidecarHttpGatewayTests
             "row-1",
             success.Result.GetProperty("rows")[0].GetProperty("id").GetString());
         Assert.AreEqual(2, handler.SendCount);
+    }
+
+    [TestMethod]
+    [DataRow("settings.calendar.invalid")]
+    [DataRow("settings.calendar.revision_conflict")]
+    [DataRow("settings.calendar.corrupt")]
+    [DataRow("metadata.idempotency_conflict")]
+    [DataRow("metadata.storage.failed")]
+    [DataRow("metadata.request.invalid")]
+    public async Task WorkCalendarDomainErrorSurvivesHttpAndRendererProjection(string code)
+    {
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = "workspace", workspaceId = WorkspaceId, sessionEpoch = 7,
+            operationId = ClaimId, sequence = 0,
+        });
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+                return Json(Capabilities(
+                    rpcMethods: "[\"settings.commitWorkCalendar\"]",
+                    registrations: "[{\"method\":\"settings.commitWorkCalendar\",\"scope\":\"workspace\"}]"));
+            return Json(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0", id = "calendar-error", wire,
+                error = new { code = -32150, message = "Product data error", data = new
+                {
+                    kind = "product_data_error", message = "Calendar rejected", code,
+                    path = "expectedRevision", details = new { }, retryable = false,
+                } },
+            }));
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new("settings.commitWorkCalendar", "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetProductSidecarForwarder(gateway);
+        JsonElement parameters = JsonSerializer.SerializeToElement(new
+        {
+            overrides = Array.Empty<object>(), expectedRevision = "", idempotencyKey = "calendar-key",
+        });
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "settings.commitWorkCalendar", "calendar-error", parameters, string.Empty, Wire: wire));
+        var reply = sink.Replies.Single();
+        Assert.AreEqual("settings.commitWorkCalendar", reply.Type, JsonSerializer.Serialize(reply.Payload));
+        JsonElement result = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual(code, result.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual("expectedRevision", result.GetProperty("error").GetProperty("path").GetString());
     }
 
     [TestMethod]
@@ -363,7 +475,7 @@ public sealed class ProductSidecarHttpGatewayTests
 
     [TestMethod]
     [DataRow('x', 1)]
-    [DataRow('é', 2)]
+    [DataRow('\u00e9', 2)]
     public async Task OneMiBSemanticParamsLeaveRoomForEnvelopeAndEscaping(char character, int bytesPerCharacter)
     {
         byte[]? body = null;
@@ -728,6 +840,50 @@ public sealed class ProductSidecarHttpGatewayTests
         Assert.ThrowsExactly<ArgumentException>(() =>
             new ProductSidecarHttpGateway(
                 Context("secret"), Identity(), [new("query.page", "process")]));
+    }
+
+    [TestMethod]
+    public async Task ContentErrorsKeepTheirClosedMethodAndCodeContract()
+    {
+        foreach (var sample in new[]
+        {
+            (Method: "contentProfile.load", Code: "content_profile.not_found", Accepted: true),
+            (Method: "contentProfile.load", Code: "content_model.idempotency_conflict", Accepted: true),
+            (Method: "contentProfile.load", Code: "content_model.future_error", Accepted: false),
+            (Method: "contentProfile.load", Code: "schema.invalid", Accepted: false),
+            (Method: "query.page", Code: "content_profile.not_found", Accepted: false),
+        })
+        {
+            string methods = JsonSerializer.Serialize(new[] { sample.Method });
+            string registrations = JsonSerializer.Serialize(new[] { new { method = sample.Method, scope = "workspace" } });
+            var replies = new Queue<HttpResponseMessage>([
+                Json(Capabilities(rpcMethods: methods, registrations: registrations)),
+                Json(JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0", id = "content", wire = new { },
+                    error = new
+                    {
+                        code = -32180, message = "Content model error",
+                        data = new { kind = "content_model_error", code = sample.Code, message = "Content metadata rejected.", path = "" },
+                    },
+                })),
+            ]);
+            using var gateway = Gateway(new RecordingHandler(_ => replies.Dequeue()),
+                expectedRegistrations: [new(sample.Method, "workspace")]);
+            await gateway.GetCapabilitiesAsync(CancellationToken.None);
+            JsonElement empty = JsonSerializer.SerializeToElement(new { });
+            if (sample.Accepted)
+            {
+                var result = (ProductSidecarFailure)await gateway.ForwardAsync("content", sample.Method, empty, empty, CancellationToken.None);
+                Assert.AreEqual(-32180, result.Error.Code);
+                Assert.AreEqual(sample.Code, result.Error.Data!.Value.GetProperty("code").GetString());
+                Assert.AreEqual("", result.Error.Data.Value.GetProperty("path").GetString());
+            }
+            else
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => gateway.ForwardAsync("content", sample.Method, empty, empty, CancellationToken.None));
+            }
+        }
     }
 
     private static ProductSidecarHttpGateway Gateway(

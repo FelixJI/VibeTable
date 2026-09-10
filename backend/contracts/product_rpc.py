@@ -11,6 +11,7 @@ from backend.contracts.generated_product_rpc_capabilities import (
     PRODUCT_RPC_METHODS_BY_CURRENT_OWNER,
     current_owner_methods,
 )
+from backend.contracts.relation_inspection import RelationInspectPairRequest
 from backend.contracts.schema_v2 import ApplyRequestV2
 
 _MAX_PARAMS_BYTES = 1 << 20
@@ -99,6 +100,17 @@ def _closed_params(
     )
 
 
+class RelationInspectPairParams(ProductParams):
+    _allowed_fields = frozenset({"tableId", "fieldId", "limit", "cursor"})
+    _required_fields = frozenset({"tableId", "fieldId"})
+    _field_types = {"tableId": (str,), "fieldId": (str,)}
+
+    @model_validator(mode="after")
+    def validate_inspection(self) -> RelationInspectPairParams:
+        RelationInspectPairRequest.model_validate(self.root)
+        return self
+
+
 class FieldChangePlanParams(ProductParams):
     """Guards the transport envelope; Go owns field-domain validation."""
 
@@ -115,13 +127,15 @@ class FieldChangePlanParams(ProductParams):
             "confirmation",
             "backupReceipt",
             "relationPair",
+            "relationPairPatch",
         }
     )
-    _required_fields = _allowed_fields - {"relationPair"}
+    _required_fields = _allowed_fields - {"relationPair", "relationPairPatch"}
     _field_types = {
         "draft": (dict, type(None)),
         "actor": (dict,),
         "relationPair": (dict, type(None)),
+        "relationPairPatch": (dict, type(None)),
     }
 
     _catalog_example = {
@@ -422,6 +436,7 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
             "dataRevision": (str,),
         },
     ),
+    "relation.inspectPair": RelationInspectPairParams,
     "relation.searchTargets": _closed_params(
         "RelationSearchTargetsParams",
         allowed=("relationId", "query", "offset", "limit"),

@@ -31,8 +31,6 @@ class ProductRelationLookupFileRpc:
             "relation.createTarget": self._create_relation_target,
             "relation.updateSingle": self._update_single_relation,
             "relation.applyDelta": self._apply_relation_delta,
-            "history.previewRestore": self._preview_history_restore,
-            "history.applyRestore": self._apply_history_restore,
         }
         self.methods = frozenset(self._handlers)
 
@@ -252,32 +250,6 @@ class ProductRelationLookupFileRpc:
                 "requestId": request_id,
                 "receipt": result.get("receipt"),
             }
-        )
-
-    async def _preview_history_restore(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        body: JsonObject = {
-            "collection": _text_any(raw, "collection", "tableId"),
-            "itemId": _text_any(raw, "itemId", "recordId"),
-            "targetRevision": _text(raw, "targetRevision"),
-            "scope": _optional_text(raw, "scope") or "row",
-        }
-        field = raw.get("field")
-        if field is not None:
-            if not isinstance(field, str) or not field:
-                raise ValueError("field must be a non-empty string")
-            body["field"] = field
-        return await self._context.post("/api/vibetable/v1/history/restore-preview", body)
-
-    async def _apply_history_restore(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        return await self._context.post(
-            "/api/vibetable/v1/history/restore-apply",
-            {
-                "collection": _text_any(raw, "collection", "tableId"),
-                "itemId": _text_any(raw, "itemId", "recordId"),
-                "token": _text(raw, "token"),
-            },
         )
 
 

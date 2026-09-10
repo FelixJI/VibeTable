@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { isDeepStrictEqual } from "node:util";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
@@ -35,9 +36,11 @@ import {
   beginWorkspaceActivationCapture,
   waitForCapturedBridgeMessage,
 } from "./bridge_capture_wait.mjs";
+import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
+import { submitWorkspaceSearch } from "./workspace_search_submit.mjs";
 import { waitForWorkspaceSearchRebuildTerminal } from "./workspace_search_terminal.mjs";
 import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
 import {
@@ -2583,6 +2586,246 @@ async function scenario27(page, recorder) {
   await runRelationScenario(page, recorder, true);
 }
 
+async function readRelationPairAuthority(page, tableId, fieldId) {
+  const source = await rawBridgeRequest(page, "field.settings.describe", { tableId, fieldId });
+  const definition = source.payload?.definition;
+  if (!definition?.relation?.pairId || !definition.relation.reciprocalFieldId) {
+    throw new Error(`paired relation definition unavailable: ${JSON.stringify(source)}`);
+  }
+  const reciprocal = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: definition.relation.targetTableId,
+    fieldId: definition.relation.reciprocalFieldId,
+  });
+  const endpoints = [];
+  for (const described of [source, reciprocal]) {
+    if (!described.payload?.definition) throw new Error("relation endpoint is missing");
+    const rows = await rawBridgeRequest(page, "query.page", {
+      tableId: described.payload.tableId,
+      query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    });
+    if (!Array.isArray(rows.payload?.rows) || rows.payload.totalRows > 100) {
+      throw new Error(`relation authority fixture is incomplete: ${JSON.stringify(rows)}`);
+    }
+    endpoints.push({
+      tableId: described.payload.tableId,
+      definition: described.payload.definition,
+      schemaRevision: described.payload.schemaRevision,
+      dataRevision: described.payload.dataRevision,
+      rows: [...rows.payload.rows].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+    });
+  }
+  return endpoints;
+}
+
+function relationPairIdentitiesAndLinks(endpoints) {
+  return endpoints.map(({ tableId, definition, rows }) => ({
+    tableId,
+    identity: definition.identity,
+    pairId: definition.relation.pairId,
+    reciprocalFieldId: definition.relation.reciprocalFieldId,
+    targetTableId: definition.relation.targetTableId,
+    rows: rows.map((row) => {
+      const value = row[definition.identity.physicalName];
+      const links = value == null || value === "" ? [] : Array.isArray(value) ? value : [value];
+      return { id: row.id, links: [...links].sort() };
+    }),
+  }));
+}
+
+async function rejectPublicRelationCascade(page, recorder, tableId, fieldId) {
+  const before = await readRelationPairAuthority(page, tableId, fieldId);
+  const rejected = await rawBridgeRequest(page, "field.change.plan", {
+    action: "update", tableId, fieldId,
+    expectedSchemaRevision: before[0].schemaRevision,
+    expectedDataRevision: before[0].dataRevision,
+    draft: null,
+    relationPairPatch: { deletePolicy: "cascade" },
+    actor: { id: "product-e2e", kind: "user" },
+    conversionRule: "", confirmation: "", backupReceipt: "",
+  });
+  recorder.check("public cascade is explicitly rejected without changing either relation endpoint",
+    rejected.payload?.error?.code === "field.contract.invalid"
+      && rejected.payload?.canApply !== true
+      && canonicalJsonText(before) === canonicalJsonText(
+        await readRelationPairAuthority(page, tableId, fieldId),
+      ), { rejected });
+  if (rejected.type === "operation.failed") await acknowledgeExpectedBridgeFailure(page, rejected);
+}
+
+async function openRelationPairEditor(page, physicalName, reciprocalName) {
+  const header = page.locator(`.tabulator-col[tabulator-field="${physicalName}"]`);
+  await header.waitFor({ state: "visible", timeout: 30_000 });
+  await header.locator(".tabulator-col-title").click({ button: "right" });
+  await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+  await page.getByTestId("relation-reciprocal-name").waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction((name) => (
+    document.querySelector('[data-testid="relation-reciprocal-name"] input')?.value === name
+  ), reciprocalName, { timeout: 30_000 });
+}
+
+async function planRelationPairThroughUi(page) {
+  await beginBridgeMessageCapture(page, ["field.change.plan", "operation.failed"]);
+  await page.getByTestId("field-plan-button").click();
+  await page.waitForFunction(() => !!window.__vibetableE2EBridgeCapture?.message,
+    undefined, { timeout: 30_000 });
+  const response = await page.evaluate(() => window.__vibetableE2EBridgeCapture.message);
+  if (response.type !== "field.change.plan" || response.payload?.error) {
+    throw new Error(`relation UI planning failed: ${JSON.stringify(response)}`);
+  }
+  await page.getByTestId("field-change-plan").waitFor({ state: "visible", timeout: 30_000 });
+  return response.payload;
+}
+
+async function applyRelationPairThroughUi(page) {
+  const planCard = page.getByTestId("field-change-plan");
+  for (const checkbox of await planCard.getByRole("checkbox").all()) {
+    if (!await checkbox.isChecked()) await checkbox.check();
+  }
+  await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
+  await page.getByTestId("field-apply-button").click();
+  await page.waitForFunction(() => !!window.__vibetableE2EBridgeCapture?.message,
+    undefined, { timeout: 30_000 });
+  const response = await page.evaluate(() => window.__vibetableE2EBridgeCapture.message);
+  if (response.type !== "field.change.apply" || response.payload?.error || response.payload?.migrationJobId) {
+    throw new Error(`relation UI apply did not complete atomically: ${JSON.stringify(response)}`);
+  }
+  await planCard.waitFor({ state: "hidden", timeout: 30_000 });
+}
+
+async function editRelationPairScenario(page, recorder, authors, articleTableId, title, relation) {
+  const targetDisplay = await createV2Field(page, authors.tableId, "Author code", "text");
+  const sourceDisplay = await createV2Field(page, articleTableId, "Article code", "text");
+  const targetId = "pairtarget00001";
+  const sourceId = "pairsource00001";
+  const target = await applyProductMutation(page, authors.tableId, [{
+    kind: "insert", recordId: targetId,
+    values: { [authors.field.physicalName]: "原作者", [targetDisplay.physicalName]: "A-01" },
+  }], "pair-edit-target");
+  const source = await applyProductMutation(page, articleTableId, [{
+    kind: "insert", recordId: sourceId,
+    values: { [title.physicalName]: "原文章", [sourceDisplay.physicalName]: "P-01", [relation.physicalName]: targetId },
+  }], "pair-edit-source");
+  if (target.payload?.status !== "applied" || source.payload?.status !== "applied") {
+    throw new Error(`relation pair fixture did not commit: ${JSON.stringify({ target, source })}`);
+  }
+  const before = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  const identitiesAndLinks = relationPairIdentitiesAndLinks(before);
+  recorder.check("relation pair fixture has reciprocal links before editing",
+    canonicalJsonText(identitiesAndLinks.map(endpoint => endpoint.rows)) === canonicalJsonText([
+      [{ id: sourceId, links: [targetId] }], [{ id: targetId, links: [sourceId] }],
+    ]), { identitiesAndLinks });
+  await selectTable(page, "E2E Articles V2");
+  await waitForVisibleRowCount(page, 1);
+  await openRelationPairEditor(page, relation.physicalName, before[1].definition.displayName);
+  await fillNInput(page, "field-display-name", "文章作者");
+  await fillNInput(page, "relation-reciprocal-name", "作者文章");
+  await selectVisibleNOption(page, "relation-source-cardinality", "多条");
+  await selectVisibleNOption(page, "relation-reciprocal-cardinality", "单条");
+  await selectVisibleNOption(page, "relation-target-display-field", "Author code");
+  await selectVisibleNOption(page, "relation-source-display-field", "Article code");
+  await selectVisibleNOption(page, "relation-delete-policy", "阻止删除");
+  const planned = await planRelationPairThroughUi(page);
+  const related = planned.relatedChanges?.[0];
+  recorder.check("frozen pair plan contains both endpoint settings and preserves their identities",
+    planned.canApply === true && planned.createsMigration === false
+      && planned.relatedChanges?.length === 1 && related.tableId === authors.tableId
+      && planned.after?.displayName === "文章作者" && related.after?.displayName === "作者文章"
+      && planned.after?.relation?.cardinality === "many" && related.after?.relation?.cardinality === "one"
+      && planned.after?.relation?.displayFieldId === targetDisplay.fieldId
+      && related.after?.relation?.displayFieldId === sourceDisplay.fieldId
+      && planned.after?.relation?.deletePolicy === "restrict" && related.after?.relation?.deletePolicy === "restrict"
+      && canonicalJsonText(planned.after.identity) === canonicalJsonText(before[0].definition.identity)
+      && canonicalJsonText(related.after.identity) === canonicalJsonText(before[1].definition.identity), { planned });
+  const sourceSummary = page.getByTestId("field-plan-source-change");
+  const reciprocalSummary = page.getByTestId("field-plan-reciprocal-change");
+  await sourceSummary.waitFor({ state: "visible" });
+  await reciprocalSummary.waitFor({ state: "visible" });
+  const sourceSummaryText = await sourceSummary.innerText();
+  const reciprocalSummaryText = await reciprocalSummary.innerText();
+  recorder.check("frozen plan visibly presents both relation endpoints before apply",
+    sourceSummaryText.includes("文章作者 · 多条")
+      && sourceSummaryText.includes("显示字段：Author code")
+      && sourceSummaryText.includes("共享删除策略：阻止删除")
+      && reciprocalSummaryText.includes("作者文章 · 单条")
+      && reciprocalSummaryText.includes("显示字段：Article code")
+      && reciprocalSummaryText.includes("共享删除策略：阻止删除"),
+    { sourceSummaryText, reciprocalSummaryText });
+  recorder.check("planning preserves both authoritative definitions and links",
+    canonicalJsonText(before) === canonicalJsonText(
+      await readRelationPairAuthority(page, articleTableId, relation.fieldId),
+    ));
+  await applyRelationPairThroughUi(page);
+  const committed = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  recorder.check("UI apply atomically saves both planned definitions without replacing pair or links",
+    canonicalJsonText(committed.map(endpoint => endpoint.definition))
+      === canonicalJsonText([planned.after, related.after])
+      && canonicalJsonText(relationPairIdentitiesAndLinks(committed)) === canonicalJsonText(identitiesAndLinks),
+    { committed });
+  await closeFieldSettingsDrawer(page);
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: relation.physicalName, label: "A-01" });
+  recorder.check("pair source Grid consumes the newly selected target display field",
+    await page.locator(`.tabulator-cell[tabulator-field="${relation.physicalName}"] .vt-relation-token`)
+      .innerText() === "A-01");
+  await selectTable(page, "E2E Authors V2");
+  const reciprocalPhysicalName = committed[1].definition.identity.physicalName;
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)
+      ?.textContent === label
+  ), { field: reciprocalPhysicalName, label: "P-01" });
+  recorder.check("pair reciprocal Grid consumes the newly selected source display field",
+    await page.locator(`.tabulator-cell[tabulator-field="${reciprocalPhysicalName}"] .vt-relation-token`)
+      .innerText() === "P-01");
+  await selectTable(page, "E2E Articles V2");
+  await waitForVisibleRowCount(page, 1);
+  await openRelationPairEditor(page, relation.physicalName, "作者文章");
+  recorder.check("reopened relation editor reads the committed names and cardinalities",
+    await page.getByTestId("field-display-name").locator("input").inputValue() === "文章作者"
+      && (await page.getByTestId("relation-source-cardinality").innerText()).includes("多条")
+      && (await page.getByTestId("relation-reciprocal-cardinality").innerText()).includes("单条")
+      && (await page.getByTestId("relation-target-display-field").innerText()).includes("Author code")
+      && (await page.getByTestId("relation-source-display-field").innerText()).includes("Article code")
+      && (await page.getByTestId("relation-delete-policy").innerText()).includes("阻止删除"));
+  await selectVisibleNOption(page, "relation-delete-policy", "置空");
+  const setNull = await planRelationPairThroughUi(page);
+  recorder.check("public setNull plans the same shared policy on both endpoints",
+    setNull.canApply === true && setNull.after?.relation?.deletePolicy === "setNull"
+      && setNull.relatedChanges?.[0]?.after?.relation?.deletePolicy === "setNull");
+  await applyRelationPairThroughUi(page);
+  const clearedPolicy = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  recorder.check("setNull apply preserves pair and links while saving both endpoint policies",
+    clearedPolicy.every(endpoint => endpoint.definition.relation.deletePolicy === "setNull")
+      && canonicalJsonText(relationPairIdentitiesAndLinks(clearedPolicy)) === canonicalJsonText(identitiesAndLinks));
+  await closeFieldSettingsDrawer(page);
+
+  const secondTargetId = "pairtarget00002";
+  const second = await applyProductMutation(page, authors.tableId, [{
+    kind: "insert", recordId: secondTargetId,
+    values: { [authors.field.physicalName]: "第二作者", [targetDisplay.physicalName]: "A-02" },
+  }], "pair-edit-second-target");
+  const multiple = await applyProductMutation(page, articleTableId, [{
+    kind: "update", recordId: sourceId, values: { [relation.physicalName]: [targetId, secondTargetId] },
+  }], "pair-edit-multiple-links");
+  if (second.payload?.status !== "applied" || multiple.payload?.status !== "applied") {
+    throw new Error(`multi-link fixture failed: ${JSON.stringify({ second, multiple })}`);
+  }
+  const conflictBefore = await readRelationPairAuthority(page, articleTableId, relation.fieldId);
+  await openRelationPairEditor(page, relation.physicalName, "作者文章");
+  await selectVisibleNOption(page, "relation-source-cardinality", "单条");
+  const blocked = await planRelationPairThroughUi(page);
+  recorder.check("many-to-one conflict is visible and cannot discard existing links",
+    blocked.canApply === false && blocked.errors?.some(error => error.code === "relation.cardinality.conflict")
+      && (await page.getByTestId("field-change-plan").innerText()).includes("relation.cardinality.conflict")
+      && await page.getByTestId("field-apply-button").isDisabled()
+      && canonicalJsonText(conflictBefore) === canonicalJsonText(
+        await readRelationPairAuthority(page, articleTableId, relation.fieldId),
+      ), { blocked });
+  await closeFieldSettingsDrawer(page);
+  await rejectPublicRelationCascade(page, recorder, articleTableId, relation.fieldId);
+}
+
 async function runRelationScenario(page, recorder, searchTargets) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -2601,34 +2844,11 @@ async function runRelationScenario(page, recorder, searchTargets) {
       return draft;
     },
   );
-  const cascade = await applyV2FieldChange(
-    page,
-    articleTableId,
-    relation.fieldId,
-    "update",
-    {
-      mutateDraft: (draft) => {
-        draft.relation.deletePolicy = "cascade";
-        return draft;
-      },
-    },
-  );
-  recorder.check(
-    "cascade relation plan exposes direction, impact, and danger classification before apply",
-    cascade.planned?.type === "field.change.plan"
-      && cascade.planned.payload?.classes?.includes("danger")
-      && cascade.planned.payload?.confirmations?.includes("cascade")
-      && cascade.planned.payload?.impact?.records >= 0
-      && Array.isArray(cascade.planned.payload?.impact?.dependencies)
-      && cascade.planned.payload?.warnings?.some(
-        (warning) => warning.details?.direction === "targetToSource",
-      )
-      && cascade.planned.payload?.steps?.some(
-        (step) => step.details?.direction === "targetToSource",
-      ),
-    { cascade: cascade.planned },
-  );
-  if (!searchTargets) return;
+  if (!searchTargets) {
+    await editRelationPairScenario(page, recorder, authors, articleTableId, title, relation);
+    return;
+  }
+  await rejectPublicRelationCascade(page, recorder, articleTableId, relation.fieldId);
   const unicodeLabel = "中文 Cafe\u0301 👩🏽‍💻";
   const labels = Array.from({ length: 51 }, (_, index) => (
     index === 0 ? unicodeLabel : `Search author ${String(index).padStart(2, "0")}`
@@ -2931,6 +3151,88 @@ async function scenario30(page, recorder) {
   await validate(afterWrite.snapshot, undefined, "schema_changed", afterSchema);
 }
 
+async function scenario31(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const targets = await createSimpleTable(page, "Inspection Targets", "Name");
+  const sources = await createSimpleTable(page, "Inspection Sources", "Name");
+  const link = await createV2Field(page, sources.tableId, "Related targets", "relation", (draft) => {
+    draft.relation.targetTableId = targets.tableId;
+    draft.relation.displayFieldId = targets.field.fieldId;
+    draft.relation.cardinality = "many";
+    return draft;
+  });
+  const targetId = "inspecttarget01";
+  const target = await applyProductMutation(page, targets.tableId, [{
+    kind: "insert", recordId: targetId, values: { [targets.field.physicalName]: "诊断目标 雪" },
+  }], "inspection-target");
+  const inserted = await applyProductMutation(page, sources.tableId,
+    Array.from({ length: 101 }, (_, index) => ({
+      kind: "insert", recordId: `inspectrow${String(index).padStart(5, "0")}`,
+      values: { [sources.field.physicalName]: `来源 ${index}`, [link.physicalName]: [targetId] },
+    })), "inspection-sources");
+  if (target.payload?.status !== "applied" || inserted.payload?.status !== "applied") {
+    throw new Error(`inspection fixture did not commit: ${JSON.stringify({ target, inserted })}`);
+  }
+  const read = async (tableId) => {
+    const response = await rawBridgeRequest(page, "query.page", {
+      tableId, query: { filters: [], sorts: [], offset: 0, limit: 200 },
+    });
+    if (response.type !== "query.page" || !response.payload?.snapshot) {
+      throw new Error(`inspection authority read failed: ${JSON.stringify(response)}`);
+    }
+    return { rows: response.payload.rows, schemaRevision: response.payload.snapshot.schemaRevision,
+      dataRevision: response.payload.snapshot.dataRevision };
+  };
+  const state = async () => [await read(sources.tableId), await read(targets.tableId)];
+  const before = await state();
+  recorder.check("inspection fixture has 101 source rows and one target", before[0].rows.length === 101 && before[1].rows.length === 1);
+  await selectTable(page, "Inspection Sources");
+  const header = page.locator(`.tabulator-col[tabulator-field="${link.physicalName}"]`);
+  await header.waitFor({ state: "visible" });
+  await header.locator(".tabulator-col-title").click({ button: "right" });
+  await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+  const panel = page.locator(".relation-inspection");
+  await panel.waitFor({ state: "visible" });
+  const firstPage = async (button) => {
+    await panel.getByRole("button", { name: button, exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "尚有后续页" }).waitFor();
+  };
+  const finish = async () => {
+    await panel.getByRole("button", { name: "继续检查", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: /^扫描覆盖完整。/u }).waitFor();
+  };
+  await firstPage("检查关系完整性");
+  recorder.check("inspection first page retains both endpoint progress without claiming completion",
+    /已检查 100 行/u.test(await panel.locator(".inspection-endpoints li").first().innerText())
+      && await panel.getByRole("button", { name: "继续检查", exact: true }).isVisible());
+  await finish();
+  recorder.check("inspection completes both endpoints after the second page",
+    /已检查 101 行/u.test(await panel.locator(".inspection-endpoints li").first().innerText())
+      && /已检查 1 行/u.test(await panel.locator(".inspection-endpoints li").nth(1).innerText())
+      && await panel.locator("[data-finding]").count() === 0
+      && await panel.getByRole("button", { name: "继续检查", exact: true }).count() === 0
+      && await panel.getByRole("alert").count() === 0);
+  const after = await state();
+  recorder.check("inspection paging preserves authority rows and revisions", JSON.stringify(before) === JSON.stringify(after), { before, after });
+  await firstPage("重新检查");
+  const changed = await applyProductMutation(page, sources.tableId, [{
+    kind: "update", recordId: "inspectrow00000", values: { [sources.field.physicalName]: "并发更新 雪" },
+  }], "inspection-revision-change");
+  if (changed.payload?.status !== "applied") throw new Error(`inspection concurrent edit failed: ${JSON.stringify(changed)}`);
+  const afterWrite = await state();
+  await panel.getByRole("button", { name: "继续检查", exact: true }).click();
+  await panel.getByRole("alert").filter({ hasText: "检查期间数据或字段已变化" }).waitFor();
+  recorder.check("a changed revision rejects continuation and requires restarting",
+    await panel.getByRole("button", { name: "继续检查", exact: true }).count() === 0
+      && /此前发现仅供参考/u.test(await panel.getByRole("alert").innerText()));
+  const afterRejected = await state();
+  recorder.check("rejected inspection continuation performs no authority writes",
+    JSON.stringify(afterWrite) === JSON.stringify(afterRejected), { afterWrite, afterRejected });
+  await firstPage("重新检查");
+  await finish();
+  recorder.check("inspection restarts against the updated revisions without a stale error", await panel.getByRole("alert").count() === 0);
+}
 async function scenario26(page, recorder) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -3259,6 +3561,17 @@ async function scenario07(page, recorder, _network, runtime) {
       `original attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
     );
   }
+  const replacementFile = replaced.payload.attachments[0];
+  const replacementRevision = attachmentHistoryProbe.changeSets.find((changeSet) =>
+    changeSet.scalarChanges?.some((change) =>
+      change.field === attachmentField
+        && String(change.after ?? "").includes(replacementFile.storedName)),
+  )?.rootRevisionId;
+  if (!replacementRevision || replacementRevision === originalRevision) {
+    throw new Error(
+      `replacement attachment revision was not returned: ${JSON.stringify(attachmentHistoryProbe)}`,
+    );
+  }
   const attachmentProductHistoryReply = await rawBridgeRequest(
     page,
     "history.queryRequested",
@@ -3341,6 +3654,89 @@ async function scenario07(page, recorder, _network, runtime) {
     expectedOriginalHash,
     expectedSize: originalBytes.length,
   });
+
+  // The drawer uses the Workspace endpoint above. These existing public Host
+  // events independently qualify the Go Product owner and its five-field result.
+  const productPreviewReply = await rawBridgeRequest(
+    page,
+    "history.previewRestoreRequested",
+    {
+      collection: tableId,
+      itemId: recordId,
+      targetRevision: replacementRevision,
+      scope: "cell",
+      field: attachmentField,
+    },
+    20_000,
+    ["history.restorePreviewReady"],
+  );
+  const productPreview = productPreviewReply.payload;
+  recorder.check(
+    "public Product restore preview targets the replacement attachment revision",
+    productPreviewReply.type === "history.restorePreviewReady"
+      && productPreview?.collection === tableId
+      && productPreview?.itemId === recordId
+      && productPreview?.targetRevision === replacementRevision
+      && productPreview?.scope === "cell"
+      && productPreview?.field === attachmentField
+      && productPreview?.canApply === true
+      && typeof productPreview?.token === "string"
+      && productPreview.token.length > 0,
+    { productPreviewReply, replacementRevision },
+  );
+  const afterProductPreview = await rawBridgeRequest(page, "file.list", attachmentParams);
+  const unchangedFile = afterProductPreview.payload?.attachments?.[0];
+  recorder.check(
+    "public Product restore preview leaves the current attachment unchanged",
+    afterProductPreview.payload?.attachments?.length === 1
+      && unchangedFile?.storedName === restored.payload.attachments[0].storedName
+      && unchangedFile?.sha256 === expectedOriginalHash
+      && unchangedFile?.size === originalBytes.length,
+    { afterProductPreview, current: restored.payload.attachments[0] },
+  );
+  const productAppliedReply = await rawBridgeRequest(
+    page,
+    "history.applyRestoreRequested",
+    { collection: tableId, itemId: recordId, token: productPreview.token },
+    20_000,
+    ["history.restoreApplied"],
+  );
+  const productApplied = productAppliedReply.payload;
+  recorder.check(
+    "public Product restore returns its typed result without a Workspace receipt field",
+    productAppliedReply.type === "history.restoreApplied"
+      && productApplied?.collection === tableId
+      && productApplied?.itemId === recordId
+      && productApplied?.restoredToRevision === replacementRevision
+      && typeof productApplied?.newRevisionId === "string"
+      && productApplied.newRevisionId.length > 0
+      && productApplied.newRevisionId !== replacementRevision
+      && !Object.hasOwn(productApplied, "mutationRevision")
+      && typeof productApplied.item?.[attachmentField] === "string"
+      && productApplied.item[attachmentField].length > 0,
+    { productAppliedReply, replacementRevision, replacementFile },
+  );
+  // Restoring stages a fresh managed file. Its current stored name comes from
+  // the committed Product row, while table/record/field and content stay bound.
+  const productStoredName = productApplied.item[attachmentField];
+  const productRestored = await waitForAttachmentList(
+    page,
+    attachmentParams,
+    (attachments) => attachments.length === 1
+      && attachments[0]?.storedName === productStoredName,
+  );
+  const productRestoredFile = productRestored.payload.attachments[0];
+  recorder.check(
+    "public Product restore binds its committed row to authoritative attachment metadata",
+    productRestoredFile.tableId === tableId
+      && productRestoredFile.recordId === recordId
+      && productRestoredFile.fieldId === attachmentColumn.fieldId
+      && productRestoredFile.storedName === productStoredName
+      && productRestoredFile.originalName === replacementFile.originalName
+      && productRestoredFile.sha256 === expectedReplacementHash
+      && productRestoredFile.size === replacementBytes.length,
+    { productRestoredFile, replacementFile, expectedSize: replacementBytes.length },
+  );
 }
 
 async function scenario08(page, recorder) {
@@ -4250,24 +4646,6 @@ async function scenario11(page, recorder, _network, runtime) {
       && await page.getByTestId("plugin-install-plan").isHidden()
       && (await page.locator(".status-strip").innerText()).includes("1.0.0"),
   { message: await upgradeFailure.innerText() });
-}
-
-async function submitWorkspaceSearch(page, { keyboard = false } = {}) {
-  const submit = page.getByTestId("workspace-search-submit");
-  await submit.waitFor({ state: "visible" });
-  await beginWorkspaceV2MethodCapture(page, "workspaceSearch.query");
-  if (keyboard) {
-    const input = page.getByTestId("workspace-search-input").locator("input");
-    await input.focus();
-    await input.press("Enter");
-  } else {
-    await submit.click();
-  }
-  const response = await waitForCapturedBridgeMessage(page, 30_000);
-  if (response.payload?.ok !== true) {
-    throw new Error(`WorkspaceSearch query failed: ${JSON.stringify(response)}`);
-  }
-  return response.payload.result;
 }
 
 async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000) {
@@ -5657,6 +6035,65 @@ async function scenario16(page, recorder, _network, runtime) {
     path: path.join(runtime.evidenceDir, "16-dashboard-lifecycle.png"),
     fullPage: true,
   });
+  await page.locator(".n-drawer-content").filter({ has: reloadedSettings })
+    .locator(".n-drawer-header__close").click();
+  await reloadedSettings.waitFor({ state: "hidden", timeout: 30_000 });
+  const committedDashboard = await rawBridgeRequest(page, "dashboard.readRequested", {
+    dashboardId,
+  }, 20_000, ["dashboard.loaded"]);
+  await page.getByTestId("nav-tables").click();
+  const dashboardTableName = page.getByTestId("sidebar-table-name")
+    .filter({ hasText: "E2E Dashboard Data" });
+  await dashboardTableName.locator("xpath=ancestor::button").click();
+  const beforeRestartData = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const quiet = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("Dashboard restart begins from a quiescent bridge",
+    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
+  const recoveryOwner = `dashboard-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
+    ownerToken: recoveryOwner, tableId: seeded.tableId,
+  });
+  let recoveryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify Dashboard aggregate and records survive sidecar restart");
+    recorder.check("Dashboard restart terminates only the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(page, "E2E Dashboard Data", seeded.tableId, 2, 60_000, recoveryOwner);
+  } catch (error) {
+    recoveryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(recoveryError, cleanupError, "Dashboard recovery window cleanup also failed")) {
+        throw cleanupError;
+      }
+    }
+  }
+  const afterRestartData = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("Dashboard source records survive sidecar restart unchanged",
+    beforeRestartData.payload?.rows?.length === 2
+      && isDeepStrictEqual(afterRestartData.payload?.rows, beforeRestartData.payload.rows),
+    { beforeRestartData, afterRestartData });
+  await page.getByTestId("nav-dashboard").click();
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  const freshList = await rawBridgeRequest(page, "dashboard.listRequested", {}, 20_000, ["dashboard.listLoaded"]);
+  recorder.check("fresh public Dashboard list retains the committed aggregate after restart",
+    freshList.payload?.dashboards?.some(item => item.id === dashboardId), { freshList });
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await persisted.click();
+  const freshWorkspace = await rawBridgeRequest(page, "dashboard.readRequested", {
+    dashboardId,
+  }, 20_000, ["dashboard.loaded"]);
+  recorder.check("fresh Dashboard workspace preserves complete panels, bindings, config and revision",
+    isDeepStrictEqual(freshWorkspace.payload, committedDashboard.payload),
+    { committedDashboard, freshWorkspace });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "16-dashboard-restarted.png"), fullPage: true });
 }
 
 async function scenario17(page, recorder, _network, runtime) {
@@ -5828,6 +6265,73 @@ async function scenario17(page, recorder, _network, runtime) {
     path: path.join(runtime.evidenceDir, "17-interface-lifecycle.png"),
     fullPage: true,
   });
+
+  await page.getByTestId("nav-tables").click();
+  const tableName = page.getByTestId("sidebar-table-name").filter({ hasText: "E2E Interface Data" });
+  await tableName.locator("xpath=ancestor::button").click();
+  const beforeRestart = await rawBridgeRequest(page, "query.page", {
+    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("Interface authoring and approved runtime actions persist three records",
+    beforeRestart.type === "query.page" && beforeRestart.payload?.rows?.length === 3,
+    { beforeRestart });
+  const quiet = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("Interface restart begins from a quiescent bridge",
+    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
+  const recoveryOwner = `interface-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
+    ownerToken: recoveryOwner, tableId: seeded.tableId,
+  });
+  let recoveryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify Interface aggregate survives sidecar restart");
+    recorder.check("Interface restart terminates only the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(page, "E2E Interface Data", seeded.tableId, 3, 60_000, recoveryOwner);
+  } catch (error) {
+    recoveryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(recoveryError, cleanupError, "Interface recovery window cleanup also failed")) {
+        throw cleanupError;
+      }
+    }
+  }
+  await beginBridgeMessageCapture(page, ["interface.listLoaded"]);
+  await page.getByTestId("nav-interfaces").click();
+  const freshList = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("fresh Interface list after restart contains the committed revision",
+    freshList.payload?.items?.some(item => item.interfaceId === interfaceId
+      && item.revision === committed.payload.revision), { freshList });
+  await persisted.waitFor({ state: "visible", timeout: 30_000 });
+  await beginBridgeMessageCapture(page, ["interface.loaded"]);
+  await persisted.click();
+  const freshLoad = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("fresh public Interface load preserves the complete pages, bindings and actions after restart",
+    isDeepStrictEqual(freshLoad.payload, committed.payload), { committed, freshLoad });
+  await page.getByTestId("interface-run").click();
+  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "17-interface-restarted.png"), fullPage: true });
+
+  await beginBridgeMessageCapture(page, ["interface.deleted"]);
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "删除界面", exact: true }).click();
+  const deleted = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("real Interface delete acknowledges exactly the selected aggregate",
+    deleted.payload?.interfaceId === interfaceId, { deleted });
+  await persisted.waitFor({ state: "hidden", timeout: 30_000 });
+  const afterDelete = await rawBridgeRequest(page, "interface.listRequested", {}, 20_000, ["interface.listLoaded"]);
+  recorder.check("fresh public Interface list omits the deleted aggregate",
+    Array.isArray(afterDelete.payload?.items)
+      && !afterDelete.payload.items.some(item => item.interfaceId === interfaceId), { afterDelete });
+  const missing = await rawBridgeRequest(page, "interface.loadRequested", { interfaceId }, 20_000, ["operation.failed"]);
+  const expectedMissing = missing.type === "operation.failed" && missing.payload?.code === "surface.not_found";
+  recorder.check("deleted Interface cannot be loaded through the real Host Product path", expectedMissing, { missing });
+  if (!expectedMissing) throw new Error(`Unexpected deleted Interface response: ${JSON.stringify(missing)}`);
+  await acknowledgeExpectedBridgeFailure(page, missing);
 }
 
 async function scenario18(page, recorder, _network, runtime) {
@@ -6241,6 +6745,56 @@ async function waitForGalleryProjection(page, expectedCount) {
   return gallery;
 }
 
+async function verifyPresetSurvivesRestart(page, recorder, runtime, tableId, expected) {
+  if (!expected?.id || !expected?.revision) {
+    throw new Error("preset restart requires a persisted identity and revision");
+  }
+  const before = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  if (before.type !== "query.page" || !Array.isArray(before.payload?.rows)) {
+    throw new Error(`preset restart baseline failed: ${JSON.stringify(before)}`);
+  }
+  const diagnostics = await waitForBridgeDiagnosticsToSettle(page);
+  if (!diagnostics || diagnostics.pending?.length || diagnostics.failures?.length) {
+    throw new Error("preset restart requires a quiescent bridge");
+  }
+  const ownerToken = `preset-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, { ownerToken, tableId });
+  let primaryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify persisted preset survives sidecar restart");
+    recorder.check("preset restart terminates the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForActiveTableBackend(page, tableId, before.payload.rows.length, 90_000);
+    const window = await page.evaluate(settleSidecarRecoveryNotificationFailureWindowInPage, {
+      ownerToken, deadlineAt: Date.now() + 30_000,
+    });
+    if (window.state !== "settled") throw new Error(`preset recovery did not settle: ${window.state}`);
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken });
+    } catch (error) {
+      if (!attachCleanupFailure(primaryError, error, "preset recovery cleanup also failed")) throw error;
+    }
+  }
+  // Read after the process boundary before allowing the UI to save any cached view.
+  const fresh = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  const actual = fresh.payload?.presets?.find(item => item.id === expected.id);
+  recorder.check("preset identity, revision and full configuration survive a real sidecar restart",
+    fresh.type === "preset.list" && isDeepStrictEqual(actual, expected), { expected, actual });
+  if (!isDeepStrictEqual(actual, expected)) throw new Error("preset changed across sidecar restart");
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("nav-tables").click();
+  const tab = page.getByTestId(`view-tab-${expected.id}`);
+  await tab.waitFor({ state: "visible", timeout: 30_000 });
+  await tab.click();
+}
+
 async function scenario19(page, recorder, _network, runtime) {
   await waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-tables").click();
@@ -6372,6 +6926,7 @@ async function scenario19(page, recorder, _network, runtime) {
   recorder.check("the stale Gallery rename exposes the typed preset conflict before recovery",
     Boolean(conflictText.trim()) && conflictRoundTrip?.code === "preset_edit_conflict",
   { conflictText, conflictRoundTrip });
+  await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "preset_edit_conflict");
 
   await page.getByTestId("view-reload").click();
   await conflictAlert.waitFor({ state: "hidden", timeout: 30_000 });
@@ -6387,6 +6942,20 @@ async function scenario19(page, recorder, _network, runtime) {
       && winner.revision === competing.payload?.revision
       && winner.view?.kind === "gallery",
   { winner, cardCount: await page.getByTestId("gallery-card").count() });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, winner);
+  await waitForGalleryProjection(page, 2);
+
+  await page.getByTestId(`view-actions-${winner.id}`).click();
+  await page.locator(".n-dropdown-option-body:visible")
+    .filter({ hasText: /删除|Delete/i }).last().click();
+  await page.getByTestId("view-dialog-confirm").click();
+  await page.getByTestId(`view-tab-${winner.id}`).waitFor({ state: "hidden", timeout: 30_000 });
+  const afterDelete = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  recorder.check("Gallery delete UI removes the persisted preset from the authority list",
+    afterDelete.type === "preset.list"
+      && Array.isArray(afterDelete.payload?.presets)
+      && !afterDelete.payload.presets.some(item => item.id === winner.id), { afterDelete });
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "19-gallery-lifecycle.png"),
@@ -6556,6 +7125,9 @@ async function scenario20(page, recorder, _network, runtime) {
   recorder.check("Kanban moved card survives refresh and leaving then reopening Tables",
     await doneLane.getByTestId("kanban-card").filter({ hasText: "Kanban Alpha" }).count() === 1,
   { presetId: persisted.id, doneOptionId: doneOption.optionId });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, persisted);
+  await waitForKanbanCardInLane(page, doneOption.optionId, "Kanban Alpha");
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "20-kanban-lane-drag.png"),
@@ -6733,6 +7305,9 @@ async function scenario21(page, recorder, _network, runtime) {
       .filter({ hasText: "Calendar Alpha" })
       .count() === 1,
   { presetId: persisted.id, targetDate });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, persisted);
+  await waitForCalendarRecordOnDate(page, targetDate, "Calendar Alpha");
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "21-calendar-date-move.png"),
@@ -6943,6 +7518,9 @@ async function scenario22(page, recorder, _network, runtime) {
       .filter({ hasText: "Timeline Alpha" })
       .count() === 1,
   { presetId: persisted.id, targetDate });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, persisted);
+  await waitForTimelineRecordInRange(page, targetDate, "Timeline Alpha");
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "22-timeline-date-move.png"),
@@ -7237,6 +7815,73 @@ async function scenario23(page, recorder, _network, runtime) {
   });
 }
 
+async function scenario32(page, recorder) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  await page.getByTestId("nav-tables").click();
+  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession);
+  const today = await page.evaluate(() => {
+    const date = new Date();
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  });
+  const tableId = await createEmptyTable(page, "Shared Calendar Records");
+  const field = await createV2Field(page, tableId, "Calendar Date", "date");
+  await closeFieldSettingsDrawer(page);
+  await applyProductMutation(page, tableId, [{ kind: "insert", recordId: null, values: { [field.physicalName]: today } }], "shared-calendar-record");
+  await selectTable(page, "Shared Calendar Records");
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-calendar").click();
+  const holiday = page.locator('.calendar-rule-options input[value="holiday"]');
+  await holiday.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => !document.querySelector('.calendar-rule-options input[value="holiday"]')?.disabled, undefined, { timeout: 30_000 });
+  await page.locator('.calendar-rule-options .n-radio-button:has(input[value="holiday"])').click();
+  if (!(await holiday.isChecked())) throw new Error("Holiday radio button did not select its input");
+  await page.locator(".calendar-name-input input").fill("公司共同假日");
+  await page.getByTestId("calendar-save").click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="shared-work-calendar"]')?.dataset.status === "ready"
+    && document.querySelector('[data-testid="calendar-save"]')?.disabled
+    && !document.querySelector('[data-testid="calendar-error"]'), undefined, { timeout: 30_000 });
+  const confirmed = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("workspace calendar save reaches the Go authority", confirmed.payload?.overrides?.some(item => item.date === today && item.name === "公司共同假日" && item.kind === "holiday"), { confirmed });
+  await page.getByTestId("nav-home").click();
+  const homeDay = page.getByTestId("home-view").locator(`[data-date="${today}"]`);
+  await homeDay.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("Home consumes the confirmed shared holiday", (await homeDay.getAttribute("title")).includes("公司共同假日") && (await homeDay.innerText()).includes("休"));
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "Shared Calendar Records");
+  await chooseToolbarMore(page, "refresh");
+  const cell = page.locator(`.tabulator-row .tabulator-cell[tabulator-field="${field.physicalName}"]`).first();
+  await cell.waitFor({ state: "visible", timeout: 30_000 });
+  await cell.dblclick();
+  const editorDay = page.locator(`.work-date-popup [data-date="${today}"]`);
+  await editorDay.waitFor({ state: "visible", timeout: 10_000 });
+  recorder.check("actual grid date editor consumes the same shared holiday", (await editorDay.getAttribute("title")).includes("公司共同假日") && (await editorDay.innerText()).includes("休"));
+  await page.keyboard.press("Escape");
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  await page.getByTestId("workspace-flow-modal").locator("input").first().fill("Calendar Workspace B");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const target = page.getByTestId("workspace-center").getByRole("button", { name: /Calendar Workspace B/ });
+  await target.waitFor({ state: "visible", timeout: 60_000 });
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  await target.click();
+  const opened = await waitForCapturedBridgeMessage(page, 60_000);
+  const isolated = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("workspace B has no A calendar rules", isolated.payload?.overrides?.length === 0 && isolated.payload?.revision === "", { isolated });
+  await switchWorkspaceByName(page, "E2E Product Workspace", opened.payload.session.sessionEpoch);
+  const reopened = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("reopening A reloads its persistent calendar revision", reopened.payload?.revision === confirmed.payload?.revision && JSON.stringify(reopened.payload?.overrides) === JSON.stringify(confirmed.payload?.overrides), { reopened });
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-calendar").click();
+  await page.locator('.calendar-rule-options .n-radio-button:has(input[value="default"])').click();
+  if (!(await page.locator('.calendar-rule-options input[value="default"]').isChecked())) throw new Error("Default radio button did not select its input");
+  await page.getByTestId("calendar-save").click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="shared-work-calendar"]')?.dataset.status === "ready"
+    && document.querySelector('[data-testid="calendar-save"]')?.disabled
+    && !document.querySelector('[data-testid="calendar-error"]'), undefined, { timeout: 30_000 });
+  const cleared = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("clearing custom dates preserves a new committed revision", cleared.payload?.overrides?.length === 0 && cleared.payload?.revision && cleared.payload.revision !== confirmed.payload?.revision, { cleared });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -7266,6 +7911,14 @@ const scenarios = {
   "28-relation-delta-preview": scenario28,
   "29-lookup-source-pagination": scenario29,
   "30-query-snapshot-validation": scenario30,
+  "31-relation-pair-inspection": scenario31,
+  "32-shared-work-calendar": scenario32,
+  "34-relation-lookup-data-io": (page, recorder, _network, runtime) => runRelationLookupDataIo(
+    page, recorder, runtime, {
+      waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, applyProductMutation,
+      parseCsv, canonicalJsonText,
+    },
+  ),
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

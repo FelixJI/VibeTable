@@ -49,6 +49,27 @@ def test_schema_v2_models_reject_unknown_nested_properties() -> None:
         FieldDefinitionV2.model_validate(payload)
 
 
+def test_relation_pair_patch_is_closed_and_round_trips_without_a_draft() -> None:
+    payload = json.loads((FIXTURES / "field-change-intent.json").read_text(encoding="utf-8"))
+    payload.update(
+        action="update",
+        fieldId="fld_orders_customer",
+        draft=None,
+        relationPairPatch={"sourceCardinality": "one", "reciprocalDisplayName": "订单"},
+    )
+    decoded = FieldChangeIntentV2.model_validate(payload)
+    assert decoded.model_dump(mode="json", by_alias=True, exclude_unset=True) == payload
+    for key, value in (
+        ("targetTableId", "different_table"),
+        ("pairId", "different_pair"),
+        ("sourceCardinality", "first"),
+        ("deletePolicy", "cascade"),
+    ):
+        invalid = payload | {"relationPairPatch": {key: value}}
+        with pytest.raises(ValidationError):
+            FieldChangeIntentV2.model_validate(invalid)
+
+
 def test_schema_v2_models_do_not_coerce_wire_scalars() -> None:
     payload = json.loads((FIXTURES / "migration-status.json").read_text(encoding="utf-8"))
     payload["processed"] = "250"

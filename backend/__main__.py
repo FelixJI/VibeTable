@@ -20,16 +20,13 @@ from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMeta
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.content_model_service import ContentModelService
 from backend.application.grid_state_service import GridStateService
 from backend.application.insights_service import InsightsService
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
 from backend.application.product_rpc import ProductRpc
-from backend.application.revisioned_metadata_port import RevisionedMetadataTransportAdapter
 from backend.application.settings_command_service import SettingsCommandService
-from backend.application.surface_service import SurfaceService
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
 from backend.contracts.data_io import (
@@ -37,27 +34,6 @@ from backend.contracts.data_io import (
     ExportParams,
     GenerateTemplateParams,
     PreviewImportParams,
-)
-from backend.contracts.generated_workbench import (
-    ContentProfileCommitRequest,
-    ContentProfileDeleteRequest,
-    ContentProfileDeleteResult,
-    ContentProfileLoadRequest,
-    ContentProfileSnapshot,
-    InterfaceCommitRequest,
-    InterfaceDeleteRequest,
-    InterfaceDeleteResult,
-    InterfaceListRequest,
-    InterfaceListResult,
-    InterfaceLoadRequest,
-    InterfaceSnapshot,
-    RecordDocumentLinkCommitRequest,
-    RecordDocumentLinkDeleteRequest,
-    RecordDocumentLinkDeleteResult,
-    RecordDocumentLinkListRequest,
-    RecordDocumentLinkListResult,
-    RecordDocumentLinkRepairRequest,
-    RecordDocumentLinkSnapshot,
 )
 from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
@@ -80,26 +56,18 @@ from backend.contracts.plugin_rpc import (
 )
 from backend.contracts.presets_versions_dashboards import (
     CreateVersionParams,
-    DashboardWorkspaceParams,
-    DeletePresetParams,
     DeleteVersionParams,
-    ExecuteDashboardQueryParams,
-    ListDashboardsParams,
-    ListPresetsParams,
     ListVersionsParams,
     PromoteVersionParams,
-    SaveDashboardDraftParams,
-    SavePresetParams,
     SaveVersionParams,
     VersionIdParams,
 )
-from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY, ProductParams
+from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 from backend.contracts.settings_commands import (
     DeleteShortcutParams,
     LaunchActionParams,
     ListCommandsParams,
     ListShortcutsParams,
-    ReadSharedSettingsParams,
     RunCommandParams,
     SaveShortcutParams,
 )
@@ -199,76 +167,6 @@ def _register_pocketbase_product_methods(
         dispatcher.register(method, partial(service.invoke, method), params_model)
 
 
-def _register_surface_methods(
-    dispatcher: RpcDispatcher,
-    service: SurfaceService,
-) -> None:
-    register_application_errors(ErrorDomain.SURFACE)
-
-    async def list_interfaces(_params: InterfaceListRequest) -> InterfaceListResult:
-        return await service.list()
-
-    async def load_interface(params: InterfaceLoadRequest) -> InterfaceSnapshot:
-        return await service.load(params.interface_id)
-
-    async def commit_interface(params: InterfaceCommitRequest) -> InterfaceSnapshot:
-        return await service.commit(params)
-
-    async def delete_interface(params: InterfaceDeleteRequest) -> InterfaceDeleteResult:
-        return await service.delete(
-            params.interface_id,
-            params.expected_revision,
-            params.idempotency_key,
-        )
-
-    dispatcher.register("interface.list", list_interfaces, InterfaceListRequest)
-    dispatcher.register("interface.load", load_interface, InterfaceLoadRequest)
-    dispatcher.register("interface.commit", commit_interface, InterfaceCommitRequest)
-    dispatcher.register("interface.delete", delete_interface, InterfaceDeleteRequest)
-
-
-def _register_content_model_methods(
-    dispatcher: RpcDispatcher,
-    service: ContentModelService,
-) -> None:
-    register_application_errors(ErrorDomain.CONTENT_MODEL)
-
-    async def load_profile(params: ContentProfileLoadRequest) -> ContentProfileSnapshot:
-        return await service.load_profile(params.table_id)
-
-    async def commit_profile(params: ContentProfileCommitRequest) -> ContentProfileSnapshot:
-        return await service.commit_profile(params)
-
-    async def delete_profile(params: ContentProfileDeleteRequest) -> ContentProfileDeleteResult:
-        return await service.delete_profile(
-            params.table_id, params.expected_revision, params.idempotency_key
-        )
-
-    async def list_links(params: RecordDocumentLinkListRequest) -> RecordDocumentLinkListResult:
-        return await service.list_links(params.table_id, params.record_id)
-
-    async def commit_link(params: RecordDocumentLinkCommitRequest) -> RecordDocumentLinkSnapshot:
-        return await service.commit_link(params)
-
-    async def repair_link(params: RecordDocumentLinkRepairRequest) -> RecordDocumentLinkSnapshot:
-        return await service.repair_link(params)
-
-    async def delete_link(
-        params: RecordDocumentLinkDeleteRequest,
-    ) -> RecordDocumentLinkDeleteResult:
-        return await service.delete_link(
-            params.link_id, params.expected_revision, params.idempotency_key
-        )
-
-    dispatcher.register("contentProfile.load", load_profile, ContentProfileLoadRequest)
-    dispatcher.register("contentProfile.commit", commit_profile, ContentProfileCommitRequest)
-    dispatcher.register("contentProfile.delete", delete_profile, ContentProfileDeleteRequest)
-    dispatcher.register("recordDocumentLink.list", list_links, RecordDocumentLinkListRequest)
-    dispatcher.register("recordDocumentLink.commit", commit_link, RecordDocumentLinkCommitRequest)
-    dispatcher.register("recordDocumentLink.repair", repair_link, RecordDocumentLinkRepairRequest)
-    dispatcher.register("recordDocumentLink.delete", delete_link, RecordDocumentLinkDeleteRequest)
-
-
 def _configure_pocketbase_data_io(
     dispatcher: RpcDispatcher,
     *,
@@ -298,7 +196,6 @@ def _register_settings_methods(
     service: SettingsCommandService,
 ) -> None:
     register_application_errors(ErrorDomain.SETTINGS_COMMAND)
-    dispatcher.register("settings.readShared", service.read_shared, ReadSharedSettingsParams)
     dispatcher.register(
         "command.list",
         lambda _params=None: service.list_commands(),
@@ -470,12 +367,6 @@ async def _build_server() -> tuple[
             task_service=task_service,
         )
         metadata_transport = PocketBaseInternalMetadataPort(client=client)
-        revisioned_metadata = RevisionedMetadataTransportAdapter(metadata_transport)
-        _register_surface_methods(dispatcher, SurfaceService(metadata_port=revisioned_metadata))
-        _register_content_model_methods(
-            dispatcher,
-            ContentModelService(metadata_port=revisioned_metadata, product_data=client),
-        )
         state_root = Path(
             os.environ.get(
                 "VIBETABLE_STATE_DIR",
@@ -500,50 +391,6 @@ async def _build_server() -> tuple[
         insights = InsightsService(metadata_port=metadata_transport, query_port=client)
         register_application_errors(ErrorDomain.INSIGHTS)
 
-        # Insights is intentionally exposed under product-owned method names.
-        async def read_dashboard_workspace(
-            params: DashboardWorkspaceParams,
-        ) -> Any:
-            return await insights.read_dashboard_workspace(params.dashboard_id)
-
-        dispatcher.register(
-            "insights.listDashboards",
-            insights.list_dashboards,
-            ListDashboardsParams,
-        )
-        dispatcher.register(
-            "insights.readDashboardWorkspace",
-            read_dashboard_workspace,
-            DashboardWorkspaceParams,
-        )
-        dispatcher.register(
-            "insights.saveDashboardDraft",
-            insights.save_dashboard_draft,
-            SaveDashboardDraftParams,
-        )
-        dispatcher.register(
-            "insights.deleteDashboardWorkspace",
-            insights.delete_dashboard_workspace,
-            DashboardWorkspaceParams,
-        )
-        dispatcher.register(
-            "insights.executeDashboardQuery",
-            insights.execute_dashboard_query,
-            ExecuteDashboardQueryParams,
-        )
-        dispatcher.register(
-            "insights.dashboardQueryLimits",
-            insights.dashboard_query_limits,
-            ProductParams,
-        )
-        dispatcher.register(
-            "insights.panelManifest",
-            insights.panel_manifest,
-            ProductParams,
-        )
-        dispatcher.register("preset.list", insights.list_presets, ListPresetsParams)
-        dispatcher.register("preset.save", insights.save_preset, SavePresetParams)
-        dispatcher.register("preset.delete", insights.delete_preset, DeletePresetParams)
         dispatcher.register("version.list", insights.list_versions, ListVersionsParams)
         dispatcher.register("version.create", insights.create_version, CreateVersionParams)
         dispatcher.register("version.save", insights.save_version, SaveVersionParams)

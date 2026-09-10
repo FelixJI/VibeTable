@@ -20,11 +20,13 @@ import {
 } from "naive-ui";
 import { ArchiveRestore, Plus, RefreshCw, Trash2 } from "@lucide/vue";
 import type {
+  FieldDefinitionV2,
   FieldDraftV2,
   JsonValueV2,
   LogicalTypeV2,
   SelectOptionV2,
 } from "@/contracts";
+import RelationInspectionPanel from "@/relation-inspection/RelationInspectionPanel.vue";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import { useFieldSettingsStore } from "./store";
@@ -60,10 +62,10 @@ watch(() => store.open, (open) => {
   }
 });
 watch(
-  () => [store.open, store.draft?.logicalType] as const,
-  ([open, logicalType], previous) => {
+  () => [store.open, store.draft?.logicalType, store.result] as const,
+  ([open, logicalType, result], previous) => {
     if (open && logicalType === "relation"
-      && (previous?.[0] !== open || previous?.[1] !== logicalType)) {
+      && (previous?.[0] !== open || previous?.[1] !== logicalType || previous?.[2] !== result)) {
       emit("loadRelationCatalog");
     }
     if (open && logicalType === "lookup"
@@ -232,11 +234,24 @@ function patchRelation(
 }
 
 function confirmationLabel(value: string): string {
-  if (value === "relationPair") return "同时停用或删除另一张表中的反向关联字段";
+  if (value === "relationPair") return store.plan?.intent.action === "update"
+    ? "同时应用预览中的两端关联设置与共享删除策略"
+    : "同时停用或删除另一张表中的反向关联字段";
   if (value === "cascade") return "目标记录删除时级联删除当前表记录";
   if (value === "backupReceipt") return "永久清除已有可验证备份";
   if (value === "fieldName") return "输入的字段名称与待清除字段一致";
   return value;
+}
+
+function relationPlanSummary(field: FieldDefinitionV2 | null): string {
+  if (!field?.relation) return "无关联字段";
+  const relation = field.relation;
+  const schema = [store.relationSourceSchema, store.relationTargetSchema]
+    .find(item => item?.collection === relation.targetTableId);
+  const displayField = schema?.columns.find(item => item.fieldId === relation.displayFieldId);
+  const policy = { setNull: "置空", restrict: "阻止删除", cascade: "级联删除" }[relation.deletePolicy];
+  return `${field.displayName} · ${relation.cardinality === "one" ? "单条" : "多条"}`
+    + ` · 显示字段：${displayField?.title || "字段名称不可用"} · 共享删除策略：${policy}`;
 }
 
 function patchFile(
@@ -449,6 +464,13 @@ function isTextual(type: LogicalTypeV2): boolean {
         <div>{{ store.error }}</div>
       </NAlert>
 
+      <RelationInspectionPanel
+        v-if="store.open && store.inspectionTarget && store.phase !== 'loading'
+          && (!store.result || store.result.definition?.logicalType === 'relation')"
+        :key="`${store.inspectionTarget.tableId}:${store.inspectionTarget.fieldId}`"
+        :table-id="store.inspectionTarget.tableId"
+        :field-id="store.inspectionTarget.fieldId"
+      />
       <div v-if="store.phase === 'loading'" class="loading-card">
         <NProgress type="line" processing :percentage="38" :show-indicator="false" />
         <span>正在读取字段能力与推荐设置…</span>
@@ -686,7 +708,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div class="section-title">
                     <div>
                       <strong>双向关联</strong>
-                      <small>选择表和显示字段；系统自动创建并维护另一端字段</small>
+                      <small>{{ store.isPairedRelation ? "两端设置一起预览并保存；目标表保持不变" : "选择表和显示字段；系统自动创建并维护另一端字段" }}</small>
                     </div>
                     <NTag v-if="store.draft.relation.pairId" size="small" type="success">已成对</NTag>
                   </div>
@@ -704,6 +726,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                       @update:value="emit('selectRelationTarget', String($event))"
                     /></label>
                     <label><span>本表可选择</span><NSelect
+                      data-testid="relation-source-cardinality"
                       :value="store.draft.relation.cardinality"
                       :options="[{label:'单条',value:'one'},{label:'多条',value:'many'}]"
                       @update:value="patchRelation({ cardinality: $event as 'one' | 'many' })"
@@ -715,13 +738,14 @@ function isTextual(type: LogicalTypeV2): boolean {
                       placeholder="选择目标表显示字段"
                       @update:value="patchRelation({ displayFieldId: $event })"
                     /></label>
-                    <label><span>目标删除时</span><NSelect
+                    <label><span>{{ store.isPairedRelation ? "任一端记录删除时" : "目标删除时" }}</span><NSelect
+                      data-testid="relation-delete-policy"
                       :value="store.draft.relation.deletePolicy"
                       :options="[
                         {label:'置空',value:'setNull'},{label:'阻止删除',value:'restrict'}]"
                       @update:value="patchRelation({ deletePolicy: $event as 'setNull' | 'restrict' | 'cascade' })"
                     /></label>
-                    <template v-if="store.action === 'create' && store.relationPair">
+                    <template v-if="(store.action === 'create' || store.isPairedRelation) && store.relationPair">
                       <label><span>另一端字段名称</span><NInput
                         data-testid="relation-reciprocal-name"
                         :value="store.relationPair.reciprocalDisplayName"
@@ -729,6 +753,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                         @update:value="store.patchRelationPair({ reciprocalDisplayName: $event })"
                       /></label>
                       <label><span>另一端可选择</span><NSelect
+                        data-testid="relation-reciprocal-cardinality"
                         :value="store.relationPair.reciprocalCardinality"
                         :options="[{label:'单条',value:'one'},{label:'多条',value:'many'}]"
                         @update:value="store.patchRelationPair({
@@ -1084,7 +1109,7 @@ function isTextual(type: LogicalTypeV2): boolean {
 
                 <section class="danger-zone" v-if="store.isExisting">
                   <div><strong>危险区</strong><small>这些操作都必须先生成冻结计划</small></div>
-              <div v-if="store.draft.relation" class="switch-row">
+              <div v-if="store.draft.relation && !store.isPairedRelation" class="switch-row">
                     <div>
                       <strong>目标删除时级联删除本表记录</strong>
                       <small>方向：目标表 → 当前表；计划会扫描影响记录和依赖</small>
@@ -1130,12 +1155,28 @@ function isTextual(type: LogicalTypeV2): boolean {
                 </NTag>
               </div>
               <NAlert
-                v-if="store.draft.relation?.pairId"
+                v-if="store.plan.before?.relation?.pairId && store.plan.intent.action !== 'update'"
                 type="warning"
                 :show-icon="false"
               >
                 停用或永久清除此字段时，计划会同时处理另一端关联字段；任一端存在依赖都会阻止操作。
               </NAlert>
+              <template v-if="store.plan.intent.relationPairPatch">
+                <div data-testid="field-plan-source-change">
+                  <strong>本端关联</strong>
+                  <div>变更前：{{ relationPlanSummary(store.plan.before) }}</div>
+                  <div>变更后：{{ relationPlanSummary(store.plan.after) }}</div>
+                </div>
+                <div
+                  v-for="change in store.plan.relatedChanges"
+                  :key="change.fieldId"
+                  data-testid="field-plan-reciprocal-change"
+                >
+                  <strong>另一端关联</strong>
+                  <div>变更前：{{ relationPlanSummary(change.before) }}</div>
+                  <div>变更后：{{ relationPlanSummary(change.after) }}</div>
+                </div>
+              </template>
               <div class="impact-grid">
                 <span><b>{{ store.plan.impact.records }}</b>记录</span>
                 <span><b>{{ store.plan.impact.missing }}</b>空白</span>

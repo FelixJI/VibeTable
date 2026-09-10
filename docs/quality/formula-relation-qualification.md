@@ -119,7 +119,7 @@ audit 与 outbox 不重复。snapshot 恢复后重建依赖并得到相同结果
 | Lookup | calculator、来源分页和 1/8/9 跳测试 | 有遍历基础；页面级查询复杂度未资格化 |
 | fan-out/backfill | 持久 jobs、取消/恢复、10k integration | 有恢复基础；公开状态、成本与产品 E2E 未闭合 |
 | `05-formula-lifecycle` | 空表转换和非空迁移失败回滚 | 不证明 authoring 或计算链 |
-| `06-relation-fanout` | cascade 方向和影响预览 | 不证明记录选择、Lookup 或跨表重算 |
+| `06-relation-fanout` | 双端配置更新、冻结摘要、重开及冲突零写入；见 [pair 更新资格](relation-pair-update.md) | 本地定向通过；不证明标签消费、完整记录选择、Lookup 或跨表重算 |
 
 ## 7. Closed 完成定义
 

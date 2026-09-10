@@ -28,10 +28,27 @@ from backend.contracts.data_io import (
     ImportPlan,
     TemplateResult,
 )
+from backend.contracts.work_calendar import (
+    ReadWorkCalendarParams,
+    CommitWorkCalendarParams,
+    WorkCalendarResult,
+    WorkCalendarReceipt,
+)
 from backend.contracts.grid_state import GridStateResult
 from backend.contracts.generated_workbench import (
+    RecordDocumentLinkDeleteRequest,
+    RecordDocumentLinkRepairRequest,
+    RecordDocumentLinkCommitRequest,
+    RecordDocumentLinkListRequest,
+    ContentProfileDeleteRequest,
+    ContentProfileCommitRequest,
+    ContentProfileLoadRequest,
     ContentProfileDeleteResult,
     ContentProfileSnapshot,
+    InterfaceDeleteRequest,
+    InterfaceCommitRequest,
+    InterfaceListRequest,
+    InterfaceLoadRequest,
     InterfaceDeleteResult,
     InterfaceListResult,
     InterfaceSnapshot,
@@ -79,6 +96,7 @@ from backend.contracts.presets_versions_dashboards import (
     VersionCompareResult,
     VersionsResult,
 )
+from backend.contracts.relation_inspection import RelationInspectionReport
 from backend.contracts.relation_admin import (
     RelationCreateTargetResult,
     RelationDeltaPreview,
@@ -95,7 +113,6 @@ from backend.contracts.settings_commands import (
     LaunchActionResult,
     ListCommandsParams,
     SaveDeviceSettingsParams,
-    SharedSettingsResult,
     ShortcutEntry,
     ShortcutsResult,
 )
@@ -244,6 +261,54 @@ def _model_payload(
     model: type[BaseModel],
     model_stack: tuple[type[BaseModel], ...] = (),
 ) -> dict[str, object]:
+    if model is RelationInspectionReport:
+        # A completed empty scan is valid across both the DTO and product parser;
+        # generic false booleans would omit the cursor of an unfinished scan.
+        return model.model_validate(
+            {
+                "pairId": "pair_example",
+                "endpoints": [
+                    {
+                        "tableId": "orders",
+                        "fieldId": "fld_customer",
+                        "schemaRevision": "schema_1",
+                        "dataRevision": 0,
+                    },
+                    {
+                        "tableId": "customers",
+                        "fieldId": "fld_orders",
+                        "schemaRevision": "schema_1",
+                        "dataRevision": 0,
+                    },
+                ],
+                "counts": {},
+                "samples": [],
+                "samplesTruncated": False,
+                "rowsScanned": [0, 0],
+                "pageComplete": True,
+                "finished": True,
+                "complete": True,
+            }
+        ).model_dump(mode="json", by_alias=True)
+    if model.__module__ == "backend.contracts.work_calendar":
+        samples = {
+            "WorkCalendarOverride": {"date": "2026-09-10", "kind": "holiday", "name": "公司假日"},
+            "ReadWorkCalendarParams": {},
+            "CommitWorkCalendarParams": {
+                "overrides": [],
+                "expectedRevision": "",
+                "idempotencyKey": "calendar-example",
+            },
+            "WorkCalendarResult": {"overrides": [], "revision": ""},
+            "WorkCalendarReceipt": {
+                "overrides": [],
+                "revision": "sha256:example",
+                "status": "applied",
+                "changeSetId": "changeSet_example",
+                "emittedEvents": [],
+            },
+        }
+        return model.model_validate(samples[model.__name__]).model_dump(mode="json", by_alias=True)
     model_stack = (*model_stack, model)
     if issubclass(model, ProductParams):
         return _product_payload(model)
@@ -280,11 +345,54 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 composition,
                 call.args[2].id,
             )
+    from backend.contracts.presets_versions_dashboards import (
+        DashboardWorkspaceParams,
+        ExecuteDashboardQueryParams,
+        ListDashboardsParams,
+        SaveDashboardDraftParams,
+        ListPresetsParams,
+        SavePresetParams,
+        DeletePresetParams,
+    )
+
+    result.update(
+        {
+            "insights.listDashboards": ListDashboardsParams,
+            "insights.readDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.saveDashboardDraft": SaveDashboardDraftParams,
+            "insights.deleteDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.executeDashboardQuery": ExecuteDashboardQueryParams,
+            "insights.dashboardQueryLimits": ListDashboardsParams,
+            "insights.panelManifest": ListDashboardsParams,
+            "preset.list": ListPresetsParams,
+            "preset.save": SavePresetParams,
+            "preset.delete": DeletePresetParams,
+        }
+    )
     result.update(PRODUCT_PARAM_MODELS)
+    # Go content methods keep the schema-generated public DTOs after their
+    # Python handlers are removed; these imports do not register BFF handlers.
+    result.update(
+        {
+            "contentProfile.load": ContentProfileLoadRequest,
+            "contentProfile.commit": ContentProfileCommitRequest,
+            "contentProfile.delete": ContentProfileDeleteRequest,
+            "recordDocumentLink.list": RecordDocumentLinkListRequest,
+            "recordDocumentLink.commit": RecordDocumentLinkCommitRequest,
+            "recordDocumentLink.repair": RecordDocumentLinkRepairRequest,
+            "recordDocumentLink.delete": RecordDocumentLinkDeleteRequest,
+            "interface.list": InterfaceListRequest,
+            "interface.load": InterfaceLoadRequest,
+            "interface.commit": InterfaceCommitRequest,
+            "interface.delete": InterfaceDeleteRequest,
+        }
+    )
     # Host-owned methods retain their full public parameter contract after
     # their Python dispatcher registrations are removed.
     result.update(
         {
+            "settings.readWorkCalendar": ReadWorkCalendarParams,
+            "settings.commitWorkCalendar": CommitWorkCalendarParams,
             "settings.readDevice": ListCommandsParams,
             "settings.saveDevice": SaveDeviceSettingsParams,
         }
@@ -634,6 +742,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "relation.applyDelta": _typed(RelationDeltaResult),
         "relation.createTarget": _typed(RelationCreateTargetResult),
         "relation.previewDelta": _typed(RelationDeltaPreview),
+        "relation.inspectPair": _typed(RelationInspectionReport),
         "relation.searchTargets": _typed(RelationSearchResult),
         "relation.updateSingle": _typed(RelationSingleUpdateResult),
         "schema.table.create": _manual(
@@ -690,7 +799,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             },
         ),
         "settings.readDevice": _typed(DeviceSettings),
-        "settings.readShared": _typed(SharedSettingsResult),
+        "settings.readWorkCalendar": _typed(WorkCalendarResult),
+        "settings.commitWorkCalendar": _typed(WorkCalendarReceipt),
         "settings.saveDevice": _typed(DeviceSettings),
         "shortcut.delete": _manual(
             "DeleteShortcutResult",
