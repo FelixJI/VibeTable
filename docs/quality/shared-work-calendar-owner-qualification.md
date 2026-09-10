@@ -106,3 +106,9 @@ SettingsView 编辑 draft，通过明确保存提交完整 overrides；忙时禁
 最终仅场景修改、产品源码仍为上述 7e2c 新包；以 `--evidence-root build/qa/calendar-radio-fixed --scenario 32-shared-work-calendar` 执行同一完整 runner，**EXIT 0 / 1 PASS / 11 断言 / 11.405s**。报告 `build/qa/calendar-radio-fixed/20260910T074459Z/product-e2e-report.json`；四组件 freshness 均通过、Node/Host 最终退出均0、pageErrors/bridge failures/pending 均0，生命周期与 owner lease/端口清理通过。实际覆盖设置页提交、首页、网格日期编辑器、B隔离、A重开持久化及清空后新revision。前两次失败不因最终通过而移除。
 
 `node --check tests/e2e/webview_product_scenarios.mjs` PASS。此增量只改 S32 场景及本文，不需要重建未变化的产品组件；正常提交后交 root 独立增量双轴。此同包 S32 PASS 不替代完整全场景/远端 fresh CI 或此前完整 Go TempDir FAIL；S24合入后的副本日历证据仍待后续明确处理。
+
+## fresh CI 的 Timeline 菜单失败与修复
+
+最终 head7bf3c0bb 的 CI34457912475 为29/30场景通过，S22在真实拖动已提交目标日期、query确认后，点击“更多→刷新”超时30秒。诊断artifact中 call196 显示菜单项先可见，实际点击时被Timeline正文遮挡，随后隐藏并移除。锁定Naive Popover的默认trigger为hover，而AppToolbar更多按钮未指定trigger；这与指针离开触发关闭的机制一致。尚未用新包复验，不能先宣称原CI故障已消除。
+
+新增真实Naive组件行为回归：点击更多按钮（不先合成mouseenter），然后指针离开并推进500ms组件时间，仍能点击刷新并发出一次refresh意图。旧代码1 FAIL/14 PASS，失败为点击后无刷新选项（build/qa/calendar-toolbar/more-click-red.log）。更多Dropdown改为明确trigger="click"，不变更选项、禁用规则或E2E超时；相同15项测试全PASS（more-click-green.log），vue-tsc与git diff --check通过。第二个命令参数所列RecordTimelineView.test.ts实际不存在，Vitest只执行AppToolbar15项，不记作额外Timeline组件测试通过。完整新包、S22/S32、独立复审、同步最新main后的fresh CI与合并后验证仍待完成。
