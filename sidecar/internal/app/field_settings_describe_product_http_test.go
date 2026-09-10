@@ -48,7 +48,12 @@ func fieldSettingsDescribeHTTPMux(t *testing.T, pb *pocketbase.PocketBase, regis
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
-		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {
 		t.Fatal(err)
 	}

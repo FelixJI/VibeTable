@@ -52,7 +52,12 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 		unrelatedRelationInspectRegistration(t),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
-		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {
 		t.Fatal(err)
 	}

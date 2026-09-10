@@ -10,9 +10,11 @@
 - 结果：29/29 passed、0 failed、0 skipped。
 - 当前 manifest gap：无。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：无。
+- 当前 manifest changed：1（`17-interface-lifecycle`）。
 
-同一 main 候选覆盖当前全部场景：01–23、26–31，累计 382 项断言通过。S06 两端关系字段的真实 UI 编辑、冻结计划与应用，以及 S26–S31 的 Lookup 描述、关系搜索与预览、来源分页、查询快照与关系完整性检查，均获得本次打包报告；不再沿用旧 S06 语义或六场缺口。
+该 main 候选覆盖当时全部场景：01–23、26–31，累计 382 项断言通过。S06 两端关系字段的真实 UI 编辑、冻结计划与应用，以及 S26–S31 的 Lookup 描述、关系搜索与预览、来源分页、查询快照与关系完整性检查，均获得本次打包报告；不再沿用旧 S06 语义或六场缺口。
+
+当前分支为 S17 新增 sidecar 重启后的 fresh Interface list/load、完整定义及 revision 持久和 UI 删除断言；这部分尚待最终源码的真实包资格，不由上述旧语义的 S17 报告证明。
 
 四组件 desktop-host、web-grid、python-backend、pocketbase-sidecar freshness 全部通过。所有场景附着真实 WPF/WebView2，Node/Host 正常退出，进程组及后代为空、端口与 owner lease 清理通过。诊断为 0 个未确认 bridge failure、0 个 pending request，另有 33 个已确认事件（含预期取消）；性能汇总的 28 次失败使用不同口径，不能称为全程没有拒绝响应。
 

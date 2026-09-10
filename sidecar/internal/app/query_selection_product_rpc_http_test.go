@@ -59,6 +59,11 @@ func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port inter
 		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {
 		t.Fatal(err)

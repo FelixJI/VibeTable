@@ -1,16 +1,16 @@
 # Surface / Interface 四方法迁移：固定公开基线与设计
 
-状态：仅冻结与设计，未切换生产 owner、未修改公共 catalog，未运行完整发布构建或 S17。本提交只属于未来完整迁移 PR，不单独发起 oracle PR。
+状态：四方法纵切源码已实施，待独立审查、完整质量与真实包 S17 资格。冻结提交 `86639eb5` 保留原 Python 捕获工具与 JSON；本分支是同一完整迁移 PR，不单独发起 oracle PR。
 
 ## 固定生产者与证据边界
 
-producer 为 `12556e5db81dd49592d69b5af1780007ccd36c37`，创建独立分支时已实际 fetch 验证。之后主干新合入的 Mutation owner 不改写此基线；进入生产实施前正常同步最新 main。
+producer 为 `12556e5db81dd49592d69b5af1780007ccd36c37`，创建独立分支时已实际 fetch 验证。之后主干新合入的 Mutation owner 不改写此基线；实施前已正常合入 main `146a9c2`，同步提交为 `19230d6`。
 
 `generate_surface_python_oracle.py` 调用原 `_register_surface_methods`、RpcDispatcher、SurfaceService 和生成的 Pydantic DTO，捕获 `interface.list/load/commit/delete` 的 78 组、81 次公开请求响应。四方法预期由捕获脚本独立列明，不从将来的 Go 注册或生成 owner 清单反推。脚本核对八个 producer 源文件与固定 Git tree 一致，并核对实际 import 文件来自本工作树。
 
 metadata 依赖是明确的 ScriptedMetadata adapter：返回 `fixture-revision-N`，按 seed 指定行和顺序，模拟写入冲突或存储异常。它不模拟 PB revision 算法，不计算新增 hash，也不证明真实数据库、并发或 durable replay。本 JSON 的 revision 只说明领域结果透传 metadata 返回值；未来真实 Go 测试须先用权威写入建立 fixture，再将固定 revision token 与真实 revision 对应，不能要求 Go 输出 fixture 字符串。
 
-一次捕获后脚本拒绝覆盖 JSON；`--check` 在旧 producer 仍存在时重放并逐值比较。实施删掉 Python handler 后，保留本次冻结提交中的原捕获器，最终 checker 只验证冻结输入/producer，不能用新 Go 输出刷新原件。
+冻结时脚本拒绝覆盖 JSON，`--check` 经旧 producer 重放逐值比较。现已删除 Python handler；原捕获器保留在 `86639eb5`，当前 checker 只比较不可变冻结 JSON 与 producer，不用新 Go 输出刷新原件。
 
 已捕获的区分性边界：
 
@@ -52,6 +52,21 @@ Go dispatcher 与 Host HTTP parser 仅允许四方法实际定义的 surface 错
 
 源码资格：冻结 corpus 经四方法 seam 对照；真实 PB 的业务 ID、list casefold、CAS 竞争和事务 trace rollback；重启后 receipt replay 与 key 冲突；generic interfaces 写拒绝而 snapshot/internal read 保持；Host 全调用链与 generation/cancel seam。旧 replay 前置检查会失败的新回归必须先 RED。无需要的任意 generic namespace 组合不扩大。
 
-现有 S17 位于 `tests/e2e/webview_product_scenarios.mjs:5961`：真实安装插件、创建 Interface、编辑并保存、在其他导航后重载、执行 record create/binding refresh/page navigate，以及 plugin 拒绝/取消/最终审批成功。它目前没有 Interface 删除或 sidecar restart 的场景断言，不能宣称已有 S17 证明二者。完整迁移稳定后在同一个 S17 扩展删除与 fresh reopen/restart（包括持久 definition 状态），再经授权用一次最终真实包核验；不额外拆小 oracle PR、不用源代码单测替代实际产品结果。
+现有 S17 位于 `tests/e2e/webview_product_scenarios.mjs:5961`：真实安装插件、创建 Interface、编辑并保存、在其他导航后重载、执行 record create/binding refresh/page navigate，以及 plugin 拒绝/取消/最终审批成功。该 producer 的场景没有 Interface 删除或 sidecar restart 的场景断言，不能宣称已有 S17 证明二者。完整迁移稳定后在同一个 S17 扩展删除与 fresh reopen/restart（包括持久 definition 状态），再经授权用一次最终真实包核验；不额外拆小 oracle PR、不用源代码单测替代实际产品结果。
 
-本轮实际验证：`uv run --frozen --no-sync python contracts/v2/generate_surface_python_oracle.py --check` 78 例一致；`uv run --frozen --no-sync pytest tests/backend/application/test_surface_service.py tests/backend/test_main_surfaces.py --no-cov -q` 19 PASS/0.47s；生成脚本 Ruff format/check 通过。未运行完整质量、Go 构建、产品包或 S17。
+冻结阶段实际验证：`uv run --frozen --no-sync python contracts/v2/generate_surface_python_oracle.py --check` 78 例一致；`uv run --frozen --no-sync pytest tests/backend/application/test_surface_service.py tests/backend/test_main_surfaces.py --no-cov -q` 19 PASS/0.47s；生成脚本 Ruff format/check 通过。未运行完整质量、Go 构建、产品包或 S17。
+
+
+## 当前实施与有意差异
+
+Go `SurfaceService` 只暴露 List/Load/Commit/Delete，聚合与树/DAG/动作验证在 `sidecar/internal/metadata/surface*.go`。四个公开注册位于 `sidecar/internal/app/surface_product_rpc.go`；两次写操作沿用 `metadata.interfaces.upsert/delete` coordinator identity，并复用 metadata receipt、CAS、audit/outbox 同事务机制。Generic HTTP 写入拒绝 interfaces，GET/internal snapshot 读取、集合及其他 namespace 保留。
+
+Host 的同一个 `JsonRpcProductDataGateway` 实现 `ISurfaceRpcGateway`，MainWindow 复用并释放原 Product binding；专属直连 Python gateway 已删除。四方法的 -32170 投影在 Go 与 Host 都采用具名方法和 38 个明确定义 code 的闭集，含有依据的 `surface.idempotency_conflict`；data 只接受 kind/message/code 和可选字符串 path，空 path 保持存在性。公开 generated DTO 与 catalog 四方法仍在。
+
+删除范围为 Python SurfaceService、四 handler、专属错误注册和仅服务旧实现的测试；通用错误注册测试改用仍由 Python 拥有的 Insights，维持原幂等注册契约。独立进程/注册清单从 22 更新为 26 方法，逐个核对名称与 workspace scope，未以生成清单自证。
+
+三个旧成功后重放拒绝例是明确修复：新实现先重放 durable receipt，即使 revision 已变或目标已删也返回原结果，不重做写入。Metadata key 的既有 1–192 safe 字符约束仍在 current CAS 之后执行，避免放宽真实旧 transport 行为或改变首次错误顺序。
+
+另一项有意差异是极深非法 DTO：本机锁定 Python/Pydantic 在 structural chain 深 98 仍可解码、99 开始 recursion_loop；这是平台实现限制，不复制为产品魔数。Go 解码资源上限为 1 MiB、256 个嵌套容器边，公开领域仍限定总元素 200、树深 8。正常深 8 接受，深 9 返回 surface.element_depth，病态深树有界 invalid params。固定 78 例仍不改，不宣称所有非法输入都与旧 Python 逐字一致。
+
+S17 已在原完整动作链后增加精确 sidecar 子进程重启、带 requestId 的 fresh list/load、完整定义和 revision 比较、重启后 runtime 绑定读取、真实删除按钮与确认、fresh list 缺失及公开 load not_found。沿用既有 recovery failure window 及精确 requestId acknowledge，未改超时、门禁或增加碎场景。新语义真实包尚未执行；旧 main S17 报告不证明新增断言。

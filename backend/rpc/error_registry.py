@@ -30,7 +30,6 @@ CODE_INSIGHTS = -32080
 CODE_SETTINGS_COMMAND = -32100
 CODE_PLUGIN = -32120
 CODE_PRODUCT_DATA = -32150
-CODE_SURFACE = -32170
 CODE_CONTENT_MODEL = -32180
 
 
@@ -42,7 +41,6 @@ class ErrorDomain(StrEnum):
     IMPORT = "import"
     EXPORT = "export"
     INSIGHTS = "insights"
-    SURFACE = "surface"
     CONTENT_MODEL = "content_model"
     SETTINGS_COMMAND = "settings_command"
     PLUGIN = "plugin"
@@ -189,10 +187,6 @@ def _domain_specs(domain: ErrorDomain) -> tuple[tuple[type[Exception], _ErrorSpe
         from backend.application.insights_service import InsightsError
 
         return ((InsightsError, _ErrorSpec(CODE_INSIGHTS, "Insights error", "insights_error")),)
-    if domain is ErrorDomain.SURFACE:
-        from backend.application.surface_service import SurfaceError
-
-        return ((SurfaceError, _ErrorSpec(CODE_SURFACE, "Interface error", "surface_error")),)
     if domain is ErrorDomain.CONTENT_MODEL:
         from backend.application.content_model_service import ContentModelError
 
@@ -267,7 +261,6 @@ def register_rpc_error(
 __all__ = [
     "CODE_CONTENT_MODEL",
     "CODE_PRODUCT_DATA",
-    "CODE_SURFACE",
     "ErrorDomain",
     "RpcError",
     "RpcErrorRegistry",

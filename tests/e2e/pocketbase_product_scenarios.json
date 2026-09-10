@@ -97,8 +97,8 @@
   },
   {
     "id": "17-interface-lifecycle",
-    "title": "Interface 构建、运行与重开",
-    "requirement": "通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，证明构建器和运行时消费同一原子定义及既有插件任务生命周期。",
+    "title": "Interface 构建、运行、重启与删除",
+    "requirement": "通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，精确重启 sidecar 后以 fresh list/load 验证完整定义和 revision 持久，最后真实 UI 删除并验证 list 缺失与 load not_found；证明构建器和运行时消费同一原子定义及既有插件任务生命周期。",
     "capabilities": ["interface.lifecycle", "interface.runtime", "plugin.action.lifecycle"]
   },
   {

@@ -33,26 +33,26 @@ def test_registry_resolves_exact_type_and_merges_structured_data() -> None:
 
 
 def test_enabling_domain_is_idempotent_and_keeps_first_policy() -> None:
-    from backend.application.surface_service import SurfaceError
+    from backend.application.insights_service import InsightsError
 
     registry = RpcErrorRegistry()
-    registry.enable(ErrorDomain.SURFACE)
-    registry.enable(ErrorDomain.SURFACE)
+    registry.enable(ErrorDomain.INSIGHTS)
+    registry.enable(ErrorDomain.INSIGHTS)
     registry.register_once(
-        SurfaceError,
+        InsightsError,
         code=-1,
         message="replacement",
         kind="replacement",
     )
 
-    resolved = registry.resolve(SurfaceError("surface missing", code="surface.not_found"))
+    resolved = registry.resolve(InsightsError("insights missing", code="insights.not_found"))
     assert resolved is not None
-    assert resolved.code == -32170
-    assert resolved.message == "Interface error"
+    assert resolved.code == -32080
+    assert resolved.message == "Insights error"
     assert resolved.data == {
-        "kind": "surface_error",
-        "message": "surface missing",
-        "code": "surface.not_found",
+        "kind": "insights_error",
+        "message": "insights missing",
+        "code": "insights.not_found",
     }
 
 

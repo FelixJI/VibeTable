@@ -188,6 +188,9 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, raw []byte) Response
 		return errorResponse(request.ID, request.Wire, CodeInternalError, "Internal error", nil)
 	}
 	if err != nil {
+		if data, public := surfaceErrorData(request.Method, err); public {
+			return errorResponse(request.ID, request.Wire, CodeSurface, "Interface error", data)
+		}
 		if data, public := productErrorData(err); public {
 			return errorResponse(
 				request.ID,
