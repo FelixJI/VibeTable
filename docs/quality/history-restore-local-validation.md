@@ -21,3 +21,40 @@ PR #324 的 head `c4c0db56` 在 CI run `34361869988` 的 core job `102507477291`
 名称，以及每个 registration 的 workspace scope；不从生产生成清单推导预期。
 使用既有 Go 1.27.0 执行 `go test ./cmd/vibetable-pb -count=1`（sidecar 目录）通过，
 包耗时 4.711s。只有测试和本记录改变，不重建此前已验证的产品包；新 head 仍须 fresh CI。
+
+## 主干同步与身份解码的后续验证
+
+head `7db3498b` 的 CI run `34367022021` 在 core job `102524859501` 失败：
+Go authority diff coverage 为 87.50%（7/8），低于既有 90% 门禁。
+缺失分支来自严格 wire 解码成功之后的第二次 JSON 解码错误返回，该路径不可达。
+提交 `18cabc2e` 让私有 `validateWireIdentity` 返回已验证的 operationId，保留 scope、
+workspaceId/sessionEpoch 与 DTO 严格校验；Dispatcher 直接使用这一结果，不重复解析。
+回归验证 workspace/global 身份传入 handler，且调用方预置 context 身份不能覆盖 wire 身份。
+
+随后正常合并 main `146a9c2cac5998ee013daebc78eedff0bd4a7ca5`，History 与 Mutation
+共同注册 24 个 Go 方法；由仓库生成脚本更新派生映射，独立进程、descriptor 和 dispatcher
+清单严格保留两组入口。Python owner 数量的语义合并遗漏最初造成 1 failed、78 passed：
+双方各迁走两个方法，预期应为 78 而非 80。修正独立预期后运行：
+
+```text
+uv run --frozen --no-sync python -m pytest tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_workspace_rpc_capability_manifest.py tests/backend/contracts/test_history_contract.py -q --no-cov
+```
+
+结果 79 passed（2.14s），原失败和复验分别保留于
+`build/history-main-merge-contracts.log` 与 `build/history-main-merge-contracts-correction.log`。
+`go vet ./internal/productrpc ./internal/contracts/productcapabilities ./cmd/vibetable-pb`
+在 sidecar 目录使用既有 Go 1.27.0 执行通过。身份与恢复聚焦测试命令为：
+
+```text
+go test ./internal/productrpc ./internal/app -run 'TestDispatch|TestHistoryRestore|TestHistoryPreview|TestHistoryApply' -count=1 -coverprofile=<本地绝对输出路径>
+```
+
+两包通过（0.738s / 3.535s），日志 `build/history-wire-refined.log`。
+完整 `uv run --frozen --no-sync python qa/go_coverage.py --go <既有 Go 1.27.0 可执行文件>`
+退出 1，记录在 `build/history-go-coverage-final.log`：六个测试在 TempDir 清理时报告目录非空，
+涉及 app、workspacesearch、workspacev2，未吞掉错误、加入重试或降低门禁。
+失败后单独读取已有 authority profile 的报告为 line 76.66%、branch 63.87%、
+diff 94.12%（16/17）；这是诊断指标，不能代替完整入口通过。
+
+上述 runtime 变更及主干同步不由早先 source `2fd495d7` 的包证据覆盖。
+当前提交仍需 fresh CI 的完整构建、smoke 与 E2E 门禁，尚未具备合并资格。
