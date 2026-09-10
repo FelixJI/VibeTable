@@ -743,19 +743,34 @@ func filesystemConflictBranches(
 	return result, nil
 }
 
+// conflictFileHistoryReference validates the same head for local and remote
+// candidates. Missing/null historyRoot is not an explicit empty history.
+func conflictFileHistoryReference(
+	head objectrepo.ManifestRecord,
+	record snapshot.Record,
+) (objectrepo.ManifestID, error) {
+	var reference struct {
+		FormatVersion uint64                 `json:"formatVersion"`
+		WorkspaceID   string                 `json:"workspaceId"`
+		HistoryRoot   *objectrepo.ManifestID `json:"historyRoot"`
+		FileRevision  *uint64                `json:"fileRevision"`
+	}
+	if err := decodeFilesystemJSON(head.Payload, &reference); err != nil ||
+		head.Name != "file-state-head" || reference.FormatVersion != 1 ||
+		reference.WorkspaceID != record.WorkspaceID ||
+		reference.HistoryRoot == nil || reference.FileRevision == nil ||
+		*reference.FileRevision != record.FileRevision {
+		return "", ErrVerificationInvalid
+	}
+	if (*reference.HistoryRoot == "") != (*reference.FileRevision == 0) {
+		return "", ErrVerificationInvalid
+	}
+	return *reference.HistoryRoot, nil
+}
+
 func filesystemConflictCandidate(
 	bundle FilesystemRecoveryBundle,
 ) (conflictresolution.Candidate, error) {
-	var history objectrepo.ManifestRecord
-	for _, manifest := range bundle.Manifests {
-		if manifest.Name == "filehistory-root" {
-			history = manifest
-			break
-		}
-	}
-	if history.ID == "" {
-		return conflictresolution.Candidate{}, ErrVerificationInvalid
-	}
 	var root struct {
 		FormatVersion int    `json:"formatVersion"`
 		WorkspaceID   string `json:"workspaceId"`
@@ -770,11 +785,6 @@ func filesystemConflictCandidate(
 				MimeType   string              `json:"mimeType"`
 			} `json:"revisions"`
 		} `json:"documents"`
-	}
-	if err := json.Unmarshal(history.Payload, &root); err != nil ||
-		(root.FormatVersion != 2 && root.FormatVersion != 3) ||
-		root.WorkspaceID != bundle.Snapshot.WorkspaceID {
-		return conflictresolution.Candidate{}, ErrVerificationInvalid
 	}
 	databaseID := bundle.Snapshot.ObjectMap["database"]
 	settingsID := bundle.Snapshot.ObjectMap["workspace-settings"]
@@ -797,6 +807,31 @@ func filesystemConflictCandidate(
 		fileState.SourceRoot == "" ||
 		fileState.Files == nil {
 		return conflictresolution.Candidate{}, ErrVerificationInvalid
+	}
+	fileHead, exists := bundle.Manifests[fileState.SourceRoot]
+	if !exists || fileHead.ID != fileState.SourceRoot {
+		return conflictresolution.Candidate{}, ErrVerificationInvalid
+	}
+	historyID, err := conflictFileHistoryReference(fileHead, bundle.Snapshot)
+	if err != nil {
+		return conflictresolution.Candidate{}, err
+	}
+	if historyID == "" {
+		// A table-only workspace has never created a file history root. Its
+		// explicit empty head is valid only while both file indexes are empty.
+		if len(fileState.Files) != 0 || len(fileState.Attachments) != 0 {
+			return conflictresolution.Candidate{}, ErrVerificationInvalid
+		}
+	} else {
+		history, exists := bundle.Manifests[historyID]
+		if !exists || history.ID != historyID || history.Name != "filehistory-root" {
+			return conflictresolution.Candidate{}, ErrVerificationInvalid
+		}
+		if err := json.Unmarshal(history.Payload, &root); err != nil ||
+			(root.FormatVersion != 2 && root.FormatVersion != 3) ||
+			root.WorkspaceID != bundle.Snapshot.WorkspaceID {
+			return conflictresolution.Candidate{}, ErrVerificationInvalid
+		}
 	}
 	attachmentObjects := make(
 		map[string]string, len(fileState.Attachments),

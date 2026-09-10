@@ -1,6 +1,6 @@
 # S24 目录副本冲突资格
 
-当前状态：c045 源码已独立双轴通过并完成完整构建；首次真实 S24 在 fork-left 导航处失败。下述仅场景导航修复已通过定向回归，待增量双轴与同包复验；S24 尚未取得产品通过资格，fresh CI 尚无本批结果。
+当前状态：c045 源码已独立双轴通过并完成完整构建；04ab 导航修复的增量双轴及完整 Python 通过。同包第二次 S24 在 resolve 因合法空文件历史被生产冲突 reader 拒绝而失败。本轮修复 Go 两个候选入口，真实 FilesystemRemote／Manager 回归及相关 Go 包通过；待新的独立双轴、完整新包与 S24 验证。S24 尚未取得产品通过资格，fresh CI 尚无本批结果。
 
 ## 完整意图与来源
 
@@ -41,9 +41,9 @@
 
 关闭失败夹具纠正后，`uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -k 'transports_only_closed_successful_stages or replica_success_requires_complete_clean_bridge_diagnostics' --no-cov -q`：18 PASS，1.55s，`late-close-focused.log`。同步后的最终组合结果见下节；此处不替代真实产品 S24。
 
-## 当前源码最终端点
+## 首次场景源码端点（生产修复前）
 
-固定组合源码 `3b5c2a11eeb6d3f79e234080d406b5cb49f45843`，已包含 main `a3ca78b9`。相对该 main 的 backend、desktop/src、desktop/web-grid/src、sidecar 与 ownership inventory 无差异，本批只改变产品场景、测试编排和文档。
+固定组合源码 `3b5c2a11eeb6d3f79e234080d406b5cb49f45843`，已包含 main `a3ca78b9`。相对该 main 的 backend、desktop/src、desktop/web-grid/src、sidecar 与 ownership inventory 无差异，当时仅改变产品场景、测试编排和文档；后续真实产品运行发现的 Go 修复见最后一节。
 
 `uv run --frozen --no-sync python -m pytest tests/e2e/test_directory_replica_payloads.py tests/e2e/test_packaged_replica_hosts.py tests/e2e/test_product_e2e_runner.py tests/contract/test_product_e2e_capability_index.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py --no-cov -q`：**239 PASS，10.53s，EXIT0**，`fixtures-main-final.log`。包含旧失败的6项 bridge 完整性回归、阶段运输与晚期关闭/重启失败、共享生命周期、固定 Node 行为契约（含新冲突选择／重启检查模块）、能力索引与 History owner 接线契约。
 
@@ -68,3 +68,26 @@ seed 完成 14 项断言；fork-left 在 `scenario24` 原7802行等待 workspace
 - 同命令完整修复后 `navigation-final-green.log`：**17 PASS，83.1218ms**，覆盖 seed、fork-left、fork-right、resolve、verify-resolved 的真实导航控制流。
 - `uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -q --no-cov`：**142 PASS，8.47s，EXIT0**，`navigation-python-final.log`，包含固定 Node 契约入口。
 - Web runner `node --check` 与 `git diff --check` 通过。仅 E2E 源码与资格记录变化，不需要替换包内产品组件；未重建、未重跑真实 S24。root 后续增量双轴与原包复验仍 pending，不能据本轮夹具通过改写首轮真实 FAIL。
+
+
+## 同包导航复验失败与合法空文件历史修复
+
+导航修复 `04ab60cdd2d9869734e104f9d62a27cfe635183e` 的增量 Standards／Spec 均为 0；root 完整 Python 质量入口报告 **1916 PASS、1 skip，coverage 91.42%**。这些结果属于生产修复前源码。root 用原 c045 包复验，shell66965 **EXIT1**；`product-e2e-navigation/20260910T041637Z/product-e2e-report.json` 保留。seed、fork-left、fork-right 各14项断言通过；resolve 的关闭／打开身份3项通过后，在 `waitForPublishedReplicaUi` 原7679行等待60s超时，bridge failure／pending 均0；verify-resolved 未执行。
+
+resolve 截图 `product-e2e-navigation/20260910T041637Z/24-directory-replica-conflict/resolve/hosts/left/24-directory-replica-conflict.png` 显示存储页“需要处理”且 release-cache 禁用。只读检查关闭后数据库（确认不存在 WAL 后用 SQLite `mode=ro&immutable=1`）发现两侧公开状态的持久投影均为 advisory／failed／pendingSync=true，冲突表0项；`replica-pending.json` 明确 `replica.verification_invalid`。所以这不是已有冲突造成正常 publish 等待不适用，不能改成“有冲突即可跳过”或放宽超时。
+
+运输后的公开不可变载荷具有完整 `file-state-root` 及所引用 `file-state-head`：files／attachments 都为空、fileRevision=0、明确 historyRoot=""，未生成 filehistory-root。这是只创建表的合法工作区。`frozen_source.go` 正常生产该空 head，普通恢复路径允许它；但 `filesystemConflictCandidate` 原先必须找到任意 filehistory-root，`Manager.snapshotConflictCandidate` 原先也直接拒绝空 historyRoot，导致远端发现及本地 base／local 候选读取都失败。
+
+本轮只修改这两个生产入口并增加小型共享 `conflictFileHistoryReference`：从 file-state-root 的精确 sourceRoot 读取 head；核对名称、格式、workspace、historyRoot／fileRevision 的显式存在性及 snapshot revision 一致。只有 historyRoot 明确为空、revision为0且 files／attachments 都为空时才创建空文件候选；非空历史仍必须读取所引用的正确 history manifest 并验证格式与 workspace。Manager 将同一 head 及必要 history 交给共享候选投影，不再形成两种空历史判定。没有伪造文档、修改运输逻辑、放宽 UI 等待／bridge／workspace 准入、改变公共协调器或生成 oracle。
+
+固定本机 Go1.27.0，在 `sidecar` 执行：
+
+- 首次新夹具调用 `Engine.List` 时遗漏分页参数／第三返回值，编译 EXIT1，`table-only-red.log`；纠正夹具签名后才取得真实 RED，不将编译失败当回归证据。
+- `go test ./internal/replica -run '^TestTableOnlyFilesystemRemoteAndManagerConflictCandidates$' -count=1 -v`：旧生产代码的真实远端发现、OpenManager 本地候选、Manager 完整发现三路径均 `replica.verification_invalid`，**EXIT1，0.931s**，`table-only-red-runtime.log`。
+- 同命令修复后 **EXIT0，0.910s**，`table-only-green.log`。通过真实 FilesystemRemote 生成并重读 seed→left／seed→right 分叉；Manager 持久保存三份不同表候选及保护 pin，并保持未安装依赖 scanner 时 graph.Complete=false。
+- 增补17个缺失／null／不一致 head、revision、history、非空 files／attachments 拒绝子例，以及既有真实非空文件历史的两个入口回归。首次后者把 Manager 断言放在既有夹具删除本地仓库之后，返回 repository.not_found，**EXIT1，1.043s**，`history-boundaries.log`；已将本地断言移到既有删除之前，远端断言仍在独立恢复之后，未修改生产行为来掩盖夹具错误。
+- `go test ./internal/replica -count=1`：**EXIT0，1.431s**，`replica-final.log`，包含上述完整边界与既有副本契约。
+- `go vet ./internal/replica`：**EXIT0**，`replica-vet.log`。
+- `go test ./internal/workspacev2 -run 'Replica|Conflict' -count=1`：**EXIT0，14.961s**，session2008，`workspace-replica-conflict.log`。
+
+所有原运输／GUI失败、包和运行现场保留；本轮未重跑完整 Python、完整 Go、完整构建或真实 S24。由于 Go runtime 已变化，c045 包及前述 Python 结果不能替代新源码的发布资格。交回 root 完整增量双轴后，必须以新包运行同一完整 S24；胜方持久状态、同一冲突、败方恢复预览可达性与 fresh／bridge／cleanup 仍待真实验证。普通 hooks 的本轮结果随提交记录保留。

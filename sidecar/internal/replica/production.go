@@ -738,19 +738,19 @@ func (manager *Manager) snapshotConflictCandidate(
 	if err != nil {
 		return conflictresolution.Candidate{}, err
 	}
-	var reference struct {
-		HistoryRoot objectrepo.ManifestID `json:"historyRoot"`
-	}
-	if err := json.Unmarshal(fileHead.Payload, &reference); err != nil ||
-		reference.HistoryRoot == "" {
-		return conflictresolution.Candidate{}, ErrVerificationInvalid
-	}
-	history, err := manager.repository.GetManifest(
-		ctx,
-		reference.HistoryRoot,
-	)
+	historyID, err := conflictFileHistoryReference(fileHead, record)
 	if err != nil {
 		return conflictresolution.Candidate{}, err
+	}
+	manifests := map[objectrepo.ManifestID]objectrepo.ManifestRecord{
+		fileHead.ID: fileHead,
+	}
+	if historyID != "" {
+		history, err := manager.repository.GetManifest(ctx, historyID)
+		if err != nil {
+			return conflictresolution.Candidate{}, err
+		}
+		manifests[history.ID] = history
 	}
 	objects := make(map[objectrepo.ObjectID][]byte, 3)
 	for _, name := range []string{
@@ -794,11 +794,9 @@ func (manager *Manager) snapshotConflictCandidate(
 		objects[id] = content
 	}
 	return filesystemConflictCandidate(FilesystemRecoveryBundle{
-		Snapshot: record,
-		Objects:  objects,
-		Manifests: map[objectrepo.ManifestID]objectrepo.ManifestRecord{
-			history.ID: history,
-		},
+		Snapshot:  record,
+		Objects:   objects,
+		Manifests: manifests,
 	})
 }
 
