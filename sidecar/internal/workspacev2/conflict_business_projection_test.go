@@ -325,6 +325,11 @@ func testConflictBusinessPublicRecovery(t *testing.T, foreign bool) {
 	// shared settings, rather than a synthetic current-state recovery marker.
 	source, err := (&workspaceConflictAppender{owner: owner}).openConflictCandidateSource(ctx, localSnapshot.ObjectMap["database"])
 	requireSnapshotRestore(t, err)
+	defer func() {
+		if source != nil {
+			source.close()
+		}
+	}()
 
 	losingRow, err := source.app.FindRecordById(collection.Id, row.Id)
 	requireSnapshotRestore(t, err)
@@ -334,6 +339,7 @@ func testConflictBusinessPublicRecovery(t *testing.T, foreign bool) {
 		t.Fatal("losing business/settings snapshot was overwritten")
 	}
 	source.close()
+	source = nil
 	if foreign {
 		terminal, err := owner.conflicts.Inspect(ctx, set.ConflictID)
 		requireSnapshotRestore(t, err)

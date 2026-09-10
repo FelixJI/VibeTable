@@ -149,3 +149,5 @@ root 将业务投影修复正常同步到 main `9fa626a13840830037bcb82eaddc0adf
 - `go vet ./internal/snapshot ./internal/replica ./internal/workspacev2`：**EXIT0**，`vet.log`；gofmt 与 `git diff --check` 通过。除随后纯排版外未更改生产行为。
 
 本轮未执行完整 Python／Go、完整构建、GUI 或真实目录副本操作，未 push／建 PR。以上源码结果不能覆盖原包真实 FAIL，也不证明败方实际 restore 执行或双端最终收敛；本场要求的双恢复来源公开列表、真实预览与 resolve 重启证据，仍须后续新包 S24 完整验证。此次普通 hooks 结果由提交日志记录，原 TempDir 失败边界保留供独立审查。
+
+独立增量审查（3cfafc67..58c74742）：Spec 0；Standards 指出测试失败路径缺少关闭保障。现恢复 defer 清理，成功路径提前关闭后置 nil，业务断言不变；复核 Standards 0。相关双来源／重启回归再次执行 EXIT0，8.031s，日志 build/qa/s24-recovery-publication/review-cleanup.log。该新修复不用于抹除此前组合 TempDir FAIL；新包 S24 仍待验证。
