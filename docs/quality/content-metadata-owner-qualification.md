@@ -191,3 +191,14 @@ receipt 写入，其他 callback/事务错误不被吞掉。公共 Runtime/coord
 - 报告 `build/qa/content-metadata/product-e2e-runtime-replay/20260910T031721Z/product-e2e-report.json`：包审计及四组件 freshness 通过，未预期 bridge failure 与 pending 均为 0；正常退出码 0，进程及后代为空，端口与 owner lease/final cleanup 通过。
 
 这组新包结果覆盖上文 Runtime 修复；历史失败记录仍保留，不把本地 TempDir 整组失败改记为通过。新的远端 head 仍需 fresh CI、严格同步、squash 及合并后 CI/CD。
+
+## 同步 History 恢复主干
+
+正常合入 main `a3ca78b9181a529d978f9fba46586fbb924ecada`，保留 Content 七方法与 History preview/apply 两方法。Go owner 独立清单为31项、Python为71项；生成物通过既有生成器重生，不从生成物派生测试期望。Host独立31项列表完整保留，fixture History注册各一次。
+
+- `uv run --frozen --no-sync python -m pytest tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py -q --no-cov`：18 passed，1.15s。
+- Go1.27 `go test ./internal/contracts/productcapabilities ./internal/productrpc`：两包PASS。
+- `go test ./internal/app ./cmd/vibetable-pb -run 'Test(ContentProduct|GenericContent|HistoryRestore|SidecarWorkspaceV2HTTP)' -count=1`：两包PASS，4.088s/1.783s，含真实Runtime重放与实际sidecar握手。
+- .NET Release：ProductRpcCapabilityManifestTests 5 passed；ProductDataSidecarRoutingTests、JsonRpcProductDataGatewayTests、ProductRpcErrorMapperTests、ProductDataRpcRegistryTests共70 passed。TRX在 `build/test-results/content-history-main/`。首个过滤另含两个不存在的类，仅报告实际5项，不作为其它路由测试证据。
+
+旧source6f1164的完整构建/S18仍仅代表该旧组合；此合并交界定向验证不替代最新head的fresh CI。所有历史失败保持原结论。

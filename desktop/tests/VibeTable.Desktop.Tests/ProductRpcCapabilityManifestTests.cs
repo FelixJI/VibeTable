@@ -56,6 +56,8 @@ public sealed class ProductRpcCapabilityManifestTests
                 "events.reconcile:workspace",
                 "field.settings.describe:workspace",
                 "file.list:workspace",
+                "history.applyRestore:workspace",
+                "history.previewRestore:workspace",
                 "history.read:workspace",
                 "lookup.list:workspace",
                 "lookup.query:workspace",

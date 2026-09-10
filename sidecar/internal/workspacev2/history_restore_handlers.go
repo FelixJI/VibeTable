@@ -117,9 +117,6 @@ func (runtime *Runtime) previewHistoryRestore(
 	if err != nil {
 		return nil, errors.New("history.request_invalid")
 	}
-	if err := runtime.drainBusinessHistory(ctx); err != nil {
-		return nil, errors.New("history.storage_failed")
-	}
 	var field *string
 	if len(params.Field) == 0 {
 		return nil, errors.New("history.request_invalid")
@@ -132,7 +129,7 @@ func (runtime *Runtime) previewHistoryRestore(
 		}
 		field = &value
 	}
-	result, err := runtime.historyRestore.PreviewRestore(
+	result, err := runtime.PreviewBusinessHistoryRestore(
 		ctx,
 		audit.PreviewParams{
 			TableID:        params.Collection,
@@ -146,6 +143,18 @@ func (runtime *Runtime) previewHistoryRestore(
 		return nil, publicHistoryRestoreError(err)
 	}
 	return result, nil
+}
+
+// PreviewBusinessHistoryRestore shares the authoritative token owner and fresh audit
+// projection across Product and Workspace transports without a business write.
+func (runtime *Runtime) PreviewBusinessHistoryRestore(ctx context.Context, params audit.PreviewParams) (audit.Preview, error) {
+	if err := runtime.drainBusinessHistory(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return audit.Preview{}, err
+		}
+		return audit.Preview{}, &audit.Error{Code: "history.storage_failed", Message: "history could not be read", Details: map[string]any{}, Retryable: true}
+	}
+	return runtime.historyRestore.PreviewRestore(ctx, params)
 }
 
 func (runtime *Runtime) drainBusinessHistory(ctx context.Context) error {
@@ -169,7 +178,7 @@ type applyHistoryRestoreParams struct {
 	Token      string `json:"token"`
 }
 
-type applyHistoryRestoreResult struct {
+type BusinessHistoryRestoreResult struct {
 	Collection         string         `json:"collection"`
 	ItemID             string         `json:"itemId"`
 	RestoredToRevision string         `json:"restoredToRevision"`
@@ -191,34 +200,32 @@ func (runtime *Runtime) applyHistoryRestore(
 	if err != nil {
 		return nil, errors.New("history.request_invalid")
 	}
-	var restored audit.RestoreResult
-	receipt, err := runtime.coordinateBusinessWriteReceipt(
-		ctx,
-		"history.restore",
-		wire.OperationID,
-		func(businessContext context.Context) error {
-			var applyErr error
-			restored, applyErr = runtime.historyRestore.ApplyRestore(
-				businessContext,
-				audit.ApplyParams{
-					TableID: params.Collection,
-					ItemID:  params.ItemID,
-					Token:   params.Token,
-				},
-			)
-			return applyErr
-		},
-	)
+	result, err := runtime.ApplyBusinessHistoryRestore(ctx, wire.OperationID, audit.ApplyParams{
+		TableID: params.Collection, ItemID: params.ItemID, Token: params.Token,
+	})
 	if err != nil {
 		return nil, publicHistoryRestoreError(err)
 	}
-	return applyHistoryRestoreResult{
-		Collection:         restored.Collection,
-		ItemID:             restored.ItemID,
-		RestoredToRevision: restored.RestoredToRevision,
-		NewRevisionID:      restored.NewRevisionID,
-		Item:               restored.Item,
-		MutationRevision:   receipt.MutationRevision,
+	return result, nil
+}
+
+// ApplyBusinessHistoryRestore is the single coordinator entry for restoring a
+// token issued by PreviewBusinessHistoryRestore. identity is the submit operation,
+// distinct from the preview capability token.
+func (runtime *Runtime) ApplyBusinessHistoryRestore(ctx context.Context, identity string, params audit.ApplyParams) (BusinessHistoryRestoreResult, error) {
+	var restored audit.RestoreResult
+	receipt, err := runtime.coordinateBusinessWriteReceipt(ctx, "history.restore", identity, func(businessContext context.Context) error {
+		var applyErr error
+		restored, applyErr = runtime.historyRestore.ApplyRestore(businessContext, params)
+		return applyErr
+	})
+	if err != nil {
+		return BusinessHistoryRestoreResult{}, err
+	}
+	return BusinessHistoryRestoreResult{
+		Collection: restored.Collection, ItemID: restored.ItemID,
+		RestoredToRevision: restored.RestoredToRevision, NewRevisionID: restored.NewRevisionID,
+		Item: restored.Item, MutationRevision: receipt.MutationRevision,
 	}, nil
 }
 
