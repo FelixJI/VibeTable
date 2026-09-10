@@ -4,6 +4,13 @@ import json
 import zlib
 from pathlib import Path
 
+PRODUCER_FIXTURES = (
+    "independent-reportlab-plain.pdf",
+    "independent-reportlab-flate.pdf",
+    "independent-aes-user-password.pdf",
+    "independent-aes-empty-user-password.pdf",
+)
+
 
 def generated_documents() -> dict[str, bytes]:
     samples: dict[str, bytes] = {}
@@ -235,6 +242,12 @@ def main() -> None:
         (Path(__file__).with_name("pdf_qualification_corpus.json")).read_text(encoding="utf-8")
     )
     samples = generated_documents()
+    fixture_root = Path(__file__).with_name("pdf_producer_fixtures")
+    for name in PRODUCER_FIXTURES:
+        fixture = fixture_root / name
+        if not fixture.is_file():
+            raise ValueError(f"missing committed producer fixture: {fixture}")
+        samples[name] = fixture.read_bytes()
     if len(manifest["cases"]) != len(samples) or set(samples) != {
         case["file"] for case in manifest["cases"]
     }:

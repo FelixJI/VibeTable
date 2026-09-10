@@ -1,7 +1,7 @@
 # A6 自有 PDF 决策语料 v1
 
-`pdf_qualification_corpus.json` 冻结 28 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
-`generate_pdf_qualification_corpus.py` 仅用标准库构造 PDF 对象，不复制字体或第三方文件。
+`pdf_qualification_corpus.json` 冻结 32 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
+`generate_pdf_qualification_corpus.py` 用标准库构造结构样本并读取固定的自有生产者 fixtures，不复制字体或外部文档。
 
 ```text
 uv run --frozen --no-sync python tests/contract/generate_pdf_qualification_corpus.py
@@ -88,3 +88,18 @@ indexed、53 code points、无错误码或 token 差距。完整 25 项仍有原
 字符及拒绝正文断言；要求精确样本集合、预算一致、有限非负测量和所有进程退出。原产品提取器入口不变。
 2026-09-10 的隔离候选在显式 1 GiB Job commit 预算下，28 项比较零差异；该实验预算不是产品默认值，
 也不关闭独立生产者、对象流/predictor、加密或产品 generation 等剩余资格。
+
+## 独立生产者及 AES 加密对照
+
+`pdf_producer_fixtures/` 的四份自有小文档由 `generate_pdf_producer_fixtures.py` 生成：
+ReportLab 4.4.9 普通页和 ASCII85Decode + FlateDecode 压缩页，以及 pypdf 6.10.0 / cryptography 50.0.1
+生成的两类 AES-256 加密页。正文只有自有 ASCII token，使用 Base14 字体，无嵌入字体或外部内容。
+普通生成与 CI 不需要这些生产者包，只读取四份固定 fixtures；重新生成需要符合脚本版本检查的资格工具环境。
+密文包含正常随机性，可重放的是语义与预期，不承诺重新生成后字节一致。
+
+两个普通样本是 MUST indexed 且保留 token；两个加密样本必须 passwordProtected / extract.password_required、
+零正文，包括空 user password 但非空 owner password。旧候选在后一项返回 indexed，修复后在页面读取前检查
+PdfDocument.IsEncrypted。最终 fixtures 的普通正文由 PDFium 核对，加密正文通过已知测试密码验证。
+
+2026-09-10 最终32项比较 failed=0、exit0，原28项预期未改；该结果仍不替代真实复杂生产者、其他security handler、
+对象流/predictor及产品generation事务资格。

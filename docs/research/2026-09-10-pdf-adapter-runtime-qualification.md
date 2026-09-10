@@ -1,6 +1,6 @@
 # A6 PDF 候选的隔离运行资格
 
-当前结论：固定 PdfPig 0.1.16 与 SharpZipLib 1.4.2 的实验工具在 28 项自有语料上与冻结预期一致。
+当前结论：固定 PdfPig 0.1.16 与 SharpZipLib 1.4.2 的实验工具在 32 项自有语料（含独立生产者）上与冻结预期一致。
 这使候选可重复观察，不批准 ADR 0014，也不替换产品 Go adapter 或改变现有发布门禁。
 
 ## 接口与边界
@@ -45,7 +45,7 @@ build/qa/pdf-adapter/pdf-qualification.exe --observations tests/contract/pdf_qua
 - .NET 10.0.401 构建零 warning/error；12 项进程检查全部通过且均清理，证据 `build/qa/pdf-adapter-runner/persistent-checks.json`。
 - 28 项原始观察 `build/qa/pdf-adapter/observations-final-1g.json`；比较 `comparison-final-1g.json` 为 failed=0、exit 0。
 - 旧原型在损坏后续页上仍返回 truncated、warning 空；`old-probe-later-invalid.json` 保留该反证。候选返回 failed / extract.pdf_stream_invalid、空正文。
-- 本次最高根 worker working set 为 754,130,944 字节；对应 Job peak commit 734,937,088 字节。仅是当前机器单次测量，不是性能承诺。
+- 28 项那次测量的最高根 worker working set 为 754,130,944 字节；对应 Job peak commit 734,937,088 字节。仅是当前机器单次测量，不是性能承诺。
 - 初始比较器将毫秒声明为整数，拒绝实际 296.875ms；现接受有限非负小数，保留原始测量，增加小数和非法测量回归。
 - 单独运行首次进程 pytest 是 1 passed，但命令因未运行 backend 覆盖率为 0 而 exit 1；不记作完整质量通过。
 
@@ -58,3 +58,31 @@ NOTICE/SBOM 与产品 adapter 决策仍未完成。此工具的包引用仅用�
 其中新增三项 PDF 集成回归全部通过。唯一 skip 为既有 Windows symlink 特权不足场景。
 日志分别为 `build/qa/pdf-adapter/python-quality.log` 和 `python-quality-reused-web.log`。
 `go test ./cmd/pdf-qualification` 通过；相关 Python Ruff 与 Pyright 通过。
+
+## 独立生产者与加密发现
+
+工具 bundle 中的 ReportLab 4.4.9 生成自有 Base14 ASCII 内容，分别使用普通和压缩页流；
+PDFium 独立核对两个 token。pypdf 6.10.0 / cryptography 50.0.1 再生成 AES 用户密码和空用户密码对照，
+通过已知测试密码确认两份正文确实存在。工具包版本不属于仓库 Python lock，不进入产品依赖。
+
+原候选四次观察均确认进程退出：普通与压缩两项 indexed、用户密码一项 passwordProtected；
+空用户密码但非空 owner 密码一项却 indexed 并返回正文，违反既定加密拒绝策略。原始证据位于
+`build/qa/a6-independent-producers/summary.json`、`assessment.json` 和逐项 `adapter-*.json`。
+修复采用 PdfPig 的 `PdfDocument.IsEncrypted`，在读取页面前明确拒绝，包括库自动接受空密码的情形。
+新的四项固定回归已通过；不得以库打开成功代替策略验收。
+
+最终增量验证：完整 `python-quality` exit0、1907 passed / 1 skipped、91.88%，包含7项PDF真实集成回归；
+`observations-independent-32.json` 对应 `comparison-independent-32.json` 为32项、failed0、exit0。
+最终四个固定fixtures另经独立oracle核验，报告 `build/qa/a6-independent-producers/final-fixture-independent-oracles.json`。
+旧候选对最终fixture的空密码RED保留在同目录 `final-fixture-old-candidate/`；未改原观察或预期。
+
+普通CI只复制已提交的四个小PDF，不加载生产者依赖。重新生成时，调用者将 `A6_PRODUCER_PYTHON` 指向
+已具备脚本要求版本的资格工具解释器，通过现有 uv 入口启动：
+
+```powershell
+uv run --frozen --no-sync -- $env:A6_PRODUCER_PYTHON -B tests/contract/generate_pdf_producer_fixtures.py
+```
+
+生成器在导入时不加载工具包；执行时核对三个版本，不匹配即失败，只写四个固定路径且不清理目录。
+本次使用现有工具bundle，不安装额外依赖或将bundle路径写入产品配置。ReportLab压缩样本采用ASCII85与Flate链，
+不能将其当作单一Flate filter或一般复杂filter链已通过的证据。

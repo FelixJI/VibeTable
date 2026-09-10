@@ -97,3 +97,52 @@ def test_output_limit_still_validates_later_pages(
     assert result["status"] == ("truncated" if valid else "failed")
     assert result["errorCode"] == ("extract.text_limit" if valid else "extract.pdf_stream_invalid")
     assert result["text"] == ("B" * 2_000_000 if valid else "")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("filename", "status", "error_code", "token"),
+    [
+        ("independent-reportlab-plain.pdf", "indexed", None, "A6INDEPENDENTPLAIN"),
+        ("independent-reportlab-flate.pdf", "indexed", None, "A6INDEPENDENTFLATE"),
+        ("independent-aes-user-password.pdf", "passwordProtected", "extract.password_required", ""),
+        (
+            "independent-aes-empty-user-password.pdf",
+            "passwordProtected",
+            "extract.password_required",
+            "",
+        ),
+    ],
+)
+def test_independent_producer_pdf_fixtures(
+    qualification_executable: Path,
+    pdf_corpus: Path,
+    filename: str,
+    status: str,
+    error_code: str | None,
+    token: str,
+) -> None:
+    completed = subprocess.run(
+        [
+            str(qualification_executable),
+            "--run",
+            str(pdf_corpus / filename),
+            "--memory-mib",
+            "1024",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    observation = json.loads(completed.stdout)
+    assert observation["allProcessesExited"] is True
+    assert observation["workerReason"] == "Succeeded"
+    result = observation["result"]
+    assert result["status"] == status
+    assert result["errorCode"] == error_code
+    if token:
+        assert token in result["text"]
+    else:
+        assert result["text"] == ""

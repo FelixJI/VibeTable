@@ -29,6 +29,8 @@ internal static class PdfWorker
                 FilterProvider = new QualificationFilterProvider(),
             };
             using var document = PdfDocument.Open(stream, options);
+            if (document.IsEncrypted)
+                return Reject("passwordProtected", "extract.password_required", pages, log);
             var text = new StringBuilder();
             int remaining = TextLimit;
             bool truncated = false;

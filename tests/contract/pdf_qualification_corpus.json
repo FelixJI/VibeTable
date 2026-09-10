@@ -369,13 +369,65 @@
       "expectedErrorCode": "extract.pdf_stream_invalid",
       "expectedCodePoints": 0,
       "tier": "MUST"
+    },
+    {
+      "file": "independent-reportlab-plain.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "indexed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "A6INDEPENDENTPLAIN"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "ReportLab 4.4.9 自有普通页面正文；独立生产者小样本必须保留 ASCII token。"
+    },
+    {
+      "file": "independent-reportlab-flate.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "indexed"
+      ],
+      "requiredTokensWhenIndexed": [
+        "A6INDEPENDENTFLATE"
+      ],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "ReportLab 4.4.9 自有 Flate 页面正文；独立生产者小样本必须保留 ASCII token。"
+    },
+    {
+      "file": "independent-aes-user-password.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "passwordProtected"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "expectedCodePoints": 0,
+      "expectedErrorCode": "extract.password_required",
+      "reason": "pypdf 6.10.0 以非空用户密码生成的 AES PDF；当前资格不接收密码。"
+    },
+    {
+      "file": "independent-aes-empty-user-password.pdf",
+      "tier": "MUST",
+      "expectedStatuses": [
+        "passwordProtected"
+      ],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "expectedCodePoints": 0,
+      "expectedErrorCode": "extract.password_required",
+      "reason": "pypdf 6.10.0 以空用户密码和非空 owner password 生成的 AES PDF；不得静默绕过。"
     }
   ],
   "remainingCoverage": [
-    "independent redistributable producer samples",
+    "独立生产者覆盖目前仅限四份自有 ReportLab/pypdf 小样本；真实复杂生产者仍缺失",
     "object streams and predictors",
     "input/output exact-edge and deadline/cancellation boundaries",
-    "encryption",
+    "加密覆盖目前仅限两份自有 AES 小样本；真实复杂加密生产者和安全 handler 组合仍缺失",
     "deep/cyclic objects",
     "product status mapping and generation transaction"
   ]
