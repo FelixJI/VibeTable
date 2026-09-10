@@ -111,3 +111,13 @@ S33 最后一轮独立 Standards 与 Spec 均0项剩余确定发现；Spec独立
 固定源码 `1ac9a1464a60affc0dc7a268812b1e2a62ac2350` 的 `uv run --frozen --no-sync python scripts/build_next.py --release` 完整 EXIT0，日志 `build/qa/host-presentation/build-release-final.log`。同包首个 S33 报告 `build/qa/host-presentation/product-e2e-final/20260910T091349Z/product-e2e-report.json` 为 EXIT1：seed 前8条断言通过，后在列宽手柄 `boundingBox` 等待30秒超时，resume未启动。四组件freshness通过，bridge failures/pending/acknowledged与pageErrors均0；唯一console条目是 autofocus 的 info，不是error。失败阶段Host仍正常退出0，进程/端口/owner lease及final cleanup均通过。
 
 锁定 Tabulator 的 ResizeColumns 实现使用 `element.after(handle)`，手柄为列头的紧邻兄弟节点。场景原来查找列头的后代，无法命中真实节点；现改为目标字段列头后紧邻的 `.tabulator-col-resize-handle`，仍执行真实鼠标拖动并验证Host回执中的宽度改变。未修改产品实现、等待时限或断言。既有完整包的运行时源码未变，后续只针对该确定定位根因复用同包验证，不把首次失败改记通过。
+
+## 第二次 S33 新包结果与真实拖动边界修正
+
+定位修正提交 `91e37cc1f9ceb04bc93caede5386f31a40666bf4` 复用上述完整包执行 S33，报告 `build/qa/host-presentation/product-e2e-resize-selector/20260910T092125Z/product-e2e-report.json` 仍为失败：seed 前9条断言通过，真实列宽由160变为224；随后列移动 `dragTo` 超时，resume未启动。trace 的 `call@230` 明确显示目标列内 `x: 2, y: 10` 被 `.tabulator-col-resize-handle` 拦截。pageErrors与bridge failures/pending/acknowledged均0，唯一console仍为autofocus info。首次列宽定位失败和本次列移动失败均保留，不能作为双Host恢复通过证据。
+
+首个trace还确定了截图横向错位的来源：header与cell字段顺序和160px宽度相同；`call@200` 点击Title时，正在关闭的筛选popover多次拦截指针，Playwright重试中的自动滚动先把header contents单独滚至115.42857 CSS px，而body仍为0，之后才真正点击排序。锁定Tabulator只通过wheel及横向滚动总线同步表头，不监听表头原生scroll。场景现等待筛选面板hidden后继续；列移动需要横向空间时，使用真实body鼠标滚轮并等待目标可见、header/body滚动一致，不依靠列头locator的自动滚动。
+
+锁定 `MoveColumns` 以250ms按住期区分点击和拖动，只有进入移动状态后才注册目标mousemove处理。场景改为真实鼠标按下后等待 `.tabulator-moving` 可见，再将First拖至Second右半部的内部位置并释放；水平滚动后的这个向右交换同时避开边缘手柄和该版本对左半部落点额外叠加scrollLeft的计算。最终仍严格要求Host保存的 `secondOrder < firstOrder`，且可见DOM同时包含两列、Second位于First之前；未使用force、固定sleep、额外重试或放宽断言。鼠标释放位于finally，失败也会结束按住状态。
+
+本次固定Node24.19.0执行 `node --check tests/e2e/webview_product_scenarios.mjs` EXIT0、`node --test tests/e2e/host_presentation_restart.test.mjs` 19 PASS / 0 FAIL / 0 SKIP，`git diff --check`通过。现有19项行为测试覆盖恢复验收断言，不能替代新鼠标交互的真实WebView2验证；本次未重跑GUI、build、commit或push，修改后的S33及独立复审仍pending。

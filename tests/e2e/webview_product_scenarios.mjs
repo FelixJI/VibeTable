@@ -5310,6 +5310,7 @@ async function scenario33(page, recorder) {
       && filtered.payload.state.filters[1].operator === "eq"
       && filtered.payload.state.filters[1].value === "", filtered);
   await page.getByTestId("view-filter-trigger").click();
+  await filterPanel.waitFor({ state: "hidden" });
   const header = page.locator(`.tabulator-col[tabulator-field="${title.physicalName}"]`).first();
   await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
   await header.locator(".tabulator-col-title").click();
@@ -5334,8 +5335,39 @@ async function scenario33(page, recorder) {
     { before: before.width, width });
   const firstHeader = page.locator(`.tabulator-col[tabulator-field="${first.physicalName}"]`).first();
   const secondHeader = page.locator(`.tabulator-col[tabulator-field="${second.physicalName}"]`).first();
+  const holder = await page.locator(".tabulator-tableholder").boundingBox();
+  const secondBeforeScroll = await secondHeader.boundingBox();
+  if (!holder || !secondBeforeScroll) throw new Error("column move viewport unavailable");
+  // Scroll the body so Tabulator synchronizes its header; locator auto-scroll
+  // can move the overflow-hidden header independently of the body.
+  if (secondBeforeScroll.x + secondBeforeScroll.width > holder.x + holder.width) {
+    await page.mouse.move(holder.x + holder.width / 2, holder.y + 20);
+    await page.mouse.wheel(secondBeforeScroll.x + secondBeforeScroll.width - holder.x - holder.width + 24, 0);
+  }
+  await page.waitForFunction((field) => {
+    const body = document.querySelector(".tabulator-tableholder");
+    const contents = document.querySelector(".tabulator-header-contents");
+    const column = document.querySelector(`.tabulator-header .tabulator-col[tabulator-field="${field}"]`);
+    if (!body || !contents || !column) return false;
+    const bounds = column.getBoundingClientRect();
+    return bounds.right <= body.getBoundingClientRect().right + 1
+      && Math.abs(contents.scrollLeft - body.scrollLeft) <= 1;
+  }, second.physicalName);
+  const moveSource = await firstHeader.boundingBox();
+  if (!moveSource) throw new Error("visible column move source unavailable");
   await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
-  await secondHeader.dragTo(firstHeader, { sourcePosition: { x: 20, y: 10 }, targetPosition: { x: 2, y: 10 } });
+  await page.mouse.move(moveSource.x + moveSource.width / 4, moveSource.y + 10);
+  await page.mouse.down();
+  try {
+    // MoveColumns starts after a held press. Wait for its real drag state,
+    // then place First after Second using the interior of its right half.
+    await page.locator(`.tabulator-col.tabulator-moving[tabulator-field="${first.physicalName}"]`).waitFor({ state: "visible" });
+    const moveTarget = await secondHeader.boundingBox();
+    if (!moveTarget) throw new Error("visible column move target unavailable");
+    await page.mouse.move(moveTarget.x + moveTarget.width * 3 / 4, moveTarget.y + 10, { steps: 8 });
+  } finally {
+    await page.mouse.up();
+  }
   const reordered = await waitForCapturedBridgeMessage(page, 30_000);
   const firstOrder = reordered.payload?.state?.columns?.find(column => column.name === first.physicalName)?.order;
   const secondOrder = reordered.payload?.state?.columns?.find(column => column.name === second.physicalName)?.order;
