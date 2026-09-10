@@ -1,6 +1,6 @@
 # S24 目录副本冲突资格
 
-当前状态：业务冲突投影修复及主干同步后的 `3cfafc674f287fcee2d17b9addf634a964d06a1e` 已完成新包构建，但同包 S24 在第二个 recoverySnapshotId 的公开可恢复性断言失败。此次补齐远端来源的本地快照发布、持久 pin／身份映射和全部本地 head 判定；snapshot／replica 包及三包 vet 通过，Workspace 相邻组合仅保留两项 TempDir 清理 FAIL。本次生产修复仍待独立双轴、完整新包、同包 S24 与 fresh CI，不声明产品资格通过。
+当前状态：固定源码 `c2b7c2eaedf11b0be5b58a08ce2704c0228e64b0` 完整发布构建与同包 S24 均 EXIT0，84 条断言通过，8 个 Host 生命周期正常退出并清理。源码修复均已有作者外 Standards／Spec 审查；远端 fresh CI、严格同步、squash merge 及合并后 CI/CD 尚未完成，不声明已进入可信 main。历史失败及其修复证据完整保留于下文。
 
 ## 完整意图与来源
 
@@ -151,3 +151,18 @@ root 将业务投影修复正常同步到 main `9fa626a13840830037bcb82eaddc0adf
 本轮未执行完整 Python／Go、完整构建、GUI 或真实目录副本操作，未 push／建 PR。以上源码结果不能覆盖原包真实 FAIL，也不证明败方实际 restore 执行或双端最终收敛；本场要求的双恢复来源公开列表、真实预览与 resolve 重启证据，仍须后续新包 S24 完整验证。此次普通 hooks 结果由提交日志记录，原 TempDir 失败边界保留供独立审查。
 
 独立增量审查（3cfafc67..58c74742）：Spec 0；Standards 指出测试失败路径缺少关闭保障。现恢复 defer 清理，成功路径提前关闭后置 nil，业务断言不变；复核 Standards 0。相关双来源／重启回归再次执行 EXIT0，8.031s，日志 build/qa/s24-recovery-publication/review-cleanup.log。该新修复不用于抹除此前组合 TempDir FAIL；新包 S24 仍待验证。
+
+## 关闭期查询修复与最终候选资格
+
+`c2bf90d8` 新包的 S24 曾在 fork-left 关闭工作区期间出现无 requestId 的 `operation.failed`，messageLength 为 50；包与业务断言通过不覆盖此失败。真实 Host 链用可控时钟复现：通知式 query 未持 workspace 租约，250 ms 防抖跨过关闭边界后触发已关闭会话拒绝。该路径 RED，相关联 requestId 路径通过。
+
+`c2b7c2eaedf11b0be5b58a08ce2704c0228e64b0` 将 query/cursor 统一纳入 scope 租约与取消，过代结果不发布，当前成功、真实失败及追加页通知保留。`dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~HostProductRpcInvokerTests|FullyQualifiedName~GridRequestControllerTests|FullyQualifiedName~GridStateCoordinatorTests|FullyQualifiedName~ProductWorkspaceControllerTests'` 对应作者记录的相关 Host/Grid/ProductWorkspace 组 76/76 PASS；正常 hooks 通过。独立 Standards、Spec 分别审查 `c2bf90d8...c2b7c2ea`，均 0 项确定发现。
+
+在该固定源码复用锁一致的环境执行一次：
+
+- `uv run --frozen --no-sync python scripts/build_next.py --release`：EXIT0；日志 `build/qa/s24-query-lifetime-build-release.log`。日志中的预期 updated-crash `0x80131623` 不改变完整命令成功结论。
+- `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --evidence-root build/qa/s24-query-lifetime --scenario 24-directory-replica-conflict`：EXIT0；报告 `build/qa/s24-query-lifetime/20260910T083912Z/product-e2e-report.json`，1/1 PASS、0 FAIL、0 SKIP。
+- seed、fork-left、fork-right、resolve、verify-resolved 共 84 条断言通过；四组件 freshness 均通过，bridge failures/pending/acknowledged 均 0、pageErrors 0，无缺失的阶段诊断。
+- seed/fork/resolve/reopen 的左右 Host 共 8 项生命周期均 exitCode 0，owner lease cleanup passed、errors 0、stableHandleClosed true。
+
+该候选证明本节声明的真实目录副本冲突、公开恢复预览和 Host 重启可达性范围；不扩大为右端再次同步收敛、云盘断网恢复或实际执行败方恢复。最终远端资格仍待 fresh CI 及合并后 CI/CD。
