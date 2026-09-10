@@ -51,3 +51,8 @@ Go 使用仓库固定 Go 1.27.0；下列 Go 命令 cwd 为 sidecar。Python 使�
 `uv run --frozen --no-sync python scripts/build_next.py --release`：source e12bf68b，EXIT0，日志build/qa/dashboard-metadata/build-release.log；此前未通过的完整Python结果不由build通过覆盖。
 
 同包S16首运行EXIT1：build/qa/dashboard-metadata/product-e2e/20260910T051543Z。15项业务断言通过至CAS冲突重载；设置抽屉仍打开，nav-tables被n-drawer-mask拦截并在原30s失败，尚未进入sidecar重启段。修正仅通过包含当前settings表单的抽屉原关闭按钮正常关闭并等待隐藏；不force点击/加sleep/延长超时/改业务断言。Node语法与diff检查通过，待同包复验；运行生产路径未改，不重复构建相同产品。
+
+### 真实抽屉关闭修复
+第二次同包 S16 仍 EXIT1（build/qa/dashboard-metadata/product-e2e-drawer-close/20260910T052107Z）：正常点击关闭按钮后表单未隐藏，15项业务断言通过，重启段尚未到达。锁定 Naive UI 的 DrawerContent 通过父 Drawer 的 update:show 请求关闭；受控 Drawer 未监听该事件，原 DrawerContent @close 无效。改由 Drawer 的 update:show 统一转发关闭，取消按钮原行为保留，不通过遮罩绕过按钮问题。
+真实组件（未替换 Drawer/DrawerContent）点击标题关闭按钮：旧实现 1 FAIL/11 PASS，close 未发出（drawer-close-red-actual.log）；修复后抽屉与 Workspace 相邻两文件 15 PASS（drawer-workspace-green.log），npm run typecheck PASS（drawer-typecheck.log）。早先错误测试路径只运行11旧测试，不算RED；随后一次相邻路径错误只运行12抽屉测试，不算两个文件通过。上述15项来自正确的 src/views 路径。
+运行时 Web 已变更，必须重新完整构建并重跑 S16；当前尚未宣称通过重启旅程。

@@ -22,6 +22,24 @@ function panel(id: string, name: string, type: "bar" | "list", query: Record<str
 }
 
 describe("DashboardSettingsDrawer", () => {
+  it("forwards the real drawer header close request to its controlled parent", async () => {
+    const wrapper = mount(DashboardSettingsDrawer, {
+      props: {
+        show: true, name: "Ops", note: "", panels: [],
+        config: { configVersion: 1, refreshInterval: 0, globalFilters: [], interactions: [] },
+        loadSchema: async () => schema,
+      },
+      global: { stubs: { teleport: true } },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get(".n-drawer-header__close").trigger("click");
+      expect(wrapper.emitted("close")).toEqual([[]]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("round-trips filters and interactions through visual panel/field bindings", async () => {
     const panels = [
       panel("source", "Source", "bar", {

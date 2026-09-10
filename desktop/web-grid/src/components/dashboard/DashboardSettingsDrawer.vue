@@ -77,6 +77,10 @@ async function loadSchemas(): Promise<void> {
   }
 }
 
+function updateShow(show: boolean): void {
+  if (!show) emit("close");
+}
+
 function addFilter(): void {
   const type = "enum" as const;
   const panelId = panelOptions.value.find((panel) =>
@@ -239,8 +243,8 @@ function filterType(value: unknown): value is DashboardFilterVariablePayload["ty
 </script>
 
 <template>
-  <NDrawer :show="show" :width="600" @mask-click="emit('close')">
-    <NDrawerContent :title="t('dashboard.settings.title')" closable @close="emit('close')">
+  <NDrawer :show="show" :width="600" @update:show="updateShow">
+    <NDrawerContent :title="t('dashboard.settings.title')" closable>
       <div class="settings-form" data-testid="dashboard-settings">
         <label>{{ t("dashboard.field.name") }}<NInput v-model:value="name" maxlength="128" /></label>
         <label>{{ t("dashboard.field.note") }}<NInput v-model:value="note" type="textarea" maxlength="512" data-testid="dashboard-settings-note" /></label>
