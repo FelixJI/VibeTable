@@ -436,6 +436,10 @@ public partial class MainWindow : Window
                 _webBridge,
                 _workspaceSessionFilter,
                 () => _runtime.CurrentWorkspace),
+            new GridPresentationRequestController(
+                _webBridge,
+                _workspaceSessionFilter,
+                new HostGridStateStore(Path.Combine(_productDataRoot, "grid-presentation"))),
             TraceHostRequest);
 
         _runtime.ClientReady += OnRuntimeClientReady;

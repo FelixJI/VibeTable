@@ -50,3 +50,6 @@
 ## 旧 Python 网格契约冻结
 固定producer9fa626a13840830037bcb82eaddc0adf8617075b，通过git archive隔离backend，在-I子进程运行实际GridState DTO、GridStateService与LocalStateStore。23项包含首次/重复读、完整列布局与大整数filter保存读取、stale/null revision、workspace/table隔离、数据库关闭重开、11项旧输入边界及3项完整JSON schema；仅服务器随机revision按首次出现顺序归一化，保留同一性关系。contracts/v2/grid_state-python-oracle.json首次由脚本生成，后续只读回放，不根据当前C#生成期望。原21个service/store测试未修改或迁移。
 首次回放通过；后续类型修正时一次文本编辑误将GridStateResult加入schema枚举，回放精确拒绝差异，现恢复原三schema且冻结文件无变化。Pyright最终0错误，Ruff通过。此基线只说明旧行为，不替代当前Host测试和真实保存恢复消费者。
+
+## Host composition 与路由接入
+MainWindow以可信_productDataRoot/grid-presentation构造状态服务，HostRequestDispatcher将gridState.get/save交给新的scope控制器。WebMessageRouter显式允许两个名字，并要求wpfHost/workspace/rendererPublic capability及真实workspace scope；DeviceSettings的global规则保持原样。新真实router回归旧6 FAIL（UNKNOWN_TYPE），接线后router+controller+store相邻62 PASS/139ms，日志router-red.log/router-green.log。默认生成owner仍为旧Python，尚未切换；显式policy测试证明新路由边界，不能写生产默认renderer已可用。下一步必须同步inventory/policy/catalog、退出Python注册和旧saveRequested链，并接真正Web读写恢复。
