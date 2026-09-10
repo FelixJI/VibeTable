@@ -481,38 +481,6 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 			}
 		}
 	}
-	/*
-	   	if methods := dispatcher.Methods(); len(methods) != 35 ||
-	   		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
-	   		methods[3] != (Method{Method: "history.applyRestore", Scope: productcapabilities.WorkspaceScope}) || methods[4] != (Method{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope}) || methods[5] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[6] != (Method{Method: "insights.dashboardQueryLimits", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[7] != (Method{Method: "insights.deleteDashboardWorkspace", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[8] != (Method{Method: "insights.executeDashboardQuery", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[9] != (Method{Method: "insights.listDashboards", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[10] != (Method{Method: "insights.panelManifest", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[11] != (Method{Method: "insights.readDashboardWorkspace", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[12] != (Method{Method: "insights.saveDashboardDraft", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[13] != (Method{Method: "interface.commit", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[14] != (Method{Method: "interface.delete", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[15] != (Method{Method: "interface.list", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[16] != (Method{Method: "interface.load", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[17].Method != "lookup.list" || methods[18] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[19] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[20] != (Method{Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope}) || methods[21] != (Method{Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope}) || methods[22].Method != "query.cursorFetch" || methods[23].Method != "query.cursorOpen" || methods[24].Method != "query.page" || methods[25].Method != "query.readRows" ||
-	   		methods[26].Method != "query.selectionOpen" || methods[27] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[28].Method != "query.view" || methods[29] != (Method{Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope}) || methods[30].Method != "relation.previewDelta" || methods[31] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[32].Method != "schema.describe" ||
-	   		methods[33].Method != "schema.getTable" || methods[34].Method != "schema.list" {
-	   alternative from main before merging Preset ownership:
-	   	if methods := dispatcher.Methods(); len(methods) != 31 ||
-	   		methods[0].Method != "events.reconcile" || methods[1] != (Method{Method: "field.settings.describe", Scope: productcapabilities.WorkspaceScope}) || methods[2].Method != "file.list" ||
-	   		methods[3] != (Method{Method: "history.applyRestore", Scope: productcapabilities.WorkspaceScope}) || methods[4] != (Method{Method: "history.previewRestore", Scope: productcapabilities.WorkspaceScope}) || methods[5] != (Method{Method: "history.read", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[6] != (Method{Method: "interface.commit", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[7] != (Method{Method: "interface.delete", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[8] != (Method{Method: "interface.list", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[9] != (Method{Method: "interface.load", Scope: productcapabilities.WorkspaceScope}) ||
-	   		methods[10].Method != "lookup.list" || methods[11] != (Method{Method: "lookup.query", Scope: productcapabilities.WorkspaceScope}) || methods[12] != (Method{Method: "lookup.valuePage", Scope: productcapabilities.WorkspaceScope}) || methods[13] != (Method{Method: "mutation.apply", Scope: productcapabilities.WorkspaceScope}) || methods[14] != (Method{Method: "mutation.preview", Scope: productcapabilities.WorkspaceScope}) || methods[15].Method != "preset.delete" || methods[16].Method != "preset.list" || methods[17].Method != "preset.save" || methods[18].Method != "query.cursorFetch" || methods[19].Method != "query.cursorOpen" || methods[20].Method != "query.page" || methods[21].Method != "query.readRows" ||
-	   		methods[22].Method != "query.selectionOpen" || methods[23] != (Method{Method: "query.validateSnapshot", Scope: productcapabilities.WorkspaceScope}) || methods[24].Method != "query.view" || methods[25] != (Method{Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope}) || methods[26].Method != "relation.previewDelta" || methods[27] != (Method{Method: "relation.searchTargets", Scope: productcapabilities.WorkspaceScope}) || methods[28].Method != "schema.describe" ||
-	   		methods[29].Method != "schema.getTable" || methods[30].Method != "schema.list" {
-	   		t.Fatalf("production registrations = %#v", methods)
-	   	}
-	*/
 	_, err = New(identity, registrations[1:]...)
 	if err == nil || !strings.Contains(err.Error(), "do not match generated goSidecar policy") {
 		t.Fatalf("unexpected missing registry mismatch error: %v", err)
