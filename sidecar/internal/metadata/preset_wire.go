@@ -30,14 +30,8 @@ func DecodePresetRequest(method string, raw []byte) (PresetRequest, error) {
 	if len(raw) > 1<<20 {
 		return request, errPresetParams
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var value map[string]any
-	if decoder.Decode(&value) != nil || value == nil {
-		return request, errPresetParams
-	}
-	var trailing any
-	if decoder.Decode(&trailing) != io.EOF {
+	value, err := decodePresetObject(raw)
+	if err != nil {
 		return request, errPresetParams
 	}
 	fields := []string{"collection"}
@@ -90,6 +84,36 @@ func DecodePresetRequest(method string, raw []byte) (PresetRequest, error) {
 		return request, errPresetParams
 	}
 	return request, nil
+}
+
+// decodePresetObject keeps authored JSON numbers exact at every persistence boundary.
+func decodePresetObject(raw []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value map[string]any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if value == nil {
+		return nil, errPresetParams
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return nil, errPresetParams
+	}
+	return value, nil
+}
+
+// A Preset receipt opts into exact JSON numbers without changing other metadata receipts.
+type presetReceipt map[string]any
+
+func (receipt *presetReceipt) UnmarshalJSON(raw []byte) error {
+	value, err := decodePresetObject(raw)
+	if err != nil {
+		return err
+	}
+	*receipt = value
+	return nil
 }
 
 func presetObject(value any, fields []string) (map[string]any, error) {

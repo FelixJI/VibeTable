@@ -80,13 +80,13 @@ Pyright 提示本工作树无 .venv，使用显式既有解释器完成解析，
 Go 的 `metadata.PresetService` 提供 list/save/delete 小接口。save/delete 在既有
 metadata 同一事务内完成 current CAS、payload 写入、audit、outbox 与 durable receipt；
 公开请求规范化后形成既有幂等摘要，在读取 current 前检查 receipt。生产注册使用已有
-idempotent business coordinator，保留取消上下文。不引入另一数据权威或新 schema 服务。
+普通 business coordinator，保留准入、epoch 校验与取消上下文。不引入另一数据权威或新 schema 服务。
 
 五种 view 的公开字段、别名、默认值、filter 三层/五十条件限制、UUIDv5 URL namespace
 及 `vibetable:preset:{operationId}` 名称保留。Preset 是保存的展示配置；保存时不查询
 实时 schema，也不验证 field 是否存在。已存在 payload 的扩展字段保留，已知 scope/name/
 presetScope/view 被本次值覆盖；原 adapter 排除的 id/revision 同样排除。保存结果 userId
-仍为 null，后续 list 保留存储中的 userId。list 保留 scope 过滤、key/id 稳定排序与默认 DTO。
+仍为 null，后续 list 保留存储中的 userId。list 保留 scope 过滤与默认 DTO；仅非空字符串 key 参与排序，否则使用 logicalId。
 
 原 Python 三 handler 和 InsightsService 对应方法已删除；Dashboard、Version、其它
 namespace 与 snapshot 读取保留。generic presets upsert/delete 和 workspace 写路径已拒绝，
@@ -146,3 +146,46 @@ main 可达的 `146a9c2cac5998ee013daebc78eedff0bd4a7ca5` 使用 git archive 读
 
 补充：严格 producer checker 的负向契约已通过（1 passed，0.83s）：只修改临时副本
 的首个响应输出即可触发精确比较失败；原 corpus 不变。Ruff/生成一致性由提交前入口检查。
+
+
+## e7dc 后独立复审修复
+
+数字保真回归先在 e7dc 上 RED：首次保存准确，但列表、保留的 payload.extension、
+receipt 重放及重启重放把合法整数 9007199254740993 舍入成 9007199254740992。
+旧 Python adapter 的 _freeze 保留 int；本次复用 Preset UseNumber + EOF 解码处理存储
+payload，并让私有 presetReceipt 实现数字保真的 JSON 解码，未改变其它 metadata DTO。
+回归以原始 JSON 输入和 json.Number 断言，避免测试本身先舍入。
+
+真实 workspaceRuntime gate 回归也先 RED：原 background idempotent gate 在发现 workspace
+receipt 后跳过业务回调，create/save/delete 重放输出 null，不同参数同 operationId
+也返回 null。原无 gate HTTP fixture 不能证明此生产边界。修复改用普通 CoordinateBusinessWrite；
+只在 metadata 已核对 request digest 并解码原 receipt 后发出已有 ReplayedBusinessWrite
+exact signal。executeIdempotent 仅新增可选 replay 回调，默认调用行为不变；沿已有 Mutation
+模式跳过新 workspace receipt，完成只读事务后传出 signal，runtime 安全 abort prepared
+intent 后返回原业务结果。未修改公共 workspace 协调器，也未绕过 writer/epoch 准入。
+真实 gate 回归检查三种重放、changed request 冲突、旧 create 在删除后重放、stale epoch
+拒绝，以及 workspace revision/proof 与 metadata/audit/outbox/receipt 均不重复增长。
+
+排序作明确开发期收窄：只用非空字符串 key，否则 logicalId。原公开 Preset DTO 无 key
+字段且拒绝额外参数，原 save 从不产生顶层 key；非字符串只可能来自历史 generic/imported
+payload。无需兼容旧 adapter 对任意 JSON 的 Python str 排序。直接 PB 契约保留数值 key 2/1、
+空字符串及正常字符串样本，验证新规则；不称其与旧任意 JSON 排序相等。冻结 53 例保持原样。
+
+原 e7dc 完整 Python 质量记录（root）：EXIT 1，1856 PASS / 1 SKIP / 1 FAIL，覆盖率
+91.41%，Ruff/Pyright/mypy 通过。唯一 catalog 测试只聚合 Python 注册与 Host owner，漏了
+已经迁移的 Go owner；官方 generator --check 原本就通过，静态 catalog 未漏 Preset。
+测试现补跨 owner 聚合，独立 25 方法 manifest/Host/cmd 固定预期保留，不手改生成物。
+完整 product_contracts 12 项复验通过（1.02s）。该局部复验不替代新的完整 Python 入口。
+
+数字与真实 gate RED 日志分别保留 build/preset-numbers-red.log、
+build/preset-runtime-replay-red.log；三项修复聚焦 GREEN 为 1.645s，日志
+build/preset-number-runtime-green.log。此后补充数字 key 收窄及 trace 不增断言，并运行相关
+回归。S19–S22 的产品旅程由 root 单独提交，本地无真实包资格声明。
+
+
+修复提交前最终记录：metadata/productrpc/capabilities 三包测试通过；原 metadata/Dashboard
+六个真实 PB 事务集成测试通过（1.502s），证明无 replay 回调的旧调用保持默认行为。
+受影响 metadata/productrpc/app 的 go vet 通过；真实 cmd 25 方法通过（1.081s）。
+最终全部 `TestPreset` 整组 EXIT 1（2.013s），唯一失败是
+TestPresetProductHTTPLifecycleReplayCASAndRestart 的 TempDir 清理目录非空；数字、
+真实 gate、排序及业务断言无失败。保留此最终失败，不把先前聚焦 GREEN 写成整组通过。

@@ -23,9 +23,9 @@ func presetRegistration(method string, service *metadata.PresetService, gates ..
 			case "preset.list":
 				return service.List(ctx, request.Collection)
 			case "preset.save":
-				err = runIdempotentBusinessWrite(ctx, gates, "metadata.presets.upsert", "preset:save:"+request.OperationID, func(ctx context.Context) error { var err error; result, err = service.Save(ctx, request); return err })
+				err = runBusinessWrite(ctx, gates, "metadata.presets.upsert", "preset:save:"+request.OperationID, func(ctx context.Context) error { var err error; result, err = service.Save(ctx, request); return err })
 			case "preset.delete":
-				err = runIdempotentBusinessWrite(ctx, gates, "metadata.presets.delete", "preset:delete:"+request.OperationID, func(ctx context.Context) error { var err error; result, err = service.Delete(ctx, request); return err })
+				err = runBusinessWrite(ctx, gates, "metadata.presets.delete", "preset:delete:"+request.OperationID, func(ctx context.Context) error { var err error; result, err = service.Delete(ctx, request); return err })
 			default:
 				return nil, errors.New("unknown Preset method")
 			}

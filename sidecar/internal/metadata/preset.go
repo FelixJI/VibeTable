@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 // PresetService owns persisted view definitions without querying their live schema.
@@ -41,8 +42,8 @@ func (service *PresetService) List(ctx context.Context, collection string) (map[
 	}
 	entries := []entry{}
 	for _, item := range items {
-		var payload map[string]any
-		if json.Unmarshal(item.Payload, &payload) != nil || payload == nil {
+		payload, err := decodePresetObject(item.Payload)
+		if err != nil {
 			return nil, storageError()
 		}
 		if payload["scope"] != collection {
@@ -101,7 +102,7 @@ func (service *PresetService) Save(ctx context.Context, request PresetRequest) (
 	if err != nil {
 		return nil, err
 	}
-	result, err := executeIdempotent(service.metadata, ctx, key, digest, func(tx core.App) (map[string]any, []metadataChange, error) {
+	result, err := executeIdempotent(service.metadata, ctx, key, digest, func(tx core.App) (presetReceipt, []metadataChange, error) {
 		current, err := presetCurrent(tx, id)
 		if err != nil {
 			return nil, nil, err
@@ -115,7 +116,8 @@ func (service *PresetService) Save(ctx context.Context, request PresetRequest) (
 		}
 		payload := map[string]any{}
 		if current != nil {
-			if err := json.Unmarshal(current.Payload, &payload); err != nil || payload == nil {
+			payload, err = decodePresetObject(current.Payload)
+			if err != nil {
 				return nil, nil, storageError()
 			}
 			delete(payload, "id")
@@ -135,7 +137,7 @@ func (service *PresetService) Save(ctx context.Context, request PresetRequest) (
 			return nil, nil, err
 		}
 		return map[string]any{"id": id, "collection": request.Collection, "name": request.Name, "scope": "system", "view": request.View, "userId": nil, "revision": item.Revision, "changeSetId": nil, "emittedEvents": []string{}}, []metadataChange{change}, nil
-	}, decoratePresetReceipt, func(*map[string]any) {})
+	}, decoratePresetReceipt, func(*presetReceipt) {}, func() error { return writecoordinator.ReplayedBusinessWrite(ctx, "metadata.presets.upsert", key) })
 	return result, presetMutationError(err)
 }
 func (service *PresetService) Delete(ctx context.Context, request PresetRequest) (map[string]any, error) {
@@ -150,7 +152,7 @@ func (service *PresetService) Delete(ctx context.Context, request PresetRequest)
 	if err != nil {
 		return nil, err
 	}
-	result, err := executeIdempotent(service.metadata, ctx, key, digest, func(tx core.App) (map[string]any, []metadataChange, error) {
+	result, err := executeIdempotent(service.metadata, ctx, key, digest, func(tx core.App) (presetReceipt, []metadataChange, error) {
 		current, err := presetCurrent(tx, *request.PresetID)
 		if err != nil {
 			return nil, nil, err
@@ -160,10 +162,10 @@ func (service *PresetService) Delete(ctx context.Context, request PresetRequest)
 		}
 		change, err := service.metadata.delete(tx, NamespacePresets, ItemDelete{LogicalID: *request.PresetID, ExpectedRevision: *request.ExpectedRevision}, "", "")
 		return map[string]any{"deleted": *request.PresetID, "status": StatusApplied}, []metadataChange{change}, err
-	}, decoratePresetReceipt, func(*map[string]any) {})
+	}, decoratePresetReceipt, func(*presetReceipt) {}, func() error { return writecoordinator.ReplayedBusinessWrite(ctx, "metadata.presets.delete", key) })
 	return result, presetMutationError(err)
 }
-func decoratePresetReceipt(result *map[string]any, id string, events []string) {
+func decoratePresetReceipt(result *presetReceipt, id string, events []string) {
 	(*result)["changeSetId"] = id
 	(*result)["emittedEvents"] = events
 }
