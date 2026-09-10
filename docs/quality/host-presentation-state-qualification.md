@@ -167,3 +167,13 @@ Host 原 node_modules 是共享 Junction，已先仅移动链接本身，再建�
 修复前执行 `uv run python -m pytest tests/e2e/test_product_e2e_runner.py -k host_presentation_resume_failure -q --no-cov` 得1 PASS / 1 FAIL：managed-default fixture 重现 `HOST_PRESENTATION_SEED_INVALID`。修复后 S33 聚焦测试8 PASS；`uv run python -m pytest tests/e2e/test_product_e2e_runner.py -q --no-cov` 全文件120 PASS。随后新增自然老化实际路径回归，`uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -k natural_aging_seed_records -q --no-cov` 得1 PASS。以上均显式使用既有共享 uv 环境、`UV_NO_SYNC=1` 和当前 worktree 的 `PYTHONPATH`；相关 Ruff format/check 与 `git diff --check` 通过。原失败目录的只读 resolver 回放已解析到上述实际 UUID 路径。
 
 本轮仅修改 Python 测试编排、相关回归和本记录，未改生产代码、未重建包、未重跑 GUI、未提交或推送。双 Host 的真实恢复资格仍待独立复审及同包重跑确认。
+
+## 2026-09-10：呈现恢复保留动态列与新权威记录
+
+CI `34468066165` 的 release smoke 中 S02 编辑器未就绪、S08 等待超时，不能将该构建记为产品资格通过。真实 Tabulator 复现了两个恢复缺陷：`setColumnLayout` 从初始化定义重建列，覆盖后来加载的 editor/schema；无 Ajax 数据源的 remote sort/filter 刷新会同步清空宿主已提供的 rows。
+
+恢复现在通过单一 `applyPresentation` 适配接口，从当前列定义叠加保存布局，并在同一同步调用段恢复宿主记录。真实运行时回归覆盖新增/删除列、编辑定义、空/非空筛选与较晚到达的权威记录。初始两个回归在旧实现失败；相关 124 项与完整 Web 1647 项通过后，独立 Spec 审查仍发现旧表头 300ms 延迟回调可在恢复后覆盖筛选并清空新记录。
+
+现有固定 Tabulator 6.5.2 补丁增加 editor success 的归属检查，退休列及同列已替换输入框的回调不再生效；保留当前输入的默认 300ms、blur 与程序化筛选行为。四个真实交错回归在反向应用补丁时全部失败，重新应用补丁后完整 Web 180 文件/1651 项通过，类型检查通过。既有冻结列补丁正文保持不变，src/ESM/CJS 同步由 patch-package 生成。
+
+这些是组件和真实库验证；原 CI S02/S08 与 S33 两 Host 恢复的最终打包验证尚待新完整包完成。本地 `20260910T110857Z` 曾在 WebView2 初始化阶段出现 `COMException 0x80080005`，未进入界面断言；终局 readiness 原始错误现在会及时传播，不能据此宣称已修复其环境根因。

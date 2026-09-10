@@ -301,11 +301,10 @@ describe("useTabulator", () => {
       onViewQueryChanged: changed,
       onPresentationRestore: async () => applyDataSourceView({
         getColumns: () => view.columns.map(column => ({ getField: () => column.name })),
-        setSort: sorters => { lastMock!.getSorters.mockReturnValue(sorters); },
-        clearHeaderFilter: () => { restoredHeaders = []; lastMock!.getHeaderFilters.mockReturnValue([]); },
-        setHeaderFilterValue: (field, value) => {
-          restoredHeaders.push({ field, value });
-          lastMock!.getHeaderFilters.mockReturnValue([...restoredHeaders]);
+        applyPresentation: ({ sorters, headerFilters }) => {
+          lastMock!.getSorters.mockReturnValue(sorters.map(sort => ({ field: sort.column, dir: sort.dir })));
+          restoredHeaders = [...headerFilters];
+          lastMock!.getHeaderFilters.mockReturnValue(restoredHeaders);
         },
       }, view),
     });

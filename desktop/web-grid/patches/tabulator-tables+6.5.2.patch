@@ -1,8 +1,23 @@
 diff --git a/node_modules/tabulator-tables/dist/js/tabulator.js b/node_modules/tabulator-tables/dist/js/tabulator.js
-index e7764c3..e8591c5 100644
+index e7764c3..f4b820f 100644
 --- a/node_modules/tabulator-tables/dist/js/tabulator.js
 +++ b/node_modules/tabulator-tables/dist/js/tabulator.js
-@@ -27058,7 +27058,7 @@
+@@ -16190,7 +16190,13 @@
+ 
+ 		generateHeaderFilterElement(column, initialValue, reinitialize){
+ 			var self = this,
+-			success = column.modules.filter.success,
++			success = function(value){
++				// Ignore callbacks retained by a replaced column or header editor.
++				if(editorElement && (self.table.columnManager.findColumn(field) !== column || column.modules.filter.headerElement !== editorElement)){
++					return false;
++				}
++				return column.modules.filter.success(value);
++			},
+ 			field = column.getField(),
+ 			filterElement, editor, editorElement, cellWrapper, typingTimer, searchTrigger, params, onRenderedCallback;
+ 
+@@ -27058,7 +27064,7 @@
  			if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
  				frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
  
@@ -11,7 +26,7 @@ index e7764c3..e8591c5 100644
  					console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
  				}
  			}
-@@ -27429,7 +27429,8 @@
+@@ -27429,7 +27435,8 @@
  					}
  				}
  
@@ -21,7 +36,7 @@ index e7764c3..e8591c5 100644
  					if(row.getElement().parentNode && column.getElement().parentNode){
  						// Use faster autoScroll when the elements are on the DOM
  						this.autoScroll(range, row.getElement(), column.getElement());
-@@ -27606,7 +27607,9 @@
+@@ -27606,7 +27613,9 @@
  		
  		autoScroll(range, row, column) {
  			var tableHolder = this.table.rowManager.element,
@@ -32,7 +47,7 @@ index e7764c3..e8591c5 100644
  			
  			if (typeof row === 'undefined') {
  				row = this.getRowByRangePos(range.end.row).getElement();
-@@ -27624,21 +27627,21 @@
+@@ -27624,21 +27633,21 @@
  			};
  			
  			view = {
@@ -60,7 +75,7 @@ index e7764c3..e8591c5 100644
  				}
  			}
  			
-@@ -27865,6 +27868,18 @@
+@@ -27865,6 +27874,18 @@
  			return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
  		}
  
@@ -80,10 +95,25 @@ index e7764c3..e8591c5 100644
  			if(!this.rowHeader){
  				return 0;
 diff --git a/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs b/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
-index 7ee0ee7..6db400d 100644
+index 7ee0ee7..a494ccb 100644
 --- a/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
 +++ b/node_modules/tabulator-tables/dist/js/tabulator_esm.mjs
-@@ -20721,7 +20721,7 @@ class SelectRange extends Module {
+@@ -9853,7 +9853,13 @@ class Filter extends Module{
+ 
+ 	generateHeaderFilterElement(column, initialValue, reinitialize){
+ 		var self = this,
+-		success = column.modules.filter.success,
++		success = function(value){
++			// Ignore callbacks retained by a replaced column or header editor.
++			if(editorElement && (self.table.columnManager.findColumn(field) !== column || column.modules.filter.headerElement !== editorElement)){
++				return false;
++			}
++			return column.modules.filter.success(value);
++		},
+ 		field = column.getField(),
+ 		filterElement, editor, editorElement, cellWrapper, typingTimer, searchTrigger, params, onRenderedCallback;
+ 
+@@ -20721,7 +20727,7 @@ class SelectRange extends Module {
  		if(this.table.modules.frozenColumns && this.table.modules.frozenColumns.active){
  			frozenCols = this.table.modules.frozenColumns.getFrozenColumns();
  
@@ -92,7 +122,7 @@ index 7ee0ee7..6db400d 100644
  				console.warn("Using frozen columns that are not the range header in combination with the selectRange option may result in unpredictable behavior");
  			}
  		}
-@@ -21092,7 +21092,8 @@ class SelectRange extends Module {
+@@ -21092,7 +21098,8 @@ class SelectRange extends Module {
  				}
  			}
  
@@ -102,7 +132,7 @@ index 7ee0ee7..6db400d 100644
  				if(row.getElement().parentNode && column.getElement().parentNode){
  					// Use faster autoScroll when the elements are on the DOM
  					this.autoScroll(range, row.getElement(), column.getElement());
-@@ -21269,7 +21270,9 @@ class SelectRange extends Module {
+@@ -21269,7 +21276,9 @@ class SelectRange extends Module {
  	
  	autoScroll(range, row, column) {
  		var tableHolder = this.table.rowManager.element,
@@ -113,7 +143,7 @@ index 7ee0ee7..6db400d 100644
  		
  		if (typeof row === 'undefined') {
  			row = this.getRowByRangePos(range.end.row).getElement();
-@@ -21287,21 +21290,21 @@ class SelectRange extends Module {
+@@ -21287,21 +21296,21 @@ class SelectRange extends Module {
  		};
  		
  		view = {
@@ -141,7 +171,7 @@ index 7ee0ee7..6db400d 100644
  			}
  		}
  		
-@@ -21528,6 +21531,18 @@ class SelectRange extends Module {
+@@ -21528,6 +21537,18 @@ class SelectRange extends Module {
  		return component ? this.activeRange.getColumns().map((col) => col.getComponent()) : this.activeRange.getColumns();
  	}
  
@@ -160,6 +190,25 @@ index 7ee0ee7..6db400d 100644
  	getRowHeaderWidth(){
  		if(!this.rowHeader){
  			return 0;
+diff --git a/node_modules/tabulator-tables/src/js/modules/Filter/Filter.js b/node_modules/tabulator-tables/src/js/modules/Filter/Filter.js
+index d07576b..681b73a 100644
+--- a/node_modules/tabulator-tables/src/js/modules/Filter/Filter.js
++++ b/node_modules/tabulator-tables/src/js/modules/Filter/Filter.js
+@@ -304,7 +304,13 @@ export default class Filter extends Module{
+ 
+ 	generateHeaderFilterElement(column, initialValue, reinitialize){
+ 		var self = this,
+-		success = column.modules.filter.success,
++		success = function(value){
++			// Ignore callbacks retained by a replaced column or header editor.
++			if(editorElement && (self.table.columnManager.findColumn(field) !== column || column.modules.filter.headerElement !== editorElement)){
++				return false;
++			}
++			return column.modules.filter.success(value);
++		},
+ 		field = column.getField(),
+ 		filterElement, editor, editorElement, cellWrapper, typingTimer, searchTrigger, params, onRenderedCallback;
+ 
 diff --git a/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js b/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js
 index cbf568d..a1be50e 100644
 --- a/node_modules/tabulator-tables/src/js/modules/SelectRange/SelectRange.js

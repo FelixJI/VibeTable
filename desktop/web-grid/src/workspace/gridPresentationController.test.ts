@@ -35,7 +35,7 @@ function fixture() {
   const grid: DataSourceViewGrid = {
     getColumns: () => columns.map(column => ({ getField: () => column.name, getWidth: () => column.width ?? 120,
       isVisible: () => column.visible !== false, getDefinition: () => ({ frozen: column.frozen }) })),
-    setColumnLayout: layout, setSort: vi.fn(), clearHeaderFilter: vi.fn(), setHeaderFilterValue: vi.fn(),
+    applyPresentation: vi.fn(presentation => layout(presentation.columns)),
   };
   const savePreset = vi.fn(async () => preset);
   const listPresets = vi.fn(() => presetRead.promise);
@@ -95,7 +95,7 @@ it.each([true, false])("restores full local state only after both sources, hostF
   expect(f.query.toQuery()).toMatchObject({ keyword: "local", filters: local.filters, sorts: local.sorts });
   expect(f.ui.density).toBe("compact"); expect(f.query.visibleFields).toEqual(["title"]);
   expect(f.layout).toHaveBeenLastCalledWith([{ field: "status", width: 90, frozen: true, visible: false }, { field: "title", width: 240, frozen: false, visible: true }]);
-  expect(f.grid.setHeaderFilterValue).not.toHaveBeenCalled();
+  expect(vi.mocked(f.grid.applyPresentation!).mock.calls.at(-1)?.[0].headerFilters).toEqual([]);
   expect(f.presets.dirty).toBe(false); expect(f.savePreset).not.toHaveBeenCalled(); expect(f.save).not.toHaveBeenCalled();
   await f.controller.dispatch({ type: "keyword.changed", keyword: "later" }); await f.controller.flush();
   expect(f.save).toHaveBeenLastCalledWith("orders", expect.objectContaining({ columns: expect.arrayContaining(local.columns!.map(column => expect.objectContaining(column))), keyword: "later", filters: local.filters, forcedRemote: true }), "r1");
