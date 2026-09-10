@@ -6,6 +6,17 @@ import {
 } from "./dataSourceViewState";
 
 describe("dataSourceViewState", () => {
+  it("restores explicitly ordered columns before unordered saved and newly added columns", async () => {
+    const setColumnLayout = vi.fn();
+    await applyDataSourceView({
+      getColumns: () => ["new", "unordered", "ordered"].map(field => ({ getField: () => field })),
+      setColumnLayout,
+    }, { layout: "table", search: "", filters: [], sorts: [], columns: [
+      { name: "unordered" }, { name: "ordered", order: 4 },
+    ] });
+    expect(setColumnLayout.mock.calls[0][0].map((column: { field: string }) => column.field))
+      .toEqual(["ordered", "unordered", "new"]);
+  });
   it("captures only actual table presentation state, never record data", () => {
     const grid: DataSourceViewGrid = {
       getColumns: () => [

@@ -8,6 +8,7 @@ import { computed, type Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 import { ROW_NUMBER_FIELD } from "./createGrid";
 import { headerFilterConditions } from "./viewQuery";
+import { orderSavedColumns } from "./gridState";
 
 interface DataSourceViewState {
   readonly columns?: readonly ColumnState[];
@@ -142,9 +143,8 @@ export async function applyDataSourceView(
     }))
     .filter(({ field }) => isDataField(field));
   const currentFields = new Set(currentColumns.map(({ field }) => field));
-  const savedColumns = [...view.columns]
-    .filter((column) => currentFields.has(column.name))
-    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+  const savedColumns = orderSavedColumns(view.columns
+    .filter((column) => currentFields.has(column.name)));
   const savedFields = new Set(savedColumns.map((column) => column.name));
   const columns = savedColumns.length
     ? [

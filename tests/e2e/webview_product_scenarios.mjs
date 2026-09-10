@@ -5253,6 +5253,148 @@ async function scenario12(page, recorder, _network, runtime) {
   });
 }
 
+async function scenario33(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const tableId = await createEmptyTable(page, "E2E Host Presentation");
+  const title = await createV2Field(page, tableId, "Title", "text");
+  const status = await createV2Field(page, tableId, "Status", "text");
+  await closeFieldSettingsDrawer(page);
+  await applyProductMutation(page, tableId, [{ kind: "insert", recordId: null,
+    values: { [title.physicalName]: "preserved", [status.physicalName]: "open" } }], "presentation-seed");
+  await createEmptyTable(page, "E2E Other Presentation");
+  await closeFieldSettingsDrawer(page);
+  await selectTable(page, "E2E Host Presentation");
+  const controls = page.getByTestId("view-query-controls");
+  await controls.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => document.querySelector('[data-testid="view-query-controls"]')?.getAttribute("aria-busy") === "false");
+  const original = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("real Host presentation read returns a correlated CAS result",
+    original.type === "gridState.get" && typeof original.payload?.revision === "string", original);
+
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await fillNInput(page, "view-keyword", "preserved");
+  const keyword = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("typing a keyword persists through the real Host response gate",
+    keyword.type === "gridState.save" && keyword.payload?.state?.keyword === "preserved"
+      && !keyword.payload?.conflict, keyword);
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await selectVisibleNOption(page, "view-density", "紧凑");
+  const density = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("the real density control persists compact presentation",
+    density.type === "gridState.save" && density.payload?.state?.density === "compact", density);
+
+  await page.getByTestId("view-filter-trigger").click();
+  const filterPanel = page.locator(".control-card--wide:visible");
+  for (const [index, label, value] of [[0, "Title", "preserved"], [1, "Status", ""]]) {
+    await filterPanel.getByRole("button", { name: "＋ 条件", exact: true }).click();
+    const node = filterPanel.locator(".filter-node").nth(index);
+    await node.locator(".field-select .n-base-selection").click();
+    await page.locator(".n-base-select-option:visible").filter({ hasText: new RegExp(`^${label}$`) }).click();
+    await node.locator(".operator-select .n-base-selection").click();
+    await page.locator(".n-base-select-option:visible").filter({ hasText: /^等于$/ }).click();
+    await node.locator(".value-input input").fill(value);
+  }
+  await filterPanel.locator(".joiner-select .n-base-selection").click();
+  await page.locator(".n-base-select-option:visible").filter({ hasText: /^或$/ }).click();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.getByTestId("view-filter-apply").click();
+  const filtered = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("the real filter editor persists OR and an explicit empty equality",
+    filtered.payload?.state?.filters?.length === 2
+      && filtered.payload.state.filters[1].logic === "OR"
+      && filtered.payload.state.filters[1].operator === "eq"
+      && filtered.payload.state.filters[1].value === "", filtered);
+  await page.getByTestId("view-filter-trigger").click();
+  const header = page.locator(`.tabulator-col[tabulator-field="${title.physicalName}"]`).first();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await header.locator(".tabulator-col-title").click();
+  const sorted = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("real sorting preserves the full filter expression when grid events return",
+    sorted.payload?.state?.sorts?.some(sort => sort.field === title.physicalName)
+      && sorted.payload?.state?.filters?.[1]?.logic === "OR"
+      && sorted.payload?.state?.filters?.[1]?.value === "", sorted);
+  const resize = header.locator(".tabulator-col-resize-handle").last();
+  const before = await header.boundingBox();
+  const handle = await resize.boundingBox();
+  if (!before || !handle) throw new Error("visible column resize handle unavailable");
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + handle.width / 2 + 64, handle.y + handle.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const resized = await waitForCapturedBridgeMessage(page, 30_000);
+  const width = resized.payload?.state?.columns?.find(column => column.name === title.physicalName)?.width;
+  recorder.check("dragging the actual header persists its changed width",
+    resized.type === "gridState.save" && Number.isFinite(width) && width > before.width + 30,
+    { before: before.width, width });
+  const statusHeader = page.locator(`.tabulator-col[tabulator-field="${status.physicalName}"]`).first();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await statusHeader.dragTo(header, { sourcePosition: { x: 20, y: 10 }, targetPosition: { x: 2, y: 10 } });
+  const reordered = await waitForCapturedBridgeMessage(page, 30_000);
+  const titleOrder = reordered.payload?.state?.columns?.find(column => column.name === title.physicalName)?.order;
+  const statusOrder = reordered.payload?.state?.columns?.find(column => column.name === status.physicalName)?.order;
+  recorder.check("dragging a real header persists the changed column order",
+    Number.isInteger(titleOrder) && Number.isInteger(statusOrder) && statusOrder < titleOrder,
+    { titleOrder, statusOrder });
+  await page.getByTestId("view-hidden-trigger").click();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.getByTestId(`view-freeze-${title.physicalName}`).click();
+  const frozen = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("freezing a visible column persists from the real control",
+    frozen.payload?.state?.columns?.some(column => column.name === title.physicalName && column.frozen), frozen);
+  const statusOption = page.locator(".field-card label").filter({ has: page.locator("span", { hasText: /^Status$/ }) });
+  await statusOption.locator(".n-checkbox").first().click();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.getByTestId("view-hidden-apply").click();
+  const hidden = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("hiding a column persists without changing the query keyword",
+    hidden.payload?.state?.columns?.some(column => column.name === status.physicalName && !column.visible)
+      && hidden.payload?.state?.keyword === "preserved", hidden);
+
+  await selectTable(page, "E2E Other Presentation");
+  await selectTable(page, "E2E Host Presentation");
+  await page.waitForFunction(() => document.querySelector('[data-testid="view-keyword"] input')?.value === "preserved");
+  recorder.check("switching tables restores the actual keyword and hidden column UI",
+    await page.getByTestId("view-keyword").locator("input").inputValue() === "preserved"
+      && !(await page.locator(`.tabulator-col[tabulator-field="${status.physicalName}"]`).first().isVisible()));
+  const restored = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("table return retains layout and density in the Host authority",
+    restored.payload?.state?.density === "compact"
+      && restored.payload?.state?.columns?.some(column => column.name === title.physicalName && column.frozen && column.width === width), restored);
+  const conflict = await rawBridgeRequest(page, "gridState.save", {
+    table: tableId, state: { ...restored.payload.state, keyword: "stale overwrite" }, revision: original.payload.revision,
+  });
+  recorder.check("a stale CAS cannot overwrite the current UI-authored state",
+    conflict.type === "gridState.save" && conflict.payload?.conflict === true
+      && conflict.payload?.state?.keyword === "preserved", conflict);
+  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  await page.getByTestId("workspace-flow-modal").locator("input").first().fill("E2E Presentation Isolation");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const target = page.getByTestId("workspace-center").getByRole("button", { name: /E2E Presentation Isolation/ });
+  await target.waitFor({ state: "visible", timeout: 60_000 });
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  await target.click();
+  const opened = await waitForCapturedBridgeMessage(page, 60_000);
+  const targetSession = opened.payload.session;
+  const isolated = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("another real workspace cannot read the first workspace's table presentation",
+    targetSession.workspaceId !== originalSession.workspaceId
+      && isolated.type === "gridState.get" && isolated.payload?.state?.keyword == null
+      && (isolated.payload?.state?.columns?.length ?? 0) === 0, isolated);
+  const returned = await switchWorkspaceByName(page, "E2E Product Workspace", targetSession.sessionEpoch);
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Host Presentation");
+  await page.waitForFunction(() => document.querySelector('[data-testid="view-keyword"] input')?.value === "preserved");
+  const reopened = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("reopening the original workspace restores the persisted presentation and UI",
+    returned.payload.session.workspaceId === originalSession.workspaceId
+      && returned.payload.session.sessionEpoch > targetSession.sessionEpoch
+      && reopened.payload?.state?.keyword === "preserved" && reopened.payload?.state?.density === "compact"
+      && await page.getByTestId("view-keyword").locator("input").inputValue() === "preserved", reopened);
+}
 async function scenario13(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-settings").click();
@@ -7643,6 +7785,7 @@ const scenarios = {
   "29-lookup-source-pagination": scenario29,
   "30-query-snapshot-validation": scenario30,
   "31-relation-pair-inspection": scenario31,
+  "33-host-grid-presentation": scenario33,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

@@ -315,6 +315,7 @@ export function createPresetViewController(
       } else {
         initializing = false;
         await applyView(baseline);
+        if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return;
         savePresentation();
       }
     } catch (error) {
@@ -354,10 +355,12 @@ export function createPresetViewController(
   async function save(view: PresetEntry): Promise<PresetEntry | null> {
     const collection = dependencies.workspace.currentTable;
     if (!collection || view.collection !== collection) return null;
+    const generation = loadGeneration;
     const saved = await persist(collection, view.name, {
       ...captureCurrent(view.view.isDefault),
       isDefault: view.view.isDefault,
     }, saveTarget(view));
+    if (generation !== loadGeneration || collection !== dependencies.workspace.currentTable) return null;
     if (saved) {
       dependencies.presets.markSaved();
       savePresentation();
@@ -366,6 +369,9 @@ export function createPresetViewController(
   }
 
   async function setDefault(view: PresetEntry): Promise<void> {
+    const generation = loadGeneration;
+    const stillCurrent = () => generation === loadGeneration
+      && view.collection === dependencies.workspace.currentTable;
     const previous = dependencies.presets.presets.find(
       item => item.view.isDefault && item.id !== view.id,
     );
@@ -373,17 +379,19 @@ export function createPresetViewController(
       ? captureCurrent(true)
       : { ...view.view, isDefault: true };
     const saved = await persist(view.collection, view.name, source, saveTarget(view));
-    if (!saved) return;
+    if (!saved || !stillCurrent()) return;
     if (previous) {
       const demoted = await persist(previous.collection, previous.name, {
         ...previous.view,
         isDefault: false,
       }, saveTarget(previous));
+      if (!stillCurrent()) return;
       if (!demoted && dependencies.workspace.currentTable === view.collection) {
         const compensated = await persist(view.collection, view.name, {
           ...source,
           isDefault: false,
         }, saveTarget(saved));
+        if (!stillCurrent()) return;
         if (!compensated) {
           dependencies.presets.fail(dependencies.defaultCompensationError());
           return;
@@ -441,6 +449,10 @@ export function createPresetViewController(
   watch(() => dependencies.ui.density, () => savePresentation());
 
   async function dispatch(intent: PresetViewIntent): Promise<PresetEntry | null | void> {
+    const generation = loadGeneration;
+    const collection = dependencies.workspace.currentTable;
+    const stillCurrent = () => generation === loadGeneration
+      && collection === dependencies.workspace.currentTable;
     switch (intent.type) {
       case "presentation.changed":
         if (!applying && !initializing && dependencies.grid.current.value) {
@@ -476,6 +488,7 @@ export function createPresetViewController(
         const view = captureCurrent();
         await applyView({ ...view, columns: view.columns?.map(column => column.name === intent.field
           ? { ...column, frozen: intent.frozen } : column) });
+        if (!stillCurrent()) return;
         savePresentation();
         return;
       }
@@ -497,11 +510,13 @@ export function createPresetViewController(
           applying = true;
           try {
             await applyDataSourceView(grid, captureTable());
+            if (!stillCurrent()) return;
             await nextTick();
           } finally {
-            applying = false;
+            if (stillCurrent()) applying = false;
           }
         }
+        if (!stillCurrent()) return;
         requestAuthoritative();
         savePresentation();
         return;
@@ -525,9 +540,12 @@ export function createPresetViewController(
           item => item.id === dependencies.presets.activePresetId,
         );
         await persistence?.flush();
+        if (!stillCurrent()) return;
         if (current && dependencies.presets.dirty && !(await save(current))) return;
+        if (!stillCurrent()) return;
         dependencies.presets.activatePreset(intent.view.id);
         await applyView(intent.view.view);
+        if (!stillCurrent()) return;
         savePresentation();
         return;
       }
@@ -545,6 +563,7 @@ export function createPresetViewController(
           coverField: intent.request.coverField,
         };
         const saved = await persist(collection, intent.request.name, view);
+        if (!stillCurrent()) return;
         if (saved) {
           dependencies.presets.activatePreset(saved.id);
           savePresentation();
@@ -558,9 +577,10 @@ export function createPresetViewController(
           ...intent.view.view,
           isDefault: false,
         });
-        if (!saved) return;
+        if (!saved || !stillCurrent()) return;
         dependencies.presets.activatePreset(saved.id);
         await applyView(saved.view);
+        if (!stillCurrent()) return;
         savePresentation();
         return;
       }
@@ -574,7 +594,7 @@ export function createPresetViewController(
           source,
           saveTarget(intent.view),
         );
-        if (saved) dependencies.presets.activatePreset(saved.id);
+        if (saved && stillCurrent()) dependencies.presets.activatePreset(saved.id);
         return;
       }
       case "view.delete": {

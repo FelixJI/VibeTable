@@ -846,8 +846,7 @@ function onValidationError(
 }
 
 /** Sidebar: select a table from the list. */
-async function onSelect(name: string) {
-  await presetViewController.flush();
+function onSelect(name: string) {
   // history.clear() now happens inside tableService.selectTable so EVERY table
   // context reset clears the stack (select + refresh + any future caller).
   tableService.selectTable(name);

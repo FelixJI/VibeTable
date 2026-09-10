@@ -8,6 +8,15 @@ namespace VibeTable.Desktop.Tests;
 public sealed class GridPresentationRouterTests
 {
     [TestMethod]
+    [DataRow("gridState.get")]
+    [DataRow("gridState.save")]
+    public void ConfirmedHostStateCanCrossOutboundWebViewGate(string method)
+    {
+        var router = new WebMessageRouter(_ => { });
+        Assert.IsTrue(router.IsHostNotificationAllowed(method));
+        Assert.IsFalse(router.IsHostNotificationAllowed("gridState.saveRequested"));
+    }
+    [TestMethod]
     public void RetiredPythonSaveNotificationCannotReachDispatcher()
     {
         List<RoutedWebRequest> requests = [];

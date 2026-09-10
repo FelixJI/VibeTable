@@ -86,6 +86,14 @@ export function reconcileState(
  * Build the Tabulator restore shape from a reconciled state: the column
  * definitions (width/visible/frozen/order) and the sorter/header-filter lists.
  */
+export function orderSavedColumns(columns: readonly ColumnState[]): ColumnState[] {
+  return [...columns].sort((left, right) => {
+    if (left.order == null) return right.order == null ? 0 : 1;
+    if (right.order == null) return -1;
+    return left.order - right.order;
+  });
+}
+
 export function buildRestorePlan(state: ReconciledGridState): {
   readonly columnLayout: readonly {
     readonly field: string;
@@ -96,11 +104,7 @@ export function buildRestorePlan(state: ReconciledGridState): {
   readonly sorters: readonly TabulatorSorter[];
   readonly headerFilters: readonly TabulatorHeaderFilter[];
 } {
-  const orderedColumns = [...state.columns].sort((left, right) => {
-    if (left.order == null) return right.order == null ? 0 : 1;
-    if (right.order == null) return -1;
-    return left.order - right.order;
-  });
+  const orderedColumns = orderSavedColumns(state.columns);
   const columnLayout = orderedColumns.map((c) => ({
     field: c.name,
     ...(c.width !== null && c.width !== undefined ? { width: c.width } : {}),

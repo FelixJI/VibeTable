@@ -24,7 +24,10 @@ export function ungroupedFilterConditions(
 export function headerFilterConditions(
   expressions: readonly FilterExpression[],
 ): readonly FilterCondition[] {
-  return ungroupedFilterConditions(expressions).filter(
-    (expression) => expression.operator === "eq",
-  );
+  const leaves = ungroupedFilterConditions(expressions);
+  if (leaves.some(expression => expression.logic === "OR")) return [];
+  return leaves.filter(expression => expression.operator === "eq"
+    && expression.value !== "" && expression.value !== null && expression.value !== undefined
+    && typeof expression.value !== "object"
+    && leaves.filter(other => other.field === expression.field && other.operator === "eq").length === 1);
 }

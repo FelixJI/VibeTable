@@ -29,6 +29,7 @@
  * (no args) binds to `window.chrome.webview` if present.
  */
 
+import { GridStateNumberError, parseGridStateJson } from "@/contracts/gridStateJson";
 import type {
   BridgeMessage,
   HostMessageType as SharedHostMessageType,
@@ -751,10 +752,22 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       let parsed: unknown;
       try {
         parsed = JSON.parse(data);
-      } catch {
+        if (isPlainObject(parsed) && (parsed.type === "gridState.get" || parsed.type === "gridState.save")) {
+          parsed = parseGridStateJson(data);
+        }
+      } catch (error) {
+        if (error instanceof GridStateNumberError && isPlainObject(parsed)
+          && typeof parsed.requestId === "string") {
+          const entry = pending.get(parsed.requestId);
+          if (entry?.responseTypes.has(parsed.type as HostMessageType)) {
+            clearPendingTimer(entry);
+            pending.delete(parsed.requestId);
+            entry.reject(error);
+          }
+        }
         onDiagnostic({
           kind: "malformed",
-          reason: "inbound message string is not valid JSON",
+          reason: error instanceof GridStateNumberError ? error.message : "inbound message string is not valid JSON",
           raw: data,
         });
         return;

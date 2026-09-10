@@ -66,3 +66,5 @@ Web 作者正在同一分支接统一 Preset/schema/Host 恢复序列、实际�
 完整 Python 回归：在 cc187f12 后端状态下执行 uv run --frozen --no-sync python -m pytest -q，1873 PASS / 1 SKIP，131.80s，coverage 91.39% 达到既有85%门禁，EXIT0（build/qa/host-presentation/full-python.log）。此时 Web 仍在修复同workspace快速切表保存队列，Python通过不代表Web/新包资格。
 
 Web 接线最终：178文件1603测试PASS，vue-tsc EXIT0，diff --check通过。真实回归先证明复合filter丢失/拖列未启用，以及快速连续修改后同步切表返回只读到旧状态；修复后CAS队列按workspace epoch+table隔离，同epoch切表保留旧表待写队列，真正epoch变化才废弃；返回原表前等待该队列完成。Preset与Host统一恢复、旧preset revision不覆盖新基线、cozy保真、实际keyword/冻结/密度控件、每次setColumns重施布局已覆盖。尚未独立审查完整Host分支或新包GUI。
+
+独立审查修复：Host出站漏get/save实际2RED，补两精确类型后70HostPASS。Web复现旧Preset等待后污染新表、runtime事件改OR/空eq/nullsLast与大整数舍入；作者补captured table/generation复核、完整查询与表头投影分离、局部lossless codec（能力不足明确拒绝）及筛选编辑器处理，并统一实际布局排序。最后Web178文件1607PASS、sidebar77PASS、typecheck/diff通过。新增S33真实控件/resize/order/filter OR+empty/sort/冻结隐藏/切表/workspace重开/CAS；node语法与索引检查通过，尚未执行新包GUI，完整Host进程重启资格仍缺。

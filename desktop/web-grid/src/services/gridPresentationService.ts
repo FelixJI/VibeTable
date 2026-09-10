@@ -1,4 +1,5 @@
 import type { GridState, GridStateResult } from "@/contracts";
+import { parseGridStateJson } from "@/contracts/gridStateJson";
 import { useHostBridge } from "./bridgeContext";
 
 export interface GridPresentationService {
@@ -119,7 +120,7 @@ export function createGridPresentationPersistence(
     const snapshot = JSON.stringify(state);
     if (snapshot === queue.lastSnapshot) return;
     queue.lastSnapshot = snapshot;
-    queue.pending = JSON.parse(snapshot) as GridState;
+    queue.pending = parseGridStateJson(snapshot) as GridState;
     void drain(queue);
   }
   return { open, save, flush: async () => { if (active) await drain(active); }, retire };

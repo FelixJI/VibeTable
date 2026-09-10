@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { reactive } from "vue";
+import { cloneFilterExpressions } from "@/stores/viewQueryStore";
 import { createHostBridge, type WebViewLike } from "@/bridge/hostBridge";
 import type { BridgeMessage, GridState, GridStateResult } from "@/contracts";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
@@ -51,6 +53,43 @@ it("uses the real correlated Host bridge with workspace scope and complete state
     expect(posted.at(-1)).toMatchObject({ type: "gridState.save", payload: { table: "orders", state, revision: "r1" } });
     respond({ state, revision: "r2", conflict: false });
     expect((await save).revision).toBe("r2");
+
+    const persistence = createGridPresentationPersistence(service, () => "workspace:7", vi.fn());
+    const opening = persistence.open("orders");
+    await Promise.resolve();
+    const request = posted.at(-1)!;
+    listener!({ data: `{"type":"gridState.get","requestId":"${request.requestId}","payload":{"state":{"filters":[{"field":"total","operator":"eq","value":9007199254740993}]},"revision":"r2","conflict":false}}` });
+    const restored = (await opening)!;
+    const reactiveState = reactive({ ...restored, filters: cloneFilterExpressions(restored.filters ?? []) });
+    persistence.save(reactiveState);
+    expect(JSON.stringify(posted.at(-1))).toContain('"value":9007199254740993');
+    respond({ state: reactiveState, revision: "r3", conflict: false });
+    await persistence.flush();
+
+    const nativeJSON = JSON;
+    const withoutSource = (text: string, reviver?: (key: string, value: unknown) => unknown): unknown =>
+      nativeJSON.parse(text, reviver ? (key, value: unknown) => reviver(key, value) : undefined);
+    for (const unsupportedJSON of [
+      { parse: nativeJSON.parse, stringify: nativeJSON.stringify },
+      { parse: withoutSource, stringify: nativeJSON.stringify,
+        rawJSON: (nativeJSON as JSON & { rawJSON: (text: string) => object }).rawJSON },
+    ]) {
+      vi.stubGlobal("JSON", unsupportedJSON);
+      try {
+        const report = vi.fn();
+        const unsupported = createGridPresentationPersistence(service, () => "workspace:7", report);
+        const failedOpen = unsupported.open("orders");
+        await Promise.resolve();
+        const failedRequest = posted.at(-1)!;
+        listener!({ data: `{"type":"gridState.get","requestId":"${failedRequest.requestId}","payload":{"state":{"filters":[{"field":"total","operator":"eq","value":9007199254740993}]},"revision":"r3","conflict":false}}` });
+        expect(await failedOpen).toBeNull();
+        expect(report).toHaveBeenCalledWith(expect.objectContaining({ name: "GridStateNumberError" }));
+        const sent = posted.length;
+        unsupported.save({ keyword: "must not overwrite unparsed state" });
+        await unsupported.flush();
+        expect(posted).toHaveLength(sent);
+      } finally { vi.stubGlobal("JSON", nativeJSON); }
+    }
   } finally { bridge.stop(); }
 });
 

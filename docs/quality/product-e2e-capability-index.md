@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：29
-- 唯一能力：47
-- 场景—能力关联：63
+- 场景：30
+- 唯一能力：48
+- 场景—能力关联：64
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -34,6 +34,7 @@
 | `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
 | `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
+| `grid.state` | <code>33-host-grid-presentation</code>（Host 网格呈现保存与恢复） |
 | `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行与重开） |
@@ -97,3 +98,4 @@
 | <code>29-lookup-source-pagination</code> | Lookup 来源分页读取 | 通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。 | `lookup.source-pagination` |
 | <code>30-query-snapshot-validation</code> | 查询快照只读校验 | 真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。 | `schema.query` |
 | <code>31-relation-pair-inspection</code> | 关系完整性只读分页检查 | 通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。 | `relation.integrity-inspection` |
+| <code>33-host-grid-presentation</code> | Host 网格呈现保存与恢复 | 实际关键词、密度、列宽拖动、冻结及隐藏控件经Host应答持久化，切表返回恢复真实界面，并验证旧CAS无法覆盖当前状态；真实创建并切换工作区验证隔离，切回原工作区验证持久状态与界面恢复；完整进程重启资格另行补齐。 | `grid.state` |

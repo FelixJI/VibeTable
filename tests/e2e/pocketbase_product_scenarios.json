@@ -174,5 +174,11 @@
     "title": "关系完整性只读分页检查",
     "requirement": "通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。",
     "capabilities": ["relation.integrity-inspection"]
+  },
+  {
+    "id": "33-host-grid-presentation",
+    "title": "Host 网格呈现保存与恢复",
+    "requirement": "实际关键词、密度、列宽拖动、冻结及隐藏控件经Host应答持久化，切表返回恢复真实界面，并验证旧CAS无法覆盖当前状态；真实创建并切换工作区验证隔离，切回原工作区验证持久状态与界面恢复；完整进程重启资格另行补齐。",
+    "capabilities": ["grid.state"]
   }
 ]

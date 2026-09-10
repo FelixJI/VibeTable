@@ -38,19 +38,47 @@ function fixture() {
     setColumnLayout: layout, setSort: vi.fn(), clearHeaderFilter: vi.fn(), setHeaderFilterValue: vi.fn(),
   };
   const savePreset = vi.fn(async () => preset);
+  const listPresets = vi.fn(() => presetRead.promise);
   const save = vi.fn(async (_table: string, state: GridState) => ({ state, revision: "r2", conflict: false }));
   const read = vi.fn(() => hostRead.promise);
   const lifetime = effectScope();
   const executeQuery = vi.fn();
   const controller = lifetime.run(() => createPresetViewController({ workspace, table, query, ui, presets,
     grid: { current: ref(grid) }, presentation: { identity, service: { read, save } },
-    service: { listPresets: () => presetRead.promise, savePreset, deletePreset: async () => {} },
+    service: { listPresets, savePreset, deletePreset: async () => {} },
     executeQuery, refreshLookups: vi.fn(), reportError: vi.fn(), defaultCompensationError: () => new Error("compensation"),
   }))!;
   workspace.selectTable("orders");
   table.schema = ["title", "status"].map(name => ({ name, title: name, dataType: "text", editable: false, nullable: true }));
-  return { workspace, table, query, ui, presets, identity, hostRead, presetRead, layout, grid, savePreset, save, read, controller, lifetime, executeQuery };
+  return { workspace, table, query, ui, presets, identity, hostRead, presetRead, layout, grid, savePreset, listPresets, save, read, controller, lifetime, executeQuery };
 }
+
+it("abandons a preset switch whose flush finishes after another table has restored", async () => {
+  const f = fixture();
+  const next = { ...preset, id: "next", view: { ...preset.view, search: "A next" } };
+  f.hostRead.resolve({ state: local, revision: "r1", conflict: false });
+  f.presetRead.resolve({ collection: "orders", presets: [preset, next] });
+  await flushPromises();
+  const saving = deferred<GridStateResult>();
+  f.save.mockImplementationOnce(() => saving.promise);
+  await f.controller.dispatch({ type: "density.changed", density: "comfortable" });
+  const switching = f.controller.dispatch({ type: "view.switch", view: next });
+  const other = { ...preset, id: "other", collection: "other", view: { ...preset.view, search: "B current" } };
+  f.listPresets.mockResolvedValue({ collection: "other", presets: [other] });
+  f.read.mockResolvedValue({ state: {}, revision: "b1", conflict: false });
+  f.workspace.selectTable("other");
+  await flushPromises();
+  expect(f.query.search).toBe("B current");
+  const saveCount = f.save.mock.calls.length;
+  saving.resolve({ state: local, revision: "r2", conflict: false });
+  await switching;
+  await flushPromises();
+  expect(f.presets.activePresetId).toBe("other");
+  expect(f.query.search).toBe("B current");
+  expect(f.save).toHaveBeenCalledTimes(saveCount);
+  expect(f.savePreset).not.toHaveBeenCalled();
+  f.lifetime.stop();
+});
 
 it.each([true, false])("restores full local state only after both sources, hostFirst=%s", async hostFirst => {
   const f = fixture(); await flushPromises();

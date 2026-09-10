@@ -175,6 +175,8 @@ public sealed class WebMessageRouter
         "plugin.projectContext.unavailable",
         "table.pageLoaded",
         "table.datasetReady",
+        "gridState.get",
+        "gridState.save",
         "operation.failed",
         // B1 mutation notifications.
         "table.editSchemaLoaded",

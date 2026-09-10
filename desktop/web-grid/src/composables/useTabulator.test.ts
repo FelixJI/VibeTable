@@ -17,6 +17,8 @@ import type {
   TablePage,
 } from "@/contracts";
 import { setLocale } from "@/i18n";
+import { applyDataSourceView } from "@/grid/dataSourceViewState";
+import { useViewQueryStore } from "@/stores/viewQueryStore";
 
 /**
  * useTabulator drives a real Tabulator via `createGrid`. Tabulator needs a
@@ -51,7 +53,8 @@ interface MockTabulator {
 let lastMock: MockTabulator | null = null;
 let mockStartsInitialized = true;
 
-vi.mock("@/grid/createGrid", () => ({
+vi.mock("@/grid/createGrid", async (importOriginal) => ({
+  ROW_NUMBER_FIELD: (await importOriginal<typeof import("@/grid/createGrid")>()).ROW_NUMBER_FIELD,
   // Return an object that quacks like TabulatorFull for our lifecycle.
   createGrid: vi.fn((_el: HTMLElement, _page: TablePage) => {
     const mock: MockTabulator = {
@@ -279,6 +282,47 @@ describe("useTabulator", () => {
     moved(); expect(changed).toHaveBeenCalledOnce();
     wrapper.unmount();
     expect(lastMock!.off).toHaveBeenCalledWith("columnMoved", moved);
+  });
+
+  it("keeps full query semantics through restore echoes and a subsequent real header edit", async () => {
+    const table = useTableStore();
+    useWorkspaceStore().selectTable("users");
+    table.appendPage(makePage([{ rowKey: "a" }], [makeColumn("id"), makeColumn("status")]));
+    const query = useViewQueryStore();
+    const view = { layout: "table", search: "", visibleFields: ["id", "status"],
+      columns: [{ name: "id" }, { name: "status" }],
+      filters: [{ field: "id", operator: "eq" as const, value: "" },
+        { field: "status", operator: "eq" as const, value: "old", logic: "OR" as const }],
+      sorts: [{ field: "id", direction: "desc" as const, nullsLast: false }] };
+    query.replace("users", view, view.visibleFields);
+    const changed = vi.fn(value => query.updateRuntime(value));
+    let restoredHeaders: Array<{ field: string; value: unknown }> = [];
+    const wrapper = mountHost(ref(document.createElement("div")), {
+      onViewQueryChanged: changed,
+      onPresentationRestore: async () => applyDataSourceView({
+        getColumns: () => view.columns.map(column => ({ getField: () => column.name })),
+        setSort: sorters => { lastMock!.getSorters.mockReturnValue(sorters); },
+        clearHeaderFilter: () => { restoredHeaders = []; lastMock!.getHeaderFilters.mockReturnValue([]); },
+        setHeaderFilterValue: (field, value) => {
+          restoredHeaders.push({ field, value });
+          lastMock!.getHeaderFilters.mockReturnValue([...restoredHeaders]);
+        },
+      }, view),
+    });
+    await flushPromises();
+    lastMock!.on.mock.calls.find(([event]) => event === "tableBuilt")![1]();
+    await flushPromises();
+    const filtered = lastMock!.on.mock.calls.find(([event]) => event === "dataFiltered")![1];
+    const sorted = lastMock!.on.mock.calls.find(([event]) => event === "dataSorted")![1];
+    filtered(); sorted();
+    expect(changed).not.toHaveBeenCalled();
+    expect(query.filters).toEqual(view.filters);
+    expect(query.sorts).toEqual(view.sorts);
+    lastMock!.getHeaderFilters.mockReturnValue([{ field: "id", value: 42 }]);
+    filtered();
+    expect(query.filters).toEqual([...view.filters, { field: "id", operator: "eq", value: 42, logic: "AND" }]);
+    expect(query.sorts).toEqual(view.sorts);
+    wrapper.unmount();
   });
 
   it("retains cell ranges through an empty loading window and consecutive column rebuilds", async () => {

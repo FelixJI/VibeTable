@@ -746,11 +746,10 @@ export function useTabulator(
     ].join(":");
   }
 
-  function emitViewQuery(grid: {
+  function captureRuntimeQuery(grid: {
     getSorters?: () => Array<{ field: string; dir: "asc" | "desc" }>;
     getHeaderFilters?: () => Array<{ field: string; value: unknown }>;
-  }): void {
-    if (!gridReady || restoringPresentation || applyingColumns) return;
+  }) {
     const query = buildQuery({
       sorters: grid.getSorters?.() ?? [],
       headerFilters: grid.getHeaderFilters?.() ?? [],
@@ -758,11 +757,16 @@ export function useTabulator(
       offset: 0,
       limit: 10_000,
     });
-    const view = {
+    return {
       headerFilters: [...(query.filters ?? [])],
       sorts: [...(query.sorts ?? [])],
       groups: activeGroups,
     };
+  }
+
+  function emitViewQuery(grid: Parameters<typeof captureRuntimeQuery>[0]): void {
+    if (!gridReady || restoringPresentation || applyingColumns) return;
+    const view = captureRuntimeQuery(grid);
     const signature = JSON.stringify(view);
     if (signature === lastViewQuerySignature) return;
     lastViewQuerySignature = signature;
@@ -772,7 +776,13 @@ export function useTabulator(
   async function restorePresentation(): Promise<void> {
     restoringPresentation = true;
     try { await options?.onPresentationRestore?.(); }
-    finally { restoringPresentation = false; lastViewQuerySignature = ""; }
+    finally {
+      restoringPresentation = false;
+      const grid = tabulator.value as unknown as Parameters<typeof captureRuntimeQuery>[0] | null;
+      if (options?.onPresentationRestore && grid) {
+        lastViewQuerySignature = JSON.stringify(captureRuntimeQuery(grid));
+      }
+    }
   }
 }
 

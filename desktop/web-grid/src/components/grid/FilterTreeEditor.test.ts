@@ -3,6 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { NButton, NDatePicker, NDynamicTags, NInputNumber, NSelect } from "naive-ui";
 import type { ColumnSchema, FilterExpression, NormalizedRelationDescriptor } from "@/contracts";
 import FilterTreeEditor from "./FilterTreeEditor.vue";
+import { parseGridStateJson } from "@/contracts/gridStateJson";
 
 const columns = [
   {
@@ -16,6 +17,18 @@ const columns = [
 ] satisfies ColumnSchema[];
 
 describe("FilterTreeEditor", () => {
+  it("renders and edits an exact Host integer without Number coercion", async () => {
+    const nodes = parseGridStateJson('[{"field":"amount","operator":"eq","value":9007199254740993}]') as FilterExpression[];
+    const wrapper = mount(FilterTreeEditor, { props: {
+      nodes, columns: [{ ...columns[0], dataType: "integer" }],
+    } });
+    const input = wrapper.get('[aria-label="筛选值"] input');
+    expect((input.element as HTMLInputElement).value).toBe("9007199254740993");
+    await input.setValue("9007199254740995");
+    expect(JSON.stringify(wrapper.emitted("update")?.at(-1)?.[0]))
+      .toBe('[{"field":"amount","operator":"eq","value":9007199254740995}]');
+    wrapper.unmount();
+  });
   it("disables every add entrance when the whole nested tree reaches 50 conditions", () => {
     const filters = Array.from({ length: 50 }, (_, index): FilterExpression => ({
       field: index % 2 === 0 ? "amount" : "note",
