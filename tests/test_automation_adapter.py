@@ -357,6 +357,28 @@ def test_ci_prepare_failure_preserves_product_e2e_evidence() -> None:
     assert "retention-days: 3" in evidence_step
 
 
+def test_ci_prepare_failure_preserves_updater_terminal_evidence_only() -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    evidence_step = ci.split("- name: Upload failed updater evidence", 1)[1]
+    evidence_step = evidence_step.split("- name: Upload immutable candidate handoff", 1)[0]
+
+    assert "if: failure()" in evidence_step
+    assert "name: ci-updater-evidence" in evidence_step
+    assert "include-hidden-files: true" in evidence_step
+    assert "if-no-files-found: warn" in evidence_step
+    assert "retention-days: 3" in evidence_step
+    paths = evidence_step.split("path: |\n", 1)[1].split("include-hidden-files:", 1)[0]
+    assert {line.strip() for line in paths.splitlines() if line.strip()} == {
+        "build/self-update-smoke/**/.VibeTable.Next.update-pending.json",
+        "build/self-update-smoke/**/.VibeTable.Next.update-rollback-*.json",
+        "build/self-update-smoke/**/*.activation-error.txt",
+        "build/self-update-smoke/**/vibetable-readiness.json",
+        "build/self-update-smoke/**/vibetable-trace.log",
+        "build/self-update-smoke/**/host-lifecycle-state.json",
+        "build/self-update-smoke/**/.self-update-smoke-process.json",
+    }
+
+
 def test_ci_downloads_lane_reports_and_evidence_at_the_automation_root() -> None:
     ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     download_step = ci.split("- name: Download lane evidence", 1)[1]
