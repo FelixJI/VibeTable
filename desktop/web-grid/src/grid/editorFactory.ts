@@ -1,3 +1,4 @@
+import type { WorkCalendarOverride } from "@/calendar/workCalendar";
 /**
  * B1 Task 6: map the UI-neutral `Editor` discriminated union to Tabulator
  * cell-editor configuration, and provide local validation + value parsing.
@@ -223,7 +224,7 @@ export function parseValue(editor: Editor, raw: string): unknown {
  * multi-select and foreign-key pickers are handled by a custom editor the grid
  * wires up separately (Task 6 integration).
  */
-export function tabulatorEditor(editor: Editor): {
+export function tabulatorEditor(editor: Editor, readOverrides: () => readonly WorkCalendarOverride[] | null = () => []): {
   editor: string | CalendarDateEditor;
   editorParams?: Record<string, unknown>;
 } {
@@ -251,7 +252,7 @@ export function tabulatorEditor(editor: Editor): {
     case "date": {
       const d = editor as DateEditor;
       return {
-        editor: createCalendarDateEditor(d.dateType),
+        editor: createCalendarDateEditor(d.dateType, readOverrides),
       };
     }
     case "single_select": {

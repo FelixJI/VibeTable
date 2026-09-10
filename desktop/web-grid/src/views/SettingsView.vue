@@ -439,7 +439,7 @@ function setCalendarName(name: string): void {
 
         <template v-else-if="current === 'calendar'">
           <header><h1>{{ t("settings.workCalendar") }}</h1><p>{{ t("settings.workCalendar.description") }}</p></header>
-          <section class="calendar-workbench">
+          <section class="calendar-workbench" data-testid="shared-work-calendar" :data-status="workCalendar.status">
             <div class="calendar-toolbar">
               <NButton quaternary circle :aria-label="t('settings.workCalendar.previous')" @click="calendarMonth = shiftMonthKey(calendarMonth, -1)">
                 <template #icon><NIcon><ChevronLeft /></NIcon></template>
@@ -456,18 +456,21 @@ function setCalendarName(name: string): void {
             <div class="calendar-layout">
               <WorkCalendarMonth
                 :month-key="calendarMonth"
-                :overrides="workCalendar.overrides"
+                :overrides="workCalendar.draft"
                 :locale="ui.locale"
                 :selected-date="selectedCalendarDate"
                 interactive
                 @select="selectCalendarDate"
               />
               <aside class="calendar-rule-panel">
+                <p v-if="workCalendar.error" role="alert" data-testid="calendar-error">{{ workCalendar.error }}</p>
+                <p v-if="!workCalendar.available">{{ t("settings.workCalendar.unavailable") }}</p>
                 <span>{{ t("settings.workCalendar.selected") }}</span>
                 <strong>{{ selectedCalendarText }}</strong>
                 <label>{{ t("settings.workCalendar.rule") }}</label>
                 <NRadioGroup
                   :value="selectedCalendarRule"
+                  :disabled="!workCalendar.editable"
                   size="small"
                   @update:value="setCalendarRule($event as 'default' | WorkCalendarOverrideKind)"
                 >
@@ -480,13 +483,14 @@ function setCalendarName(name: string): void {
                 <label>{{ t("settings.workCalendar.name") }}</label>
                 <NInput
                   :value="selectedCalendarName"
-                  :disabled="selectedCalendarRule === 'default'"
+                  :disabled="!workCalendar.editable || selectedCalendarRule === 'default'"
                   :placeholder="t('settings.workCalendar.name.placeholder')"
                   maxlength="40"
                   class="calendar-name-input"
                   @update:value="setCalendarName"
                 />
-                <p>{{ selectedCalendarRule === "default" ? t("settings.workCalendar.defaultHint") : t("settings.workCalendar.saved") }}</p>
+                <NButton data-testid="calendar-save" :disabled="!workCalendar.editable || !workCalendar.dirty" :loading="workCalendar.status === 'saving'" @click="workCalendar.save()">{{ t("settings.workCalendar.save") }}</NButton>
+                <NButton data-testid="calendar-reload" :disabled="workCalendar.status === 'saving'" @click="workCalendar.load()">{{ t("settings.workCalendar.reload") }}</NButton>
               </aside>
             </div>
             <footer class="calendar-footer">

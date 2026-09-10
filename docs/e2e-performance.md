@@ -8,7 +8,7 @@
 - GitHub run：[main CI 34309394462](https://github.com/FelixJI/VibeTable/actions/runs/34309394462)
 - 报告契约：`contractVersion=2.0`
 - 结果：29/29 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`32-shared-work-calendar`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：1（`07-attachment-history`）。
 

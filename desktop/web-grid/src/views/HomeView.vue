@@ -338,10 +338,12 @@ function openTable(name: string) {
           <WorkCalendarMonth
             :month-key="calendarMonth"
             :overrides="workCalendar.overrides"
+            v-if="workCalendar.available"
             :locale="ui.locale"
             compact
           />
-          <div class="calendar-legend">
+          <p v-if="!workCalendar.available">{{ t("settings.workCalendar.unavailable") }}</p>
+          <div v-if="workCalendar.available" class="calendar-legend">
             <span><i class="legend-rest">休</i>{{ t("calendar.legend.rest") }}</span>
             <span><i class="legend-work">班</i>{{ t("calendar.legend.work") }}</span>
           </div>

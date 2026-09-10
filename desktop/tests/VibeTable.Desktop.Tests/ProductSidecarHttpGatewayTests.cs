@@ -223,6 +223,54 @@ public sealed class ProductSidecarHttpGatewayTests
     }
 
     [TestMethod]
+    [DataRow("settings.calendar.invalid")]
+    [DataRow("settings.calendar.revision_conflict")]
+    [DataRow("settings.calendar.corrupt")]
+    [DataRow("metadata.idempotency_conflict")]
+    [DataRow("metadata.storage.failed")]
+    [DataRow("metadata.request.invalid")]
+    public async Task WorkCalendarDomainErrorSurvivesHttpAndRendererProjection(string code)
+    {
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = "workspace", workspaceId = WorkspaceId, sessionEpoch = 7,
+            operationId = ClaimId, sequence = 0,
+        });
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+                return Json(Capabilities(
+                    rpcMethods: "[\"settings.commitWorkCalendar\"]",
+                    registrations: "[{\"method\":\"settings.commitWorkCalendar\",\"scope\":\"workspace\"}]"));
+            return Json(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0", id = "calendar-error", wire,
+                error = new { code = -32150, message = "Product data error", data = new
+                {
+                    kind = "product_data_error", message = "Calendar rejected", code,
+                    path = "expectedRevision", details = new { }, retryable = false,
+                } },
+            }));
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new("settings.commitWorkCalendar", "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetProductSidecarForwarder(gateway);
+        JsonElement parameters = JsonSerializer.SerializeToElement(new
+        {
+            overrides = Array.Empty<object>(), expectedRevision = "", idempotencyKey = "calendar-key",
+        });
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "settings.commitWorkCalendar", "calendar-error", parameters, string.Empty, Wire: wire));
+        var reply = sink.Replies.Single();
+        Assert.AreEqual("settings.commitWorkCalendar", reply.Type, JsonSerializer.Serialize(reply.Payload));
+        JsonElement result = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual(code, result.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual("expectedRevision", result.GetProperty("error").GetProperty("path").GetString());
+    }
+
+    [TestMethod]
     public async Task ForwardParsesStandardAndTypedProductErrors()
     {
         Queue<HttpResponseMessage> responses = new(

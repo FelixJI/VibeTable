@@ -1,21 +1,21 @@
 # 共享工作日历 Go owner 设计与旧语义资格
 
-本次仅设计与冻结，生产基线为 `9fa626a13840830037bcb82eaddc0adf8617075b`。完整意图是工作区 A 的假日/调休日经 PocketBase 保存，设置页、首页小日历与网格日期编辑器共享同一已确认投影；切换 B 不泄漏 A 的规则。尚未生产实施、双轴审查、构建、packaged E2E、PR 或 CI 放行。
+本次完整共享工作日历实施的基线为 `9fa626a13840830037bcb82eaddc0adf8617075b`。完整意图是工作区 A 的假日/调休日经 PocketBase 保存，设置页、首页小日历与网格日期编辑器共享同一已确认投影；切换 B 不泄漏 A 的规则。生产代码与相关本地回归已实施；尚未双轴审查、构建、packaged E2E、PR 或 CI 放行。
 
-## 当前事实与 Module
+## 切换前事实与 Module
 
 - `SettingsCommandService.read_shared` 经真实 `PocketBaseInternalMetadataPort` 投影、scope/key 筛选读取 Go `shared_settings`；注册点仍在 Python `backend/__main__.py`。失败会返回空 settings/fresh=false。Web 没有调用者。
 - `workCalendarStore.ts` 在全局 localStorage `vt:work-calendar:v1` 存放规则；SettingsView、HomeView 消费 store，`calendarDateEditor.ts` 直接读 storage。该状态没有 workspace 身份，既不复制也不进入 PB。
 - Go metadata Module 已提供 `vibetable_shared_settings`、revision、事务、幂等 receipt、audit/outbox。复用其 Implementation 与 Runtime 写门禁；不增加 SQLite、Host 文件或 renderer storage authority。
 - Host device settings、theme、locale、网格本机布局、shortcut/command 不是共享规则。本 PR 不修改这些能力的 owner，不将它们写入 PB 日历。
 
-## 拟定 Interface 与持久语义
+## Interface 与持久语义
 
 新增公开 Go Product 方法 `settings.readWorkCalendar({})` 与 `settings.commitWorkCalendar({overrides, expectedRevision, idempotencyKey})`。两者要求活动 workspace，Host 使用现有 workspace/epoch scope 路由；不接受 renderer 提供物理路径、PB collection 或任意 key。
 
 读结果 `{overrides, revision}`。未保存返回 `overrides: [], revision: ""`，读取不创建记录。固定 namespace=shared_settings，logicalId=`work-calendar`，payload 为 `{scope:"workspace", key:"work-calendar", value:{overrides:[...]}}`；revision 来自真实 metadata Item，不另算内容摘要。旧其他 shared_settings 项保持原样。
 
-提交是完整替换一个聚合，operation 固定为 commit；没有逐日期 patch、第二 delete 路由或隐式 merge。`overrides: []` 清除覆盖规则但保留已有记录及其新 revision，防止删除重建造成空 revision ABA。首次创建必须 `expectedRevision: ""`；已有记录必须精确 revision。相同幂等键/相同请求返回原完整结果；异载荷拒绝；结果 receipt 在同一 PB 事务写入，使用现有 TTL、Runtime replay/epoch 处理，不额外补写或额外计算 hash。
+提交是完整替换一个聚合，operation 固定为 commit；没有逐日期 patch、第二 delete 路由或隐式 merge。`overrides: []` 清除覆盖规则但保留已有记录及其新 revision，避免删除重建回到空 revision。仅保留记录仍不足以防内容 ABA：现 metadata revision 源自 payload 内容摘要。固定日历 payload 另含私有 generation，由现 newID 在每次真正提交的同一事务内生成，A→B→A 仍有不同 metadata revision；重放不生成，不增加第二 hash 或公开 token 字段。首次创建必须 `expectedRevision: ""`；已有记录必须精确 revision。相同幂等键/相同请求返回原完整结果；异载荷拒绝；结果 receipt 在同一 PB 事务写入，使用现有 TTL、Runtime replay/epoch 处理，不额外补写或额外计算 hash。
 
 提交结果 `{overrides, revision}` 外加既有 receipt trace 必需字段（按当前 metadata Product 约定确定），前端只采用确认结果。CAS 冲突显式重新加载，不能后台重试覆盖他人新值。保留现有旧 setting payload 的必需 metadata 字段；该固定 key 的 malformed payload 返回错误，不能当空日历覆盖。
 
@@ -31,7 +31,7 @@
 
 ## Python 退出与必要元数据读
 
-同一切换 PR 删除 `settings.readShared` Python 注册与专属 service 方法，将旧公开 readShared 从 capability/catalog 退役；没有生产 UI 依赖它，不维持无消费者兼容层。SharedSettings DTO 如仍被固定历史回放需要，由固定 producer 提供，不让当前 Python owner 留存。其他 command/shortcut 方法不在此 PR 删除。
+同一切换 PR 删除 `settings.readShared` Python 注册，将旧公开 readShared 从 capability/catalog 退役；没有生产 UI 依赖它，不维持无消费者兼容层。固定历史回放的 DTO 与方法由固定 producer 提供。当前源码暂保留未注册、无生产调用者的 read_shared 方法与旧 DTO，原服务单测仍运行；公共生产注册已经退出；此残留仅供历史服务测试，尚未满足最终死代码退出项，后续统一收束。其他 command/shortcut 方法不在此 PR 删除。
 
 现有内部 metadata GET shared_settings 保留，供 PB authority 的 snapshot/冲突/只读诊断等必要消费者使用。generic HTTP upsert/delete 对整个 shared_settings namespace 封闭，只允许 typed Product Module 写；不能只挡 work-calendar key 仍允许旁路修改它。内部 Go metadata Method 不删除，由 typed Module 复用。实现前搜索所有内部写消费者，发现真实另一个写能力则纳入显式 typed 设计或先交 root 裁决，不能暗中破坏或保留无限制 public 写。
 
@@ -64,3 +64,14 @@ SettingsView 编辑 draft，通过明确保存提交完整 overrides；忙时禁
 - `uv run --frozen --no-sync python -m pytest tests/backend/application/test_settings_command_service.py tests/contract/test_d2_settings_contracts.py -q --no-cov`：21 passed，0.64 秒。
 - `uv run --frozen --no-sync ruff format --check contracts/v2/replay_shared_work_calendar_legacy.py` 与 `ruff check`：通过；首轮 I001 导入排序失败已修正，未忽略规则。
 - 此阶段没有安装新环境、运行全矩阵或 GUI；无生产改动，因此没有新包资格主张。提交正常执行既有 hooks。
+
+## 生产实施的本地结果与剩余资格
+
+- Go typed owner、同事务 CAS/receipt、固定记录的私有 generation、Host 两层同一领域错误 allowlist、三处真实 UI 接线及 generic shared_settings 写封闭已经落地。内部 metadata GET 保留。已盘点真实写消费者，没有另一个生产 shared_settings 写能力需要兼容。
+- 真实 PB 的 A→B→A 测试先以固定 generation 触发旧 revision 被接受的 RED，再恢复每次提交生成后 GREEN；另覆盖清空再填、同键重放不改变 generation/revision/mutation。证据位于本地 build/qa/shared-work-calendar/aba-red.log 与 calendar-green.log。
+- Web store 等待 workspace.phase=opened，并在 applySession 的 UUID/epoch 批次完成后读取；新增回归验证 opening 不请求、新 workspace 只以新 epoch 请求一次。最终 vue-tsc --noEmit 通过；Vitest 相关 8 文件 140 passed。
+- Host 相关 5 类测试 63 passed；曾有 6 个真实控制器投影测试因缺少 ProductDataRpcRegistry 注册而 UNKNOWN_TYPE，补齐注册后通过，原失败 TRX 留存。领域错误走真实 gateway→controller→reply 测试。
+- Python 契约、capability policy、原 SettingsCommandService 与 E2E runner 回归组合 145 passed。固定 producer 再独立只读回放 11 Python + 12 日历样本通过，原件未重捕。
+- Go 工作日历 metadata、真实 PB 集成、Product HTTP 与生成注册定向测试通过。完整 internal/app 包运行仍有三项 TempDir cleanup 失败：TestHistoryReadProductHTTPReturnsFreshAuditedPage、TestMutationProductHTTPRejectsStaleRevisionEpochAndRetiredGate、TestWorkspaceMutationReplayCancellationDuringReceiptRead；没有将其归因杀软或修改清理规则，不宣称完整 Go 矩阵通过。
+- 新 S32 源码覆盖实际 A 保存、三个消费者、B 隔离、返回 A 重开与清空。尚未构建或运行 packaged GUI，S32 不能标为 passed。S24 场景来自另一未合分支，其日历副本消费追加须在主干合入后正常同步实施。
+- 尚未运行完整项目质量/覆盖率门禁、新包、独立双轴审查与远端 fresh CI。已有局部测试不替代这些资格。

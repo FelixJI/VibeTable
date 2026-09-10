@@ -7613,6 +7613,70 @@ async function scenario23(page, recorder, _network, runtime) {
   });
 }
 
+async function scenario32(page, recorder) {
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession);
+  const today = await page.evaluate(() => {
+    const date = new Date();
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  });
+  const tableId = await createEmptyTable(page, "Shared Calendar Records");
+  const field = await createV2Field(page, tableId, "Calendar Date", "date");
+  await closeFieldSettingsDrawer(page);
+  await applyProductMutation(page, tableId, [{ kind: "insert", recordId: null, values: { [field.physicalName]: today } }], "shared-calendar-record");
+  await selectTable(page, "Shared Calendar Records");
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-calendar").click();
+  const holiday = page.locator('.calendar-rule-options input[value="holiday"]');
+  await holiday.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => !document.querySelector('.calendar-rule-options input[value="holiday"]')?.disabled, undefined, { timeout: 30_000 });
+  await holiday.check();
+  await page.locator(".calendar-name-input input").fill("公司共同假日");
+  await page.getByTestId("calendar-save").click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="shared-work-calendar"]')?.dataset.status === "ready"
+    && document.querySelector('[data-testid="calendar-save"]')?.disabled
+    && !document.querySelector('[data-testid="calendar-error"]'), undefined, { timeout: 30_000 });
+  const confirmed = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("workspace calendar save reaches the Go authority", confirmed.payload?.overrides?.some(item => item.date === today && item.name === "公司共同假日" && item.kind === "holiday"), { confirmed });
+  await page.getByTestId("nav-home").click();
+  const homeDay = page.getByTestId("home-view").locator(`[data-date="${today}"]`);
+  await homeDay.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("Home consumes the confirmed shared holiday", (await homeDay.getAttribute("title")).includes("公司共同假日") && (await homeDay.innerText()).includes("休"));
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "Shared Calendar Records");
+  await chooseToolbarMore(page, "refresh");
+  const cell = page.locator(`.tabulator-row .tabulator-cell[tabulator-field="${field.physicalName}"]`).first();
+  await cell.waitFor({ state: "visible", timeout: 30_000 });
+  await cell.dblclick();
+  const editorDay = page.locator(`.work-date-popup [data-date="${today}"]`);
+  await editorDay.waitFor({ state: "visible", timeout: 10_000 });
+  recorder.check("actual grid date editor consumes the same shared holiday", (await editorDay.getAttribute("title")).includes("公司共同假日") && (await editorDay.innerText()).includes("休"));
+  await page.keyboard.press("Escape");
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  await page.getByTestId("workspace-flow-modal").locator("input").first().fill("Calendar Workspace B");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const target = page.getByTestId("workspace-center").getByRole("button", { name: /Calendar Workspace B/ });
+  await target.waitFor({ state: "visible", timeout: 60_000 });
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  await target.click();
+  const opened = await waitForCapturedBridgeMessage(page, 60_000);
+  const isolated = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("workspace B has no A calendar rules", isolated.payload?.overrides?.length === 0 && isolated.payload?.revision === "", { isolated });
+  await switchWorkspaceByName(page, "E2E Product Workspace", opened.payload.session.sessionEpoch);
+  const reopened = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("reopening A reloads its persistent calendar revision", reopened.payload?.revision === confirmed.payload?.revision && JSON.stringify(reopened.payload?.overrides) === JSON.stringify(confirmed.payload?.overrides), { reopened });
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("settings-nav-calendar").click();
+  await page.locator('.calendar-rule-options input[value="default"]').check();
+  await page.getByTestId("calendar-save").click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="shared-work-calendar"]')?.dataset.status === "ready"
+    && document.querySelector('[data-testid="calendar-save"]')?.disabled
+    && !document.querySelector('[data-testid="calendar-error"]'), undefined, { timeout: 30_000 });
+  const cleared = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
+  recorder.check("clearing custom dates preserves a new committed revision", cleared.payload?.overrides?.length === 0 && cleared.payload?.revision && cleared.payload.revision !== confirmed.payload?.revision, { cleared });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -7643,6 +7707,7 @@ const scenarios = {
   "29-lookup-source-pagination": scenario29,
   "30-query-snapshot-validation": scenario30,
   "31-relation-pair-inspection": scenario31,
+  "32-shared-work-calendar": scenario32,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

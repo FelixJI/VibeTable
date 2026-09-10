@@ -418,13 +418,13 @@
     {
       "id": "rpc.insights-shared-read",
       "kind": "rpc",
-      "names": ["insights.dashboardQueryLimits", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "preset.list", "settings.readShared", "version.compare", "version.list"],
+      "names": ["insights.dashboardQueryLimits", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "preset.list", "version.compare", "version.list"],
       "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
       "currentRoute": "pythonBff",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["insights.dashboardQueryLimits", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "preset.list", "settings.readShared", "version.compare", "version.list"], "write": [], "notification": [], "state": []},
+      "effects": {"read": ["insights.dashboardQueryLimits", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "preset.list", "version.compare", "version.list"], "write": [], "notification": [], "state": []},
       "stateHolders": ["goSidecar", "pocketBase", "pythonBff"],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
@@ -1160,6 +1160,50 @@
       "targetPr": null,
       "deleteWhen": "Go owns shared-content validation, revision, idempotency, and persistence and all corresponding Python write handlers are removed.",
       "evidence": ["backend/__main__.py", "backend/adapters/pocketbase/internal_metadata.py", "backend/application/content_model_service.py", "backend/application/surface_service.py", "sidecar/internal/app/metadata_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.shared-work-calendar",
+      "kind": "rpc",
+      "names": [
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar"
+      ],
+      "currentPath": [
+        "renderer",
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "settings.readWorkCalendar"
+        ],
+        "write": [
+          "settings.commitWorkCalendar"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": ["32-shared-work-calendar"],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Go owns the shared calendar; all three renderer consumers use its confirmed workspace projection and Python readShared is removed.",
+      "evidence": [
+        "sidecar/internal/metadata/work_calendar.go",
+        "sidecar/internal/app/work_calendar_product_rpc.go",
+        "desktop/web-grid/src/stores/workCalendarStore.ts"
+      ]
     },
     {
       "id": "rpc.system-handshake",

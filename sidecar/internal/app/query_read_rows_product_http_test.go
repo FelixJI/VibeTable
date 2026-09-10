@@ -48,7 +48,8 @@ func queryReadRowsHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration 
 		schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
 		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
-		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))
+		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil))
 	if err != nil {
 		t.Fatal(err)
 	}

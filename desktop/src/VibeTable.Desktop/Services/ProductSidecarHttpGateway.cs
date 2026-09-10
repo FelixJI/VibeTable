@@ -469,6 +469,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || !IsNonEmptyString(data.GetProperty("message"))
             || !IsNonEmptyString(data.GetProperty("code"))
             || !PublicErrorCode.IsMatch(data.GetProperty("code").GetString()!)
+            || !WorkCalendarErrorPolicy.Accepts(data.GetProperty("code").GetString()!)
             || data.GetProperty("code").GetString()!.StartsWith(
                 "pocketbase.",
                 StringComparison.Ordinal)

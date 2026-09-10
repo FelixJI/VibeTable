@@ -455,6 +455,8 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				historyPreviewRestoreRegistration(workspaceRuntime),
 				historyApplyRestoreRegistration(workspaceRuntime),
 				queryViewRegistration(queryPort),
+				workCalendarReadRegistration(metadata.New(pb)),
+				workCalendarCommitRegistration(metadata.New(pb), businessGate, idempotentBusinessGate),
 				relationPreviewDeltaRegistration(relationService),
 			)
 			if err != nil {
