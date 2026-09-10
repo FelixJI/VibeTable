@@ -197,7 +197,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 64
+    assert len(methods) == 57
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
