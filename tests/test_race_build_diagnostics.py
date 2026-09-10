@@ -64,7 +64,45 @@ def test_race_build_observes_timeout_before_kill(monkeypatch, timeout):
         assert events[1]["snapshot"]["status"] == "root_missing"
 
 
-def test_race_build_snapshot_failure_preserves_timeout(monkeypatch):
+@pytest.mark.parametrize("collector_times_out", [False, True])
+def test_snapshot_wrapper_keeps_five_second_budget(monkeypatch, collector_times_out):
+    expected = {"status": "captured", "processes": []}
+    timeout_error = subprocess.TimeoutExpired("powershell.exe", 5)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command == [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(gate.REPO_ROOT / "qa" / "race_build_process_snapshot.ps1"),
+            "-RootProcessId",
+            "123",
+        ]
+        assert kwargs["timeout"] == 5
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+        if collector_times_out:
+            raise timeout_error
+        return subprocess.CompletedProcess(command, 0, json.dumps(expected), "")
+
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    if collector_times_out:
+        with pytest.raises(subprocess.TimeoutExpired) as raised:
+            gate._race_build_process_snapshot(123)
+        assert raised.value is timeout_error
+    else:
+        assert gate._race_build_process_snapshot(123) == expected
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "collector_error", [OSError("unavailable"), subprocess.TimeoutExpired("powershell.exe", 5)]
+)
+def test_race_build_snapshot_failure_preserves_timeout(monkeypatch, collector_error):
     class Process:
         pid = 123
         count = 0
@@ -75,23 +113,49 @@ def test_race_build_snapshot_failure_preserves_timeout(monkeypatch):
         def communicate(self, timeout=None):
             self.count += 1
             if self.count == 1:
+                assert timeout == 420
                 raise subprocess.TimeoutExpired("go", timeout)
+            assert timeout == 5
             return "", ""
 
-    killed = []
+    calls = []
     monkeypatch.setattr(gate.subprocess, "Popen", lambda *a, **kw: Process())
+    expected_snapshot = {
+        "status": "collection_failed",
+        "errorType": type(collector_error).__name__,
+    }
 
-    def unavailable(pid):
-        raise OSError("unavailable")
+    def unavailable(command, **kwargs):
+        calls.append("snapshot")
+        assert kwargs["timeout"] == 5
+        raise collector_error
 
-    monkeypatch.setattr(gate, "_race_build_process_snapshot", unavailable)
-    monkeypatch.setattr(gate, "_terminate_process_tree", lambda p: killed.append(p.pid))
+    def terminate(process):
+        evidence = list(gate.RACE_BINARY_DIR.glob("timeouts/*.json"))
+        assert len(evidence) == 1
+        payload = json.loads(evidence[0].read_text(encoding="utf-8"))
+        assert payload["pid"] == process.pid == 123
+        recorded = json.loads(payload["events"][-1].removeprefix("RACE_BUILD "))
+        assert recorded["phase"] == "timeout"
+        assert recorded["snapshot"] == expected_snapshot
+        calls.append("kill")
+
+    monkeypatch.setattr(gate.subprocess, "run", unavailable)
+    monkeypatch.setattr(gate, "_terminate_process_tree", terminate)
     code, stdout, _ = gate._run_command(
         ["go"], cwd=".", environment={}, timeout=420, race_build=True
     )
     assert code == 124
-    assert killed == [123]
-    assert '"status": "collection_failed"' in stdout
+    assert calls == ["snapshot", "kill"]
+    events = [
+        json.loads(line.removeprefix("RACE_BUILD "))
+        for line in stdout.splitlines()
+        if line.startswith("RACE_BUILD ")
+    ]
+    assert [event["phase"] for event in events] == ["started", "timeout", "evidence", "finished"]
+    assert events[1]["snapshot"] == expected_snapshot
+    assert events[2]["status"] == "saved"
+    assert events[3]["returncode"] == 124
 
 
 def test_ordinary_command_does_not_collect_or_emit_build_events(monkeypatch):
@@ -132,7 +196,35 @@ def test_windows_snapshot_contains_only_requested_tree():
 
     if os.name != "nt":
         pytest.skip("Windows CIM collector")
-    script = "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); print(p.pid,flush=True); sys.stdin.readline(); p.terminate(); p.wait()"
+
+    def collect_tree(pid):
+        # Exercise the real collector's semantics independently of the production
+        # five-second diagnostic budget, which explicitly permits collection failure.
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                str(gate.REPO_ROOT / "qa" / "race_build_process_snapshot.ps1"),
+                "-RootProcessId",
+                str(pid),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return json.loads(result.stdout)
+
+    script = (
+        "import subprocess,sys; "
+        "p=subprocess.Popen([sys.executable,'-c','import sys; sys.stdin.readline()'],"
+        "stdin=subprocess.PIPE); "
+        "print(p.pid,flush=True); sys.stdin.readline(); p.terminate(); p.wait()"
+    )
     with subprocess.Popen(
         [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
     ) as process:
@@ -140,7 +232,7 @@ def test_windows_snapshot_contains_only_requested_tree():
         assert process.stdin is not None
         child_pid = int(process.stdout.readline())
         try:
-            snapshot = gate._race_build_process_snapshot(process.pid)
+            snapshot = collect_tree(process.pid)
             assert snapshot["status"] == "captured"
             rows = snapshot["processes"]
             parents = {row["pid"]: row["parentPid"] for row in rows}
@@ -161,7 +253,7 @@ def test_windows_snapshot_contains_only_requested_tree():
             process.stdin.write("done\n")
             process.stdin.flush()
             process.wait(timeout=5)
-    assert gate._race_build_process_snapshot(process.pid) == {
+    assert collect_tree(process.pid) == {
         "status": "root_missing",
         "processes": [],
     }
