@@ -39,10 +39,21 @@ func (productError *PublicError) Error() string {
 	return productError.Message
 }
 
+// Historical restore codes are public Product contracts predating dotted codes.
+// Keep this exact allowlist; arbitrary unclassified errors remain private.
+func validPublicErrorCode(code string) bool {
+	switch code {
+	case "archive_not_supported", "restore_conflict", "restore_no_fields", "restore_scope_mismatch", "restore_token_expired", "restore_token_unknown", "revision_not_created", "schema_drift", "target_revision_invalid", "restore_attachment_missing", "restore_attachment_corrupt", "restore_validation_failed":
+		return true
+	default:
+		return publicErrorCodePattern.MatchString(code)
+	}
+}
+
 func productErrorData(err error) (map[string]any, bool) {
 	var productError *PublicError
 	if !errors.As(err, &productError) || productError == nil ||
-		!publicErrorCodePattern.MatchString(productError.Code) ||
+		!validPublicErrorCode(productError.Code) ||
 		strings.TrimSpace(productError.Message) == "" ||
 		strings.HasPrefix(productError.Code, "pocketbase.") {
 		return nil, false

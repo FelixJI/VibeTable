@@ -2454,6 +2454,10 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert "rawWorkspaceV2Request(" in source
     assert 'rawBridgeRequest(\n    page,\n    "history.queryRequested"' in source
     assert '"history.pageLoaded"' in source
+    assert 'rawBridgeRequest(\n    page,\n    "history.previewRestoreRequested"' in source
+    assert 'rawBridgeRequest(\n    page,\n    "history.applyRestoreRequested"' in source
+    assert '["history.restorePreviewReady"]' in source
+    assert '["history.restoreApplied"]' in source
     assert "externalRequests.length === 0" in source
     assert 'url.hostname === "app.vibetable.local"' in source
     assert '["127.0.0.1", "::1", "localhost"]' in source

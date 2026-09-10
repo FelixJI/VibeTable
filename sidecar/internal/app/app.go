@@ -452,6 +452,8 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				querySelectionOpenRegistration(queryPort),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
 				historyReadRegistration(workspaceRuntime),
+				historyPreviewRestoreRegistration(workspaceRuntime),
+				historyApplyRestoreRegistration(workspaceRuntime),
 				queryViewRegistration(queryPort),
 				relationPreviewDeltaRegistration(relationService),
 			)
