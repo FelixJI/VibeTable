@@ -1,6 +1,6 @@
 # Surface metadata owner 资格记录
 
-状态：**源码冻结，尚未取得完整迁移资格，不可据此宣称可合并**。本分支未执行完整发布构建或真实包 S17，未 push/创建 PR。
+状态：**本批本地源码审查、完整发布构建与同包 S17 资格通过**。远端完整 required 门禁仍未执行，不据此宣称已可合并；未 push/创建 PR。
 
 ## 固定源码与完整意图
 
@@ -52,9 +52,18 @@ Host 真实 `ISurfaceRpcGateway` 由现有 `JsonRpcProductDataGateway` 实现，
 
 完整 Python 入口 `uv run --frozen --no-sync python scripts/automation_project.py python-quality` 由主任务执行，handle `73726` 已 **EXIT 0**：1841 PASS / 1 skip，86.55s，backend coverage 91.74%；Ruff、Pyright、mypy 均通过。日志 `build/surface-python-quality.log` 保留。内部 uv run 继承 `UV_NO_SYNC=1`，源码保持冻结；主任务按 lock 一致建立 `.venv`、`.tools/node`、`desktop/web-grid/node_modules` junction，未安装新依赖。此完整入口通过不覆盖或改写上述历史聚焦失败。
 
-## 剩余资格
+## 独立审查与同包资格
 
+- Standards、Spec 对完整实施源码 `4eb7f00348618a31a78e2434768f6b24629d2732` 分别完成独立审查，均为 0 findings；范围包括全部 14 个注册 fixture。随后仅文档更新，无 runtime 修改。
+- 实际构建 source：`3bd09a4e92e3134def488e0300167ef66c3030b2`，构建前工作树干净。`uv run --frozen --no-sync python scripts/build_next.py --release` 仅执行一次，handle `55382`，**EXIT 0**。完整执行 sidecar、recovery tools、Web、PyInstaller、Host publish、产物校验、manifest、self-update smoke 与固定 atomic publish，产物为 `dist/VibeTable.Next`。日志 `build/qa/surface-metadata/build-release.log`，命令/source/工具链/终态记录 `build/qa/surface-metadata/build-release-command.txt`。
+- 已有工具链固定 Go 1.27.0、Node 24.19.0、.NET 10.0.401（global.json 10.0.400/latestFeature），共享 uv。预检发现脚本原会选公共根目录的 .NET 10.0.400，因此仅为本 worktree 新增 `.tools/dotnet` junction 指向已有 10.0.401；缺少的 Go junction 同样复用已有目录。没有安装、升级依赖或修改 lock。构建中 updated-crash 的 `0x80131623` 是 self-update 故障注入输出；完整入口最终 EXIT 0，不是构建失败。
+- 同一包只运行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --scenario 17-interface-lifecycle --evidence-root build/qa/surface-metadata/product-e2e`，handle `95374`，**EXIT 0，1/1 PASS，0 FAIL，0 skip**。场景 8775ms、22 项断言全 PASS；未重建或手工替换组件。
+- 报告：`build/qa/surface-metadata/product-e2e/20260910T020400Z/product-e2e-report.json`；原 runner 日志 `build/qa/surface-metadata/s17.log`、命令记录 `s17-command.txt`。同次场景目录保留原 result、trace、Host/runner 日志、精确 fault request/result 和 `17-interface-lifecycle.png`、`17-interface-restarted.png` 截图。
+- Package audit 与四组件 freshness（desktop-host、web-grid、python-backend、pocketbase-sidecar）全部通过。S17 保留原构建器/运行时和插件拒绝、取消、批准旅程；精确 sidecar child kill 完成，重启后 fresh list 返回原 committed revision，fresh public load 与完整 pages/bindings/actions 定义相等。真实 UI 删除只确认目标 aggregate，fresh list 省略目标，真实 Host Product load 返回 `surface.not_found`。
+- Bridge failures 0、pending 0。仅两项精确预期失败被 acknowledged：重启窗口 `BACKEND_UNAVAILABLE` 与删除后的目标 load；无宽泛忽略。Renderer 无 page error、意外 console 或外部 HTTP 请求。Host normal exit 0，membersAfterExit、descendantsAfterExit 和 final remainingPids 为空；portsReleased、ownerLeaseCleanup、finalCleanup 均通过。
 
-- 独立 Standards/Spec 两轴审查 pending。未执行完整 Go 全仓/完整应用 suite、完整 Node 质量或全量 .NET suite，不拿聚焦结果替代它们。
-- 完整 `build_next.py --release` 与同包 S17 pending；本分支没有 Surface 发布包。S17 已扩展原完整旅程：插件任务行为之后，精确重启 sidecar，以 fresh list/load 比较完整 aggregate/revision，重开运行时，再由真实删除按钮删除，fresh list 省略、public load not_found。取消/恢复窗口仍按既有 ownership 规则精确清理，不增加重试或放宽超时。
-- [当前 E2E 证据](../e2e-performance.md) 继续保留旧 main 的 29 场景结果，并明确 `17-interface-lifecycle` 语义已变；旧结果不证明新增重启/删除断言。
+## 保留的资格边界
+
+- 上述源码与同包资格不改写前文原始 fixture/契约失败。没有重复完整 Python 入口、构建或 S17 求绿；本批完整构建和 S17 均首轮通过。
+- 未执行完整 Go 全仓/完整应用 suite、完整 Node 质量或全量 .NET suite，不拿聚焦结果替代它们；远端 PR required 门禁尚未开始。
+- [当前 E2E 汇总](../e2e-performance.md) 继续保留旧 main 的 29 场景结果，并明确 `17-interface-lifecycle` 语义已变。本记录补充该新语义的独立同包 S17 证据，不把旧 29 场景结果改写成当前分支全场景通过。
