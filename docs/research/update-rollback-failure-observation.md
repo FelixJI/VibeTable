@@ -38,3 +38,8 @@ worker error 新形状只包含 `exceptionType`、`hResult`、`operation`、`ent
 - `uv run --no-sync python -m pyright scripts/build_next.py`：0 errors。
 
 这些是源码局部验证，不是完整包、GUI、CI 或真实 updated-crash 资格。下一阶段由本候选正常 CI 取得新包证据；若拒绝再次出现，使用受控 operation 与现有 ledger 缩小调用区间，仍需同一失败时刻的文件操作/句柄证据才能判断具体路径和持有者。不据此猜测杀软或调整 ACL、延迟与重试。
+
+## 激活完成与进程退出的终态竞态
+PR330 CI 34439650206 的 prepare 报进程在激活完成前退出；远端证据未包含激活完成现场，因此未确认其具体根因。独立本地回归证明现有读取顺序存在竞态：先读取完成文件，再观察退出；若文件在两者之间写入且进程随即退出，会误拒绝有效完成。
+回归使用真实临时 JSON 文件，在退出观察时写入完成记录。旧实现四种情形中2 FAIL/2 PASS（build/qa/activation-observation/red.log）：错拒合法终态且未对错误身份走完整校验。修复在观察退出后立即执行一次完整最终文件校验，不再查询进程、不sleep、不延长预算；缺失文件和错误身份仍拒绝，所有成功字段校验保留。
+Ruff format/check PASS，tests/test_release_tooling.py 全文件112 PASS/3.15s（green.log）。首次Ruff发现参数集容器与复合assert规范问题，修正后通过。该本地RED/GREEN不替代远端失败归因，也不声称原目录移动Win5失败已修复。

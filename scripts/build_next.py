@@ -1346,7 +1346,8 @@ def wait_for_self_update_activation(
     """Wait until full shell readiness authorizes the updater cleanup."""
     deadline = time.monotonic() + timeout_seconds
     readiness_payload: dict[str, Any] | None = None
-    while time.monotonic() < deadline:
+    process_exited = False
+    while time.monotonic() < deadline or process_exited:
         if completion.is_file() and not readiness.is_file():
             raise BuildError("desktop self-update smoke cleaned staging before shell readiness")
         if readiness.is_file():
@@ -1412,9 +1413,13 @@ def wait_for_self_update_activation(
                 if confirmed_at < readiness_at:
                     raise BuildError("desktop self-update smoke completed before shell readiness")
                 return payload
-        if wait_for_windows_process_exit(process_id, timeout_seconds=0):
+        if process_exited:
             raise BuildError("desktop self-update smoke process exited before activation completed")
-        time.sleep(0.1)
+        # The writer may publish completion between our read and its exit.
+        # Once exit is observed, validate the final files once without waiting.
+        process_exited = wait_for_windows_process_exit(process_id, timeout_seconds=0)
+        if not process_exited:
+            time.sleep(0.1)
     if readiness_payload is None:
         raise BuildError("desktop self-update smoke shell did not become ready")
     raise BuildError("desktop self-update smoke restart handoff did not complete")

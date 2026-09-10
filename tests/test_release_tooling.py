@@ -1569,8 +1569,13 @@ def test_self_update_activation_requires_workspace_probe_evidence(tmp_path: Path
         )
 
 
+@pytest.mark.parametrize(
+    "completion_mode", ["before_wait", "at_process_exit", "missing", "wrong_identity"]
+)
 def test_self_update_activation_binds_readiness_before_completion(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    completion_mode: str,
 ) -> None:
     completion = tmp_path / build_next.SELF_UPDATE_SMOKE_COMPLETION_FILE
     readiness = (
@@ -1596,28 +1601,50 @@ def test_self_update_activation_binds_readiness_before_completion(
         ),
         encoding="utf-8",
     )
-    completion.write_text(
-        json.dumps(
-            {
-                "token": "token",
-                "targetVersion": "1.0.1",
-                "processId": os.getpid(),
-                "confirmedAt": "2026-08-27T03:00:01+00:00",
-            }
-        ),
-        encoding="utf-8",
-    )
+    completion_payload = {
+        "token": "other" if completion_mode == "wrong_identity" else "token",
+        "targetVersion": "1.0.1",
+        "processId": os.getpid(),
+        "confirmedAt": "2026-08-27T03:00:01+00:00",
+    }
+    observations = 0
 
-    payload = build_next.wait_for_self_update_activation(
-        completion,
-        readiness,
-        "token",
-        "1.0.1",
-        os.getpid(),
-        timeout_seconds=0.1,
-    )
+    def observe_exit(process_id: int, *, timeout_seconds: float) -> bool:
+        nonlocal observations
+        observations += 1
+        assert process_id == os.getpid()
+        assert timeout_seconds == 0
+        if completion_mode != "missing":
+            completion.write_text(json.dumps(completion_payload), encoding="utf-8")
+        return True
 
-    assert payload["ready"] is True
+    def unexpected_sleep(seconds: float) -> None:
+        pytest.fail("an exited writer must not require another timed wait")
+
+    monkeypatch.setattr(build_next, "wait_for_windows_process_exit", observe_exit)
+    monkeypatch.setattr(build_next.time, "sleep", unexpected_sleep)
+    if completion_mode == "before_wait":
+        completion.write_text(json.dumps(completion_payload), encoding="utf-8")
+
+    def wait() -> dict[str, object]:
+        return build_next.wait_for_self_update_activation(
+            completion,
+            readiness,
+            "token",
+            "1.0.1",
+            os.getpid(),
+            timeout_seconds=1,
+        )
+
+    if completion_mode == "missing":
+        with pytest.raises(build_next.BuildError, match="exited before activation completed"):
+            wait()
+    elif completion_mode == "wrong_identity":
+        with pytest.raises(build_next.BuildError, match="completion identity is invalid"):
+            wait()
+    else:
+        assert wait()["ready"] is True
+    assert observations == (0 if completion_mode == "before_wait" else 1)
 
 
 def test_windows_process_open_failure_only_accepts_a_missing_pid() -> None:
