@@ -251,3 +251,5 @@ uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root 
 - .NET Release实际五类 ProductRpcCapabilityManifestTests、ProductDataSidecarRoutingTests、JsonRpcProductDataGatewayTests、ProductRpcErrorMapperTests、ProductDataRpcRegistryTests：71 passed；TRX `build/test-results/preset-history-main/preset-history-main.trx`。
 
 旧sourcec673完整构建及四场景51断言仅代表旧组合；新head的fresh CI仍待完成。历史完整Python失败和旧S19失败保留原结论，本次定向测试不代替完整资格。
+
+旧远端head835bbdf6的CI34433711433/core102737079811后来报告FAIL：实际25方法已含Preset三项，但旧cmd断言仍按原22项下标检查，错误位于main_process_test.go:601。官方日志已保留。本次合入main后的完整27项独立字面量清单修正了这个期望错位，真实cmd测试PASS1.826s；没有将旧CI改写为通过。新组合e534bc2d的Standards/Spec独立复审均0，待推送后的fresh CI验证完整矩阵。
