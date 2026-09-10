@@ -455,8 +455,10 @@ public sealed class ProductDataRequestController
             RejectPayload(request);
             return;
         }
-        if (error.Code == -32150
-            && error.Data is JsonElement data
+        if (error.Data is JsonElement data
+            && (error.Code == -32150
+                || (error.Code == -32080
+                    && ProductSidecarHttpGateway.IsValidPresetErrorData(request.Type, error.Message, data)))
             && ProductRpcErrorMapper.TryMap(data, out JsonElement mapped))
         {
             _reply.PostResponse(request.Type, request.RequestId, mapped);

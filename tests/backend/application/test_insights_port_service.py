@@ -16,7 +16,6 @@ from backend.application.insights_service import (
 )
 from backend.application.revisioned_metadata_port import (
     DashboardRevisionConflictError,
-    MetadataConflictError,
 )
 from backend.contracts.presets_versions_dashboards import (
     DashboardAggregateQuery,
@@ -31,7 +30,6 @@ from backend.contracts.presets_versions_dashboards import (
     ExecuteDashboardQueryParams,
     PanelPosition,
     PanelType,
-    PresetView,
     SaveDashboardDraftParams,
     SaveDashboardDraftResult,
 )
@@ -189,85 +187,6 @@ class FakeQueryPort:
 
 
 @pytest.mark.asyncio
-async def test_presets_use_logical_internal_metadata_namespace() -> None:
-    metadata = FakeMetadataPort(
-        {
-            "presets": [
-                {
-                    "id": "p1",
-                    "scope": "orders",
-                    "name": "Open",
-                    "presetScope": "personal",
-                    "view": {"filters": [], "sorts": [], "visibleFields": ["id"]},
-                }
-            ]
-        }
-    )
-    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
-
-    result = await service.list_presets("orders")
-
-    assert result.presets[0].id == "p1"
-    assert metadata.calls == [("list", {"namespace": "presets", "scope": "orders", "keys": None})]
-
-
-@pytest.mark.asyncio
-async def test_save_preset_submits_internal_metadata_mutation() -> None:
-    metadata = FakeMetadataPort()
-    service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
-
-    saved = await service.save_preset(
-        "orders",
-        "Open",
-        PresetView(
-            visible_fields=["id", "status"],
-            kind="kanban",
-            title_field="title",
-            group_field="status",
-            cover_field="cover",
-        ),
-        preset_id="p1",
-        expected_revision="sha256:" + "a" * 64,
-        operation_id="preset-op-1",
-    )
-
-    assert saved.id == "p1"
-    operation, payload = metadata.calls[-1]
-    assert operation == "upsert"
-    assert payload["namespace"] == "presets"
-    assert payload["record_id"] == "p1"
-    assert payload["expected_revision"] == "sha256:" + "a" * 64
-    assert payload["values"]["scope"] == "orders"
-    assert payload["values"]["presetScope"] == "system"
-    assert payload["values"]["view"]["kind"] == "kanban"
-    assert payload["values"]["view"]["titleField"] == "title"
-    assert payload["values"]["view"]["groupField"] == "status"
-    assert payload["values"]["view"]["coverField"] == "cover"
-    assert "token" not in repr(payload).lower()
-
-
-@pytest.mark.asyncio
-async def test_save_preset_maps_stale_metadata_to_a_stable_product_conflict() -> None:
-    service = InsightsService(
-        metadata_port=FakeMetadataPort(upsert_error=MetadataConflictError()),
-        query_port=FakeQueryPort(),
-    )
-
-    with pytest.raises(InsightsError) as raised:
-        await service.save_preset(
-            "orders",
-            "Open",
-            PresetView(),
-            preset_id="preset-1",
-            expected_revision="sha256:" + "a" * 64,
-            operation_id="preset-op-stale",
-        )
-
-    assert raised.value.code == "preset_edit_conflict"
-    assert raised.value.field == "expectedRevision"
-
-
-@pytest.mark.asyncio
 async def test_content_version_is_named_audit_snapshot_and_promotes_via_restore() -> None:
     metadata = FakeMetadataPort()
     query_port = FakeQueryPort()
@@ -306,12 +225,11 @@ async def test_content_version_is_named_audit_snapshot_and_promotes_via_restore(
 
 
 @pytest.mark.asyncio
-async def test_preset_and_version_deletes_bind_revision_and_operation_id() -> None:
+async def test_version_delete_binds_revision_and_operation_id() -> None:
     metadata = FakeMetadataPort()
     service = InsightsService(metadata_port=metadata, query_port=FakeQueryPort())
     revision = "sha256:" + "a" * 64
 
-    preset = await service.delete_preset("preset-1", revision, "preset-delete-1")
     version = await service.delete_version(
         "orders",
         "row-1",
@@ -320,18 +238,8 @@ async def test_preset_and_version_deletes_bind_revision_and_operation_id() -> No
         "version-delete-1",
     )
 
-    assert preset["deleted"] == "preset-1"
     assert version["deleted"] == "version-1"
-    assert metadata.calls[-2:] == [
-        (
-            "delete",
-            {
-                "namespace": "presets",
-                "record_id": "preset-1",
-                "expected_revision": revision,
-                "idempotency_key": "preset:delete:preset-delete-1",
-            },
-        ),
+    assert metadata.calls == [
         (
             "delete",
             {
@@ -472,22 +380,8 @@ def test_insights_error_carries_code_and_optional_field() -> None:
 
 
 # ===========================================================================
-# operation_id guard across preset/version write methods
+# operation_id guard across version write methods
 # ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_save_preset_requires_operation_id() -> None:
-    service = InsightsService(metadata_port=FakeMetadataPort(), query_port=FakeQueryPort())
-    with pytest.raises(InsightsError, match="operationId is required"):
-        await service.save_preset(
-            "orders",
-            "n",
-            PresetView(),
-            preset_id="p1",
-            expected_revision="revision-p1",
-            operation_id="",
-        )
 
 
 @pytest.mark.asyncio
