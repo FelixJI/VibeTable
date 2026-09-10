@@ -38,3 +38,11 @@
 首次测试仅因HostGridStateStore类型尚不存在而编译失败（host-store-red.log），不能称为旧生产行为RED。实现后3真实文件测试PASS；扩大到临时写入后lease失效、损坏文件不覆盖、完整排序/过滤与9007199254740993保真后5 PASS/45ms；调用方快照完善后5 PASS/42ms（host-store-snapshot-green.log）。使用dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter FullyQualifiedName~HostGridStateStoreTests；首次locked restore已通过。本阶段未双轴/完整质量/新包/真实UI，不能写Host迁移完成。
 
 下一接线需将local://workspace/<UUID>的现有source绑定与真实workspace epoch核对，防止旧表请求在新workspace下保存。GridStateCoordinator保存/加载的请求结果和pending completion须按各自世代处理，不能让旧任务完成新任务；Web必须从真实列操作采集状态，在schema就绪后恢复且避免恢复事件反写。旧Python路由与仅为旧persist使用的LocalStateStore在完整切换时处理，保持既有测试门禁可审。
+
+## Workspace scope 请求模块（待生产 composition/renderer 接入）
+
+新增GridPresentationRequestController独立处理gridState.get/save，直接消费真实WorkspaceSessionEnvelopeFilter lease和HostGridStateStore。新参数为table与save必填state/revision；workspace由scope取得，renderer不能指定database路径。无scope/旧scope拒绝；严格大小写、未知字段、重复JSON字段和缺revision拒绝；错误消息固定，不输出路径。持有lease直到回复结束，关闭排空等待lease释放；过期请求不再回写或向新workspace交付结果。未添加Python fallback。
+
+三项controller回归使用真实WorkspaceSessionManager/Registry/WorkspaceLayout和epoch drain，仅运行时进程启动是测试适配器：验证两个workspace同名table互不污染、旧scope拒绝、损坏DTO不改revision及回复中close必须排空。与存储五项合跑8 PASS/118ms（build/qa/host-presentation/host-controller-tests.log）；初次controller编译时仅重跑原store5项，不能把该记录算controller测试。尚未修改生产HostRequestDispatcher/MainWindow或renderer白名单/owner，当前不宣称生产请求已通。
+
+后续采用独立Host route模块接入既有HostRequestDispatcher，按workspace范围/wpfHost owner进行router能力校验；不为了复用旧GridStateCoordinator而保留无配置时Python fallback。旧saveRequested/debounce链的清理及现有测试对应关系必须在完整切换前说明并验证。
