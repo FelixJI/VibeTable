@@ -710,6 +710,8 @@ internal static class PendingUpdateActivationJournal
             workerNonce,
             worker);
         string pointerPath = GetPointerPath(normalizedRoot);
+        UpdateRollbackOperation operation = UpdateRollbackOperation.PrepareRecovery;
+        string? entry = null;
         try
         {
             checkpoint?.Invoke("claim:completed");
@@ -725,14 +727,19 @@ internal static class PendingUpdateActivationJournal
             UpdateProcessCommand.RejectReparsePoint(failedRoot);
             foreach (string name in UpdatePackageOwnedEntries.InInstallOrder)
             {
-                RecoverOwnedEntry(pointerPath, attempt, worker, failedRoot, name, checkpoint);
+                entry = name;
+                RecoverOwnedEntry(pointerPath, attempt, worker, failedRoot, name, checkpoint,
+                    current => operation = current);
             }
+            entry = null;
+            operation = UpdateRollbackOperation.ValidateRestoredPackage;
             InstalledPackageIdentity restored = InstalledPackageIdentity.Read(attempt.TargetRoot);
             if (restored.Version != attempt.CurrentVersion
                 || !UpdatePackageOwnedEntries.AllExistAt(attempt.TargetRoot))
             {
                 throw InvalidPointer("回退后的安装身份无效。");
             }
+            operation = UpdateRollbackOperation.FinalizeReceipt;
             FinalizeRollbackReceipt(pointerPath, attempt, worker, checkpoint);
         }
         catch (Exception exception) when (exception is
@@ -742,7 +749,7 @@ internal static class PendingUpdateActivationJournal
                 ? "UPDATE_ROLLBACK_SHAPE_AMBIGUOUS"
                 : "UPDATE_ROLLBACK_IO_FAILED");
             UpdateRecoveryFailureEvidence.WriteOnce(
-                attempt.StagingRoot, ".rollback-worker-error.json", exception);
+                attempt.StagingRoot, ".rollback-worker-error.json", exception, operation, entry);
             throw;
         }
     }
@@ -801,27 +808,38 @@ internal static class PendingUpdateActivationJournal
         UpdateProcessIdentity worker,
         string failedRoot,
         string name,
-        Action<string>? checkpoint)
+        Action<string>? checkpoint,
+        Action<UpdateRollbackOperation> observe)
     {
+        void ObserveMove(UpdateRollbackOperation operation)
+        {
+            observe(operation);
+            checkpoint?.Invoke($"{name}:{operation}");
+        }
         string target = Path.Combine(attempt.TargetRoot, name);
         string failed = Path.Combine(failedRoot, name);
         string backup = Path.Combine(attempt.StagingRoot, "backup", name);
+        observe(UpdateRollbackOperation.ReadLedger);
         string phase = CurrentLedgerPhase(pointerPath, attempt, worker, name);
         if (phase == "none")
         {
+            observe(UpdateRollbackOperation.WriteLedger);
             SetLedgerPhase(pointerPath, attempt, worker, name, "isolatePlanned");
             checkpoint?.Invoke($"{name}:isolatePlanned");
-            MoveExact(target, failed);
+            MoveExact(target, failed, ObserveMove);
             checkpoint?.Invoke($"{name}:isolatedOnDisk");
+            observe(UpdateRollbackOperation.WriteLedger);
             SetLedgerPhase(pointerPath, attempt, worker, name, "isolated");
             phase = "isolated";
         }
         else if (phase == "isolatePlanned")
         {
-            ResumePlannedMove(target, failed);
+            ResumePlannedMove(target, failed, ObserveMove);
+            observe(UpdateRollbackOperation.WriteLedger);
             SetLedgerPhase(pointerPath, attempt, worker, name, "isolated");
             phase = "isolated";
         }
+        observe(UpdateRollbackOperation.ValidateMoveShape);
         if (phase == "isolated")
         {
             if (!ExistsExact(failed) || ExistsExact(target))
@@ -833,10 +851,12 @@ internal static class PendingUpdateActivationJournal
                     "UPDATE_ROLLBACK_SHAPE_AMBIGUOUS");
                 throw InvalidPointer("已隔离 ledger 与失败包形状不一致。");
             }
+            observe(UpdateRollbackOperation.WriteLedger);
             SetLedgerPhase(pointerPath, attempt, worker, name, "restorePlanned");
             checkpoint?.Invoke($"{name}:restorePlanned");
-            MoveExact(backup, target);
+            MoveExact(backup, target, ObserveMove);
             checkpoint?.Invoke($"{name}:restoredOnDisk");
+            observe(UpdateRollbackOperation.WriteLedger);
             SetLedgerPhase(pointerPath, attempt, worker, name, "restored");
             return;
         }
@@ -851,7 +871,8 @@ internal static class PendingUpdateActivationJournal
                     "UPDATE_ROLLBACK_SHAPE_AMBIGUOUS");
                 throw InvalidPointer("恢复 ledger 缺少失败新版入口。");
             }
-            ResumePlannedMove(backup, target);
+            ResumePlannedMove(backup, target, ObserveMove);
+            observe(UpdateRollbackOperation.WriteLedger);
             SetLedgerPhase(pointerPath, attempt, worker, name, "restored");
             return;
         }
@@ -1033,13 +1054,15 @@ internal static class PendingUpdateActivationJournal
         }
     }
 
-    private static void ResumePlannedMove(string source, string destination)
+    private static void ResumePlannedMove(string source, string destination,
+        Action<UpdateRollbackOperation> observe)
     {
+        observe(UpdateRollbackOperation.ValidateMoveShape);
         bool sourceExists = ExistsExact(source);
         bool destinationExists = ExistsExact(destination);
         if (sourceExists && !destinationExists)
         {
-            MoveExact(source, destination);
+            MoveExact(source, destination, observe);
             return;
         }
         if (!sourceExists && destinationExists)
@@ -1049,20 +1072,26 @@ internal static class PendingUpdateActivationJournal
         throw InvalidPointer("回退写前 ledger 无法唯一解释磁盘形状。");
     }
 
-    private static void MoveExact(string source, string destination)
+    private static void MoveExact(string source, string destination,
+        Action<UpdateRollbackOperation> observe)
     {
+        observe(UpdateRollbackOperation.ValidateMoveShape);
         if (ExistsExact(destination) || !ExistsExact(source))
         {
             throw InvalidPointer("回退 owned entry 磁盘形状无效。");
         }
+        observe(UpdateRollbackOperation.ValidateMoveSource);
         UpdateProcessCommand.RejectReparsePoint(source);
         if (File.Exists(source))
         {
+            observe(UpdateRollbackOperation.MoveFile);
             File.Move(source, destination);
         }
         else
         {
+            observe(UpdateRollbackOperation.ValidateMoveTree);
             UpdateProcessCommand.RejectReparsePointsRecursively(source);
+            observe(UpdateRollbackOperation.MoveDirectory);
             Directory.Move(source, destination);
         }
     }

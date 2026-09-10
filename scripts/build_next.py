@@ -1509,7 +1509,7 @@ def _is_lower_hex(value: object, *, length: int) -> bool:
     )
 
 
-def _self_update_rollback_receipt_error(
+def _self_update_rollback_evidence_error(
     receipt: object,
     *,
     receipt_name: str,
@@ -1519,6 +1519,7 @@ def _self_update_rollback_receipt_error(
     expected_updater_process_id: int,
     updated_process_id: int,
     expected_failure_code: str,
+    failed_worker: bool = False,
 ) -> str | None:
     if not isinstance(receipt, dict) or set(receipt) != _SELF_UPDATE_ACTIVATION_POINTER_V2_FIELDS:
         return "fields"
@@ -1552,7 +1553,8 @@ def _self_update_rollback_receipt_error(
         "rolledBackAtUtc",
     )
     timestamps = {field: _offset_datetime(receipt.get(field)) for field in timestamp_fields}
-    if any(timestamp is None for timestamp in timestamps.values()):
+    required_timestamps = timestamps.keys() - ({"rolledBackAtUtc"} if failed_worker else set())
+    if any(timestamps[field] is None for field in required_timestamps):
         return "timestamps"
     updater_started = cast(datetime, timestamps["updaterStartedAtUtc"])
     created_at = cast(datetime, timestamps["createdAtUtc"])
@@ -1569,8 +1571,12 @@ def _self_update_rollback_receipt_error(
         <= rollback_requested
         <= group_quiesced
         <= worker_started
-        <= rolled_back
     ):
+        return "timestampOrder"
+    if failed_worker:
+        if receipt.get("rolledBackAtUtc") is not None:
+            return "rolledBackAtUtc"
+    elif worker_started > rolled_back:
         return "timestampOrder"
     if watchdog_process_id != receipt_updater_process_id or watchdog_started != updater_started:
         return "watchdogIdentity"
@@ -1589,7 +1595,9 @@ def _self_update_rollback_receipt_error(
         ("release.json", "restored"),
         (HOST_EXE_NAME, "restored"),
     }
-    if not isinstance(ledger, list) or len(ledger) != len(expected_ledger):
+    if not isinstance(ledger, list) or (
+        len(ledger) > len(expected_ledger) if failed_worker else len(ledger) != len(expected_ledger)
+    ):
         return "ownedEntryLedger"
     if any(
         not isinstance(entry, dict)
@@ -1603,7 +1611,7 @@ def _self_update_rollback_receipt_error(
     worker_replacement_count = receipt.get("workerReplacementCount")
     if not (type(receipt.get("schemaVersion")) is int and receipt.get("schemaVersion") == 2):
         return "schemaVersion"
-    if receipt.get("state") != "rollbackComplete":
+    if receipt.get("state") != ("rollbackFailed" if failed_worker else "rollbackComplete"):
         return "state"
     if not (
         type(receipt.get("targetRoot")) is str
@@ -1635,13 +1643,37 @@ def _self_update_rollback_receipt_error(
         return "workerLaunchNonce"
     if not (type(worker_replacement_count) is int and worker_replacement_count in (0, 1)):
         return "workerReplacementCount"
-    if actual_ledger != expected_ledger:
+    if failed_worker:
+        names = [entry["name"] for entry in ledger]
+        order = ["resources", "release.json", HOST_EXE_NAME]
+        if names != order[: len(names)]:
+            return "ownedEntryLedger"
+        if any(entry["phase"] != "restored" for entry in ledger[:-1]):
+            return "ownedEntryLedger"
+        if ledger and ledger[-1]["phase"] not in {
+            "isolatePlanned",
+            "isolated",
+            "restorePlanned",
+            "restored",
+        }:
+            return "ownedEntryLedger"
+    elif actual_ledger != expected_ledger:
         return "ownedEntryLedger"
     if not (_is_lower_hex(rollback_attempt, length=32)):
         return "rollbackAttempt"
-    if receipt_name != f".VibeTable.Next.update-rollback-{rollback_attempt}.json":
+    expected_name = (
+        PENDING_UPDATE_ACTIVATION_POINTER
+        if failed_worker
+        else f".VibeTable.Next.update-rollback-{rollback_attempt}.json"
+    )
+    if receipt_name != expected_name:
         return "receiptName"
-    if receipt.get("rollbackErrorCode") is not None:
+    if failed_worker:
+        if type(receipt.get("rollbackErrorCode")) is not str or receipt[
+            "rollbackErrorCode"
+        ] not in {"UPDATE_ROLLBACK_IO_FAILED", "UPDATE_ROLLBACK_SHAPE_AMBIGUOUS"}:
+            return "rollbackErrorCode"
+    elif receipt.get("rollbackErrorCode") is not None:
         return "rollbackErrorCode"
     return None
 
@@ -1804,6 +1836,36 @@ def _wait_for_self_update_rollback(
         receipts = sorted(root.glob(SELF_UPDATE_ROLLBACK_RECEIPT_GLOB))
         if len(receipts) > 1:
             raise BuildError("desktop self-update smoke produced ambiguous rollback receipts")
+        pointer_path = root / PENDING_UPDATE_ACTIVATION_POINTER
+        try:
+            # Journal replacement is atomic; an absent pointer can mean receipt finalization.
+            # Read only the bounded journal, never exception messages or worker arguments.
+            with pointer_path.open("rb") as stream:
+                pointer_bytes = stream.read(16 * 1024 + 1)
+            pointer = json.loads(pointer_bytes) if len(pointer_bytes) <= 16 * 1024 else None
+        except (OSError, ValueError):
+            pointer = None
+        if isinstance(pointer, dict) and pointer.get("state") == "rollbackFailed":
+            pointer_error = _self_update_rollback_evidence_error(
+                pointer,
+                receipt_name=pointer_path.name,
+                target=target,
+                stage=stage,
+                token=token,
+                expected_updater_process_id=updater_process_id,
+                updated_process_id=updated_process_id,
+                expected_failure_code=expected_failure_code,
+                failed_worker=True,
+            )
+            if pointer_error is not None:
+                raise BuildError(
+                    "desktop self-update smoke rollback failure identity is invalid: "
+                    f"{scenario_slug}/{pointer_error}"
+                )
+            raise BuildError(
+                "desktop self-update smoke rollback failed: "
+                f"{scenario_slug}/{pointer['rollbackErrorCode']}"
+            )
         if not (
             (health_failure_readiness is None or health_failure_readiness.is_file())
             and len(receipts) == 1
@@ -1844,7 +1906,7 @@ def _wait_for_self_update_rollback(
             or not failed["error"]
         ):
             raise BuildError("desktop self-update smoke did not observe a health failure")
-        receipt_error = _self_update_rollback_receipt_error(
+        receipt_error = _self_update_rollback_evidence_error(
             receipt,
             receipt_name=receipts[0].name,
             target=target,

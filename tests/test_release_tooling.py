@@ -2575,3 +2575,120 @@ def test_rollback_receipt_rejection_reports_only_scenario_and_check(
     assert str(captured.value) == (
         f"desktop self-update smoke rollback receipt identity is invalid: health-failure/{reason}"
     )
+
+
+def test_self_update_rollback_reports_bound_worker_failure_without_waiting_for_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path, failure_code="workspaceHealthProbeFailed"
+    )
+    fixture.receipt_path.unlink()
+    pointer = dict(fixture.receipt)
+    pointer.update(
+        state="rollbackFailed",
+        rollbackErrorCode="UPDATE_ROLLBACK_IO_FAILED",
+        rolledBackAtUtc=None,
+        ownedEntryLedger=[{"name": "resources", "phase": "isolatePlanned"}],
+    )
+    (tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER).write_text(
+        json.dumps(pointer), encoding="utf-8"
+    )
+
+    def unexpected_wait(_: float) -> None:
+        pytest.fail("terminal rollback failure waited for a success receipt")
+
+    monkeypatch.setattr(build_next.time, "sleep", unexpected_wait)
+    with pytest.raises(build_next.BuildError, match="health-failure/UPDATE_ROLLBACK_IO_FAILED"):
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("token", "private-stale-token", "token"),
+        ("targetRoot", "other-target", "targetRoot"),
+        ("stagingRoot", "other-stage", "stagingRoot"),
+        ("updaterProcessId", 698, "updaterProcessId"),
+        ("updatedProcessId", 698, "updatedProcessId"),
+        ("workerProcessId", True, "processIds"),
+        ("workerStartedAtUtc", None, "timestamps"),
+        ("ownedGroupQuiescedAtUtc", None, "timestamps"),
+        ("rollbackAttempt", "not-an-attempt", "rollbackAttempt"),
+        ("workerLaunchNonce", "private-nonce", "workerLaunchNonce"),
+        ("rolledBackAtUtc", "2026-08-28T04:00:07+00:00", "rolledBackAtUtc"),
+        ("rollbackErrorCode", ["private-code"], "rollbackErrorCode"),
+        ("ownedEntryLedger", [{"name": "unowned", "phase": "restored"}], "ownedEntryLedger"),
+        ("schemaVersion", None, "fields"),
+    ],
+)
+def test_self_update_rollback_rejects_unbound_or_partial_worker_failure(
+    tmp_path: Path, field: str, value: object, reason: str
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path, failure_code="workspaceHealthProbeFailed"
+    )
+    fixture.receipt_path.unlink()
+    pointer = dict(fixture.receipt)
+    pointer.update(
+        state="rollbackFailed",
+        rollbackErrorCode="UPDATE_ROLLBACK_IO_FAILED",
+        rolledBackAtUtc=None,
+        ownedEntryLedger=[{"name": "resources", "phase": "isolatePlanned"}],
+    )
+    if field == "schemaVersion":
+        del pointer[field]
+    else:
+        pointer[field] = value
+    (tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER).write_text(
+        json.dumps(pointer), encoding="utf-8"
+    )
+    with pytest.raises(build_next.BuildError) as captured:
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.1,
+        )
+    assert str(captured.value) == (
+        f"desktop self-update smoke rollback failure identity is invalid: health-failure/{reason}"
+    )
+
+
+@pytest.mark.parametrize("state", ["rollbackRestoring", "rollbackWorkerLaunching"])
+def test_self_update_rollback_does_not_treat_nonterminal_worker_as_failure(
+    tmp_path: Path, state: str
+) -> None:
+    fixture = _write_strict_self_update_rollback_fixture(
+        tmp_path, failure_code="workspaceHealthProbeFailed"
+    )
+    fixture.receipt_path.unlink()
+    pointer = dict(fixture.receipt)
+    pointer.update(state=state, rollbackErrorCode="UPDATE_ROLLBACK_IO_FAILED")
+    (tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER).write_text(
+        json.dumps(pointer), encoding="utf-8"
+    )
+    with pytest.raises(build_next.BuildError, match="rollback did not complete"):
+        build_next.wait_for_self_update_health_failure_rollback(
+            tmp_path,
+            process_scope=fixture.process_scope,
+            target=fixture.target,
+            stage=fixture.stage,
+            token=fixture.token,
+            updater_process_id=fixture.updater_process_id,
+            updated_process_id=fixture.updated_process_id,
+            timeout_seconds=0.01,
+        )
