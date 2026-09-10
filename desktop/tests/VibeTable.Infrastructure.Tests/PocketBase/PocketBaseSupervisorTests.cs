@@ -200,32 +200,226 @@ public sealed class PocketBaseSupervisorTests
     }
 
     [TestMethod]
-    public async Task UnexpectedExit_AutoRecoversWithFreshSecretAndHonorsRestartCap()
+    public async Task StopAdmittedDuringStartup_PreventsReadyPublication()
     {
-        var first = FakePocketBaseProcess.Ready(ReadyRecord());
-        var second = FakePocketBaseProcess.Ready(ReadyRecord());
-        var factory = new FakePocketBaseProcessFactory(first, second);
+        var healthEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHealth = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var published = new List<PocketBaseState>();
+        var process = FakePocketBaseProcess.Ready(ReadyRecord());
+        var health = new FakePocketBaseHealthProbe(
+            getHealth: async cancellationToken =>
+            {
+                healthEntered.SetResult();
+                await releaseHealth.Task.WaitAsync(cancellationToken);
+                return HealthyStatus();
+            });
         await using var supervisor = new PocketBaseSupervisor(
-            Options(crashRestartLimit: 1),
+            Options(),
+            new FakePocketBaseProcessFactory(process),
+            health);
+        supervisor.StatusChanged += (_, status) => published.Add(status.State);
+
+        Task starting = supervisor.StartAsync(CancellationToken.None);
+        Task? stopping = null;
+        try
+        {
+            await healthEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                () => supervisor.StopAsync(cancelled.Token));
+            Assert.AreEqual(PocketBaseState.Starting, supervisor.GetStatus().State);
+            stopping = supervisor.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            releaseHealth.TrySetResult();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => starting);
+        Assert.IsNotNull(stopping);
+        await stopping!.WaitAsync(TimeSpan.FromSeconds(2));
+        CollectionAssert.DoesNotContain(published, PocketBaseState.Ready);
+        Assert.AreEqual(PocketBaseState.Stopped, supervisor.GetStatus().State);
+    }
+
+    [TestMethod]
+    public async Task StartCancellationAfterAdmission_CompletesRetirement()
+    {
+        using var callerCts = new CancellationTokenSource();
+        var first = FakePocketBaseProcess.ReadyWithBlockedDispose(ReadyRecord());
+        var unused = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, unused);
+        Task? replacing = null;
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(),
             factory,
             new FakePocketBaseHealthProbe(isHealthy: true));
+        supervisor.StatusChanged += (_, status) =>
+        {
+            if (status.State == PocketBaseState.Faulted && replacing is null)
+            {
+                replacing = supervisor.StartAsync(callerCts.Token);
+            }
+        };
+        await supervisor.StartAsync(CancellationToken.None);
+
+        try
+        {
+            first.Crash(exitCode: 17);
+            await first.DisposeEntered.WaitAsync(TimeSpan.FromSeconds(2));
+            callerCts.Cancel();
+        }
+        finally
+        {
+            first.ReleaseDispose();
+        }
+
+        Assert.IsNotNull(replacing);
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => replacing!.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.AreEqual(1, factory.Requests.Count);
+        Assert.IsTrue(first.Disposed);
+        Assert.AreEqual(PocketBaseState.Stopped, supervisor.GetStatus().State);
+        Assert.Throws<InvalidOperationException>(
+            () => supervisor.ConfigureBackendEnvironment(new Dictionary<string, string>()));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LaterRetirement_PreventsEarlierStartFromPublishingReady(
+        bool dispose)
+    {
+        var first = FakePocketBaseProcess.ReadyWithBlockedDispose(ReadyRecord());
+        var unused = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, unused);
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartDelay: TimeSpan.FromSeconds(10)),
+            factory,
+            new FakePocketBaseHealthProbe(isHealthy: true));
+        await supervisor.StartAsync(CancellationToken.None);
+        Task? replacing = null;
+        Task? retiring = null;
+        try
+        {
+            first.Crash(17);
+            replacing = supervisor.StartAsync(CancellationToken.None);
+            await first.DisposeEntered.WaitAsync(TimeSpan.FromSeconds(2));
+            retiring = dispose
+                ? supervisor.DisposeAsync().AsTask()
+                : supervisor.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            first.ReleaseDispose();
+        }
+
+        Assert.IsNotNull(replacing);
+        Assert.IsNotNull(retiring);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => replacing!);
+        await retiring!.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(1, factory.Requests.Count);
+        Assert.AreEqual(PocketBaseState.Stopped, supervisor.GetStatus().State);
+    }
+
+    [TestMethod]
+    public async Task RecoveryCancellationCallbackFailure_CompletesSharedDispose()
+    {
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var recovering = FakePocketBaseProcess.Ready(ReadyRecord());
+        var healthEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        int healthCalls = 0;
+        var health = new FakePocketBaseHealthProbe(
+            getHealth: async cancellationToken =>
+            {
+                if (Interlocked.Increment(ref healthCalls) == 1)
+                {
+                    return HealthyStatus();
+                }
+
+                using CancellationTokenRegistration registration =
+                    cancellationToken.Register(
+                        () => throw new InvalidOperationException(
+                            "recovery cancellation callback failed"));
+                healthEntered.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return null;
+            });
+        var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 1),
+            new FakePocketBaseProcessFactory(first, recovering),
+            health);
+        try
+        {
+            await supervisor.StartAsync(CancellationToken.None);
+            first.Crash(exitCode: 17);
+            await healthEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Task disposing = supervisor.DisposeAsync().AsTask();
+            Task repeatedDispose = supervisor.DisposeAsync().AsTask();
+            Task stopping = supervisor.StopAsync(CancellationToken.None);
+
+            Assert.AreSame(disposing, repeatedDispose);
+            await Assert.ThrowsAsync<AggregateException>(
+                () => disposing.WaitAsync(TimeSpan.FromSeconds(2)));
+            await Assert.ThrowsAsync<AggregateException>(
+                () => stopping.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.IsTrue(first.Disposed);
+            Assert.IsTrue(recovering.Disposed);
+            Assert.IsTrue(health.Disposed);
+        }
+        finally
+        {
+            try
+            {
+                await supervisor.DisposeAsync().AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (AggregateException)
+            {
+                // This test deliberately makes the shared owner fault.
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task UnexpectedExit_RetriesFailedReplacementAndHonorsRestartCap()
+    {
+        var first = FakePocketBaseProcess.Ready(ReadyRecord());
+        var failed = FakePocketBaseProcess.Ready(ReadyRecord());
+        var recovered = FakePocketBaseProcess.Ready(ReadyRecord());
+        var factory = new FakePocketBaseProcessFactory(first, failed, recovered);
+        int healthCalls = 0;
+        await using var supervisor = new PocketBaseSupervisor(
+            Options(crashRestartLimit: 2),
+            factory,
+            new FakePocketBaseHealthProbe(getHealth: _ =>
+                Task.FromResult<PocketBaseHealthStatus?>(
+                    Interlocked.Increment(ref healthCalls) == 2
+                        ? HealthyStatus(migrationHash: "wrong-hash")
+                        : HealthyStatus())));
         await supervisor.StartAsync(CancellationToken.None);
         string firstSecret = factory.Requests[0]
             .Environment["VIBETABLE_SIDECAR_SESSION_SECRET"];
 
         first.Crash(exitCode: 17);
         await WaitUntilAsync(
-            () => factory.Requests.Count == 2
+            () => factory.Requests.Count == 3
                 && supervisor.GetStatus().State == PocketBaseState.Ready);
 
         Assert.AreNotEqual(
             firstSecret,
-            factory.Requests[1].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"]);
+            factory.Requests[2].Environment["VIBETABLE_SIDECAR_SESSION_SECRET"]);
         Assert.IsTrue(first.Disposed);
+        Assert.IsTrue(failed.Disposed);
 
-        second.Crash(exitCode: 23);
+        recovered.Crash(exitCode: 23);
         await Task.Delay(30);
-        Assert.AreEqual(2, factory.Requests.Count);
+        Assert.AreEqual(3, factory.Requests.Count);
         Assert.AreEqual(PocketBaseState.Faulted, supervisor.GetStatus().State);
         Assert.AreEqual(23, supervisor.GetStatus().ExitCode);
     }
@@ -242,6 +436,10 @@ public sealed class PocketBaseSupervisorTests
             new FakePocketBaseHealthProbe(isHealthy: true));
         await supervisor.StartAsync(CancellationToken.None);
 
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => supervisor.StartAsync(cancelled.Token));
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => supervisor.StartAsync(CancellationToken.None));
         first.Crash(exitCode: 17);
@@ -463,20 +661,20 @@ public sealed class PocketBaseSupervisorTests
         int crashRestartLimit = 3,
         bool developmentMode = false,
         TimeSpan? crashRestartDelay = null) => new()
-    {
-        ExecutablePath = "vibetable-pb.exe",
-        DataDirectory = "pb_data",
-        DevelopmentMode = developmentMode,
-        StartupTimeout = startupTimeout ?? TimeSpan.FromSeconds(1),
-        StopTimeout = TimeSpan.FromSeconds(1),
-        HealthPollInterval = TimeSpan.FromMilliseconds(1),
-        CrashRestartLimit = crashRestartLimit,
-        CrashRestartInitialDelay =
+        {
+            ExecutablePath = "vibetable-pb.exe",
+            DataDirectory = "pb_data",
+            DevelopmentMode = developmentMode,
+            StartupTimeout = startupTimeout ?? TimeSpan.FromSeconds(1),
+            StopTimeout = TimeSpan.FromSeconds(1),
+            HealthPollInterval = TimeSpan.FromMilliseconds(1),
+            CrashRestartLimit = crashRestartLimit,
+            CrashRestartInitialDelay =
             crashRestartDelay ?? TimeSpan.FromMilliseconds(1),
-        CrashRestartMaximumDelay =
+            CrashRestartMaximumDelay =
             crashRestartDelay ?? TimeSpan.FromMilliseconds(2),
-        ExpectedIdentity = ExpectedIdentity(),
-    };
+            ExpectedIdentity = ExpectedIdentity(),
+        };
 
     private static PocketBaseExpectedIdentity ExpectedIdentity() => new(
         ReadyContract: "vibetable.sidecar.ready.v1",
@@ -554,13 +752,15 @@ public sealed class PocketBaseSupervisorTests
         }
     }
 
-    private sealed class FakePocketBaseHealthProbe : IPocketBaseHealthProbe
+    private sealed class FakePocketBaseHealthProbe : IPocketBaseHealthProbe, IDisposable
     {
         private readonly PocketBaseHealthStatus? _status;
         private readonly Exception? _exception;
         private readonly bool _shutdownAccepted;
         private readonly Action? _onShutdown;
         private readonly Action? _onHealth;
+        private readonly Func<CancellationToken, Task<PocketBaseHealthStatus?>>?
+            _getHealth;
 
         public FakePocketBaseHealthProbe(
             bool isHealthy = false,
@@ -568,7 +768,8 @@ public sealed class PocketBaseSupervisorTests
             Exception? exception = null,
             bool shutdownAccepted = false,
             Action? onShutdown = null,
-            Action? onHealth = null)
+            Action? onHealth = null,
+            Func<CancellationToken, Task<PocketBaseHealthStatus?>>? getHealth = null)
         {
             _status = status ?? (isHealthy
                 ? HealthyStatus()
@@ -582,10 +783,12 @@ public sealed class PocketBaseSupervisorTests
             _shutdownAccepted = shutdownAccepted;
             _onShutdown = onShutdown;
             _onHealth = onHealth;
+            _getHealth = getHealth;
         }
 
         public List<(Uri Endpoint, string SessionSecret)> Requests { get; } = [];
         public List<(Uri Endpoint, string SessionSecret)> ShutdownRequests { get; } = [];
+        public bool Disposed { get; private set; }
 
         public Task<PocketBaseHealthStatus?> GetHealthAsync(
             Uri endpoint,
@@ -594,6 +797,10 @@ public sealed class PocketBaseSupervisorTests
         {
             Requests.Add((endpoint, sessionSecret));
             _onHealth?.Invoke();
+            if (_getHealth is not null)
+            {
+                return _getHealth(cancellationToken);
+            }
             return _exception is null
                 ? Task.FromResult(_status)
                 : Task.FromException<PocketBaseHealthStatus?>(_exception);
@@ -608,6 +815,8 @@ public sealed class PocketBaseSupervisorTests
             _onShutdown?.Invoke();
             return Task.FromResult(_shutdownAccepted);
         }
+
+        public void Dispose() => Disposed = true;
     }
 
     private sealed class FakePocketBaseProcess : IPocketBaseProcess
@@ -634,6 +843,14 @@ public sealed class PocketBaseSupervisorTests
                 new StringReader(record + Environment.NewLine),
                 new LateLineTextReader(lateStderr));
 
+        public static FakePocketBaseProcess ReadyWithBlockedDispose(string record)
+        {
+            var process = Ready(record);
+            process._releaseDispose = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            return process;
+        }
+
         public int Id => 42;
         public TextReader StandardOutput => _stdout;
         public TextReader StandardError => _stderr;
@@ -641,7 +858,14 @@ public sealed class PocketBaseSupervisorTests
         public int? ExitCode => HasExited ? _exitCode : null;
         public int KillProcessTreeCalls { get; private set; }
         public bool Disposed { get; private set; }
+        public Task DisposeEntered => _disposeEntered.Task;
         public event EventHandler? Exited;
+
+        private readonly TaskCompletionSource _disposeEntered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource? _releaseDispose;
+
+        public void ReleaseDispose() => _releaseDispose?.TrySetResult();
 
         public void KillProcessTree()
         {
@@ -667,12 +891,16 @@ public sealed class PocketBaseSupervisorTests
         public Task WaitForExitAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
             Disposed = true;
+            _disposeEntered.TrySetResult();
+            if (_releaseDispose is not null)
+            {
+                await _releaseDispose.Task;
+            }
             _stdout.Dispose();
             _stderr.Dispose();
-            return ValueTask.CompletedTask;
         }
     }
 

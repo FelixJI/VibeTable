@@ -31,6 +31,7 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private readonly IPocketBaseProcessFactory _processFactory;
     private readonly IPocketBaseHealthProbe _healthProbe;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
+    private readonly object _generationGate = new();
     private readonly object _statusGate = new();
     private readonly object _recoveryGate = new();
     private readonly StringBuilder _log = new();
@@ -42,6 +43,8 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     private Task? _recoveryTask;
     private int _restartAttempts;
     private int _restartSuppressed = 1;
+    private long _retirementEpoch;
+    private Task? _disposeTask;
     private int _disposed;
     private PocketBaseStartupTimings? _lastStartupTimings;
 
@@ -88,12 +91,11 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     public PocketBaseAdminContext? GetAdminContext()
     {
-        ProcessGeneration? generation = Volatile.Read(ref _generation);
-        if (generation is null) return null;
-
-        lock (generation.TransitionGate)
+        lock (_generationGate)
         {
-            if (generation.Phase != ProcessGeneration.Ready
+            ProcessGeneration? generation = _generation;
+            if (generation is null
+                || generation.Phase != ProcessGeneration.Ready
                 || generation.Process.HasExited
                 || generation.BaseAddress is null
                 || string.IsNullOrEmpty(generation.SessionSecret))
@@ -120,14 +122,14 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         IDictionary<string, string> environment)
     {
         ArgumentNullException.ThrowIfNull(environment);
-        ProcessGeneration? generation = Volatile.Read(ref _generation);
-        if (generation is null)
+        lock (_generationGate)
         {
-            throw new InvalidOperationException(
-                "Local data sidecar is not ready.");
-        }
-        lock (generation.TransitionGate)
-        {
+            ProcessGeneration? generation = _generation;
+            if (generation is null)
+            {
+                throw new InvalidOperationException(
+                    "Local data sidecar is not ready.");
+            }
             if (generation.Phase != ProcessGeneration.Ready
                 || generation.BaseAddress is null
                 || string.IsNullOrEmpty(generation.SessionSecret))
@@ -152,29 +154,73 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        cancellationToken.ThrowIfCancellationRequested();
+        RetirementAdmission admission;
+        lock (_generationGate)
         {
             ThrowIfDisposed();
-            PocketBaseState state = GetStatus().State;
-            if (state is PocketBaseState.Starting or PocketBaseState.Ready
-                or PocketBaseState.Stopping)
+            ThrowIfCannotStart();
+            admission = AdmitRetirementUnsafe();
+        }
+        Exception? retirementFailure =
+            await CancelAndObserveRecoveryAsync(admission).ConfigureAwait(false);
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            ProcessGeneration? previous;
+            lock (_generationGate)
             {
-                throw new InvalidOperationException(
-                    $"Local data sidecar cannot start from state {state}.");
+                EnsureRetirementEpoch(admission.Epoch, expectedSuppression: 1);
+                previous = _generation;
             }
-
-            SuppressAndCancelRecovery();
-            ProcessGeneration? previous = Volatile.Read(ref _generation);
             if (previous is not null)
             {
                 await TeardownGenerationAsync(previous, requestGraceful: false)
                     .ConfigureAwait(false);
             }
 
-            _restartAttempts = 0;
-            Volatile.Write(ref _restartSuppressed, 0);
-            await StartGenerationAsync(cancellationToken).ConfigureAwait(false);
+            lock (_generationGate)
+            {
+                EnsureRetirementEpoch(admission.Epoch, expectedSuppression: 1);
+                if (retirementFailure is not null
+                    || cancellationToken.IsCancellationRequested)
+                {
+                    PublishStatus(new PocketBaseStatus(
+                        PocketBaseState.Stopped, null, false, null, null));
+                }
+                else
+                {
+                    _restartAttempts = 0;
+                    _restartSuppressed = 0;
+                }
+            }
+            if (retirementFailure is not null)
+            {
+                throw retirementFailure;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await StartGenerationAsync(cancellationToken, admission.Epoch)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                lock (_generationGate)
+                {
+                    if (Volatile.Read(ref _disposed) == 0
+                        && _retirementEpoch == admission.Epoch
+                        && _restartSuppressed == 0
+                        && _generation is null)
+                    {
+                        _restartSuppressed = 1;
+                        PublishStatus(new PocketBaseStatus(
+                            PocketBaseState.Stopped, null, false, null, null));
+                    }
+                }
+                throw;
+            }
         }
         finally
         {
@@ -184,25 +230,81 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        SuppressAndCancelRecovery();
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        cancellationToken.ThrowIfCancellationRequested();
+        RetirementAdmission admission = default;
+        Task? disposeTask;
+        lock (_generationGate)
         {
-            ProcessGeneration? generation = Volatile.Read(ref _generation);
-            if (GetStatus().State == PocketBaseState.Stopped && generation is null)
+            disposeTask = _disposeTask;
+            if (disposeTask is null)
             {
-                return;
+                admission = AdmitRetirementUnsafe();
+            }
+        }
+
+        if (disposeTask is not null)
+        {
+            await disposeTask.ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return;
+        }
+
+        Exception? retirementFailure =
+            await CancelAndObserveRecoveryAsync(admission).ConfigureAwait(false);
+        await StopAfterAdmissionAsync(admission).ConfigureAwait(false);
+        if (retirementFailure is not null)
+        {
+            throw retirementFailure;
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        TaskCompletionSource owner;
+        RetirementAdmission admission = default;
+        Task disposeTask;
+        lock (_generationGate)
+        {
+            if (_disposeTask is not null)
+            {
+                return new ValueTask(_disposeTask);
             }
 
-            PublishStatus(new PocketBaseStatus(
-                PocketBaseState.Stopping,
-                GetStatus().BaseAddress,
-                false,
-                generation?.Process.ExitCode,
-                null));
+            owner = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            disposeTask = owner.Task;
+            _disposeTask = disposeTask;
+            Volatile.Write(ref _disposed, 1);
+            admission = AdmitRetirementUnsafe();
+        }
 
-            // Once stop has changed externally visible state, cleanup is bounded
-            // by our own timeout and must finish even if the caller cancels.
+        _ = CompleteDisposeAsync(owner, admission);
+        return new ValueTask(disposeTask);
+    }
+
+    private async Task StopAfterAdmissionAsync(RetirementAdmission admission)
+    {
+        await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            ProcessGeneration? generation;
+            lock (_generationGate)
+            {
+                generation = _generation;
+                if (GetStatus().State == PocketBaseState.Stopped
+                    && generation is null)
+                {
+                    return;
+                }
+                PublishStatus(new PocketBaseStatus(
+                    PocketBaseState.Stopping,
+                    GetStatus().BaseAddress,
+                    false,
+                    generation?.Process.ExitCode,
+                    null));
+            }
+
             try
             {
                 if (generation is not null)
@@ -213,53 +315,122 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             }
             finally
             {
-                PublishStatus(new PocketBaseStatus(
-                    PocketBaseState.Stopped, null, false, null, null));
+                lock (_generationGate)
+                {
+                    PublishStatus(new PocketBaseStatus(
+                        PocketBaseState.Stopped, null, false, null, null));
+                }
             }
         }
         finally
         {
             _lifecycle.Release();
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task CompleteDisposeAsync(
+        TaskCompletionSource owner,
+        RetirementAdmission admission)
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        Exception? failure =
+            await CancelAndObserveRecoveryAsync(admission).ConfigureAwait(false);
+        try
         {
-            return;
+            await StopAfterAdmissionAsync(admission).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception;
         }
 
         try
         {
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            _lifecycle.Dispose();
-            lock (_recoveryGate)
-            {
-                _recoveryCts?.Dispose();
-                _recoveryCts = null;
-                _recoveryTask = null;
-            }
             if (_healthProbe is IDisposable disposable)
             {
                 disposable.Dispose();
             }
         }
+        catch (Exception exception)
+        {
+            failure ??= exception;
+        }
+
+        if (failure is null)
+        {
+            owner.SetResult();
+        }
+        else
+        {
+            owner.SetException(failure);
+        }
     }
 
-    private async Task StartGenerationAsync(CancellationToken cancellationToken)
+    private static async Task<Exception?> CancelAndObserveRecoveryAsync(
+        RetirementAdmission admission)
+    {
+        Exception? failure = admission.CancelRecovery();
+        try
+        {
+            await admission.RecoveryTask.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception;
+        }
+        return failure;
+    }
+
+    private RetirementAdmission AdmitRetirementUnsafe()
+    {
+        _restartSuppressed = 1;
+        long epoch = ++_retirementEpoch;
+        lock (_recoveryGate)
+        {
+            return new RetirementAdmission(
+                epoch,
+                _recoveryCts,
+                _recoveryTask ?? Task.CompletedTask);
+        }
+    }
+
+    private void EnsureRetirementEpoch(
+        long expectedEpoch,
+        int expectedSuppression)
+    {
+        ThrowIfDisposed();
+        if (_restartSuppressed != expectedSuppression
+            || _retirementEpoch != expectedEpoch)
+        {
+            throw new InvalidOperationException(
+                "Local data sidecar start was superseded.");
+        }
+    }
+
+    private void ThrowIfCannotStart()
+    {
+        PocketBaseState state = GetStatus().State;
+        if (state is PocketBaseState.Starting or PocketBaseState.Ready
+            or PocketBaseState.Stopping)
+        {
+            throw new InvalidOperationException(
+                $"Local data sidecar cannot start from state {state}.");
+        }
+    }
+
+    private async Task StartGenerationAsync(
+        CancellationToken cancellationToken,
+        long expectedRetirementEpoch)
     {
         long startedAt = Stopwatch.GetTimestamp();
         long? spawnedAt = null;
         long? readyAt = null;
         Volatile.Write(ref _lastStartupTimings, null);
-        PublishStatus(new PocketBaseStatus(
-            PocketBaseState.Starting, null, false, null, null));
+        lock (_generationGate)
+        {
+            EnsureRetirementEpoch(expectedRetirementEpoch, expectedSuppression: 0);
+            PublishStatus(new PocketBaseStatus(
+                PocketBaseState.Starting, null, false, null, null));
+        }
 
         ProcessGeneration? generation = null;
         try
@@ -281,7 +452,11 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             generation = new ProcessGeneration(process, sessionSecret);
             generation.ExitHandler = (_, _) => OnProcessExited(generation);
             process.Exited += generation.ExitHandler;
-            Volatile.Write(ref _generation, generation);
+            lock (_generationGate)
+            {
+                EnsureRetirementEpoch(expectedRetirementEpoch, expectedSuppression: 0);
+                _generation = generation;
+            }
 
             generation.StderrPump = PumpDiagnosticsAsync(
                 process.StandardError,
@@ -330,13 +505,17 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
             // Exited and Ready compete through one atomic phase transition.
             // If Exited won, Ready can never be published for this generation.
-            lock (generation.TransitionGate)
+            lock (_generationGate)
             {
                 if (process.HasExited
+                    || Volatile.Read(ref _disposed) != 0
+                    || _restartSuppressed != 0
+                    || _retirementEpoch != expectedRetirementEpoch
+                    || !ReferenceEquals(_generation, generation)
                     || generation.Phase != ProcessGeneration.Starting)
                 {
                     throw new InvalidOperationException(
-                        "Local data sidecar exited before becoming ready.");
+                        "Local data sidecar start was superseded.");
                 }
                 generation.Phase = ProcessGeneration.Ready;
                 PublishStatus(new PocketBaseStatus(
@@ -367,12 +546,20 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
                         : readyAt is null ? "ready-record" : "health"));
             int? exitCode = generation?.Process.ExitCode;
             string message = Sanitize(exception.Message, generation?.SessionSecret);
-            PublishStatus(new PocketBaseStatus(
-                PocketBaseState.Faulted,
-                null,
-                false,
-                exitCode,
-                message));
+            lock (_generationGate)
+            {
+                if (Volatile.Read(ref _disposed) == 0
+                    && _restartSuppressed == 0
+                    && _retirementEpoch == expectedRetirementEpoch)
+                {
+                    PublishStatus(new PocketBaseStatus(
+                        PocketBaseState.Faulted,
+                        null,
+                        false,
+                        exitCode,
+                        message));
+                }
+            }
             if (generation is not null)
             {
                 await TeardownGenerationAsync(generation, requestGraceful: false)
@@ -408,8 +595,13 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             {
                 callerToken.ThrowIfCancellationRequested();
                 startupToken.ThrowIfCancellationRequested();
-                if (generation.Process.HasExited
-                    || Volatile.Read(ref generation.Phase) != ProcessGeneration.Starting)
+                bool generationIsStarting;
+                lock (_generationGate)
+                {
+                    generationIsStarting = ReferenceEquals(_generation, generation)
+                        && generation.Phase == ProcessGeneration.Starting;
+                }
+                if (generation.Process.HasExited || !generationIsStarting)
                 {
                     throw new InvalidOperationException(
                         "Local data sidecar exited before its health check succeeded.");
@@ -624,12 +816,13 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         ProcessGeneration generation,
         bool requestGraceful)
     {
-        Interlocked.Exchange(
-            ref generation.Phase,
-            ProcessGeneration.Stopping);
-        if (generation.ExitHandler is not null)
+        lock (_generationGate)
         {
-            generation.Process.Exited -= generation.ExitHandler;
+            generation.Phase = ProcessGeneration.Stopping;
+            if (generation.ExitHandler is not null)
+            {
+                generation.Process.Exited -= generation.ExitHandler;
+            }
         }
 
         try
@@ -698,11 +891,12 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             }
             finally
             {
-                if (ReferenceEquals(
-                    Interlocked.CompareExchange(ref _generation, null, generation),
-                    generation))
+                lock (_generationGate)
                 {
-                    // Cleared only if this is still the active generation.
+                    if (ReferenceEquals(_generation, generation))
+                    {
+                        _generation = null;
+                    }
                 }
                 await ObserveAndReleasePumpsAsync(generation).ConfigureAwait(false);
             }
@@ -747,13 +941,15 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     private void OnProcessExited(ProcessGeneration generation)
     {
-        lock (generation.TransitionGate)
+        lock (_generationGate)
         {
-            int previous = generation.Phase;
+            if (!ReferenceEquals(_generation, generation)
+                || generation.Phase != ProcessGeneration.Ready)
+            {
+                return;
+            }
             generation.Phase = ProcessGeneration.Exited;
-            if (previous != ProcessGeneration.Ready
-                || Volatile.Read(ref _restartSuppressed) != 0
-                || !ReferenceEquals(Volatile.Read(ref _generation), generation))
+            if (_restartSuppressed != 0)
             {
                 return;
             }
@@ -770,50 +966,84 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
     private void BeginRecovery(ProcessGeneration crashedGeneration)
     {
-        lock (_recoveryGate)
+        lock (_generationGate)
         {
-            if (Volatile.Read(ref _restartSuppressed) != 0
+            if (!ReferenceEquals(_generation, crashedGeneration)
+                || crashedGeneration.Phase != ProcessGeneration.Exited
+                || _restartSuppressed != 0
                 || _restartAttempts >= _options.CrashRestartLimit)
             {
                 return;
             }
 
-            _recoveryCts?.Dispose();
-            _recoveryCts = new CancellationTokenSource();
-            CancellationTokenSource owner = _recoveryCts;
-            _recoveryTask = Task.Run(
-                () => RecoverAsync(
-                    crashedGeneration,
-                    owner,
-                    owner.Token));
+            long expectedRetirementEpoch = _retirementEpoch;
+            lock (_recoveryGate)
+            {
+                if (_recoveryTask is not null)
+                {
+                    return;
+                }
+                _recoveryCts = new CancellationTokenSource();
+                CancellationTokenSource owner = _recoveryCts;
+                _recoveryTask = Task.Run(
+                    () => RecoverAsync(
+                        crashedGeneration,
+                        expectedRetirementEpoch,
+                        owner,
+                        owner.Token));
+            }
         }
     }
 
     private async Task RecoverAsync(
         ProcessGeneration crashedGeneration,
+        long expectedRetirementEpoch,
         CancellationTokenSource owner,
         CancellationToken cancellationToken)
     {
         ProcessGeneration? stale = crashedGeneration;
         try
         {
-            while (_restartAttempts < _options.CrashRestartLimit)
+            while (true)
             {
-                int attempt = Interlocked.Increment(ref _restartAttempts);
+                int attempt;
+                lock (_generationGate)
+                {
+                    if (_restartSuppressed != 0
+                        || _retirementEpoch != expectedRetirementEpoch
+                        || _restartAttempts >= _options.CrashRestartLimit)
+                    {
+                        return;
+                    }
+                    if (stale is not null
+                        && (!ReferenceEquals(_generation, stale)
+                            || stale.Phase != ProcessGeneration.Exited))
+                    {
+                        return;
+                    }
+                    attempt = ++_restartAttempts;
+                }
                 TimeSpan delay = GetRecoveryDelay(attempt);
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    if (Volatile.Read(ref _restartSuppressed) != 0)
+                    lock (_generationGate)
                     {
-                        return;
+                        if (_restartSuppressed != 0
+                            || _retirementEpoch != expectedRetirementEpoch)
+                        {
+                            return;
+                        }
+                        if (stale is not null
+                            && (!ReferenceEquals(_generation, stale)
+                                || stale.Phase != ProcessGeneration.Exited))
+                        {
+                            return;
+                        }
                     }
 
-                    if (stale is not null
-                        && ReferenceEquals(
-                            Volatile.Read(ref _generation),
-                            stale))
+                    if (stale is not null)
                     {
                         await TeardownGenerationAsync(
                             stale,
@@ -823,7 +1053,9 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
 
                     try
                     {
-                        await StartGenerationAsync(cancellationToken)
+                        await StartGenerationAsync(
+                            cancellationToken,
+                            expectedRetirementEpoch)
                             .ConfigureAwait(false);
                         return;
                     }
@@ -870,15 +1102,6 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
             _options.CrashRestartInitialDelay.Ticks * multiplier,
             _options.CrashRestartMaximumDelay.Ticks);
         return TimeSpan.FromTicks((long)ticks);
-    }
-
-    private void SuppressAndCancelRecovery()
-    {
-        Volatile.Write(ref _restartSuppressed, 1);
-        lock (_recoveryGate)
-        {
-            _recoveryCts?.Cancel();
-        }
     }
 
     private void PublishStatus(PocketBaseStatus status)
@@ -935,7 +1158,6 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         }
 
         internal IPocketBaseProcess Process { get; }
-        internal object TransitionGate { get; } = new();
         internal string SessionSecret => _sessionSecret;
         internal EventHandler? ExitHandler { get; set; }
         internal Task? StdoutPump { get; set; }
@@ -944,6 +1166,30 @@ public sealed class PocketBaseSupervisor : IPocketBaseSupervisor
         internal int Phase = Starting;
 
         internal void ReleaseSecret() => _sessionSecret = string.Empty;
+    }
+
+    private readonly record struct RetirementAdmission(
+        long Epoch,
+        CancellationTokenSource? RecoveryCancellation,
+        Task RecoveryTask)
+    {
+        internal Exception? CancelRecovery()
+        {
+            try
+            {
+                RecoveryCancellation?.Cancel();
+                return null;
+            }
+            catch (ObjectDisposedException)
+            {
+                // A completed recovery can release its owner after admission.
+                return null;
+            }
+            catch (Exception exception)
+            {
+                return exception;
+            }
+        }
     }
 
     private sealed record ReadyRecord(
