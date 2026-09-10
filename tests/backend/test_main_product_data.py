@@ -42,6 +42,8 @@ class FakeProductService:
         ),
         ("field.settings.describe", {"tableId": "orders"}),
         ("field.settings.describe", {"extra": True}),
+        ("mutation.apply", {}),
+        ("mutation.preview", {}),
         ("schema.list", {}),
         ("query.page", {"tableId": "orders", "query": {}}),
         ("query.page", {"extra": True}),
@@ -128,6 +130,8 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
+        "mutation.apply",
+        "mutation.preview",
         "field.settings.describe",
         "relation.searchTargets",
         "query.selectionOpen",
@@ -156,6 +160,8 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
         WORKSPACE_CATALOG_METHODS
         | {
+            "mutation.apply",
+            "mutation.preview",
             "events.reconcile",
             "field.settings.describe",
             "file.list",

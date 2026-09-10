@@ -560,6 +560,54 @@
       ]
     },
     {
+      "id": "rpc.mutation",
+      "kind": "rpc",
+      "names": [
+        "mutation.apply",
+        "mutation.preview"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "mutation.preview"
+        ],
+        "write": [
+          "mutation.apply"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "02-all-field-schema",
+        "08-stale-conflict",
+        "10-sse-reconnect",
+        "11-plugin-mutation"
+      ],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Python Product mutation routes are removed; Go preserves the existing mutation kernel, write admission, idempotency, revision and audit receipt.",
+      "evidence": [
+        "sidecar/internal/app/mutation_product_rpc.go",
+        "contracts/v2/mutation-product-python-oracle.json",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
       "id": "rpc.path-grants",
       "kind": "rpc",
       "names": ["path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant"],
@@ -951,22 +999,67 @@
     {
       "id": "rpc.schema-formula-mutation",
       "kind": "rpc",
-      "names": ["formula.draft.validate", "formula.preview", "formula.validate", "mutation.apply", "mutation.preview", "schema.delete", "schema.table.create"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
+      "names": [
+        "formula.draft.validate",
+        "formula.preview",
+        "formula.validate",
+        "schema.delete",
+        "schema.table.create"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "pythonBff",
+        "goSidecar",
+        "pocketBase"
+      ],
       "currentRoute": "pythonBff",
       "classification": "TEMPORARY_BFF",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
-      "effects": {"read": ["formula.draft.validate", "formula.preview", "formula.validate", "mutation.preview"], "write": ["mutation.apply", "schema.delete", "schema.table.create"], "notification": [], "state": []},
-      "stateHolders": ["goSidecar", "pocketBase"],
+      "effects": {
+        "read": [
+          "formula.draft.validate",
+          "formula.preview",
+          "formula.validate"
+        ],
+        "write": [
+          "schema.delete",
+          "schema.table.create"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
       "stateLifetime": "workspace",
       "cancellation": "clientPendingOnly",
       "timeout": "perHopBounded",
-      "productScenarios": ["02-all-field-schema", "03-schema-errors", "05-formula-lifecycle", "08-stale-conflict", "10-sse-reconnect", "11-plugin-mutation", "12-backup-consistency", "18-workspace-search", "19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "productScenarios": [
+        "02-all-field-schema",
+        "03-schema-errors",
+        "05-formula-lifecycle",
+        "08-stale-conflict",
+        "10-sse-reconnect",
+        "11-plugin-mutation",
+        "12-backup-consistency",
+        "18-workspace-search",
+        "19-gallery-lifecycle",
+        "20-kanban-lane-drag",
+        "21-calendar-date-move",
+        "22-timeline-date-move"
+      ],
       "targetSlice": "L5",
       "targetPr": null,
       "deleteWhen": "Go owns formula computation and every schema or mutation write invariant, and Python validation, projection, and duplicate error mapping are removed.",
-      "evidence": ["backend/adapters/pocketbase/product_query_schema_rpc.py", "sidecar/internal/app/formula_routes.go", "sidecar/internal/app/mutation_routes.go", "sidecar/internal/app/schema_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "evidence": [
+        "backend/adapters/pocketbase/product_query_schema_rpc.py",
+        "sidecar/internal/app/formula_routes.go",
+        "sidecar/internal/app/mutation_routes.go",
+        "sidecar/internal/app/schema_routes.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
     },
     {
 	  "id": "rpc.schema-get-table",

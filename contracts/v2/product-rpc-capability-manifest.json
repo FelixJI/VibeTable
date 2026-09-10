@@ -302,7 +302,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "data.mutation",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -310,7 +310,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "data.mutation",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {

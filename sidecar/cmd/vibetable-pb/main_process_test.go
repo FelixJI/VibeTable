@@ -530,6 +530,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"events.reconcile", "field.settings.describe", "file.list",
 		"history.applyRestore", "history.previewRestore", "history.read",
 		"lookup.list", "lookup.query", "lookup.valuePage",
+		"mutation.apply", "mutation.preview",
 		"query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows",
 		"query.selectionOpen", "query.validateSnapshot", "query.view",
 		"relation.inspectPair", "relation.previewDelta", "relation.searchTargets",

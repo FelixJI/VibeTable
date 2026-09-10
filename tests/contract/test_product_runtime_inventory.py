@@ -75,6 +75,8 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "lookup.list",
         "lookup.query",
         "lookup.valuePage",
+        "mutation.apply",
+        "mutation.preview",
         "query.cursorFetch",
         "query.cursorOpen",
         "query.page",
