@@ -50,9 +50,11 @@ Host 真实 `ISurfaceRpcGateway` 由现有 `JsonRpcProductDataGateway` 实现，
 - Python 契约先后暴露仍引用旧 Surface handler 的枚举、替换通用错误注册测试时误填 Insights code，以及新增 S17 语义未正常生成索引/更新严格 manifest changed 声明。保留原 86/3、88/1 失败；修正公共参数模型接线与独立四方法预期、真实 Insights -32080、生成索引及文档，不删除公共方法或降低门禁。
 - 辅助命令曾有错误工作目录下的 gofmt 路径、默认 GBK 下打印/读取 Unicode、inventory 分组未排序和 manifest changed 声明格式错误。这些是工具/编写阶段失败，修正后复验；不是发布构建失败或产品通过证明。
 
+完整 Python 入口 `uv run --frozen --no-sync python scripts/automation_project.py python-quality` 由主任务执行，handle `73726` 已 **EXIT 0**：1841 PASS / 1 skip，86.55s，backend coverage 91.74%；Ruff、Pyright、mypy 均通过。日志 `build/surface-python-quality.log` 保留。内部 uv run 继承 `UV_NO_SYNC=1`，源码保持冻结；主任务按 lock 一致建立 `.venv`、`.tools/node`、`desktop/web-grid/node_modules` junction，未安装新依赖。此完整入口通过不覆盖或改写上述历史聚焦失败。
+
 ## 剩余资格
 
-- 主任务已启动完整入口 `uv run --frozen --no-sync python scripts/automation_project.py python-quality`，运行 handle `73726`，日志 `build/surface-python-quality.log`。本记录写入时仍在运行，完整 Python 资格 pending。内部 uv run 继承 `UV_NO_SYNC=1`，源码保持冻结；主任务按 lock 一致建立 `.venv`、`.tools/node`、`desktop/web-grid/node_modules` junction，未安装新依赖。
+
 - 独立 Standards/Spec 两轴审查 pending。未执行完整 Go 全仓/完整应用 suite、完整 Node 质量或全量 .NET suite，不拿聚焦结果替代它们。
 - 完整 `build_next.py --release` 与同包 S17 pending；本分支没有 Surface 发布包。S17 已扩展原完整旅程：插件任务行为之后，精确重启 sidecar，以 fresh list/load 比较完整 aggregate/revision，重开运行时，再由真实删除按钮删除，fresh list 省略、public load not_found。取消/恢复窗口仍按既有 ownership 规则精确清理，不增加重试或放宽超时。
 - [当前 E2E 证据](../e2e-performance.md) 继续保留旧 main 的 29 场景结果，并明确 `17-interface-lifecycle` 语义已变；旧结果不证明新增重启/删除断言。
