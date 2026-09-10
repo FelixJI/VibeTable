@@ -18,6 +18,29 @@ public sealed class UpdateRollbackWorkerTests
     }
 
     [TestMethod]
+    [DataRow("ValidateMoveTree")]
+    [DataRow("MoveDirectory")]
+    public void WorkerFailureIdentifiesOwnedEntryAndOperationWithoutPrivatePayload(string operation)
+    {
+        RollbackFixture fixture = Prepare("operation-evidence", '9');
+        var failure = new IOException("private path and arguments", unchecked((int)0x80070005));
+        Exception observed = Assert.Throws<Exception>(() =>
+            PendingUpdateActivationJournal.RunRollbackWorker(
+                fixture.Plan.TargetRoot, fixture.WorkerNonce, fixture.Worker,
+                checkpoint => { if (checkpoint == $"resources:{operation}") throw failure; }));
+        Assert.AreSame(failure, observed);
+        using JsonDocument evidence = JsonDocument.Parse(File.ReadAllText(
+            fixture.Plan.StagingRoot + ".rollback-worker-error.json"));
+        CollectionAssert.AreEquivalent(new[] { "exceptionType", "hResult", "operation", "entry" },
+            evidence.RootElement.EnumerateObject().Select(property => property.Name).ToArray());
+        Assert.AreEqual(operation, evidence.RootElement.GetProperty("operation").GetString());
+        Assert.AreEqual("resources", evidence.RootElement.GetProperty("entry").GetString());
+        Assert.AreEqual(unchecked((int)0x80070005), evidence.RootElement.GetProperty("hResult").GetInt32());
+        Assert.IsTrue(Directory.Exists(Path.Combine(fixture.Plan.TargetRoot, "resources")));
+        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Plan.StagingRoot, "failed-package", "resources")));
+    }
+
+    [TestMethod]
     [DataRow(false, false, false)]
     [DataRow(true, false, false)]
     [DataRow(false, true, false)]
@@ -46,10 +69,12 @@ public sealed class UpdateRollbackWorkerTests
         if (blocked) { Assert.IsTrue(Directory.Exists(evidencePath)); return; }
         if (existing) { Assert.AreEqual("retained evidence", File.ReadAllText(evidencePath)); return; }
         using JsonDocument evidence = JsonDocument.Parse(File.ReadAllText(evidencePath));
-        CollectionAssert.AreEquivalent(new[] { "exceptionType", "hResult" },
+        CollectionAssert.AreEquivalent(new[] { "exceptionType", "hResult", "operation", "entry" },
             evidence.RootElement.EnumerateObject().Select(property => property.Name).ToArray());
         Assert.AreEqual(failure.GetType().FullName, evidence.RootElement.GetProperty("exceptionType").GetString());
         Assert.AreEqual(failure.HResult, evidence.RootElement.GetProperty("hResult").GetInt32());
+        Assert.AreEqual("WriteLedger", evidence.RootElement.GetProperty("operation").GetString());
+        Assert.AreEqual("resources", evidence.RootElement.GetProperty("entry").GetString());
     }
     [TestMethod]
     public void OwnedEntryAuthorityKeepsExecutableLast()
@@ -128,12 +153,38 @@ public sealed class UpdateRollbackWorkerTests
             new[]
             {
                 "claim:completed",
-                "resources:isolatePlanned", "resources:isolatedOnDisk",
-                "resources:restorePlanned", "resources:restoredOnDisk",
-                "release.json:isolatePlanned", "release.json:isolatedOnDisk",
-                "release.json:restorePlanned", "release.json:restoredOnDisk",
-                "VibeTable.Next.exe:isolatePlanned", "VibeTable.Next.exe:isolatedOnDisk",
-                "VibeTable.Next.exe:restorePlanned", "VibeTable.Next.exe:restoredOnDisk",
+                "resources:isolatePlanned",
+                "resources:ValidateMoveShape",
+                "resources:ValidateMoveSource",
+                "resources:ValidateMoveTree",
+                "resources:MoveDirectory",
+                "resources:isolatedOnDisk",
+                "resources:restorePlanned",
+                "resources:ValidateMoveShape",
+                "resources:ValidateMoveSource",
+                "resources:ValidateMoveTree",
+                "resources:MoveDirectory",
+                "resources:restoredOnDisk",
+                "release.json:isolatePlanned",
+                "release.json:ValidateMoveShape",
+                "release.json:ValidateMoveSource",
+                "release.json:MoveFile",
+                "release.json:isolatedOnDisk",
+                "release.json:restorePlanned",
+                "release.json:ValidateMoveShape",
+                "release.json:ValidateMoveSource",
+                "release.json:MoveFile",
+                "release.json:restoredOnDisk",
+                "VibeTable.Next.exe:isolatePlanned",
+                "VibeTable.Next.exe:ValidateMoveShape",
+                "VibeTable.Next.exe:ValidateMoveSource",
+                "VibeTable.Next.exe:MoveFile",
+                "VibeTable.Next.exe:isolatedOnDisk",
+                "VibeTable.Next.exe:restorePlanned",
+                "VibeTable.Next.exe:ValidateMoveShape",
+                "VibeTable.Next.exe:ValidateMoveSource",
+                "VibeTable.Next.exe:MoveFile",
+                "VibeTable.Next.exe:restoredOnDisk",
                 "finalize:rolledBack", "finalize:restoredLaunchPending",
             },
             checkpoints);
