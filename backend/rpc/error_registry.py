@@ -30,7 +30,6 @@ CODE_INSIGHTS = -32080
 CODE_SETTINGS_COMMAND = -32100
 CODE_PLUGIN = -32120
 CODE_PRODUCT_DATA = -32150
-CODE_CONTENT_MODEL = -32180
 
 
 class ErrorDomain(StrEnum):
@@ -41,7 +40,6 @@ class ErrorDomain(StrEnum):
     IMPORT = "import"
     EXPORT = "export"
     INSIGHTS = "insights"
-    CONTENT_MODEL = "content_model"
     SETTINGS_COMMAND = "settings_command"
     PLUGIN = "plugin"
 
@@ -187,15 +185,6 @@ def _domain_specs(domain: ErrorDomain) -> tuple[tuple[type[Exception], _ErrorSpe
         from backend.application.insights_service import InsightsError
 
         return ((InsightsError, _ErrorSpec(CODE_INSIGHTS, "Insights error", "insights_error")),)
-    if domain is ErrorDomain.CONTENT_MODEL:
-        from backend.application.content_model_service import ContentModelError
-
-        return (
-            (
-                ContentModelError,
-                _ErrorSpec(CODE_CONTENT_MODEL, "Content model error", "content_model_error"),
-            ),
-        )
     if domain is ErrorDomain.SETTINGS_COMMAND:
         from backend.application.settings_command_service import SettingsCommandError
 
@@ -259,7 +248,6 @@ def register_rpc_error(
 
 
 __all__ = [
-    "CODE_CONTENT_MODEL",
     "CODE_PRODUCT_DATA",
     "ErrorDomain",
     "RpcError",

@@ -1,0 +1,882 @@
+{
+  "producerCommit": "79c2ce4faa53d65af1fa9ee297655739d5407a2e",
+  "producerSources": [
+    "backend/application/content_model_service.py",
+    "backend/__main__.py",
+    "backend/rpc/dispatcher.py",
+    "backend/rpc/error_registry.py",
+    "backend/contracts/generated_workbench.py"
+  ],
+  "cases": [
+    {
+      "name": "profile-missing",
+      "method": "contentProfile.load",
+      "params": {
+        "tableId": "articles"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-missing",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Content profile not found.",
+            "code": "content_profile.not_found"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-load",
+      "method": "contentProfile.load",
+      "params": {
+        "tableId": "articles"
+      },
+      "seed": [
+        {
+          "namespace": "content_profiles",
+          "logicalId": "articles",
+          "payload": {
+            "contractVersion": "1.0",
+            "tableId": "articles",
+            "titleFieldId": "fld_title000",
+            "bodyFieldId": "fld_body0000",
+            "summaryFieldId": null,
+            "searchableFieldIds": [
+              "fld_title000",
+              "fld_body0000"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-load",
+        "result": {
+          "profile": {
+            "contractVersion": "1.0",
+            "tableId": "articles",
+            "titleFieldId": "fld_title000",
+            "bodyFieldId": "fld_body0000",
+            "summaryFieldId": null,
+            "searchableFieldIds": [
+              "fld_title000",
+              "fld_body0000"
+            ]
+          },
+          "revision": "sha256:98f5114c4aac7a8e651445457190f1bec73fdb1335edf9a65eb99969d0eb29e2"
+        }
+      }
+    },
+    {
+      "name": "profile-create",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-create",
+        "result": {
+          "profile": {
+            "contractVersion": "1.0",
+            "tableId": "articles",
+            "titleFieldId": "fld_title000",
+            "bodyFieldId": "fld_body0000",
+            "summaryFieldId": null,
+            "searchableFieldIds": [
+              "fld_title000",
+              "fld_body0000"
+            ]
+          },
+          "revision": "sha256:98f5114c4aac7a8e651445457190f1bec73fdb1335edf9a65eb99969d0eb29e2"
+        }
+      }
+    },
+    {
+      "name": "profile-stale",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [
+        {
+          "namespace": "content_profiles",
+          "logicalId": "articles",
+          "payload": {
+            "contractVersion": "1.0",
+            "tableId": "articles",
+            "titleFieldId": "fld_title000",
+            "bodyFieldId": "fld_body0000",
+            "summaryFieldId": null,
+            "searchableFieldIds": [
+              "fld_title000",
+              "fld_body0000"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-stale",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Content metadata changed elsewhere.",
+            "code": "content_profile.edit_conflict"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-invalid-bodyFieldId-4",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_title000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-invalid-bodyFieldId-4",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Body field must be richText or longText.",
+            "code": "content_profile.body_type_invalid",
+            "path": "bodyFieldId"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-invalid-titleFieldId-5",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "missing",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-invalid-titleFieldId-5",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Content profile field is missing from SchemaCore.",
+            "code": "content_profile.field_missing",
+            "path": "missing"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-invalid-titleFieldId-6",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_secret00",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-invalid-titleFieldId-6",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Title field must be text-like.",
+            "code": "content_profile.title_type_invalid",
+            "path": "titleFieldId"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-invalid-summaryFieldId-7",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": "fld_secret00",
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-invalid-summaryFieldId-7",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Summary field must be text-like.",
+            "code": "content_profile.summary_type_invalid",
+            "path": "summaryFieldId"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-invalid-searchableFieldIds-8",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_secret00"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-invalid-searchableFieldIds-8",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Searchable fields must be text-like.",
+            "code": "content_profile.search_field_invalid",
+            "path": "searchableFieldIds"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-invalid-searchableFieldIds-9",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_title000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-invalid-searchableFieldIds-9",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Searchable fields must be unique.",
+            "code": "content_profile.search_field_duplicate",
+            "path": "searchableFieldIds"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-invalid-tableId-10",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "missing",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-invalid-tableId-10",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Content profile table not found.",
+            "code": "content_profile.table_missing",
+            "path": "tableId"
+          }
+        }
+      }
+    },
+    {
+      "name": "profile-delete",
+      "method": "contentProfile.delete",
+      "params": {
+        "tableId": "articles",
+        "expectedRevision": "sha256:98f5114c4aac7a8e651445457190f1bec73fdb1335edf9a65eb99969d0eb29e2",
+        "idempotencyKey": "profile-delete"
+      },
+      "seed": [
+        {
+          "namespace": "content_profiles",
+          "logicalId": "articles",
+          "payload": {
+            "contractVersion": "1.0",
+            "tableId": "articles",
+            "titleFieldId": "fld_title000",
+            "bodyFieldId": "fld_body0000",
+            "summaryFieldId": null,
+            "searchableFieldIds": [
+              "fld_title000",
+              "fld_body0000"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-delete",
+        "result": {
+          "tableId": "articles"
+        }
+      }
+    },
+    {
+      "name": "profile-delete-missing",
+      "method": "contentProfile.delete",
+      "params": {
+        "tableId": "articles",
+        "expectedRevision": "sha256:98f5114c4aac7a8e651445457190f1bec73fdb1335edf9a65eb99969d0eb29e2",
+        "idempotencyKey": "profile-delete"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "profile-delete-missing",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Metadata item not found.",
+            "code": "content_model.not_found"
+          }
+        }
+      }
+    },
+    {
+      "name": "links-empty",
+      "method": "recordDocumentLink.list",
+      "params": {
+        "tableId": "articles",
+        "recordId": "record-1"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "links-empty",
+        "result": {
+          "items": []
+        }
+      }
+    },
+    {
+      "name": "links-list",
+      "method": "recordDocumentLink.list",
+      "params": {
+        "tableId": "articles",
+        "recordId": "record-1"
+      },
+      "seed": [
+        {
+          "namespace": "record_document_links",
+          "logicalId": "link-1",
+          "payload": {
+            "contractVersion": "1.0",
+            "linkId": "link-1",
+            "tableId": "articles",
+            "recordId": "record-1",
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "role": "reference",
+            "order": 1
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "links-list",
+        "result": {
+          "items": [
+            {
+              "link": {
+                "contractVersion": "1.0",
+                "linkId": "link-1",
+                "tableId": "articles",
+                "recordId": "record-1",
+                "documentId": "22222222-2222-4222-8222-222222222222",
+                "role": "reference",
+                "order": 1
+              },
+              "revision": "sha256:fa886a5f14484b4fdae44ad54970b7976b998fc8ca941e58a7416ef6d615c487"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "link-create-broken-allowed",
+      "method": "recordDocumentLink.commit",
+      "params": {
+        "link": {
+          "contractVersion": "1.0",
+          "linkId": "link-1",
+          "tableId": "articles",
+          "recordId": "record-1",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "role": "reference",
+          "order": 1
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "link-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "link-create-broken-allowed",
+        "result": {
+          "link": {
+            "contractVersion": "1.0",
+            "linkId": "link-1",
+            "tableId": "articles",
+            "recordId": "record-1",
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "role": "reference",
+            "order": 1
+          },
+          "revision": "sha256:fa886a5f14484b4fdae44ad54970b7976b998fc8ca941e58a7416ef6d615c487"
+        }
+      }
+    },
+    {
+      "name": "link-stale",
+      "method": "recordDocumentLink.commit",
+      "params": {
+        "link": {
+          "contractVersion": "1.0",
+          "linkId": "link-1",
+          "tableId": "articles",
+          "recordId": "record-1",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "role": "reference",
+          "order": 1
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "link-create"
+      },
+      "seed": [
+        {
+          "namespace": "record_document_links",
+          "logicalId": "link-1",
+          "payload": {
+            "contractVersion": "1.0",
+            "linkId": "link-1",
+            "tableId": "articles",
+            "recordId": "record-1",
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "role": "reference",
+            "order": 1
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "link-stale",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Content metadata changed elsewhere.",
+            "code": "record_document_link.edit_conflict"
+          }
+        }
+      }
+    },
+    {
+      "name": "link-record-missing",
+      "method": "recordDocumentLink.commit",
+      "params": {
+        "link": {
+          "contractVersion": "1.0",
+          "linkId": "link-1",
+          "tableId": "articles",
+          "recordId": "missing",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "role": "reference",
+          "order": 1
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "link-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "link-record-missing",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Record does not exist.",
+            "code": "record_document_link.record_missing",
+            "path": "recordId"
+          }
+        }
+      }
+    },
+    {
+      "name": "link-repair",
+      "method": "recordDocumentLink.repair",
+      "params": {
+        "linkId": "link-1",
+        "documentId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": "sha256:fa886a5f14484b4fdae44ad54970b7976b998fc8ca941e58a7416ef6d615c487",
+        "idempotencyKey": "link-repair"
+      },
+      "seed": [
+        {
+          "namespace": "record_document_links",
+          "logicalId": "link-1",
+          "payload": {
+            "contractVersion": "1.0",
+            "linkId": "link-1",
+            "tableId": "articles",
+            "recordId": "record-1",
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "role": "reference",
+            "order": 1
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "link-repair",
+        "result": {
+          "link": {
+            "contractVersion": "1.0",
+            "linkId": "link-1",
+            "tableId": "articles",
+            "recordId": "record-1",
+            "documentId": "33333333-3333-4333-8333-333333333333",
+            "role": "reference",
+            "order": 1
+          },
+          "revision": "sha256:c21e4386cd4ed8416c5b0536f77e2938377eec46cf24ed77fc54848f214b360e"
+        }
+      }
+    },
+    {
+      "name": "link-repair-missing",
+      "method": "recordDocumentLink.repair",
+      "params": {
+        "linkId": "link-1",
+        "documentId": "33333333-3333-4333-8333-333333333333",
+        "expectedRevision": "sha256:fa886a5f14484b4fdae44ad54970b7976b998fc8ca941e58a7416ef6d615c487",
+        "idempotencyKey": "link-repair"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "link-repair-missing",
+        "error": {
+          "code": -32180,
+          "message": "Content model error",
+          "data": {
+            "kind": "content_model_error",
+            "message": "Link not found.",
+            "code": "record_document_link.not_found"
+          }
+        }
+      }
+    },
+    {
+      "name": "link-delete",
+      "method": "recordDocumentLink.delete",
+      "params": {
+        "linkId": "link-1",
+        "expectedRevision": "sha256:fa886a5f14484b4fdae44ad54970b7976b998fc8ca941e58a7416ef6d615c487",
+        "idempotencyKey": "link-delete"
+      },
+      "seed": [
+        {
+          "namespace": "record_document_links",
+          "logicalId": "link-1",
+          "payload": {
+            "contractVersion": "1.0",
+            "linkId": "link-1",
+            "tableId": "articles",
+            "recordId": "record-1",
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "role": "reference",
+            "order": 1
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "link-delete",
+        "result": {
+          "linkId": "link-1"
+        }
+      }
+    },
+    {
+      "name": "invalid-params-21",
+      "method": "contentProfile.load",
+      "params": {
+        "tableId": ""
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "invalid-params-21",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "invalid-params-22",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "profile-create",
+        "extra": true
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "invalid-params-22",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "invalid-params-23",
+      "method": "contentProfile.commit",
+      "params": {
+        "profile": {
+          "contractVersion": "1.0",
+          "tableId": "articles",
+          "titleFieldId": "fld_title000",
+          "bodyFieldId": "fld_body0000",
+          "summaryFieldId": null,
+          "searchableFieldIds": [
+            "fld_title000",
+            "fld_body0000"
+          ]
+        },
+        "idempotencyKey": "missing-revision"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "invalid-params-23",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "invalid-params-24",
+      "method": "recordDocumentLink.commit",
+      "params": {
+        "link": {
+          "contractVersion": "1.0",
+          "linkId": "link-1",
+          "tableId": "articles",
+          "recordId": "record-1",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "role": "invalid",
+          "order": 1
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "link-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "invalid-params-24",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "invalid-params-25",
+      "method": "recordDocumentLink.commit",
+      "params": {
+        "link": {
+          "contractVersion": "1.0",
+          "linkId": "link-1",
+          "tableId": "articles",
+          "recordId": "record-1",
+          "documentId": "22222222-2222-4222-8222-222222222222",
+          "role": "reference",
+          "order": 10001
+        },
+        "expectedRevision": null,
+        "idempotencyKey": "link-create"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "invalid-params-25",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "invalid-params-26",
+      "method": "recordDocumentLink.repair",
+      "params": {
+        "linkId": "link-1",
+        "documentId": "invalid",
+        "expectedRevision": "sha256:fa886a5f14484b4fdae44ad54970b7976b998fc8ca941e58a7416ef6d615c487",
+        "idempotencyKey": "link-repair"
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "invalid-params-26",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "invalid-params-27",
+      "method": "recordDocumentLink.list",
+      "params": {
+        "tableId": "articles",
+        "recordId": "record-1",
+        "extra": 1
+      },
+      "seed": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "invalid-params-27",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    }
+  ]
+}

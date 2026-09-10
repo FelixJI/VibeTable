@@ -123,6 +123,100 @@
       "evidence": ["desktop/src/VibeTable.Desktop/Services/ProductRealtimeSession.cs", "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs", "backend/__main__.py", "backend/application/task_runtime.py", "backend/application/task_service.py", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
+      "id": "rpc.content-metadata-read",
+      "kind": "rpc",
+      "names": [
+        "contentProfile.load",
+        "recordDocumentLink.list"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "contentProfile.load",
+          "recordDocumentLink.list"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "18-workspace-search"
+      ],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Python content handlers are removed. Go owns validation, CAS and durable replay; packaged S18 qualification remains required.",
+      "evidence": [
+        "sidecar/internal/metadata/content.go",
+        "sidecar/internal/app/content_metadata_product_rpc.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
+      "id": "rpc.content-metadata-write",
+      "kind": "rpc",
+      "names": [
+        "contentProfile.commit",
+        "contentProfile.delete",
+        "recordDocumentLink.commit",
+        "recordDocumentLink.delete",
+        "recordDocumentLink.repair"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [],
+        "write": [
+          "contentProfile.commit",
+          "contentProfile.delete",
+          "recordDocumentLink.commit",
+          "recordDocumentLink.delete",
+          "recordDocumentLink.repair"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "18-workspace-search"
+      ],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Python content handlers are removed. Go owns validation, CAS and durable replay; packaged S18 qualification remains required.",
+      "evidence": [
+        "sidecar/internal/metadata/content.go",
+        "sidecar/internal/app/content_metadata_product_rpc.go",
+        "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
       "id": "rpc.data-format",
       "kind": "rpc",
       "names": ["data.generateTemplate", "data.previewImport"],
@@ -1160,106 +1254,6 @@
       "targetPr": null,
       "deleteWhen": "Python runtime route is removed; retain the public snapshot DTO, frozen Python wire corpus, and Go authoritative validation.",
       "evidence": ["sidecar/internal/app/query_validate_snapshot_product_rpc.go", "sidecar/internal/app/query_routes.go", "sidecar/internal/query/port.go", "tests/e2e/pocketbase_product_scenarios.json"]
-    },
-    {
-      "id": "rpc.shared-content-read",
-      "kind": "rpc",
-      "names": [
-        "contentProfile.load",
-        "recordDocumentLink.list"
-      ],
-      "currentPath": [
-        "wpfHost",
-        "pythonBff",
-        "goSidecar",
-        "pocketBase"
-      ],
-      "currentRoute": "pythonBff",
-      "classification": "GO_AUTHORITY",
-      "targetOwner": "GO_AUTHORITY",
-      "authority": "GO_AUTHORITY",
-      "effects": {
-        "read": [
-          "contentProfile.load",
-          "recordDocumentLink.list"
-        ],
-        "write": [],
-        "notification": [],
-        "state": []
-      },
-      "stateHolders": [
-        "goSidecar",
-        "pocketBase"
-      ],
-      "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
-      "timeout": "perHopBounded",
-      "productScenarios": [
-        "18-workspace-search"
-      ],
-      "targetSlice": "L5",
-      "targetPr": null,
-      "deleteWhen": "Go returns the public shared-content snapshots from authoritative metadata and Python content or surface orchestration has no production route.",
-      "evidence": [
-        "backend/__main__.py",
-        "backend/adapters/pocketbase/internal_metadata.py",
-        "backend/application/content_model_service.py",
-        "sidecar/internal/app/metadata_routes.go",
-        "tests/e2e/pocketbase_product_scenarios.json"
-      ]
-    },
-    {
-      "id": "rpc.shared-content-write",
-      "kind": "rpc",
-      "names": [
-        "contentProfile.commit",
-        "contentProfile.delete",
-        "recordDocumentLink.commit",
-        "recordDocumentLink.delete",
-        "recordDocumentLink.repair"
-      ],
-      "currentPath": [
-        "wpfHost",
-        "pythonBff",
-        "goSidecar",
-        "pocketBase"
-      ],
-      "currentRoute": "pythonBff",
-      "classification": "GO_AUTHORITY",
-      "targetOwner": "GO_AUTHORITY",
-      "authority": "GO_AUTHORITY",
-      "effects": {
-        "read": [],
-        "write": [
-          "contentProfile.commit",
-          "contentProfile.delete",
-          "recordDocumentLink.commit",
-          "recordDocumentLink.delete",
-          "recordDocumentLink.repair"
-        ],
-        "notification": [],
-        "state": []
-      },
-      "stateHolders": [
-        "goSidecar",
-        "pocketBase"
-      ],
-      "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
-      "timeout": "perHopBounded",
-      "productScenarios": [
-        "18-workspace-search"
-      ],
-      "targetSlice": "L5",
-      "targetPr": null,
-      "deleteWhen": "Go owns shared-content validation, revision, idempotency, and persistence and all corresponding Python write handlers are removed.",
-      "evidence": [
-        "backend/__main__.py",
-        "backend/adapters/pocketbase/internal_metadata.py",
-        "backend/application/content_model_service.py",
-        "sidecar/internal/app/metadata_routes.go",
-        "tests/e2e/pocketbase_product_scenarios.json"
-      ]
     },
     {
       "id": "rpc.surface-read",
