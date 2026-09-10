@@ -55,7 +55,12 @@ func lookupValuePageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}), querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}), queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
-		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+		unrelatedSurfaceRegistration(t, "interface.list"),
+		unrelatedSurfaceRegistration(t, "interface.load"),
+		unrelatedSurfaceRegistration(t, "interface.commit"),
+		unrelatedSurfaceRegistration(t, "interface.delete"),
+		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}))
 	if err != nil {
