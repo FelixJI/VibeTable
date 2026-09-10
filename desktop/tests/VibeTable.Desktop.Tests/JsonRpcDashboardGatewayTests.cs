@@ -14,7 +14,8 @@ public sealed class JsonRpcDashboardGatewayTests
     {
         var transport = new DashboardTransport();
         await using var client = new JsonRpcClient(transport);
-        var gateway = new JsonRpcDashboardGateway(client);
+        using var product = new JsonRpcProductDataGateway(client);
+        var gateway = new JsonRpcDashboardGateway(product);
 
         await gateway.ListDashboardsAsync(CancellationToken.None);
         AssertMethod(transport, "insights.listDashboards");
