@@ -2,47 +2,47 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
-using VibeTable.Infrastructure.Rpc;
+
 
 namespace VibeTable.Desktop.Services;
 
-/// <summary>Dashboard adapter over the supervisor-owned local JSON-RPC pipe.</summary>
+/// <summary>Dashboard adapter through the shared Host Product generation.</summary>
 public sealed class JsonRpcDashboardGateway : IDashboardRpcGateway
 {
-    private readonly JsonRpcClient _client;
+    private readonly JsonRpcProductDataGateway _product;
 
-    public JsonRpcDashboardGateway(JsonRpcClient client)
-        => _client = client ?? throw new ArgumentNullException(nameof(client));
+    public JsonRpcDashboardGateway(JsonRpcProductDataGateway product)
+        => _product = product ?? throw new ArgumentNullException(nameof(product));
 
     public Task<DashboardsResult> ListDashboardsAsync(CancellationToken token)
-        => _client.InvokeAsync<ListDashboardsParams, DashboardsResult>(
+        => _product.InvokeDashboardAsync<ListDashboardsParams, DashboardsResult>(
             "insights.listDashboards", new(), token);
 
     public Task<DashboardWorkspaceResult> ReadDashboardWorkspaceAsync(
         string dashboardId, CancellationToken token)
-        => _client.InvokeAsync<DashboardWorkspaceParams, DashboardWorkspaceResult>(
+        => _product.InvokeDashboardAsync<DashboardWorkspaceParams, DashboardWorkspaceResult>(
             "insights.readDashboardWorkspace", new(dashboardId), token);
 
     public Task<SaveDashboardDraftResult> SaveDashboardDraftAsync(
         SaveDashboardDraftParams parameters, CancellationToken token)
-        => _client.InvokeAsync<SaveDashboardDraftParams, SaveDashboardDraftResult>(
+        => _product.InvokeDashboardAsync<SaveDashboardDraftParams, SaveDashboardDraftResult>(
             "insights.saveDashboardDraft", parameters, token);
 
     public Task<DeleteDashboardResult> DeleteDashboardAsync(
         string dashboardId, CancellationToken token)
-        => _client.InvokeAsync<DashboardWorkspaceParams, DeleteDashboardResult>(
+        => _product.InvokeDashboardAsync<DashboardWorkspaceParams, DeleteDashboardResult>(
             "insights.deleteDashboardWorkspace", new(dashboardId), token);
 
     public Task<DashboardQueryResult> ExecuteDashboardQueryAsync(
         ExecuteDashboardQueryParams parameters, CancellationToken token)
-        => _client.InvokeAsync<ExecuteDashboardQueryParams, DashboardQueryResult>(
+        => _product.InvokeDashboardAsync<ExecuteDashboardQueryParams, DashboardQueryResult>(
             "insights.executeDashboardQuery", parameters, token);
 
     public Task<DashboardQueryLimits> GetDashboardQueryLimitsAsync(CancellationToken token)
-        => _client.InvokeAsync<InsightsEmptyParams, DashboardQueryLimits>(
+        => _product.InvokeDashboardAsync<InsightsEmptyParams, DashboardQueryLimits>(
             "insights.dashboardQueryLimits", new(), token);
 
     public Task<PanelManifestResult> GetPanelManifestAsync(CancellationToken token)
-        => _client.InvokeAsync<InsightsEmptyParams, PanelManifestResult>(
+        => _product.InvokeDashboardAsync<InsightsEmptyParams, PanelManifestResult>(
             "insights.panelManifest", new(), token);
 }

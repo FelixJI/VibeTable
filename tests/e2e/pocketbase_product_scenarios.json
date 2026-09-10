@@ -92,7 +92,7 @@
   {
     "id": "16-dashboard-lifecycle",
     "title": "Dashboard 可视化、筛选与冲突闭环",
-    "requirement": "通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision。",
+    "requirement": "通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision；随后真实重启 sidecar，fresh 公开 list/workspace 验证完整面板、配置、绑定与 revision 持久，源记录保持不变。",
     "capabilities": ["dashboard.lifecycle", "dashboard.visualization", "dashboard.filtering", "dashboard.drilldown", "dashboard.conflict", "release.smoke"]
   },
   {
