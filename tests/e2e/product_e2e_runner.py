@@ -326,6 +326,7 @@ def _wait_for_cdp(
     port: int,
     scope: _SnapshotScope,
     process_network: dict[str, Any] | None = None,
+    readiness_dir: Path | None = None,
 ) -> None:
     endpoint = f"http://127.0.0.1:{port}/json/version"
     deadline = time.monotonic() + CDP_TIMEOUT_SECONDS
@@ -333,6 +334,18 @@ def _wait_for_cdp(
     while time.monotonic() < deadline:
         if process_network is not None:
             _record_process_network(scope, process_network)
+        if readiness_dir is not None:
+            readiness = _read_json(readiness_dir / "vibetable-readiness.json")
+            startup_error = readiness.get("error") if readiness is not None else None
+            if (
+                readiness is not None
+                and readiness.get("ready") is False
+                and isinstance(startup_error, str)
+                and startup_error.strip()
+            ):
+                raise RuntimeError(
+                    f"WPF host startup failed before CDP became ready: {startup_error}"
+                )
         exit_code = scope.root.poll()
         if exit_code is not None:
             raise RuntimeError(f"WPF host exited with code {exit_code} before CDP became ready")
@@ -1513,7 +1526,7 @@ def run_scenario(
                 if scenario.id == "01-offline-first-start"
                 else None
             )
-            _wait_for_cdp(port, scope, process_network)
+            _wait_for_cdp(port, scope, process_network, readiness_dir)
             cdp_owner = WindowsTcpListenerOwnerLease.capture(port)
             resources.enter_context(_close_owner_on_primary_error(cdp_owner))
             node_command = [

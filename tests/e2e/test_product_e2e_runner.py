@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import json
 import sqlite3
 import subprocess
@@ -1195,6 +1196,96 @@ def test_missing_owner_cleanup_report_fails_closed() -> None:
         "errors": ["captured CDP owner cleanup returned no report"],
         "status": "failed",
     }
+
+
+@pytest.mark.parametrize(
+    "readiness_json",
+    [
+        None,
+        "{",
+        "[]",
+        "{}",
+        '{"ready": false}',
+        '{"ready": false, "error": null}',
+        '{"ready": false, "error": "  "}',
+        '{"ready": 0, "error": "bad"}',
+        '{"ready": true, "error": "ignored"}',
+    ],
+)
+def test_cdp_wait_keeps_polling_for_pending_or_malformed_readiness(
+    monkeypatch, tmp_path: Path, readiness_json: str | None
+) -> None:
+    if readiness_json is not None:
+        (tmp_path / "vibetable-readiness.json").write_text(readiness_json, encoding="utf-8")
+    calls: list[str] = []
+
+    def urlopen(endpoint, **_kwargs):
+        calls.append(endpoint)
+        if len(calls) == 1:
+            raise OSError("not listening yet")
+        return io.StringIO('{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/test"}')
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+    runner._wait_for_cdp(9222, _FakeScope(), readiness_dir=tmp_path)
+    assert calls == ["http://127.0.0.1:9222/json/version"] * 2
+
+
+def test_run_scenario_surfaces_terminal_readiness_before_cdp_timeout(
+    monkeypatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="startup")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}), encoding="utf-8"
+    )
+    scope = _FakeScope(members=(42,))
+    startup_error = "Product runtime startup failed: COMException: 0x80080005"
+    readiness_paths: list[Path] = []
+    cdp_calls: list[str] = []
+    clock = 0.0
+
+    def launch(command, **_kwargs):
+        readiness_dir = Path(command[command.index("--readiness-dir") + 1])
+        readiness_paths.append(readiness_dir / "vibetable-readiness.json")
+        return scope
+
+    def urlopen(endpoint, **_kwargs):
+        cdp_calls.append(endpoint)
+        readiness_paths[0].write_text(
+            json.dumps({"ready": False, "mode": None, "error": startup_error}), encoding="utf-8"
+        )
+        raise OSError("timed out")
+
+    def advance_clock(_seconds):
+        nonlocal clock
+        clock += 1.0
+
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(runner, "CDP_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(runner.time, "sleep", advance_clock)
+    monkeypatch.setattr(runner.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        runner,
+        "_run_node_runner",
+        lambda *_args, **_kwargs: pytest.fail("Node must not run after terminal startup failure"),
+    )
+    result = runner.run_scenario(
+        scenario, package_root=package, evidence_root=tmp_path / "evidence", node="node"
+    )
+    assert result["error"]["code"] == "E2E_INFRASTRUCTURE_FAILED"
+    assert startup_error in result["error"]["message"]
+    assert "CDP endpoint was not ready" not in result["error"]["message"]
+    assert len(cdp_calls) == 1
+    assert cdp_calls[0].endswith("/json/version")
+    assert result["lifecycle"]["normalExitRequested"] is False
+    assert result["lifecycle"]["status"] == "failed"
+    assert result["lifecycle"]["finalCleanup"]["status"] == "passed"
+    assert result["lifecycle"]["finalCleanup"]["remainingPids"] == []
+    assert scope.terminate_calls > 0
 
 
 def test_run_scenario_scope_launch_failure_executes_no_followup_app_logic(
