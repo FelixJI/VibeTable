@@ -328,6 +328,7 @@ export function createPresetViewController(
   watch(
     () => dependencies.workspace.currentTable,
     (collection) => {
+      ++loadGeneration;
       pendingView.value = null;
       dependencies.presets.clearPresets(collection ?? "");
       dependencies.query.reset(collection ?? "");

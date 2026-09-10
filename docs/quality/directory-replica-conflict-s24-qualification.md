@@ -166,3 +166,19 @@ root 将业务投影修复正常同步到 main `9fa626a13840830037bcb82eaddc0adf
 - seed/fork/resolve/reopen 的左右 Host 共 8 项生命周期均 exitCode 0，owner lease cleanup passed、errors 0、stableHandleClosed true。
 
 该候选证明本节声明的真实目录副本冲突、公开恢复预览和 Host 重启可达性范围；不扩大为右端再次同步收敛、云盘断网恢复或实际执行败方恢复。最终远端资格仍待 fresh CI 及合并后 CI/CD。
+
+## PR #333 CI 失败与 Preset 关闭代际修复
+
+source `af7442d8` 的 CI run `34457594963` 中，S24 seed 通过，fork-left 已通过9项业务断言，包括关闭保护和 epoch 5 重新打开。实际终止点是 `waitForPublishedReplicaUi` 等待释放缓存预览按钮启用60秒超时；这不是之前无 requestId 的查询失败。证据为 resilience lane 的 `20260910T091449Z/24-directory-replica-conflict/24-directory-replica-conflict-result.json` 和同轮 `product-e2e-report.json`。
+
+另有一个在途 `preset.list`：09:33:49.851Z 选表，49.852Z 发出请求，51.186Z 开始 `workspace.close`，51.224Z 返回 `workspace.session_stale`（requestId `rmtvbye8s-33-971e53b0-9f08-4b2a-ad85-fa13ca5936e2`）。该时序符合 Host 会话退役取消请求的路径，不能据此认定它造成复制超时。按钮是否启用取决于 busy、isTransitioning、pendingSync 和 replicaVerified；当前下载的结果没有最终四项状态、重开后的 replica.changed 载荷及 worker 发布日志，尚不能区分发布失败和 UI 投影问题。Preset 迁移 Go 的 PR #327 合并本身也不能证明这次失败已修复。
+
+独立复现发现 `presetViewController` 清空 currentTable 时没有使请求代际失效，旧 list 拒绝会继续修改已清空的呈现错误状态。本次只在表选择变化时推进代际，让关闭、切表和重开同表遵循相同生命周期；Host 取消终结、bridge 错误诊断与 S24 门禁均保持原语义，当前请求的真实错误仍显示。
+
+固定 Node 24.19.0、仓库锁一致依赖执行：
+
+- RED：仓库根运行 `node desktop/web-grid/node_modules/vitest/vitest.mjs run --root desktop/web-grid src/workspace/presetViewController.test.ts`。旧生产实现 **EXIT1，1 failed / 9 passed**；关闭到 null 后旧请求拒绝仍调用 presets.fail，明确在新断言失败。
+- GREEN：仓库根运行 `node desktop/web-grid/node_modules/vitest/vitest.mjs run --root desktop/web-grid src/workspace/presetViewController.test.ts src/services/presetVersionService.test.ts src/bridge/presetVersionBridgeContract.test.ts`，**EXIT0，3 files / 15 tests passed**。覆盖关闭后的旧拒绝、切换其他表、重开同表、当前列表错误和正常当前列表成功。
+- 类型检查：在 `desktop/web-grid` 运行 `node node_modules/vue-tsc/bin/vue-tsc.js --noEmit`，**EXIT0**。
+
+本次未执行构建、GUI 或重跑 CI；这项呈现代际修复不消除原 CI 的 bridge 取消记录，也不证明复制按钮超时已解决。该超时及 fresh CI 资格继续保持未解决状态。
