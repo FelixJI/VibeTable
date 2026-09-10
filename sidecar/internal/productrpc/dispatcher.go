@@ -202,6 +202,9 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, raw []byte) Response
 		if data, public := dashboardErrorData(request.Method, err); public {
 			return errorResponse(request.ID, request.Wire, CodeDashboard, "Insights error", data)
 		}
+		if data, public := presetErrorData(request.Method, err); public {
+			return errorResponse(request.ID, request.Wire, -32080, "Insights error", data)
+		}
 		if data, public := surfaceErrorData(request.Method, err); public {
 			return errorResponse(request.ID, request.Wire, CodeSurface, "Interface error", data)
 		}

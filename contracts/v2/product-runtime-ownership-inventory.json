@@ -475,7 +475,6 @@
       "id": "rpc.insights-shared-read",
       "kind": "rpc",
       "names": [
-        "preset.list",
         "settings.readShared",
         "version.compare",
         "version.list"
@@ -492,7 +491,6 @@
       "authority": "GO_AUTHORITY",
       "effects": {
         "read": [
-          "preset.list",
           "settings.readShared",
           "version.compare",
           "version.list"
@@ -532,8 +530,6 @@
       "id": "rpc.insights-shared-write",
       "kind": "rpc",
       "names": [
-        "preset.delete",
-        "preset.save",
         "version.create",
         "version.delete",
         "version.promote",
@@ -552,8 +548,6 @@
       "effects": {
         "read": [],
         "write": [
-          "preset.delete",
-          "preset.save",
           "version.create",
           "version.delete",
           "version.promote",
@@ -839,6 +833,46 @@
       "targetPr": null,
       "deleteWhen": "The on-demand Worker owns package and Node execution only, Go owns shared catalog, audit, and mutation state, WPF owns task settlement, and the persistent BFF lifecycle route is removed.",
       "evidence": ["backend/__main__.py", "backend/application/plugin_execution_runtime.py", "backend/application/plugin_platform_service.py", "backend/infrastructure/plugin_package_lifecycle.py", "backend/infrastructure/plugin_worker.py", "tests/e2e/pocketbase_product_scenarios.json"]
+    },
+    {
+      "id": "rpc.preset-read",
+      "kind": "rpc",
+      "names": ["preset.list"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": ["preset.list"], "write": [], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "clientPendingOnly",
+      "timeout": "perHopBounded",
+      "productScenarios": ["19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Preset Python handlers are removed; the Go aggregate owns normalized views, CAS and durable replay.",
+      "evidence": ["sidecar/internal/metadata/preset.go", "sidecar/internal/app/preset_product_rpc.go", "contracts/v2/preset-python-oracle.json"]
+    },
+    {
+      "id": "rpc.preset-write",
+      "kind": "rpc",
+      "names": ["preset.delete", "preset.save"],
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {"read": [], "write": ["preset.delete", "preset.save"], "notification": [], "state": []},
+      "stateHolders": ["goSidecar", "pocketBase"],
+      "stateLifetime": "workspace",
+      "cancellation": "clientPendingOnly",
+      "timeout": "perHopBounded",
+      "productScenarios": ["19-gallery-lifecycle", "20-kanban-lane-drag", "21-calendar-date-move", "22-timeline-date-move"],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Preset Python handlers are removed; the Go aggregate owns normalized views, CAS and durable replay.",
+      "evidence": ["sidecar/internal/metadata/preset.go", "sidecar/internal/app/preset_product_rpc.go", "contracts/v2/preset-python-oracle.json"]
     },
     {
       "id": "rpc.query-cursor-window",

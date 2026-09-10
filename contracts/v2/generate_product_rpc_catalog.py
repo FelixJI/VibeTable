@@ -319,9 +319,11 @@ def _registered_models() -> dict[str, type[BaseModel]]:
         ExecuteDashboardQueryParams,
         ListDashboardsParams,
         SaveDashboardDraftParams,
+        ListPresetsParams,
+        SavePresetParams,
+        DeletePresetParams,
     )
 
-    # Go-owned Dashboard methods keep typed public parameters after Python exit.
     result.update(
         {
             "insights.listDashboards": ListDashboardsParams,
@@ -331,6 +333,9 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             "insights.executeDashboardQuery": ExecuteDashboardQueryParams,
             "insights.dashboardQueryLimits": ListDashboardsParams,
             "insights.panelManifest": ListDashboardsParams,
+            "preset.list": ListPresetsParams,
+            "preset.save": SavePresetParams,
+            "preset.delete": DeletePresetParams,
         }
     )
     result.update(PRODUCT_PARAM_MODELS)

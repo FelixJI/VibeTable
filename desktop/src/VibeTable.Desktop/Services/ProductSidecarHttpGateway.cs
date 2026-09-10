@@ -451,7 +451,8 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             ValidateProductErrorData(data);
         if (code == -32170 && !SurfaceRpcErrorContract.IsValid(method, data))
             throw InvalidResponse();
-        if (code == -32080 && !IsValidDashboardErrorData(method, message, data))
+        if (code == -32080 && !IsValidDashboardErrorData(method, message, data)
+            && !IsValidPresetErrorData(method, message, data))
             throw InvalidResponse();
         return new ProductSidecarRpcError(
             code,
@@ -478,6 +479,24 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
                 or "dashboard_manifest_invalid" or "dashboard_panel_membership_invalid" or "dashboard_storage_invalid"
                 or "dashboard_persistence_failed" or "dashboard_idempotency_conflict" or "dashboard_query_invalid")
             && (!field || IsNonEmptyString(path));
+    }
+    internal static bool IsValidPresetErrorData(string method, string message, JsonElement data)
+    {
+        if (method is not ("preset.save" or "preset.delete")
+            || message != "Insights error"
+            || !HasExactProperties(data, "kind", "message", "code", "field")
+            || data.GetProperty("kind").ValueKind != JsonValueKind.String
+            || data.GetProperty("kind").GetString() != "insights_error"
+            || data.GetProperty("code").ValueKind != JsonValueKind.String
+            || data.GetProperty("field").ValueKind != JsonValueKind.String
+            || data.GetProperty("message").ValueKind != JsonValueKind.String)
+            return false;
+        var projection = (data.GetProperty("code").GetString(),
+            data.GetProperty("field").GetString(), data.GetProperty("message").GetString());
+        if (projection is not ("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.")
+            and not ("preset_idempotency_conflict", "operationId", "Operation was used for another Preset request."))
+            return false;
+        return true;
     }
     private static void ValidateProductErrorData(JsonElement data)
     {
