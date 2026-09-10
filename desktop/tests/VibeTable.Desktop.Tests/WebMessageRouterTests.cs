@@ -1148,6 +1148,50 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    [DataRow("preset.list")]
+    [DataRow("preset.save")]
+    [DataRow("preset.delete")]
+    public void PresetGoRoutesRequireScopeAndPreservePayloadAndWire(string method)
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(
+            dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default,
+            ProductRpcCapabilityManifest.Default)
+        {
+            IsReady = true,
+        };
+        JsonElement payload = JsonSerializer.Deserialize<JsonElement>(
+            "{}");
+        HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new
+        {
+            type = method, requestId = "preset-go", payload,
+        }));
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", reply?.Payload?.Code);
+        Assert.HasCount(0, dispatched);
+        string scoped = JsonSerializer.Serialize(new
+        {
+            type = method, requestId = "preset-go", payload,
+            scope = new
+            {
+                scope = "workspace",
+                workspaceId = "11111111-1111-4111-8111-111111111111",
+                sessionEpoch = 7,
+                operationId = "22222222-2222-4222-8222-222222222222",
+                sequence = 1,
+            },
+        });
+        Assert.IsNull(router.Route(scoped));
+        using JsonDocument document = JsonDocument.Parse(scoped);
+        RoutedWebRequest request = dispatched.Single();
+        Assert.AreEqual(method, request.Type);
+        Assert.AreEqual("preset-go", request.RequestId);
+        Assert.IsTrue(JsonElement.DeepEquals(payload, request.Payload));
+        Assert.IsTrue(JsonElement.DeepEquals(document.RootElement.GetProperty("scope"), request.Wire));
+    }
+
+    [TestMethod]
     [DataRow("{}", false)]
     [DataRow("{\"snapshot\":null}", false)]
     [DataRow("{\"snapshot\":[]}", false)]
