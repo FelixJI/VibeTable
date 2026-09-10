@@ -58,3 +58,24 @@ diff 94.12%（16/17）；这是诊断指标，不能代替完整入口通过。
 
 上述 runtime 变更及主干同步不由早先 source `2fd495d7` 的包证据覆盖。
 当前提交仍需 fresh CI 的完整构建、smoke 与 E2E 门禁，尚未具备合并资格。
+
+## 同步计算预检与副本准入主干
+
+候选 `f5d639d45ef0611cb97f0083b95113590b05eb56` 正常合入 main
+`58032b97043c2bba80a8eb1f65ae2906797e3251`，无冲突；History 生产实现未被同步改动。
+独立 Standards 与 Spec 增量审查均为 0 项新增问题。
+
+- `uv run --frozen --no-sync python scripts/automation_project.py python-quality`：
+  Ruff format/check、backend Pyright/mypy 通过；1861 passed、1 skipped，覆盖率
+  91.42%，完整入口退出 0。日志 `build/history-main320-python-quality.log`。
+  先前只跑两份 History 契约的 59 项断言通过，但因作用域不足触发全仓 85% 覆盖率失败；
+  不将该定向命令记为成功，也未降低阈值。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release -p:RestoreLockedMode=true --filter 'FullyQualifiedName~GridStateCoordinatorTests|FullyQualifiedName~WorkspaceProductControllerInterfaceTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests' --logger 'trx;LogFileName=history-main320.trx' --results-directory build/history-main320`：
+  99 passed、0 failed、0 skipped；日志 `build/history-main320-host.log`。
+- sidecar 下 Go 1.27.0 执行
+  `go test ./internal/computationplan ./internal/fieldchange ./internal/productrpc ./internal/app -run 'History|Computation|Lookup|Field' -count=1`：
+  前三个包通过，app 的 `TestSchemaGetTableProductHTTPMatchesFieldRouteValidationError`
+  因 TempDir RemoveAll 的目录非空错误失败，整体退出 1；没有业务断言失败，
+  未添加重试或修改清理门禁。日志 `build/history-main320-go.log`。
+
+上述结果不替代该新 head 的 GitHub 完整 CI；旧包 S07 证据仍只对应上文原 source。
