@@ -20,7 +20,7 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "history.read" or "lookup.list" or "mutation.apply" or "mutation.preview" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "schema.list"
+            Assert.AreEqual(method is "contentProfile.commit" or "contentProfile.delete" or "contentProfile.load" or "recordDocumentLink.commit" or "recordDocumentLink.delete" or "recordDocumentLink.list" or "recordDocumentLink.repair" or "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "history.read" or "lookup.list" or "mutation.apply" or "mutation.preview" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "schema.list"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
                 route, method);
         }

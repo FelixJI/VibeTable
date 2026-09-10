@@ -133,3 +133,22 @@ run `20260909T150507Z` / session 41605 EXIT0：1/1 PASS，21 项断言，19.554s
 - Bridge failures 0、pending 0；重启窗口仅有 5 项原机制精确确认的 BACKEND_UNAVAILABLE，未吞意外失败。Renderer 无 page error、意外 console 或外部 HTTP 请求；Host 正常 exit 0，membersAfterExit、descendantsAfterExit、final remainingPids 均空，portsReleased、ownerLeaseCleanup 和 finalCleanup 全通过。
 
 最新组合的完整 Python 入口 `uv run --frozen --no-sync python scripts/automation_project.py python-quality` 由主任务运行，handle `10769`，**EXIT 0：1851 PASS / 1 skip，78.90s，coverage 91.60%**；Ruff、Pyright、mypy 均通过，日志 `build/content-python-quality-main.log`。这是当前 3ef 与 main 146a 组合的完整结果，旧 ee27 的 1823 PASS 仍单独保留。上述本地通过不覆盖旧 Go TempDir 清理失败，也不替代尚未执行的远端完整 required 门禁。
+
+## Host 独立 owner 预期的补充验证
+
+同步后补查五组 Host 测试，初次为131 passed、4 failed。添加TRX的同一程序集诊断
+确认四项都是迁移后遗漏的独立预期：Go方法完整列表未列七项、route selector 与公开
+policy测试仍预期pythonBff，以及白名单成功输入未给新增Go方法提供合法workspace scope。
+未修改生产路由或scope验证；仅在三份测试中明确列入Content七方法并按既有格式提供scope。
+
+当前相同五组复验为135 passed、0 failed、0 skipped（18s）：
+
+```text
+dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release -p:RestoreLockedMode=true --filter 'FullyQualifiedName~HostProductRpcCompositionTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~WorkspaceRequestDispatcherQueryTests' --logger 'trx;LogFileName=content-main-host-contracts-correction.trx' --results-directory build/qa/content-main-host-contracts
+```
+
+原quiet日志 `build/content-main-host-contracts.log`、带详情的
+`build/content-main-host-contracts-diagnostic.log` 与原TRX保留；复验日志为
+`build/content-main-host-contracts-correction.log`，TRX位于上述results目录。
+这些测试修正及文档相对实际构建source3ef的production runtime diff为零，不重建相同包，
+当前分支仍需完整fresh CI。此处不覆盖或改变之前Go TempDir清理失败的结论。
