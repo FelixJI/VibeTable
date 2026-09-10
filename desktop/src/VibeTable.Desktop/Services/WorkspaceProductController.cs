@@ -370,7 +370,12 @@ public sealed class WorkspaceProductController : IAsyncDisposable
                     break;
                 default:
                     if (IsWorkspaceMutation(request.V2Method!)
-                        && !_session.CurrentSession.Writable)
+                        && !_session.CurrentSession.Writable
+                        && !IsAdmittedProvisionalReplicaOperation(
+                            request.V2Method!,
+                            request.Scope,
+                            epochLease,
+                            _session.CurrentSession))
                     {
                         throw new WorkspaceRegistryException(
                             "workspace.read_only",
@@ -656,6 +661,20 @@ public sealed class WorkspaceProductController : IAsyncDisposable
             or "retention.apply"
             or "replica.forceTakeover"
             or "conflict.apply";
+
+    private static bool IsAdmittedProvisionalReplicaOperation(
+        string method,
+        WorkspaceWireScope? scope,
+        WorkspaceRequestEpochLease? epochLease,
+        WorkspaceSessionV2 session)
+        => method is "replica.forceTakeover" or "conflict.apply"
+            && scope is not null
+            && epochLease is not null
+            && session.State == WorkspaceSessionState.OpenedProvisional
+            && session.OpenMode == WorkspaceOpenMode.Provisional
+            && session.Provisional
+            && !session.Writable
+            && session.Phase == WorkspaceSessionPhase.Idle;
 
     private static Guid ReadRequiredGuid(JsonElement value, string name)
     {
