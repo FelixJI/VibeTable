@@ -1,9 +1,13 @@
 # Preset 持久视图：原 Python 公开语义冻结
 
-生产者固定为 main `146a9c2cac5998ee013daebc78eedff0bd4a7ca5`。本提交仅冻结
-`preset.list/save/delete` 的 53 个样本，不迁移 owner、不改变生产代码、catalog 或门禁。
-生成器在运行前用 Git diff 确认 backend、pyproject.toml、uv.lock 与生产者一致，并确认
-实际导入的是本工作树 backend；生成期望不调用任何拟迁移的 Go 实现。
+当前候选已将 `preset.list/save/delete` 完整迁移到 Go/PocketBase 权威路由，关闭旧
+Python 写入口，并修复真实 workspace gate 的重放及 Host 冲突投影。后文分阶段保留冻结、
+实施、失败与纠正证据；历史冻结结果不替代当前新包或远端 CI 资格。
+
+冻结生产者为 main `146a9c2cac5998ee013daebc78eedff0bd4a7ca5`。初始冻结提交
+`18bf403b272d28e6c9489aab2212f79b4f2cec95` 捕获 53 个原 Python 样本，当时未改 owner。
+当前校验器隔离提取可从 main 到达的 producer backend，重放原捕获并精确比较完整 JSON；
+不依赖初始冻结提交对象，不调用 Go 生成期望。
 
 ## 独立聚合与 module 设计
 
@@ -12,13 +16,13 @@ Preset 是单个持久视图 aggregate：业务身份、collection、name、view
 是同一个 view DTO 的 kind，不是五个存储 owner。filter/sort/group/summary、共享可见字段、
 布局配置均属于 view；设备窗口/滚动/像素宽度属于 GridState，不纳入本意图。
 
-现在 InsightsService 同时承载 Dashboard 与 Content Version；后续仅把 Preset 的验证、
-身份派生、单聚合保存删除及公开投影集中进独立 module，不迁移其他能力，不另建通用
+本批把 Preset 的验证、身份派生、单聚合保存删除及公开投影集中进独立 module；
+InsightsService 保留 Dashboard 与 Content Version，不迁移其他能力，不另建通用
 framework。底层复用 PocketBase metadata 的事务/CAS/receipt/audit/outbox；真正 seam 是
-三方法的公开请求，而非让调用方掌握物理 collection。Python 的 metadata adapter 是本轮
+三方法的公开请求，而非让调用方掌握物理 collection。Python 的 metadata adapter 是冻结捕获时
 真实执行的 adapter，脚本只替换最底层 client 回复，保留 current 读取与写参数编排。
 
-真实调用链：`backend/__main__.py` 注册三方法 → `RpcDispatcher` 验证 Params 并解包 →
+冻结时的真实调用链：`backend/__main__.py` 注册三方法 → `RpcDispatcher` 验证 Params 并解包 →
 `InsightsService` → `PocketBaseInternalMetadataPort` → 当前 sidecar metadata client。
 冻结时使用完全相同的三个 handler 与 Params 注册，不启动整个 BFF/sidecar。
 
@@ -221,3 +225,18 @@ dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj
 GREEN TRX在同results目录。未改冻结53例oracle或Go authority，未构建/重跑产品场景。
 Host runtime已变，旧包S20–S22通过也不归为当前源码资格；主任务需要安排新包与必要产品
 验证。此次源码测试通过不证明S19已经在真实包恢复，也不替代独立审查或远端required。
+## Host 冲突投影修复后的完整包资格
+
+生产 source `c673a2a1b103e6104bd352ff8a63b51b47e79b36` 的独立 Standards/Spec 尾审均无确定问题。
+`uv run --frozen --no-sync python scripts/build_next.py --release` 完整入口退出 0，含 self-update smoke 和原子发布目录；日志 `build/qa/preset-metadata/build-release-host-projection.log`。
+
+同一包运行：
+
+```text
+uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --evidence-root build/qa/preset-metadata/product-e2e-host-projection --scenario 19-gallery-lifecycle --scenario 20-kanban-lane-drag --scenario 21-calendar-date-move --scenario 22-timeline-date-move
+```
+
+4 passed、0 failed、0 skipped，合计51项断言；S19/S20/S21/S22分别11.507s、14.778s、14.581s、14.431s。
+报告 `build/qa/preset-metadata/product-e2e-host-projection/20260910T032738Z/product-e2e-report.json` 的包审计及 freshness通过，四场景未预期bridge failure/pending均0、正常退出码均0、清理均通过。Gallery已证明typed冲突恢复、完整配置跨sidecar重启及公开删除；其他三场景保留原真实记录移动与新重启配置检查。
+
+该结果覆盖最新Host修复，原S19失败和升级复制/TempDir失败记录保留，不将其它整组EXIT1改写为成功。远端fresh CI、合并及合并后CI/CD仍是后续门禁。
