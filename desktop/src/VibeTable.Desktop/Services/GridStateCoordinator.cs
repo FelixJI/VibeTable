@@ -181,6 +181,22 @@ public sealed class GridStateCoordinator
         return token;
     }
 
+    /// <summary>Completes one cursor read without broadcasting its result.</summary>
+    public async Task<TablePage?> RequestNextWindowAsync(
+        string cursor, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(cursor) || _cursorFetchInFlight || _queryCts is null)
+            return null;
+        _cursorFetchInFlight = true;
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            _queryCts.Token, cancellationToken);
+        var completion = new TaskCompletionSource<TablePage>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await FetchNextWindowAsync(cursor, _generation, lifetime.Token, completion)
+            .ConfigureAwait(false);
+        return await completion.Task.ConfigureAwait(false);
+    }
+
     public void RequestNextWindow(string cursor)
     {
         if (string.IsNullOrWhiteSpace(cursor) || _cursorFetchInFlight || _queryCts is null)
@@ -372,37 +388,48 @@ public sealed class GridStateCoordinator
     }
 
     private async Task FetchNextWindowAsync(
-        string cursor, int generation, CancellationToken token)
+        string cursor, int generation, CancellationToken token,
+        TaskCompletionSource<TablePage>? completion = null)
     {
         try
         {
+            token.ThrowIfCancellationRequested();
             TablePage page = await _gateway.FetchTableCursorAsync(cursor, token)
                 .ConfigureAwait(true);
             if (IsStale(generation) || token.IsCancellationRequested)
             {
+                completion?.TrySetCanceled(token);
                 return;
             }
-            _notify(new TableNotification
-            {
-                Type = "table.windowLoaded",
-                Page = page,
-            });
+            if (completion is not null)
+                completion.TrySetResult(page);
+            else
+                _notify(new TableNotification
+                {
+                    Type = "table.windowLoaded",
+                    Page = page,
+                });
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // Superseded query.
+            completion?.TrySetCanceled(token);
         }
         catch (Exception ex)
         {
-            if (!IsStale(generation))
+            if (IsStale(generation) || token.IsCancellationRequested)
             {
+                completion?.TrySetCanceled(token);
+                return;
+            }
+            if (completion is not null)
+                completion.TrySetException(ex);
+            else
                 _notify(new TableNotification
                 {
                     Type = "operation.failed",
                     MutationResult = new MutationOutcome(
                         "query.cursor", false, MutationErrorMapper.Map(ex), null),
                 });
-            }
         }
         finally
         {

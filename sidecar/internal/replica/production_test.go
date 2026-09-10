@@ -20,6 +20,21 @@ type productionCatalog struct {
 	records []snapshot.Record
 }
 
+// This manager-unit port records publication requests; the real Runtime/catalog
+// publication and public recovery contract are covered in workspacev2.
+type productionRecoveryPublisher struct {
+	records []snapshot.Record
+	err     error
+}
+
+func (publisher *productionRecoveryPublisher) PreserveRecoverySnapshot(_ context.Context, record snapshot.Record) error {
+	if publisher.err != nil {
+		return publisher.err
+	}
+	publisher.records = append(publisher.records, record)
+	return nil
+}
+
 type productionProvisionalAcceptor struct {
 	records []snapshot.Record
 	err     error
@@ -230,13 +245,14 @@ func productionManagerFixture(
 	root := strictRecord.ObjectMap["database"]
 	directory := t.TempDir()
 	options := ManagerOptions{
-		WorkspaceID: workspaceID,
-		DeviceID:    "33333333-3333-4333-8333-333333333333",
-		QueuePath:   filepath.Join(directory, "queue.db"),
-		StatePath:   filepath.Join(directory, "state.db"),
-		Remote:      remote,
-		Catalog:     productionCatalog{records: []snapshot.Record{strictRecord}},
-		Repository:  repository,
+		WorkspaceID:       workspaceID,
+		DeviceID:          "33333333-3333-4333-8333-333333333333",
+		QueuePath:         filepath.Join(directory, "queue.db"),
+		StatePath:         filepath.Join(directory, "state.db"),
+		Remote:            remote,
+		Catalog:           productionCatalog{records: []snapshot.Record{strictRecord}},
+		RecoveryPublisher: &productionRecoveryPublisher{},
+		Repository:        repository,
 		Authority: &productionAuthority{
 			value: AuthorityState{
 				WorkspaceID: workspaceID,

@@ -8,7 +8,7 @@
 - GitHub run：[main CI 34309394462](https://github.com/FelixJI/VibeTable/actions/runs/34309394462)
 - 报告契约：`contractVersion=2.0`
 - 结果：29/29 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`24-directory-replica-conflict`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：2（`07-attachment-history`、`17-interface-lifecycle`）。
 
@@ -23,6 +23,13 @@
 S23 证明目录副本的公开创建、读写、释放活动缓存、同 UUID 重开与 sidecar 替代进程恢复。此范围不扩展为手动同步、跨设备 offline/reconnect、冲突处理或 exclusive-writer 资格；手动 `replica.synchronize` 保持 Internal only。S12/S14/S23 本次均通过；[历史失败记录](quality/product-e2e-failure-notes.md)继续保留原始出处与未归因状态，本次通过不替代历史根因分析。
 
 报告来自该 run 的 `ci-lane-resilience`，内部路径 `lane-evidence/resilience/20260909T042302Z/product-e2e-report.json`。artifact 按 CI 策略短期保留，长期出处为上述 source、run 与报告契约。这里只声明该固定主干样本，不代表后续所有提交均通过，也不以一次样本宣称性能改善。
+
+S24 的四个核心阶段为 seed、fork-left、fork-right、resolve；双方正常关闭后只运输产品生成的副本载荷。
+解决后另一次正常 Host 关闭及重启检查同一 workspace、胜方行、已解决冲突和 recovery Snapshot 的 UI 恢复预览可达性。
+左右 local-data、WebView 数据目录、选择目录保持独立；每次启动保留独立日志、readiness、退出与清理证据。
+成功 Node 阶段必须提供完整 bridge diagnostics，且没有未确认失败或 pending；180s 超时保留原始输出和部分结果。
+当前 main `58032b9` 已包含限定 provisional 操作准入；当前 S24 源码尚待完整包与真实产品执行，不能据夹具通过宣布完成。
+本场不执行败方恢复，不声明右端最终收敛、云盘 offline/reconnect 或 exclusive writing。详见[唯一资格记录](quality/directory-replica-conflict-s24-qualification.md)。
 
 ### 该样本的 29 场景耗时（2026-09-09）
 

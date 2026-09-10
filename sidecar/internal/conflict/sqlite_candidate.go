@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 	_ "modernc.org/sqlite"
 )
 
@@ -26,8 +27,11 @@ var ErrCandidateDatabaseInvalid = errors.New(
 // content hashes; DatabaseObjectID remains the independently verified Snapshot
 // object from which an apply stage can rebuild the selected table.
 type SQLiteProjection struct {
-	Tables map[string]TableState
-	Edges  map[string][]string
+	// Tables retains private physical restore validation; Candidates contains
+	// only normalized business tables and synchronized schema/metadata.
+	Tables     map[string]TableState
+	Candidates map[string]TableState
+	Edges      map[string][]string
 }
 
 type sqliteCollectionProjection struct {
@@ -163,7 +167,11 @@ func ProjectSQLiteDatabase(
 		)
 	}
 	edges[WorkspaceSettingsItemID] = []string{}
-	return SQLiteProjection{Tables: tables, Edges: edges}, nil
+	candidates, err := workspaceConflictCandidates(collections, tables)
+	if err != nil {
+		return SQLiteProjection{}, err
+	}
+	return SQLiteProjection{Tables: tables, Candidates: candidates, Edges: edges}, nil
 }
 
 func typedWorkspaceDependencyEdges(
@@ -213,16 +221,7 @@ func typedWorkspaceDependencyEdges(
 		}
 		return nil
 	}
-	for _, spec := range []struct {
-		name   string
-		left   string
-		rights []string
-	}{
-		{"vibetable_relations", "source_table_id",
-			[]string{"target_table_id"}},
-		{"vibetable_formula_dependencies", "source_table_id",
-			[]string{"target_table_id"}},
-	} {
+	for _, spec := range workspaceSchemaRelations {
 		collection, ok := byName[spec.name]
 		if !ok {
 			continue
@@ -250,15 +249,7 @@ func typedWorkspaceDependencyEdges(
 			}
 		}
 	}
-	for _, spec := range []struct {
-		name      string
-		directKey string
-		jsonKeys  []string
-	}{
-		{"vibetable_lookups", "table_id",
-			[]string{"path_json"}},
-		{"vibetable_jobs", "source_table_id", nil},
-	} {
+	for _, spec := range workspaceSchemaReferences {
 		collection, ok := byName[spec.name]
 		if !ok {
 			continue
@@ -302,18 +293,8 @@ func typedWorkspaceDependencyEdges(
 			}
 		}
 	}
-	for _, name := range []string{
-		"vibetable_shared_settings",
-		"vibetable_dashboards",
-		"vibetable_panels",
-		"vibetable_presets",
-		"vibetable_content_versions",
-		"vibetable_interfaces",
-		"vibetable_content_profiles",
-		"vibetable_record_document_links",
-	} {
-		collection, ok := byName[name]
-		if !ok {
+	for _, collection := range collections {
+		if _, ok := metadata.NamespaceForCollection(collection.Name); !ok {
 			continue
 		}
 		for _, raw := range collection.Records {

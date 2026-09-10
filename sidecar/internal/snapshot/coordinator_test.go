@@ -85,6 +85,15 @@ func TestCapturePublishesOnlyVerifiedCompleteSnapshotAndDeduplicatesRevision(t *
 }
 
 func TestCatalogFailureNeverPublishesPartialRecord(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		name := "ordinary"
+		if recovery {
+			name = "local-recovery"
+		}
+		t.Run(name, func(t *testing.T) { testCatalogFailureNeverPublishesPartialRecord(t, recovery) })
+	}
+}
+func testCatalogFailureNeverPublishesPartialRecord(t *testing.T, recovery bool) {
 	ctx := context.Background()
 	authority := objectrepo.Authority{WorkspaceID: "workspace-1", FenceEpoch: 1, ClaimID: "claim"}
 	repository := objectrepo.NewMemory()
@@ -94,13 +103,16 @@ func TestCatalogFailureNeverPublishesPartialRecord(t *testing.T) {
 	catalog := NewMemoryCatalog().WithPublishError(errors.New("disk full"))
 	coordinator := NewCoordinator(repository, fakeBarrier{view: BarrierView{
 		MutationRevision: 1, SnapshotSequence: 1,
+		SourceWorkspaceID: "workspace-1", SourceSnapshotID: "foreign-source",
 		BusinessSchemaVersion: 1,
 		AuditAnchor:           digest([]byte("anchor")),
 		Database:              snapshotDatabaseForTest(t), Files: map[string][]byte{},
 	}}, catalog)
-	if _, _, err := coordinator.Capture(ctx, CaptureRequest{
-		WorkspaceID: "workspace-1", Authority: authority, Trigger: TriggerAutomatic,
-	}); err == nil {
+	request := CaptureRequest{WorkspaceID: "workspace-1", Authority: authority, Trigger: TriggerAutomatic}
+	if recovery {
+		request.Trigger, request.Pinned, request.LocalRecovery, request.RecoverySourceManifestID = TriggerProtection, true, true, "manifest-source"
+	}
+	if _, _, err := coordinator.Capture(ctx, request); err == nil {
 		t.Fatal("expected publish failure")
 	}
 	records, err := catalog.List(ctx, "workspace-1")

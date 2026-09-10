@@ -626,12 +626,8 @@ func (owner *productionReplicaConflict) latestOrProtectionSnapshot(
 	if err != nil {
 		return "", err
 	}
-	if len(records) > 0 {
-		sort.Slice(records, func(i, j int) bool {
-			return records[i].CatalogRevision <
-				records[j].CatalogRevision
-		})
-		return records[len(records)-1].SnapshotID, nil
+	if record, found := snapshot.LatestLocalRecord(records); found {
+		return record.SnapshotID, nil
 	}
 	token, _ := owner.runtime.coordinator.Current()
 	operationID := uuid.NewSHA1(

@@ -164,7 +164,7 @@ func initializeWorkspaceReplicaWithMigrationLoader(
 	if err != nil {
 		return ReplicaOneShotReceipt{}, err
 	}
-	if len(records) == 0 {
+	if _, found := snapshot.LatestLocalRecord(records); !found {
 		token, _ := runtime.coordinator.Current()
 		if _, _, err := runtime.snapshots.Capture(
 			ctx,
