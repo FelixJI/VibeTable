@@ -171,6 +171,8 @@ root 将业务投影修复正常同步到 main `9fa626a13840830037bcb82eaddc0adf
 
 source `af7442d8` 的 CI run `34457594963` 中，S24 seed 通过，fork-left 已通过9项业务断言，包括关闭保护和 epoch 5 重新打开。实际终止点是 `waitForPublishedReplicaUi` 等待释放缓存预览按钮启用60秒超时；这不是之前无 requestId 的查询失败。证据为 resilience lane 的 `20260910T091449Z/24-directory-replica-conflict/24-directory-replica-conflict-result.json` 和同轮 `product-e2e-report.json`。
 
+该次 CI 的 lane 归档只保留场景汇总结果，未保留 S24 seed/fork/resolve/reopen 的左右 Host 阶段诊断。现仅为 `24-directory-replica-conflict` 的 QA 失败证据保留既有文本日志白名单，以及每个已有阶段 Host 的 `stage-result.json`、`lifecycle.json`、`readiness.json`、场景结果、trace 和截图；同时保留 `_runtime/24/{left,right}/host` 的 trace 与既有 backend/PocketBase 日志白名单。其他场景即使有同形目录也不扩展归档。不会递归复制数据库、controls、用户数据或包。该改动只补齐未来失败的可审计证据，不能据此判断或解决按钮 60 秒超时根因。
+
 另有一个在途 `preset.list`：09:33:49.851Z 选表，49.852Z 发出请求，51.186Z 开始 `workspace.close`，51.224Z 返回 `workspace.session_stale`（requestId `rmtvbye8s-33-971e53b0-9f08-4b2a-ad85-fa13ca5936e2`）。该时序符合 Host 会话退役取消请求的路径，不能据此认定它造成复制超时。按钮是否启用取决于 busy、isTransitioning、pendingSync 和 replicaVerified；当前下载的结果没有最终四项状态、重开后的 replica.changed 载荷及 worker 发布日志，尚不能区分发布失败和 UI 投影问题。Preset 迁移 Go 的 PR #327 合并本身也不能证明这次失败已修复。
 
 独立复现发现 `presetViewController` 清空 currentTable 时没有使请求代际失效，旧 list 拒绝会继续修改已清空的呈现错误状态。本次只在表选择变化时推进代际，让关闭、切表和重开同表遵循相同生命周期；Host 取消终结、bridge 错误诊断与 S24 门禁均保持原语义，当前请求的真实错误仍显示。

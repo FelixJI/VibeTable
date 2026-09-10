@@ -131,6 +131,9 @@ PRODUCT_E2E_EVIDENCE_FILES = (
     "runner-stdout.log",
 )
 PRODUCT_E2E_RUNTIME_LOGS = ("backend.log", "pocketbase.log")
+REPLICA_E2E_PHASES = ("seed", "fork", "resolve", "reopen")
+REPLICA_E2E_HOSTS = ("left", "right")
+REPLICA_E2E_HOST_EVIDENCE_FILES = ("stage-result.json", "lifecycle.json", "readiness.json")
 
 
 def _qa_temp_dir() -> Path:
@@ -1284,20 +1287,43 @@ def persist_product_e2e_evidence(
             _copy_if_file(scenario_source / filename, scenario_destination / filename)
 
         scenario_number = scenario_id.partition("-")[0]
-        runtime_source = run_source / "_runtime" / scenario_number / "host"
-        runtime_destination = run_destination / "_runtime" / scenario_number / "host"
-        _copy_if_file(
-            runtime_source / "vibetable-trace.log",
-            runtime_destination / "vibetable-trace.log",
+        runtime_root = run_source / "_runtime" / scenario_number
+
+        def copy_runtime_diagnostics(runtime_source: Path, runtime_destination: Path) -> None:
+            _copy_if_file(
+                runtime_source / "vibetable-trace.log",
+                runtime_destination / "vibetable-trace.log",
+            )
+            workspace_root = runtime_source / "local-data" / "workspaces"
+            for log_name in PRODUCT_E2E_RUNTIME_LOGS:
+                for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
+                    workspace_id = log_path.parents[3].name
+                    _copy_if_file(
+                        log_path,
+                        runtime_destination / "workspace-logs" / workspace_id / log_name,
+                    )
+
+        copy_runtime_diagnostics(
+            runtime_root / "host",
+            run_destination / "_runtime" / scenario_number / "host",
         )
-        workspace_root = runtime_source / "local-data" / "workspaces"
-        for log_name in PRODUCT_E2E_RUNTIME_LOGS:
-            for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
-                workspace_id = log_path.parents[3].name
-                _copy_if_file(
-                    log_path,
-                    runtime_destination / "workspace-logs" / workspace_id / log_name,
-                )
+        if scenario_id == "24-directory-replica-conflict":
+            for phase in REPLICA_E2E_PHASES:
+                for host in REPLICA_E2E_HOSTS:
+                    host_source = scenario_source / phase / "hosts" / host
+                    host_destination = scenario_destination / phase / "hosts" / host
+                    for filename in (
+                        *PRODUCT_E2E_EVIDENCE_FILES,
+                        *REPLICA_E2E_HOST_EVIDENCE_FILES,
+                        f"{scenario_id}-result.json",
+                        f"{scenario_id}-trace.zip",
+                        f"{scenario_id}.png",
+                    ):
+                        _copy_if_file(host_source / filename, host_destination / filename)
+                    copy_runtime_diagnostics(
+                        runtime_root / host / "host",
+                        run_destination / "_runtime" / scenario_number / host / "host",
+                    )
     return run_destination
 
 
