@@ -214,3 +214,10 @@ receipt 写入，其他 callback/事务错误不被吞掉。公共 Runtime/coord
 - `go vet ./internal/metadata` EXIT 0，日志 `build/content-json-wrapper-vet.log`；改动 Go 文件已 gofmt。
 
 本次未运行发布构建、GUI/E2E、完整 suite 或远端 CodeQL 复验；本地回归通过不代表告警已由远端确认关闭。生产修改后的包验证与 fresh CI 由独立双轴审查后安排，旧完整构建和 S18 证据仅覆盖其原 source，历史失败记录保留。
+## 新包自更新 smoke 失败
+
+生产修复6e25b565执行 `uv run --frozen --no-sync python scripts/build_next.py --release`，shell4196已结束EXIT1，日志 `build/qa/content-metadata/build-release-json-boundary.log`。完整构建在 updated-crash 回滚 smoke 未完成，不能计作完整包PASS；旧dist包不代表此修复。
+
+现场 `build/self-update-smoke/updated-crash/` 保留：worker错误为System.IO.IOException/HResult0x80070005，journal为rollbackFailed/UPDATE_ROLLBACK_IO_FAILED，owned group已记quiesced，唯一resources ledger在isolatePlanned；target/resources与backup/resources存在、failed-package/resources不存在。证据将失败限定在隔离资源目录前后，尚未确定占用者或访问拒绝原因。不归因杀软、不移动/删除现场、不放宽重试或回滚门禁，亦不重跑求绿。
+
+CodeQL源码修复独立Standards/Spec均0，拟正常推送由fresh CI重新验证；远端安全告警关闭、新包S18及合并后CI/CD仍待完成。本地失败保持原结论。
