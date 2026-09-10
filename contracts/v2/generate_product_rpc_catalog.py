@@ -36,6 +36,13 @@ from backend.contracts.work_calendar import (
 )
 from backend.contracts.grid_state import GridStateResult
 from backend.contracts.generated_workbench import (
+    RecordDocumentLinkDeleteRequest,
+    RecordDocumentLinkRepairRequest,
+    RecordDocumentLinkCommitRequest,
+    RecordDocumentLinkListRequest,
+    ContentProfileDeleteRequest,
+    ContentProfileCommitRequest,
+    ContentProfileLoadRequest,
     ContentProfileDeleteResult,
     ContentProfileSnapshot,
     InterfaceDeleteRequest,
@@ -352,8 +359,17 @@ def _registered_models() -> dict[str, type[BaseModel]]:
         }
     )
     result.update(PRODUCT_PARAM_MODELS)
+    # Go content methods keep the schema-generated public DTOs after their
+    # Python handlers are removed; these imports do not register BFF handlers.
     result.update(
         {
+            "contentProfile.load": ContentProfileLoadRequest,
+            "contentProfile.commit": ContentProfileCommitRequest,
+            "contentProfile.delete": ContentProfileDeleteRequest,
+            "recordDocumentLink.list": RecordDocumentLinkListRequest,
+            "recordDocumentLink.commit": RecordDocumentLinkCommitRequest,
+            "recordDocumentLink.repair": RecordDocumentLinkRepairRequest,
+            "recordDocumentLink.delete": RecordDocumentLinkDeleteRequest,
             "interface.list": InterfaceListRequest,
             "interface.load": InterfaceLoadRequest,
             "interface.commit": InterfaceCommitRequest,

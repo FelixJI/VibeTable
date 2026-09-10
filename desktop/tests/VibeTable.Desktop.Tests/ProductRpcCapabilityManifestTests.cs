@@ -50,6 +50,9 @@ public sealed class ProductRpcCapabilityManifestTests
         CollectionAssert.AreEqual(
             new[]
             {
+                "contentProfile.commit:workspace",
+                "contentProfile.delete:workspace",
+                "contentProfile.load:workspace",
                 "events.reconcile:workspace",
                 "field.settings.describe:workspace",
                 "file.list:workspace",
@@ -75,6 +78,10 @@ public sealed class ProductRpcCapabilityManifestTests
                 "query.selectionOpen:workspace",
                 "query.validateSnapshot:workspace",
                 "query.view:workspace",
+                "recordDocumentLink.commit:workspace",
+                "recordDocumentLink.delete:workspace",
+                "recordDocumentLink.list:workspace",
+                "recordDocumentLink.repair:workspace",
                 "relation.inspectPair:workspace",
                 "relation.previewDelta:workspace",
                 "relation.searchTargets:workspace",

@@ -663,7 +663,7 @@ public sealed class WebMessageRouterTests
                 ["requestId"] = $"request-{type}",
                 ["payload"] = new { },
             };
-            if (type is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "settings.readWorkCalendar" or "settings.commitWorkCalendar")
+            if (type is "settings.readWorkCalendar" or "settings.commitWorkCalendar" or "contentProfile.commit" or "contentProfile.delete" or "contentProfile.load" or "recordDocumentLink.commit" or "recordDocumentLink.delete" or "recordDocumentLink.list" or "recordDocumentLink.repair" or "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable")
             {
                 request["scope"] = new
                 {
@@ -1289,7 +1289,7 @@ public sealed class WebMessageRouterTests
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
             Assert.AreEqual(
-                route is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "settings.readWorkCalendar" or "settings.commitWorkCalendar"
+                route is "settings.readWorkCalendar" or "settings.commitWorkCalendar" or "contentProfile.commit" or "contentProfile.delete" or "contentProfile.load" or "recordDocumentLink.commit" or "recordDocumentLink.delete" or "recordDocumentLink.list" or "recordDocumentLink.repair" or "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable"
                     ? "goSidecar"
                     : "pythonBff",
                 capability.Owner,
