@@ -530,7 +530,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||
 		productCapabilities.SessionEpoch != 7 || productCapabilities.FenceEpoch != 3 ||
 		productCapabilities.ClaimID != env[config.ClaimIDEnv] ||
-		len(productCapabilities.RPCMethods) != 22 ||
+		len(productCapabilities.RPCMethods) != 25 ||
 		productCapabilities.RPCMethods[0] != "events.reconcile" ||
 		productCapabilities.RPCMethods[1] != "field.settings.describe" ||
 		productCapabilities.RPCMethods[2] != "file.list" ||
@@ -553,7 +553,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		productCapabilities.RPCMethods[19] != "schema.describe" ||
 		productCapabilities.RPCMethods[20] != "schema.getTable" ||
 		productCapabilities.RPCMethods[21] != "schema.list" ||
-		len(productCapabilities.Registrations) != 22 ||
+		len(productCapabilities.Registrations) != 25 ||
 		productCapabilities.Registrations[0].Method != "events.reconcile" ||
 		productCapabilities.Registrations[0].Scope != "workspace" ||
 		productCapabilities.Registrations[1].Method != "field.settings.describe" ||

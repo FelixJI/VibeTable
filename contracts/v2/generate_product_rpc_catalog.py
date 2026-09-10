@@ -310,6 +310,19 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 composition,
                 call.args[2].id,
             )
+    from backend.contracts.presets_versions_dashboards import (
+        ListPresetsParams,
+        SavePresetParams,
+        DeletePresetParams,
+    )
+
+    result.update(
+        {
+            "preset.list": ListPresetsParams,
+            "preset.save": SavePresetParams,
+            "preset.delete": DeletePresetParams,
+        }
+    )
     result.update(PRODUCT_PARAM_MODELS)
     # Host-owned methods retain their full public parameter contract after
     # their Python dispatcher registrations are removed.

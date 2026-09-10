@@ -73,3 +73,76 @@ Pyright 提示本工作树无 .venv，使用显式既有解释器完成解析，
 差异，尤其 replay/current 顺序与 delete 错误投影；随后补真实 HTTP 的 CAS/失败回滚/
 幂等重放和重启持久化，再关闭旧 Python 三 handler 与通用绕过写入口。S19–S22 留作
 后续一次最终真实包资格，冻结样本与当前局部测试不能替代该资格。
+
+
+## Preset 三方法生产迁移（本地纵切）
+
+Go 的 `metadata.PresetService` 提供 list/save/delete 小接口。save/delete 在既有
+metadata 同一事务内完成 current CAS、payload 写入、audit、outbox 与 durable receipt；
+公开请求规范化后形成既有幂等摘要，在读取 current 前检查 receipt。生产注册使用已有
+idempotent business coordinator，保留取消上下文。不引入另一数据权威或新 schema 服务。
+
+五种 view 的公开字段、别名、默认值、filter 三层/五十条件限制、UUIDv5 URL namespace
+及 `vibetable:preset:{operationId}` 名称保留。Preset 是保存的展示配置；保存时不查询
+实时 schema，也不验证 field 是否存在。已存在 payload 的扩展字段保留，已知 scope/name/
+presetScope/view 被本次值覆盖；原 adapter 排除的 id/revision 同样排除。保存结果 userId
+仍为 null，后续 list 保留存储中的 userId。list 保留 scope 过滤、key/id 稳定排序与默认 DTO。
+
+原 Python 三 handler 和 InsightsService 对应方法已删除；Dashboard、Version、其它
+namespace 与 snapshot 读取保留。generic presets upsert/delete 和 workspace 写路径已拒绝，
+Host 继续使用既有 JsonRpcProductDataGateway → HostProductRpcInvoker → Product HTTP，
+生成 owner 清单为 Go 25 / Python 77 / Host 2。14 个已有 HTTP fixture 各显式添加三个
+Preset registration，不从生成清单构造独立预期。Host manifest、owner 与 Whitelist 的
+合法 workspace scope 输入同样独立更新，原无 scope 拒绝契约保留。
+
+### 有意差异及冻结来源
+
+- create/save/delete 的同一公开请求重放优先于 current 状态检查，即使对象更新、删除，
+  仍返回首次 durable receipt；不会额外写 audit/outbox，也不会恢复已删除对象。
+- save/delete CAS 冲突统一 `-32080 / insights_error / preset_edit_conflict /
+  expectedRevision`；重复 operationId 但请求不同返回 `preset_idempotency_conflict /
+  operationId`。冻结旧 delete/idempotency `-32603` 不改写，不复制偶然内部错误。
+- 原 adapter 会先扫描整个 namespace；新写路径只在事务中读取目标对象，避免不相关
+  current 或其旧 DTO 错误阻挡已有 receipt。存储/事务失败仍失败，不吞异常。
+
+`preset-python-oracle.json` 的 53 例及原捕获 inputs/cases 不变。原捕获程序移入
+`preset_python_capture.py`，仅在隔离的原 producer backend 下重放。`--check` 从
+main 可达的 `146a9c2cac5998ee013daebc78eedff0bd4a7ca5` 使用 git archive 读取 backend，
+写入 build/preset-python-producer 下唯一新目录；拒绝路径逃逸/链接，使用当前 uv 解释器
+的隔离子进程，核对 backend 导入来源，再完整精确比较所有 JSON 输入、调用和输出。
+不依赖 squash 前的 freeze commit 可达性，不由 Go 生成预期，不覆盖既有取证目录。
+
+### 本地验证记录与限制
+
+- 原 producer 隔离重放：53 例完整 JSON 精确一致；Go `TestPresetFrozenPythonPublicDTO`
+  消费全部 53 例，检查拒绝边界和规范化 view。
+- 真实 PB HTTP 创建/更新/删除、重放、重启持久化、CAS、审计失败回滚、扩展 payload
+  与排序：前三个生命周期测试通过。新增并发 CAS 与 idempotent gate 取消断言执行无
+  业务失败，但最后整组 `go test ./internal/app -run '^TestPreset' -count=1` EXIT 1，
+  原 schemaProductStore fixture 在并发测试 TempDir RemoveAll 清理时目录非空；不称整组通过。
+- `go test ./internal/metadata ./internal/productrpc ./internal/contracts/productcapabilities -count=1`
+  通过；受影响五包 `go vet` 通过。
+- `go test ./cmd/vibetable-pb -run '^TestSidecarProcessReadyHealthAuthAndGracefulShutdown$' -count=1`
+  真实进程 25 方法注册通过（1.073s）。
+- 全部 14 个受影响已有 HTTP fixture 的 47 测试整体 EXIT 1（9.270s）：唯一报告为
+  TestSchemaProductStoreCleanupTerminatesBeforeReset 的 TempDir 非空；无重复注册或业务断言失败。
+  完整日志保留在 build/preset-existing-fixtures.log，不把该组当作通过。
+- Host invoker/HTTP 49 测试通过；manifest/route selector/WebMessageRouter/Host composition/
+  WorkspaceRequestDispatcherQuery 138 测试通过，涵盖三方法合法 scope 和错误投影。
+- Python service/adapter/capability/inventory 初次 77 项为 76 PASS/1 FAIL，失败是独立 inventory
+  Go owner 预期漏三方法；精确补齐后 inventory 10 项通过（1.50s）。
+- 完整 backend Pyright 0 errors、mypy 80 source files 通过。扩查原 tests 文件时 Pyright
+  有 3 个 Dashboard 类型错误；使用 producer146a 原 backend、原测试、原 pyproject 同配置
+  复现相同 3 错（原827/1024/1029行），不混入本次修改，也不忽略规则。
+
+### S19–S22 后续真实包资格设计
+
+复用既有编号，不增加小场景：S19 gallery 保存 cover/columns 后关闭并重开同一 workspace，
+核对同一 presetId/revision、展示字段和删除后的列表；S20 kanban 保留 lane drag 的真实记录
+写入断言，再保存/重启核对 groupField 与列配置；S21 calendar 保留日期移动断言，核对保存
+的 dateField/titleField；S22 timeline 保留区间移动断言，核对 dateField/endDateField。
+各场景的业务成功门禁不变，重放/CAS/rollback 由本地公开 HTTP 回归补证。
+本轮不执行完整构建、S19–S22 包资格、push 或 PR；局部结果不替代完整 CI/包验收。
+
+补充：严格 producer checker 的负向契约已通过（1 passed，0.83s）：只修改临时副本
+的首个响应输出即可触发精确比较失败；原 corpus 不变。Ruff/生成一致性由提交前入口检查。

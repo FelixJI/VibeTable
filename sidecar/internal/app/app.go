@@ -426,12 +426,16 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			}
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
+			presets := metadata.NewPreset(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
 				FenceEpoch:   capabilities.FenceEpoch,
 				ClaimID:      capabilities.ClaimID,
 			},
+				presetRegistration("preset.list", presets, businessGate, idempotentBusinessGate),
+				presetRegistration("preset.save", presets, businessGate, idempotentBusinessGate),
+				presetRegistration("preset.delete", presets, businessGate, idempotentBusinessGate),
 				mutationPreviewRegistration(mutationKernel),
 				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),

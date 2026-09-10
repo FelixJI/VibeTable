@@ -298,6 +298,52 @@ public sealed class HostProductRpcInvokerTests
         Assert.AreEqual(fixture.Session.SessionEpoch, wire.GetProperty("sessionEpoch").GetUInt64());
     }
 
+    [TestMethod]
+    public async Task PresetLifecycleUsesGeneratedGoOwnerWithoutPython()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Result = Json("{}");
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        await gateway.ListPresetsAsync(Json("{\"collection\":\"orders\"}"), CancellationToken.None);
+        await gateway.SavePresetAsync(Json("{\"collection\":\"orders\",\"name\":\"saved\",\"view\":{},\"presetId\":null,\"expectedRevision\":null,\"operationId\":\"public-operation\"}"), CancellationToken.None);
+        await gateway.DeletePresetAsync(Json("{\"presetId\":\"saved\",\"expectedRevision\":\"revision\",\"operationId\":\"delete\"}"), CancellationToken.None);
+        CollectionAssert.AreEqual(new[] { "preset.list", "preset.save", "preset.delete" },
+            fixture.Http.Calls.Select(call => call.GetProperty("method").GetString()).ToArray());
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        Assert.AreEqual(1, fixture.Http.Handshakes);
+        Assert.AreEqual("public-operation", fixture.Http.Calls[1].GetProperty("params").GetProperty("operationId").GetString());
+    }
+
+    [TestMethod]
+    [DataRow("preset.save", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.")]
+    [DataRow("preset.delete", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.")]
+    [DataRow("preset.save", "preset_idempotency_conflict", "operationId", "Operation was used for another Preset request.")]
+    public async Task PresetConflictRetainsItsClosedPublicProjection(string method, string code, string field, string message)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Error = JsonSerializer.SerializeToElement(new { code = -32080, message = "Insights error",
+            data = new { kind = "insights_error", message, code, field } });
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+            method == "preset.save" ? gateway.SavePresetAsync(Json("{}"), CancellationToken.None)
+                : gateway.DeletePresetAsync(Json("{}"), CancellationToken.None));
+        Assert.AreEqual(-32080, error.Code);
+        Assert.AreEqual(field, error.ErrorData!.Value.GetProperty("field").GetString());
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task PresetErrorCannotEscapeToOtherMethodsOrAddPrivateFields()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Error = Json("""{"code":-32080,"message":"Insights error","data":{"kind":"insights_error","code":"preset_edit_conflict","field":"expectedRevision","message":"Preset changed elsewhere."}}""");
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => gateway.ListTablesAsync(Json("{}"), CancellationToken.None));
+        fixture.Http.Error = Json("""{"code":-32080,"message":"Insights error","data":{"kind":"insights_error","code":"preset_edit_conflict","field":"expectedRevision","message":"Preset changed elsewhere.","private":"not public"}}""");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => gateway.SavePresetAsync(Json("{}"), CancellationToken.None));
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
     private sealed class HostFixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(),
@@ -350,7 +396,7 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }

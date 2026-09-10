@@ -177,7 +177,7 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
                 .ConfigureAwait(false);
             try
             {
-                return ParseResponse(raw, requestId, wire);
+                return ParseResponse(raw, requestId, wire, method);
             }
             catch (JsonException)
             {
@@ -398,7 +398,8 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
     private static ProductSidecarForwardResult ParseResponse(
         byte[] raw,
         string requestId,
-        JsonElement requestWire)
+        JsonElement requestWire,
+        string method)
     {
         using JsonDocument document = JsonDocument.Parse(raw);
         JsonElement root = document.RootElement;
@@ -423,11 +424,11 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             throw InvalidResponse();
         if (hasResult)
             return new ProductSidecarSuccess(wire.Clone(), result.Clone());
-        ProductSidecarRpcError parsedError = ParseError(error);
+        ProductSidecarRpcError parsedError = ParseError(error, method);
         return new ProductSidecarFailure(wire.Clone(), parsedError);
     }
 
-    private static ProductSidecarRpcError ParseError(JsonElement error)
+    private static ProductSidecarRpcError ParseError(JsonElement error, string method)
     {
         JsonElement data = default;
         bool hasData = error.ValueKind == JsonValueKind.Object
@@ -443,15 +444,35 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
             || string.IsNullOrWhiteSpace(messageElement.GetString()))
             throw InvalidResponse();
         string message = messageElement.GetString()!;
-        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150)
+        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32080)
             || (code == -32150 && !hasData))
             throw InvalidResponse();
+        if (code == -32080)
+            ValidatePresetErrorData(method, message, data);
         if (code == -32150)
             ValidateProductErrorData(data);
         return new ProductSidecarRpcError(
             code,
             message,
             hasData ? data.Clone() : null);
+    }
+
+    private static void ValidatePresetErrorData(string method, string message, JsonElement data)
+    {
+        if (method is not ("preset.save" or "preset.delete")
+            || message != "Insights error"
+            || !HasExactProperties(data, "kind", "message", "code", "field")
+            || data.GetProperty("kind").ValueKind != JsonValueKind.String
+            || data.GetProperty("kind").GetString() != "insights_error"
+            || data.GetProperty("code").ValueKind != JsonValueKind.String
+            || data.GetProperty("field").ValueKind != JsonValueKind.String
+            || data.GetProperty("message").ValueKind != JsonValueKind.String)
+            throw InvalidResponse();
+        var projection = (data.GetProperty("code").GetString(),
+            data.GetProperty("field").GetString(), data.GetProperty("message").GetString());
+        if (projection is not ("preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.")
+            and not ("preset_idempotency_conflict", "operationId", "Operation was used for another Preset request."))
+            throw InvalidResponse();
     }
 
     private static void ValidateProductErrorData(JsonElement data)
