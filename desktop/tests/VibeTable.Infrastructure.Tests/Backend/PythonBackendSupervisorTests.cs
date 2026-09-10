@@ -673,8 +673,6 @@ public sealed class PythonBackendSupervisorTests
             CollectionAssert.AreEquivalent(
                 new[]
                 {
-                    "gridState.get",
-                    "gridState.save",
                     "path.registerExportTarget",
                     "path.registerImportSource",
                     "path.requestExportTarget",
