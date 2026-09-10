@@ -100,7 +100,7 @@ func cursorProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interfac
 		unrelatedContentRegistration(t, "recordDocumentLink.list"),
 		unrelatedContentRegistration(t, "recordDocumentLink.repair"), queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
 		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
-		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}), queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		queryCursorOpenRegistration(port), queryCursorFetchRegistration(port),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),

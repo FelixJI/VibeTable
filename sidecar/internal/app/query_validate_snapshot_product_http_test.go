@@ -47,7 +47,7 @@ func queryValidateSnapshotHTTPMux(t *testing.T, pb *pocketbase.PocketBase, snaps
 		unrelatedContentRegistration(t, "recordDocumentLink.list"),
 		unrelatedContentRegistration(t, "recordDocumentLink.repair"), productrpc.ReconcileRegistration(catalog), snapshotRegistration,
 		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
-		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}), productrpc.ReconcileRegistration(catalog), snapshotRegistration,
+		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 		lookupListRegistration(relation.New(pb, nil, nil)),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		unrelatedRelationInspectRegistration(t),

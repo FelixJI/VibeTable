@@ -103,3 +103,19 @@ run `20260909T150507Z` / session 41605 EXIT0：1/1 PASS，21 项断言，19.554s
 主干同步改变 runtime，先前 e8af staging 的 S18 功能通过不能覆盖此次源码。
 原完整构建的自更新 smoke 失败、原 staging 和相关证据均保留；本次未重新构建，
 尚未取得最终包与完整远端 CI 资格。
+
+同步后的独立审查发现八个测试 fixture 重复了原 registration 参数。字段设置现有
+`TestFieldSettingsDescribeProductHTTPReplaysFrozenPython` 首先复现
+`duplicate Product RPC registration: relation.inspectPair`；删除重复项后该 HTTP 组通过
+（1.081s）。随后对14个发生冲突的 fixture 文件中全部47项既有测试做一次精确筛选，
+发现 query cursor/page/readRows/selection/validateSnapshot/view 与 relation preview 七处
+同类重复；原日志 `build/content-main-conflict-fixtures.log` 保留，包括两项独立 TempDir
+清理失败。修正仅删除合并重复参数，保留 Content 七项、Mutation 两项及所有原注册，
+未修改生产注册规则或断言。
+
+相同47项复验 `build/content-main-conflict-fixtures-correction.log` 不再报告重复注册或
+业务断言失败，但仍退出1：`TestHistoryReadProductHTTPUsesPythonSemanticParamBudget`
+在 TempDir 清理 coordination 目录时报非空。该运行不是完整通过，不重复运行求绿。
+原字段设置 RED/GREEN 日志分别为 `build/content-main-field-settings-red.log` 与
+`build/content-main-field-settings-green.log`。审查早先未逐一核对 fixture 的零问题结论
+已撤回，以全部修正后的尾审为准。
