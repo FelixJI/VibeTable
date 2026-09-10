@@ -43,3 +43,19 @@ worker error 新形状只包含 `exceptionType`、`hResult`、`operation`、`ent
 PR330 CI 34439650206 的 prepare 报进程在激活完成前退出；远端证据未包含激活完成现场，因此未确认其具体根因。独立本地回归证明现有读取顺序存在竞态：先读取完成文件，再观察退出；若文件在两者之间写入且进程随即退出，会误拒绝有效完成。
 回归使用真实临时 JSON 文件，在退出观察时写入完成记录。旧实现四种情形中2 FAIL/2 PASS（build/qa/activation-observation/red.log）：错拒合法终态且未对错误身份走完整校验。修复在观察退出后立即执行一次完整最终文件校验，不再查询进程、不sleep、不延长预算；缺失文件和错误身份仍拒绝，所有成功字段校验保留。
 Ruff format/check PASS，tests/test_release_tooling.py 全文件112 PASS/3.15s（green.log）。首次Ruff发现参数集容器与复合assert规范问题，修正后通过。该本地RED/GREEN不替代远端失败归因，也不声称原目录移动Win5失败已修复。
+
+## Journal 进程锁释放与路径检查的真实竞态
+
+后续 S24 的新包构建（源码 `999e8427`）在普通 activation 阶段失败：watchdog 的 `.recovery-read-error.json` 记录 `System.IO.FileNotFoundException`／HResult `-2147024894`，pending 为 `rollbackFailed`／`UPDATE_ACTIVATION_INVALID`，只有 process evidence，没有 readiness/completion。其原失败现场保持不变；诊断文件没有具体文件或操作类别，因此本地复现不能代替该次失败的精确归因，也不能归因杀软或认定既有 Win5 回退问题已修复。
+
+静态候选是锁生命周期而非 pointer 原子替换：旧 Acquire 在 File.Exists(lock) 后用 File.GetAttributes 检查 reparse；旧 Release 先关闭持有句柄，再删除同一路径。竞争者可已观察到路径，随后持有者删除它，使属性读取抛 FileNotFoundException。这不是现有 Win32 32/33 sharing/lock contention，不能扩大重试错误集合来掩盖。
+
+先将既有获取／释放逻辑原样提取到内部 `UpdateActivationJournalLock`，所有 journal 读／写入口继续使用同一锁。唯一可选 checkpoint 在“已观察路径存在”处控制测试交错；生产不传 checkpoint。真实 FileStream 的持有者在该点 Dispose，竞争者继续走真实属性检查和独占打开，没有伪造异常、替换 File API 或读写 activation pointer。
+
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter FullyQualifiedName~JournalLockSurvivesHolderReleaseAfterContenderObservedItsPath --logger "trx;LogFileName=lock-red.trx" --results-directory build/qa/update-journal-lock`：旧释放策略 **1 FAIL，19ms**；`red.log`／`lock-red.trx` 堆栈精确为 File.GetAttributes→RejectReparsePoint→Acquire。随后相同过滤的 `--no-build --no-restore` 再次 **1 FAIL**，`red-repeat.log`／`lock-red-repeat.trx`，证明交错稳定。最初插入测试时因换行 marker 不匹配而提前停止，未运行测试，不算 RED。
+- 修复仅把普通释放改为 Dispose OS handle，保留空锁文件路径供后续进程复用。锁文件无 token、nonce 或 journal 内容；它的存在不代表被占用，独占 FileStream 才是锁。没有改 pointer 的 File.Replace、删除/receipt 转移、owned entry 恢复、权限、reparse 检查、5s/25ms 预算或可重试的 32/33 码。
+- 相同测试以及整个 `PendingUpdateActivationJournalTests`：**24 PASS／1 SKIP／0 FAIL**，`green.log`／`lock-green.trx`。回归同时证明新持有者期间第二 FileStream 被 Win32 32 拒绝，释放后可再次获取；新增锁路径 junction 拒绝测试通过，未触碰其目标。旧 writer/reader 竞争、超时 fail closed、pointer/祖先 reparse 与 activation 清理测试保留。唯一 SKIP 是原 `ActivationPointerLinkIsRejectedAndRetained` 缺文件符号链接权限。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-build --no-restore --filter "FullyQualifiedName~UpdateRecoveryWatchdogTests|FullyQualifiedName~UpdateRollbackWorkerTests|FullyQualifiedName~PendingUpdateActivationJournalTests|FullyQualifiedName~UpdateActivationSettlementTests|FullyQualifiedName~ReleaseUpdateServiceTests|FullyQualifiedName~UpdateProcessCommandTests" --logger "trx;LogFileName=update-lock-related.trx" --results-directory build/qa/update-journal-lock`：**137 PASS／1 同上 SKIP／0 FAIL，7s**，`host-related.log`。
+- `uv run --frozen --no-sync python -m pytest tests/test_release_tooling.py tests/test_release_eligibility.py --no-cov -q`：**125 PASS，2.39s**，`python-related.log`。随后按原 main 同步资格的精确集合执行 `uv run --frozen --no-sync python -m pytest tests/test_release_tooling.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_surface_python_oracle.py --no-cov -q`：**140 PASS，4.02s**，`python-140.log`。
+
+本节日志均在 `build/qa/update-journal-lock/`。没有执行新包构建、GUI、S24 或远端写入；修复仍待 root 独立双轴和 fresh CI／新包资格，不覆盖此前任何构建失败。

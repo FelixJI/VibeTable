@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -34,10 +33,6 @@ internal static class PendingUpdateActivationJournal
     private const string ConfirmedState = "confirmed";
     private const string PointerFileName = ".VibeTable.Next.update-pending.json";
     private const string LockFileName = ".VibeTable.Next.update-pending.lock";
-    private const int ErrorSharingViolation = 32;
-    private const int ErrorLockViolation = 33;
-    private static readonly TimeSpan LockAcquisitionBudget = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan LockRetryInterval = TimeSpan.FromMilliseconds(25);
     private static readonly Encoding Utf8NoBom =
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
     private static readonly JsonSerializerOptions WebJson =
@@ -101,7 +96,7 @@ internal static class PendingUpdateActivationJournal
         ValidatePlanShape(normalized);
         string pointerPath = GetPointerPath(normalized.TargetRoot);
         string lockPath = GetLockPath(normalized.TargetRoot);
-        using FileStream claim = AcquireLock(lockPath);
+        using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
         try
         {
             if (File.Exists(pointerPath) || Directory.Exists(pointerPath))
@@ -145,7 +140,7 @@ internal static class PendingUpdateActivationJournal
         }
         finally
         {
-            ReleaseLock(claim, lockPath);
+            claim.Dispose();
         }
     }
 
@@ -162,7 +157,7 @@ internal static class PendingUpdateActivationJournal
         UpdateApplyPlan normalized = NormalizePlanPaths(plan);
         string pointerPath = GetPointerPath(normalized.TargetRoot);
         string lockPath = GetLockPath(normalized.TargetRoot);
-        using FileStream claim = AcquireLock(lockPath);
+        using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
         try
         {
             PendingUpdateActivation pending = Read(pointerPath);
@@ -189,7 +184,7 @@ internal static class PendingUpdateActivationJournal
         }
         finally
         {
-            ReleaseLock(claim, lockPath);
+            claim.Dispose();
         }
     }
 
@@ -240,7 +235,7 @@ internal static class PendingUpdateActivationJournal
 
         string? launchNonce = TryReadSingleArgument(arguments, "--claim-update");
         string lockPath = GetLockPath(normalizedRoot);
-        using FileStream claim = AcquireLock(lockPath);
+        using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
         try
         {
             PendingUpdateActivation pending = Read(pointerPath);
@@ -359,7 +354,7 @@ internal static class PendingUpdateActivationJournal
         }
         finally
         {
-            ReleaseLock(claim, lockPath);
+            claim.Dispose();
         }
     }
 
@@ -373,7 +368,7 @@ internal static class PendingUpdateActivationJournal
         PendingUpdateActivation snapshot;
         ValidatedPending validated;
         UpdateProcessIdentity watchdog;
-        using (FileStream claim = AcquireLock(lockPath))
+        using (UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath))
         {
             try
             {
@@ -402,7 +397,7 @@ internal static class PendingUpdateActivationJournal
             }
             finally
             {
-                ReleaseLock(claim, lockPath);
+                claim.Dispose();
             }
         }
         if (!waitForWatchdogExit(watchdog).GetAwaiter().GetResult())
@@ -412,7 +407,7 @@ internal static class PendingUpdateActivationJournal
                 null,
                 "UPDATE_WATCHDOG_EXIT_TIMEOUT");
         }
-        using FileStream cleanupClaim = AcquireLock(lockPath);
+        using UpdateActivationJournalLock cleanupClaim = UpdateActivationJournalLock.Acquire(lockPath);
         try
         {
             PendingUpdateActivation current = Read(pointerPath);
@@ -438,7 +433,7 @@ internal static class PendingUpdateActivationJournal
         }
         finally
         {
-            ReleaseLock(cleanupClaim, lockPath);
+            cleanupClaim.Dispose();
         }
     }
 
@@ -938,7 +933,7 @@ internal static class PendingUpdateActivationJournal
         Action<string>? checkpoint)
     {
         string lockPath = GetLockPath(attempt.TargetRoot);
-        using FileStream claim = AcquireLock(lockPath);
+        using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
         try
         {
             PendingUpdateActivation current = Read(pointerPath);
@@ -965,7 +960,7 @@ internal static class PendingUpdateActivationJournal
         }
         finally
         {
-            ReleaseLock(claim, lockPath);
+            claim.Dispose();
         }
     }
 
@@ -1016,7 +1011,7 @@ internal static class PendingUpdateActivationJournal
     {
         string pointerPath = GetPointerPath(targetRoot);
         string lockPath = GetLockPath(targetRoot);
-        using FileStream claim = AcquireLock(lockPath);
+        using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
         try
         {
             PendingUpdateActivation current = Read(pointerPath);
@@ -1024,7 +1019,7 @@ internal static class PendingUpdateActivationJournal
         }
         finally
         {
-            ReleaseLock(claim, lockPath);
+            claim.Dispose();
         }
     }
 
@@ -1032,14 +1027,14 @@ internal static class PendingUpdateActivationJournal
     {
         string pointerPath = GetPointerPath(targetRoot);
         string lockPath = GetLockPath(targetRoot);
-        FileStream claim = AcquireLock(lockPath);
+        UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
         try
         {
             return Read(pointerPath);
         }
         finally
         {
-            ReleaseLock(claim, lockPath);
+            claim.Dispose();
         }
     }
 
@@ -1172,10 +1167,10 @@ internal static class PendingUpdateActivationJournal
         {
             return false;
         }
-        FileStream? claim = null;
+        UpdateActivationJournalLock? claim = null;
         try
         {
-            claim = AcquireLock(lockPath);
+            claim = UpdateActivationJournalLock.Acquire(lockPath);
             if (!File.Exists(pointerPath))
             {
                 return false;
@@ -1209,7 +1204,7 @@ internal static class PendingUpdateActivationJournal
         {
             if (claim is not null)
             {
-                ReleaseLock(claim, lockPath);
+                claim.Dispose();
             }
         }
     }
@@ -1505,68 +1500,6 @@ internal static class PendingUpdateActivationJournal
             throw InvalidPointer("无法确定更新激活记录目录。");
         }
         return ReleasePackageStager.NormalizeDirectory(parent.FullName);
-    }
-
-    private static FileStream AcquireLock(string lockPath)
-    {
-        Stopwatch wait = Stopwatch.StartNew();
-        IOException? contention = null;
-        while (true)
-        {
-            if (contention is not null && wait.Elapsed >= LockAcquisitionBudget)
-            {
-                ExceptionDispatchInfo.Capture(contention).Throw();
-            }
-            FileStream claim;
-            try
-            {
-                UpdateProcessCommand.RejectReparsePointChainsToVolumeRoot(
-                    Path.GetDirectoryName(lockPath)
-                        ?? throw InvalidPointer("无法确定更新锁目录。"));
-                if (File.Exists(lockPath) || Directory.Exists(lockPath))
-                {
-                    UpdateProcessCommand.RejectReparsePoint(lockPath);
-                }
-                claim = new FileStream(
-                    lockPath,
-                    FileMode.OpenOrCreate,
-                    FileAccess.ReadWrite,
-                    FileShare.None,
-                    bufferSize: 4096,
-                    FileOptions.WriteThrough);
-            }
-            catch (IOException exception) when (IsLockContention(exception))
-            {
-                contention = exception;
-                TimeSpan remaining = LockAcquisitionBudget - wait.Elapsed;
-                if (remaining <= TimeSpan.Zero)
-                {
-                    throw;
-                }
-                Thread.Sleep(remaining < LockRetryInterval ? remaining : LockRetryInterval);
-                if (wait.Elapsed >= LockAcquisitionBudget)
-                {
-                    throw;
-                }
-                continue;
-            }
-            if (contention is not null && wait.Elapsed >= LockAcquisitionBudget)
-            {
-                ReleaseLock(claim, lockPath);
-                ExceptionDispatchInfo.Capture(contention).Throw();
-            }
-            return claim;
-        }
-    }
-
-    private static bool IsLockContention(IOException exception) =>
-        OperatingSystem.IsWindows()
-        && (exception.HResult & 0xffff) is ErrorSharingViolation or ErrorLockViolation;
-
-    private static void ReleaseLock(FileStream claim, string lockPath)
-    {
-        claim.Dispose();
-        TryDeleteExactFile(lockPath);
     }
 
     private static void TryDeleteExactFile(string path)
@@ -1897,7 +1830,7 @@ internal static class PendingUpdateActivationJournal
         private void PersistHealthy()
         {
             string lockPath = GetLockPath(plan.TargetRoot);
-            using FileStream claim = AcquireLock(lockPath);
+            using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
             try
             {
                 PendingUpdateActivation current = Read(pointerPath);
@@ -1916,7 +1849,7 @@ internal static class PendingUpdateActivationJournal
             }
             finally
             {
-                ReleaseLock(claim, lockPath);
+                claim.Dispose();
             }
         }
 
@@ -1935,7 +1868,7 @@ internal static class PendingUpdateActivationJournal
             }
 
             string lockPath = GetLockPath(plan.TargetRoot);
-            using FileStream claim = AcquireLock(lockPath);
+            using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
             try
             {
                 PendingUpdateActivation current = Read(pointerPath);
@@ -1967,14 +1900,14 @@ internal static class PendingUpdateActivationJournal
             }
             finally
             {
-                ReleaseLock(claim, lockPath);
+                claim.Dispose();
             }
         }
 
         private void PersistFailure(UpdateActivationFailureCode code)
         {
             string lockPath = GetLockPath(plan.TargetRoot);
-            using FileStream claim = AcquireLock(lockPath);
+            using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
             try
             {
                 PendingUpdateActivation current = Read(pointerPath);
@@ -2003,7 +1936,7 @@ internal static class PendingUpdateActivationJournal
             }
             finally
             {
-                ReleaseLock(claim, lockPath);
+                claim.Dispose();
             }
         }
     }
@@ -2103,7 +2036,7 @@ internal static class PendingUpdateActivationJournal
         private async Task<bool> CompleteJournalAsync(bool confirm)
         {
             string lockPath = GetLockPath(plan.TargetRoot);
-            FileStream? claim = null;
+            UpdateActivationJournalLock? claim = null;
             try
             {
                 var updater = new UpdateProcessIdentity(
@@ -2113,7 +2046,7 @@ internal static class PendingUpdateActivationJournal
                 {
                     return false;
                 }
-                claim = AcquireLock(lockPath);
+                claim = UpdateActivationJournalLock.Acquire(lockPath);
                 PendingUpdateActivation current = Read(pointerPath);
                 ValidatedPending currentValidated = ValidatePending(
                     current,
@@ -2169,7 +2102,7 @@ internal static class PendingUpdateActivationJournal
             {
                 if (claim is not null)
                 {
-                    ReleaseLock(claim, lockPath);
+                    claim.Dispose();
                 }
             }
         }
