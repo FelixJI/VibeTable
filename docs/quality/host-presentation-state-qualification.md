@@ -157,3 +157,13 @@ Host 原 node_modules 是共享 Junction，已先仅移动链接本身，再建�
 重放后 `node desktop/web-grid/node_modules/vitest/vitest.mjs run --root desktop/web-grid src/grid/frozenRangeCompatibility.test.ts src/grid/dataSourceViewState.test.ts src/workspace/gridPresentationController.test.ts src/workspace/presetViewController.test.ts` 为4文件37 PASS（`frozen-review-web-green.log`）。新增测试初次 typecheck 因引用仓库未导出的类型及可选 destroy 失败；修正后 `node desktop/web-grid/node_modules/vue-tsc/bin/vue-tsc.js --noEmit --project desktop/web-grid/tsconfig.json` EXIT0（`frozen-review-typecheck.log`）。指定既有隔离 uv 环境、`UV_NO_SYNC=1` 与当前 worktree `PYTHONPATH` 执行 `uv run --frozen --no-sync python -m pytest tests/test_handoff_artifacts.py --no-cov -q` 得26 PASS，相关 Python Ruff format/check及 `git diff --check` 通过。
 
 本轮未重新 npm ci、未执行完整产品 build、GUI S33、完整质量门禁、commit 或 push；补丁重放和局部回归不能替代固定新包的真实双Host验收。
+
+## S33 seed 的实际 workspace 路径绑定
+
+`build/qa/host-frozen-preset-combo/product-e2e/20260910T105610Z/product-e2e-report.json` 的 seed 完成19项断言及生命周期清理，但 Python 编排返回 `HOST_PRESENTATION_SEED_INVALID`，未启动 resume。五个必需字段均存在；实际 workspace UUID 为 `2bb6f71a-a023-46ac-87bc-253fa24f895f`。注册表的 `selectedRoot` 和同目录 manifest 均指向 `persistent/host/local-data/workspaces/<UUID>`；`persistent/workspace` 只是 picker 占位目录，没有 manifest。UI 创建没有选择自定义位置，因此 Host 按 `managedDefault` 创建 UUID 目录，原编排却固定检查 picker 路径。
+
+共用持久化 resolver 现在从注册表解析 seed UUID，只接受预先提供的 picker 路径或本轮 local-data 下的 `workspaces/<UUID>`，并核对同目录 manifest UUID。身份不符、目录缺失、注册路径越界或同 UUID 重复注册均拒绝。S33 的 seed-state 和第二阶段参数、自然老化场景的 seed-state 均保存解析出的实际路径。
+
+修复前执行 `uv run python -m pytest tests/e2e/test_product_e2e_runner.py -k host_presentation_resume_failure -q --no-cov` 得1 PASS / 1 FAIL：managed-default fixture 重现 `HOST_PRESENTATION_SEED_INVALID`。修复后 S33 聚焦测试8 PASS；`uv run python -m pytest tests/e2e/test_product_e2e_runner.py -q --no-cov` 全文件120 PASS。随后新增自然老化实际路径回归，`uv run --frozen --no-sync python -m pytest tests/e2e/test_product_e2e_runner.py -k natural_aging_seed_records -q --no-cov` 得1 PASS。以上均显式使用既有共享 uv 环境、`UV_NO_SYNC=1` 和当前 worktree 的 `PYTHONPATH`；相关 Ruff format/check 与 `git diff --check` 通过。原失败目录的只读 resolver 回放已解析到上述实际 UUID 路径。
+
+本轮仅修改 Python 测试编排、相关回归和本记录，未改生产代码、未重建包、未重跑 GUI、未提交或推送。双 Host 的真实恢复资格仍待独立复审及同包重跑确认。

@@ -3444,8 +3444,9 @@ def test_host_presentation_seed_failure_does_not_launch_resume(monkeypatch, tmp_
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("managed_default", [False, True])
 def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, managed_default: bool
 ) -> None:
     scenario = runner.Scenario("33-host-grid-presentation", "presentation", "restart")
     workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -3456,7 +3457,12 @@ def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
         assert isinstance(persistent, runner._PersistentScenarioRun)
         calls.append(persistent)
         if persistent.phase == "seed":
-            manifest = persistent.workspace_root / ".vibetable" / "workspace.json"
+            created_root = (
+                persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+                if managed_default
+                else persistent.workspace_root
+            )
+            manifest = created_root / ".vibetable" / "workspace.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
             registry = (
@@ -3473,7 +3479,7 @@ def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
                         "workspaces": [
                             {
                                 "workspaceId": workspace_id,
-                                "selectedRoot": str(persistent.workspace_root),
+                                "selectedRoot": str(created_root),
                             }
                         ]
                     }
@@ -3499,8 +3505,128 @@ def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
     assert result["error"]["code"] == "HOST_PRESENTATION_RESUME_FAILED"
     assert [run.phase for run in calls] == ["seed", "resume"]
     assert calls[0].readiness_dir == calls[1].readiness_dir
+    expected_root = (
+        calls[0].readiness_dir / "local-data" / "workspaces" / workspace_id
+        if managed_default
+        else calls[0].workspace_root
+    )
+    assert calls[1].workspace_root == expected_root
+    assert json.loads(calls[1].state_path.read_text(encoding="utf-8"))["workspaceRoot"] == str(
+        expected_root
+    )
     assert calls[0].scenario_dir != calls[1].scenario_dir
     assert result["phases"]["resume"]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "invalid", ["manifest-id", "registry-id", "outside", "missing", "duplicate"]
+)
+def test_host_presentation_invalid_workspace_does_not_launch_resume(
+    monkeypatch, tmp_path: Path, invalid: str
+) -> None:
+    scenario = runner.Scenario("33-host-grid-presentation", "presentation", "restart")
+    workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    calls: list[str] = []
+
+    def seed(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent.phase)
+        assert persistent.phase == "seed"
+        created_root = persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+        if invalid == "outside":
+            created_root = tmp_path / "unrelated" / workspace_id
+        manifest = created_root / ".vibetable" / "workspace.json"
+        manifest.parent.mkdir(parents=True)
+        if invalid != "missing":
+            manifest.write_text(
+                json.dumps(
+                    {"workspaceId": "other-id" if invalid == "manifest-id" else workspace_id}
+                ),
+                encoding="utf-8",
+            )
+        registry = (
+            persistent.readiness_dir
+            / "local-data"
+            / "VibeTable"
+            / "shell"
+            / "workspace-registry-v2.json"
+        )
+        registry.parent.mkdir(parents=True)
+        entry = {
+            "workspaceId": "other-id" if invalid == "registry-id" else workspace_id,
+            "selectedRoot": str(created_root),
+        }
+        registry.write_text(
+            json.dumps({"workspaces": [entry, entry] if invalid == "duplicate" else [entry]}),
+            encoding="utf-8",
+        )
+        return {
+            "status": "passed",
+            "lifecycle": {"status": "passed"},
+            "workspaceId": workspace_id,
+            "tableId": "table-1",
+            "fields": {},
+            "state": {},
+            "revision": "revision-1",
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", seed)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+    assert result["error"]["code"] == "HOST_PRESENTATION_SEED_INVALID"
+    assert calls == ["seed"]
+    assert not (tmp_path / "evidence" / scenario.id / "persistent" / "seed-state.json").exists()
+
+
+def test_natural_aging_seed_records_the_created_managed_workspace(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    state_path = tmp_path / "persistent" / "seed-state.json"
+    created_root = state_path.parent / "host" / "local-data" / "workspaces" / workspace_id
+
+    def seed(*_args: object, **_kwargs: object) -> dict[str, object]:
+        manifest = created_root / ".vibetable" / "workspace.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
+        registry = (
+            state_path.parent
+            / "host"
+            / "local-data"
+            / "VibeTable"
+            / "shell"
+            / "workspace-registry-v2.json"
+        )
+        registry.parent.mkdir(parents=True)
+        registry.write_text(
+            json.dumps(
+                {"workspaces": [{"workspaceId": workspace_id, "selectedRoot": str(created_root)}]}
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "passed",
+            "workspaceId": workspace_id,
+            "olderSnapshotId": "older",
+            "newerSnapshotId": "newer",
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", seed)
+    monkeypatch.setattr(runner, "ensure_node", lambda _root: Path("node"))
+    monkeypatch.setattr(runner.sys, "platform", "win32")
+    result = runner.run_natural_aging_phase(
+        phase="seed",
+        state_path=state_path,
+        package_root=tmp_path,
+        evidence_root=tmp_path / "evidence",
+        package_audit={"passed": True, "fingerprint": "fixture"},
+    )
+    assert result["status"] == "passed"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["workspaceRoot"] == str(created_root)
+    assert state["workspaceId"] == workspace_id
 
 
 def test_host_presentation_resume_state_comparison_is_structural_and_complete() -> None:

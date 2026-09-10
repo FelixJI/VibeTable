@@ -1800,14 +1800,14 @@ def _run_host_presentation_restart_acceptance(
             scenario, phase_results, "HOST_PRESENTATION_SEED_FAILED"
         )
     required = ("workspaceId", "tableId", "fields", "state", "revision")
-    if not all(
-        seed.get(name) is not None for name in required
-    ) or not _natural_aging_workspace_matches(
+    created_workspace_root = _resolve_persistent_workspace_root(
         workspace_root, readiness_dir, seed.get("workspaceId")
-    ):
+    )
+    if not all(seed.get(name) is not None for name in required) or created_workspace_root is None:
         return _host_presentation_phase_failure(
             scenario, phase_results, "HOST_PRESENTATION_SEED_INVALID"
         )
+    workspace_root = created_workspace_root
     try:
         _write_json_atomic(
             state_path,
@@ -1926,11 +1926,15 @@ def run_natural_aging_phase(
         if not all(isinstance(result.get(name), str) and result[name] for name in required):
             result["status"] = "failed"
             result["error"] = {"code": "NATURAL_AGING_RESULT_INVALID"}
-        elif not _natural_aging_workspace_matches(
-            workspace_root, readiness_dir, result["workspaceId"]
-        ):
-            result["status"] = "failed"
-            result["error"] = {"code": "NATURAL_AGING_WORKSPACE_IDENTITY_INVALID"}
+        else:
+            created_workspace_root = _resolve_persistent_workspace_root(
+                workspace_root, readiness_dir, result["workspaceId"]
+            )
+            if created_workspace_root is None:
+                result["status"] = "failed"
+                result["error"] = {"code": "NATURAL_AGING_WORKSPACE_IDENTITY_INVALID"}
+            else:
+                workspace_root = created_workspace_root
 
     report_path = run_dir / "natural-retention-aging-report.json"
     report = write_aggregate(report_path, audit=dict(package_audit), results=[result])
@@ -1964,29 +1968,41 @@ def run_natural_aging_phase(
     return result
 
 
-def _natural_aging_workspace_matches(
+def _resolve_persistent_workspace_root(
     workspace_root: Path,
     readiness_dir: Path,
     workspace_id: object,
-) -> bool:
-    if not isinstance(workspace_id, str):
-        return False
-    manifest = _read_json(workspace_root / ".vibetable" / "workspace.json")
+) -> Path | None:
+    """Bind the created UUID to its registered picker or managed-default root."""
+    if not isinstance(workspace_id, str) or not workspace_id:
+        return None
     registry = _read_json(
         readiness_dir / "local-data" / "VibeTable" / "shell" / "workspace-registry-v2.json"
     )
-    if manifest is None or registry is None or manifest.get("workspaceId") != workspace_id:
-        return False
+    if registry is None:
+        return None
     workspaces = registry.get("workspaces")
     if not isinstance(workspaces, list):
-        return False
-    return any(
-        isinstance(item, dict)
-        and item.get("workspaceId") == workspace_id
-        and isinstance(item.get("selectedRoot"), str)
-        and Path(item["selectedRoot"]).resolve() == workspace_root.resolve()
+        return None
+    matches = [
+        item
         for item in workspaces
-    )
+        if isinstance(item, dict) and item.get("workspaceId") == workspace_id
+    ]
+    if len(matches) != 1 or not isinstance(matches[0].get("selectedRoot"), str):
+        return None
+    selected_root = Path(matches[0]["selectedRoot"])
+    if not selected_root.is_absolute():
+        return None
+    selected_root = selected_root.resolve()
+    managed_parent = (readiness_dir / "local-data" / "workspaces").resolve()
+    is_managed_root = selected_root.parent == managed_parent and selected_root.name == workspace_id
+    if selected_root != workspace_root.resolve() and not is_managed_root:
+        return None
+    manifest = _read_json(selected_root / ".vibetable" / "workspace.json")
+    if manifest is None or manifest.get("workspaceId") != workspace_id:
+        return None
+    return selected_root
 
 
 def _parser() -> argparse.ArgumentParser:
