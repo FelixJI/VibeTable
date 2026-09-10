@@ -5318,7 +5318,7 @@ async function scenario33(page, recorder) {
     sorted.payload?.state?.sorts?.some(sort => sort.field === title.physicalName)
       && sorted.payload?.state?.filters?.[1]?.logic === "OR"
       && sorted.payload?.state?.filters?.[1]?.value === "", sorted);
-  const resize = header.locator(".tabulator-col-resize-handle").last();
+  const resize = page.locator(`.tabulator-col[tabulator-field="${title.physicalName}"] + .tabulator-col-resize-handle`).first();
   const before = await header.boundingBox();
   const handle = await resize.boundingBox();
   if (!before || !handle) throw new Error("visible column resize handle unavailable");

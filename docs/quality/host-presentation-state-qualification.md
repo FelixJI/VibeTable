@@ -105,3 +105,9 @@ seed 增加 First/Second 两列，真实拖动 Second 到 First 前，并保留�
 固定 Node 24.19.0 执行 `desktop/web-grid/node_modules/vitest/vitest.mjs run --config desktop/web-grid/vite.config.ts src/services/gridPresentationService.test.ts src/components/grid/FilterTreeEditor.test.ts src/contracts/gridStateJson.test.ts src/bridge/hostBridge.test.ts`：71 PASS；`desktop/web-grid/node_modules/vue-tsc/bin/vue-tsc.js --noEmit --project desktop/web-grid/tsconfig.json` EXIT0。独立 Spec 复审另运行三文件36测试及12种数字边界，均通过，原数字P2已修复。
 
 S33 最后一轮独立 Standards 与 Spec 均0项剩余确定发现；Spec独立用固定Node执行 `--test tests/e2e/host_presentation_restart.test.mjs`：19 PASS / 0 FAIL / 0 SKIP。此前两轮复审失败不视为通过，最终修复已用实际异步交错和DOM破坏回归证明。完整release build和真实双Host S33仍待当前固定提交执行。
+
+## 首次 S33 新包结果与列宽定位修正
+
+固定源码 `1ac9a1464a60affc0dc7a268812b1e2a62ac2350` 的 `uv run --frozen --no-sync python scripts/build_next.py --release` 完整 EXIT0，日志 `build/qa/host-presentation/build-release-final.log`。同包首个 S33 报告 `build/qa/host-presentation/product-e2e-final/20260910T091349Z/product-e2e-report.json` 为 EXIT1：seed 前8条断言通过，后在列宽手柄 `boundingBox` 等待30秒超时，resume未启动。四组件freshness通过，bridge failures/pending/acknowledged与pageErrors均0；唯一console条目是 autofocus 的 info，不是error。失败阶段Host仍正常退出0，进程/端口/owner lease及final cleanup均通过。
+
+锁定 Tabulator 的 ResizeColumns 实现使用 `element.after(handle)`，手柄为列头的紧邻兄弟节点。场景原来查找列头的后代，无法命中真实节点；现改为目标字段列头后紧邻的 `.tabulator-col-resize-handle`，仍执行真实鼠标拖动并验证Host回执中的宽度改变。未修改产品实现、等待时限或断言。既有完整包的运行时源码未变，后续只针对该确定定位根因复用同包验证，不把首次失败改记通过。
