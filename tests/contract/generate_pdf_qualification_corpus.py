@@ -205,6 +205,26 @@ def generated_documents() -> dict[str, bytes]:
             stream(payload, filter_name),
         ]
         samples[name] = document(operator_objects)
+    large_first = zlib.compress(
+        b"BT /F1 0.001 Tf 10 720 Td " + (b"(" + b"B" * 500 + b") Tj\n") * 4001 + b"ET"
+    )
+    valid_second = zlib.compress(b"BT /F1 12 Tf 72 720 Td (SECOND_PAGE_REACHABLE) Tj ET")
+    invalid_second = valid_second[:-1] + bytes([valid_second[-1] ^ 1])
+    for filename, second in (
+        ("output-limit-later-valid-page.pdf", valid_second),
+        ("output-limit-later-invalid-page.pdf", invalid_second),
+    ):
+        samples[filename] = document(
+            [
+                b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 2000 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+                stream(large_first, "FlateDecode"),
+                stream(second, "FlateDecode"),
+            ]
+        )
     return samples
 
 

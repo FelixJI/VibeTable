@@ -1,6 +1,6 @@
 # A6 自有 PDF 决策语料 v1
 
-`pdf_qualification_corpus.json` 冻结 23 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
+`pdf_qualification_corpus.json` 冻结 28 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
 `generate_pdf_qualification_corpus.py` 仅用标准库构造 PDF 对象，不复制字体或第三方文件。
 
 ```text
@@ -76,3 +76,15 @@ indexed、53 code points、无错误码或 token 差距。完整 25 项仍有原
 完整 26 项仍有原 9 项不匹配并 exit 1。该项只补充输入精确边界，输出精确值、deadline/取消、外部生产者
 及其他 `remainingCoverage` 继续待完成。证据为 `build/qa/pdf-qualification/input-exact-poppler.jsonl`
 和 `build/qa/pdf-qualification/current-go-26.json`，未改变生产提取器、预算或 ADR 提议状态。
+
+## 隔离 PdfPig 候选与后续页验证
+
+资格工具和复现命令见 [PDF 候选运行记录](../../docs/research/2026-09-10-pdf-adapter-runtime-qualification.md)。
+新增 `output-limit-later-valid-page.pdf` / `output-limit-later-invalid-page.pdf` 共用含 2,000,500 个 B 的首页，
+第二页只有 zlib Adler 校验字节不同。正常样本必须截断到精确 2,000,000 个 B；损坏样本必须拒绝且正文为空。
+输出预算耗尽不能停止验证后续可达页。保留的旧原型在损坏样本上返回 truncated、无 warning，构成回归反证。
+
+新增 `--observations <manifest> <observations>` 入口只替换观察来源，复用原报告器的状态、token、错误码、
+字符及拒绝正文断言；要求精确样本集合、预算一致、有限非负测量和所有进程退出。原产品提取器入口不变。
+2026-09-10 的隔离候选在显式 1 GiB Job commit 预算下，28 项比较零差异；该实验预算不是产品默认值，
+也不关闭独立生产者、对象流/predictor、加密或产品 generation 等剩余资格。
