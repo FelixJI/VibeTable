@@ -94,3 +94,15 @@ SettingsView 编辑 draft，通过明确保存提交完整 overrides；忙时禁
 - capability policy、Product catalog、E2E capability index 三个生成器 `--check` 与 `vue-tsc --noEmit` PASS。
 
 本节作者没有 push、PR 操作、完整 build、GUI 或删除迁移旧 Calendar 测试；主干 Surface 的既有删除仅随正常合并保留。固定旧 Calendar oracle 未改。S32、S24 后续拼接、全项目/coverage/fresh CI 与此修复后的新包仍未取得资格，待 root 安排独立双轴和后续验证。
+
+## 首个完整包与 S32 场景交互修正
+
+固定 clean source `7e2c4526e630d7a8b97ad15a8be448fcd0aa4985` 执行 `uv run --frozen --no-sync python scripts/build_next.py --release`，**EXIT 0**（build/calendar-release-build.log、calendar-release-build.exitcode）。完整阶段和自更新 smoke 均由原入口执行，没有 skip、替换 exe 或修改构建逻辑。
+
+随后同包运行 `uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --evidence-root build/qa/calendar-packaged --scenario 32-shared-work-calendar`，**EXIT 1 / 32.590s**。报告 `build/qa/calendar-packaged/20260910T073846Z/product-e2e-report.json`，原截图/trace 与压缩日志保留。根因是 S32 在 waitForShell 停留首页后直接调用表侧栏建表 helper，缺少 nav-tables 导航；trace 明确从 home-view 等待直接点击 sidebar-new-table，截图仍为首页，WorkspaceView 的 tables-view 由 activeView 控制隐藏。按钮存在但不可见，不能用 force click 或等待重试解决。
+
+仅补正常 nav-tables 点击后，同包下一次进入建表和设置页，随后 **EXIT 1**（`build/qa/calendar-navigation-fixed/20260910T074257Z/product-e2e-report.json`）：对 Naive NRadioButton 内层 input 执行 check 被组件自己的 n-radio__label 拦截。与仓库已有按钮交互一致，改为点击含对应 value 的 n-radio-button，并显式验证 input.isChecked；holiday/default 两处同形修正，没有修改产品 DOM、放宽 actionability、删断言或追加重试。
+
+最终仅场景修改、产品源码仍为上述 7e2c 新包；以 `--evidence-root build/qa/calendar-radio-fixed --scenario 32-shared-work-calendar` 执行同一完整 runner，**EXIT 0 / 1 PASS / 11 断言 / 11.405s**。报告 `build/qa/calendar-radio-fixed/20260910T074459Z/product-e2e-report.json`；四组件 freshness 均通过、Node/Host 最终退出均0、pageErrors/bridge failures/pending 均0，生命周期与 owner lease/端口清理通过。实际覆盖设置页提交、首页、网格日期编辑器、B隔离、A重开持久化及清空后新revision。前两次失败不因最终通过而移除。
+
+`node --check tests/e2e/webview_product_scenarios.mjs` PASS。此增量只改 S32 场景及本文，不需要重建未变化的产品组件；正常提交后交 root 独立增量双轴。此同包 S32 PASS 不替代完整全场景/远端 fresh CI 或此前完整 Go TempDir FAIL；S24合入后的副本日历证据仍待后续明确处理。

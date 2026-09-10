@@ -7683,6 +7683,7 @@ async function scenario23(page, recorder, _network, runtime) {
 
 async function scenario32(page, recorder) {
   await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  await page.getByTestId("nav-tables").click();
   const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession);
   const today = await page.evaluate(() => {
     const date = new Date();
@@ -7698,7 +7699,8 @@ async function scenario32(page, recorder) {
   const holiday = page.locator('.calendar-rule-options input[value="holiday"]');
   await holiday.waitFor({ state: "visible", timeout: 30_000 });
   await page.waitForFunction(() => !document.querySelector('.calendar-rule-options input[value="holiday"]')?.disabled, undefined, { timeout: 30_000 });
-  await holiday.check();
+  await page.locator('.calendar-rule-options .n-radio-button:has(input[value="holiday"])').click();
+  if (!(await holiday.isChecked())) throw new Error("Holiday radio button did not select its input");
   await page.locator(".calendar-name-input input").fill("公司共同假日");
   await page.getByTestId("calendar-save").click();
   await page.waitForFunction(() => document.querySelector('[data-testid="shared-work-calendar"]')?.dataset.status === "ready"
@@ -7736,7 +7738,8 @@ async function scenario32(page, recorder) {
   recorder.check("reopening A reloads its persistent calendar revision", reopened.payload?.revision === confirmed.payload?.revision && JSON.stringify(reopened.payload?.overrides) === JSON.stringify(confirmed.payload?.overrides), { reopened });
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-calendar").click();
-  await page.locator('.calendar-rule-options input[value="default"]').check();
+  await page.locator('.calendar-rule-options .n-radio-button:has(input[value="default"])').click();
+  if (!(await page.locator('.calendar-rule-options input[value="default"]').isChecked())) throw new Error("Default radio button did not select its input");
   await page.getByTestId("calendar-save").click();
   await page.waitForFunction(() => document.querySelector('[data-testid="shared-work-calendar"]')?.dataset.status === "ready"
     && document.querySelector('[data-testid="calendar-save"]')?.disabled
