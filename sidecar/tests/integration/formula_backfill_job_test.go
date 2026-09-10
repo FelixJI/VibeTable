@@ -1198,7 +1198,18 @@ func TestResumePendingDrainsJobsBeyondConcurrencyWindow(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("pending job dispatcher left queued jobs behind")
+	records, err := app.FindRecordsByFilter("vibetable_jobs", "job_type='formula_fanout'", "+id", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := make(map[string]int)
+	for _, record := range records {
+		states[record.GetString("state")]++
+		if record.GetString("state") != "complete" {
+			t.Logf("[DEBUG-pending-drain] state=%s error=%s", record.GetString("state"), record.GetString("error_json"))
+		}
+	}
+	t.Fatalf("pending job dispatcher left queued jobs behind: %v", states)
 }
 
 func TestResumePendingFailsClosedOnInvalidRetainedDataEvent(t *testing.T) {
