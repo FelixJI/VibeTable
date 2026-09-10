@@ -72,20 +72,13 @@ from backend.contracts.plugin_rpc import (
 )
 from backend.contracts.presets_versions_dashboards import (
     CreateVersionParams,
-    DashboardWorkspaceParams,
-    DeletePresetParams,
     DeleteVersionParams,
-    ExecuteDashboardQueryParams,
-    ListDashboardsParams,
-    ListPresetsParams,
     ListVersionsParams,
     PromoteVersionParams,
-    SaveDashboardDraftParams,
-    SavePresetParams,
     SaveVersionParams,
     VersionIdParams,
 )
-from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY, ProductParams
+from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 from backend.contracts.settings_commands import (
     DeleteShortcutParams,
     LaunchActionParams,
@@ -463,50 +456,6 @@ async def _build_server() -> tuple[
         insights = InsightsService(metadata_port=metadata_transport, query_port=client)
         register_application_errors(ErrorDomain.INSIGHTS)
 
-        # Insights is intentionally exposed under product-owned method names.
-        async def read_dashboard_workspace(
-            params: DashboardWorkspaceParams,
-        ) -> Any:
-            return await insights.read_dashboard_workspace(params.dashboard_id)
-
-        dispatcher.register(
-            "insights.listDashboards",
-            insights.list_dashboards,
-            ListDashboardsParams,
-        )
-        dispatcher.register(
-            "insights.readDashboardWorkspace",
-            read_dashboard_workspace,
-            DashboardWorkspaceParams,
-        )
-        dispatcher.register(
-            "insights.saveDashboardDraft",
-            insights.save_dashboard_draft,
-            SaveDashboardDraftParams,
-        )
-        dispatcher.register(
-            "insights.deleteDashboardWorkspace",
-            insights.delete_dashboard_workspace,
-            DashboardWorkspaceParams,
-        )
-        dispatcher.register(
-            "insights.executeDashboardQuery",
-            insights.execute_dashboard_query,
-            ExecuteDashboardQueryParams,
-        )
-        dispatcher.register(
-            "insights.dashboardQueryLimits",
-            insights.dashboard_query_limits,
-            ProductParams,
-        )
-        dispatcher.register(
-            "insights.panelManifest",
-            insights.panel_manifest,
-            ProductParams,
-        )
-        dispatcher.register("preset.list", insights.list_presets, ListPresetsParams)
-        dispatcher.register("preset.save", insights.save_preset, SavePresetParams)
-        dispatcher.register("preset.delete", insights.delete_preset, DeletePresetParams)
         dispatcher.register("version.list", insights.list_versions, ListVersionsParams)
         dispatcher.register("version.create", insights.create_version, CreateVersionParams)
         dispatcher.register("version.save", insights.save_version, SaveVersionParams)
