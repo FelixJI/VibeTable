@@ -84,6 +84,28 @@ describe("reconcileState", () => {
 });
 
 describe("buildRestorePlan", () => {
+  it("restores explicit saved column order after pruning and appends unordered columns", () => {
+    const reconciled = reconcileState(
+      {
+        columns: [
+          { name: "amount", order: 2, width: 180 },
+          { name: "removed", order: 0 },
+          { name: "name", order: 1, frozen: true },
+          { name: "status", order: null, visible: false },
+        ],
+      },
+      [col("status"), col("amount"), col("name"), col("newColumn")],
+    );
+    const plan = buildRestorePlan(reconciled);
+    expect(plan.columnLayout).toEqual([
+      { field: "name", visible: true, frozen: true },
+      { field: "amount", width: 180, visible: true, frozen: false },
+      { field: "status", visible: false, frozen: false },
+    ]);
+    expect(reconciled.newlyAdded).toEqual(["newColumn"]);
+    expect(reconciled.columns.map((column) => column.name)).toEqual(["status", "amount", "name"]);
+  });
+
   it("builds column layout, sorters and header filters", () => {
     const reconciled = reconcileState(
       {

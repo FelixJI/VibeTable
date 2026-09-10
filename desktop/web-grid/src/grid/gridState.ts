@@ -95,7 +95,12 @@ export function buildRestorePlan(state: ReconciledGridState): {
   readonly sorters: readonly TabulatorSorter[];
   readonly headerFilters: readonly TabulatorHeaderFilter[];
 } {
-  const columnLayout = state.columns.map((c) => ({
+  const orderedColumns = [...state.columns].sort((left, right) => {
+    if (left.order == null) return right.order == null ? 0 : 1;
+    if (right.order == null) return -1;
+    return left.order - right.order;
+  });
+  const columnLayout = orderedColumns.map((c) => ({
     field: c.name,
     ...(c.width !== null && c.width !== undefined ? { width: c.width } : {}),
     visible: c.visible ?? true,
