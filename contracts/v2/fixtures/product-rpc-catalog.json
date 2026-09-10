@@ -4360,7 +4360,7 @@
     },
     {
       "method": "insights.dashboardQueryLimits",
-      "paramsModel": "ProductParams",
+      "paramsModel": "ListDashboardsParams",
       "resultModel": "DashboardQueryLimits",
       "resultSchema": {
         "additionalProperties": false,
@@ -4759,7 +4759,7 @@
     },
     {
       "method": "insights.panelManifest",
-      "paramsModel": "ProductParams",
+      "paramsModel": "ListDashboardsParams",
       "resultModel": "PanelManifestResult",
       "resultSchema": {
         "$defs": {

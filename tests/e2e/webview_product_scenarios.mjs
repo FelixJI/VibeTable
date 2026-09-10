@@ -6034,6 +6034,9 @@ async function scenario16(page, recorder, _network, runtime) {
     path: path.join(runtime.evidenceDir, "16-dashboard-lifecycle.png"),
     fullPage: true,
   });
+  await page.locator(".n-drawer-content").filter({ has: reloadedSettings })
+    .locator(".n-drawer-header__close").click();
+  await reloadedSettings.waitFor({ state: "hidden", timeout: 30_000 });
   const committedDashboard = await rawBridgeRequest(page, "dashboard.readRequested", {
     dashboardId,
   }, 20_000, ["dashboard.loaded"]);

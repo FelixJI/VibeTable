@@ -310,6 +310,25 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 composition,
                 call.args[2].id,
             )
+    from backend.contracts.presets_versions_dashboards import (
+        DashboardWorkspaceParams,
+        ExecuteDashboardQueryParams,
+        ListDashboardsParams,
+        SaveDashboardDraftParams,
+    )
+
+    # Go-owned Dashboard methods keep typed public parameters after Python exit.
+    result.update(
+        {
+            "insights.listDashboards": ListDashboardsParams,
+            "insights.readDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.saveDashboardDraft": SaveDashboardDraftParams,
+            "insights.deleteDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.executeDashboardQuery": ExecuteDashboardQueryParams,
+            "insights.dashboardQueryLimits": ListDashboardsParams,
+            "insights.panelManifest": ListDashboardsParams,
+        }
+    )
     result.update(PRODUCT_PARAM_MODELS)
     # Host-owned methods retain their full public parameter contract after
     # their Python dispatcher registrations are removed.

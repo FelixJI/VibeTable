@@ -41,3 +41,13 @@ Go 使用仓库固定 Go 1.27.0；下列 Go 命令 cwd 为 sidecar。Python 使�
 - Product capability policy、Product E2E capability index 均经原脚本生成并 `--check` 通过；相关 Python 文件 Ruff format/check、S16 Node `--check` 通过。首轮 policy 生成曾拒绝不合法 cancellation 值及 group 非规范排序，按真实 cooperative 与排序契约修正后生成通过，未放宽生成器。
 
 上述仅是源码与相关本地契约证据。没有 full release build、新 Dashboard 包、真实 S16 新段、完整 Python/多栈质量入口、远端 CI 或独立双轴通过结论；后续由 root 安排独立审查和必要新包资格。其他 L5 余项及 L6–L10 目标范围未缩减。
+
+### 完整质量、新包与真实 S16 后续
+
+原完整提交6988c96d经独立Standards/Spec0；正常合入main27e511至e12bf68b，无冲突，增量两轴0。首次全质量因日志目录缺失未执行；实际运行又因本工作树.venv缺依赖导致Pyright50项导入失败。`uv sync --frozen --group dev --group build --offline`补齐锁定依赖后，全Python入口1863 PASS、1 SKIP、2 FAIL，coverage91.42%，Ruff/type阶段通过；两FAIL为退出Python的七个Dashboard方法未保留catalog参数模型。
+
+修正生成输入显式保留七方法typed参数；两个无参方法使用既有空闭合模型，匹配Go已实现的空DTO。catalog仍按所有owner穷尽校验，不删公开方法。原generator生成golden，仅两个paramsModel名称改变，冻结Python oracle不改。`uv run --frozen --no-sync python -m pytest tests/contract/test_product_contracts.py -q --no-cov`：12 PASS/1.16s，Ruff format/check通过。
+
+`uv run --frozen --no-sync python scripts/build_next.py --release`：source e12bf68b，EXIT0，日志build/qa/dashboard-metadata/build-release.log；此前未通过的完整Python结果不由build通过覆盖。
+
+同包S16首运行EXIT1：build/qa/dashboard-metadata/product-e2e/20260910T051543Z。15项业务断言通过至CAS冲突重载；设置抽屉仍打开，nav-tables被n-drawer-mask拦截并在原30s失败，尚未进入sidecar重启段。修正仅通过包含当前settings表单的抽屉原关闭按钮正常关闭并等待隐藏；不force点击/加sleep/延长超时/改业务断言。Node语法与diff检查通过，待同包复验；运行生产路径未改，不重复构建相同产品。
