@@ -29,8 +29,6 @@ class ProductQuerySchemaRpc:
             "field.recycleBin.list": self._list_recycled_fields,
             "schema.table.create": self._create_schema_table,
             "schema.delete": self._delete_schema,
-            "mutation.preview": self._preview_mutation,
-            "mutation.apply": self._apply_mutation,
             "formula.validate": self._validate_formula,
             "formula.draft.validate": self._validate_formula_draft,
             "formula.preview": self._preview_formula,
@@ -84,12 +82,6 @@ class ProductQuerySchemaRpc:
                 expected_status=(200,),
             )
         )
-
-    async def _preview_mutation(self, params: ProductParams) -> JsonObject:
-        return await self._context.client.preview_mutation(params.root)
-
-    async def _apply_mutation(self, params: ProductParams) -> JsonObject:
-        return await self._context.client.apply_mutation(params.root)
 
     async def _validate_formula(self, params: ProductParams) -> JsonObject:
         FormulaValidateRequestV2.model_validate(params.root)
