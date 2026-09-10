@@ -31,8 +31,8 @@
   },
   {
     "id": "06-relation-fanout",
-    "title": "双向关联字段编辑、冻结计划与重开",
-    "requirement": "从真实字段设置修改两端名称、基数、显示字段与共享 setNull/restrict 策略，冻结计划展示两端并原子应用；重开后定义和链接身份保持。many→one 多链接冲突及公共 cascade 输入明确拒绝且不改变两端权威状态；内部迁移 cascade 能力保留。",
+    "title": "双向关联字段编辑、写入生命周期与重启持久化",
+    "requirement": "从真实字段设置修改两端名称、基数、显示字段与共享 setNull/restrict 策略，冻结计划展示两端并原子应用；重开后定义和链接身份保持。many→one 多链接冲突及公共 cascade 输入明确拒绝且不改变两端权威状态；内部迁移 cascade 能力保留。随后从真实关联编辑器快速创建目标、单值选择与清空、多值草稿应用与移除，核对两端权威链接；公开 delta 幂等重放不重复写入，真实打包 sidecar 重启后目标值、两端链接、字段身份与修订保持。",
     "capabilities": ["schema.v2", "relation.pair-edit", "contract.diagnostics"]
   },
   {

@@ -1114,9 +1114,9 @@
       "id": "rpc.relation-history-write",
       "kind": "rpc",
       "names": ["relation.applyDelta", "relation.createTarget", "relation.updateSingle"],
-      "currentPath": ["wpfHost", "pythonBff", "goSidecar", "pocketBase"],
-      "currentRoute": "pythonBff",
-      "classification": "TEMPORARY_BFF",
+      "currentPath": ["wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
       "effects": {"read": [], "write": ["relation.applyDelta", "relation.createTarget", "relation.updateSingle"], "notification": [], "state": []},
@@ -1128,7 +1128,7 @@
       "targetSlice": "L5",
       "targetPr": null,
       "deleteWhen": "Each write capability has one Go route with revision and idempotency authority, and the Python translation and fallback surface is deleted.",
-      "evidence": ["backend/adapters/pocketbase/product_relation_lookup_file_rpc.py", "sidecar/internal/app/audit_routes.go", "sidecar/internal/app/relation_routes.go", "tests/e2e/pocketbase_product_scenarios.json"]
+      "evidence": ["sidecar/internal/app/relation_write_product_rpc.go", "sidecar/internal/relation/write.go", "sidecar/internal/mutation/apply.go", "contracts/v2/relation-write-python-oracle.json", "tests/backend/adapters/test_pocketbase_product_rpc.py", "tests/e2e/pocketbase_product_scenarios.json"]
     },
     {
       "id": "rpc.relation-inspect",

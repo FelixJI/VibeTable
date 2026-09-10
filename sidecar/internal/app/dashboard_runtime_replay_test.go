@@ -144,6 +144,11 @@ func dashboardHTTPServer(t *testing.T, pb *pocketbase.PocketBase, gates ...busin
 			return nil, nil
 		}})
 	}
+	registrations = append(registrations,
+		unrelatedRelationWriteRegistration(t, "relation.createTarget"),
+		unrelatedRelationWriteRegistration(t, "relation.updateSingle"),
+		unrelatedRelationWriteRegistration(t, "relation.applyDelta"),
+	)
 	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, registrations...)
 	if err != nil {
 		t.Fatal(err)

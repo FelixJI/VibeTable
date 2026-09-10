@@ -32,8 +32,15 @@ func (p unrelatedRelationPreviewMustNotRun) PreviewDelta(context.Context, relati
 	return relation.DeltaPreview{}, nil
 }
 
-func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration productrpc.Registration) http.Handler {
+func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration productrpc.Registration, writes ...productrpc.Registration) http.Handler {
 	t.Helper()
+	writeRegistrations := map[string]productrpc.Registration{}
+	for _, method := range []string{"relation.createTarget", "relation.updateSingle", "relation.applyDelta"} {
+		writeRegistrations[method] = unrelatedRelationWriteRegistration(t, method)
+	}
+	for _, item := range writes {
+		writeRegistrations[item.Method] = item
+	}
 	catalog := schemaapi.New(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -60,6 +67,9 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 		unrelatedRelationInspectRegistration(t),
+		writeRegistrations["relation.createTarget"],
+		writeRegistrations["relation.updateSingle"],
+		writeRegistrations["relation.applyDelta"],
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),

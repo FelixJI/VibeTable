@@ -58,6 +58,9 @@ class FakeProductService:
         ("lookup.valuePage", {"extra": True}),
         ("relation.inspectPair", {"tableId": "orders", "fieldId": "fld_link"}),
         ("relation.previewDelta", {"extra": True}),
+        ("relation.createTarget", {"extra": True}),
+        ("relation.updateSingle", {"extra": True}),
+        ("relation.applyDelta", {"extra": True}),
         ("lookup.query", {"extra": True}),
         ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
@@ -130,6 +133,9 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert set(dispatcher.registered_methods) == expected_methods - {
+        "relation.createTarget",
+        "relation.updateSingle",
+        "relation.applyDelta",
         "mutation.apply",
         "mutation.preview",
         "field.settings.describe",
@@ -178,6 +184,9 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
             "query.selectionOpen",
             "query.validateSnapshot",
             "query.view",
+            "relation.applyDelta",
+            "relation.createTarget",
+            "relation.updateSingle",
             "relation.inspectPair",
             "relation.previewDelta",
             "relation.searchTargets",

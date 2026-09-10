@@ -51,6 +51,50 @@ public sealed class HostProductRpcInvokerTests
         Assert.AreEqual("file.list", fixture.Http.Calls.Single().GetProperty("method").GetString());
     }
 
+    [TestMethod]
+    [DataRow("relation.createTarget", "{\"relationId\":\"orders.customer\",\"label\":\"Acme\",\"idempotencyKey\":\"create-1\"}")]
+    [DataRow("relation.updateSingle", "{\"relationId\":\"orders.customer\",\"sourceItemId\":\"o-1\",\"target\":null,\"expectedSchemaRevision\":\"schema-1\",\"idempotencyKey\":\"single-1\"}")]
+    [DataRow("relation.applyDelta", "{\"relationId\":\"orders.related\",\"sourceItemId\":\"o-1\",\"adds\":[],\"removes\":[],\"expectedSchemaRevision\":\"schema-1\",\"idempotencyKey\":\"delta-1\"}")]
+    public async Task RelationWritesUseGeneratedGoOwnerWithoutPython(string method, string payload)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.Result = Json("""{"outcome":"committed","requestId":"original-operation"}""");
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        JsonElement parameters = Json(payload);
+
+        JsonElement result = await (method switch
+        {
+            "relation.createTarget" => gateway.CreateRelationTargetAsync(parameters, CancellationToken.None),
+            "relation.updateSingle" => gateway.UpdateSingleRelationAsync(parameters, CancellationToken.None),
+            "relation.applyDelta" => gateway.ApplyRelationDeltaAsync(parameters, CancellationToken.None),
+            _ => throw new InvalidOperationException("Unexpected test method."),
+        });
+
+        JsonElement call = fixture.Http.Calls.Single();
+        Assert.AreEqual(method, call.GetProperty("method").GetString());
+        Assert.IsTrue(JsonElement.DeepEquals(parameters, call.GetProperty("params")));
+        Assert.IsTrue(JsonElement.DeepEquals(fixture.Http.Result, result));
+        Assert.AreEqual(1, fixture.Http.Handshakes);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task RelationWriteCannotPublishAReplyFromRetiredWorkspace()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.BeforeReply = (_, _) =>
+        {
+            fixture.Current = false;
+            return Task.CompletedTask;
+        };
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => gateway.ApplyRelationDeltaAsync(
+            Json("""{"relationId":"orders.related","sourceItemId":"o-1","adds":[],"removes":[],"expectedSchemaRevision":"schema-1","idempotencyKey":"delta-1"}"""),
+            CancellationToken.None));
+        Assert.AreEqual(1, fixture.Http.Calls.Count);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
     private static JsonElement Json(string text)
     {
         using JsonDocument document = JsonDocument.Parse(text);
@@ -536,7 +580,7 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("relation.applyDelta", "workspace"), new("relation.createTarget", "workspace"), new("relation.updateSingle", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }

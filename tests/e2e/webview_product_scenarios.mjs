@@ -2578,8 +2578,182 @@ async function scenario05(page, recorder, _network, runtime) {
   return;
 }
 
-async function scenario06(page, recorder) {
+async function scenario06(page, recorder, _network, runtime) {
   await runRelationScenario(page, recorder, false);
+  await runRelationWriteLifecycle(page, recorder, runtime);
+}
+
+async function runRelationWriteLifecycle(page, recorder, runtime) {
+  const sourceName = "Relation Write Sources";
+  const targets = await createSimpleTable(page, "Relation Write Targets", "Name");
+  const sources = await createSimpleTable(page, sourceName, "Title");
+  const createRelation = (name, cardinality) => createV2Field(
+    page, sources.tableId, name, "relation", draft => {
+      draft.relation.targetTableId = targets.tableId;
+      draft.relation.displayFieldId = targets.field.fieldId;
+      draft.relation.cardinality = cardinality;
+      return draft;
+    },
+  );
+  const single = await createRelation("Single target", "one");
+  const many = await createRelation("Many targets", "many");
+  const sourceId = "writeorigin0001";
+  const targetB = { collection: targets.tableId, itemId: "writetarget0002", label: "候选乙" };
+  const seedTarget = await applyProductMutation(page, targets.tableId, [{
+    kind: "insert", recordId: targetB.itemId,
+    values: { [targets.field.physicalName]: targetB.label },
+  }], "relation-write-target");
+  const seedSource = await applyProductMutation(page, sources.tableId, [{
+    kind: "insert", recordId: sourceId, values: { [sources.field.physicalName]: "Relation lifecycle" },
+  }], "relation-write-source");
+  if (seedTarget.payload?.status !== "applied" || seedSource.payload?.status !== "applied") {
+    throw new Error("relation write fixture did not commit");
+  }
+  const readAuthority = async () => ({
+    single: await readRelationPairAuthority(page, sources.tableId, single.fieldId),
+    many: await readRelationPairAuthority(page, sources.tableId, many.fieldId),
+  });
+  const assertLinks = async (label, singleIds, manyIds) => {
+    const authority = await readAuthority();
+    const agrees = (endpoints, ids) => {
+      const links = relationPairIdentitiesAndLinks(endpoints);
+      return links[0].rows.length === 1 && links[0].rows[0].id === sourceId
+        && isDeepStrictEqual(links[0].rows[0].links, [...ids].sort())
+        && links[1].rows.length === 2
+        && links[1].rows.every(row => isDeepStrictEqual(
+          row.links, ids.includes(row.id) ? [sourceId] : [],
+        ));
+    };
+    recorder.check(label, agrees(authority.single, singleIds) && agrees(authority.many, manyIds),
+      { authority });
+    return authority;
+  };
+  await selectTable(page, sourceName);
+  await waitForVisibleRowCount(page, 1);
+  const panel = page.locator(".relation-editor:visible");
+  const open = async field => {
+    await page.locator(
+      `.grid-wrapper[aria-busy="false"] .tabulator-cell.vt-relation-cell--editable[tabulator-field="${field.physicalName}"]`,
+    ).first().dblclick();
+    await panel.waitFor();
+    await panel.locator(".relation-editor__candidate").filter({ hasText: targetB.label }).waitFor();
+  };
+  const terminal = async method => {
+    await page.waitForFunction(() => !!window.__vibetableE2EBridgeCapture?.message,
+      undefined, { timeout: 30_000 });
+    const response = await page.evaluate(() => window.__vibetableE2EBridgeCapture.message);
+    if (response.type !== method || response.payload?.outcome !== "committed") {
+      throw new Error(`relation write did not commit: ${JSON.stringify(response)}`);
+    }
+    return response.payload;
+  };
+  const commitUi = async (method, action) => {
+    await beginBridgeMessageCapture(page, [method, "operation.failed"]);
+    await action();
+    const result = await terminal(method);
+    await panel.waitFor({ state: "hidden", timeout: 30_000 });
+    return result;
+  };
+  await open(single);
+  const labelA = "新建甲 中文 Café";
+  await panel.getByRole("textbox", { name: /^(搜索目标记录|Search target records)$/u }).fill(labelA);
+  await beginBridgeMessageCapture(page, ["relation.createTarget", "operation.failed"]);
+  await panel.getByTestId("relation-create-target").click();
+  const created = await terminal("relation.createTarget");
+  await panel.waitFor({ state: "hidden", timeout: 30_000 });
+  const targetA = created.target;
+  recorder.check("quick create returns the new authority target identity and Unicode label",
+    targetA?.collection === targets.tableId && typeof targetA.itemId === "string"
+      && targetA.itemId !== targetB.itemId && targetA.label === labelA, { created });
+  if (!targetA?.itemId) throw new Error("quick create returned no target identity");
+  const createdState = await assertLinks("quick create immediately attaches both single endpoints",
+    [targetA.itemId], []);
+  recorder.check("quick create persists exactly one new target with its complete Unicode label",
+    createdState.single[1].rows.filter(row => row[targets.field.physicalName] === labelA).length === 1
+      && createdState.single[1].rows.some(row => row.id === targetA.itemId
+        && row[targets.field.physicalName] === labelA));
+  const choose = label => panel.locator(".relation-editor__candidate").filter({ hasText: label }).click();
+  await open(single);
+  await commitUi("relation.updateSingle", () => choose(targetB.label));
+  await assertLinks("single replacement updates the source and both reciprocal links", [targetB.itemId], []);
+  await open(single);
+  await commitUi("relation.updateSingle", () => panel.getByRole("button", { name: /^(清空|Clear)$/u }).click());
+  await assertLinks("single clear removes both endpoint links and retains both target records", [], []);
+  await open(single);
+  await commitUi("relation.updateSingle", () => choose(labelA));
+  const beforeDraft = await readAuthority();
+  await open(many);
+  await choose(labelA);
+  await choose(targetB.label);
+  recorder.check("many selection is a two-target draft without authority writes",
+    await panel.locator(".relation-editor__token").count() === 2
+      && await panel.locator(".relation-editor__error").count() === 0
+      && isDeepStrictEqual(await readAuthority(), beforeDraft));
+  const apply = () => panel.getByRole("button", { name: /^(应用 \d+ 项|Apply \d+ items)$/u }).click();
+  await commitUi("relation.applyDelta", apply);
+  await assertLinks("many UI apply commits both target links and reciprocal endpoints",
+    [targetA.itemId], [targetA.itemId, targetB.itemId]);
+  await open(many);
+  // Preview currently labels existing selected tokens by raw target ID.
+  await panel.locator(".relation-editor__selected-row").filter({ hasText: targetA.itemId })
+    .getByRole("button", { name: /^(移除关系|Remove relation)$/u }).click();
+  await commitUi("relation.applyDelta", apply);
+  const beforeReplay = await assertLinks("many UI removal retains only the other target and reciprocal",
+    [targetA.itemId], [targetB.itemId]);
+  const replayParams = {
+    relationId: `${sources.tableId}.${many.fieldId}`,
+    sourceItemId: sourceId,
+    expectedSchemaRevision: beforeReplay.many[0].schemaRevision,
+    adds: [{ target: targetA }], removes: [{ target: targetB }],
+    idempotencyKey: `relation-write-replay-${crypto.randomUUID()}`,
+  };
+  const first = await rawBridgeRequest(page, "relation.applyDelta", replayParams);
+  if (first.payload?.outcome !== "committed") throw new Error("public delta replay setup did not commit");
+  const committed = await assertLinks("public delta changes both endpoints before idempotent replay",
+    [targetA.itemId], [targetA.itemId]);
+  const replayed = await rawBridgeRequest(page, "relation.applyDelta", replayParams);
+  recorder.check("identical public delta replay preserves receipt, records, links and revisions",
+    isDeepStrictEqual(replayed.payload, first.payload)
+      && isDeepStrictEqual(await readAuthority(), committed), { first, replayed });
+  const quiet = await waitForBridgeDiagnosticsToSettle(page);
+  recorder.check("relation restart begins from a quiescent bridge",
+    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
+  const recoveryOwner = `relation-write-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
+    ownerToken: recoveryOwner, tableId: sources.tableId,
+  });
+  let recoveryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify relation writes survive sidecar restart");
+    recorder.check("relation restart terminates only the exact packaged sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(page, sourceName, sources.tableId, 1, 60_000, recoveryOwner);
+  } catch (error) {
+    recoveryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
+    } catch (cleanupError) {
+      if (!attachCleanupFailure(recoveryError, cleanupError, "Relation recovery window cleanup also failed")) {
+        throw cleanupError;
+      }
+    }
+  }
+  recorder.check("fresh authority preserves both pairs, target values, identities and revisions after restart",
+    isDeepStrictEqual(await readAuthority(), committed));
+  for (const field of [single, many]) {
+    await page.waitForFunction(({ fieldName, label }) => {
+      const tokens = document.querySelectorAll(`.tabulator-cell[tabulator-field="${fieldName}"] .vt-relation-token`);
+      return tokens.length === 1 && tokens[0].textContent === label;
+    }, { fieldName: field.physicalName, label: labelA });
+    await open(field);
+    recorder.check(`reopened ${field.physicalName} editor retains one selected target after restart`,
+      await panel.locator(".relation-editor__token").count() === 1
+        && await panel.locator(".relation-editor__error").count() === 0);
+    await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
+    await panel.waitFor({ state: "hidden" });
+  }
 }
 
 async function scenario27(page, recorder) {

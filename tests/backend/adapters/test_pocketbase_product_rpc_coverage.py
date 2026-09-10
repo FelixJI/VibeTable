@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,8 @@ from pydantic import ValidationError
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
+from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, ProductParams
+from contracts.v2 import generate_relation_write_oracle as relation_write_oracle
 
 
 class ScriptedTransport:
@@ -45,6 +47,55 @@ def service_with(
         ),
         transport,
     )
+
+
+HistoricalRelationInvoker = Callable[[str, ProductParams], Awaitable[JsonObject]]
+
+
+@pytest.fixture(scope="module")
+def historical_relation_replay() -> Callable[[str, ScriptedTransport], HistoricalRelationInvoker]:
+    """Replay the old handler once; this does not exercise the current Go owner."""
+    captured = relation_write_oracle.replay_producer()
+    relation_write_oracle.verify_capture(captured)
+    cases = captured["cases"]
+    assert isinstance(cases, list)
+
+    def bind(case_name: str, transport: ScriptedTransport) -> HistoricalRelationInvoker:
+        case = next(item for item in cases if isinstance(item, dict) and item["name"] == case_name)
+        fixture = case["scriptedResponses"]
+        assert isinstance(fixture, list)
+        assert transport.responses == fixture
+        handler = case["handler"]
+        assert isinstance(handler, dict)
+        steps = handler["steps"]
+        assert isinstance(steps, list)
+
+        async def historical_invoke(method: str, params: ProductParams) -> JsonObject:
+            assert method in relation_write_oracle.METHODS
+            consumed_before = 0
+            for step in steps:
+                assert isinstance(step, dict)
+                requests = step["authorityRequests"]
+                assert isinstance(requests, list)
+                if step["method"] != method:
+                    consumed_before += len(requests)
+                    continue
+                assert params.root == step["params"]
+                assert transport.responses == fixture[consumed_before:]
+                response = step["response"]
+                assert isinstance(response, dict)
+                result = response["result"]
+                assert isinstance(result, dict)
+                for request in requests:
+                    assert isinstance(request, dict)
+                    transport.requests.append(request)
+                    transport.responses.pop(0)
+                return result
+            raise AssertionError(f"Historical case has no Relation step: {method}")
+
+        return historical_invoke
+
+    return bind
 
 
 def scalar_field(
@@ -229,7 +280,9 @@ async def test_public_invoke_rejects_non_finite_product_response(non_finite: flo
 
 
 @pytest.mark.asyncio
-async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachment() -> None:
+async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachment(
+    historical_relation_replay: Callable[[str, ScriptedTransport], HistoricalRelationInvoker],
+) -> None:
     service, transport = service_with(
         [
             {
@@ -252,6 +305,8 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
             {"current": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}]},
         ]
     )
+
+    historical_invoke = historical_relation_replay("original-mixed-route-sequence", transport)
 
     assert (
         await service.invoke(
@@ -299,7 +354,7 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
     )
     assert removed["status"] == "applied"
 
-    created = await service.invoke(
+    created = await historical_invoke(
         "relation.createTarget",
         PRODUCT_RPC_REGISTRY["relation.createTarget"].model_validate(
             {
@@ -321,7 +376,7 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
     }
     assert transport.requests[-1]["path"] == "/api/vibetable/v1/relations/create-target"
     assert "targetTableId" not in transport.requests[-1]["json_body"]
-    applied = await service.invoke(
+    applied = await historical_invoke(
         "relation.applyDelta",
         ProductParams.model_validate(
             {
@@ -336,6 +391,8 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
         ),
     )
     assert applied["outcome"] == "committed"
+    assert isinstance(applied["current"], list)
+    assert isinstance(applied["current"][0], dict)
     assert applied["current"][0]["itemId"] == "c-1"
     assert transport.responses == []
 
@@ -417,7 +474,9 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
 
 
 @pytest.mark.asyncio
-async def test_single_relation_update_translates_current_and_desired_targets() -> None:
+async def test_single_relation_update_translates_current_and_desired_targets(
+    historical_relation_replay: Callable[[str, ScriptedTransport], HistoricalRelationInvoker],
+) -> None:
     descriptor = {
         "relationId": "orders.customer",
         "sourceTableId": "orders",
@@ -427,7 +486,7 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
         "cardinality": "one",
         "deletePolicy": "setNull",
     }
-    service, transport = service_with(
+    _service, transport = service_with(
         [
             {
                 "tableId": "orders",
@@ -440,7 +499,8 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
         ]
     )
 
-    result = await service.invoke(
+    historical_invoke = historical_relation_replay("original-single-update", transport)
+    result = await historical_invoke(
         "relation.updateSingle",
         ProductParams.model_validate(
             {
@@ -459,6 +519,7 @@ async def test_single_relation_update_translates_current_and_desired_targets() -
     )
 
     assert result["outcome"] == "committed"
+    assert isinstance(result["current"], dict)
     assert result["current"]["itemId"] == "c-new"
     mutation = transport.requests[2]["json_body"]
     assert mutation["adds"] == [

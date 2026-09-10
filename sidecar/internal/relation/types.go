@@ -1,6 +1,8 @@
 package relation
 
 import (
+	"encoding/json"
+
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 )
@@ -74,6 +76,8 @@ type CreateTargetRequest struct {
 	IdempotencyKey string         `json:"idempotencyKey"`
 	Actor          mutation.Actor `json:"actor"`
 	TargetTableID  string         `json:"-"`
+	// CallerParams retains the validated public intent without widening this DTO.
+	CallerParams json.RawMessage `json:"-"`
 }
 
 type CreateTargetResult struct {
@@ -82,15 +86,16 @@ type CreateTargetResult struct {
 }
 
 type DeltaRequest struct {
-	RelationID     string         `json:"relationId"`
-	SourceRecordID string         `json:"sourceRecordId"`
-	SchemaRevision string         `json:"schemaRevision"`
-	Adds           []TargetRef    `json:"adds"`
-	Removes        []TargetRef    `json:"removes"`
-	RequestID      string         `json:"requestId"`
-	IdempotencyKey string         `json:"idempotencyKey"`
-	ExpectedDigest *string        `json:"expectedDigest,omitempty"`
-	Actor          mutation.Actor `json:"actor"`
+	RelationID     string          `json:"relationId"`
+	SourceRecordID string          `json:"sourceRecordId"`
+	SchemaRevision string          `json:"schemaRevision"`
+	Adds           []TargetRef     `json:"adds"`
+	Removes        []TargetRef     `json:"removes"`
+	RequestID      string          `json:"requestId"`
+	IdempotencyKey string          `json:"idempotencyKey"`
+	ExpectedDigest *string         `json:"expectedDigest,omitempty"`
+	Actor          mutation.Actor  `json:"actor"`
+	CallerParams   json.RawMessage `json:"-"`
 }
 
 type DeltaPreview struct {

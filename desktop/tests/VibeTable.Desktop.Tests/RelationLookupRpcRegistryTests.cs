@@ -37,7 +37,7 @@ public sealed class RelationLookupRpcRegistryTests
     }
 
     [TestMethod]
-    public void CreateTargetRequiresVisualRelationLabelAndIdempotencyKey()
+    public void CreateTargetAcceptsVisualLabelsAndRejectsUnknownFields()
     {
         Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.createTarget", out var endpoint));
         Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse(
@@ -49,14 +49,27 @@ public sealed class RelationLookupRpcRegistryTests
     }
 
     [TestMethod]
-    public void PreviewAcceptsTheCurrentSixFieldRendererContract()
+    [DataRow("{\"relationId\":\"orders.customer\",\"values\":{\"name\":\"中文\",\"active\":false,\"count\":0},\"idempotencyKey\":\"create-values\"}", true)]
+    [DataRow("{\"relationId\":\"orders.customer\",\"idempotencyKey\":\"create-default\"}", true)]
+    [DataRow("{\"relationId\":\"orders.customer\",\"label\":\"\",\"idempotencyKey\":\"empty-label\"}", false)]
+    [DataRow("{\"relationId\":\"orders.customer\",\"values\":[],\"idempotencyKey\":\"bad-values\"}", false)]
+    [DataRow("{\"relationId\":\"orders.customer\",\"values\":{}}", false)]
+    public void CreateTargetPreservesTheOptionalLabelAndValuesContract(string json, bool accepted)
+    {
+        Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.createTarget", out var endpoint));
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.AreEqual(accepted, endpoint.IsValidPayload(document.RootElement));
+    }
+
+    [TestMethod]
+    public void PreviewAndApplyAcceptTheCurrentSixFieldRendererContract()
     {
         using JsonDocument document = JsonDocument.Parse(
             """{"relationId":"orders.customer","sourceItemId":"order-1","expectedSchemaRevision":"schema-1","adds":[],"removes":[],"idempotencyKey":"preview-1"}""");
         Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.previewDelta", out var preview));
         Assert.IsTrue(preview.IsValidPayload(document.RootElement));
         Assert.IsTrue(RelationLookupRpcRegistry.TryGet("relation.applyDelta", out var apply));
-        Assert.IsFalse(apply.IsValidPayload(document.RootElement));
+        Assert.IsTrue(apply.IsValidPayload(document.RootElement));
     }
 
     [TestMethod]

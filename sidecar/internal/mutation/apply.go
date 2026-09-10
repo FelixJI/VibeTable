@@ -62,6 +62,50 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 	if err != nil {
 		return Receipt{}, mutationError("mutation.request.invalid", nil, "mutation request cannot be canonicalized", nil, false)
 	}
+	return kernel.apply(ctx, request, requestHash, "mutation.apply", nil, nil)
+}
+
+// PreparedIntent identifies an internal business operation before mutable rows
+// are read. Params is the caller's typed, complete intent, including its scope
+// and optimistic guards. It must not contain derived database state.
+type PreparedIntent struct {
+	Kind           string `json:"kind"`
+	RequestID      string `json:"requestId"`
+	IdempotencyKey string `json:"idempotencyKey"`
+	Actor          Actor  `json:"actor"`
+	Params         any    `json:"params"`
+}
+
+// PreparedResult is an internal receipt envelope, stored in the same existing
+// idempotency record. The public mutation Receipt wire format stays unchanged.
+type PreparedResult struct {
+	Receipt Receipt         `json:"receipt"`
+	Result  json.RawMessage `json:"result"`
+}
+
+type preparedProjection struct {
+	project func(core.App, Receipt) (any, error)
+	result  json.RawMessage
+}
+
+// ApplyPrepared compiles only a new intent, using the same transaction that
+// persists its writes, audit and receipt. canonicalHash is the sole identity
+// producer; the existing coordinator and receipt store reject changed intents.
+func (kernel *Kernel) ApplyPrepared(ctx context.Context, intent PreparedIntent, compile func(core.App) (Request, error), project func(core.App, Receipt) (any, error)) (PreparedResult, error) {
+	if intent.Kind == "" || intent.RequestID == "" || intent.IdempotencyKey == "" || intent.Actor.Type == "" || intent.Actor.ID == "" || compile == nil || project == nil {
+		return PreparedResult{}, mutationError("mutation.request.invalid", nil, "prepared intent is incomplete", nil, false)
+	}
+	requestHash, err := canonicalHash(intent)
+	if err != nil {
+		return PreparedResult{}, mutationError("mutation.request.invalid", nil, "prepared intent cannot be canonicalized", nil, false)
+	}
+	identity := Request{RequestID: intent.RequestID, IdempotencyKey: intent.IdempotencyKey, Actor: intent.Actor}
+	projection := &preparedProjection{project: project}
+	receipt, err := kernel.apply(ctx, identity, requestHash, intent.Kind, compile, projection)
+	return PreparedResult{Receipt: receipt, Result: projection.result}, err
+}
+
+func (kernel *Kernel) apply(ctx context.Context, request Request, requestHash, replayKind string, compile func(core.App) (Request, error), projection *preparedProjection) (Receipt, error) {
 	leader, err := kernel.coordinator.begin(request.IdempotencyKey, requestHash)
 	if err != nil {
 		return Receipt{}, err
@@ -96,16 +140,35 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		replayed, found, replayErr := kernel.replayOrReject(txApp, request, requestHash)
+		var storedResult *json.RawMessage
+		if projection != nil {
+			storedResult = &projection.result
+		}
+		replayed, found, replayErr := kernel.replayOrReject(txApp, request, requestHash, storedResult)
 		if replayErr != nil {
 			return replayErr
 		}
 		if found {
 			receipt = replayed
 			if receipt.Status == StatusReplayed {
-				replaySignal = writecoordinator.ReplayedBusinessWrite(ctx, "mutation.apply", request.IdempotencyKey)
+				replaySignal = writecoordinator.ReplayedBusinessWrite(ctx, replayKind, request.IdempotencyKey)
 			}
 			return nil
+		}
+		if compile != nil {
+			compiled, err := compile(txApp)
+			if err != nil {
+				return err
+			}
+			if compiled.RequestID != request.RequestID || compiled.IdempotencyKey != request.IdempotencyKey ||
+				compiled.Actor.Type != request.Actor.Type || compiled.Actor.ID != request.Actor.ID ||
+				!sameOptionalText(compiled.Actor.DisplayName, request.Actor.DisplayName) {
+				return mutationError("mutation.request.invalid", nil, "compiled request changed intent identity", nil, false)
+			}
+			if err := validateRequestShape(compiled); err != nil {
+				return err
+			}
+			request = compiled
 		}
 
 		preview, previewErr := kernel.preview(ctx, txApp, request)
@@ -368,7 +431,20 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			ComputedFields: computedFields, NewRevision: &newRevision,
 			EmittedEvents: emitted, Warnings: []ProductError{},
 		}
-		if err := saveIdempotency(txApp, request, requestHash, receipt, kernel.now()); err != nil {
+		var storedReceipt any = receipt
+		if projection != nil {
+			result, err := projection.project(txApp, receipt)
+			if err != nil {
+				return err
+			}
+			raw, err := json.Marshal(result)
+			if err != nil || string(raw) == "null" {
+				return mutationError("mutation.internal.failed", nil, "prepared result could not be recorded", nil, true)
+			}
+			projection.result = raw
+			storedReceipt = PreparedResult{Receipt: receipt, Result: raw}
+		}
+		if err := saveIdempotency(txApp, request, requestHash, storedReceipt, kernel.now()); err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
@@ -1562,7 +1638,7 @@ func saveIdempotency(
 	app core.App,
 	request Request,
 	requestHash string,
-	receipt Receipt,
+	receipt any,
 	now time.Time,
 ) error {
 	collection, err := app.FindCollectionByNameOrId("vibetable_idempotency_keys")
@@ -1589,6 +1665,7 @@ func (kernel *Kernel) replayOrReject(
 	app core.App,
 	request Request,
 	requestHash string,
+	result *json.RawMessage,
 ) (Receipt, bool, error) {
 	record, err := app.FindFirstRecordByFilter(
 		"vibetable_idempotency_keys", "key={:key}", dbx.Params{"key": request.IdempotencyKey},
@@ -1623,6 +1700,17 @@ func (kernel *Kernel) replayOrReject(
 		return Receipt{}, false, storageFailure()
 	}
 	var receipt Receipt
+	if result != nil {
+		var stored PreparedResult
+		if err := DecodeStrict(raw, &stored); err != nil || len(stored.Result) == 0 || string(stored.Result) == "null" {
+			return Receipt{}, false, storageFailure()
+		}
+		*result = stored.Result
+		raw, marshalErr = json.Marshal(stored.Receipt)
+		if marshalErr != nil {
+			return Receipt{}, false, storageFailure()
+		}
+	}
 	if err := DecodeStrict(raw, &receipt); err != nil ||
 		receipt.ContractVersion != ContractVersion ||
 		receipt.Status != StatusApplied {
@@ -1737,6 +1825,10 @@ func canonicalHash(value any) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func sameOptionalText(left, right *string) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
 func formatRevision(prefix string, revision int64) string {

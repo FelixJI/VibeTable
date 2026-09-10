@@ -137,6 +137,31 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
                 "idempotencyKey": "preview-1",
             },
         ),
+        (
+            "relation.createTarget",
+            {"relationId": "orders.customer", "label": "Grace", "idempotencyKey": "create-1"},
+        ),
+        (
+            "relation.updateSingle",
+            {
+                "relationId": "orders.customer",
+                "sourceItemId": "row-1",
+                "target": None,
+                "expectedSchemaRevision": "schema-1",
+                "idempotencyKey": "single-1",
+            },
+        ),
+        (
+            "relation.applyDelta",
+            {
+                "relationId": "orders.customer",
+                "sourceItemId": "row-1",
+                "expectedSchemaRevision": "schema-1",
+                "idempotencyKey": "delta-1",
+                "adds": [],
+                "removes": [],
+            },
+        ),
         ("schema.getTable", {"tableId": "orders"}),
         ("schema.list", {}),
         ("query.page", {"tableId": "orders", "query": {}}),

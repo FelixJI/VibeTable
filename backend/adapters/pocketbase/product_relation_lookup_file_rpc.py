@@ -1,4 +1,4 @@
-"""Relation, Lookup, managed-file, and row-history product RPC module."""
+"""Managed-file product RPC module; Relation writes are owned by Go."""
 
 from __future__ import annotations
 
@@ -9,18 +9,16 @@ from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
     _array,
-    _optional_text,
     _result_object,
     _text,
-    _text_any,
 )
-from backend.contracts.product_rpc import JsonObject, JsonValue, ProductParams
+from backend.contracts.product_rpc import JsonObject, ProductParams
 
 _ROW_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class ProductRelationLookupFileRpc:
-    """Owns relation/Lookup semantics plus managed-file and history lifecycles."""
+    """Owns managed-file operations that still require the Python backend."""
 
     def __init__(self, context: PocketBaseProductContext) -> None:
         self._context = context
@@ -28,9 +26,6 @@ class ProductRelationLookupFileRpc:
             "file.token": self._create_file_token,
             "file.applyHostChange": self._apply_host_attachment_change,
             "file.saveHostFile": self._save_attachment_to_host,
-            "relation.createTarget": self._create_relation_target,
-            "relation.updateSingle": self._update_single_relation,
-            "relation.applyDelta": self._apply_relation_delta,
         }
         self.methods = frozenset(self._handlers)
 
@@ -144,163 +139,3 @@ class ProductRelationLookupFileRpc:
             expected_status=(200,),
         )
         return {"contractVersion": "2.0", "saved": True, "bytes": saved_bytes}
-
-    async def _create_relation_target(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        request_id = _text(raw, "idempotencyKey")
-        result = await self._context.post(
-            "/api/vibetable/v1/relations/create-target",
-            {
-                "relationId": _text(raw, "relationId"),
-                "label": raw.get("label") or "",
-                "values": raw.get("values") or {},
-                "requestId": request_id,
-                "idempotencyKey": request_id,
-                "actor": {"type": "user", "id": "local-user", "displayName": None},
-            },
-        )
-        target = result.get("target")
-        if not isinstance(target, dict):
-            raise ValueError("PocketBase returned an invalid created relation target")
-        return {
-            "outcome": "committed",
-            "target": _renderer_target(target),
-            "requestId": request_id,
-        }
-
-    async def _apply_relation_delta(self, params: ProductParams) -> JsonObject:
-        result = await self._context.post(
-            "/api/vibetable/v1/relations/apply-delta",
-            _translate_delta(params.root),
-        )
-        current = result.get("current")
-        if not isinstance(current, list):
-            raise ValueError("PocketBase returned invalid relation result")
-        return {
-            "outcome": "committed",
-            "current": [_renderer_target(item) for item in current if isinstance(item, dict)],
-            "schemaRevision": _text(params.root, "expectedSchemaRevision"),
-            "requestId": _text(params.root, "idempotencyKey"),
-        }
-
-    async def _update_single_relation(self, params: ProductParams) -> JsonObject:
-        raw = params.root
-        relation_id = _text(raw, "relationId")
-        source_record_id = _text_any(raw, "sourceRecordId", "sourceItemId")
-        catalog = await self._context.client.describe_relations(relation_id.split(".", 1)[0])
-        relations = catalog.get("relations")
-        if not isinstance(relations, list):
-            raise ValueError("PocketBase returned an invalid relation catalog")
-        descriptor = next(
-            (
-                item
-                for item in relations
-                if isinstance(item, dict) and item.get("relationId") == relation_id
-            ),
-            None,
-        )
-        if not isinstance(descriptor, dict) or descriptor.get("cardinality") != "one":
-            raise ValueError("single relation is unavailable")
-        source_table = _text(descriptor, "sourceTableId")
-        physical_name = _text(descriptor, "physicalName")
-        target_table = _text(descriptor, "targetTableId")
-        rows = await self._context.client.read_rows(
-            table_id=source_table,
-            row_ids=[source_record_id],
-        )
-        if len(rows) != 1:
-            raise ValueError("relation source record was not found")
-        current_ids = _relation_ids(rows[0].get(physical_name))
-        target = raw.get("target")
-        target_ref = None if target is None else _translate_target(target, "target")
-        if target_ref is not None and target_ref["tableId"] != target_table:
-            raise ValueError("relation target belongs to another table")
-        desired_id = target_ref["recordId"] if target_ref is not None else None
-        adds = [] if desired_id is None or desired_id in current_ids else [target_ref]
-        removes = [
-            {"tableId": target_table, "recordId": record_id, "label": record_id}
-            for record_id in current_ids
-            if record_id != desired_id
-        ]
-        request_id = _text_any(raw, "requestId", "idempotencyKey")
-        result = await self._context.post(
-            "/api/vibetable/v1/relations/apply-delta",
-            _result_object(
-                {
-                    "relationId": relation_id,
-                    "sourceRecordId": source_record_id,
-                    "schemaRevision": _text_any(raw, "schemaRevision", "expectedSchemaRevision"),
-                    "adds": adds,
-                    "removes": removes,
-                    "requestId": request_id,
-                    "idempotencyKey": _text(raw, "idempotencyKey"),
-                    "expectedDigest": raw.get("expectedDigest"),
-                    "actor": raw.get(
-                        "actor",
-                        {"type": "user", "id": "local-user", "displayName": None},
-                    ),
-                }
-            ),
-        )
-        return _result_object(
-            {
-                "outcome": "committed",
-                "current": target,
-                "schemaRevision": _text_any(raw, "schemaRevision", "expectedSchemaRevision"),
-                "requestId": request_id,
-                "receipt": result.get("receipt"),
-            }
-        )
-
-
-def _translate_delta(raw: JsonObject) -> JsonObject:
-    return _result_object(
-        {
-            "relationId": _text(raw, "relationId"),
-            "sourceRecordId": _text_any(raw, "sourceRecordId", "sourceItemId"),
-            "schemaRevision": _text_any(raw, "schemaRevision", "expectedSchemaRevision"),
-            "adds": [_translate_target(item, "add") for item in _array(raw, "adds")],
-            "removes": [_translate_target(item, "remove") for item in _array(raw, "removes")],
-            "requestId": _text_any(raw, "requestId", "idempotencyKey"),
-            "idempotencyKey": _text(raw, "idempotencyKey"),
-            "expectedDigest": raw.get("expectedDigest"),
-            "actor": raw.get(
-                "actor",
-                {"type": "user", "id": "local-user", "displayName": None},
-            ),
-        }
-    )
-
-
-def _translate_target(value: JsonValue, label: str) -> dict[str, str]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} target must be an object")
-    nested = value.get("target")
-    target = nested if isinstance(nested, dict) else value
-    return {
-        "tableId": _text_any(target, "tableId", "collection"),
-        "recordId": _text_any(target, "recordId", "itemId"),
-        "label": _optional_text(target, "label") or _text_any(target, "recordId", "itemId"),
-    }
-
-
-def _renderer_target(value: JsonObject) -> JsonObject:
-    return {
-        "collection": _text(value, "tableId"),
-        "itemId": _text(value, "recordId"),
-        "label": _text(value, "label"),
-        "secondaryLabel": value.get("secondaryLabel") or None,
-    }
-
-
-def _relation_ids(value: JsonValue) -> list[str]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list) and all(isinstance(item, str) and item for item in value):
-        return [item for item in value if isinstance(item, str)]
-    raise ValueError("PocketBase returned an invalid relation value")
-
-
-__all__ = ["ProductRelationLookupFileRpc"]

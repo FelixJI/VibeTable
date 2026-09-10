@@ -1,0 +1,1875 @@
+{
+  "producer": "e90889c1cb2c10b3f3a7c69e6f8de46dbccbeef2",
+  "methods": [
+    "relation.createTarget",
+    "relation.applyDelta",
+    "relation.updateSingle"
+  ],
+  "cases": [
+    {
+      "name": "original-mixed-route-sequence",
+      "sourceTest": "test_closed_routes_cover_schema_formula_file_and_remove_only_attachment",
+      "scriptedResponses": [
+        {
+          "contract": "vibetable.schema.v2",
+          "operationId": "operation-create-table-12345678",
+          "tableId": "tbl_orders",
+          "displayName": "订单",
+          "schemaRevision": "schema_0001"
+        },
+        {
+          "valid": true,
+          "diagnostics": []
+        },
+        {
+          "downloadCapability": "opaque",
+          "contractVersion": "2.0"
+        },
+        {
+          "status": "applied"
+        },
+        {
+          "target": {
+            "tableId": "customers",
+            "recordId": "c-2",
+            "label": "Grace"
+          }
+        },
+        {
+          "current": [
+            {
+              "tableId": "customers",
+              "recordId": "c-1",
+              "label": "Ada"
+            }
+          ]
+        }
+      ],
+      "failure": null,
+      "handler": {
+        "steps": [
+          {
+            "method": "schema.table.create",
+            "params": {
+              "displayName": "订单",
+              "operationId": "operation-create-table-12345678",
+              "actor": {
+                "id": "desktop-host",
+                "kind": "host"
+              }
+            },
+            "direct_model": null,
+            "paramsModel": "SchemaTableCreateParams",
+            "response": {
+              "result": {
+                "contract": "vibetable.schema.v2",
+                "operationId": "operation-create-table-12345678",
+                "tableId": "tbl_orders",
+                "displayName": "订单",
+                "schemaRevision": "schema_0001"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v2/schema/tables",
+                "query": null,
+                "json_body": {
+                  "displayName": "订单",
+                  "operationId": "operation-create-table-12345678",
+                  "actor": {
+                    "id": "desktop-host",
+                    "kind": "host"
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "formula.validate",
+            "params": {
+              "tableId": "orders",
+              "field": {
+                "contract": "vibetable.schema.v2",
+                "identity": {
+                  "fieldId": "fld_01JABCDE",
+                  "physicalName": "f_01jabcde",
+                  "providerFieldId": "pb_01JABCDE"
+                },
+                "displayName": "金额",
+                "help": "",
+                "logicalType": "formula",
+                "lifecycle": {
+                  "state": "active",
+                  "retiredAt": null
+                },
+                "value": {
+                  "required": false,
+                  "default": {
+                    "enabled": false,
+                    "value": null,
+                    "source": "recommended",
+                    "defaultsVersion": 1
+                  },
+                  "presence": {
+                    "mode": "computed"
+                  }
+                },
+                "constraints": {
+                  "unique": {
+                    "enabled": false,
+                    "blankPolicy": "ignoreMissing"
+                  },
+                  "range": {
+                    "min": null,
+                    "max": null
+                  },
+                  "length": {
+                    "min": null,
+                    "max": null
+                  },
+                  "pattern": {
+                    "enabled": false,
+                    "value": ""
+                  },
+                  "domains": {
+                    "only": [],
+                    "except": []
+                  },
+                  "selection": {
+                    "min": 0,
+                    "max": null
+                  }
+                },
+                "storage": {
+                  "kind": "computed",
+                  "options": {
+                    "onlyInt": false,
+                    "maxSize": 0,
+                    "convertURLs": false,
+                    "presentable": false
+                  }
+                },
+                "display": {
+                  "kind": "readonly",
+                  "preset": "number",
+                  "displayScale": 2,
+                  "scaleMode": "max",
+                  "trimTrailingZeros": true,
+                  "useGrouping": true,
+                  "currency": "CNY",
+                  "percentStorage": "ratio",
+                  "unit": null,
+                  "precision": "minute",
+                  "timezone": "system",
+                  "mode": "default",
+                  "indent": 0,
+                  "trueLabel": "是",
+                  "falseLabel": "否"
+                },
+                "formula": {
+                  "language": "cel-v1",
+                  "source": "price * quantity",
+                  "resultType": "number"
+                }
+              }
+            },
+            "direct_model": null,
+            "paramsModel": "ProductParams",
+            "response": {
+              "result": {
+                "valid": true,
+                "diagnostics": []
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/formulas/validate",
+                "query": null,
+                "json_body": {
+                  "tableId": "orders",
+                  "field": {
+                    "contract": "vibetable.schema.v2",
+                    "identity": {
+                      "fieldId": "fld_01JABCDE",
+                      "physicalName": "f_01jabcde",
+                      "providerFieldId": "pb_01JABCDE"
+                    },
+                    "displayName": "金额",
+                    "help": "",
+                    "logicalType": "formula",
+                    "lifecycle": {
+                      "state": "active",
+                      "retiredAt": null
+                    },
+                    "value": {
+                      "required": false,
+                      "default": {
+                        "enabled": false,
+                        "value": null,
+                        "source": "recommended",
+                        "defaultsVersion": 1
+                      },
+                      "presence": {
+                        "mode": "computed"
+                      }
+                    },
+                    "constraints": {
+                      "unique": {
+                        "enabled": false,
+                        "blankPolicy": "ignoreMissing"
+                      },
+                      "range": {
+                        "min": null,
+                        "max": null
+                      },
+                      "length": {
+                        "min": null,
+                        "max": null
+                      },
+                      "pattern": {
+                        "enabled": false,
+                        "value": ""
+                      },
+                      "domains": {
+                        "only": [],
+                        "except": []
+                      },
+                      "selection": {
+                        "min": 0,
+                        "max": null
+                      }
+                    },
+                    "storage": {
+                      "kind": "computed",
+                      "options": {
+                        "onlyInt": false,
+                        "maxSize": 0,
+                        "convertURLs": false,
+                        "presentable": false
+                      }
+                    },
+                    "display": {
+                      "kind": "readonly",
+                      "preset": "number",
+                      "displayScale": 2,
+                      "scaleMode": "max",
+                      "trimTrailingZeros": true,
+                      "useGrouping": true,
+                      "currency": "CNY",
+                      "percentStorage": "ratio",
+                      "unit": null,
+                      "precision": "minute",
+                      "timezone": "system",
+                      "mode": "default",
+                      "indent": 0,
+                      "trueLabel": "是",
+                      "falseLabel": "否"
+                    },
+                    "formula": {
+                      "language": "cel-v1",
+                      "source": "price * quantity",
+                      "resultType": "number"
+                    }
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "file.token",
+            "params": {
+              "tableId": "orders",
+              "recordId": "row-1",
+              "fieldId": "invoice",
+              "storedName": "invoice.pdf",
+              "variant": "thumb"
+            },
+            "direct_model": null,
+            "paramsModel": "ProductParams",
+            "response": {
+              "result": {
+                "downloadCapability": "opaque",
+                "contractVersion": "2.0"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "GET",
+                "path": "/api/vibetable/v1/files/token",
+                "query": {
+                  "tableId": "orders",
+                  "recordId": "row-1",
+                  "fieldId": "invoice",
+                  "storedName": "invoice.pdf",
+                  "variant": "thumb"
+                },
+                "json_body": null,
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "file.applyHostChange",
+            "params": {
+              "tableId": "orders",
+              "recordId": "row-1",
+              "fieldId": "invoice",
+              "schemaRevision": "schema_3",
+              "expectedDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "hostPaths": [],
+              "removeStoredNames": [
+                "old.pdf"
+              ]
+            },
+            "direct_model": null,
+            "paramsModel": "ProductParams",
+            "response": {
+              "result": {
+                "status": "applied"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/mutations/apply",
+                "query": null,
+                "json_body": {
+                  "contractVersion": "2.0",
+                  "requestId": "540e2cfd-b647-4ec7-9e79-edc0c9cda84d",
+                  "idempotencyKey": "attachment:540e2cfd-b647-4ec7-9e79-edc0c9cda84d",
+                  "tableId": "orders",
+                  "schemaRevision": "schema_3",
+                  "operations": [
+                    {
+                      "kind": "setAttachments",
+                      "recordId": "row-1",
+                      "fieldId": "invoice",
+                      "uploadHandles": [],
+                      "removeStoredNames": [
+                        "old.pdf"
+                      ]
+                    }
+                  ],
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  },
+                  "expectedRevision": null,
+                  "expectedDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "result": {
+                "outcome": "committed",
+                "target": {
+                  "collection": "customers",
+                  "itemId": "c-2",
+                  "label": "Grace",
+                  "secondaryLabel": null
+                },
+                "requestId": "create-customer-1"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {},
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "relation.applyDelta",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "row-1",
+              "expectedSchemaRevision": "schema_3",
+              "adds": [
+                {
+                  "collection": "customers",
+                  "itemId": "c-1"
+                }
+              ],
+              "removes": [],
+              "updates": [],
+              "idempotencyKey": "relation-op-1"
+            },
+            "direct_model": null,
+            "paramsModel": "ProductParams",
+            "response": {
+              "result": {
+                "outcome": "committed",
+                "current": [
+                  {
+                    "collection": "customers",
+                    "itemId": "c-1",
+                    "label": "Ada",
+                    "secondaryLabel": null
+                  }
+                ],
+                "schemaRevision": "schema_3",
+                "requestId": "relation-op-1"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/apply-delta",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "sourceRecordId": "row-1",
+                  "schemaRevision": "schema_3",
+                  "adds": [
+                    {
+                      "tableId": "customers",
+                      "recordId": "c-1",
+                      "label": "c-1"
+                    }
+                  ],
+                  "removes": [],
+                  "requestId": "relation-op-1",
+                  "idempotencyKey": "relation-op-1",
+                  "expectedDigest": null,
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "schema.table.create",
+            "params": {
+              "displayName": "订单",
+              "operationId": "operation-create-table-12345678",
+              "actor": {
+                "id": "desktop-host",
+                "kind": "host"
+              }
+            },
+            "direct_model": null,
+            "paramsModel": "SchemaTableCreateParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "original-mixed-route-sequence:0",
+              "result": {
+                "contract": "vibetable.schema.v2",
+                "operationId": "operation-create-table-12345678",
+                "tableId": "tbl_orders",
+                "displayName": "订单",
+                "schemaRevision": "schema_0001"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v2/schema/tables",
+                "query": null,
+                "json_body": {
+                  "displayName": "订单",
+                  "operationId": "operation-create-table-12345678",
+                  "actor": {
+                    "id": "desktop-host",
+                    "kind": "host"
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "formula.validate",
+            "params": {
+              "tableId": "orders",
+              "field": {
+                "contract": "vibetable.schema.v2",
+                "identity": {
+                  "fieldId": "fld_01JABCDE",
+                  "physicalName": "f_01jabcde",
+                  "providerFieldId": "pb_01JABCDE"
+                },
+                "displayName": "金额",
+                "help": "",
+                "logicalType": "formula",
+                "lifecycle": {
+                  "state": "active",
+                  "retiredAt": null
+                },
+                "value": {
+                  "required": false,
+                  "default": {
+                    "enabled": false,
+                    "value": null,
+                    "source": "recommended",
+                    "defaultsVersion": 1
+                  },
+                  "presence": {
+                    "mode": "computed"
+                  }
+                },
+                "constraints": {
+                  "unique": {
+                    "enabled": false,
+                    "blankPolicy": "ignoreMissing"
+                  },
+                  "range": {
+                    "min": null,
+                    "max": null
+                  },
+                  "length": {
+                    "min": null,
+                    "max": null
+                  },
+                  "pattern": {
+                    "enabled": false,
+                    "value": ""
+                  },
+                  "domains": {
+                    "only": [],
+                    "except": []
+                  },
+                  "selection": {
+                    "min": 0,
+                    "max": null
+                  }
+                },
+                "storage": {
+                  "kind": "computed",
+                  "options": {
+                    "onlyInt": false,
+                    "maxSize": 0,
+                    "convertURLs": false,
+                    "presentable": false
+                  }
+                },
+                "display": {
+                  "kind": "readonly",
+                  "preset": "number",
+                  "displayScale": 2,
+                  "scaleMode": "max",
+                  "trimTrailingZeros": true,
+                  "useGrouping": true,
+                  "currency": "CNY",
+                  "percentStorage": "ratio",
+                  "unit": null,
+                  "precision": "minute",
+                  "timezone": "system",
+                  "mode": "default",
+                  "indent": 0,
+                  "trueLabel": "是",
+                  "falseLabel": "否"
+                },
+                "formula": {
+                  "language": "cel-v1",
+                  "source": "price * quantity",
+                  "resultType": "number"
+                }
+              }
+            },
+            "direct_model": null,
+            "paramsModel": "FormulaValidateParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "original-mixed-route-sequence:1",
+              "result": {
+                "valid": true,
+                "diagnostics": []
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/formulas/validate",
+                "query": null,
+                "json_body": {
+                  "tableId": "orders",
+                  "field": {
+                    "contract": "vibetable.schema.v2",
+                    "identity": {
+                      "fieldId": "fld_01JABCDE",
+                      "physicalName": "f_01jabcde",
+                      "providerFieldId": "pb_01JABCDE"
+                    },
+                    "displayName": "金额",
+                    "help": "",
+                    "logicalType": "formula",
+                    "lifecycle": {
+                      "state": "active",
+                      "retiredAt": null
+                    },
+                    "value": {
+                      "required": false,
+                      "default": {
+                        "enabled": false,
+                        "value": null,
+                        "source": "recommended",
+                        "defaultsVersion": 1
+                      },
+                      "presence": {
+                        "mode": "computed"
+                      }
+                    },
+                    "constraints": {
+                      "unique": {
+                        "enabled": false,
+                        "blankPolicy": "ignoreMissing"
+                      },
+                      "range": {
+                        "min": null,
+                        "max": null
+                      },
+                      "length": {
+                        "min": null,
+                        "max": null
+                      },
+                      "pattern": {
+                        "enabled": false,
+                        "value": ""
+                      },
+                      "domains": {
+                        "only": [],
+                        "except": []
+                      },
+                      "selection": {
+                        "min": 0,
+                        "max": null
+                      }
+                    },
+                    "storage": {
+                      "kind": "computed",
+                      "options": {
+                        "onlyInt": false,
+                        "maxSize": 0,
+                        "convertURLs": false,
+                        "presentable": false
+                      }
+                    },
+                    "display": {
+                      "kind": "readonly",
+                      "preset": "number",
+                      "displayScale": 2,
+                      "scaleMode": "max",
+                      "trimTrailingZeros": true,
+                      "useGrouping": true,
+                      "currency": "CNY",
+                      "percentStorage": "ratio",
+                      "unit": null,
+                      "precision": "minute",
+                      "timezone": "system",
+                      "mode": "default",
+                      "indent": 0,
+                      "trueLabel": "是",
+                      "falseLabel": "否"
+                    },
+                    "formula": {
+                      "language": "cel-v1",
+                      "source": "price * quantity",
+                      "resultType": "number"
+                    }
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "file.token",
+            "params": {
+              "tableId": "orders",
+              "recordId": "row-1",
+              "fieldId": "invoice",
+              "storedName": "invoice.pdf",
+              "variant": "thumb"
+            },
+            "direct_model": null,
+            "paramsModel": "FileTokenParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "original-mixed-route-sequence:2",
+              "result": {
+                "downloadCapability": "opaque",
+                "contractVersion": "2.0"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "GET",
+                "path": "/api/vibetable/v1/files/token",
+                "query": {
+                  "tableId": "orders",
+                  "recordId": "row-1",
+                  "fieldId": "invoice",
+                  "storedName": "invoice.pdf",
+                  "variant": "thumb"
+                },
+                "json_body": null,
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "file.applyHostChange",
+            "params": {
+              "tableId": "orders",
+              "recordId": "row-1",
+              "fieldId": "invoice",
+              "schemaRevision": "schema_3",
+              "expectedDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "hostPaths": [],
+              "removeStoredNames": [
+                "old.pdf"
+              ]
+            },
+            "direct_model": null,
+            "paramsModel": "FileApplyHostChangeParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "original-mixed-route-sequence:3",
+              "result": {
+                "status": "applied"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/mutations/apply",
+                "query": null,
+                "json_body": {
+                  "contractVersion": "2.0",
+                  "requestId": "ac09584d-5132-42e3-af6f-1a35b37c8bf3",
+                  "idempotencyKey": "attachment:ac09584d-5132-42e3-af6f-1a35b37c8bf3",
+                  "tableId": "orders",
+                  "schemaRevision": "schema_3",
+                  "operations": [
+                    {
+                      "kind": "setAttachments",
+                      "recordId": "row-1",
+                      "fieldId": "invoice",
+                      "uploadHandles": [],
+                      "removeStoredNames": [
+                        "old.pdf"
+                      ]
+                    }
+                  ],
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  },
+                  "expectedRevision": null,
+                  "expectedDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "original-mixed-route-sequence:4",
+              "result": {
+                "outcome": "committed",
+                "target": {
+                  "collection": "customers",
+                  "itemId": "c-2",
+                  "label": "Grace",
+                  "secondaryLabel": null
+                },
+                "requestId": "create-customer-1"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {},
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          },
+          {
+            "method": "relation.applyDelta",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "row-1",
+              "expectedSchemaRevision": "schema_3",
+              "adds": [
+                {
+                  "collection": "customers",
+                  "itemId": "c-1"
+                }
+              ],
+              "removes": [],
+              "updates": [],
+              "idempotencyKey": "relation-op-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationApplyDeltaParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "original-mixed-route-sequence:5",
+              "error": {
+                "code": -32602,
+                "message": "Invalid params"
+              }
+            },
+            "authorityRequests": []
+          }
+        ],
+        "remainingResponses": 1,
+        "untriggeredFailure": null
+      }
+    },
+    {
+      "name": "original-single-update",
+      "sourceTest": "test_single_relation_update_translates_current_and_desired_targets",
+      "scriptedResponses": [
+        {
+          "tableId": "orders",
+          "schemaRevision": "schema_3",
+          "relations": [
+            {
+              "relationId": "orders.customer",
+              "sourceTableId": "orders",
+              "sourceFieldId": "customer",
+              "physicalName": "customer_id",
+              "targetTableId": "customers",
+              "cardinality": "one",
+              "deletePolicy": "setNull"
+            }
+          ],
+          "lookups": []
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_id": "c-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "failure": null,
+      "handler": {
+        "steps": [
+          {
+            "method": "relation.updateSingle",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "o-1",
+              "target": {
+                "collection": "customers",
+                "itemId": "c-new",
+                "label": "New customer"
+              },
+              "expectedSchemaRevision": "schema_3",
+              "idempotencyKey": "single-relation-1",
+              "expectedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "direct_model": null,
+            "paramsModel": "ProductParams",
+            "response": {
+              "result": {
+                "outcome": "committed",
+                "current": {
+                  "collection": "customers",
+                  "itemId": "c-new",
+                  "label": "New customer"
+                },
+                "schemaRevision": "schema_3",
+                "requestId": "single-relation-1",
+                "receipt": {
+                  "changeSetId": "change-1"
+                }
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "GET",
+                "path": "/api/vibetable/v1/relations/describe",
+                "query": {
+                  "tableId": "orders"
+                },
+                "json_body": null,
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              },
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/query",
+                "query": null,
+                "json_body": {
+                  "operation": "readRows",
+                  "tableId": "orders",
+                  "rowIds": [
+                    "o-1"
+                  ]
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              },
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/apply-delta",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "sourceRecordId": "o-1",
+                  "schemaRevision": "schema_3",
+                  "adds": [
+                    {
+                      "tableId": "customers",
+                      "recordId": "c-new",
+                      "label": "New customer"
+                    }
+                  ],
+                  "removes": [
+                    {
+                      "tableId": "customers",
+                      "recordId": "c-old",
+                      "label": "c-old"
+                    }
+                  ],
+                  "requestId": "single-relation-1",
+                  "idempotencyKey": "single-relation-1",
+                  "expectedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "relation.updateSingle",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "o-1",
+              "target": {
+                "collection": "customers",
+                "itemId": "c-new",
+                "label": "New customer"
+              },
+              "expectedSchemaRevision": "schema_3",
+              "idempotencyKey": "single-relation-1",
+              "expectedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationUpdateSingleParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "original-single-update:0",
+              "error": {
+                "code": -32602,
+                "message": "Invalid params"
+              }
+            },
+            "authorityRequests": []
+          }
+        ],
+        "remainingResponses": 3,
+        "untriggeredFailure": null
+      }
+    },
+    {
+      "name": "single-clear-target",
+      "sourceTest": null,
+      "scriptedResponses": [
+        {
+          "tableId": "orders",
+          "schemaRevision": "schema_3",
+          "relations": [
+            {
+              "relationId": "orders.customer",
+              "sourceTableId": "orders",
+              "sourceFieldId": "customer",
+              "physicalName": "customer_id",
+              "targetTableId": "customers",
+              "cardinality": "one",
+              "deletePolicy": "setNull"
+            }
+          ],
+          "lookups": []
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "customer_id": "c-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "failure": null,
+      "handler": {
+        "steps": [
+          {
+            "method": "relation.updateSingle",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "o-1",
+              "target": null,
+              "expectedSchemaRevision": "schema_3",
+              "idempotencyKey": "single-relation-1",
+              "expectedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "direct_model": null,
+            "paramsModel": "ProductParams",
+            "response": {
+              "result": {
+                "outcome": "committed",
+                "current": null,
+                "schemaRevision": "schema_3",
+                "requestId": "single-relation-1",
+                "receipt": {
+                  "changeSetId": "change-1"
+                }
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "GET",
+                "path": "/api/vibetable/v1/relations/describe",
+                "query": {
+                  "tableId": "orders"
+                },
+                "json_body": null,
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              },
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/query",
+                "query": null,
+                "json_body": {
+                  "operation": "readRows",
+                  "tableId": "orders",
+                  "rowIds": [
+                    "o-1"
+                  ]
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              },
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/apply-delta",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "sourceRecordId": "o-1",
+                  "schemaRevision": "schema_3",
+                  "adds": [],
+                  "removes": [
+                    {
+                      "tableId": "customers",
+                      "recordId": "c-old",
+                      "label": "c-old"
+                    }
+                  ],
+                  "requestId": "single-relation-1",
+                  "idempotencyKey": "single-relation-1",
+                  "expectedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "relation.updateSingle",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "o-1",
+              "target": null,
+              "expectedSchemaRevision": "schema_3",
+              "idempotencyKey": "single-relation-1",
+              "expectedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationUpdateSingleParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "single-clear-target:0",
+              "error": {
+                "code": -32602,
+                "message": "Invalid params"
+              }
+            },
+            "authorityRequests": []
+          }
+        ],
+        "remainingResponses": 3,
+        "untriggeredFailure": null
+      }
+    },
+    {
+      "name": "create-full-values",
+      "sourceTest": null,
+      "scriptedResponses": [
+        {
+          "target": {
+            "tableId": "customers",
+            "recordId": "c-2",
+            "label": "Grace"
+          }
+        }
+      ],
+      "failure": null,
+      "handler": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1",
+              "values": {
+                "name": "Grace",
+                "count": 0,
+                "enabled": false,
+                "note": null
+              }
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "result": {
+                "outcome": "committed",
+                "target": {
+                  "collection": "customers",
+                  "itemId": "c-2",
+                  "label": "Grace",
+                  "secondaryLabel": null
+                },
+                "requestId": "create-customer-1"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {
+                    "name": "Grace",
+                    "count": 0,
+                    "enabled": false,
+                    "note": null
+                  },
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1",
+              "values": {
+                "name": "Grace",
+                "count": 0,
+                "enabled": false,
+                "note": null
+              }
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "create-full-values:0",
+              "result": {
+                "outcome": "committed",
+                "target": {
+                  "collection": "customers",
+                  "itemId": "c-2",
+                  "label": "Grace",
+                  "secondaryLabel": null
+                },
+                "requestId": "create-customer-1"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {
+                    "name": "Grace",
+                    "count": 0,
+                    "enabled": false,
+                    "note": null
+                  },
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      }
+    },
+    {
+      "name": "create-falsy-defaults",
+      "sourceTest": null,
+      "scriptedResponses": [
+        {
+          "target": {
+            "tableId": "customers",
+            "recordId": "c-2",
+            "label": "Grace"
+          }
+        }
+      ],
+      "failure": null,
+      "handler": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "",
+              "idempotencyKey": "create-customer-1",
+              "values": {}
+            },
+            "direct_model": "ProductParams",
+            "paramsModel": "ProductParams",
+            "response": {
+              "result": {
+                "outcome": "committed",
+                "target": {
+                  "collection": "customers",
+                  "itemId": "c-2",
+                  "label": "Grace",
+                  "secondaryLabel": null
+                },
+                "requestId": "create-customer-1"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "",
+                  "values": {},
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "",
+              "idempotencyKey": "create-customer-1",
+              "values": {}
+            },
+            "direct_model": "ProductParams",
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "create-falsy-defaults:0",
+              "error": {
+                "code": -32602,
+                "message": "Invalid params"
+              }
+            },
+            "authorityRequests": []
+          }
+        ],
+        "remainingResponses": 1,
+        "untriggeredFailure": null
+      }
+    },
+    {
+      "name": "apply-public-error",
+      "sourceTest": null,
+      "scriptedResponses": [],
+      "failure": "product",
+      "handler": {
+        "steps": [
+          {
+            "method": "relation.applyDelta",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "row-1",
+              "expectedSchemaRevision": "schema_3",
+              "adds": [
+                {
+                  "collection": "customers",
+                  "itemId": "c-1"
+                }
+              ],
+              "removes": [],
+              "idempotencyKey": "relation-op-1"
+            },
+            "direct_model": null,
+            "paramsModel": "ProductParams",
+            "response": {
+              "exception": {
+                "type": "backend.adapters.pocketbase.client.PocketBaseProductError",
+                "message": "record changed"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/apply-delta",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "sourceRecordId": "row-1",
+                  "schemaRevision": "schema_3",
+                  "adds": [
+                    {
+                      "tableId": "customers",
+                      "recordId": "c-1",
+                      "label": "c-1"
+                    }
+                  ],
+                  "removes": [],
+                  "requestId": "relation-op-1",
+                  "idempotencyKey": "relation-op-1",
+                  "expectedDigest": null,
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "relation.applyDelta",
+            "params": {
+              "relationId": "orders.customer",
+              "sourceItemId": "row-1",
+              "expectedSchemaRevision": "schema_3",
+              "adds": [
+                {
+                  "collection": "customers",
+                  "itemId": "c-1"
+                }
+              ],
+              "removes": [],
+              "idempotencyKey": "relation-op-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationApplyDeltaParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "apply-public-error:0",
+              "error": {
+                "code": -32150,
+                "message": "Product data error",
+                "data": {
+                  "kind": "product_data_error",
+                  "message": "record changed",
+                  "code": "mutation.digest_conflict",
+                  "path": "expectedDigest",
+                  "details": {
+                    "expected": "old",
+                    "actual": "new"
+                  },
+                  "retryable": false
+                }
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/apply-delta",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "sourceRecordId": "row-1",
+                  "schemaRevision": "schema_3",
+                  "adds": [
+                    {
+                      "tableId": "customers",
+                      "recordId": "c-1",
+                      "label": "c-1"
+                    }
+                  ],
+                  "removes": [],
+                  "requestId": "relation-op-1",
+                  "idempotencyKey": "relation-op-1",
+                  "expectedDigest": null,
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      }
+    },
+    {
+      "name": "create-transport-error",
+      "sourceTest": null,
+      "scriptedResponses": [],
+      "failure": "transport",
+      "handler": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "exception": {
+                "type": "backend.adapters.pocketbase.transport.PocketBaseTransportError",
+                "message": "sidecar unavailable"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {},
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "create-transport-error:0",
+              "error": {
+                "code": -32150,
+                "message": "Product data unavailable",
+                "data": {
+                  "kind": "product_data_unavailable",
+                  "message": "sidecar unavailable",
+                  "code": "sidecar.unavailable"
+                }
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {},
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      }
+    },
+    {
+      "name": "create-invalid-authority-target",
+      "sourceTest": null,
+      "scriptedResponses": [
+        {
+          "target": []
+        }
+      ],
+      "failure": null,
+      "handler": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "exception": {
+                "type": "builtins.ValueError",
+                "message": "PocketBase returned an invalid created relation target"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {},
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      },
+      "dispatcher": {
+        "steps": [
+          {
+            "method": "relation.createTarget",
+            "params": {
+              "relationId": "orders.customer",
+              "label": "Grace",
+              "idempotencyKey": "create-customer-1"
+            },
+            "direct_model": null,
+            "paramsModel": "RelationCreateTargetParams",
+            "response": {
+              "jsonrpc": "2.0",
+              "id": "create-invalid-authority-target:0",
+              "error": {
+                "code": -32603,
+                "message": "Internal error"
+              }
+            },
+            "authorityRequests": [
+              {
+                "method": "POST",
+                "path": "/api/vibetable/v1/relations/create-target",
+                "query": null,
+                "json_body": {
+                  "relationId": "orders.customer",
+                  "label": "Grace",
+                  "values": {},
+                  "requestId": "create-customer-1",
+                  "idempotencyKey": "create-customer-1",
+                  "actor": {
+                    "type": "user",
+                    "id": "local-user",
+                    "displayName": null
+                  }
+                },
+                "headerNames": [
+                  "X-VibeTable-Session"
+                ],
+                "expected_status": [
+                  200
+                ]
+              }
+            ]
+          }
+        ],
+        "remainingResponses": 0,
+        "untriggeredFailure": null
+      }
+    }
+  ]
+}

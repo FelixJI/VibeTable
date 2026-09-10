@@ -483,6 +483,9 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				workCalendarReadRegistration(metadata.New(pb)),
 				workCalendarCommitRegistration(metadata.New(pb), businessGate),
 				relationPreviewDeltaRegistration(relationService),
+				relationCreateTargetRegistration(relationService, businessGate),
+				relationUpdateSingleRegistration(relationService, businessGate),
+				relationApplyDeltaRegistration(relationService, businessGate),
 			)
 			if err != nil {
 				_ = rawListener.Close()

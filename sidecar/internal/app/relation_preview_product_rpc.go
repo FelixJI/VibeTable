@@ -73,7 +73,7 @@ func relationPreviewDeltaRegistration(port interface {
 	}
 }
 
-func decodeRelationPreviewParams(raw json.RawMessage) (map[string]any, error) {
+func decodeRelationProductObject(raw json.RawMessage) (map[string]any, error) {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -112,6 +112,14 @@ func decodeRelationPreviewParams(raw json.RawMessage) (map[string]any, error) {
 	object, ok := value.(map[string]any)
 	if !ok {
 		return nil, errors.New("relation preview requires an object")
+	}
+	return object, nil
+}
+
+func decodeRelationPreviewParams(raw json.RawMessage) (map[string]any, error) {
+	object, err := decodeRelationProductObject(raw)
+	if err != nil {
+		return nil, err
 	}
 	for key := range object {
 		switch key {

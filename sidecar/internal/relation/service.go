@@ -3,6 +3,7 @@ package relation
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -16,11 +17,12 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 type MutationKernel interface {
 	Preview(context.Context, mutation.Request) (mutation.PreviewResult, error)
-	Apply(context.Context, mutation.Request) (mutation.Receipt, error)
+	ApplyPrepared(context.Context, mutation.PreparedIntent, func(core.App) (mutation.Request, error), func(core.App, mutation.Receipt) (any, error)) (mutation.PreparedResult, error)
 }
 
 type Service struct {
@@ -226,36 +228,36 @@ func (service *Service) SearchTargets(
 	}, nil
 }
 
-func (service *Service) CreateTarget(
+func (service *Service) compileCreateTarget(
 	ctx context.Context,
 	request CreateTargetRequest,
-) (CreateTargetResult, error) {
+) (mutation.Request, error) {
 	resolved, err := service.resolve(ctx, request.RelationID)
 	if err != nil {
-		return CreateTargetResult{}, err
+		return mutation.Request{}, err
 	}
 	label := strings.TrimSpace(request.Label)
 	if request.RequestID == "" || request.IdempotencyKey == "" ||
 		request.Actor.Type == "" || request.Actor.ID == "" {
-		return CreateTargetResult{}, relationError(
+		return mutation.Request{}, relationError(
 			"relation.request.invalid",
 			"direct relation target creation request is incomplete",
 		)
 	}
 	targetTableID := resolved.descriptor.TargetTableID
 	if request.TargetTableID != "" && request.TargetTableID != targetTableID {
-		return CreateTargetResult{}, relationError(
+		return mutation.Request{}, relationError(
 			"relation.target_invalid",
 			"target table does not match the relation",
 		)
 	}
 	target, err := schemaexecution.Describe(ctx, service.app, targetTableID)
 	if err != nil {
-		return CreateTargetResult{}, err
+		return mutation.Request{}, err
 	}
 	labelPhysicalName := targetLabelField(target)
 	if labelPhysicalName == "" {
-		return CreateTargetResult{}, relationError(
+		return mutation.Request{}, relationError(
 			"relation.target_create_unavailable",
 			"target table has no writable display field",
 		)
@@ -263,12 +265,12 @@ func (service *Service) CreateTarget(
 	values := map[string]any{}
 	if len(request.Values) == 0 {
 		if label == "" {
-			return CreateTargetResult{}, relationError(
+			return mutation.Request{}, relationError(
 				"relation.request.invalid", "target label is required",
 			)
 		}
 		if eligible, reason := quickCreateEligibility(target); !eligible {
-			return CreateTargetResult{}, relationError(
+			return mutation.Request{}, relationError(
 				"relation.target_create_requires_full_editor", reason,
 			)
 		}
@@ -283,22 +285,25 @@ func (service *Service) CreateTarget(
 		}
 		for physicalName, value := range request.Values {
 			if _, ok := allowed[physicalName]; !ok {
-				return CreateTargetResult{}, relationError(
+				return mutation.Request{}, relationError(
 					"relation.target_create_field_invalid",
 					"full target creation contains an unknown or read-only field",
 				)
 			}
 			values[physicalName] = value
 		}
+		if value, exists := values[labelPhysicalName]; !exists || value == nil {
+			return mutation.Request{}, relationError("relation.target_create_field_invalid", "full target creation must include the primary display field")
+		}
 		label = strings.TrimSpace(fmt.Sprint(values[labelPhysicalName]))
 		if label == "" {
-			return CreateTargetResult{}, relationError(
+			return mutation.Request{}, relationError(
 				"relation.target_create_field_invalid",
 				"full target creation must include the primary display field",
 			)
 		}
 	}
-	receipt, err := service.kernel.Apply(ctx, mutation.Request{
+	return mutation.Request{
 		ContractVersion: mutation.ContractVersion,
 		RequestID:       request.RequestID,
 		IdempotencyKey:  request.IdempotencyKey,
@@ -309,34 +314,6 @@ func (service *Service) CreateTarget(
 			Values: values,
 		}},
 		Actor: request.Actor,
-	})
-	if err != nil {
-		return CreateTargetResult{}, err
-	}
-	if receipt.Status != mutation.StatusApplied || len(receipt.AffectedRows) != 1 {
-		return CreateTargetResult{}, relationError(
-			"relation.target_create_pending",
-			"target record creation has not committed",
-		)
-	}
-	recordID := receipt.AffectedRows[0].RecordID
-	rows, err := service.queries.ReadRows(ctx, target.Snapshot.TableID, []string{recordID})
-	if err != nil || len(rows) != 1 {
-		return CreateTargetResult{}, relationError(
-			"relation.storage_failed",
-			"created target record could not be read",
-		)
-	}
-	canonicalLabel := label
-	if value := rows[0][labelPhysicalName]; value != nil && fmt.Sprint(value) != "" {
-		canonicalLabel = fmt.Sprint(value)
-	}
-	return CreateTargetResult{
-		Target: TargetRef{
-			TableID: target.Snapshot.TableID, RecordID: recordID,
-			Label: canonicalLabel,
-		},
-		Receipt: receipt,
 	}, nil
 }
 
@@ -361,23 +338,40 @@ func (service *Service) PreviewDelta(
 	}, nil
 }
 
-func (service *Service) ApplyDelta(
-	ctx context.Context,
-	request DeltaRequest,
-) (DeltaResult, error) {
-	resolved, _, result, err := service.prepareDelta(ctx, request)
-	if err != nil {
+func (service *Service) ApplyDelta(ctx context.Context, request DeltaRequest) (DeltaResult, error) {
+	var result []TargetRef
+	prepared, err := service.kernel.ApplyPrepared(ctx, mutation.PreparedIntent{
+		Kind: "relation.apply-delta", RequestID: request.RequestID,
+		IdempotencyKey: request.IdempotencyKey, Actor: request.Actor,
+		Params: struct {
+			Request      DeltaRequest
+			CallerParams json.RawMessage
+		}{request, request.CallerParams},
+	}, func(txApp core.App) (mutation.Request, error) {
+		transaction := New(txApp, nil, nil)
+		resolved, _, current, err := transaction.prepareDelta(ctx, request)
+		if err != nil {
+			return mutation.Request{}, err
+		}
+		result = current
+		return transaction.deltaMutation(request, resolved, current), nil
+	}, func(core.App, mutation.Receipt) (any, error) { return result, nil })
+	if err != nil && err != writecoordinator.ErrBusinessReplay {
 		return DeltaResult{}, err
 	}
-	receipt, err := service.kernel.Apply(
-		ctx, service.deltaMutation(request, resolved, result),
-	)
-	if err != nil {
-		return DeltaResult{}, err
+	if !committed(prepared.Receipt) {
+		return DeltaResult{}, relationError("relation.write_pending", "relation mutation has not committed")
 	}
-	return DeltaResult{Current: result, Receipt: receipt}, nil
+	if mutation.DecodeStrict(prepared.Result, &result) != nil || result == nil {
+		return DeltaResult{}, relationError("relation.storage_failed", "committed relation result is invalid")
+	}
+	for _, target := range result {
+		if target.TableID == "" || target.RecordID == "" || target.Label == "" {
+			return DeltaResult{}, relationError("relation.storage_failed", "committed relation result is invalid")
+		}
+	}
+	return DeltaResult{Current: result, Receipt: prepared.Receipt}, err
 }
-
 func (service *Service) QueryLookups(
 	ctx context.Context,
 	request LookupQueryRequest,
@@ -618,7 +612,7 @@ func (service *Service) prepareDelta(
 			)
 		}
 	}
-	rows, err := service.queries.ReadRows(
+	rows, err := service.readSourceRows(
 		ctx, resolved.definition.Snapshot.TableID,
 		[]string{request.SourceRecordID},
 	)
@@ -667,6 +661,9 @@ func (service *Service) prepareDelta(
 				"relation.target_duplicate",
 				"add target is already linked",
 			)
+		}
+		if add.Label == "" {
+			add.Label = add.RecordID
 		}
 		currentSet[add.RecordID] = add
 	}

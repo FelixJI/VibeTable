@@ -23,6 +23,11 @@ func calendarRuntimeServer(t *testing.T, f *surfaceRuntimeFixture) *httptest.Ser
 	for _, method := range []string{"contentProfile.commit", "contentProfile.delete", "contentProfile.load", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "events.reconcile", "field.settings.describe", "file.list", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.describe", "schema.getTable", "schema.list"} {
 		registrations = append(registrations, productrpc.Registration{Method: method, Scope: productcapabilities.WorkspaceScope, ValidateParams: func(json.RawMessage) error { t.Fatal("unrelated validator"); return nil }, Handler: func(context.Context, json.RawMessage) (any, error) { t.Fatal("unrelated handler"); return nil, nil }})
 	}
+	registrations = append(registrations,
+		unrelatedRelationWriteRegistration(t, "relation.createTarget"),
+		unrelatedRelationWriteRegistration(t, "relation.updateSingle"),
+		unrelatedRelationWriteRegistration(t, "relation.applyDelta"),
+	)
 	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, registrations...)
 	if err != nil {
 		t.Fatal(err)

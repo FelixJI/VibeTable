@@ -33,7 +33,7 @@ internal static class RelationLookupRpcRegistry
             (gateway, payload, token) => gateway.SearchRelationTargetsAsync(payload, token)),
         new(
             "relation.createTarget",
-            payload => HasStrings(payload, "relationId", "label", "idempotencyKey"),
+            IsValidRelationCreate,
             (gateway, payload, token) => gateway.CreateRelationTargetAsync(payload, token)),
         new(
             "relation.updateSingle",
@@ -75,8 +75,15 @@ internal static class RelationLookupRpcRegistry
     internal static bool TryGet(string type, out RelationLookupRpcEndpoint endpoint)
         => ByType.TryGetValue(type, out endpoint!);
 
+    private static bool IsValidRelationCreate(JsonElement payload)
+        => HasStrings(payload, "relationId", "idempotencyKey")
+            && (!payload.TryGetProperty("label", out _) || HasString(payload, "label"))
+            && (!payload.TryGetProperty("values", out _) || HasObject(payload, "values"))
+            && payload.EnumerateObject().All(property =>
+                property.Name is "relationId" or "label" or "values" or "idempotencyKey");
+
     private static bool IsValidRelationDelta(JsonElement payload)
-        => IsValidRelationPreview(payload) && HasArray(payload, "updates");
+        => IsValidRelationPreview(payload);
 
     private static bool IsValidRelationPreview(JsonElement payload)
         => HasStrings(

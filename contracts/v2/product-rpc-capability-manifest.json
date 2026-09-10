@@ -598,7 +598,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "relation.lookup",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -606,7 +606,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "relation.lookup",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -638,7 +638,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "relation.lookup",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
