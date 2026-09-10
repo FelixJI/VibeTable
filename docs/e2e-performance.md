@@ -8,8 +8,8 @@
 - GitHub run：[main CI 34309394462](https://github.com/FelixJI/VibeTable/actions/runs/34309394462)
 - 报告契约：`contractVersion=2.0`
 - 结果：29/29 passed、0 failed、0 skipped。
-- 当前 manifest gap：1（`33-host-grid-presentation`）。
-- S33 现已具备两真实 Host phase 编排；本报告尚无新包运行结果，因此保留样本的 gap 记录。
+- 当前 manifest gap：2（`33-host-grid-presentation`、`34-relation-lookup-data-io`）。
+- S33 两真实 Host 的本地新包资格见对应资格记录；本节旧 main 样本没有这些结果，因此保留该样本的 gap。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：2（`07-attachment-history`、`17-interface-lifecycle`）。
 
@@ -19,7 +19,10 @@
 
 当前分支的 S17 新增 sidecar 重启后的 fresh Interface list/load、完整定义及 revision 持久和真实 UI 删除断言。source `65be85ce3d5727dc95cf3723ab0fd4795fb2016e` 的同包 S17 已通过，证据见 [Surface 资格记录](quality/surface-metadata-owner-qualification.md)；这只覆盖该 source，不能将旧 main 29 场样本或该局部新包结果归为本次 History/Surface 合并后的完整资格。
 
+新场景 S34 不在上述主干样本中，仍待正式 main 打包报告验收。本候选的历史 S32 局部资格记录见[关系与 Lookup 数据互操作](quality/relation-lookup-data-io.md)，不能用旧 29/29 报告或该旧包记录关闭当前缺口。
+
 四组件 desktop-host、web-grid、python-backend、pocketbase-sidecar freshness 全部通过。所有场景附着真实 WPF/WebView2，Node/Host 正常退出，进程组及后代为空、端口与 owner lease 清理通过。诊断为 0 个未确认 bridge failure、0 个 pending request，另有 33 个已确认事件（含预期取消）；性能汇总的 28 次失败使用不同口径，不能称为全程没有拒绝响应。
+
 
 S23 证明目录副本的公开创建、读写、释放活动缓存、同 UUID 重开与 sidecar 替代进程恢复。此范围不扩展为手动同步、跨设备 offline/reconnect、冲突处理或 exclusive-writer 资格；手动 `replica.synchronize` 保持 Internal only。S12/S14/S23 本次均通过；[历史失败记录](quality/product-e2e-failure-notes.md)继续保留原始出处与未归因状态，本次通过不替代历史根因分析。
 

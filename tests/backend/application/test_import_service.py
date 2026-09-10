@@ -30,8 +30,13 @@ from backend.contracts.data_io import (
     ImportColumnMapping,
     PreviewImportParams,
 )
-from backend.contracts.data_profile import CollectionProfile, RelationProfile
+from backend.contracts.data_profile import (
+    CollectionProfile,
+    RelationProfile,
+    collection_profile_from_definition,
+)
 from backend.contracts.paste import ApplyPasteResult
+from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 FIELD_VALUE_CORPUS_PATH = (
     Path(__file__).resolve().parents[3]
@@ -713,6 +718,40 @@ async def test_failed_atomic_apply_surfaces_safe_product_path_and_message(
     assert progress_messages == [
         "atomic import failed [mutation.validation.failed]: at payload: Invalid JSON value."
     ]
+
+
+@pytest.mark.asyncio
+async def test_relation_preview_accepts_the_public_catalog_identity(tmp_path: Path) -> None:
+    path = tmp_path / "public-relation.csv"
+    _write_csv(path, ["Code"], [["C-1"]])
+    profile = collection_profile_from_definition(
+        snapshot_v2(
+            "orders",
+            [field_v2("contract", "relation", target_table_id="contracts")],
+            revision="schema-1",
+        )
+    )
+    provider = FakeRelationProvider({"C-1": ["contract-1"]})
+    service, mutation = _service(path, profile=profile, relation_provider=provider)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="orders",
+            schema_revision="schema-1",
+            column_mapping=[
+                ImportColumnMapping(
+                    source_column="Code",
+                    target_field="f_contract",
+                    relation_id="orders.fld_contract",
+                    match_field="number",
+                )
+            ],
+        )
+    )
+    assert plan.summary.error_count == 0
+    assert plan.rows[0].values == {"f_contract": "contract-1"}
+    assert provider.inspected == [("orders.fld_contract", "number")]
+    assert mutation.calls == []
 
 
 @pytest.mark.asyncio

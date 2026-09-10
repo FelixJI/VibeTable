@@ -185,3 +185,13 @@ CI `34468066165` 的 release smoke 中 S02 编辑器未就绪、S08 等待超时
 该运行整体仍为 EXIT1：S02前16项业务断言通过，最终桥接门禁捕获一次 gridState.save BAD_PAYLOAD。真实trace显示动态扩列后末列宽228.857px；完整保存payload未被诊断保留，不宣称原请求逐字节回放。真实Tabulator fitColumns小数容器几何与动态schema回归复现相同类型缺陷：capture原样发送小数，而Host ColumnState.Width要求整数。
 
 生产capture现仅将持久化列宽四舍五入为整CSS像素，最多半像素布局误差；不改Host严格合同、精确数值筛选或E2E错误门禁。直接采集和实际控制器分组自动保存两个回归分别在旧实现失败；修复后相关Web41项、Host14项及Web类型检查通过。Host测试同时确认小数被拒且revision不变，整数被接受。精确命令和原失败日志保存在build/qa/host-presentation/grid-width-diagnosis.md。本次修复的新完整包复验仍待执行，不能用旧组合的S08/S33通过覆盖S02失败。
+
+## 2026-09-10：列宽修复后的完整包复验
+
+固定 e7eb0b65 的完整 `scripts/build_next.py --release` 原生 EXIT0，日志 build/qa/h33-width/build-release-pinned.log。首次命令在版本预检因 PATH 命中系统 Go1.26.5 退出；显式复用现有 Go1.27.0、Node24.19 后执行完整构建，原失败日志保留。
+
+`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --evidence-root build/qa/h33-width/e2e --scenario 02-all-field-schema --scenario 08-stale-conflict --scenario 33-host-grid-presentation` 原生 EXIT0，run20260910T124736Z：S02 18项、S08 8项、S33 seed19/resume6项全部通过。四组件freshness与package audit通过；四阶段bridge failures/pending/pageErrors均0，Host正常退出0、portsReleased=true、owner lease/finalCleanup通过且无剩余PID。原S02小数列宽错误在此新包不再出现。
+
+同一呈现保存消费者的完整wire测试改用既有ManualTimeProvider，明确推进查询和保存debounce后再核原有全部断言。原测试独立等待600ms不保证保存timer已执行；固定延迟保存回调、保留旧等待可稳定取得Single空集合RED。改为受控推进后，当前Host分支25项直接相关测试通过；没有修改生产debounce或扩大等待。S24 CI缺少调度trace，不能把受控RED写成已观测到其具体线程交错。该测试修复归入本Host完整意图，S24源码保持原状。
+
+随后同步DataIO主干时保留S33和S34两场景登记；上述新包证据属于e7eb组合，后续组合仍需fresh CI，不改写为合并后CI/CD已通过。
