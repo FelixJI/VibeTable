@@ -864,7 +864,7 @@ func filesystemConflictCandidate(
 		AttachmentObjects: attachmentObjects,
 		Revision:          bundle.Snapshot.CatalogRevision,
 		Files:             map[string]conflictresolution.FileState{},
-		Tables:            projection.Tables,
+		Tables:            projection.Candidates,
 	}
 	for _, document := range root.Documents {
 		state := conflictresolution.FileState{

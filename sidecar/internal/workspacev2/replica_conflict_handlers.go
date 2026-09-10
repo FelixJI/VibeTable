@@ -804,28 +804,23 @@ func (owner *productionReplicaConflict) inspectConflict(
 			LocalSummary:   conflictFileSummary(item.Local),
 			ReplicaSummary: conflictFileSummary(item.Replica),
 			BaseSummary:    conflictFileSummary(item.Base),
-			Dependencies: append(
-				[]string(nil),
-				set.Dependencies.Edges[item.DocumentID]...,
-			),
-			Selected: nil,
+			Dependencies:   conflictPublicDependencies(set, item.DocumentID),
+			Selected:       nil,
 		})
 	}
 	for _, item := range plan.Tables {
+		itemID, kind := item.PublicItem()
 		items = append(items, conflictItemProjection{
 			ConflictID:     set.ConflictID,
-			ItemID:         item.TableID,
-			Kind:           string(conflictresolution.TableItem),
+			ItemID:         itemID,
+			Kind:           string(kind),
 			Path:           conflictTableName(item),
 			State:          conflictProjectionState(set.State),
 			LocalSummary:   conflictTableSummary(item.Local),
 			ReplicaSummary: conflictTableSummary(item.Replica),
 			BaseSummary:    conflictTableSummary(item.Base),
-			Dependencies: append(
-				[]string(nil),
-				set.Dependencies.Edges[item.TableID]...,
-			),
-			Selected: nil,
+			Dependencies:   conflictPublicDependencies(set, item.TableID),
+			Selected:       nil,
 		})
 	}
 	if plan.Settings != nil {
@@ -839,10 +834,7 @@ func (owner *productionReplicaConflict) inspectConflict(
 			LocalSummary:   conflictSettingsSummary(plan.Settings.Local),
 			ReplicaSummary: conflictSettingsSummary(plan.Settings.Replica),
 			BaseSummary:    conflictSettingsSummary(plan.Settings.Base),
-			Dependencies: append(
-				[]string(nil),
-				set.Dependencies.Edges[plan.Settings.ItemID]...,
-			),
+			Dependencies:   conflictPublicDependencies(set, plan.Settings.ItemID),
 			// Workspace settings are shared workspace state. Prefer the
 			// verified replica candidate while still requiring preview/apply.
 			Selected: &selected,
@@ -1284,7 +1276,7 @@ func (appender *workspaceConflictAppender) Stage(
 		if kind == "" && change.DocumentID != "" {
 			kind = conflictresolution.FileItem
 		}
-		if kind == conflictresolution.TableItem {
+		if kind == conflictresolution.TableItem || (kind == conflictresolution.SettingsItem && change.TableChosen.TableID != "") {
 			table, err := appender.stageConflictTable(
 				ctx, change.TablePrevious, change.TableChosen,
 			)
@@ -1527,6 +1519,30 @@ func uniqueStrings(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+// Keep the complete physical graph for validation. The public detail only names
+// domain items; collection addresses and execution-only nodes are not choices.
+func conflictPublicDependencies(set conflictresolution.Set, id string) []string {
+	public := map[string]string{conflictresolution.WorkspaceSettingsItemID: conflictresolution.WorkspaceSettingsItemID}
+	for _, candidate := range []conflictresolution.Candidate{set.Base, set.Replica, set.Local} {
+		for key := range candidate.Files {
+			public[key] = key
+		}
+		for key, table := range candidate.Tables {
+			if !table.Deleted {
+				public[key], _ = table.PublicItem()
+			}
+		}
+	}
+	var result []string
+	for _, dependency := range set.Dependencies.Edges[id] {
+		if alias, exists := public[dependency]; exists {
+			result = append(result, alias)
+		}
 	}
 	sort.Strings(result)
 	return result

@@ -41,6 +41,17 @@ var (
 	}
 )
 
+// NamespaceForCollection resolves the existing shared-metadata allowlist for
+// immutable workspace projections. It does not authorize generic writes.
+func NamespaceForCollection(collection string) (Namespace, bool) {
+	for namespace, name := range collectionByNamespace {
+		if name == collection {
+			return namespace, true
+		}
+	}
+	return "", false
+}
+
 type Service struct {
 	app   core.App
 	now   func() time.Time

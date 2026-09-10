@@ -116,7 +116,7 @@ func (scanner productionConflictDependencyScanner) project(
 	if err != nil {
 		return conflictresolution.SQLiteProjection{}, err
 	}
-	if !reflect.DeepEqual(projection.Tables, candidate.Tables) {
+	if !reflect.DeepEqual(projection.Candidates, candidate.Tables) {
 		return conflictresolution.SQLiteProjection{},
 			errors.New("conflict.candidate_projection_mismatch")
 	}

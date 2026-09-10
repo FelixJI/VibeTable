@@ -1,6 +1,6 @@
 # S24 目录副本冲突资格
 
-当前状态：c045 源码已独立双轴通过并完成完整构建；04ab 导航修复的增量双轴及完整 Python 通过。同包第二次 S24 在 resolve 因合法空文件历史被生产冲突 reader 拒绝而失败。本轮修复 Go 两个候选入口，真实 FilesystemRemote／Manager 回归及相关 Go 包通过；待新的独立双轴、完整新包与 S24 验证。S24 尚未取得产品通过资格，fresh CI 尚无本批结果。
+当前状态：081fa 空历史修复已独立双轴通过并完成新包构建；第三次真实 S24 已越过副本发布，但因公开冲突投影使用物理表身份、整库恢复对象被计入表相等及重复发现而失败。本轮修复完整冲突投影／选择／应用，真实 PocketBase 公共链和 conflict／replica 包通过；Workspace 相邻组合保留一项既有 TempDir 清理 FAIL。当前修复仍待独立双轴、完整新包、同包 S24 与 fresh CI；不声明已取得产品通过资格。
 
 ## 完整意图与来源
 
@@ -91,3 +91,31 @@ resolve 截图 `product-e2e-navigation/20260910T041637Z/24-directory-replica-con
 - `go test ./internal/workspacev2 -run 'Replica|Conflict' -count=1`：**EXIT0，14.961s**，session2008，`workspace-replica-conflict.log`。
 
 所有原运输／GUI失败、包和运行现场保留；本轮未重跑完整 Python、完整 Go、完整构建或真实 S24。由于 Go runtime 已变化，c045 包及前述 Python 结果不能替代新源码的发布资格。交回 root 完整增量双轴后，必须以新包运行同一完整 S24；胜方持久状态、同一冲突、败方恢复预览可达性与 fresh／bridge／cleanup 仍待真实验证。普通 hooks 的本轮结果随提交记录保留。
+
+
+## 第三次新包 S24 失败与完整业务冲突修复
+
+固定源码 `081fa4edf3431e0a97ce7dbea31a7b617975def3` 的独立 Standards／Spec 均为 0，root 完整构建 session15966 EXIT0。同包真实 S24 session90860 **EXIT1**，报告 `product-e2e-empty-history/20260910T045044Z/product-e2e-report.json`。resolve 已到 replicated／pendingSync=false，9项断言通过（含公开 conflict.list、两次真实 inspect 及行绑定），随后唯一目标选择报 found0；旧空历史问题已越过，不能把这次失败归为等待或运输问题。
+
+真实 inspect 中业务表为 `pbc_2168654062`／`t_b91c8638dc04562dbb9b`，而 schema 和场景身份为 `tbl_b91c8638dc04562dbb9b`／`E2E Forked Records`。关闭后只读冲突库显示两组相同 base／replica，local 仅 snapshot ID 与 revision 不同，内容相同。每组原27项包含 users 和执行账本；未变表也因 DatabaseObjectID 指向另一整库快照而进入选择。原截图、完整 inspect 和关闭后的持久状态均保留，不改 selector 为首项、不任选多项。
+
+本修复以 081fa 为父提交，范围为现有 Go 冲突投影、Manager 发现及 whole-table appender：
+
+- `SQLiteProjection.Tables` 保留物理恢复验证，`Candidates` 根据 `vibetable_tables` 的逻辑／物理／显示名映射选出业务表。共享 metadata 从现有 `collectionByNamespace` 经只读 `NamespaceForCollection` 识别；schema／计算依赖／附件定义复用集中 typed dependency 描述，作为现有 `kind=settings` 整表选择。jobs 保留依赖扫描但不作为用户设置；认证、outbox、审计、执行回执、未知内部集合不冒充用户表。
+- 公开 itemId/path 为业务逻辑 ID／显示名，metadata 为 `metadata:<namespace>`，schema 为 `schema:<definition>`。公共 DTO shape 不变；公开依赖投影领域 ID，私有完整依赖图仍执行闭包校验。公共 choice 映射回原物理恢复地址；错误 kind、物理地址绕过、非法 both、缺失／重复映射和非法 metadata 引用均失败。
+- 表相等复用已有 schema／records／views／attachments 组件，不新增 hash；只移除作为恢复来源的 DatabaseObjectID 对相等性的影响，附件 map 按内容比较，删除与身份仍参与。选择后仍保留原不可变数据库对象和附件来源。
+- 同 workspace、相同 base／replica 身份及内容、语义相等 local 的发现，在新 pin 创建前复用原 set；prepared plan、状态、revision、pins、receipt 不改写。不同源或实际 schema／records／views／attachments／settings／files／delete 变化不折叠；stale replan 不复用。
+- 真实公共 apply 回归还暴露两项原 staging 缺陷：空附件 map 经持久化变 nil 后被 reflect 拒绝；PocketBase ImportCollections 自动改写 `_collections.updated`，导致导入后的 schema component 与来源不符。四处 staging/CAS/mixed 检查统一使用完整内容比较；原导入事务恢复已验证 config 的 created/updated，保留选中来源及未选择本地 schema，不忽略 schema 字段、不改组件摘要算法。
+
+源码验证均使用固定 Go1.27.0，在 `sidecar` 运行，日志目录仍为本页既有证据根：
+
+- 表内容回归旧实现 RED：`table-content-red.log`；真实 Manager 同内容新 snapshot 重复发现 RED：`duplicate-discovery-red.log`。初次修复因持久化空 map／nil 差异仍 FAIL，`content-and-discovery-green.log`；语义修正后 `content-and-discovery-green-final.log` 通过。
+- 三方夹具改为真实 PocketBase 完整 migrations、标准业务 schema 映射、正常 OnTerminate→Reset 和生产等价 VACUUM INTO 快照。原裸表夹具、错误复制 WAL 模式 DB、漏建生产 mutation receipt 表的失败分别保留在 `business-projection-first.log`、`business-pb-first.log`、`business-pb-snapshot.log`，不当作产品 RED；最终真实 FilesystemRemote／Manager 定向 PASS1.527s，`business-pb-current.log`。
+- 新公共链夹具的 wire sequence／错误方法名首轮失败保留于 `business-public-apply-first.log`、`business-public-apply-sequence.log`、`business-public-apply-method.log`；修正夹具后真实 apply_unproven RED 在 `business-public-apply-current.log`。`business-public-stage-diagnosis.log` 精确定位空 map 持久化；`business-public-stage-map-fix.log` 和 `business-public-schema-diagnosis.log` 定位导入 updated。恢复 ID 断言首次未按原排序，`business-public-apply-preserved-schema.log` 保留；后续断言独立排序精确集合。
+- `go test ./internal/conflict ./internal/replica -count=1`：**EXIT0**，分别0.836s／1.983s，`business-conflict-replica-suite.log`。包含实际表内容变更负控、缺失／重复／错误 schema 映射、共享 metadata 非法 JSON／未知引用、正常空／非空文件历史、真实三方冲突及同内容重复发现。
+- `go test ./internal/replica -run '^TestEquivalentDiscoveryPreservesPreparedPlanAndRootPins$' -count=1`：**EXIT0，0.749s**，`business-plan-lifecycle.log`。真实 Engine prepared plan、原 set 与 pins 精确保留；不同状态及来源负控另在 conflict 包覆盖。
+- `go test ./internal/workspacev2 -run 'Test.*(Conflict|Replica)' -count=1`：**EXIT1，17.500s**，session93550，`business-workspace-contracts.log`。唯一失败为既有 `TestConflictExternalExpectedSettingsCASRejectsPostPreviewEdit` 的 TempDir RemoveAll“目录非空”，其他契约无失败；早期 `business-projection-first.log` 同样保留既有附件 fault 测试 TempDir 清理失败。不重跑整组求绿，不更改清理 fixture／重试。
+- `go test ./internal/workspacev2 -run '^TestConflictBusinessAndSharedSettingsPublicApplyPreservesRecovery$' -count=1`：最终 **EXIT0，3.138s**，`business-public-retained-settings.log`。通过真实 normalized schema／PB 快照→公开 inspect 精确业务表+共享 settings 两项→三类非法 preview 拒绝→合法 preview/apply；胜方两值均恢复、未选 schema/settings 和本地执行账本原样保留。返回双方 recoverySnapshotIds 的精确集合，败方公开 snapshot restore preview 成功，原不可变数据库仍有败方业务值和 settings。中间通过日志一并保留。
+- `go vet ./internal/conflict ./internal/replica ./internal/workspacev2 ./internal/metadata`：**EXIT0**，`business-vet.log`；gofmt 和 `git diff --check` 通过。
+
+本轮未修改 Web／Python／公开 DTO 生成器，未重复完整 Python／Node、完整 Go、发布构建或真实 GUI；原 1916 Python／1 skip 仍只属于04ab。旧 WIP、三次真实失败及各包现场不动；本轮 Go runtime 修复必须新包资格，081fa 包不能覆盖。交回 root 独立双轴后，再以原 runner 完整 S24 证明唯一冲突、胜方重开持久值、败方恢复预览、fresh／bridge／cleanup；本页不把源码通过写成产品通过。

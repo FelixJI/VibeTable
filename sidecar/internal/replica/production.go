@@ -115,6 +115,7 @@ type ConflictRemote interface {
 }
 
 type ConflictSink interface {
+	List(context.Context, string, *string, int) ([]conflictresolution.Set, *string, error)
 	Add(context.Context, conflictresolution.Set) error
 	Inspect(context.Context, string) (conflictresolution.Set, error)
 }
@@ -518,6 +519,13 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 				rootsDigest(sortedRoots(candidate.Roots)) {
 			return ErrVerificationInvalid
 		}
+		duplicate, err := manager.hasEquivalentConflict(ctx, set)
+		if err != nil {
+			return err
+		}
+		if duplicate {
+			continue
+		}
 		existing, err := manager.conflicts.Inspect(
 			ctx, set.ConflictID,
 		)
@@ -612,6 +620,27 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// Discovery is serialized by the manager. Reuse before allocating another pin;
+// leave the original set, prepared plan and terminal receipt completely intact.
+func (manager *Manager) hasEquivalentConflict(ctx context.Context, incoming conflictresolution.Set) (bool, error) {
+	var cursor *string
+	for {
+		sets, next, err := manager.conflicts.List(ctx, manager.workspace, cursor, 200)
+		if err != nil {
+			return false, err
+		}
+		for _, existing := range sets {
+			if conflictresolution.EquivalentDiscovery(existing, incoming) {
+				return true, nil
+			}
+		}
+		if next == nil {
+			return false, nil
+		}
+		cursor = next
+	}
 }
 
 func (manager *Manager) scanConflictDependencies(

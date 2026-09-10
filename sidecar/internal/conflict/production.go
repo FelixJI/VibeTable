@@ -981,19 +981,30 @@ func validateChoices(
 		map[string]ItemKind,
 		len(plan.Files)+len(plan.Tables)+1,
 	)
+	publicIDs := map[string]string{}
 	for _, item := range plan.Files {
+		publicIDs[item.DocumentID] = item.DocumentID
 		conflicts[item.DocumentID] = FileItem
 	}
 	for _, item := range plan.Tables {
 		if _, duplicate := conflicts[item.TableID]; duplicate {
 			return Resolution{}, []string{"conflict.item_id_collision"}
 		}
-		conflicts[item.TableID] = TableItem
+		id, kind := item.PublicItem()
+		if _, duplicate := publicIDs[id]; duplicate {
+			return Resolution{}, []string{"conflict.item_id_collision"}
+		}
+		publicIDs[id] = item.TableID
+		conflicts[item.TableID] = kind
 	}
 	if plan.Settings != nil {
 		if _, duplicate := conflicts[plan.Settings.ItemID]; duplicate {
 			return Resolution{}, []string{"conflict.item_id_collision"}
 		}
+		if _, duplicate := publicIDs[plan.Settings.ItemID]; duplicate {
+			return Resolution{}, []string{"conflict.item_id_collision"}
+		}
+		publicIDs[plan.Settings.ItemID] = plan.Settings.ItemID
 		conflicts[plan.Settings.ItemID] = SettingsItem
 	}
 	resolution := Resolution{Choices: map[string]Side{}}
@@ -1002,6 +1013,7 @@ func validateChoices(
 		if itemID == "" {
 			itemID = choice.DocumentID
 		}
+		itemID = publicIDs[itemID]
 		expectedKind, exists := conflicts[itemID]
 		kind := choice.Kind
 		if kind == "" && choice.DocumentID != "" {
