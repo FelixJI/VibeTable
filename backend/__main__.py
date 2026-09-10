@@ -73,15 +73,12 @@ from backend.contracts.plugin_rpc import (
 from backend.contracts.presets_versions_dashboards import (
     CreateVersionParams,
     DashboardWorkspaceParams,
-    DeletePresetParams,
     DeleteVersionParams,
     ExecuteDashboardQueryParams,
     ListDashboardsParams,
-    ListPresetsParams,
     ListVersionsParams,
     PromoteVersionParams,
     SaveDashboardDraftParams,
-    SavePresetParams,
     SaveVersionParams,
     VersionIdParams,
 )
@@ -502,9 +499,6 @@ async def _build_server() -> tuple[
             insights.panel_manifest,
             ProductParams,
         )
-        dispatcher.register("preset.list", insights.list_presets, ListPresetsParams)
-        dispatcher.register("preset.save", insights.save_preset, SavePresetParams)
-        dispatcher.register("preset.delete", insights.delete_preset, DeletePresetParams)
         dispatcher.register("version.list", insights.list_versions, ListVersionsParams)
         dispatcher.register("version.create", insights.create_version, CreateVersionParams)
         dispatcher.register("version.save", insights.save_version, SaveVersionParams)

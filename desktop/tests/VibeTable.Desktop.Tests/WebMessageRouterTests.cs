@@ -663,7 +663,7 @@ public sealed class WebMessageRouterTests
                 ["requestId"] = $"request-{type}",
                 ["payload"] = new { },
             };
-            if (type is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "settings.readWorkCalendar" or "settings.commitWorkCalendar")
+            if (type is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "settings.readWorkCalendar" or "settings.commitWorkCalendar")
             {
                 request["scope"] = new
                 {
@@ -1245,7 +1245,7 @@ public sealed class WebMessageRouterTests
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
             Assert.AreEqual(
-                route is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "settings.readWorkCalendar" or "settings.commitWorkCalendar"
+                route is "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "settings.readWorkCalendar" or "settings.commitWorkCalendar"
                     ? "goSidecar"
                     : "pythonBff",
                 capability.Owner,

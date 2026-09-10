@@ -56,6 +56,9 @@ func registerMetadataRoutes(
 		if request.Request.PathValue("namespace") == "shared_settings" {
 			return request.JSON(http.StatusForbidden, map[string]string{"code": "metadata.product_owner_required"})
 		}
+		if request.Request.PathValue("namespace") == string(metadata.NamespacePresets) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
+		}
 
 		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {
 			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use the public Interface methods."})
@@ -90,6 +93,9 @@ func registerMetadataRoutes(
 	) error {
 		if request.Request.PathValue("namespace") == "shared_settings" {
 			return request.JSON(http.StatusForbidden, map[string]string{"code": "metadata.product_owner_required"})
+		}
+		if request.Request.PathValue("namespace") == string(metadata.NamespacePresets) {
+			return request.JSON(http.StatusForbidden, map[string]any{"code": "metadata.product_method_required", "message": "Use public Preset methods."})
 		}
 
 		if request.Request.PathValue("namespace") == string(metadata.NamespaceInterfaces) {

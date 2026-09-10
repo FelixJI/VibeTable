@@ -6685,6 +6685,56 @@ async function waitForGalleryProjection(page, expectedCount) {
   return gallery;
 }
 
+async function verifyPresetSurvivesRestart(page, recorder, runtime, tableId, expected) {
+  if (!expected?.id || !expected?.revision) {
+    throw new Error("preset restart requires a persisted identity and revision");
+  }
+  const before = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  if (before.type !== "query.page" || !Array.isArray(before.payload?.rows)) {
+    throw new Error(`preset restart baseline failed: ${JSON.stringify(before)}`);
+  }
+  const diagnostics = await waitForBridgeDiagnosticsToSettle(page);
+  if (!diagnostics || diagnostics.pending?.length || diagnostics.failures?.length) {
+    throw new Error("preset restart requires a quiescent bridge");
+  }
+  const ownerToken = `preset-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, { ownerToken, tableId });
+  let primaryError = null;
+  try {
+    const restart = await requestSidecarKill(runtime, "verify persisted preset survives sidecar restart");
+    recorder.check("preset restart terminates the exact sidecar child",
+      restart.processName === "vibetable-pb.exe", { restart });
+    await waitForActiveTableBackend(page, tableId, before.payload.rows.length, 90_000);
+    const window = await page.evaluate(settleSidecarRecoveryNotificationFailureWindowInPage, {
+      ownerToken, deadlineAt: Date.now() + 30_000,
+    });
+    if (window.state !== "settled") throw new Error(`preset recovery did not settle: ${window.state}`);
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken });
+    } catch (error) {
+      if (!attachCleanupFailure(primaryError, error, "preset recovery cleanup also failed")) throw error;
+    }
+  }
+  // Read after the process boundary before allowing the UI to save any cached view.
+  const fresh = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  const actual = fresh.payload?.presets?.find(item => item.id === expected.id);
+  recorder.check("preset identity, revision and full configuration survive a real sidecar restart",
+    fresh.type === "preset.list" && isDeepStrictEqual(actual, expected), { expected, actual });
+  if (!isDeepStrictEqual(actual, expected)) throw new Error("preset changed across sidecar restart");
+  await page.getByTestId("nav-settings").click();
+  await page.getByTestId("nav-tables").click();
+  const tab = page.getByTestId(`view-tab-${expected.id}`);
+  await tab.waitFor({ state: "visible", timeout: 30_000 });
+  await tab.click();
+}
+
 async function scenario19(page, recorder, _network, runtime) {
   await waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-tables").click();
@@ -6816,6 +6866,7 @@ async function scenario19(page, recorder, _network, runtime) {
   recorder.check("the stale Gallery rename exposes the typed preset conflict before recovery",
     Boolean(conflictText.trim()) && conflictRoundTrip?.code === "preset_edit_conflict",
   { conflictText, conflictRoundTrip });
+  await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "preset_edit_conflict");
 
   await page.getByTestId("view-reload").click();
   await conflictAlert.waitFor({ state: "hidden", timeout: 30_000 });
@@ -6831,6 +6882,20 @@ async function scenario19(page, recorder, _network, runtime) {
       && winner.revision === competing.payload?.revision
       && winner.view?.kind === "gallery",
   { winner, cardCount: await page.getByTestId("gallery-card").count() });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, winner);
+  await waitForGalleryProjection(page, 2);
+
+  await page.getByTestId(`view-actions-${winner.id}`).click();
+  await page.locator(".n-dropdown-option-body:visible")
+    .filter({ hasText: /删除|Delete/i }).last().click();
+  await page.getByTestId("view-dialog-confirm").click();
+  await page.getByTestId(`view-tab-${winner.id}`).waitFor({ state: "hidden", timeout: 30_000 });
+  const afterDelete = await rawBridgeRequest(page, "preset.list", { collection: tableId });
+  recorder.check("Gallery delete UI removes the persisted preset from the authority list",
+    afterDelete.type === "preset.list"
+      && Array.isArray(afterDelete.payload?.presets)
+      && !afterDelete.payload.presets.some(item => item.id === winner.id), { afterDelete });
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "19-gallery-lifecycle.png"),
@@ -7000,6 +7065,9 @@ async function scenario20(page, recorder, _network, runtime) {
   recorder.check("Kanban moved card survives refresh and leaving then reopening Tables",
     await doneLane.getByTestId("kanban-card").filter({ hasText: "Kanban Alpha" }).count() === 1,
   { presetId: persisted.id, doneOptionId: doneOption.optionId });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, persisted);
+  await waitForKanbanCardInLane(page, doneOption.optionId, "Kanban Alpha");
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "20-kanban-lane-drag.png"),
@@ -7177,6 +7245,9 @@ async function scenario21(page, recorder, _network, runtime) {
       .filter({ hasText: "Calendar Alpha" })
       .count() === 1,
   { presetId: persisted.id, targetDate });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, persisted);
+  await waitForCalendarRecordOnDate(page, targetDate, "Calendar Alpha");
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "21-calendar-date-move.png"),
@@ -7387,6 +7458,9 @@ async function scenario22(page, recorder, _network, runtime) {
       .filter({ hasText: "Timeline Alpha" })
       .count() === 1,
   { presetId: persisted.id, targetDate });
+
+  await verifyPresetSurvivesRestart(page, recorder, runtime, tableId, persisted);
+  await waitForTimelineRecordInRange(page, targetDate, "Timeline Alpha");
 
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "22-timeline-date-move.png"),
