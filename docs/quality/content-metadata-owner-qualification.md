@@ -101,8 +101,8 @@ run `20260909T150507Z` / session 41605 EXIT0：1/1 PASS，21 项断言，19.554s
 `build/content-main-merge-go.log`。
 
 主干同步改变 runtime，先前 e8af staging 的 S18 功能通过不能覆盖此次源码。
-原完整构建的自更新 smoke 失败、原 staging 和相关证据均保留；本次未重新构建，
-尚未取得最终包与完整远端 CI 资格。
+同步当时尚未重新构建，原 staging 不能覆盖新源码；本次必要构建后旧 smoke 已原样归档，
+新包与同包 S18 通过结果见末节，完整远端 CI 资格仍未取得。
 
 同步后的独立审查发现八个测试 fixture 重复了原 registration 参数。字段设置现有
 `TestFieldSettingsDescribeProductHTTPReplaysFrozenPython` 首先复现
