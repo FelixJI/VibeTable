@@ -56,3 +56,5 @@ Go 使用仓库固定 Go 1.27.0；下列 Go 命令 cwd 为 sidecar。Python 使�
 第二次同包 S16 仍 EXIT1（build/qa/dashboard-metadata/product-e2e-drawer-close/20260910T052107Z）：正常点击关闭按钮后表单未隐藏，15项业务断言通过，重启段尚未到达。锁定 Naive UI 的 DrawerContent 通过父 Drawer 的 update:show 请求关闭；受控 Drawer 未监听该事件，原 DrawerContent @close 无效。改由 Drawer 的 update:show 统一转发关闭，取消按钮原行为保留，不通过遮罩绕过按钮问题。
 真实组件（未替换 Drawer/DrawerContent）点击标题关闭按钮：旧实现 1 FAIL/11 PASS，close 未发出（drawer-close-red-actual.log）；修复后抽屉与 Workspace 相邻两文件 15 PASS（drawer-workspace-green.log），npm run typecheck PASS（drawer-typecheck.log）。早先错误测试路径只运行11旧测试，不算RED；随后一次相邻路径错误只运行12抽屉测试，不算两个文件通过。上述15项来自正确的 src/views 路径。
 运行时 Web 已变更，必须重新完整构建并重跑 S16；当前尚未宣称通过重启旅程。
+
+395842bd 的独立 Standards/Spec 均0。完整构建 scripts/build_next.py --release EXIT0（build-release-drawer.log，session66412）；同新包 S16 EXIT0，22项断言、31.557s，报告 product-e2e-fixed-drawer/20260910T054308Z/product-e2e-report.json。已通过原完整Dashboard旅程、真实关闭按钮及sidecar终止恢复后fresh公开list/read和源表数据验证；Host正常退出0，生命周期清理通过。前两次S16 FAIL保留，不由最终通过抹去。远端fresh CI尚待创建PR。
