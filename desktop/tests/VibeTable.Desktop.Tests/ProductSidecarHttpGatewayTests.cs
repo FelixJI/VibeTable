@@ -14,6 +14,70 @@ public sealed class ProductSidecarHttpGatewayTests
         "11111111-1111-4111-8111-111111111111";
     private const string ClaimId =
         "22222222-2222-4222-8222-222222222222";
+    [TestMethod]
+    [DataRow("preset.save", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", false, true)]
+    [DataRow("preset.delete", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", false, true)]
+    [DataRow("preset.save", "preset_idempotency_conflict", "operationId", "Operation was used for another Preset request.", false, true)]
+    [DataRow("preset.delete", "preset_idempotency_conflict", "operationId", "Operation was used for another Preset request.", false, true)]
+    [DataRow("preset.save", "preset_unknown", "expectedRevision", "Preset changed elsewhere.", false, false)]
+    [DataRow("preset.save", "preset_edit_conflict", "wrongField", "Preset changed elsewhere.", false, false)]
+    [DataRow("preset.save", "preset_edit_conflict", "expectedRevision", "Preset changed elsewhere.", true, false)]
+    public async Task PresetControllerPreservesOnlyClosedHttpConflicts(
+        string method, string code, string field, string message, bool extra, bool accepted)
+    {
+        JsonElement wire = JsonSerializer.SerializeToElement(new
+        {
+            scope = "workspace", workspaceId = WorkspaceId, sessionEpoch = 7,
+            operationId = ClaimId, sequence = 0,
+        });
+        JsonElement parameters = JsonDocument.Parse(method == "preset.save"
+            ? """{"collection":"orders","name":"Gallery","view":{},"presetId":"view-1","expectedRevision":"stale","operationId":"save-conflict"}"""
+            : """{"presetId":"view-1","expectedRevision":"stale","operationId":"delete-conflict"}""").RootElement.Clone();
+        var data = new Dictionary<string, object?> { ["kind"] = "insights_error", ["code"] = code, ["field"] = field, ["message"] = message };
+        if (extra) data["private"] = "must not cross";
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get)
+                return Json(Capabilities(rpcMethods: JsonSerializer.Serialize(new[] { method }),
+                    registrations: JsonSerializer.Serialize(new[] { new { method, scope = "workspace" } })));
+            using JsonDocument sent = JsonDocument.Parse(request.Content!.ReadAsStream());
+            Assert.AreEqual(method, sent.RootElement.GetProperty("method").GetString());
+            Assert.IsTrue(JsonElement.DeepEquals(parameters, sent.RootElement.GetProperty("params")));
+            return Json(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0", id = "preset-conflict", wire,
+                error = new { code = -32080, message = "Insights error", data },
+            }));
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new(method, "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        var pythonTransport = new CountingQueryTransport();
+        await using var pythonClient = new JsonRpcClient(pythonTransport);
+        using var pythonGateway = new JsonRpcProductDataGateway(pythonClient);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(pythonGateway);
+        controller.SetProductSidecarForwarder(gateway);
+        await controller.DispatchAsync(new RoutedWebRequest(method, "preset-conflict", parameters, string.Empty, Wire: wire));
+        Assert.AreEqual(0, pythonTransport.WriteCount);
+        Assert.AreEqual(2, handler.SendCount);
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual("preset-conflict", reply.RequestId);
+        Assert.AreEqual(accepted ? method : "operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        if (accepted)
+        {
+            JsonElement error = payload.GetProperty("error");
+            Assert.AreEqual(code, error.GetProperty("code").GetString());
+            Assert.AreEqual(field, error.GetProperty("path").GetString());
+            Assert.AreEqual(message, error.GetProperty("message").GetString());
+        }
+        else
+        {
+            Assert.IsFalse(payload.GetRawText().Contains(code, StringComparison.Ordinal));
+            Assert.IsFalse(payload.GetRawText().Contains("must not cross", StringComparison.Ordinal));
+        }
+    }
     private static readonly ProductSidecarRegistration[] ProductCatalog =
         [new("query.page", "workspace")];
 

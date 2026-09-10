@@ -321,6 +321,19 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 composition,
                 call.args[2].id,
             )
+    from backend.contracts.presets_versions_dashboards import (
+        ListPresetsParams,
+        SavePresetParams,
+        DeletePresetParams,
+    )
+
+    result.update(
+        {
+            "preset.list": ListPresetsParams,
+            "preset.save": SavePresetParams,
+            "preset.delete": DeletePresetParams,
+        }
+    )
     result.update(PRODUCT_PARAM_MODELS)
     # Go content methods keep the schema-generated public DTOs after their
     # Python handlers are removed; these imports do not register BFF handlers.

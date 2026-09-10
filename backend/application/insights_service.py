@@ -1,4 +1,4 @@
-"""Provider-neutral presets, content versions, and dashboard orchestration.
+"""Provider-neutral content versions and dashboard orchestration.
 
 The application layer addresses logical metadata namespaces and the product
 QueryPort.  Physical PocketBase collection names and HTTP details belong only
@@ -21,7 +21,6 @@ from backend.application.revisioned_metadata_port import (
     DashboardRevisionConflictError,
     JsonObject,
     JsonValue,
-    MetadataConflictError,
 )
 from backend.contracts.presets_versions_dashboards import (
     CompiledDashboardQuery,
@@ -45,10 +44,6 @@ from backend.contracts.presets_versions_dashboards import (
     PanelPosition,
     PanelSelection,
     PanelType,
-    PresetEntry,
-    PresetScope,
-    PresetsResult,
-    PresetView,
     SaveDashboardDraftParams,
     SaveDashboardDraftResult,
     VersionCompareResult,
@@ -218,77 +213,6 @@ class InsightsService:
         self._metadata = metadata_port
         self._query = query_port
         self._query_slots = asyncio.Semaphore(DASHBOARD_QUERY_LIMITS.max_concurrent_requests)
-
-    async def list_presets(self, collection: str) -> PresetsResult:
-        rows = await self._metadata.list_metadata("presets", scope=collection)
-        return PresetsResult(
-            collection=collection,
-            presets=[
-                _preset(row, collection)
-                for row in rows
-                if _text(row.get("scope"), collection) == collection
-            ],
-        )
-
-    async def save_preset(
-        self,
-        collection: str,
-        name: str,
-        view: PresetView,
-        preset_id: str | None,
-        expected_revision: str | None,
-        operation_id: str = "",
-    ) -> PresetEntry:
-        if not operation_id:
-            raise InsightsError("operationId is required", code="operation_id_required")
-        record_id = preset_id or str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"vibetable:preset:{operation_id}")
-        )
-        values: JsonObject = {
-            "scope": collection,
-            "name": name,
-            "presetScope": "system",
-            "view": _model_object(view),
-        }
-        try:
-            receipt = await self._metadata.upsert_metadata(
-                "presets",
-                record_id=record_id,
-                values=values,
-                expected_revision=expected_revision,
-                idempotency_key=f"preset:save:{operation_id}",
-            )
-        except MetadataConflictError as error:
-            raise InsightsError(
-                "Preset changed elsewhere.",
-                code="preset_edit_conflict",
-                field="expectedRevision",
-            ) from error
-        return PresetEntry(
-            id=record_id,
-            collection=collection,
-            name=name,
-            scope="system",
-            view=view,
-            revision=_receipt_revision(receipt),
-            change_set_id=_optional_text(receipt.get("changeSetId")),
-            emitted_events=_string_list(receipt.get("emittedEvents")),
-        )
-
-    async def delete_preset(
-        self,
-        preset_id: str,
-        expected_revision: str,
-        operation_id: str,
-    ) -> JsonObject:
-        receipt = await self._delete(
-            "presets",
-            preset_id,
-            expected_revision=expected_revision,
-            operation_id=operation_id,
-            label="preset",
-        )
-        return {"deleted": preset_id, **_receipt_trace(receipt)}
 
     async def list_versions(self, collection: str, item_id: str) -> VersionsResult:
         rows = await self._metadata.list_metadata(
@@ -943,28 +867,6 @@ def _matches_option_rule(value: object, rule: Mapping[str, JsonValue]) -> bool:
             _matches_option_rule(item, item_rule) for item in value
         )
     return False
-
-
-def _preset(row: Mapping[str, JsonValue], collection: str) -> PresetEntry:
-    view = row.get("view")
-    scope = row.get("presetScope")
-    return PresetEntry(
-        id=_text(row.get("id")),
-        collection=collection,
-        name=_text(row.get("name")),
-        scope=_preset_scope(scope),
-        view=PresetView.model_validate(view if isinstance(view, dict) else {}),
-        user_id=_optional_text(row.get("userId")),
-        revision=_text(row.get("revision")),
-    )
-
-
-def _preset_scope(value: object) -> PresetScope:
-    if value == "system":
-        return "system"
-    if value == "role":
-        return "role"
-    return "personal"
 
 
 def _version(row: Mapping[str, JsonValue]) -> ContentVersionEntry:
