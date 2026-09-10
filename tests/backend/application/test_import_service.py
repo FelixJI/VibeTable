@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -227,13 +229,24 @@ def _service(
     path: Path,
     *,
     profile: CollectionProfile | None = None,
+    profiles: dict[str, CollectionProfile] | None = None,
     mutation: FakeProductMutationPort | None = None,
     relation_provider: FakeRelationProvider | None = None,
     consumed: list[str] | None = None,
     clock: Any = None,
 ) -> tuple[ImportService, FakeProductMutationPort]:
     profile = profile or _profile()
+    profiles = profiles or {profile.collection: profile}
     mutation = mutation or FakeProductMutationPort()
+
+    @contextmanager
+    def reserve_grant(grant: str) -> Iterator[Callable[[], None]]:
+        def commit() -> None:
+            if consumed is not None:
+                consumed.append(grant)
+
+        yield commit
+
     kwargs: dict[str, Any] = {}
     if clock is not None:
         kwargs["clock"] = clock
@@ -242,9 +255,9 @@ def _service(
             client=object(),
             auth=object(),
             bulk=mutation,
-            profiles={profile.collection: profile},
+            profiles=profiles,
             resolve_path=lambda _grant, **_kwargs: str(path),
-            consume_grant=lambda grant: consumed.append(grant) if consumed is not None else None,
+            reserve_grant=reserve_grant,
             relation_provider=relation_provider,
             **kwargs,
         ),
@@ -591,6 +604,57 @@ async def test_apply_is_one_atomic_product_mutation_and_consumes_grant(tmp_path:
             )
         )
     assert replay.value.code == "import_token_consumed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("apply_collection", "apply_mode"),
+    [
+        ("vibetable_archive", "create_only"),
+        ("vibetable_demo", "upsert"),
+    ],
+    ids=["collection", "mode"],
+)
+async def test_apply_rejects_target_or_mode_changed_since_preview(
+    tmp_path: Path,
+    apply_collection: str,
+    apply_mode: str,
+) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    source_profile = _profile()
+    archive_profile = source_profile.model_copy(update={"collection": "vibetable_archive"})
+    consumed: list[str] = []
+    service, mutation = _service(
+        path,
+        profile=source_profile,
+        profiles={
+            source_profile.collection: source_profile,
+            archive_profile.collection: archive_profile,
+        },
+        consumed=consumed,
+    )
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection=source_profile.collection,
+            schema_revision="schema-1",
+        )
+    )
+
+    with pytest.raises(ImportFlowError) as error:
+        await service.apply(
+            ApplyImportParams(
+                grant_id="grant-1",
+                collection=apply_collection,
+                mode=apply_mode,
+                token=plan.token.token,
+            )
+        )
+
+    assert error.value.code == "import_plan_mismatch"
+    assert mutation.calls == []
+    assert consumed == []
 
 
 @pytest.mark.asyncio
