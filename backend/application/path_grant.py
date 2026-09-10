@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,7 @@ class _StoredGrant:
         "mime_type",
         "path",
         "purpose",
+        "reserved",
         "size_bytes",
     )
 
@@ -70,6 +73,7 @@ class _StoredGrant:
         self.mime_type = mime_type
         self.expires_at = expires_at
         self.consumed = False
+        self.reserved = False
 
 
 class SessionPathGrantStore:
@@ -157,10 +161,37 @@ class SessionPathGrantStore:
         stored = self._get(grant_id)
         stored.consumed = True
 
+    @contextmanager
+    def reserve(
+        self, grant_id: str, *, purpose: str, direction: str
+    ) -> Iterator[Callable[[], None]]:
+        """Authorize one operation, then consume only after its side effect commits.
+
+        Expiry controls admission. An admitted operation can finish after the TTL;
+        a failed or cancelled operation releases its reservation without consuming.
+        """
+        self.resolve(grant_id, purpose=purpose, direction=direction)
+        stored = self._grants[grant_id]
+        stored.reserved = True
+        active = True
+
+        def commit() -> None:
+            if not active or stored.consumed:
+                raise RuntimeError("path grant reservation is no longer active")
+            stored.consumed = True
+
+        try:
+            yield commit
+        finally:
+            active = False
+            stored.reserved = False
+
     def _get(self, grant_id: str) -> _StoredGrant:
         stored = self._grants.get(grant_id)
         if stored is None:
             raise PathGrantError("path grant not found", code="grant_unknown")
+        if stored.reserved:
+            raise PathGrantError("path grant is in use", code="grant_in_use")
         if self._clock() >= stored.expires_at:
             self._grants.pop(grant_id, None)
             raise PathGrantError("path grant expired", code="grant_expired")

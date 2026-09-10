@@ -208,6 +208,69 @@ public sealed class NativeProductFileRequestControllerTests
     }
 
     [TestMethod]
+    [DataRow("CON.csv")]
+    [DataRow("NUL.csv")]
+    [DataRow("missing-source.csv")]
+    public async Task UnreadableNativeImportPathReturnsCorrelatedGrantFailure(string fileName)
+    {
+        // Device names are deliberately never created or opened as streams.
+        // FileInfo must reject them as ordinary import sources.
+        var sink = new FakeWebReplySink();
+        var gateway = new FakeProductFileGateway();
+        var host = new FakeNativeProductFileHost
+        {
+            ImportSource = Path.Combine(
+                Path.GetTempPath(),
+                fileName == "missing-source.csv" ? Guid.NewGuid().ToString("N") + fileName : fileName),
+        };
+
+        await Controller(sink, gateway, host).DispatchAsync(Request(
+            "data.importSourceRequested", "{}"));
+
+        Assert.IsEmpty(gateway.ImportRegistrations);
+        FakeWebReplySink.Reply response = sink.Replies.Single();
+        AssertFailure(response, "PATH_GRANT_FAILED");
+        Assert.DoesNotContain(
+            JsonSerializer.Serialize(response.Payload), host.ImportSource);
+    }
+
+    [TestMethod]
+    public async Task LongUnicodeImportPathUsesNativeFileMetadataWithoutRendererPath()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "vt-grant-" + Guid.NewGuid().ToString("N"));
+        string directory = root;
+        while (directory.Length < 280)
+            directory = Path.Combine(directory, "中文-Cafe\u0301-" + new string('a', 35));
+        Directory.CreateDirectory(directory);
+        string source = Path.Combine(directory, "源-👩‍💻.csv");
+        try
+        {
+            await File.WriteAllTextAsync(source, "value\n原样值\n");
+            var sink = new FakeWebReplySink();
+            var gateway = new FakeProductFileGateway();
+            var host = new FakeNativeProductFileHost { ImportSource = source };
+
+            await Controller(sink, gateway, host).DispatchAsync(Request(
+                "data.importSourceRequested", """{"path":"C:\\untrusted\\ignored.csv"}"""));
+
+            JsonElement registration = gateway.ImportRegistrations.Single();
+            Assert.AreEqual(Path.GetFullPath(source), registration.GetProperty("path").GetString());
+            Assert.AreEqual(new FileInfo(source).Length, registration.GetProperty("sizeBytes").GetInt64());
+            Assert.AreEqual("data.importSourceRequested", sink.Replies.Single().Type);
+        }
+        finally
+        {
+            File.Delete(source);
+            // Remove only the known empty fixture directories, without recursion.
+            while (directory.StartsWith(root, StringComparison.Ordinal))
+            {
+                Directory.Delete(directory);
+                directory = Path.GetDirectoryName(directory)!;
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task RemoveAndDownloadShareValidatedAttachmentIdentity()
     {
         var sink = new FakeWebReplySink();
