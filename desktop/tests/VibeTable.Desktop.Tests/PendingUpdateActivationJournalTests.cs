@@ -20,6 +20,58 @@ public sealed class PendingUpdateActivationJournalTests
     }
 
     [TestMethod]
+    public void JournalLockRejectsReparsePointWithoutTouchingItsTarget()
+    {
+        string root = Root();
+        string target = Path.Combine(root, "outside-lock");
+        Directory.CreateDirectory(target);
+        string marker = Path.Combine(target, "preserved.txt");
+        File.WriteAllText(marker, "original");
+        string lockPath = Path.Combine(root, ".VibeTable.Next.update-pending.lock");
+        if (!TryCreateJunction(lockPath, target))
+        {
+            Assert.Inconclusive("Cannot create the lock reparse-point fixture.");
+        }
+        try
+        {
+            Assert.ThrowsExactly<ReleaseUpdateException>(() =>
+            {
+                using UpdateActivationJournalLock claim = UpdateActivationJournalLock.Acquire(lockPath);
+            });
+            Assert.AreEqual("original", File.ReadAllText(marker));
+            Assert.IsTrue((File.GetAttributes(lockPath) & FileAttributes.ReparsePoint) != 0);
+        }
+        finally
+        {
+            Directory.Delete(lockPath);
+        }
+    }
+    [TestMethod]
+    public void JournalLockSurvivesHolderReleaseAfterContenderObservedItsPath()
+    {
+        string lockPath = Path.Combine(Root(), ".VibeTable.Next.update-pending.lock");
+        using UpdateActivationJournalLock holder = UpdateActivationJournalLock.Acquire(lockPath);
+        int observed = 0;
+        // Deterministically interleave a real holder release between the next
+        // contender's File.Exists and reparse-point attribute read.
+        using (UpdateActivationJournalLock contender = UpdateActivationJournalLock.Acquire(
+            lockPath,
+            () => { observed++; holder.Dispose(); }))
+        {
+            Assert.AreEqual(1, observed);
+            Assert.IsTrue(File.Exists(lockPath));
+            IOException excluded = Assert.ThrowsExactly<IOException>(() =>
+            {
+                using var bypass = new FileStream(lockPath, FileMode.Open,
+                    FileAccess.ReadWrite, FileShare.None);
+            });
+            Assert.AreEqual(32, excluded.HResult & 0xffff);
+        }
+        // The released OS handle is reusable without removing its shared pathname.
+        Assert.IsTrue(File.Exists(lockPath));
+        using UpdateActivationJournalLock next = UpdateActivationJournalLock.Acquire(lockPath);
+    }
+    [TestMethod]
     public async Task RecoveryReadWaitsForJournalWriterBeforeReadingState()
     {
         UpdateApplyPlan plan = CreatePendingPlan("recovery-read-lock", '0');

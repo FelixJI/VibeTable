@@ -427,6 +427,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			capabilities := workspaceRuntime.Capabilities()
 			schemaCatalog := schemaapi.New(pb)
 			presets := metadata.NewPreset(pb)
+			surfaces := metadata.NewSurface(pb)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
@@ -436,6 +437,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				presetRegistration("preset.list", presets, businessGate),
 				presetRegistration("preset.save", presets, businessGate),
 				presetRegistration("preset.delete", presets, businessGate),
+				surfaceListRegistration(surfaces),
+				surfaceLoadRegistration(surfaces),
+				surfaceCommitRegistration(surfaces, businessGate),
+				surfaceDeleteRegistration(surfaces, businessGate),
 				mutationPreviewRegistration(mutationKernel),
 				mutationApplyRegistration(mutationKernel, businessGate),
 				fieldSettingsDescribeRegistration(fieldSettings),

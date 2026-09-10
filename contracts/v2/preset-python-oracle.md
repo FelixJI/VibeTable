@@ -276,3 +276,24 @@ uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --package-root 
 
 - `go test -count=1 -covermode=count '-coverpkg=./internal/filehistory,./internal/restore,./internal/query,./internal/mutation,./internal/productrpc' '-coverprofile=../build/qa/preset-coverage/after.out' ./...`：整体 **EXIT1**，`after-tests.log`；存在 E2EMutationBarrier、HistoryRestoreProductHTTP、KopiaRetention、HistoryQueryV2、SnapshotRestore 等既有 TempDir 非空清理失败，未扩大本任务去改变它们。
 - `go run ./cmd/go-coverage-report --group authority --profile ../build/qa/preset-coverage/after.out --repository-root .. --base-ref 27e51198 --report ../build/qa/preset-coverage/after-report.json --line-min 73 --branch-min 61 --diff-min 90 --scope sidecar/internal/filehistory --scope sidecar/internal/restore --scope sidecar/internal/query --scope sidecar/internal/mutation --scope sidecar/internal/productrpc`：reporter **EXIT0**，line **76.72%（4494/5858）**、branch **63.97%（2296/3589）**、diff **100.00%（13/13）**。没有修改 scope 或门槛；相对新 main 的 authority 生产差分仍是原13行。统计 GREEN 只表明缺少的两行已通过实际错误边界执行，不能抵消上一条完整测试 FAIL，也不能代替 fresh CI。
+
+## 同步 Surface owner 与当前主干（2026-09-10）
+
+从 `c5433519b7c795fe00c0fe907583785642d0af88` 正常合入 main
+`f88e856eea3b830c8f910acc3dbc9eae842eb5d1`。保留 Preset 三方法、Surface 四方法及
+既有 History 恢复闭集；Go 31 方法、Python 71 方法。Host 与 Go 两类领域错误继续逐方法
+验证，generic presets/interfaces 写入口均关闭，真实 Runtime 普通 business gate 与精确
+replay signal 保持。两方固定方法列表和严格断言完整合并；Preset/Surface 自有 fixture
+分别补入另一方具名注册，不从生成 owner 列表构造预期。能力生成物由仓库脚本重生。
+
+证据目录为 `build/qa/preset-surface-main/`：
+
+- `uv run --frozen --no-sync python -m pytest tests/backend/application/test_insights_port_service.py tests/backend/rpc/test_error_registry.py tests/contract/test_product_contracts.py tests/contract/test_product_rpc_capability_policy.py tests/contract/test_product_runtime_inventory.py tests/contract/test_workspace_rpc_capability_manifest.py tests/contract/test_product_e2e_capability_index.py tests/contract/test_preset_python_oracle.py tests/contract/test_surface_python_oracle.py --no-cov -q`：163 PASS，5.12s，`python-contracts.log`。
+- `product_rpc_capability_policy.py --check`、`generate_product_rpc_catalog.py --check`、两套 oracle `--check` 及 `scripts/generate_product_e2e_capability_index.py --check` 全部 EXIT0；Preset 53 例、Surface 78 例原 Python 完整重放一致。命令与结果见 `generation-checks.log`。该原日志后续 Node 检查因自动合并重复 `isDeepStrictEqual` import 而 EXIT1；仅删除重复声明后固定 Node 24.19.0 同一语法检查 EXIT0，`node-check-final.log`。相关三文件 Ruff format/check 通过。
+- `dotnet test desktop/tests/VibeTable.Desktop.Tests/VibeTable.Desktop.Tests.csproj --configuration Release --no-restore --filter 'FullyQualifiedName~HostProductRpcInvokerTests|FullyQualifiedName~ProductRpcCapabilityManifestTests|FullyQualifiedName~ProductRpcRouteSelectorTests|FullyQualifiedName~WebMessageRouterTests|FullyQualifiedName~ProductSidecarHttpGatewayTests|FullyQualifiedName~ProductDataSidecarRoutingTests|FullyQualifiedName~JsonRpcProductSurfaceGatewayTests|FullyQualifiedName~SurfaceBridgeTests' --logger 'trx;LogFileName=host.trx' --results-directory build/qa/preset-surface-main/host --verbosity quiet`：180 PASS / 0 FAIL / 0 skip，364ms，`host.log` 与 `host/host.trx`。
+- 固定 Go 1.27.0，`go test ./internal/metadata ./internal/productrpc ./internal/contracts/productcapabilities ./internal/app ./cmd/vibetable-pb -run 'Test(Preset|Surface|DispatchPreset|Generated|NewRequires|WorkspaceV2WriteBoundary|SidecarWorkspaceV2HTTP)' -count=1`：整体 EXIT1，`go-focused.log`。productrpc/capabilities/cmd 分别 PASS 0.811s/0.274s/1.885s；metadata 与 app 仅三个 TempDir RemoveAll 目录非空清理失败：`TestSurfaceFrozenPythonOracle/same-delete-replay-old-current-rejects`、`TestSurfaceProductRealRuntimeGatePreservesReplayAndRejectsPayloadReuse`、`TestSurfaceProductRealRuntimeGateRejectsStaleScopeAndCancellation`。业务断言未失败，但整组不记为通过，未重跑求绿。
+- 从 14 个受影响既有 app fixture 提取 47 个顶层 Test 名称（`fixture-tests.txt`），加 `TestDashboardCommitUsesBusinessWriteGateAndReturnsTheAppliedReceipt`、`TestMetadataMutationUsesIdempotentBusinessWriteGate`，以 `go test ./internal/app -run '^(上述具名测试以|连接)$' -count=1` 精确执行：PASS 10.220s，`go-fixtures.log`。
+- `go vet ./internal/metadata ./internal/productrpc ./internal/contracts/productcapabilities ./internal/app ./cmd/vibetable-pb` EXIT0，`go-vet.log`；冲突 Go 文件已 gofmt。首次 gofmt 调用遗漏工具目录内的 `go/`，未执行格式化；核实路径后执行成功，不修改工具 pin。
+
+仅运行本次组合直接相关增量验证，未 push、完整 build 或产品 E2E；旧 head CI
+34442929776 的成功不代表本次组合资格。合并提交仍需独立双轴审查与 fresh required。
