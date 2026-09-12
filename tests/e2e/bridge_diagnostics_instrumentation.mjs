@@ -9,6 +9,7 @@ export function installBridgeDiagnosticsInPage() {
     roundTrips: [],
     recentCompleted: [],
     failures: [],
+    inboundRevisions: [],
     diagnosticCursor: 0,
     pending: {},
     workspaceSession: null,
@@ -243,6 +244,31 @@ export function installBridgeDiagnosticsInPage() {
       || message?.ok === false
       || message?.payload?.ok === false;
     if (!request) {
+      // Host-driven dataset/schema notifications decide revision-floor
+      // acceptance in the renderer; record their protocol revisions (same
+      // trust level as request ids) so stale-snapshot loops stay diagnosable.
+      const revisionPayload = message?.payload?.revision;
+      if (typeof message?.type === "string"
+        && (message.type.startsWith("table.")
+          || message.type === "data.changed"
+          || message.type === "realtime.recovered")) {
+        pushBounded(diagnostics.inboundRevisions, {
+          type: message.type,
+          at: new Date().toISOString(),
+          schemaRevision: typeof revisionPayload?.schemaRevision === "string"
+            ? revisionPayload.schemaRevision.slice(0, 64) : null,
+          dataRevision: typeof revisionPayload?.dataRevision === "number"
+            ? revisionPayload.dataRevision
+            : (typeof revisionPayload?.dataRevision === "string"
+              ? revisionPayload.dataRevision.slice(0, 32) : null),
+          sessionTail: typeof revisionPayload?.databaseSessionId === "string"
+            ? revisionPayload.databaseSessionId.slice(-12) : null,
+          columns: Array.isArray(message.payload?.columns)
+            ? message.payload.columns.length : null,
+          table: typeof message.payload?.table === "string"
+            ? message.payload.table.slice(0, 64) : null,
+        });
+      }
       if (isFailure) {
         let completedRequest = null;
         for (let index = diagnostics.recentCompleted.length - 1; index >= 0; index -= 1) {
@@ -328,6 +354,7 @@ export function readBridgeDiagnosticsInPage() {
     })),
     roundTrips: diagnostics.roundTrips,
     failures: diagnostics.failures,
+    inboundRevisions: diagnostics.inboundRevisions,
     acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
     pending: Object.values(diagnostics.pending).map((request) => ({
       requestId: request.requestId,

@@ -2673,6 +2673,8 @@ async function openRelationPairEditor(page, physicalName, reciprocalName) {
       bannerText: [...document.querySelectorAll(".n-alert, .n-result, [role='alert'], .n-drawer")]
         .map((el) => el.textContent?.slice(0, 120))
         .filter(Boolean),
+      inboundRevisions: (window.__vibetableE2EBridgeDiagnostics?.inboundRevisions ?? [])
+        .slice(-15),
     }), physicalName);
     throw new Error(`relation column header not visible: ${JSON.stringify(probe)}`);
   }
