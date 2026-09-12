@@ -28,13 +28,17 @@ from backend.contracts.data_io import (
     ImportPlan,
     TemplateResult,
 )
+from backend.contracts.grid_state import (
+    HostGridStateResult,
+    HostGridStateGetParams,
+    HostGridStateSaveParams,
+)
 from backend.contracts.work_calendar import (
     ReadWorkCalendarParams,
     CommitWorkCalendarParams,
     WorkCalendarResult,
     WorkCalendarReceipt,
 )
-from backend.contracts.grid_state import GridStateResult
 from backend.contracts.generated_workbench import (
     RecordDocumentLinkDeleteRequest,
     RecordDocumentLinkRepairRequest,
@@ -391,6 +395,8 @@ def _registered_models() -> dict[str, type[BaseModel]]:
     # their Python dispatcher registrations are removed.
     result.update(
         {
+            "gridState.get": HostGridStateGetParams,
+            "gridState.save": HostGridStateSaveParams,
             "settings.readWorkCalendar": ReadWorkCalendarParams,
             "settings.commitWorkCalendar": CommitWorkCalendarParams,
             "settings.readDevice": ListCommandsParams,
@@ -607,8 +613,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 ]
             },
         ),
-        "gridState.get": _typed(GridStateResult),
-        "gridState.save": _typed(GridStateResult),
+        "gridState.get": _typed(HostGridStateResult),
+        "gridState.save": _typed(HostGridStateResult),
         "history.applyRestore": _typed(RestoreResult),
         "history.previewRestore": _typed(RestorePreview),
         "history.read": _typed(HistoryPage),

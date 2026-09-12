@@ -3145,8 +3145,8 @@
     },
     {
       "method": "gridState.get",
-      "paramsModel": "GridStateGetParams",
-      "resultModel": "GridStateResult",
+      "paramsModel": "HostGridStateGetParams",
+      "resultModel": "HostGridStateResult",
       "resultSchema": {
         "$defs": {
           "ColumnState": {
@@ -3196,7 +3196,100 @@
             ],
             "type": "object"
           },
-          "GridState": {
+          "FilterCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "contains",
+                  "eq",
+                  "ne",
+                  "starts_with",
+                  "ends_with",
+                  "gt",
+                  "lt",
+                  "gte",
+                  "lte",
+                  "between",
+                  "in",
+                  "is_null",
+                  "is_not_null",
+                  "regex"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/JsonValue",
+                "default": null
+              },
+              "logic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "operator"
+            ],
+            "type": "object"
+          },
+          "FilterGroup": {
+            "additionalProperties": false,
+            "properties": {
+              "groupLogic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              },
+              "logic": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "AND",
+                      "OR"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "filters": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "filters"
+            ],
+            "type": "object"
+          },
+          "HostGridState": {
             "additionalProperties": false,
             "properties": {
               "columns": {
@@ -3208,18 +3301,23 @@
               },
               "sorts": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/$defs/SortCondition"
                 },
                 "maxItems": 16,
                 "type": "array"
               },
               "filters": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
                 },
-                "maxItems": 64,
+                "maxItems": 50,
                 "type": "array"
               },
               "keyword": {
@@ -3257,15 +3355,68 @@
                   }
                 ],
                 "default": null
+              },
+              "presetId": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "presetRevision": {
+                "anyOf": [
+                  {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
+            "type": "object"
+          },
+          "JsonValue": {},
+          "SortCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "direction": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              },
+              "nullsLast": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "field"
+            ],
             "type": "object"
           }
         },
         "additionalProperties": false,
         "properties": {
           "state": {
-            "$ref": "#/$defs/GridState"
+            "$ref": "#/$defs/HostGridState"
           },
           "revision": {
             "type": "string"
@@ -3286,7 +3437,6 @@
         "id": "rpc-019",
         "method": "gridState.get",
         "params": {
-          "databaseId": "00000000-0000-4000-8000-000000000001",
           "table": "sample-value"
         }
       },
@@ -3301,7 +3451,9 @@
             "keyword": null,
             "density": "comfortable",
             "forcedRemote": false,
-            "revision": null
+            "revision": null,
+            "presetId": null,
+            "presetRevision": null
           },
           "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "conflict": false
@@ -3323,8 +3475,8 @@
     },
     {
       "method": "gridState.save",
-      "paramsModel": "GridStateSaveParams",
-      "resultModel": "GridStateResult",
+      "paramsModel": "HostGridStateSaveParams",
+      "resultModel": "HostGridStateResult",
       "resultSchema": {
         "$defs": {
           "ColumnState": {
@@ -3374,7 +3526,100 @@
             ],
             "type": "object"
           },
-          "GridState": {
+          "FilterCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "contains",
+                  "eq",
+                  "ne",
+                  "starts_with",
+                  "ends_with",
+                  "gt",
+                  "lt",
+                  "gte",
+                  "lte",
+                  "between",
+                  "in",
+                  "is_null",
+                  "is_not_null",
+                  "regex"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/JsonValue",
+                "default": null
+              },
+              "logic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "operator"
+            ],
+            "type": "object"
+          },
+          "FilterGroup": {
+            "additionalProperties": false,
+            "properties": {
+              "groupLogic": {
+                "default": "AND",
+                "enum": [
+                  "AND",
+                  "OR"
+                ],
+                "type": "string"
+              },
+              "logic": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "AND",
+                      "OR"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "filters": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "filters"
+            ],
+            "type": "object"
+          },
+          "HostGridState": {
             "additionalProperties": false,
             "properties": {
               "columns": {
@@ -3386,18 +3631,23 @@
               },
               "sorts": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/$defs/SortCondition"
                 },
                 "maxItems": 16,
                 "type": "array"
               },
               "filters": {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/FilterCondition"
+                    },
+                    {
+                      "$ref": "#/$defs/FilterGroup"
+                    }
+                  ]
                 },
-                "maxItems": 64,
+                "maxItems": 50,
                 "type": "array"
               },
               "keyword": {
@@ -3435,15 +3685,68 @@
                   }
                 ],
                 "default": null
+              },
+              "presetId": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "presetRevision": {
+                "anyOf": [
+                  {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
+            "type": "object"
+          },
+          "JsonValue": {},
+          "SortCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "field": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "direction": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              },
+              "nullsLast": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "field"
+            ],
             "type": "object"
           }
         },
         "additionalProperties": false,
         "properties": {
           "state": {
-            "$ref": "#/$defs/GridState"
+            "$ref": "#/$defs/HostGridState"
           },
           "revision": {
             "type": "string"
@@ -3464,7 +3767,6 @@
         "id": "rpc-020",
         "method": "gridState.save",
         "params": {
-          "databaseId": "00000000-0000-4000-8000-000000000001",
           "table": "sample-value",
           "state": {
             "columns": [],
@@ -3473,9 +3775,11 @@
             "keyword": null,
             "density": "comfortable",
             "forcedRemote": false,
-            "revision": null
+            "revision": null,
+            "presetId": null,
+            "presetRevision": null
           },
-          "revision": null
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
       },
       "success": {
@@ -3489,7 +3793,9 @@
             "keyword": null,
             "density": "comfortable",
             "forcedRemote": false,
-            "revision": null
+            "revision": null,
+            "presetId": null,
+            "presetRevision": null
           },
           "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "conflict": false

@@ -23,7 +23,7 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 	if !HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
 		t.Fatal("L3A must route schema.getTable through goSidecar")
 	}
-	for _, method := range []string{"settings.readDevice", "settings.saveDevice"} {
+	for _, method := range []string{"gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"} {
 		if HasCurrentOwnerRPCMethod(PythonBff, method) {
 			t.Fatalf("%s must not remain on pythonBff after L6", method)
 		}
@@ -120,9 +120,10 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		got[39] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
-	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||
-		got[0].Method != "settings.readDevice" || got[1].Method != "settings.saveDevice" {
-		t.Fatalf("wpfHost descriptors = %#v, want settings.readDevice and settings.saveDevice", got)
+	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 4 ||
+		got[0].Method != "gridState.get" || got[1].Method != "gridState.save" ||
+		got[2].Method != "settings.readDevice" || got[3].Method != "settings.saveDevice" {
+		t.Fatalf("wpfHost descriptors = %#v, want gridState.get, gridState.save, settings.readDevice and settings.saveDevice", got)
 	}
 
 	descriptors[0].Method = "mutated"

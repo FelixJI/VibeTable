@@ -127,7 +127,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert snapshot.cancellation == "cooperative"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"
-    } == {"settings.readDevice", "settings.saveDevice"}
+    } == {"gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"}
     device_settings = inventory.require("rpc", "settings.readDevice")
     assert device_settings.group_id == "rpc.device-settings"
     assert device_settings.current_path == ("renderer", "wpfHost")

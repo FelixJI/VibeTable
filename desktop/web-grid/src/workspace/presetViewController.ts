@@ -1,7 +1,8 @@
-import { computed, nextTick, ref, watch, type ComputedRef } from "vue";
+import { computed, nextTick, onScopeDispose, ref, watch, type ComputedRef, type Ref } from "vue";
 
 import type {
   FilterExpression,
+  GridState,
   GroupCondition,
   PresetEntry,
   PresetView,
@@ -14,6 +15,8 @@ import {
   captureDataSourceView,
   type DataSourceViewGridSource,
 } from "@/grid/dataSourceViewState";
+import { reconcileState } from "@/grid/gridState";
+import { createGridPresentationPersistence, type GridPresentationService } from "@/services/gridPresentationService";
 import type { usePresetVersionService } from "@/services/presetVersionService";
 import type { usePresetVersionStore } from "@/stores/presetVersionStore";
 import type { useTableStore } from "@/stores/tableStore";
@@ -29,7 +32,7 @@ type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 type PresetService = ReturnType<typeof usePresetVersionService>;
 
 type PresetStorePort = Pick<PresetStore,
-  | "presets" | "activePresetId" | "loading"
+  | "presets" | "activePresetId" | "loading" | "dirty"
   | "begin" | "receivePresets" | "activatePreset" | "upsertPreset"
   | "fail" | "markSaved" | "markDirty" | "clearPresets" | "removePreset">;
 type ViewQueryPort = Pick<ViewQueryStore,
@@ -37,7 +40,7 @@ type ViewQueryPort = Pick<ViewQueryStore,
   | "search" | "visibleFields" | "toQuery" | "replace" | "reset"
   | "updateRuntime" | "updateDefinition" | "toggleGroup">;
 type TablePort = Pick<TableStore, "allRows" | "schema" | "viewGroups">;
-type UiPort = Pick<UiStore, "density">;
+type UiPort = Pick<UiStore, "density" | "setDensity">;
 type WorkspacePort = Pick<WorkspaceStore, "currentTable">;
 export type PresetServicePort = Pick<PresetService,
   "listPresets" | "savePreset" | "deletePreset">;
@@ -60,6 +63,11 @@ export interface CreatePresetViewRequest {
 }
 
 export type PresetViewIntent =
+  | { readonly type: "presentation.changed" }
+  | { readonly type: "presentation.reload" }
+  | { readonly type: "keyword.changed"; readonly keyword: string }
+  | { readonly type: "density.changed"; readonly density: "compact" | "comfortable" }
+  | { readonly type: "column.frozen"; readonly field: string; readonly frozen: boolean }
   | {
     readonly type: "runtime.changed";
     readonly query: {
@@ -86,6 +94,11 @@ interface FieldOption {
 }
 
 export interface PresetViewController {
+  readonly presentationError: Readonly<Ref<string>>;
+  readonly presentationLoading: ComputedRef<boolean>;
+  readonly frozenFields: ComputedRef<readonly string[]>;
+  restoreGrid(): Promise<void>;
+  flush(): Promise<void>;
   readonly activeView: ComputedRef<PresetView | null>;
   readonly activeKind: ComputedRef<NonNullable<PresetView["kind"]>>;
   readonly projectedRows: ComputedRef<readonly Readonly<Record<string, unknown>>[]>;
@@ -97,6 +110,10 @@ export interface PresetViewController {
 }
 
 export interface PresetViewDependencies {
+  readonly presentation?: {
+    readonly service: GridPresentationService;
+    readonly identity: Readonly<Ref<string | null>>;
+  };
   readonly workspace: WorkspacePort;
   readonly table: TablePort;
   readonly ui: UiPort;
@@ -114,9 +131,25 @@ export function createPresetViewController(
   dependencies: PresetViewDependencies,
 ): PresetViewController {
   const pendingView = ref<PresetView | null>(null);
+  const presentedView = ref<PresetView | null>(null);
+  const presentationError = ref("");
+  let pendingRestore: { view: PresetView; local: GridState | null } | null = null;
+  let initializing = true;
+  let forcedRemote = false;
+  let legacyCozy = false;
   const memoryDefaults = new Map<string, PresetView>();
   let loadGeneration = 0;
   let applying = false;
+  const persistence = dependencies.presentation ? createGridPresentationPersistence(
+    dependencies.presentation.service,
+    () => dependencies.presentation!.identity.value,
+    error => { presentationError.value = error.message; },
+  ) : null;
+  const frozenFields = computed(() => (presentedView.value?.columns ?? [])
+    .filter(column => column.frozen).map(column => column.name));
+  const presentationLoading = computed(() => !!dependencies.workspace.currentTable
+    && (dependencies.presets.loading || !presentedView.value || !!pendingView.value));
+  onScopeDispose(() => { loadGeneration++; persistence?.retire(); });
 
   const activeView = computed(() => dependencies.presets.presets
     .find(item => item.id === dependencies.presets.activePresetId)?.view ?? null);
@@ -143,7 +176,7 @@ export function createPresetViewController(
   function captureTable(isDefault = false): PresetView {
     const captured = captureDataSourceView(
       dependencies.grid.current.value,
-      { isDefault, density: dependencies.ui.density },
+      { isDefault, density: legacyCozy && dependencies.ui.density === "comfortable" ? "cozy" : dependencies.ui.density },
     );
     return {
       ...captured,
@@ -178,6 +211,52 @@ export function createPresetViewController(
     };
   }
 
+  function savePresentation(): void {
+    if (initializing || applying || pendingView.value || !dependencies.workspace.currentTable
+      || !dependencies.grid.current.value || dependencies.grid.current.value.initialized === false) return;
+    const view = captureCurrent();
+    presentedView.value = view;
+    const active = dependencies.presets.presets.find(item => item.id === dependencies.presets.activePresetId);
+    persistence?.save({
+      columns: view.columns ?? [], sorts: view.sorts,
+      filters: cloneFilterExpressions(view.filters), keyword: view.search || null,
+      density: legacyCozy && dependencies.ui.density === "comfortable" ? "cozy" : dependencies.ui.density,
+      forcedRemote,
+      presetId: active?.id ?? null, presetRevision: active?.revision ?? null,
+    });
+  }
+
+  async function restoreGrid(): Promise<void> {
+    const grid = dependencies.grid.current.value;
+    const view = pendingView.value ?? presentedView.value;
+    if (!grid || grid.initialized === false || !view || initializing) return;
+    const generation = loadGeneration;
+    applying = true;
+    try {
+      await applyDataSourceView(grid, view);
+      await nextTick();
+      if (generation === loadGeneration) pendingView.value = null;
+    } catch (error) {
+      if (generation === loadGeneration) presentationError.value = error instanceof Error ? error.message : String(error);
+    } finally { if (generation === loadGeneration) applying = false; }
+  }
+
+  async function restoreLoaded(): Promise<void> {
+    const schema = dependencies.table.schema;
+    if (!schema || !pendingRestore) return;
+    const { view: baseline, local } = pendingRestore;
+    pendingRestore = null;
+    const state = local ? reconcileState(local, schema) : null;
+    const view: PresetView = state ? {
+      ...baseline, columns: state.columns,
+      filters: cloneFilterExpressions(state.filters), sorts: [...state.sorts],
+      search: state.keyword ?? "", density: state.density,
+      visibleFields: [...state.columns.filter(column => column.visible !== false).map(column => column.name), ...state.newlyAdded],
+    } : baseline;
+    initializing = false;
+    await applyView(view);
+  }
+
   function requestAuthoritative(groupOffset = 0): void {
     const table = dependencies.workspace.currentTable;
     if (!table) return;
@@ -188,6 +267,10 @@ export function createPresetViewController(
   async function applyView(view: PresetView): Promise<void> {
     const collection = dependencies.workspace.currentTable;
     if (!collection) return;
+    presentedView.value = view;
+    const generation = loadGeneration;
+    legacyCozy = view.density === "cozy";
+    if (view.density) dependencies.ui.setDensity(view.density === "cozy" ? "comfortable" : view.density);
     dependencies.query.replace(
       collection,
       view,
@@ -198,37 +281,42 @@ export function createPresetViewController(
       requestAuthoritative();
       return;
     }
-    const grid = dependencies.grid.current.value;
-    if (!grid) {
-      pendingView.value = view;
-      return;
-    }
-    pendingView.value = null;
-    applying = true;
-    try {
-      await applyDataSourceView(grid, view);
-      await nextTick();
-    } finally {
-      applying = false;
-    }
+    pendingView.value = view;
+    await restoreGrid();
+    if (generation !== loadGeneration || collection !== dependencies.workspace.currentTable) return;
     requestAuthoritative();
   }
 
-  async function loadCollection(collection: string, preserveActive = false): Promise<void> {
+  async function loadCollection(collection: string, preserveActive = false, restoreLocal = false): Promise<void> {
     const generation = ++loadGeneration;
     const requestedActiveId = preserveActive ? dependencies.presets.activePresetId : null;
     dependencies.presets.begin();
     try {
-      const result = await dependencies.service.listPresets(collection);
+      const [result, local] = await Promise.all([
+        dependencies.service.listPresets(collection),
+        restoreLocal ? persistence?.open(collection) ?? Promise.resolve(null) : Promise.resolve(null),
+      ]);
       if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return;
       dependencies.presets.receivePresets(result);
-      const selected = result.presets.find(view => view.id === requestedActiveId)
+      const selected = result.presets.find(view => view.id === (requestedActiveId ?? local?.presetId))
         ?? result.presets.find(view => view.view.isDefault)
         ?? result.presets[0];
       dependencies.presets.activatePreset(selected?.id ?? null);
-      if (selected) await applyView(selected.view);
-      else if (dependencies.grid.current.value && !memoryDefaults.has(collection)) {
-        memoryDefaults.set(collection, captureCurrent());
+      const baseline = selected?.view ?? memoryDefaults.get(collection) ?? {
+        kind: "table", layout: "table", columns: [], filters: [], sorts: [], search: "",
+        visibleFields: (dependencies.table.schema ?? []).map(column => column.name),
+      };
+      if (restoreLocal) forcedRemote = local?.forcedRemote ?? false;
+      const matches = (local?.presetId ?? null) === (selected?.id ?? null)
+        && (local?.presetRevision ?? null) === (selected?.revision ?? null);
+      if (restoreLocal) {
+        pendingRestore = { view: baseline, local: matches ? local : null };
+        await restoreLoaded();
+      } else {
+        initializing = false;
+        await applyView(baseline);
+        if (generation !== loadGeneration || dependencies.workspace.currentTable !== collection) return;
+        savePresentation();
       }
     } catch (error) {
       if (generation === loadGeneration) {
@@ -267,15 +355,23 @@ export function createPresetViewController(
   async function save(view: PresetEntry): Promise<PresetEntry | null> {
     const collection = dependencies.workspace.currentTable;
     if (!collection || view.collection !== collection) return null;
+    const generation = loadGeneration;
     const saved = await persist(collection, view.name, {
       ...captureCurrent(view.view.isDefault),
       isDefault: view.view.isDefault,
     }, saveTarget(view));
-    if (saved) dependencies.presets.markSaved();
+    if (generation !== loadGeneration || collection !== dependencies.workspace.currentTable) return null;
+    if (saved) {
+      dependencies.presets.markSaved();
+      savePresentation();
+    }
     return saved;
   }
 
   async function setDefault(view: PresetEntry): Promise<void> {
+    const generation = loadGeneration;
+    const stillCurrent = () => generation === loadGeneration
+      && view.collection === dependencies.workspace.currentTable;
     const previous = dependencies.presets.presets.find(
       item => item.view.isDefault && item.id !== view.id,
     );
@@ -283,17 +379,19 @@ export function createPresetViewController(
       ? captureCurrent(true)
       : { ...view.view, isDefault: true };
     const saved = await persist(view.collection, view.name, source, saveTarget(view));
-    if (!saved) return;
+    if (!saved || !stillCurrent()) return;
     if (previous) {
       const demoted = await persist(previous.collection, previous.name, {
         ...previous.view,
         isDefault: false,
       }, saveTarget(previous));
+      if (!stillCurrent()) return;
       if (!demoted && dependencies.workspace.currentTable === view.collection) {
         const compensated = await persist(view.collection, view.name, {
           ...source,
           isDefault: false,
         }, saveTarget(saved));
+        if (!stillCurrent()) return;
         if (!compensated) {
           dependencies.presets.fail(dependencies.defaultCompensationError());
           return;
@@ -308,10 +406,11 @@ export function createPresetViewController(
   watch(
     () => dependencies.table.schema,
     (columns) => {
+      if (pendingRestore) { void restoreLoaded(); return; }
       const collection = dependencies.workspace.currentTable;
       if (!collection || !columns || dependencies.query.visibleFields.length > 0) return;
       const fields = columns.map(column => column.name);
-      if (activeView.value) dependencies.query.replace(collection, activeView.value, fields);
+      if (presentedView.value) dependencies.query.replace(collection, presentedView.value, fields);
       else dependencies.query.reset(collection, fields);
     },
   );
@@ -319,34 +418,91 @@ export function createPresetViewController(
   watch(dependencies.grid.current, (grid) => {
     const collection = dependencies.workspace.currentTable;
     if (!grid || !collection) return;
-    if (pendingView.value) void applyView(pendingView.value);
+    if (pendingView.value) void restoreGrid();
     else if (dependencies.presets.presets.length === 0 && !memoryDefaults.has(collection)) {
       memoryDefaults.set(collection, captureCurrent());
     }
   });
 
   watch(
-    () => dependencies.workspace.currentTable,
-    (collection) => {
+    [() => dependencies.workspace.currentTable, () => dependencies.presentation?.identity.value],
+    ([collection, identity], previous) => {
+      const generation = ++loadGeneration;
+      if (previous?.[1] !== identity) memoryDefaults.clear();
+      persistence?.retire();
+      initializing = true;
+      applying = false;
+      presentationError.value = "";
+      presentedView.value = null;
+      pendingRestore = null;
       pendingView.value = null;
       dependencies.presets.clearPresets(collection ?? "");
       dependencies.query.reset(collection ?? "");
-      if (collection) void loadCollection(collection);
+      void nextTick().then(() => {
+        if (generation !== loadGeneration || !collection) return;
+        if (dependencies.presentation && !dependencies.presentation.identity.value) return;
+        void loadCollection(collection, false, true);
+      });
     },
-    { immediate: true },
+    { immediate: true, flush: "sync" },
   );
+  watch(() => dependencies.ui.density, () => savePresentation());
 
   async function dispatch(intent: PresetViewIntent): Promise<PresetEntry | null | void> {
+    const generation = loadGeneration;
+    const collection = dependencies.workspace.currentTable;
+    const stillCurrent = () => generation === loadGeneration
+      && collection === dependencies.workspace.currentTable;
     switch (intent.type) {
+      case "presentation.changed":
+        if (!applying && !initializing && dependencies.grid.current.value) {
+          dependencies.query.visibleFields = (captureDataSourceView(dependencies.grid.current.value).columns ?? [])
+            .filter(column => column.visible !== false).map(column => column.name);
+        }
+        savePresentation();
+        return;
+      case "presentation.reload": {
+        const collection = dependencies.workspace.currentTable;
+        if (collection) {
+          presentationError.value = "";
+          initializing = true;
+          await loadCollection(collection, true, true);
+        }
+        return;
+      }
+      case "keyword.changed":
+        if (initializing || applying) return;
+        dependencies.query.search = intent.keyword;
+        dependencies.presets.markDirty();
+        requestAuthoritative();
+        savePresentation();
+        return;
+      case "density.changed":
+        if (initializing || applying) return;
+        legacyCozy = false;
+        dependencies.ui.setDensity(intent.density);
+        savePresentation();
+        return;
+      case "column.frozen": {
+        if (initializing || applying) return;
+        const view = captureCurrent();
+        await applyView({ ...view, columns: view.columns?.map(column => column.name === intent.field
+          ? { ...column, frozen: intent.frozen } : column) });
+        if (!stillCurrent()) return;
+        savePresentation();
+        return;
+      }
       case "runtime.changed": {
         const table = dependencies.workspace.currentTable;
-        if (!table || applying) return;
+        if (!table || applying || initializing) return;
         dependencies.query.updateRuntime(intent.query);
         dependencies.presets.markDirty();
         requestAuthoritative();
+        savePresentation();
         return;
       }
       case "definition.changed": {
+        if (initializing || applying) return;
         dependencies.query.updateDefinition(intent.definition);
         dependencies.presets.markDirty();
         const grid = dependencies.grid.current.value;
@@ -354,12 +510,15 @@ export function createPresetViewController(
           applying = true;
           try {
             await applyDataSourceView(grid, captureTable());
+            if (!stillCurrent()) return;
             await nextTick();
           } finally {
-            applying = false;
+            if (stillCurrent()) applying = false;
           }
         }
+        if (!stillCurrent()) return;
         requestAuthoritative();
+        savePresentation();
         return;
       }
       case "groups.loadMore":
@@ -380,9 +539,14 @@ export function createPresetViewController(
         const current = dependencies.presets.presets.find(
           item => item.id === dependencies.presets.activePresetId,
         );
-        if (current && !(await save(current))) return;
+        await persistence?.flush();
+        if (!stillCurrent()) return;
+        if (current && dependencies.presets.dirty && !(await save(current))) return;
+        if (!stillCurrent()) return;
         dependencies.presets.activatePreset(intent.view.id);
         await applyView(intent.view.view);
+        if (!stillCurrent()) return;
+        savePresentation();
         return;
       }
       case "view.create": {
@@ -399,7 +563,11 @@ export function createPresetViewController(
           coverField: intent.request.coverField,
         };
         const saved = await persist(collection, intent.request.name, view);
-        if (saved) dependencies.presets.activatePreset(saved.id);
+        if (!stillCurrent()) return;
+        if (saved) {
+          dependencies.presets.activatePreset(saved.id);
+          savePresentation();
+        }
         return;
       }
       case "view.duplicate": {
@@ -409,9 +577,11 @@ export function createPresetViewController(
           ...intent.view.view,
           isDefault: false,
         });
-        if (!saved) return;
+        if (!saved || !stillCurrent()) return;
         dependencies.presets.activatePreset(saved.id);
         await applyView(saved.view);
+        if (!stillCurrent()) return;
+        savePresentation();
         return;
       }
       case "view.rename": {
@@ -424,7 +594,7 @@ export function createPresetViewController(
           source,
           saveTarget(intent.view),
         );
-        if (saved) dependencies.presets.activatePreset(saved.id);
+        if (saved && stillCurrent()) dependencies.presets.activatePreset(saved.id);
         return;
       }
       case "view.delete": {
@@ -464,6 +634,11 @@ export function createPresetViewController(
   }
 
   return {
+    presentationError,
+    presentationLoading,
+    frozenFields,
+    restoreGrid,
+    flush: () => persistence?.flush() ?? Promise.resolve(),
     activeView,
     activeKind,
     projectedRows,

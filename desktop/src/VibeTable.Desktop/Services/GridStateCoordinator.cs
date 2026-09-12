@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
@@ -40,6 +41,19 @@ public sealed class GridStateCoordinator
 
     /// <summary>Maximum shutdown flush wait (ms).</summary>
     public const int ShutdownFlushTimeoutMs = 2000;
+
+    /// <summary>
+    /// Bounded recovery window for notify-path reads hit by transient
+    /// transport failures (for example a Sidecar generation rebinding).
+    /// Mirrors the workspace selection recovery timeout.
+    /// </summary>
+    private static readonly TimeSpan NotifyRecoveryWindow = TimeSpan.FromSeconds(3);
+
+    /// <summary>Retry delay between notify-path recovery attempts.</summary>
+    private static readonly TimeSpan NotifyRecoveryRetryDelay = TimeSpan.FromMilliseconds(250);
+
+    private static bool IsTransientTransportFailure(Exception exception)
+        => exception is BackendUnavailableException or ObjectDisposedException;
 
     private readonly ITableRpcGateway _gateway;
     private readonly Action<TableNotification> _notify;
@@ -298,77 +312,131 @@ public sealed class GridStateCoordinator
         string table, JsonElement query, int generation, CancellationToken token,
         TaskCompletionSource<TablePage>? completion)
     {
-        try
+        TablePage? page;
+        if (completion is null)
         {
-            token.ThrowIfCancellationRequested();
-            Task<TablePage> windowTask = _gateway.OpenTableCursorRawAsync(table, query, token);
-            TablePage page;
-            if (HasViewAggregates(query))
+            // Notify-path loads own the renderer UI and have no correlated
+            // caller to reject; a transient transport failure (for example a
+            // Sidecar generation rebinding) must recover within the bounded
+            // window instead of flashing operation.failed at the user.
+            page = await TryFetchNotifyPageAsync(table, query, generation, token)
+                .ConfigureAwait(true);
+            if (page is null || IsStale(generation) || token.IsCancellationRequested)
             {
-                Task<TablePage> groupsTask = _gateway.QueryTableViewRawAsync(table, query, token);
-                await Task.WhenAll(windowTask, groupsTask).ConfigureAwait(true);
-                TablePage window = await windowTask.ConfigureAwait(true);
-                TablePage groups = await groupsTask.ConfigureAwait(true);
-                if (!HaveSameQueryRevision(window, groups))
+                return;
+            }
+        }
+        else
+        {
+            try
+            {
+                page = await FetchQueryPageAsync(table, query, token).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                completion.TrySetCanceled(token);
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (IsStale(generation) || token.IsCancellationRequested)
                 {
-                    throw new InvalidOperationException(
-                        "The table changed while loading the cursor and group summary.");
+                    completion.TrySetCanceled(token);
+                    return;
                 }
-                page = window with
-                {
-                    GroupRows = groups.GroupRows,
-                    GroupOffset = groups.GroupOffset,
-                    GroupLimit = groups.GroupLimit,
-                    HasMoreGroups = groups.HasMoreGroups,
-                };
-            }
-            else
-            {
-                page = await windowTask.ConfigureAwait(true);
-            }
-            if (IsStale(generation) || token.IsCancellationRequested)
-            {
-                completion?.TrySetCanceled(token);
-                return;
-            }
-            if (completion is not null)
-            {
-                completion.TrySetResult(page);
-            }
-            else
-            {
-                _notify(new TableNotification
-                {
-                    Type = "table.datasetReady",
-                    Page = page,
-                });
-            }
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        {
-            completion?.TrySetCanceled(token);
-        }
-        catch (Exception ex)
-        {
-            if (IsStale(generation) || token.IsCancellationRequested)
-            {
-                completion?.TrySetCanceled(token);
-                return;
-            }
-            if (completion is not null)
-            {
                 completion.TrySetException(ex);
+                return;
             }
-            else
+            if (IsStale(generation) || token.IsCancellationRequested)
             {
+                completion.TrySetCanceled(token);
+                return;
+            }
+        }
+        if (completion is not null)
+        {
+            completion.TrySetResult(page);
+        }
+        else
+        {
+            _notify(new TableNotification
+            {
+                Type = "table.datasetReady",
+                Page = page,
+            });
+        }
+    }
+
+    /// <summary>
+    /// Runs the notify-path query with a bounded transient recovery window.
+    /// Returns the loaded page, or null when the load was superseded or has
+    /// already surfaced as operation.failed.
+    /// </summary>
+    private async Task<TablePage?> TryFetchNotifyPageAsync(
+        string table, JsonElement query, int generation, CancellationToken token)
+    {
+        DateTimeOffset deadline = _timeProvider.GetUtcNow() + NotifyRecoveryWindow;
+        while (true)
+        {
+            try
+            {
+                return await FetchQueryPageAsync(table, query, token)
+                    .ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                return null;
+            }
+            catch (Exception ex) when (IsTransientTransportFailure(ex)
+                && !IsStale(generation)
+                && !token.IsCancellationRequested
+                && _timeProvider.GetUtcNow() + NotifyRecoveryRetryDelay <= deadline)
+            {
+                await Task.Delay(NotifyRecoveryRetryDelay, _timeProvider, token)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                if (IsStale(generation) || token.IsCancellationRequested)
+                {
+                    return null;
+                }
                 _notify(new TableNotification
                 {
                     Type = "operation.failed",
                     MutationResult = new MutationOutcome(
                         "query", false, MutationErrorMapper.Map(ex), null),
                 });
+                return null;
             }
         }
+    }
+
+    private async Task<TablePage> FetchQueryPageAsync(
+        string table, JsonElement query, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        Task<TablePage> windowTask = _gateway.OpenTableCursorRawAsync(table, query, token);
+        if (!HasViewAggregates(query))
+        {
+            return await windowTask.ConfigureAwait(true);
+        }
+        Task<TablePage> groupsTask = _gateway.QueryTableViewRawAsync(table, query, token);
+        await Task.WhenAll(windowTask, groupsTask).ConfigureAwait(true);
+        TablePage window = await windowTask.ConfigureAwait(true);
+        TablePage groups = await groupsTask.ConfigureAwait(true);
+        if (!HaveSameQueryRevision(window, groups))
+        {
+            throw new InvalidOperationException(
+                "The table changed while loading the cursor and group summary.");
+        }
+        return window with
+        {
+            GroupRows = groups.GroupRows,
+            GroupOffset = groups.GroupOffset,
+            GroupLimit = groups.GroupLimit,
+            HasMoreGroups = groups.HasMoreGroups,
+        };
     }
 
     private async Task FetchNextWindowAsync(
@@ -376,9 +444,9 @@ public sealed class GridStateCoordinator
     {
         try
         {
-            TablePage page = await _gateway.FetchTableCursorAsync(cursor, token)
+            TablePage? page = await TryFetchNotifyWindowAsync(cursor, generation, token)
                 .ConfigureAwait(true);
-            if (IsStale(generation) || token.IsCancellationRequested)
+            if (page is null || IsStale(generation) || token.IsCancellationRequested)
             {
                 return;
             }
@@ -392,21 +460,55 @@ public sealed class GridStateCoordinator
         {
             // Superseded query.
         }
-        catch (Exception ex)
+        finally
         {
-            if (!IsStale(generation))
+            _cursorFetchInFlight = false;
+        }
+    }
+
+    /// <summary>
+    /// Runs the notify-path cursor window fetch with the same bounded transient
+    /// recovery window as <see cref="TryFetchNotifyPageAsync"/>. Returns the
+    /// loaded page, or null when the fetch was superseded or has already
+    /// surfaced as operation.failed.
+    /// </summary>
+    private async Task<TablePage?> TryFetchNotifyWindowAsync(
+        string cursor, int generation, CancellationToken token)
+    {
+        DateTimeOffset deadline = _timeProvider.GetUtcNow() + NotifyRecoveryWindow;
+        while (true)
+        {
+            try
             {
+                return await _gateway.FetchTableCursorAsync(cursor, token)
+                    .ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsTransientTransportFailure(ex)
+                && !IsStale(generation)
+                && !token.IsCancellationRequested
+                && _timeProvider.GetUtcNow() + NotifyRecoveryRetryDelay <= deadline)
+            {
+                await Task.Delay(NotifyRecoveryRetryDelay, _timeProvider, token)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                if (IsStale(generation) || token.IsCancellationRequested)
+                {
+                    return null;
+                }
                 _notify(new TableNotification
                 {
                     Type = "operation.failed",
                     MutationResult = new MutationOutcome(
                         "query.cursor", false, MutationErrorMapper.Map(ex), null),
                 });
+                return null;
             }
-        }
-        finally
-        {
-            _cursorFetchInFlight = false;
         }
     }
 

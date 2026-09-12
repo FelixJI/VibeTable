@@ -527,7 +527,9 @@ export interface ColumnState {
 export interface GridState {
   readonly columns?: readonly ColumnState[];
   readonly sorts?: readonly SortCondition[];
-  readonly filters?: readonly FilterCondition[];
+  readonly filters?: readonly FilterExpression[];
+  readonly presetId?: string | null;
+  readonly presetRevision?: string | null;
   readonly keyword?: string | null;
   readonly density?: "compact" | "comfortable" | "cozy";
   readonly forcedRemote?: boolean;
@@ -1427,6 +1429,8 @@ export type WebMessageType =
   | "table.queryRequested"
   | "table.cursorRequested"
   | "gridState.saveRequested"
+  | "gridState.get"
+  | "gridState.save"
   // B2 paste preview + apply requests.
   | "table.previewPasteRequested"
   | "table.applyPasteRequested"
@@ -1489,6 +1493,8 @@ export type WebMessageType =
  * Unknown inbound types are dropped after a diagnostic callback.
  */
 export type HostMessageType =
+  | "gridState.get"
+  | "gridState.save"
   | "host.startupStateChanged"
   | "database.opened"
   | "database.openCancelled"
@@ -1810,6 +1816,8 @@ export interface BridgeMessage<P = unknown> {
 
 /** Map of (inbound) message type -> resolved payload type, for typed handlers. */
 export interface HostPayloadMap {
+  "gridState.get": GridStateResult;
+  "gridState.save": GridStateResult;
   "host.startupStateChanged": StartupStatePayload;
   "database.opened": DatabaseOpenedPayload;
   "database.openCancelled": { readonly openId: string; readonly reason: string };
@@ -2055,6 +2063,8 @@ export interface WebPayloadMap {
   "table.queryRequested": TableQueryRequestedPayload;
   "table.cursorRequested": TableCursorRequestedPayload;
   "gridState.saveRequested": GridStateSaveRequestedPayload;
+  "gridState.get": { readonly table: string };
+  "gridState.save": { readonly table: string; readonly state: GridState; readonly revision: string };
   // B2 paste preview + apply requests.
   "table.previewPasteRequested": PreviewPasteRequestedPayload;
   "table.applyPasteRequested": ApplyPasteRequestedPayload;

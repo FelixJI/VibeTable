@@ -20,7 +20,6 @@ from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMeta
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.grid_state_service import GridStateService
 from backend.application.insights_service import InsightsService
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
@@ -35,7 +34,6 @@ from backend.contracts.data_io import (
     GenerateTemplateParams,
     PreviewImportParams,
 )
-from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
 from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
@@ -326,9 +324,6 @@ async def _build_server() -> tuple[
         SystemService(lambda: dispatcher.registered_methods).handshake,
         HandshakeParams,
     )
-    grid = GridStateService()
-    dispatcher.register("gridState.get", grid.get, GridStateGetParams)
-    dispatcher.register("gridState.save", grid.save, GridStateSaveParams)
 
     register_application_errors(ErrorDomain.PATH_GRANT)
     task_service = build_task_service(notification_sink=notify_task_status)

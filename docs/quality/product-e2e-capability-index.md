@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：31
-- 唯一能力：50
-- 场景—能力关联：66
+- 场景：32
+- 唯一能力：51
+- 场景—能力关联：67
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -34,6 +34,7 @@
 | `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
 | `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
+| `grid.state` | <code>33-host-grid-presentation</code>（Host 网格呈现保存与恢复） |
 | `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
@@ -101,4 +102,5 @@
 | <code>30-query-snapshot-validation</code> | 查询快照只读校验 | 真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。 | `schema.query` |
 | <code>31-relation-pair-inspection</code> | 关系完整性只读分页检查 | 通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。 | `relation.integrity-inspection` |
 | <code>32-shared-work-calendar</code> | 工作区共享工作日历 | 通过真实设置页保存工作区假日，首页和实际网格日期编辑器显示相同已确认规则；创建并打开B证明隔离，再正常重开A证明PB持久化，清除规则仍推进revision。S24目录副本消费证据待独立实现合入后追加。 | `workspace.calendar` |
+| <code>33-host-grid-presentation</code> | Host 网格呈现保存与恢复 | 第一真实 Host 通过关键词、密度、列宽拖动、排序、冻结、隐藏和完整 OR/空值过滤控件保存，经正常退出后第二真实 Host 使用相同 local-data 与 workspace UUID 从既有工作区卡片选择原表；两阶段分别保留 CDP、control、readiness 和 lifecycle 证据，并由 Host get 与真实 UI 核对完整呈现状态恢复。 | `grid.state` |
 | <code>34-relation-lookup-data-io</code> | Relation 导入与 Lookup 文本导出 | 复用固定 corpus，通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。当前 UI 尚无匹配配置和 Lookup 导出选列，本场景验证打包协议。 | `relation.import`、`lookup.export` |

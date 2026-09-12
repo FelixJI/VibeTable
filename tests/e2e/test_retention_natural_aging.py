@@ -116,6 +116,44 @@ def test_resume_state_accepts_real_snapshot_uuids(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "mismatch", ["unapproved-root", "registry-other-root", "duplicate-registry", "manifest-id"]
+)
+def test_resume_state_rejects_unbound_workspace_roots(tmp_path: Path, mismatch: str) -> None:
+    now = datetime(2026, 9, 3, 12, tzinfo=UTC)
+    state = _write_state(tmp_path, not_before=now)
+    payload = json.loads(state.read_text(encoding="utf-8"))
+    workspace = Path(payload["workspaceRoot"])
+    registry = Path(payload["localData"]) / "VibeTable" / "shell" / "workspace-registry-v2.json"
+    registration = json.loads(registry.read_text(encoding="utf-8"))
+    if mismatch in {"unapproved-root", "registry-other-root"}:
+        other = (
+            tmp_path / "unapproved"
+            if mismatch == "unapproved-root"
+            else Path(payload["localData"]) / "workspaces" / payload["workspaceId"]
+        )
+        (other / ".vibetable").mkdir(parents=True)
+        (other / ".vibetable" / "workspace.json").write_text(
+            json.dumps({"workspaceId": payload["workspaceId"]}), encoding="utf-8"
+        )
+        registration["workspaces"][0]["selectedRoot"] = str(other)
+        if mismatch == "unapproved-root":
+            payload["workspaceRoot"] = str(other)
+    elif mismatch == "duplicate-registry":
+        registration["workspaces"].append(registration["workspaces"][0].copy())
+    else:
+        (workspace / ".vibetable" / "workspace.json").write_text(
+            json.dumps({"workspaceId": "44444444-4444-4444-8444-444444444444"}), encoding="utf-8"
+        )
+    registry.write_text(json.dumps(registration), encoding="utf-8")
+    state.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        retention_natural_aging.NaturalAgingStateError, match=r"workspace (root|identity)"
+    ):
+        retention_natural_aging.load_resume_state(state, _audit(), now=now)
+
+
 def _run_resume_navigation_contract() -> dict[str, object]:
     workspace_id = "11111111-1111-4111-8111-111111111111"
     source = product_e2e_runner.NODE_RUNNER.read_text(encoding="utf-8")
@@ -459,23 +497,29 @@ def test_cli_rejects_nonisolated_attempt_state_before_audit_or_launch(
     assert launched is False
 
 
+@pytest.mark.parametrize("managed_workspace", [False, True], ids=["picker", "managed"])
 def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, managed_workspace: bool
 ) -> None:
     state = tmp_path / "state.json"
     workspace = tmp_path / "workspace"
     local_data = tmp_path / "host" / "local-data"
+    created_workspace = (
+        local_data / "workspaces" / "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        if managed_workspace
+        else workspace
+    )
 
     monkeypatch.setattr(product_e2e_runner.sys, "platform", "win32")
     monkeypatch.setattr(product_e2e_runner, "ensure_node", lambda _root: "node")
 
     def run_shared_scenario(_scenario: object, **kwargs: object) -> dict[str, object]:
-        context = kwargs["natural_aging"]
-        assert isinstance(context, product_e2e_runner._NaturalAgingRun)
+        context = kwargs["persistent_run"]
+        assert isinstance(context, product_e2e_runner._PersistentScenarioRun)
         assert context.workspace_root == workspace
         assert context.workspace_root.is_dir()
-        (workspace / ".vibetable").mkdir(parents=True)
-        (workspace / ".vibetable" / "workspace.json").write_text(
+        (created_workspace / ".vibetable").mkdir(parents=True)
+        (created_workspace / ".vibetable" / "workspace.json").write_text(
             json.dumps({"workspaceId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}), encoding="utf-8"
         )
         registry = local_data / "VibeTable" / "shell" / "workspace-registry-v2.json"
@@ -486,7 +530,7 @@ def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
                     "workspaces": [
                         {
                             "workspaceId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-                            "selectedRoot": str(workspace),
+                            "selectedRoot": str(created_workspace),
                         }
                     ]
                 }
@@ -514,6 +558,7 @@ def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
     assert result["status"] == "passed"
     persisted = json.loads(state.read_text(encoding="utf-8"))
     assert persisted["workspaceId"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert Path(persisted["workspaceRoot"]) == created_workspace
     assert datetime.fromisoformat(persisted["notBefore"]) >= (
         datetime.fromisoformat(persisted["completedAt"]) + timedelta(hours=24)
     )
@@ -522,6 +567,30 @@ def test_seed_persists_state_only_after_the_shared_lifecycle_passes(
     assert report["status"] == "passed"
     assert report["packageAudit"] == _audit()
     assert report["scenarios"][0]["lifecycle"] == {"status": "passed"}
+
+    assert (
+        retention_natural_aging.load_resume_state(
+            state, _audit(), now=datetime.fromisoformat(persisted["notBefore"])
+        )
+        == persisted
+    )
+
+    def resume_shared_scenario(_scenario: object, **kwargs: object) -> dict[str, object]:
+        context = kwargs["persistent_run"]
+        assert isinstance(context, product_e2e_runner._PersistentScenarioRun)
+        assert context.phase == "resume"
+        assert context.workspace_root == created_workspace
+        return {"status": "passed", "lifecycle": {"status": "passed"}}
+
+    monkeypatch.setattr(product_e2e_runner, "run_scenario", resume_shared_scenario)
+    resumed = product_e2e_runner.run_natural_aging_phase(
+        phase="resume",
+        state_path=state,
+        package_root=tmp_path / "package",
+        evidence_root=tmp_path / "evidence",
+        package_audit=_audit(),
+    )
+    assert resumed["status"] == "passed"
 
 
 def test_seed_lifecycle_failure_writes_failed_report_without_state(

@@ -16,7 +16,7 @@ public sealed record ColumnState(
 
 /// <summary>
 /// The full persisted grid state for one table. Mirrors
-/// <c>backend.contracts.grid_state.GridState</c>:
+/// <c>backend.contracts.grid_state.HostGridState</c>:
 /// <c>{"columns":[...],"sorts":[...],"filters":[...],"keyword","density","forcedRemote","revision"}</c>.
 /// </summary>
 /// <remarks>
@@ -26,15 +26,17 @@ public sealed record ColumnState(
 public sealed record GridState(
     IReadOnlyList<ColumnState>? Columns = null,
     IReadOnlyList<SortCondition>? Sorts = null,
-    IReadOnlyList<FilterCondition>? Filters = null,
+    IReadOnlyList<FilterExpression>? Filters = null,
     string? Keyword = null,
     string Density = "comfortable",
     bool ForcedRemote = false,
-    string? Revision = null);
+    string? Revision = null,
+    string? PresetId = null,
+    string? PresetRevision = null);
 
 /// <summary>
 /// Result of <c>gridState.get</c> / <c>gridState.save</c>. Mirrors
-/// <c>backend.contracts.grid_state.GridStateResult</c>:
+/// <c>backend.contracts.grid_state.HostGridStateResult</c>:
 /// <c>{"state":{...},"revision","conflict"}</c>.
 /// </summary>
 public sealed record GridStateResult(

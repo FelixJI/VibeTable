@@ -95,6 +95,7 @@
     ".md",
     ".mjs",
     ".mod",
+    ".patch",
     ".png",
     ".props",
     ".ps1",

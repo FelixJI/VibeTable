@@ -14,3 +14,8 @@ import type { TabulatorFull } from "tabulator-tables";
 
 export const TABULATOR_INJECTION_KEY: InjectionKey<Ref<TabulatorFull | null>> =
   Symbol("tabulator");
+
+export const GRID_PRESENTATION_KEY: InjectionKey<{
+  restoreGrid(): Promise<void>;
+  changed(): void;
+}> = Symbol("grid-presentation");

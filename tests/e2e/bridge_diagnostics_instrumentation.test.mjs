@@ -244,6 +244,113 @@ test("drops code and operation names outside the protocol diagnostic catalog", (
   }
 });
 
+test("records host-driven dataset notification revisions", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    listeners[0]({
+      data: {
+        type: "table.datasetReady",
+        requestId: null,
+        payload: {
+          table: "articles",
+          columns: [{ name: "id" }, { name: "region" }],
+          revision: {
+            databaseSessionId: "session-abcdef123456",
+            schemaRevision: "rev-11",
+            dataRevision: 42,
+          },
+        },
+      },
+    });
+    listeners[0]({
+      data: { type: "dashboard.listLoaded", requestId: null, payload: {} },
+    });
+
+    const revisions = readBridgeDiagnosticsInPage().inboundRevisions;
+    assert.equal(revisions.length, 1);
+    assert.equal(revisions[0].type, "table.datasetReady");
+    assert.equal(revisions[0].schemaRevision, "rev-11");
+    assert.equal(revisions[0].dataRevision, 42);
+    assert.equal(revisions[0].sessionTail, "abcdef123456");
+    assert.equal(revisions[0].columns, 2);
+    assert.equal(revisions[0].table, "articles");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("retains realtime.stopped notification with bounded host failure detail", () => {  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
+          operation: "realtime.stream",
+          code: "realtime.stopped",
+          message: "Live updates stopped. Close and reopen the workspace.",
+          detail: "HttpRequestException",
+        },
+      },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
+          message: "The host Product RPC binding is no longer current.",
+          mutationResult: {
+            kind: "query.cursor",
+            success: false,
+            error: { kind: "backend_unavailable" },
+          },
+        },
+      },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
+          code: "realtime.stopped",
+          detail: "x".repeat(65),
+        },
+      },
+    });
+
+    const [bounded, mutation, oversized] = readBridgeDiagnosticsInPage().failures;
+    assert.equal(bounded.code, "realtime.stopped");
+    assert.equal(bounded.detail, "HttpRequestException");
+    assert.equal(bounded.operation, null);
+    assert.equal(mutation.messageLength, 50);
+    assert.equal(mutation.messagePreview, undefined);
+    assert.equal(
+      JSON.stringify(mutation).includes("no longer current"),
+      false,
+    );
+    assert.equal(mutation.mutationKind, "query.cursor");
+    assert.equal(oversized.detail, null);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 test("retains closed renderer capability rejection codes", () => {
   const listeners = [];
   const webview = {

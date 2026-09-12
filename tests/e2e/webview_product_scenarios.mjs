@@ -2654,7 +2654,30 @@ async function rejectPublicRelationCascade(page, recorder, tableId, fieldId) {
 
 async function openRelationPairEditor(page, physicalName, reciprocalName) {
   const header = page.locator(`.tabulator-col[tabulator-field="${physicalName}"]`);
-  await header.waitFor({ state: "visible", timeout: 30_000 });
+  try {
+    await header.waitFor({ state: "visible", timeout: 30_000 });
+  } catch (error) {
+    // Bounded DOM probe so a header timeout reports which columns actually
+    // rendered instead of only the absent locator.
+    const probe = await page.evaluate((field) => ({
+      expectedField: field,
+      headerFields: [...document.querySelectorAll(".tabulator-col[tabulator-field]")]
+        .map((el) => el.getAttribute("tabulator-field")),
+      headerCount: document.querySelectorAll(".tabulator-col").length,
+      cellFields: [...new Set([...document.querySelectorAll(".tabulator-cell[tabulator-field]")]
+        .map((el) => el.getAttribute("tabulator-field")))],
+      activeTables: [...document.querySelectorAll('[data-testid="sidebar-table-name"]')]
+        .filter((el) => el.getAttribute("aria-selected") === "true"
+          || el.classList.contains("active"))
+        .map((el) => el.textContent),
+      bannerText: [...document.querySelectorAll(".n-alert, .n-result, [role='alert'], .n-drawer")]
+        .map((el) => el.textContent?.slice(0, 120))
+        .filter(Boolean),
+      inboundRevisions: (window.__vibetableE2EBridgeDiagnostics?.inboundRevisions ?? [])
+        .slice(-15),
+    }), physicalName);
+    throw new Error(`relation column header not visible: ${JSON.stringify(probe)}`);
+  }
   await header.locator(".tabulator-col-title").click({ button: "right" });
   await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
   await page.getByTestId("relation-reciprocal-name").waitFor({ state: "visible", timeout: 30_000 });
@@ -5255,6 +5278,358 @@ async function scenario12(page, recorder, _network, runtime) {
   });
 }
 
+async function scenario33(page, recorder) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const tableId = await createEmptyTable(page, "E2E Host Presentation");
+  const title = await createV2Field(page, tableId, "Title", "text");
+  const status = await createV2Field(page, tableId, "Status", "text");
+  const first = await createV2Field(page, tableId, "First", "text");
+  const second = await createV2Field(page, tableId, "Second", "text");
+  await closeFieldSettingsDrawer(page);
+  await applyProductMutation(page, tableId, [{ kind: "insert", recordId: null,
+    values: { [title.physicalName]: "preserved", [status.physicalName]: "open",
+      [first.physicalName]: "first", [second.physicalName]: "second" } }], "presentation-seed");
+  await createEmptyTable(page, "E2E Other Presentation");
+  await closeFieldSettingsDrawer(page);
+  await selectTable(page, "E2E Host Presentation");
+  const controls = page.getByTestId("view-query-controls");
+  await controls.waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => document.querySelector('[data-testid="view-query-controls"]')?.getAttribute("aria-busy") === "false");
+  const original = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("real Host presentation read returns a correlated CAS result",
+    original.type === "gridState.get" && typeof original.payload?.revision === "string", original);
+
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await fillNInput(page, "view-keyword", "preserved");
+  const keyword = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("typing a keyword persists through the real Host response gate",
+    keyword.type === "gridState.save" && keyword.payload?.state?.keyword === "preserved"
+      && !keyword.payload?.conflict, keyword);
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await selectVisibleNOption(page, "view-density", "紧凑");
+  const density = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("the real density control persists compact presentation",
+    density.type === "gridState.save" && density.payload?.state?.density === "compact", density);
+
+  await page.getByTestId("view-filter-trigger").click();
+  const filterPanel = page.locator(".control-card--wide:visible");
+  for (const [index, label, value] of [[0, "Title", "preserved"], [1, "Status", ""]]) {
+    await filterPanel.getByRole("button", { name: "＋ 条件", exact: true }).click();
+    const node = filterPanel.locator(".filter-node").nth(index);
+    await node.locator(".field-select .n-base-selection").click();
+    await page.locator(".n-base-select-option:visible").filter({ hasText: new RegExp(`^${label}$`) }).click();
+    await node.locator(".operator-select .n-base-selection").click();
+    await page.locator(".n-base-select-option:visible").filter({ hasText: /^等于$/ }).click();
+    await node.locator(".value-input input").fill(value);
+  }
+  await filterPanel.locator(".joiner-select .n-base-selection").click();
+  await page.locator(".n-base-select-option:visible").filter({ hasText: /^或$/ }).click();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.getByTestId("view-filter-apply").click();
+  const filtered = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("the real filter editor persists OR and an explicit empty equality",
+    filtered.payload?.state?.filters?.length === 2
+      && filtered.payload.state.filters[1].logic === "OR"
+      && filtered.payload.state.filters[1].operator === "eq"
+      && filtered.payload.state.filters[1].value === "", filtered);
+  await page.getByTestId("view-filter-trigger").click();
+  await filterPanel.waitFor({ state: "hidden" });
+  const header = page.locator(`.tabulator-col[tabulator-field="${title.physicalName}"]`).first();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await header.locator(".tabulator-col-title").click();
+  const sorted = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("real sorting preserves the full filter expression when grid events return",
+    sorted.payload?.state?.sorts?.some(sort => sort.field === title.physicalName)
+      && sorted.payload?.state?.filters?.[1]?.logic === "OR"
+      && sorted.payload?.state?.filters?.[1]?.value === "", sorted);
+  const resize = page.locator(`.tabulator-col[tabulator-field="${title.physicalName}"] + .tabulator-col-resize-handle`).first();
+  const before = await header.boundingBox();
+  const handle = await resize.boundingBox();
+  if (!before || !handle) throw new Error("visible column resize handle unavailable");
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + handle.width / 2 + 64, handle.y + handle.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const resized = await waitForCapturedBridgeMessage(page, 30_000);
+  const width = resized.payload?.state?.columns?.find(column => column.name === title.physicalName)?.width;
+  recorder.check("dragging the actual header persists its changed width",
+    resized.type === "gridState.save" && Number.isFinite(width) && width > before.width + 30,
+    { before: before.width, width });
+  const firstHeader = page.locator(`.tabulator-col[tabulator-field="${first.physicalName}"]`).first();
+  const secondHeader = page.locator(`.tabulator-col[tabulator-field="${second.physicalName}"]`).first();
+  const holder = await page.locator(".tabulator-tableholder").boundingBox();
+  const secondBeforeScroll = await secondHeader.boundingBox();
+  if (!holder || !secondBeforeScroll) throw new Error("column move viewport unavailable");
+  const visibleDropTarget = async () => {
+    const target = await secondHeader.boundingBox();
+    if (!target) throw new Error("visible column move target unavailable");
+    const viewport = await page.locator(".tabulator-tableholder").evaluate(body => {
+      const bounds = body.getBoundingClientRect();
+      return { left: bounds.left, right: bounds.left + body.clientWidth };
+    });
+    const overflow = target.x < viewport.left
+      ? target.x - viewport.left - 24
+      : target.x + target.width > viewport.right
+        ? target.x + target.width - viewport.right + 24
+        : 0;
+    if (overflow !== 0) {
+      // Wheel the real body, never the overflow-hidden header. MoveColumns can
+      // reset the body scroll while entering its drag state, so this runs again
+      // after the moving marker appears.
+      await page.mouse.move(holder.x + holder.width / 2, holder.y + 20);
+      await page.mouse.wheel(overflow, 0);
+    }
+    await page.waitForFunction((field) => {
+      const body = document.querySelector(".tabulator-tableholder");
+      const contents = document.querySelector(".tabulator-header-contents");
+      const column = document.querySelector(`.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`);
+      if (!body || !contents || !column) return false;
+      const viewport = body.getBoundingClientRect();
+      const bounds = column.getBoundingClientRect();
+      return bounds.left >= viewport.left && bounds.right <= viewport.left + body.clientWidth
+        && Math.abs(contents.scrollLeft - body.scrollLeft) <= 1;
+    }, second.physicalName);
+    const visibleTarget = await secondHeader.boundingBox();
+    if (!visibleTarget) throw new Error("column move target became unavailable");
+    const dropPoint = { x: visibleTarget.x + visibleTarget.width * 3 / 4, y: visibleTarget.y + 10 };
+    const hitsTarget = await page.evaluate(({ field, point }) => {
+      const targetHeader = document.querySelector(
+        `.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`,
+      );
+      return document.elementFromPoint(point.x, point.y)?.closest(".tabulator-col") === targetHeader;
+    }, {
+      field: second.physicalName,
+      point: dropPoint,
+    });
+    if (!hitsTarget) throw new Error("column move drop point does not hit the target header");
+    return dropPoint;
+  };
+  await visibleDropTarget();
+  const moveSource = await firstHeader.boundingBox();
+  if (!moveSource) throw new Error("visible column move source unavailable");
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.mouse.move(moveSource.x + moveSource.width / 4, moveSource.y + 10);
+  await page.mouse.down();
+  let releasePoint = { x: holder.x + holder.width / 2, y: holder.y + 20 };
+  try {
+    // MoveColumns starts after a held press. Wait for its real drag state,
+    // then re-establish a real body scroll before placing First after Second.
+    await page.locator(`.tabulator-col.tabulator-moving[tabulator-field="${first.physicalName}"]`).waitFor({ state: "visible" });
+    releasePoint = await visibleDropTarget();
+    await page.mouse.move(releasePoint.x, releasePoint.y, { steps: 8 });
+  } finally {
+    await page.mouse.move(releasePoint.x, releasePoint.y);
+    await page.mouse.up();
+  }
+  await page.waitForFunction((field) => !document.querySelector(
+    `.tabulator-col.tabulator-moving[tabulator-field="${field}"], .tabulator-col-placeholder`,
+  ), first.physicalName);
+  const reordered = await waitForCapturedBridgeMessage(page, 30_000);
+  const firstOrder = reordered.payload?.state?.columns?.find(column => column.name === first.physicalName)?.order;
+  const secondOrder = reordered.payload?.state?.columns?.find(column => column.name === second.physicalName)?.order;
+  const visibleOrder = await page.locator(".tabulator-header .tabulator-col[tabulator-field]:visible")
+    .evaluateAll(columns => columns.map(column => column.getAttribute("tabulator-field")));
+  recorder.check("dragging two visible unfrozen headers changes their persisted and DOM order",
+    Number.isInteger(firstOrder) && Number.isInteger(secondOrder) && secondOrder < firstOrder
+      && visibleOrder.includes(second.physicalName) && visibleOrder.includes(first.physicalName)
+      && visibleOrder.indexOf(second.physicalName) < visibleOrder.indexOf(first.physicalName),
+    { firstOrder, secondOrder, visibleOrder });
+  await page.getByTestId("view-hidden-trigger").click();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.getByTestId(`view-freeze-${title.physicalName}`).click();
+  const frozen = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("freezing a visible column persists from the real control",
+    frozen.payload?.state?.columns?.some(column => column.name === title.physicalName && column.frozen), frozen);
+  const statusOption = page.locator(".field-card label").filter({ has: page.locator("span", { hasText: /^Status$/ }) });
+  await statusOption.locator(".n-checkbox").first().click();
+  await beginBridgeMessageCapture(page, ["gridState.save", "operation.failed"]);
+  await page.getByTestId("view-hidden-apply").click();
+  const hidden = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("hiding a column persists without changing the query keyword",
+    hidden.payload?.state?.columns?.some(column => column.name === status.physicalName && !column.visible)
+      && hidden.payload?.state?.keyword === "preserved", hidden);
+
+  await selectTable(page, "E2E Other Presentation");
+  await selectTable(page, "E2E Host Presentation");
+  await page.waitForFunction(() => document.querySelector('[data-testid="view-keyword"] input')?.value === "preserved");
+  recorder.check("switching tables restores the actual keyword and hidden column UI",
+    await page.getByTestId("view-keyword").locator("input").inputValue() === "preserved"
+      && !(await page.locator(`.tabulator-col[tabulator-field="${status.physicalName}"]`).first().isVisible()));
+  const restored = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("table return retains layout and density in the Host authority",
+    restored.payload?.state?.density === "compact"
+      && restored.payload?.state?.columns?.some(column => column.name === title.physicalName && column.frozen && column.width === width), restored);
+  const conflict = await rawBridgeRequest(page, "gridState.save", {
+    table: tableId, state: { ...restored.payload.state, keyword: "stale overwrite" }, revision: original.payload.revision,
+  });
+  recorder.check("a stale CAS cannot overwrite the current UI-authored state",
+    conflict.type === "gridState.save" && conflict.payload?.conflict === true
+      && conflict.payload?.state?.keyword === "preserved", conflict);
+  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-create").click();
+  await page.getByTestId("workspace-flow-modal").locator("input").first().fill("E2E Presentation Isolation");
+  await page.getByTestId("workspace-flow-confirm").click();
+  const target = page.getByTestId("workspace-center").getByRole("button", { name: /E2E Presentation Isolation/ });
+  await target.waitFor({ state: "visible", timeout: 60_000 });
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  await target.click();
+  const opened = await waitForCapturedBridgeMessage(page, 60_000);
+  const targetSession = opened.payload.session;
+  const isolated = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("another real workspace cannot read the first workspace's table presentation",
+    targetSession.workspaceId !== originalSession.workspaceId
+      && isolated.type === "gridState.get" && isolated.payload?.state?.keyword == null
+      && (isolated.payload?.state?.columns?.length ?? 0) === 0, isolated);
+  const returned = await switchWorkspaceByName(page, "E2E Product Workspace", targetSession.sessionEpoch);
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Host Presentation");
+  await page.waitForFunction(() => document.querySelector('[data-testid="view-keyword"] input')?.value === "preserved");
+  const reopened = await rawBridgeRequest(page, "gridState.get", { table: tableId });
+  recorder.check("reopening the original workspace restores the persisted presentation and UI",
+    returned.payload.session.workspaceId === originalSession.workspaceId
+      && returned.payload.session.sessionEpoch > targetSession.sessionEpoch
+      && reopened.payload?.state?.keyword === "preserved" && reopened.payload?.state?.density === "compact"
+      && await page.getByTestId("view-keyword").locator("input").inputValue() === "preserved", reopened);
+  return {
+    workspaceId: originalSession.workspaceId,
+    tableId,
+    fields: { title: title.physicalName, status: status.physicalName,
+      first: first.physicalName, second: second.physicalName },
+    state: reopened.payload.state,
+    revision: reopened.payload.revision,
+  };
+}
+
+async function resumeHostPresentation(page, recorder, statePath) {
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  const session = await activateHostPresentationWorkspace(page, recorder, state.workspaceId);
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Host Presentation");
+  const keyword = page.getByTestId("view-keyword").locator("input");
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="view-keyword"] input')?.value === "preserved",
+    undefined,
+    { timeout: 30_000 },
+  );
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="view-query-controls"]')?.getAttribute("aria-busy") === "false"
+      && document.querySelector(".grid-wrapper")?.getAttribute("aria-busy") === "false",
+    undefined, { timeout: 30_000 });
+  const restored = await rawBridgeRequest(page, "gridState.get", { table: state.tableId });
+  recorder.check("second Host reads the saved authoritative presentation state",
+    restored.type === "gridState.get" && restored.payload?.revision === state.revision
+      && equivalentPresentationState(restored.payload?.state, state.state),
+    { restored: restored.payload, expected: state });
+  const expectedTitle = state.state?.columns?.find(column => column.name === state.fields?.title);
+  const expectedVisibleOrder = state.state.columns.filter(column => column.visible
+    && [state.fields.first, state.fields.second].includes(column.name))
+    .sort((left, right) => left.order - right.order).map(column => column.name);
+  const density = await page.getByTestId("view-density").innerText();
+  const layout = await page.evaluate(() => {
+    const columns = [...document.querySelectorAll(".tabulator-header .tabulator-col[tabulator-field]")]
+      .map(column => {
+        const rect = column.getBoundingClientRect();
+        const style = getComputedStyle(column);
+        return {
+          name: column.getAttribute("tabulator-field"), width: rect.width,
+          visible: rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden",
+          frozen: column.classList.contains("tabulator-frozen"),
+          sort: column.getAttribute("aria-sort"),
+        };
+      });
+    return { columns, compact: document.querySelector(".grid-wrapper")?.classList.contains("density-compact") };
+  });
+  const title = layout.columns.find(column => column.name === state.fields.title);
+  const actualVisibleOrder = layout.columns.filter(column => column.visible
+    && [state.fields.first, state.fields.second].includes(column.name)).map(column => column.name);
+  const expectedSort = state.state.sorts.find(sort => sort.field === state.fields.title);
+  recorder.check("second Host restores actual column width, frozen state, visible order, hidden state, density and sort",
+    title?.visible && title.frozen && Number.isFinite(expectedTitle?.width)
+      // Tabulator writes a numeric CSS px width; browser geometry can be fractional.
+      // Keep the allowance to one CSS pixel, not a percentage of the column width.
+      && Math.abs(title.width - expectedTitle.width) <= 1
+      && expectedVisibleOrder.length === 2
+      && equivalentPresentationState(actualVisibleOrder, expectedVisibleOrder)
+      && layout.columns.filter(column => actualVisibleOrder.includes(column.name)).every(column => !column.frozen)
+      && !(layout.columns.find(column => column.name === state.fields.status)?.visible)
+      && density.includes("紧凑") && layout.compact
+      && ["asc", "desc"].includes(expectedSort?.direction)
+      && title.sort === (expectedSort.direction === "asc" ? "ascending" : "descending"),
+    { layout, expectedTitle, expectedVisibleOrder, actualVisibleOrder, density, expectedSort });
+  await page.getByTestId("view-filter-trigger").click();
+  const filterNodes = page.locator(".control-card--wide:visible .filter-node");
+  const filterUi = await filterNodes.evaluateAll(nodes => nodes.map(node => ({
+    field: node.querySelector(".field-select")?.textContent?.trim(),
+    operator: node.querySelector(".operator-select")?.textContent?.trim(),
+    logic: node.querySelector(".joiner-select")?.textContent?.trim() ?? null,
+    value: node.querySelector(".value-input input")?.value,
+  })));
+  recorder.check("second Host restores the real keyword and OR empty-equality filter UI",
+    await keyword.inputValue() === state.state?.keyword
+      && equivalentPresentationState(filterUi, [
+        { field: "Title", operator: "等于", logic: null, value: "preserved" },
+        { field: "Status", operator: "等于", logic: "或", value: "" },
+      ]),
+    { keyword: await keyword.inputValue(), filterUi });
+  return { workspaceId: session.workspaceId, tableId: state.tableId, state: restored.payload?.state, revision: restored.payload?.revision };
+}
+
+async function activateHostPresentationWorkspace(page, recorder, workspaceId) {
+  const active = () => page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null);
+  const targetTestId = `workspace-delete-${workspaceId}`;
+  const targetSession = page.waitForFunction(
+    (workspaceId) => window.__vibetableE2EBridgeDiagnostics?.workspaceSession?.workspaceId === workspaceId,
+    workspaceId,
+    { timeout: 60_000 },
+  );
+  const targetCard = page.getByTestId(targetTestId);
+  const cardReady = targetCard.waitFor({ state: "visible", timeout: 60_000 }).then(() =>
+    page.waitForFunction(
+      (testId) => {
+        const card = document.querySelector(`[data-testid="${testId}"]`)?.closest(".workspace-card");
+        const button = card?.querySelector("button[aria-label]");
+        return button instanceof HTMLButtonElement && !button.disabled;
+      },
+      targetTestId,
+      { timeout: 60_000 },
+    ),
+  );
+  const activation = await Promise.race([
+    targetSession.then(() => "session"),
+    cardReady.then(() => "card"),
+  ]);
+  let session = await active();
+  if (activation === "card" && session?.workspaceId !== workspaceId) {
+    const opened = await page.evaluate(openNaturalAgingWorkspaceInPage, targetTestId);
+    if (!opened) {
+      // Auto-open can finish after the preceding read, or disable the button
+      // while still pending. Recheck identity, then await the same target wait.
+      session = await active();
+      recorder.check("restarted Host does not substitute another active workspace",
+        session == null || session.workspaceId === workspaceId,
+        { expectedWorkspaceId: workspaceId, opened, session });
+    }
+  }
+  await targetSession;
+  session = await active();
+  recorder.check("restarted Host resumes the seeded workspace UUID",
+    session?.workspaceId === workspaceId, { expected: workspaceId, session });
+  return session;
+}
+
+function equivalentPresentationState(actual, expected) {
+  const normalize = (value) => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object") return Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, normalize(item)]),
+    );
+    return value;
+  };
+  return JSON.stringify(normalize(actual)) === JSON.stringify(normalize(expected));
+}
 async function scenario13(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-settings").click();
@@ -7913,6 +8288,7 @@ const scenarios = {
   "30-query-snapshot-validation": scenario30,
   "31-relation-pair-inspection": scenario31,
   "32-shared-work-calendar": scenario32,
+  "33-host-grid-presentation": scenario33,
   "34-relation-lookup-data-io": (page, recorder, _network, runtime) => runRelationLookupDataIo(
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, applyProductMutation,
@@ -8188,10 +8564,14 @@ async function main() {
     page = await locateProductPage(browser);
     observePage(page);
     await installBridgeDiagnostics(page);
-    const implementation = args["natural-aging-phase"] === "seed"
-      ? (candidate, checks) => seedNaturalRetentionAging(candidate, checks)
-      : args["natural-aging-phase"] === "resume"
-        ? (candidate, checks) => resumeNaturalRetentionAging(candidate, checks, args.state)
+    const implementation = args["persistent-phase"] === "seed"
+      ? (candidate, checks, network, runtime) => args.scenario === "33-host-grid-presentation"
+        ? scenario33(candidate, checks, network, runtime)
+        : seedNaturalRetentionAging(candidate, checks)
+      : args["persistent-phase"] === "resume"
+        ? (candidate, checks) => args.scenario === "33-host-grid-presentation"
+          ? resumeHostPresentation(candidate, checks, args.state)
+          : resumeNaturalRetentionAging(candidate, checks, args.state)
         : scenarios[args.scenario];
     if (implementation) {
       const phaseResult = await implementation(page, recorder, network, {
@@ -8206,7 +8586,7 @@ async function main() {
           });
         },
       });
-      if (phaseResult && args["natural-aging-phase"]) Object.assign(result, phaseResult);
+      if (phaseResult && args["persistent-phase"]) Object.assign(result, phaseResult);
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
     result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);

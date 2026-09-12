@@ -19,8 +19,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "formula.draft.validate",
         "formula.preview",
         "formula.validate",
-        "gridState.get",
-        "gridState.save",
         "path.registerExportTarget",
         "path.registerImportSource",
         "path.requestExportTarget",
@@ -114,6 +112,8 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "settings.readWorkCalendar",
     ),
     "wpfHost": (
+        "gridState.get",
+        "gridState.save",
         "settings.readDevice",
         "settings.saveDevice",
     ),

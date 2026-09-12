@@ -1,4 +1,9 @@
 export const messages: Record<string, string> = {
+  "grid.presentation.search": "Search records",
+  "grid.presentation.freeze": "Freeze",
+  "grid.presentation.density": "Row density",
+  "grid.presentation.error": "Layout not saved",
+  "grid.presentation.reload": "Reload saved layout",
   "grid.formula.updating": "Calculating",
   "grid.formula.failed": "Calculation failed",
   "grid.formula.cancelled": "Calculation cancelled",

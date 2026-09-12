@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { headerFilterConditions } from "@/grid/viewQuery";
 import type {
   FilterExpression,
   GroupCondition,
@@ -19,10 +20,7 @@ export function cloneFilterExpressions(filters: readonly FilterExpression[]): Fi
 }
 
 function mirroredHeaderFilters(filters: readonly FilterExpression[]): FilterExpression[] {
-  if (!filters.every(filter => "field" in filter)) return [];
-  return filters
-    .filter(filter => "field" in filter && filter.operator === "eq")
-    .map(filter => ({ ...filter }));
+  return headerFilterConditions(filters).map(filter => ({ ...filter }));
 }
 
 function sameFilter(left: FilterExpression, right: FilterExpression): boolean {
@@ -82,7 +80,8 @@ export const useViewQueryStore = defineStore("view-query", {
       const saved = view.visibleFields.filter((field) => available.has(field));
       this.visibleFields = allFields.length === 0
         ? [...view.visibleFields]
-        : saved.length > 0 ? saved : [...allFields];
+        : saved.length > 0 || view.columns?.some(column => column.visible === false)
+          ? saved : [...allFields];
     },
     updateRuntime(query: {
       readonly headerFilters: readonly FilterExpression[];
@@ -92,7 +91,10 @@ export const useViewQueryStore = defineStore("view-query", {
       this.filters = withoutManagedHeaderFilters(this.filters, this.headerFilters);
       this.filters.push(...cloneFilterExpressions(query.headerFilters));
       this.headerFilters = cloneFilterExpressions(query.headerFilters);
-      this.sorts = [...query.sorts];
+      this.sorts = query.sorts.map(sort => {
+        const previous = this.sorts.find(item => item.field === sort.field);
+        return previous ? { ...sort, ...previous, direction: sort.direction } : { ...sort };
+      });
       this.groups = [...query.groups].slice(0, 2);
     },
     updateDefinition(input: {
@@ -114,7 +116,7 @@ export const useViewQueryStore = defineStore("view-query", {
     },
     toQuery(groupOffset = 0): TableQuery {
       return {
-        ...(this.search ? { keyword: this.search } : {}),
+        ...(this.search.trim() ? { keyword: this.search.trim() } : {}),
         filters: cloneFilterExpressions(this.filters),
         sorts: [...this.sorts],
         ...(this.groups.length ? { groups: [...this.groups] } : {}),

@@ -184,6 +184,12 @@
   ]
 },
   {
+    "id": "33-host-grid-presentation",
+    "title": "Host 网格呈现保存与恢复",
+    "requirement": "第一真实 Host 通过关键词、密度、列宽拖动、排序、冻结、隐藏和完整 OR/空值过滤控件保存，经正常退出后第二真实 Host 使用相同 local-data 与 workspace UUID 从既有工作区卡片选择原表；两阶段分别保留 CDP、control、readiness 和 lifecycle 证据，并由 Host get 与真实 UI 核对完整呈现状态恢复。",
+    "capabilities": ["grid.state"]
+  },
+  {
     "id": "34-relation-lookup-data-io",
     "title": "Relation 导入与 Lookup 文本导出",
     "requirement": "复用固定 corpus，通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。当前 UI 尚无匹配配置和 Lookup 导出选列，本场景验证打包协议。",

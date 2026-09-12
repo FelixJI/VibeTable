@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import json
 import sqlite3
 import subprocess
@@ -1195,6 +1196,96 @@ def test_missing_owner_cleanup_report_fails_closed() -> None:
         "errors": ["captured CDP owner cleanup returned no report"],
         "status": "failed",
     }
+
+
+@pytest.mark.parametrize(
+    "readiness_json",
+    [
+        None,
+        "{",
+        "[]",
+        "{}",
+        '{"ready": false}',
+        '{"ready": false, "error": null}',
+        '{"ready": false, "error": "  "}',
+        '{"ready": 0, "error": "bad"}',
+        '{"ready": true, "error": "ignored"}',
+    ],
+)
+def test_cdp_wait_keeps_polling_for_pending_or_malformed_readiness(
+    monkeypatch, tmp_path: Path, readiness_json: str | None
+) -> None:
+    if readiness_json is not None:
+        (tmp_path / "vibetable-readiness.json").write_text(readiness_json, encoding="utf-8")
+    calls: list[str] = []
+
+    def urlopen(endpoint, **_kwargs):
+        calls.append(endpoint)
+        if len(calls) == 1:
+            raise OSError("not listening yet")
+        return io.StringIO('{"webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/test"}')
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+    runner._wait_for_cdp(9222, _FakeScope(), readiness_dir=tmp_path)
+    assert calls == ["http://127.0.0.1:9222/json/version"] * 2
+
+
+def test_run_scenario_surfaces_terminal_readiness_before_cdp_timeout(
+    monkeypatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="startup")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}), encoding="utf-8"
+    )
+    scope = _FakeScope(members=(42,))
+    startup_error = "Product runtime startup failed: COMException: 0x80080005"
+    readiness_paths: list[Path] = []
+    cdp_calls: list[str] = []
+    clock = 0.0
+
+    def launch(command, **_kwargs):
+        readiness_dir = Path(command[command.index("--readiness-dir") + 1])
+        readiness_paths.append(readiness_dir / "vibetable-readiness.json")
+        return scope
+
+    def urlopen(endpoint, **_kwargs):
+        cdp_calls.append(endpoint)
+        readiness_paths[0].write_text(
+            json.dumps({"ready": False, "mode": None, "error": startup_error}), encoding="utf-8"
+        )
+        raise OSError("timed out")
+
+    def advance_clock(_seconds):
+        nonlocal clock
+        clock += 1.0
+
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(runner, "CDP_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(runner.time, "sleep", advance_clock)
+    monkeypatch.setattr(runner.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        runner,
+        "_run_node_runner",
+        lambda *_args, **_kwargs: pytest.fail("Node must not run after terminal startup failure"),
+    )
+    result = runner.run_scenario(
+        scenario, package_root=package, evidence_root=tmp_path / "evidence", node="node"
+    )
+    assert result["error"]["code"] == "E2E_INFRASTRUCTURE_FAILED"
+    assert startup_error in result["error"]["message"]
+    assert "CDP endpoint was not ready" not in result["error"]["message"]
+    assert len(cdp_calls) == 1
+    assert cdp_calls[0].endswith("/json/version")
+    assert result["lifecycle"]["normalExitRequested"] is False
+    assert result["lifecycle"]["status"] == "failed"
+    assert result["lifecycle"]["finalCleanup"]["status"] == "passed"
+    assert result["lifecycle"]["finalCleanup"]["remainingPids"] == []
+    assert scope.terminate_calls > 0
 
 
 def test_run_scenario_scope_launch_failure_executes_no_followup_app_logic(
@@ -3141,6 +3232,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),
+        runner.NODE_RUNNER.with_name("host_presentation_restart.test.mjs"),
         runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
     ]
@@ -3423,3 +3515,236 @@ def test_recovery_summary_does_not_claim_unscheduled_recovery() -> None:
         "runs": [],
         "unmeasuredRuns": 0,
     }
+
+
+def test_host_presentation_seed_failure_does_not_launch_resume(monkeypatch, tmp_path: Path) -> None:
+    scenario = runner.Scenario("33-host-grid-presentation", "presentation", "restart")
+    calls: list[object] = []
+
+    def fail_seed(*_args: object, **kwargs: object) -> dict[str, object]:
+        calls.append(kwargs["persistent_run"])
+        return {"status": "failed", "lifecycle": {"status": "failed"}}
+
+    monkeypatch.setattr(runner, "run_scenario", fail_seed)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "HOST_PRESENTATION_SEED_FAILED"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("managed_default", [False, True])
+def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
+    monkeypatch, tmp_path: Path, managed_default: bool
+) -> None:
+    scenario = runner.Scenario("33-host-grid-presentation", "presentation", "restart")
+    workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    calls: list[runner._PersistentScenarioRun] = []
+
+    def two_phases(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent)
+        if persistent.phase == "seed":
+            created_root = (
+                persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+                if managed_default
+                else persistent.workspace_root
+            )
+            manifest = created_root / ".vibetable" / "workspace.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
+            registry = (
+                persistent.readiness_dir
+                / "local-data"
+                / "VibeTable"
+                / "shell"
+                / "workspace-registry-v2.json"
+            )
+            registry.parent.mkdir(parents=True)
+            registry.write_text(
+                json.dumps(
+                    {
+                        "workspaces": [
+                            {
+                                "workspaceId": workspace_id,
+                                "selectedRoot": str(created_root),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "status": "passed",
+                "lifecycle": {"status": "passed"},
+                "workspaceId": workspace_id,
+                "tableId": "table-1",
+                "fields": {"title": "Title", "status": "Status"},
+                "state": {"keyword": "preserved"},
+                "revision": "revision-1",
+            }
+        return {"status": "failed", "lifecycle": {"status": "passed"}}
+
+    monkeypatch.setattr(runner, "run_scenario", two_phases)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["error"]["code"] == "HOST_PRESENTATION_RESUME_FAILED"
+    assert [run.phase for run in calls] == ["seed", "resume"]
+    assert calls[0].readiness_dir == calls[1].readiness_dir
+    expected_root = (
+        calls[0].readiness_dir / "local-data" / "workspaces" / workspace_id
+        if managed_default
+        else calls[0].workspace_root
+    )
+    assert calls[1].workspace_root == expected_root
+    assert json.loads(calls[1].state_path.read_text(encoding="utf-8"))["workspaceRoot"] == str(
+        expected_root
+    )
+    assert calls[0].scenario_dir != calls[1].scenario_dir
+    assert result["phases"]["resume"]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "invalid", ["manifest-id", "registry-id", "outside", "missing", "duplicate"]
+)
+def test_host_presentation_invalid_workspace_does_not_launch_resume(
+    monkeypatch, tmp_path: Path, invalid: str
+) -> None:
+    scenario = runner.Scenario("33-host-grid-presentation", "presentation", "restart")
+    workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    calls: list[str] = []
+
+    def seed(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent.phase)
+        assert persistent.phase == "seed"
+        created_root = persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+        if invalid == "outside":
+            created_root = tmp_path / "unrelated" / workspace_id
+        manifest = created_root / ".vibetable" / "workspace.json"
+        manifest.parent.mkdir(parents=True)
+        if invalid != "missing":
+            manifest.write_text(
+                json.dumps(
+                    {"workspaceId": "other-id" if invalid == "manifest-id" else workspace_id}
+                ),
+                encoding="utf-8",
+            )
+        registry = (
+            persistent.readiness_dir
+            / "local-data"
+            / "VibeTable"
+            / "shell"
+            / "workspace-registry-v2.json"
+        )
+        registry.parent.mkdir(parents=True)
+        entry = {
+            "workspaceId": "other-id" if invalid == "registry-id" else workspace_id,
+            "selectedRoot": str(created_root),
+        }
+        registry.write_text(
+            json.dumps({"workspaces": [entry, entry] if invalid == "duplicate" else [entry]}),
+            encoding="utf-8",
+        )
+        return {
+            "status": "passed",
+            "lifecycle": {"status": "passed"},
+            "workspaceId": workspace_id,
+            "tableId": "table-1",
+            "fields": {},
+            "state": {},
+            "revision": "revision-1",
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", seed)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+    assert result["error"]["code"] == "HOST_PRESENTATION_SEED_INVALID"
+    assert calls == ["seed"]
+    assert not (tmp_path / "evidence" / scenario.id / "persistent" / "seed-state.json").exists()
+
+
+def test_natural_aging_seed_records_the_created_managed_workspace(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    state_path = tmp_path / "persistent" / "seed-state.json"
+    created_root = state_path.parent / "host" / "local-data" / "workspaces" / workspace_id
+
+    def seed(*_args: object, **_kwargs: object) -> dict[str, object]:
+        manifest = created_root / ".vibetable" / "workspace.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
+        registry = (
+            state_path.parent
+            / "host"
+            / "local-data"
+            / "VibeTable"
+            / "shell"
+            / "workspace-registry-v2.json"
+        )
+        registry.parent.mkdir(parents=True)
+        registry.write_text(
+            json.dumps(
+                {"workspaces": [{"workspaceId": workspace_id, "selectedRoot": str(created_root)}]}
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "passed",
+            "workspaceId": workspace_id,
+            "olderSnapshotId": "older",
+            "newerSnapshotId": "newer",
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", seed)
+    monkeypatch.setattr(runner, "ensure_node", lambda _root: Path("node"))
+    monkeypatch.setattr(runner.sys, "platform", "win32")
+    result = runner.run_natural_aging_phase(
+        phase="seed",
+        state_path=state_path,
+        package_root=tmp_path,
+        evidence_root=tmp_path / "evidence",
+        package_audit={"passed": True, "fingerprint": "fixture"},
+    )
+    assert result["status"] == "passed"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["workspaceRoot"] == str(created_root)
+    assert state["workspaceId"] == workspace_id
+
+
+def test_host_presentation_resume_state_comparison_is_structural_and_complete() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    resume = source[
+        source.index("async function resumeHostPresentation") : source.index(
+            "async function scenario13"
+        )
+    ]
+    helper = resume[resume.index("function equivalentPresentationState") :]
+    completed = subprocess.run(
+        [
+            str(ensure_node(runner.ROOT)),
+            "--eval",
+            (
+                f"{helper}\n"
+                "const expected={sorts:[{field:'Title',direction:'asc'}],filters:[{logic:'AND',value:''}],columns:[{name:'Title',order:1,frozen:true}]};\n"
+                "const reorderedKeys={columns:[{frozen:true,order:1,name:'Title'}],filters:[{value:'',logic:'AND'}],sorts:[{direction:'asc',field:'Title'}]};\n"
+                "const changedSort={...reorderedKeys,sorts:[{direction:'desc',field:'Title'}]};\n"
+                "if (!equivalentPresentationState(reorderedKeys, expected) || equivalentPresentationState(changedSort, expected)) process.exit(1);"
+            ),
+        ],
+        cwd=runner.ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "waitForShell" not in resume
