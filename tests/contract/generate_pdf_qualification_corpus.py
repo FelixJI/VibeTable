@@ -4,6 +4,13 @@ import json
 import zlib
 from pathlib import Path
 
+PRODUCER_FIXTURES = (
+    "independent-reportlab-plain.pdf",
+    "independent-reportlab-flate.pdf",
+    "independent-aes-user-password.pdf",
+    "independent-aes-empty-user-password.pdf",
+)
+
 
 def generated_documents() -> dict[str, bytes]:
     samples: dict[str, bytes] = {}
@@ -205,6 +212,141 @@ def generated_documents() -> dict[str, bytes]:
             stream(payload, filter_name),
         ]
         samples[name] = document(operator_objects)
+    large_first = zlib.compress(
+        b"BT /F1 0.001 Tf 10 720 Td " + (b"(" + b"B" * 500 + b") Tj\n") * 4001 + b"ET"
+    )
+    valid_second = zlib.compress(b"BT /F1 12 Tf 72 720 Td (SECOND_PAGE_REACHABLE) Tj ET")
+    invalid_second = valid_second[:-1] + bytes([valid_second[-1] ^ 1])
+    for filename, second in (
+        ("output-limit-later-valid-page.pdf", valid_second),
+        ("output-limit-later-invalid-page.pdf", invalid_second),
+    ):
+        samples[filename] = document(
+            [
+                b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 2000 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>",
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+                stream(large_first, "FlateDecode"),
+                stream(second, "FlateDecode"),
+            ]
+        )
+
+    structure_visible = "A6 STRUCTURE VISIBLE"
+    structure_poison = "A6 UNREACHABLE POISON"
+
+    def structured_xref_document(
+        objects: dict[int, bytes],
+        compressed_objects: dict[int, tuple[int, int]] | None = None,
+        predictor: int | None = None,
+        bad_filter: bool = False,
+    ) -> bytes:
+        data = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        offsets: dict[int, int] = {}
+        for number, body in sorted(objects.items()):
+            offsets[number] = len(data)
+            data.extend(f"{number} 0 obj\n".encode() + body + b"\nendobj\n")
+        compressed_objects = compressed_objects or {}
+        xref_number = max(objects.keys() | compressed_objects.keys()) + 1
+        offsets[xref_number] = len(data)
+        entries = []
+        for number in range(xref_number + 1):
+            if number == 0:
+                entries.append((0, 0, 65535))
+            elif number in compressed_objects:
+                entries.append((2, *compressed_objects[number]))
+            else:
+                entries.append((1, offsets[number], 0))
+        raw = b"".join(
+            bytes([kind]) + address.to_bytes(4, "big") + generation.to_bytes(2, "big")
+            for kind, address, generation in entries
+        )
+        encoded, parameters = raw, b""
+        if predictor == 12:
+            rows, previous = [], bytes(7)
+            for index in range(xref_number + 1):
+                current = raw[index * 7 : (index + 1) * 7]
+                filter_byte = 9 if bad_filter and index == 0 else 2
+                rows.append(
+                    bytes([filter_byte])
+                    + bytes((a - b) % 256 for a, b in zip(current, previous, strict=True))
+                )
+                previous = current
+            encoded = b"".join(rows)
+            parameters = (
+                b" /DecodeParms << /Predictor 12 /Columns 7 /Colors 1 /BitsPerComponent 8 >>"
+            )
+        elif predictor == 1:
+            parameters = (
+                b" /DecodeParms << /Predictor 1 /Columns 7 /Colors 1 /BitsPerComponent 8 >>"
+            )
+        compressed = zlib.compress(encoded)
+        data.extend(
+            f"{xref_number} 0 obj\n<< /Type /XRef /Size {xref_number + 1} /Root 1 0 R /W [1 4 2] /Filter /FlateDecode /Length {len(compressed)}".encode()
+            + parameters
+            + b" >>\nstream\n"
+            + compressed
+            + b"\nendstream\nendobj\n"
+        )
+        data.extend(f"startxref\n{offsets[xref_number]}\n%%EOF\n".encode())
+        return bytes(data)
+
+    catalog = b"<< /Type /Catalog /Pages 2 0 R >>"
+    pages = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+    page = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+    font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    visible = stream(f"BT /F1 12 Tf 72 720 Td ({structure_visible}) Tj ET".encode())
+    poison = stream(f"BT /F1 12 Tf 72 720 Td ({structure_poison}) Tj ET".encode())
+    bodies = [pages, page, font]
+    body_offsets = [0, len(pages) + 1, len(pages) + len(page) + 2]
+    header = (
+        " ".join(
+            f"{number} {offset}" for number, offset in zip((2, 3, 4), body_offsets, strict=True)
+        ).encode()
+        + b" "
+    )
+    object_data = header + b"\n".join(bodies)
+    object_stream_payload = zlib.compress(object_data)
+    object_stream = (
+        f"<< /Type /ObjStm /N 3 /First {len(header)} /Filter /FlateDecode /Length {len(object_stream_payload)} >>\nstream\n".encode()
+        + object_stream_payload
+        + b"\nendstream"
+    )
+    samples["structure-object-stream.pdf"] = structured_xref_document(
+        {1: catalog, 5: visible, 6: object_stream, 7: poison},
+        {2: (6, 0), 3: (6, 1), 4: (6, 2)},
+    )
+    structure_objects = {1: catalog, 2: pages, 3: page, 4: font, 5: visible, 6: poison}
+    samples["structure-predictor12-valid.pdf"] = structured_xref_document(
+        structure_objects, predictor=12
+    )
+    samples["structure-predictor12-bad-filter.pdf"] = structured_xref_document(
+        structure_objects, predictor=12, bad_filter=True
+    )
+    samples["structure-predictor1-identity.pdf"] = structured_xref_document(
+        structure_objects, predictor=1
+    )
+    depth = 64
+    leaf, font_number, content_number = depth + 2, depth + 3, depth + 4
+    page_tree = [catalog]
+    for number in range(2, leaf):
+        parent = f" /Parent {number - 1} 0 R" if number > 2 else ""
+        page_tree.append(f"<< /Type /Pages /Kids [{number + 1} 0 R] /Count 1{parent} >>".encode())
+    page_tree.extend(
+        [
+            f"<< /Type /Page /Parent {leaf - 1} 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font_number} 0 R >> >> /Contents {content_number} 0 R >>".encode(),
+            font,
+            visible,
+            poison,
+        ]
+    )
+    samples["structure-deep-page-tree.pdf"] = document(page_tree)
+    cyclic_tree = list(page_tree)
+    cyclic_tree[leaf - 2] = cyclic_tree[leaf - 2].replace(
+        f"/Kids [{leaf} 0 R]".encode(), b"/Kids [2 0 R]"
+    )
+    samples["structure-cyclic-page-tree.pdf"] = document(cyclic_tree)
     return samples
 
 
@@ -215,6 +357,12 @@ def main() -> None:
         (Path(__file__).with_name("pdf_qualification_corpus.json")).read_text(encoding="utf-8")
     )
     samples = generated_documents()
+    fixture_root = Path(__file__).with_name("pdf_producer_fixtures")
+    for name in PRODUCER_FIXTURES:
+        fixture = fixture_root / name
+        if not fixture.is_file():
+            raise ValueError(f"missing committed producer fixture: {fixture}")
+        samples[name] = fixture.read_bytes()
     if len(manifest["cases"]) != len(samples) or set(samples) != {
         case["file"] for case in manifest["cases"]
     }:
