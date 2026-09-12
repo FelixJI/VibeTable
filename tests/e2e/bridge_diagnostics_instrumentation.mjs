@@ -90,6 +90,7 @@ export function installBridgeDiagnosticsInPage() {
     "DOCUMENT_LIST_FAILED",
     "DOCUMENT_LIST_INVALID",
     "PRODUCT_DATA_FAILED",
+    "realtime.stopped",
     "SCHEMA_LIFECYCLE_CANCELLED",
     "SCHEMA_LIFECYCLE_TIMEOUT",
     "UNKNOWN_TYPE",
@@ -109,6 +110,14 @@ export function installBridgeDiagnosticsInPage() {
     "workspace.session_stale",
   ]);
   const stableCode = (value) => diagnosticCodes.has(value) ? value : null;
+  // Bounded host-side failure classifier (for example the exception type behind
+  // realtime.stopped) so failure artifacts stay diagnosable without accepting
+  // arbitrary host strings into artifacts.
+  const boundedDetail = (value) => typeof value === "string"
+    && value.length > 0
+    && value.length <= 64
+    ? value
+    : null;
   // The outbound bridge is the authority for request type names. Reuse the
   // bounded, sanitized observation ledger as a dynamic closed catalog so new
   // protocol operations remain diagnosable without accepting arbitrary host
@@ -246,6 +255,7 @@ export function installBridgeDiagnosticsInPage() {
             ?? message?.error?.code
             ?? null),
           messageLength: messageLength(rawMessage),
+          detail: boundedDetail(message?.payload?.detail ?? message?.error?.detail ?? null),
           operation: stableOperation(message?.payload?.operation),
           startedAt: completedRequest?.startedAt ?? null,
           finishedAt: new Date().toISOString(),

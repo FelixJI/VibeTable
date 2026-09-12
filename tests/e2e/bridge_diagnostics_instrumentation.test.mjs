@@ -244,6 +244,50 @@ test("drops code and operation names outside the protocol diagnostic catalog", (
   }
 });
 
+test("retains realtime.stopped notification with bounded host failure detail", () => {
+  const listeners = [];
+  const webview = {
+    postMessage() {},
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
+          operation: "realtime.stream",
+          code: "realtime.stopped",
+          message: "Live updates stopped. Close and reopen the workspace.",
+          detail: "HttpRequestException",
+        },
+      },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
+          code: "realtime.stopped",
+          detail: "x".repeat(65),
+        },
+      },
+    });
+
+    const [bounded, oversized] = readBridgeDiagnosticsInPage().failures;
+    assert.equal(bounded.code, "realtime.stopped");
+    assert.equal(bounded.detail, "HttpRequestException");
+    assert.equal(bounded.operation, null);
+    assert.equal(oversized.detail, null);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 test("retains closed renderer capability rejection codes", () => {
   const listeners = [];
   const webview = {
