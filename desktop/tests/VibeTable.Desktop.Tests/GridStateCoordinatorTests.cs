@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -93,6 +94,79 @@ public sealed class GridStateCoordinatorTests
 
         Assert.AreEqual(1, gateway.QueryWindowCalls.Count,
             "rapid queries should coalesce into one debounced read");
+    }
+
+    [TestMethod]
+    public void NotifyQueryRecoversFromTransientBackendUnavailableWithoutSurfacingFailure()
+    {
+        var gateway = new FakeTableRpcGateway();
+        TablePage page = SamplePage("contracts", 3);
+        int calls = 0;
+        gateway.CursorOpenOverride = (_, _, _) =>
+        {
+            calls += 1;
+            return calls == 1
+                ? Task.FromException<TablePage>(new BackendUnavailableException(
+                    "The host Product RPC binding is no longer current."))
+                : Task.FromResult(page);
+        };
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
+
+        coordinator.RequestQuery("contracts", Query());
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        time.Advance(TimeSpan.FromMilliseconds(250));
+
+        Assert.AreEqual(2, gateway.QueryWindowCalls.Count,
+            "the notify-path load should retry the transient failure once");
+        Assert.AreEqual(1, notifications.Count(n => n.Type == "table.datasetReady"),
+            "the recovered page must still reach the renderer");
+        Assert.AreEqual(0, notifications.Count(n => n.Type == "operation.failed"),
+            "a transient rebinding must not surface operation.failed");
+    }
+
+    [TestMethod]
+    public void NotifyQuerySurfacesOperationFailedOnlyAfterTheRecoveryWindow()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.CursorOpenOverride = (_, _, _) =>
+            Task.FromException<TablePage>(new BackendUnavailableException(
+                "The host Product RPC binding is no longer current."));
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var coordinator = NewCoordinator(gateway, notifications.Add, time);
+
+        coordinator.RequestQuery("contracts", Query());
+        time.Advance(TimeSpan.FromSeconds(10));
+
+        Assert.IsTrue(gateway.QueryWindowCalls.Count >= 2,
+            "the notify-path load must retry within the recovery window");
+        Assert.AreEqual(1, notifications.Count(n => n.Type == "operation.failed"),
+            "an exhausted recovery window surfaces exactly one failure");
+        Assert.AreEqual(0, notifications.Count(n => n.Type == "table.datasetReady"));
+        TableNotification failure = notifications.Single(n => n.Type == "operation.failed");
+        Assert.AreEqual("query", failure.MutationResult?.Kind);
+    }
+
+    [TestMethod]
+    public async Task CorrelatedQueryDoesNotRetryTransientFailures()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.CursorOpenOverride = (_, _, _) =>
+            Task.FromException<TablePage>(new BackendUnavailableException(
+                "The host Product RPC binding is no longer current."));
+        var time = new ManualTimeProvider();
+        var coordinator = NewCoordinator(gateway, null, time);
+
+        Task<TablePage> query = coordinator.RequestQueryAsync(
+            "contracts", Query(), CancellationToken.None);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+
+        await Assert.ThrowsAsync<BackendUnavailableException>(
+            () => query.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count,
+            "correlated queries keep their single-attempt rejection contract");
     }
 
     [TestMethod]
