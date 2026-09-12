@@ -946,6 +946,56 @@ describe("tableService realtime product wiring", () => {
     service.dispose();
   });
 
+  it("ignores a late datasetReady from a superseded table selection", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady(dataset(1));
+    const service = useTableService();
+    service.init();
+
+    service.refresh({ preserveHistory: true });
+    harness.notify.mockClear();
+    // A higher data revision belonging to the PREVIOUS table must not raise
+    // the current table's revision floor and poison subsequent pages.
+    harness.emit("table.datasetReady", dataset(9, "customers"));
+    harness.emit("table.datasetReady", dataset(1));
+
+    expect(harness.notify).not.toHaveBeenCalledWith(
+      "table.selected",
+      { table: "orders" },
+    );
+    expect(table.error).toBe(null);
+    expect(table.loading).toBe(false);
+    service.dispose();
+  });
+
+  it("ignores editSchemaLoaded and windowLoaded from other tables", () => {
+    const harness = bridgeHarness({ action: "none" });
+    setHostBridgeForTesting(harness.bridge);
+    useWorkspaceStore().selectTable("orders");
+    const table = useTableStore();
+    table.setDatasetReady(dataset(1));
+    const service = useTableService();
+    service.init();
+    const schemaBefore = table.editSchema;
+
+    harness.emit("table.editSchemaLoaded", {
+      table: "customers",
+      schemaRevision: "schema_0009",
+      rowKeyKind: "primary_key",
+      rowKeyStable: true,
+      editable: true,
+      columns: [],
+    });
+    harness.emit("table.windowLoaded", dataset(1, "customers") as unknown as TablePage);
+
+    expect(table.editSchema).toBe(schemaBefore);
+    expect(table.error).toBe(null);
+    service.dispose();
+  });
+
   it("shows monotonic backfill progress and refreshes once on its terminal snapshot", async () => {
     const harness = bridgeHarness({ action: "none" });
     setHostBridgeForTesting(harness.bridge);
