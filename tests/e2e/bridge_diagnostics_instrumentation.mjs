@@ -118,6 +118,16 @@ export function installBridgeDiagnosticsInPage() {
     && value.length <= 64
     ? value
     : null;
+  // Mutation outcomes carry a closed kind vocabulary (grid query paths plus
+  // the shared error kinds); gate recordings to it like diagnosticCodes.
+  const mutationKinds = new Set([
+    "query",
+    "query.cursor",
+    "backend_unavailable",
+    "cancelled",
+    "unknown",
+  ]);
+  const stableMutationKind = (value) => mutationKinds.has(value) ? value : null;
   // The outbound bridge is the authority for request type names. Reuse the
   // bounded, sanitized observation ledger as a dynamic closed catalog so new
   // protocol operations remain diagnosable without accepting arbitrary host
@@ -256,6 +266,8 @@ export function installBridgeDiagnosticsInPage() {
             ?? null),
           messageLength: messageLength(rawMessage),
           detail: boundedDetail(message?.payload?.detail ?? message?.error?.detail ?? null),
+          mutationKind: stableMutationKind(
+            message?.payload?.mutationResult?.kind ?? message?.payload?.error?.kind ?? null),
           operation: stableOperation(message?.payload?.operation),
           startedAt: completedRequest?.startedAt ?? null,
           finishedAt: new Date().toISOString(),

@@ -272,16 +272,37 @@ test("retains realtime.stopped notification with bounded host failure detail", (
         type: "operation.failed",
         requestId: null,
         payload: {
+          message: "The host Product RPC binding is no longer current.",
+          mutationResult: {
+            kind: "query.cursor",
+            success: false,
+            error: { kind: "backend_unavailable" },
+          },
+        },
+      },
+    });
+    listeners[0]({
+      data: {
+        type: "operation.failed",
+        requestId: null,
+        payload: {
           code: "realtime.stopped",
           detail: "x".repeat(65),
         },
       },
     });
 
-    const [bounded, oversized] = readBridgeDiagnosticsInPage().failures;
+    const [bounded, mutation, oversized] = readBridgeDiagnosticsInPage().failures;
     assert.equal(bounded.code, "realtime.stopped");
     assert.equal(bounded.detail, "HttpRequestException");
     assert.equal(bounded.operation, null);
+    assert.equal(mutation.messageLength, 50);
+    assert.equal(mutation.messagePreview, undefined);
+    assert.equal(
+      JSON.stringify(mutation).includes("no longer current"),
+      false,
+    );
+    assert.equal(mutation.mutationKind, "query.cursor");
     assert.equal(oversized.detail, null);
   } finally {
     delete globalThis.window;
