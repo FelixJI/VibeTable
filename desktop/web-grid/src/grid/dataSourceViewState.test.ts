@@ -165,6 +165,18 @@ describe("dataSourceViewState", () => {
     expect(applyPresentation.mock.calls[0][0].columns.map((column: { field: string }) => column.field))
       .toEqual(["ordered", "unordered", "new"]);
   });
+  it("defers application while the grid has no data columns yet", async () => {
+    const applyPresentation = vi.fn();
+    await applyDataSourceView({
+      // Only non-data runtime columns (rowKey/row-number) exist before the
+      // schema build; a saved layout must not strip the upcoming columns.
+      getColumns: () => ["rowKey", "__rowNumber"].map(field => ({ getField: () => field })),
+      applyPresentation,
+    }, { layout: "table", search: "", filters: [], sorts: [], columns: [
+      { name: "f_missing", visible: true },
+    ] });
+    expect(applyPresentation).not.toHaveBeenCalled();
+  });
   it("captures only actual table presentation state, never record data", () => {
     const grid: DataSourceViewGrid = {
       getColumns: () => [

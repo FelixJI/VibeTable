@@ -172,6 +172,11 @@ export async function applyDataSourceView(
       order,
     }))
     .filter(({ field }) => isDataField(field));
+  // A presentation overlay requires live data columns to lay out. Applying
+  // onto a grid that has not built its schema columns yet would pass an empty
+  // (or stale) column set to setColumns and strip the upcoming schema build,
+  // leaving the grid headerless; defer to the default column build instead.
+  if (currentColumns.length === 0) return;
   const currentFields = new Set(currentColumns.map(({ field }) => field));
   const savedColumns = orderSavedColumns(view.columns
     .filter((column) => currentFields.has(column.name)));
