@@ -192,6 +192,9 @@ export function useTableService(): {
       }
     }));
     unsubscribe.push(bridge.on("table.pageLoaded", (payload: TablePageLoadedPayload) => {
+      // A late page from a superseded table selection must not replace the
+      // current table's schema or raise its revision floor.
+      if (payload.table !== workspaceStore.currentTable) return;
       const accepted = tableStore.appendPage(payload);
       if (!accepted) {
         retryStaleSnapshot();
@@ -202,6 +205,10 @@ export function useTableService(): {
     }));
     unsubscribe.push(bridge.on("table.datasetReady", (payload: DatasetReadyPayload) => {
       // DatasetReadyPayload extends TablePage — it IS the authoritative page.
+      // A late datasetReady for another table would adopt its revision into
+      // this table's floor and permanently reject the current table's pages
+      // when the other table's data revision happens to be higher.
+      if (payload.table !== workspaceStore.currentTable) return;
       if (!tableStore.setDatasetReady(payload)) {
         retryStaleSnapshot();
         return;
@@ -210,6 +217,7 @@ export function useTableService(): {
       completeLoad();
     }));
     unsubscribe.push(bridge.on("table.windowLoaded", (payload: TablePage) => {
+      if (payload.table !== workspaceStore.currentTable) return;
       if (!tableStore.appendWindow(payload)) {
         retryStaleSnapshot();
       }
@@ -230,6 +238,7 @@ export function useTableService(): {
       // EditSchemaResult only carries schemaRevision; the full MutationRevision
       // (with real databaseSessionId/dataRevision) arrives later via
       // datasetReady, whose handler overrides this placeholder revision.
+      if (payload.table !== workspaceStore.currentTable) return;
       tableStore.setEditSchema(payload.columns, {
         databaseSessionId: "",
         schemaRevision: payload.schemaRevision,
