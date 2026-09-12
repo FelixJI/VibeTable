@@ -10,3 +10,6 @@ tests/contract/fixtures/** eol=lf
 
 # Stage handoff manifests are also byte-stable evidence.
 docs/handoffs/*.json eol=lf
+
+# Owned PDF producer fixtures contain binary streams; never normalize their bytes.
+tests/contract/pdf_producer_fixtures/*.pdf binary
