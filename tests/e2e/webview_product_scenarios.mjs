@@ -2654,7 +2654,28 @@ async function rejectPublicRelationCascade(page, recorder, tableId, fieldId) {
 
 async function openRelationPairEditor(page, physicalName, reciprocalName) {
   const header = page.locator(`.tabulator-col[tabulator-field="${physicalName}"]`);
-  await header.waitFor({ state: "visible", timeout: 30_000 });
+  try {
+    await header.waitFor({ state: "visible", timeout: 30_000 });
+  } catch (error) {
+    // Bounded DOM probe so a header timeout reports which columns actually
+    // rendered instead of only the absent locator.
+    const probe = await page.evaluate((field) => ({
+      expectedField: field,
+      headerFields: [...document.querySelectorAll(".tabulator-col[tabulator-field]")]
+        .map((el) => el.getAttribute("tabulator-field")),
+      headerCount: document.querySelectorAll(".tabulator-col").length,
+      cellFields: [...new Set([...document.querySelectorAll(".tabulator-cell[tabulator-field]")]
+        .map((el) => el.getAttribute("tabulator-field")))],
+      activeTables: [...document.querySelectorAll('[data-testid="sidebar-table-name"]')]
+        .filter((el) => el.getAttribute("aria-selected") === "true"
+          || el.classList.contains("active"))
+        .map((el) => el.textContent),
+      bannerText: [...document.querySelectorAll(".n-alert, .n-result, [role='alert'], .n-drawer")]
+        .map((el) => el.textContent?.slice(0, 120))
+        .filter(Boolean),
+    }), physicalName);
+    throw new Error(`relation column header not visible: ${JSON.stringify(probe)}`);
+  }
   await header.locator(".tabulator-col-title").click({ button: "right" });
   await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
   await page.getByTestId("relation-reciprocal-name").waitFor({ state: "visible", timeout: 30_000 });
