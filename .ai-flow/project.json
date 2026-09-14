@@ -1,0 +1,69 @@
+{
+  "schema_version": 4,
+  "flow_version": "4.0.0",
+  "repository": "FelixJI/VibeTable",
+  "default_branch": "main",
+  "mode": "manual-handoff",
+  "profile": "balanced",
+  "worker_tool": "user-selected-zcode-or-pi",
+  "control": {
+    "cross_tool_start": "human",
+    "cross_session_start": "human",
+    "technical_owner": "codex",
+    "worker_may_pick_next_task": false,
+    "automatic_agent_calls": false,
+    "automatic_resume": false,
+    "progress_polling": false
+  },
+  "work_scope": {
+    "default": "one-authorized-stage",
+    "max_active_writers_per_repository": 1,
+    "stacked_prs_default": false
+  },
+  "validation": {
+    "commands": [
+      "uv sync --frozen --group dev --group build",
+      "uv run python .ai-flow/scripts/hygiene.py --staged",
+      "uv run python scripts/automation_project.py quality",
+      "uv run python scripts/automation_project.py pr-e2e",
+      "uv run python scripts/automation_project.py build",
+      "uv run python scripts/automation_project.py smoke"
+    ],
+    "required_check_names": [
+      "required"
+    ]
+  },
+  "risk_paths": {
+    "review_required": [
+      "**/*"
+    ],
+    "human_merge_required": [
+      "**/*"
+    ]
+  },
+  "review": {
+    "independent_codex_session_required": true,
+    "human_starts_review_session": true,
+    "bind_head_and_base_sha": true,
+    "new_commit_requires_recheck": true
+  },
+  "merge": {
+    "mode": "human-only",
+    "automatic": false
+  },
+  "deployment": {
+    "authorized": false,
+    "real_data_operations_authorized": false
+  },
+  "retry_policy": {
+    "worker_same_root_cause_failed_rounds": 2,
+    "codex_same_root_cause_failed_rounds": 2,
+    "ci_infrastructure_retries": 1
+  },
+  "artifact_policy": {
+    "task_and_handoff": "github_issue",
+    "code_test_review": "github_pr",
+    "local_diagnostics": ".ai-flow/runtime/",
+    "checkpoint_report_commits": false
+  }
+}

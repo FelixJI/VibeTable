@@ -85,3 +85,19 @@
 - VibeTable 与 VibeOCR Protocol/Backend/Classic/Next、File Toolbox 没有源码或运行时依赖；PocketBase/BFF/WebView2 架构不能被其他仓的组件关系替代。
 - 六仓关系仅是共享 CI/CD 深模块、版本/changelog PR 状态机、远端治理与镜像规则。本仓多栈 bootstrap、w64devkit、全量 QA、杀软和 workspace 规则必须留在项目 adapter/本文件。
 - 公共 core 修改必须六仓同步；workflow 可按本仓瓶颈差异化，但不得改变统一质量与发布不变量。VibeTable 发版不触发其他仓库版本或 CD。
+
+<!-- AI-FLOW-V4:START -->
+## AI Flow v4.0：人工交接
+
+AI 编程任务先读 `.ai-flow/AGENTS.md`、`.ai-flow/AI_CODING_PLAYBOOK.md`、
+`.ai-flow/project.json`；日常入口为 `.ai-flow/prompts/08-codex-entry.md`，
+一句话模板见 `.ai-flow/docs/ONE_SENTENCE_PROMPTS.md`。
+
+- 启用 Issue-first、balanced：网页版规划并写入 GitHub Issues；Codex 负责技术判断、复杂调查/实施、结果接收和工程把关；zcode/pi 只施工已明确的当前范围。
+- 用户手工启动每个工具和独立会话。需施工时 Codex 写回 Issue 交接单，输出已填实际编号的施工、收尾汇报、阻碍汇报三句后停止；施工者完成或受阻后主动给出返回 Codex 的一句话。
+- 不通过 CLI/API/MCP、子代理、后台任务或自动唤醒调用任何其他 Agent。本模式不采用通用 CI/CD 监控子代理规则；当前会话只读查询一次，未完成则记录 WAITING_CI 和恢复短句后结束，由用户手工续办。
+- 所有变更需用户另开独立 Codex 会话审阅，绑定实际 base/head SHA；自检不能代替独立审阅，新提交需增量复核。只报告 MERGE_READY，人工合并，不自动合并或发布。
+- 保留上文全部业务、验证、hooks、分支/worktree、六仓共享文件与发布不变量；AI Flow 不改登录、模型、CI/CD 配置或远端保护，也不改变已有 release PR 人工合并后的流水线语义。重试上限不是自动重试授权，仍须先诊断。
+- 一个仓库只保留一位实施写入者，保留用户改动。任务合同和交接存 Issue，代码/验证/审阅证据存 PR；本机报告、日志、临时状态只放 ignored `.ai-flow/runtime/`，不提交。
+- Python 命令统一在仓库根目录使用 `uv run python ...`；包外安装器和测试用 `uv run --project <目标仓库> python ...`。提交前运行 `uv run python .ai-flow/scripts/hygiene.py --staged`，沿用现有 hooks。
+<!-- AI-FLOW-V4:END -->
