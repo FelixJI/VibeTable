@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { NButton, NDatePicker, NDynamicTags, NInput, NInputNumber, NSelect } from "naive-ui";
+import { gridStateNumberText, parseGridStateJson } from "@/contracts/gridStateJson";
+import { NButton, NDatePicker, NDynamicTags, NInput, NSelect } from "naive-ui";
 import type {
   ColumnSchema,
   FilterCondition,
@@ -133,10 +134,14 @@ async function searchRelation(field: string, query: string): Promise<void> {
   }
 }
 function optionValue(node: FilterCondition): string | string[] | null {
-  if (Array.isArray(node.value)) return node.value.map(value => String(value));
+  if (Array.isArray(node.value)) return node.value.map(inputText);
   if (typeof node.value === "string" || typeof node.value === "number") return String(node.value);
   return null;
 }
+function inputText(value: unknown): string {
+  return gridStateNumberText(value) ?? String(value ?? "");
+}
+
 function initialValue(field: string, operator: FilterOperator): unknown {
   if (operator === "is_null" || operator === "is_not_null") return undefined;
   if (operator === "between") return ["", ""];
@@ -148,9 +153,14 @@ function parseScalar(field: string, value: string): unknown {
   const column = columnFor(field);
   if (column?.dataType === "boolean") return value === "true";
   const numeric = column?.dataType === "integer" || column?.dataType === "decimal";
-  return numeric && value.trim() !== "" && Number.isFinite(Number(value))
-    ? Number(value)
-    : value;
+  if (!numeric) return value;
+  const text = value.trim();
+  // Keep incomplete input as text; only complete numeric tokens enter the codec.
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(text)) {
+    return parseGridStateJson(text);
+  }
+  if (/^[+-]?\d+$/.test(text)) return parseGridStateJson(BigInt(text).toString());
+  return value;
 }
 function updateValue(index: number, value: string): void {
   const current = props.nodes[index];
@@ -215,18 +225,10 @@ function updateDiscreteValues(index: number, values: Array<string | number>): vo
             aria-label="筛选起始值"
             @update:formatted-value="value => updateBetweenValue(index, 0, value ?? '')"
           />
-          <NInputNumber
-            v-else-if="filterInputFor(node.field) === 'number'"
-            size="small"
-            :value="Number(Array.isArray(node.value) ? node.value[0] : null)"
-            :show-button="false"
-            aria-label="筛选起始值"
-            @update:value="value => updateBetweenValue(index, 0, String(value ?? ''))"
-          />
           <NInput
             v-else
             size="small"
-            :value="String(Array.isArray(node.value) ? (node.value[0] ?? '') : '')"
+            :value="inputText(Array.isArray(node.value) ? node.value[0] : '')"
             aria-label="筛选起始值"
             @update:value="value => updateBetweenValue(index, 0, value)"
           />
@@ -240,18 +242,10 @@ function updateDiscreteValues(index: number, values: Array<string | number>): vo
             aria-label="筛选结束值"
             @update:formatted-value="value => updateBetweenValue(index, 1, value ?? '')"
           />
-          <NInputNumber
-            v-else-if="filterInputFor(node.field) === 'number'"
-            size="small"
-            :value="Number(Array.isArray(node.value) ? node.value[1] : null)"
-            :show-button="false"
-            aria-label="筛选结束值"
-            @update:value="value => updateBetweenValue(index, 1, String(value ?? ''))"
-          />
           <NInput
             v-else
             size="small"
-            :value="String(Array.isArray(node.value) ? (node.value[1] ?? '') : '')"
+            :value="inputText(Array.isArray(node.value) ? node.value[1] : '')"
             aria-label="筛选结束值"
             @update:value="value => updateBetweenValue(index, 1, value)"
           />
@@ -269,7 +263,7 @@ function updateDiscreteValues(index: number, values: Array<string | number>): vo
         <NDynamicTags
           v-else-if="node.operator === 'in' && filterInputFor(node.field) !== 'relation'"
           class="value-input"
-          :value="Array.isArray(node.value) ? node.value.map(value => String(value)) : []"
+          :value="Array.isArray(node.value) ? node.value.map(inputText) : []"
           aria-label="筛选值列表"
           @update:value="(value: string[]) => updateDiscreteValues(index, value)"
         />
@@ -318,20 +312,11 @@ function updateDiscreteValues(index: number, values: Array<string | number>): vo
           aria-label="日期筛选值"
           @update:formatted-value="value => updateCondition(index, { value })"
         />
-        <NInputNumber
-          v-else-if="filterInputFor(node.field) === 'number'"
-          size="small"
-          class="value-input"
-          :value="typeof node.value === 'number' ? node.value : null"
-          :show-button="false"
-          aria-label="数值筛选值"
-          @update:value="value => updateCondition(index, { value })"
-        />
         <NInput
           v-else-if="node.operator !== 'is_null' && node.operator !== 'is_not_null'"
           size="small"
           class="value-input"
-          :value="String(node.value ?? '')"
+          :value="inputText(node.value)"
           aria-label="筛选值"
           @update:value="value => updateValue(index, value)"
         />

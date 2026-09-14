@@ -1,0 +1,4188 @@
+{
+  "producer": "a3ca78b9181a529d978f9fba46586fbb924ecada",
+  "methods": [
+    "insights.listDashboards",
+    "insights.readDashboardWorkspace",
+    "insights.saveDashboardDraft",
+    "insights.deleteDashboardWorkspace",
+    "insights.executeDashboardQuery",
+    "insights.dashboardQueryLimits",
+    "insights.panelManifest"
+  ],
+  "cases": [
+    {
+      "name": "list-projection-and-order",
+      "method": "insights.listDashboards",
+      "params": {},
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "dashboards": [
+            {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "label",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "label",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 4,
+                    "height": 4
+                  },
+                  "options": {
+                    "text": "中文"
+                  },
+                  "query": {}
+                },
+                {
+                  "id": "33333333-3333-4333-8333-333333333333",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "unknown",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "custom",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 4,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        }
+      ]
+    },
+    {
+      "name": "list-empty",
+      "method": "insights.listDashboards",
+      "params": {},
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "dashboards": []
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        }
+      ]
+    },
+    {
+      "name": "workspace-revision",
+      "method": "insights.readDashboardWorkspace",
+      "params": {
+        "dashboardId": "11111111-1111-4111-8111-111111111111"
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "dashboard": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "中文 <&> \\\"",
+            "note": "note",
+            "icon": null,
+            "color": null,
+            "panels": [
+              {
+                "id": "22222222-2222-4222-8222-222222222222",
+                "dashboardId": "11111111-1111-4111-8111-111111111111",
+                "name": "label",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "showHeader": true,
+                "type": "label",
+                "position": {
+                  "x": 0,
+                  "y": 0,
+                  "width": 4,
+                  "height": 4
+                },
+                "options": {
+                  "text": "中文"
+                },
+                "query": {}
+              },
+              {
+                "id": "33333333-3333-4333-8333-333333333333",
+                "dashboardId": "11111111-1111-4111-8111-111111111111",
+                "name": "unknown",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "showHeader": true,
+                "type": "custom",
+                "position": {
+                  "x": 0,
+                  "y": 0,
+                  "width": 4,
+                  "height": 4
+                },
+                "options": {},
+                "query": {}
+              }
+            ]
+          },
+          "config": {
+            "configVersion": 1,
+            "globalFilters": [],
+            "interactions": [],
+            "refreshInterval": 0
+          },
+          "revision": "5a3902fa8be0bd9d23c02f9b1b89addf1343c0294c30727e5b17c8fd869cd79d",
+          "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+          "queryLimits": {
+            "maxConcurrentRequests": 6,
+            "maxSeriesPoints": 50000,
+            "maxPanelPoints": 100000,
+            "maxCategoryPoints": 5000,
+            "defaultTopN": 100,
+            "maxPieSlices": 50,
+            "maxListRows": 100
+          }
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        }
+      ]
+    },
+    {
+      "name": "workspace-missing",
+      "method": "insights.readDashboardWorkspace",
+      "params": {
+        "dashboardId": "22222222-2222-4222-8222-222222222222"
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32080,
+          "message": "Insights error",
+          "data": {
+            "kind": "insights_error",
+            "message": "dashboard was not found",
+            "code": "dashboard_not_found"
+          }
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        }
+      ]
+    },
+    {
+      "name": "draft-create",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": []
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": []
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "015981f95cad84a566ec661e772760de26bacc36038d61dfc1e09ee7cc003559",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {},
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-conflict",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [],
+        "dashboardId": "11111111-1111-4111-8111-111111111111",
+        "expectedRevision": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32080,
+          "message": "Insights error",
+          "data": {
+            "kind": "insights_error",
+            "message": "dashboard revision does not match",
+            "code": "dashboard_edit_conflict"
+          }
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        }
+      ]
+    },
+    {
+      "name": "delete",
+      "method": "insights.deleteDashboardWorkspace",
+      "params": {
+        "dashboardId": "11111111-1111-4111-8111-111111111111"
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "deleted": "11111111-1111-4111-8111-111111111111"
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "delete",
+          "namespace": "dashboards",
+          "request": {
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "expectedRevision": "stored-1",
+            "idempotencyKey": "dashboard:delete:11111111-1111-4111-8111-111111111111"
+          }
+        }
+      ]
+    },
+    {
+      "name": "query-record-projection",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "list",
+        "query": {
+          "kind": "records",
+          "collection": "articles",
+          "fields": [
+            "title",
+            "missing"
+          ],
+          "limit": 1
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "rows": [
+            {
+              "title": "A",
+              "missing": null
+            }
+          ],
+          "truncated": true,
+          "maxPoints": 1
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "query",
+          "tableId": "articles",
+          "query": {
+            "keyword": null,
+            "filters": [],
+            "sorts": [],
+            "offset": 0,
+            "limit": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "query-aggregate",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "metric",
+        "query": {
+          "kind": "aggregate",
+          "collection": "articles",
+          "measures": [
+            {
+              "key": "total",
+              "op": "count"
+            }
+          ]
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "rows": [
+            {
+              "total": 2
+            }
+          ],
+          "truncated": false,
+          "maxPoints": 100
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "aggregate",
+          "tableId": "articles",
+          "query": {
+            "filters": [],
+            "groupBy": [],
+            "metrics": [
+              {
+                "function": "count",
+                "field": "",
+                "alias": "total"
+              }
+            ],
+            "limit": 100
+          }
+        }
+      ]
+    },
+    {
+      "name": "query-custom-rejected",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "custom",
+        "query": {
+          "kind": "records",
+          "collection": "articles",
+          "fields": [
+            "title",
+            "missing"
+          ],
+          "limit": 1
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32080,
+          "message": "Insights error",
+          "data": {
+            "kind": "insights_error",
+            "message": "panel type cannot execute queries",
+            "code": "dashboard_panel_type_unknown"
+          }
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "limits",
+      "method": "insights.dashboardQueryLimits",
+      "params": {},
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "maxConcurrentRequests": 6,
+          "maxSeriesPoints": 50000,
+          "maxPanelPoints": 100000,
+          "maxCategoryPoints": 5000,
+          "defaultTopN": 100,
+          "maxPieSlices": 50,
+          "maxListRows": 100
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "manifest",
+      "method": "insights.panelManifest",
+      "params": {},
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "manifestVersion": "dashboard-panel-manifest.v2",
+          "queryContract": "product-query-port.v1",
+          "panels": [
+            {
+              "type": "label",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 1,
+                "height": 1
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "metric",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 2,
+                "height": 2
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "metric-list",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 3,
+                "height": 3
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "list",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 4,
+                "height": 3
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {
+                  "drilldownFields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "time-series",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 6,
+                "height": 4
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {
+                  "fillType": {
+                    "type": "string",
+                    "enum": [
+                      "solid",
+                      "gradient"
+                    ]
+                  },
+                  "drilldownFields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "bar",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 4,
+                "height": 3
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {
+                  "drilldownFields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "line",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 4,
+                "height": 3
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {
+                  "fillType": {
+                    "type": "string",
+                    "enum": [
+                      "solid",
+                      "gradient"
+                    ]
+                  },
+                  "drilldownFields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "donut",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 4,
+                "height": 3
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {
+                  "drilldownFields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            },
+            {
+              "type": "pie",
+              "minSize": {
+                "x": 0,
+                "y": 0,
+                "width": 4,
+                "height": 3
+              },
+              "optionsSchema": {
+                "type": "object",
+                "properties": {
+                  "drilldownFields": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "rendererVersion": "2"
+            }
+          ]
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "draft-panel-label",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "label",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "label",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "53209c15633e563b08da7f76aa6b7cadbe65780ac5291193956f0227249d5ccc",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "label",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-metric",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "metric",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "metric",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "f3ed0b6fac12ec74e476c89c051783ea1cab776eaf3cde1f8c4828806b4e3d3d",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "metric",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-metric-list",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "metric-list",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "metric-list",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "d89c5c1ad4cfcd31892ce5202a2e6c44bc2635cdee9ae5310fed4ae3c59d5ba0",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "metric-list",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-list",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "list",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "list",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "66ad0ff131370e148fe6e60d576d8ef9ed192dbc575bd1974d9de64efb28bf48",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "list",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-time-series",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "time-series",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "time-series",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "320e620e382ea8cdc543039947fdbdf6ab7c1b36bf38d9eb8bf56016a91f663a",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "time-series",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-bar",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "bar",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "bar",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "7041e33fd4878c1e348e04f5a25b68d9868af80a4e0d48dff3583ee423d59904",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "bar",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-line",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "line",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "line",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "d5b074e33046b2ad6f6298c00427575a9bf191aa98ee4267396b5aa9ff2b773b",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "line",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-donut",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "donut",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "donut",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "791845a2424c4b62bd4c21c2d7e5074e97f5e0b16f19b760b2c376e69c73751d",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "donut",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-pie",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "pie",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "pie",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "468bdd383dfa9ac728812207dd27aa03629bf9ba7f8b7d4793e88bb10e8e8dc9",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "pie",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-panel-custom",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "custom",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            },
+            "options": {}
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32080,
+          "message": "Insights error",
+          "data": {
+            "kind": "insights_error",
+            "message": "panel type is not in the runtime manifest",
+            "code": "dashboard_panel_type_unknown"
+          }
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "draft-small",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "time-series",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 4
+            }
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32080,
+          "message": "Insights error",
+          "data": {
+            "kind": "insights_error",
+            "message": "panel position is smaller than the renderer minimum",
+            "code": "dashboard_panel_size_invalid",
+            "field": "position"
+          }
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "draft-unknown-option",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "label",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 4
+            },
+            "options": {
+              "z": true
+            }
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32080,
+          "message": "Insights error",
+          "data": {
+            "kind": "insights_error",
+            "message": "panel options contain fields not declared by the renderer",
+            "code": "dashboard_panel_options_invalid",
+            "field": "options.z"
+          }
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "draft-invalid-option",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "label",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 4
+            },
+            "options": {
+              "text": false
+            }
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32080,
+          "message": "Insights error",
+          "data": {
+            "kind": "insights_error",
+            "message": "panel option does not match the renderer schema",
+            "code": "dashboard_panel_options_invalid",
+            "field": "options.text"
+          }
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "draft-grid-overflow",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "label",
+            "position": {
+              "x": 11,
+              "y": 0,
+              "width": 2,
+              "height": 4
+            }
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "draft-unicode-option",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "label",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 4
+            },
+            "options": {
+              "text": "中文\n<&>\\\""
+            }
+          }
+        ]
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "label",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 4,
+                    "height": 4
+                  },
+                  "options": {
+                    "text": "中文\n<&>\\\""
+                  },
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "ae9ea8f4ddb2f4327f2963416b0ec4f3b044746e6e673cf2e8940417369a65ca",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "label",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 4,
+                    "height": 4
+                  },
+                  "options": {
+                    "text": "中文\n<&>\\\""
+                  },
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-binding-remap",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "label",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 4
+            }
+          }
+        ],
+        "config": {
+          "globalFilters": [
+            {
+              "key": "status",
+              "type": "enum",
+              "targetPanels": [
+                "local"
+              ],
+              "fieldBindings": {
+                "local": "fld_status"
+              }
+            }
+          ]
+        }
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "workspace": {
+            "dashboard": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "中文 <&>",
+              "note": "",
+              "icon": null,
+              "color": null,
+              "panels": [
+                {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "label",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 4,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                }
+              ]
+            },
+            "config": {
+              "configVersion": 1,
+              "globalFilters": [
+                {
+                  "key": "status",
+                  "label": "",
+                  "type": "enum",
+                  "defaultValue": null,
+                  "allowedFields": [],
+                  "targetPanels": [
+                    "22222222-2222-4222-8222-222222222222"
+                  ],
+                  "fieldBindings": {
+                    "22222222-2222-4222-8222-222222222222": "fld_status"
+                  }
+                }
+              ],
+              "interactions": [],
+              "refreshInterval": 0
+            },
+            "revision": "a3890f13c0ea6cdefd3f44fee99e4d1ca14106bd0e352a441598a0087df6480a",
+            "atomicSaveEndpoint": "vibetable-dashboard-atomic.v1",
+            "queryLimits": {
+              "maxConcurrentRequests": 6,
+              "maxSeriesPoints": 50000,
+              "maxPanelPoints": 100000,
+              "maxCategoryPoints": 5000,
+              "defaultTopN": 100,
+              "maxPieSlices": 50,
+              "maxListRows": 100
+            }
+          },
+          "clientPanelIds": {
+            "local": "22222222-2222-4222-8222-222222222222"
+          },
+          "atomic": true
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        },
+        {
+          "operation": "commit",
+          "request": {
+            "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+            "dashboard": {
+              "logicalId": "11111111-1111-4111-8111-111111111111",
+              "payload": {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "name": "中文 <&>",
+                "note": "",
+                "icon": null,
+                "color": null,
+                "config": {
+                  "configVersion": 1,
+                  "globalFilters": [
+                    {
+                      "key": "status",
+                      "label": "",
+                      "type": "enum",
+                      "defaultValue": null,
+                      "allowedFields": [],
+                      "targetPanels": [
+                        "22222222-2222-4222-8222-222222222222"
+                      ],
+                      "fieldBindings": {
+                        "22222222-2222-4222-8222-222222222222": "fld_status"
+                      }
+                    }
+                  ],
+                  "interactions": [],
+                  "refreshInterval": 0
+                }
+              },
+              "expectedRevision": ""
+            },
+            "panels": [
+              {
+                "logicalId": "22222222-2222-4222-8222-222222222222",
+                "payload": {
+                  "id": "22222222-2222-4222-8222-222222222222",
+                  "dashboardId": "11111111-1111-4111-8111-111111111111",
+                  "name": "",
+                  "note": "",
+                  "icon": null,
+                  "color": null,
+                  "showHeader": true,
+                  "type": "label",
+                  "position": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 4,
+                    "height": 4
+                  },
+                  "options": {},
+                  "query": {}
+                },
+                "expectedRevision": ""
+              }
+            ],
+            "deletePanels": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "draft-binding-missing",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [
+          {
+            "clientId": "local",
+            "type": "label",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 4
+            }
+          }
+        ],
+        "config": {
+          "interactions": [
+            {
+              "sourcePanelId": "missing",
+              "targetPanelIds": [
+                "local"
+              ],
+              "targetField": "title"
+            }
+          ]
+        }
+      },
+      "initial": {},
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "list",
+          "namespace": "dashboards"
+        },
+        {
+          "operation": "list",
+          "namespace": "panels"
+        }
+      ]
+    },
+    {
+      "name": "insights.readDashboardWorkspace-unknown-field",
+      "method": "insights.readDashboardWorkspace",
+      "params": {
+        "dashboardId": "11111111-1111-4111-8111-111111111111",
+        "unknown": true
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.readDashboardWorkspace-missing",
+      "method": "insights.readDashboardWorkspace",
+      "params": {},
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.readDashboardWorkspace-non-object",
+      "method": "insights.readDashboardWorkspace",
+      "params": [],
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.saveDashboardDraft-unknown-field",
+      "method": "insights.saveDashboardDraft",
+      "params": {
+        "idempotencyKey": "44444444-4444-4444-8444-444444444444",
+        "name": "中文 <&>",
+        "panels": [],
+        "unknown": true
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.saveDashboardDraft-missing",
+      "method": "insights.saveDashboardDraft",
+      "params": {},
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.saveDashboardDraft-non-object",
+      "method": "insights.saveDashboardDraft",
+      "params": [],
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.deleteDashboardWorkspace-unknown-field",
+      "method": "insights.deleteDashboardWorkspace",
+      "params": {
+        "dashboardId": "11111111-1111-4111-8111-111111111111",
+        "unknown": true
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.deleteDashboardWorkspace-missing",
+      "method": "insights.deleteDashboardWorkspace",
+      "params": {},
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.deleteDashboardWorkspace-non-object",
+      "method": "insights.deleteDashboardWorkspace",
+      "params": [],
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.executeDashboardQuery-unknown-field",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "list",
+        "query": {
+          "kind": "records",
+          "collection": "articles",
+          "fields": [
+            "title",
+            "missing"
+          ],
+          "limit": 1
+        },
+        "unknown": true
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.executeDashboardQuery-missing",
+      "method": "insights.executeDashboardQuery",
+      "params": {},
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "insights.executeDashboardQuery-non-object",
+      "method": "insights.executeDashboardQuery",
+      "params": [],
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "bool-limit",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "list",
+        "query": {
+          "kind": "records",
+          "collection": "articles",
+          "fields": [
+            "title",
+            "missing"
+          ],
+          "limit": true
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "rows": [
+            {
+              "title": "A",
+              "missing": null
+            }
+          ],
+          "truncated": true,
+          "maxPoints": 1
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "query",
+          "tableId": "articles",
+          "query": {
+            "keyword": null,
+            "filters": [],
+            "sorts": [],
+            "offset": 0,
+            "limit": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "string-limit",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "list",
+        "query": {
+          "kind": "records",
+          "collection": "articles",
+          "fields": [
+            "title",
+            "missing"
+          ],
+          "limit": "3"
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "rows": [
+            {
+              "title": "A",
+              "missing": null
+            },
+            {
+              "title": "B",
+              "missing": null
+            }
+          ],
+          "truncated": false,
+          "maxPoints": 3
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "query",
+          "tableId": "articles",
+          "query": {
+            "keyword": null,
+            "filters": [],
+            "sorts": [],
+            "offset": 0,
+            "limit": 3
+          }
+        }
+      ]
+    },
+    {
+      "name": "zero-limit",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "list",
+        "query": {
+          "kind": "records",
+          "collection": "articles",
+          "fields": [
+            "title",
+            "missing"
+          ],
+          "limit": 0
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "over-limit",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "list",
+        "query": {
+          "kind": "records",
+          "collection": "articles",
+          "fields": [
+            "title",
+            "missing"
+          ],
+          "limit": 101
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    },
+    {
+      "name": "topN",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "metric",
+        "query": {
+          "kind": "aggregate",
+          "collection": "articles",
+          "measures": [
+            {
+              "key": "total",
+              "op": "count"
+            }
+          ],
+          "topN": 3
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "rows": [
+            {
+              "total": 2
+            }
+          ],
+          "truncated": false,
+          "maxPoints": 100
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "aggregate",
+          "tableId": "articles",
+          "query": {
+            "filters": [],
+            "groupBy": [],
+            "metrics": [
+              {
+                "function": "count",
+                "field": "",
+                "alias": "total"
+              }
+            ],
+            "limit": 100,
+            "topN": 3
+          }
+        }
+      ]
+    },
+    {
+      "name": "timeBucket",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "metric",
+        "query": {
+          "kind": "aggregate",
+          "collection": "articles",
+          "measures": [
+            {
+              "key": "total",
+              "op": "count"
+            }
+          ],
+          "timeBucket": {
+            "field": "date",
+            "unit": "week",
+            "timezone": "UTC"
+          }
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "rows": [
+            {
+              "total": 2
+            }
+          ],
+          "truncated": false,
+          "maxPoints": 100
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "aggregate",
+          "tableId": "articles",
+          "query": {
+            "filters": [],
+            "groupBy": [],
+            "metrics": [
+              {
+                "function": "count",
+                "field": "",
+                "alias": "total"
+              }
+            ],
+            "limit": 100,
+            "timeBucket": {
+              "field": "date",
+              "unit": "week",
+              "timezone": "UTC"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "dimension",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "metric",
+        "query": {
+          "kind": "aggregate",
+          "collection": "articles",
+          "measures": [
+            {
+              "key": "total",
+              "op": "count"
+            }
+          ],
+          "dimensions": [
+            "status"
+          ]
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "result": {
+          "rows": [
+            {
+              "total": 2
+            }
+          ],
+          "truncated": false,
+          "maxPoints": 100
+        }
+      },
+      "authorityCalls": [
+        {
+          "operation": "aggregate",
+          "tableId": "articles",
+          "query": {
+            "filters": [],
+            "groupBy": [
+              "status"
+            ],
+            "metrics": [
+              {
+                "function": "count",
+                "field": "",
+                "alias": "total"
+              }
+            ],
+            "limit": 100
+          }
+        }
+      ]
+    },
+    {
+      "name": "duplicate-measure",
+      "method": "insights.executeDashboardQuery",
+      "params": {
+        "panelType": "metric",
+        "query": {
+          "kind": "aggregate",
+          "collection": "articles",
+          "measures": [
+            {
+              "key": "x",
+              "op": "count"
+            },
+            {
+              "key": "x",
+              "op": "sum",
+              "field": "amount"
+            }
+          ]
+        }
+      },
+      "initial": {
+        "dashboards": [
+          {
+            "namespace": "dashboards",
+            "logicalId": "11111111-1111-4111-8111-111111111111",
+            "revision": "stored-1",
+            "payload": {
+              "name": "中文 <&> \\\"",
+              "note": "note",
+              "config": {}
+            }
+          }
+        ],
+        "panels": [
+          {
+            "namespace": "panels",
+            "logicalId": "33333333-3333-4333-8333-333333333333",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "unknown",
+              "type": "retired"
+            }
+          },
+          {
+            "namespace": "panels",
+            "logicalId": "22222222-2222-4222-8222-222222222222",
+            "revision": "stored-1",
+            "payload": {
+              "dashboardId": "11111111-1111-4111-8111-111111111111",
+              "name": "label",
+              "type": "label",
+              "options": {
+                "text": "中文"
+              }
+            }
+          }
+        ]
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "oracle",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      },
+      "authorityCalls": []
+    }
+  ]
+}

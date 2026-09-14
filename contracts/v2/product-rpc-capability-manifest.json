@@ -147,18 +147,18 @@
     },
     {
       "method": "gridState.get",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "grid.state",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
       "method": "gridState.save",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "grid.state",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
@@ -190,7 +190,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "insights",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -198,7 +198,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "insights",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -206,7 +206,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "insights",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -214,7 +214,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "insights",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -222,7 +222,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "insights",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -230,7 +230,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "insights",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -238,7 +238,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "insights",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -682,6 +682,14 @@
       "effect": "write"
     },
     {
+      "method": "settings.commitWorkCalendar",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "workspace.calendar",
+      "owner": "goSidecar",
+      "effect": "write"
+    },
+    {
       "method": "settings.readDevice",
       "scope": "global",
       "audience": "rendererPublic",
@@ -690,11 +698,11 @@
       "effect": "read"
     },
     {
-      "method": "settings.readShared",
+      "method": "settings.readWorkCalendar",
       "scope": "workspace",
       "audience": "rendererPublic",
-      "capabilityId": "insights",
-      "owner": "pythonBff",
+      "capabilityId": "workspace.calendar",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {

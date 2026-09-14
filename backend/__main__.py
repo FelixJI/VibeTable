@@ -20,7 +20,6 @@ from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMeta
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.grid_state_service import GridStateService
 from backend.application.insights_service import InsightsService
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
@@ -35,7 +34,6 @@ from backend.contracts.data_io import (
     GenerateTemplateParams,
     PreviewImportParams,
 )
-from backend.contracts.grid_state import GridStateGetParams, GridStateSaveParams
 from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
 from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
@@ -56,23 +54,18 @@ from backend.contracts.plugin_rpc import (
 )
 from backend.contracts.presets_versions_dashboards import (
     CreateVersionParams,
-    DashboardWorkspaceParams,
     DeleteVersionParams,
-    ExecuteDashboardQueryParams,
-    ListDashboardsParams,
     ListVersionsParams,
     PromoteVersionParams,
-    SaveDashboardDraftParams,
     SaveVersionParams,
     VersionIdParams,
 )
-from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY, ProductParams
+from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 from backend.contracts.settings_commands import (
     DeleteShortcutParams,
     LaunchActionParams,
     ListCommandsParams,
     ListShortcutsParams,
-    ReadSharedSettingsParams,
     RunCommandParams,
     SaveShortcutParams,
 )
@@ -201,7 +194,6 @@ def _register_settings_methods(
     service: SettingsCommandService,
 ) -> None:
     register_application_errors(ErrorDomain.SETTINGS_COMMAND)
-    dispatcher.register("settings.readShared", service.read_shared, ReadSharedSettingsParams)
     dispatcher.register(
         "command.list",
         lambda _params=None: service.list_commands(),
@@ -332,9 +324,6 @@ async def _build_server() -> tuple[
         SystemService(lambda: dispatcher.registered_methods).handshake,
         HandshakeParams,
     )
-    grid = GridStateService()
-    dispatcher.register("gridState.get", grid.get, GridStateGetParams)
-    dispatcher.register("gridState.save", grid.save, GridStateSaveParams)
 
     register_application_errors(ErrorDomain.PATH_GRANT)
     task_service = build_task_service(notification_sink=notify_task_status)
@@ -397,47 +386,6 @@ async def _build_server() -> tuple[
         insights = InsightsService(metadata_port=metadata_transport, query_port=client)
         register_application_errors(ErrorDomain.INSIGHTS)
 
-        # Insights is intentionally exposed under product-owned method names.
-        async def read_dashboard_workspace(
-            params: DashboardWorkspaceParams,
-        ) -> Any:
-            return await insights.read_dashboard_workspace(params.dashboard_id)
-
-        dispatcher.register(
-            "insights.listDashboards",
-            insights.list_dashboards,
-            ListDashboardsParams,
-        )
-        dispatcher.register(
-            "insights.readDashboardWorkspace",
-            read_dashboard_workspace,
-            DashboardWorkspaceParams,
-        )
-        dispatcher.register(
-            "insights.saveDashboardDraft",
-            insights.save_dashboard_draft,
-            SaveDashboardDraftParams,
-        )
-        dispatcher.register(
-            "insights.deleteDashboardWorkspace",
-            insights.delete_dashboard_workspace,
-            DashboardWorkspaceParams,
-        )
-        dispatcher.register(
-            "insights.executeDashboardQuery",
-            insights.execute_dashboard_query,
-            ExecuteDashboardQueryParams,
-        )
-        dispatcher.register(
-            "insights.dashboardQueryLimits",
-            insights.dashboard_query_limits,
-            ProductParams,
-        )
-        dispatcher.register(
-            "insights.panelManifest",
-            insights.panel_manifest,
-            ProductParams,
-        )
         dispatcher.register("version.list", insights.list_versions, ListVersionsParams)
         dispatcher.register("version.create", insights.create_version, CreateVersionParams)
         dispatcher.register("version.save", insights.save_version, SaveVersionParams)

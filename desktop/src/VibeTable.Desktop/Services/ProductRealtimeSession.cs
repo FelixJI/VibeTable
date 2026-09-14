@@ -177,6 +177,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                         {
                             operation = "realtime.stream", code = "realtime.stopped",
                             message = "Live updates stopped. Close and reopen the workspace.",
+                            detail = error.GetType().Name,
                         });
                         return true;
                     }), token).ConfigureAwait(false);

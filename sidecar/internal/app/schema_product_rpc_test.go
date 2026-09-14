@@ -712,7 +712,13 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
-
+		unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
+		unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
+		unrelatedDashboardRegistration(t, "insights.listDashboards"),
+		unrelatedDashboardRegistration(t, "insights.panelManifest"),
+		unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
+		unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
 		unrelatedSurfaceRegistration(t, "interface.list"),
 		unrelatedSurfaceRegistration(t, "interface.load"),
 		unrelatedSurfaceRegistration(t, "interface.commit"),
@@ -721,6 +727,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 	)
 	if err != nil {
 		t.Fatal(err)

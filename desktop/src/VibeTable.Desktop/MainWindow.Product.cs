@@ -436,6 +436,10 @@ public partial class MainWindow : Window
                 _webBridge,
                 _workspaceSessionFilter,
                 () => _runtime.CurrentWorkspace),
+            new GridPresentationRequestController(
+                _webBridge,
+                _workspaceSessionFilter,
+                new HostGridStateStore(Path.Combine(_productDataRoot, "grid-presentation"))),
             TraceHostRequest);
 
         _runtime.ClientReady += OnRuntimeClientReady;
@@ -615,7 +619,7 @@ public partial class MainWindow : Window
         _dispatcher.SetProductDataGateway(_productGateway);
 
         _dispatcher.SetDashboardGateway(
-            new JsonRpcDashboardGateway(client),
+            new JsonRpcDashboardGateway(_productGateway),
             _session.Token);
         _dispatcher.SetSurfaceGateway(_productGateway);
 

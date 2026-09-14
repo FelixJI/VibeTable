@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { NDropdown } from "naive-ui";
@@ -7,6 +7,28 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 
 describe("AppToolbar", () => {
   beforeEach(() => setActivePinia(createPinia()));
+  it("keeps More open after button activation while the pointer leaves for an action", async () => {
+    vi.useFakeTimers();
+    useWorkspaceStore().selectTable("orders");
+    const wrapper = mount(AppToolbar, { attachTo: document.body });
+    try {
+      const trigger = wrapper.get('[data-testid="toolbar-more"]');
+      await trigger.trigger("click");
+      await vi.advanceTimersByTimeAsync(0);
+      const refreshOption = () => [...document.querySelectorAll<HTMLElement>(".n-dropdown-option-body")]
+        .find(option => option.textContent?.includes("刷新"));
+      expect(refreshOption()).toBeTruthy();
+      await trigger.trigger("mouseleave");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(refreshOption()).toBeTruthy();
+      refreshOption()!.click();
+      await wrapper.vm.$nextTick();
+      expect(wrapper.emitted("refresh")).toHaveLength(1);
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
 
   it("does not render the former connect, refresh, row-count, or theme controls", () => {
     const wrapper = mount(AppToolbar);

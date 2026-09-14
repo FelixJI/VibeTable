@@ -89,6 +89,8 @@ interface RangeRuntime {
 
 /** Options accepted by `useTabulator` (Task M3: editable grid wiring). */
 export interface UseTabulatorOptions {
+  readonly onPresentationRestore?: () => Promise<void>;
+  readonly onPresentationChanged?: () => void;
   /**
    * Invoked when the user commits an inline cell edit, with the row's
    * `rowKey`, the column name, the pre-edit value (captured in `cellEditing`),
@@ -208,6 +210,8 @@ export function useTabulator(
   let rangeChangedHandler: ((range: unknown) => void) | null = null;
   let tableBuiltHandler: (() => void) | null = null;
   let viewQueryHandler: (() => void) | null = null;
+  let presentationChangedHandler: (() => void) | null = null;
+  let restoringPresentation = false;
   let groupChangedHandler: ((groups: unknown) => void) | null = null;
   let cellEditingHandler: (() => void) | null = null;
   let cellEditFinishedHandler: (() => void) | null = null;
@@ -328,8 +332,11 @@ export function useTabulator(
       tableBuiltHandler = () => {
         gridReady = true;
         gridOperationsReady = true;
-        void drainQueuedColumns();
-        void drainQueuedRows();
+        void (async () => {
+          await drainQueuedColumns();
+          await restorePresentation();
+          await drainQueuedRows();
+        })();
       };
       eventGrid.on?.("tableBuilt", tableBuiltHandler);
       viewQueryHandler = () => emitViewQuery(eventGrid);
@@ -340,6 +347,12 @@ export function useTabulator(
       eventGrid.on?.("dataSorted", viewQueryHandler);
       eventGrid.on?.("dataFiltered", viewQueryHandler);
       eventGrid.on?.("dataGrouped", groupChangedHandler);
+      presentationChangedHandler = () => {
+        if (gridReady && !restoringPresentation && !applyingColumns) options?.onPresentationChanged?.();
+      };
+      for (const event of ["columnMoved", "columnResized", "columnVisibilityChanged"]) {
+        eventGrid.on?.(event, presentationChangedHandler);
+      }
       scrollVerticalHandler = () => {
         const cursorGrid = tabulator.value as unknown as {
           getRows?: (range?: string) => Array<{ getData: () => Record<string, unknown> }>;
@@ -475,6 +488,11 @@ export function useTabulator(
       eventGrid?.off?.("dataFiltered", viewQueryHandler);
     }
     if (groupChangedHandler) eventGrid?.off?.("dataGrouped", groupChangedHandler);
+    if (presentationChangedHandler) {
+      for (const event of ["columnMoved", "columnResized", "columnVisibilityChanged"]) {
+        eventGrid?.off?.(event, presentationChangedHandler);
+      }
+    }
     if (scrollVerticalHandler) eventGrid?.off?.("scrollVertical", scrollVerticalHandler);
     if (cellEditingHandler) eventGrid?.off?.("cellEditing", cellEditingHandler);
     if (cellEditFinishedHandler) {
@@ -623,6 +641,7 @@ export function useTabulator(
           lastSchemaGeneration = store.loadGeneration;
           lastEditSignature = editSchemaSignature(store.editSchema);
           lastRelationSignature = relationSignature();
+          await restorePresentation();
           refreshLocalizedPlaceholder(grid, gridEl.value);
           restoreCellRanges(grid, cellRanges);
         } catch {
@@ -727,11 +746,10 @@ export function useTabulator(
     ].join(":");
   }
 
-  function emitViewQuery(grid: {
+  function captureRuntimeQuery(grid: {
     getSorters?: () => Array<{ field: string; dir: "asc" | "desc" }>;
     getHeaderFilters?: () => Array<{ field: string; value: unknown }>;
-  }): void {
-    if (!gridReady) return;
+  }) {
     const query = buildQuery({
       sorters: grid.getSorters?.() ?? [],
       headerFilters: grid.getHeaderFilters?.() ?? [],
@@ -739,15 +757,32 @@ export function useTabulator(
       offset: 0,
       limit: 10_000,
     });
-    const view = {
+    return {
       headerFilters: [...(query.filters ?? [])],
       sorts: [...(query.sorts ?? [])],
       groups: activeGroups,
     };
+  }
+
+  function emitViewQuery(grid: Parameters<typeof captureRuntimeQuery>[0]): void {
+    if (!gridReady || restoringPresentation || applyingColumns) return;
+    const view = captureRuntimeQuery(grid);
     const signature = JSON.stringify(view);
     if (signature === lastViewQuerySignature) return;
     lastViewQuerySignature = signature;
     options?.onViewQueryChanged?.(view);
+  }
+
+  async function restorePresentation(): Promise<void> {
+    restoringPresentation = true;
+    try { await options?.onPresentationRestore?.(); }
+    finally {
+      restoringPresentation = false;
+      const grid = tabulator.value as unknown as Parameters<typeof captureRuntimeQuery>[0] | null;
+      if (options?.onPresentationRestore && grid) {
+        lastViewQuerySignature = JSON.stringify(captureRuntimeQuery(grid));
+      }
+    }
   }
 }
 

@@ -59,6 +59,7 @@ internal static class ProductRpcErrorMapper
         if (source.ValueKind != JsonValueKind.Object
             || !TryString(source, "code", out string code)
             || !TryString(source, "message", out string message)
+            || !WorkCalendarErrorPolicy.Accepts(code)
             || code.StartsWith("pocketbase.", StringComparison.OrdinalIgnoreCase))
         {
             return false;

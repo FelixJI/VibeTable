@@ -278,6 +278,18 @@ async def test_build_server_dispatches_import_task_without_internal_error(
     server, plugin_service = await backend_main._build_server()
     try:
         dispatcher = server._dispatcher
+        assert {
+            "insights.dashboardQueryLimits",
+            "insights.deleteDashboardWorkspace",
+            "insights.executeDashboardQuery",
+            "insights.listDashboards",
+            "insights.panelManifest",
+            "insights.readDashboardWorkspace",
+            "insights.saveDashboardDraft",
+            "preset.delete",
+            "preset.list",
+            "preset.save",
+        }.isdisjoint(dispatcher.registered_methods)
         registered = await dispatcher.dispatch(
             {
                 "jsonrpc": "2.0",

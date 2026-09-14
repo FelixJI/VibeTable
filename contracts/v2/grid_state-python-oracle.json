@@ -1,0 +1,749 @@
+{
+  "producer": "9fa626a13840830037bcb82eaddc0adf8617075b",
+  "cases": [
+    {
+      "name": "default-first-get",
+      "result": {
+        "state": {
+          "columns": [],
+          "sorts": [],
+          "filters": [],
+          "keyword": null,
+          "density": "comfortable",
+          "forcedRemote": false,
+          "revision": null
+        },
+        "revision": "revision-1",
+        "conflict": false
+      }
+    },
+    {
+      "name": "default-repeated-get",
+      "result": {
+        "state": {
+          "columns": [],
+          "sorts": [],
+          "filters": [],
+          "keyword": null,
+          "density": "comfortable",
+          "forcedRemote": false,
+          "revision": null
+        },
+        "revision": "revision-1",
+        "conflict": false
+      }
+    },
+    {
+      "name": "full-save",
+      "result": {
+        "state": {
+          "columns": [
+            {
+              "name": "amount",
+              "width": 4096,
+              "visible": false,
+              "frozen": true,
+              "order": 1
+            },
+            {
+              "name": "title",
+              "width": 1,
+              "visible": true,
+              "frozen": false,
+              "order": 0
+            }
+          ],
+          "sorts": [
+            {
+              "field": "amount",
+              "direction": "desc",
+              "nullsLast": true
+            }
+          ],
+          "filters": [
+            {
+              "field": "amount",
+              "operator": "eq",
+              "value": 9007199254740993,
+              "logic": "and"
+            }
+          ],
+          "keyword": "查询😀",
+          "density": "compact",
+          "forcedRemote": true,
+          "revision": null
+        },
+        "revision": "revision-2",
+        "conflict": false
+      }
+    },
+    {
+      "name": "full-read",
+      "result": {
+        "state": {
+          "columns": [
+            {
+              "name": "amount",
+              "width": 4096,
+              "visible": false,
+              "frozen": true,
+              "order": 1
+            },
+            {
+              "name": "title",
+              "width": 1,
+              "visible": true,
+              "frozen": false,
+              "order": 0
+            }
+          ],
+          "sorts": [
+            {
+              "field": "amount",
+              "direction": "desc",
+              "nullsLast": true
+            }
+          ],
+          "filters": [
+            {
+              "field": "amount",
+              "operator": "eq",
+              "value": 9007199254740993,
+              "logic": "and"
+            }
+          ],
+          "keyword": "查询😀",
+          "density": "compact",
+          "forcedRemote": true,
+          "revision": null
+        },
+        "revision": "revision-2",
+        "conflict": false
+      }
+    },
+    {
+      "name": "stale-save",
+      "result": {
+        "state": {
+          "columns": [
+            {
+              "name": "amount",
+              "width": 4096,
+              "visible": false,
+              "frozen": true,
+              "order": 1
+            },
+            {
+              "name": "title",
+              "width": 1,
+              "visible": true,
+              "frozen": false,
+              "order": 0
+            }
+          ],
+          "sorts": [
+            {
+              "field": "amount",
+              "direction": "desc",
+              "nullsLast": true
+            }
+          ],
+          "filters": [
+            {
+              "field": "amount",
+              "operator": "eq",
+              "value": 9007199254740993,
+              "logic": "and"
+            }
+          ],
+          "keyword": "查询😀",
+          "density": "compact",
+          "forcedRemote": true,
+          "revision": null
+        },
+        "revision": "revision-2",
+        "conflict": true
+      }
+    },
+    {
+      "name": "null-revision-existing",
+      "result": {
+        "state": {
+          "columns": [
+            {
+              "name": "amount",
+              "width": 4096,
+              "visible": false,
+              "frozen": true,
+              "order": 1
+            },
+            {
+              "name": "title",
+              "width": 1,
+              "visible": true,
+              "frozen": false,
+              "order": 0
+            }
+          ],
+          "sorts": [
+            {
+              "field": "amount",
+              "direction": "desc",
+              "nullsLast": true
+            }
+          ],
+          "filters": [
+            {
+              "field": "amount",
+              "operator": "eq",
+              "value": 9007199254740993,
+              "logic": "and"
+            }
+          ],
+          "keyword": "查询😀",
+          "density": "compact",
+          "forcedRemote": true,
+          "revision": null
+        },
+        "revision": "revision-2",
+        "conflict": true
+      }
+    },
+    {
+      "name": "other-workspace",
+      "result": {
+        "state": {
+          "columns": [],
+          "sorts": [],
+          "filters": [],
+          "keyword": null,
+          "density": "comfortable",
+          "forcedRemote": false,
+          "revision": null
+        },
+        "revision": "revision-3",
+        "conflict": false
+      }
+    },
+    {
+      "name": "other-table",
+      "result": {
+        "state": {
+          "columns": [],
+          "sorts": [],
+          "filters": [],
+          "keyword": null,
+          "density": "comfortable",
+          "forcedRemote": false,
+          "revision": null
+        },
+        "revision": "revision-4",
+        "conflict": false
+      }
+    },
+    {
+      "name": "reopen",
+      "result": {
+        "state": {
+          "columns": [
+            {
+              "name": "amount",
+              "width": 4096,
+              "visible": false,
+              "frozen": true,
+              "order": 1
+            },
+            {
+              "name": "title",
+              "width": 1,
+              "visible": true,
+              "frozen": false,
+              "order": 0
+            }
+          ],
+          "sorts": [
+            {
+              "field": "amount",
+              "direction": "desc",
+              "nullsLast": true
+            }
+          ],
+          "filters": [
+            {
+              "field": "amount",
+              "operator": "eq",
+              "value": 9007199254740993,
+              "logic": "and"
+            }
+          ],
+          "keyword": "查询😀",
+          "density": "compact",
+          "forcedRemote": true,
+          "revision": null
+        },
+        "revision": "revision-2",
+        "conflict": false
+      }
+    },
+    {
+      "name": "row-data",
+      "result": [
+        {
+          "type": "extra_forbidden",
+          "loc": [
+            "rowData"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pending-edits",
+      "result": [
+        {
+          "type": "extra_forbidden",
+          "loc": [
+            "pendingEdits"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "columns-overflow",
+      "result": [
+        {
+          "type": "too_long",
+          "loc": [
+            "columns"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sorts-overflow",
+      "result": [
+        {
+          "type": "too_long",
+          "loc": [
+            "sorts"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "filters-overflow",
+      "result": [
+        {
+          "type": "too_long",
+          "loc": [
+            "filters"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "keyword-overflow",
+      "result": [
+        {
+          "type": "string_too_long",
+          "loc": [
+            "keyword"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "width-low",
+      "result": [
+        {
+          "type": "greater_than_equal",
+          "loc": [
+            "columns",
+            0,
+            "width"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "width-high",
+      "result": [
+        {
+          "type": "less_than_equal",
+          "loc": [
+            "columns",
+            0,
+            "width"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "negative-order",
+      "result": [
+        {
+          "type": "greater_than_equal",
+          "loc": [
+            "columns",
+            0,
+            "order"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "empty-column",
+      "result": [
+        {
+          "type": "string_too_short",
+          "loc": [
+            "columns",
+            0,
+            "name"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "invalid-density",
+      "result": [
+        {
+          "type": "literal_error",
+          "loc": [
+            "density"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "schema-GridState",
+      "result": {
+        "$defs": {
+          "ColumnState": {
+            "additionalProperties": false,
+            "description": "One column's persisted grid state.\n\nWire form::\n\n    {\"name\": \"amount\", \"width\": 120, \"visible\": true,\n     \"frozen\": false, \"order\": 2}\n\n* ``name`` is the schema column name (verified against the live schema on\n  load; unknown columns are pruned).\n* ``width`` is in CSS pixels (null = default).\n* ``visible`` controls column visibility (default true).\n* ``frozen`` marks a frozen/pinned column (default false).\n* ``order`` is the 0-based position in the column order (null = append).",
+            "properties": {
+              "name": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Name",
+                "type": "string"
+              },
+              "width": {
+                "anyOf": [
+                  {
+                    "maximum": 4096,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Width"
+              },
+              "visible": {
+                "default": true,
+                "title": "Visible",
+                "type": "boolean"
+              },
+              "frozen": {
+                "default": false,
+                "title": "Frozen",
+                "type": "boolean"
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Order"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "title": "ColumnState",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "The full persisted grid state for one table.\n\nWire form::\n\n    {\"columns\": [...], \"sorts\": [...], \"filters\": [...],\n     \"keyword\": null, \"density\": \"comfortable\",\n     \"forcedRemote\": false, \"revision\": \"rev-3\"}\n\n* ``columns`` is the per-column layout state.\n* ``sorts`` / ``filters`` / ``keyword`` mirror the B3 query AST so the\n  grid restores the exact view the user left.\n* ``density`` is a UI hint (``compact`` / ``comfortable`` / ``cozy``).\n* ``forced_remote`` records the user's per-table remote-mode preference.\n* ``revision`` is the opaque conflict token carried on save.",
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/$defs/ColumnState"
+            },
+            "maxItems": 512,
+            "title": "Columns",
+            "type": "array"
+          },
+          "sorts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 16,
+            "title": "Sorts",
+            "type": "array"
+          },
+          "filters": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 64,
+            "title": "Filters",
+            "type": "array"
+          },
+          "keyword": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Keyword"
+          },
+          "density": {
+            "default": "comfortable",
+            "enum": [
+              "compact",
+              "comfortable",
+              "cozy"
+            ],
+            "title": "Density",
+            "type": "string"
+          },
+          "forcedRemote": {
+            "default": false,
+            "title": "Forcedremote",
+            "type": "boolean"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          }
+        },
+        "title": "GridState",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schema-GridStateGetParams",
+      "result": {
+        "additionalProperties": false,
+        "description": "Parameters for ``gridState.get``.\n\nWire form::\n\n    {\"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\"}",
+        "properties": {
+          "databaseId": {
+            "minLength": 1,
+            "title": "Databaseid",
+            "type": "string"
+          },
+          "table": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Table",
+            "type": "string"
+          }
+        },
+        "required": [
+          "databaseId",
+          "table"
+        ],
+        "title": "GridStateGetParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schema-GridStateSaveParams",
+      "result": {
+        "$defs": {
+          "ColumnState": {
+            "additionalProperties": false,
+            "description": "One column's persisted grid state.\n\nWire form::\n\n    {\"name\": \"amount\", \"width\": 120, \"visible\": true,\n     \"frozen\": false, \"order\": 2}\n\n* ``name`` is the schema column name (verified against the live schema on\n  load; unknown columns are pruned).\n* ``width`` is in CSS pixels (null = default).\n* ``visible`` controls column visibility (default true).\n* ``frozen`` marks a frozen/pinned column (default false).\n* ``order`` is the 0-based position in the column order (null = append).",
+            "properties": {
+              "name": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Name",
+                "type": "string"
+              },
+              "width": {
+                "anyOf": [
+                  {
+                    "maximum": 4096,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Width"
+              },
+              "visible": {
+                "default": true,
+                "title": "Visible",
+                "type": "boolean"
+              },
+              "frozen": {
+                "default": false,
+                "title": "Frozen",
+                "type": "boolean"
+              },
+              "order": {
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Order"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "title": "ColumnState",
+            "type": "object"
+          },
+          "GridState": {
+            "additionalProperties": false,
+            "description": "The full persisted grid state for one table.\n\nWire form::\n\n    {\"columns\": [...], \"sorts\": [...], \"filters\": [...],\n     \"keyword\": null, \"density\": \"comfortable\",\n     \"forcedRemote\": false, \"revision\": \"rev-3\"}\n\n* ``columns`` is the per-column layout state.\n* ``sorts`` / ``filters`` / ``keyword`` mirror the B3 query AST so the\n  grid restores the exact view the user left.\n* ``density`` is a UI hint (``compact`` / ``comfortable`` / ``cozy``).\n* ``forced_remote`` records the user's per-table remote-mode preference.\n* ``revision`` is the opaque conflict token carried on save.",
+            "properties": {
+              "columns": {
+                "items": {
+                  "$ref": "#/$defs/ColumnState"
+                },
+                "maxItems": 512,
+                "title": "Columns",
+                "type": "array"
+              },
+              "sorts": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "title": "Sorts",
+                "type": "array"
+              },
+              "filters": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "maxItems": 64,
+                "title": "Filters",
+                "type": "array"
+              },
+              "keyword": {
+                "anyOf": [
+                  {
+                    "maxLength": 256,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Keyword"
+              },
+              "density": {
+                "default": "comfortable",
+                "enum": [
+                  "compact",
+                  "comfortable",
+                  "cozy"
+                ],
+                "title": "Density",
+                "type": "string"
+              },
+              "forcedRemote": {
+                "default": false,
+                "title": "Forcedremote",
+                "type": "boolean"
+              },
+              "revision": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Revision"
+              }
+            },
+            "title": "GridState",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Parameters for ``gridState.save``.\n\nWire form::\n\n    {\"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"state\": {...}, \"revision\": \"rev-3\"}\n\n``revision`` is the conflict token from the prior get/save; a mismatch\nmeans another session saved newer state and the caller must re-read.",
+        "properties": {
+          "databaseId": {
+            "minLength": 1,
+            "title": "Databaseid",
+            "type": "string"
+          },
+          "table": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Table",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/$defs/GridState"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "databaseId",
+          "table",
+          "state"
+        ],
+        "title": "GridStateSaveParams",
+        "type": "object"
+      }
+    }
+  ]
+}

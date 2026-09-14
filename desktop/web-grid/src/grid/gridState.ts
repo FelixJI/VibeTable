@@ -2,8 +2,8 @@
  * B3 Task 5: durable grid-state restore and reconcile.
  *
  * The host loads saved grid state (column width/order/visibility/frozen,
- * sort/filter/search, density, forced-remote) through the backend's local
- * user-state database. This module restores that state onto a Tabulator grid
+ * sort/filter/search and density) through the Host's device-local store.
+ * This module reconciles that state for a Tabulator grid
  * AFTER the schema has loaded, pruning columns that no longer exist and
  * leaving newly-added columns visible by default.
  *
@@ -16,8 +16,9 @@ import type {
   ColumnState,
   GridState,
   SortCondition,
-  FilterCondition,
+  FilterExpression,
 } from "@/contracts";
+import { headerFilterConditions } from "./viewQuery";
 import type { TabulatorSorter, TabulatorHeaderFilter } from "./queryAdapter";
 
 /** A reconciled column state after pruning against the live schema. */
@@ -29,7 +30,7 @@ export interface ReconciledGridState {
   /** The sort conditions to restore. */
   readonly sorts: readonly SortCondition[];
   /** The filter conditions to restore. */
-  readonly filters: readonly FilterCondition[];
+  readonly filters: readonly FilterExpression[];
   /** The keyword to restore, or null. */
   readonly keyword: string | null;
   /** The density hint. */
@@ -68,7 +69,7 @@ export function reconcileState(
   }
 
   const sorts = (saved.sorts ?? []).filter((s) => liveNames.has(s.field));
-  const filters = (saved.filters ?? []).filter((f) => liveNames.has(f.field));
+  const filters = reconcileFilters(saved.filters ?? [], liveNames);
 
   return {
     columns,
@@ -85,6 +86,14 @@ export function reconcileState(
  * Build the Tabulator restore shape from a reconciled state: the column
  * definitions (width/visible/frozen/order) and the sorter/header-filter lists.
  */
+export function orderSavedColumns(columns: readonly ColumnState[]): ColumnState[] {
+  return [...columns].sort((left, right) => {
+    if (left.order == null) return right.order == null ? 0 : 1;
+    if (right.order == null) return -1;
+    return left.order - right.order;
+  });
+}
+
 export function buildRestorePlan(state: ReconciledGridState): {
   readonly columnLayout: readonly {
     readonly field: string;
@@ -95,7 +104,8 @@ export function buildRestorePlan(state: ReconciledGridState): {
   readonly sorters: readonly TabulatorSorter[];
   readonly headerFilters: readonly TabulatorHeaderFilter[];
 } {
-  const columnLayout = state.columns.map((c) => ({
+  const orderedColumns = orderSavedColumns(state.columns);
+  const columnLayout = orderedColumns.map((c) => ({
     field: c.name,
     ...(c.width !== null && c.width !== undefined ? { width: c.width } : {}),
     visible: c.visible ?? true,
@@ -105,10 +115,17 @@ export function buildRestorePlan(state: ReconciledGridState): {
     field: s.field,
     dir: s.direction ?? "asc",
   }));
-  const headerFilters: TabulatorHeaderFilter[] = state.filters
-    .filter((f) => f.operator === "eq")
+  const headerFilters: TabulatorHeaderFilter[] = headerFilterConditions(state.filters)
     .map((f) => ({ field: f.field, value: f.value }));
   return { columnLayout, sorters, headerFilters };
+}
+
+function reconcileFilters(filters: readonly FilterExpression[], fields: ReadonlySet<string>): FilterExpression[] {
+  return filters.flatMap((filter): FilterExpression[] => {
+    if ("field" in filter) return fields.has(filter.field) ? [{ ...filter }] : [];
+    const children = reconcileFilters(filter.filters, fields);
+    return children.length ? [{ ...filter, filters: children }] : [];
+  });
 }
 
 /**

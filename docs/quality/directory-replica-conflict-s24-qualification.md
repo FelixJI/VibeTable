@@ -184,3 +184,29 @@ source `af7442d8` 的 CI run `34457594963` 中，S24 seed 通过，fork-left 已
 - 类型检查：在 `desktop/web-grid` 运行 `node node_modules/vue-tsc/bin/vue-tsc.js --noEmit`，**EXIT0**。
 
 本次未执行构建、GUI 或重跑 CI；这项呈现代际修复不消除原 CI 的 bridge 取消记录，也不证明复制按钮超时已解决。该超时及 fresh CI 资格继续保持未解决状态。
+
+## 2026-09-14：Task #342 接手与最新主干整合
+
+复用 PR #333 / `codex/complete-directory-replica-conflict-s24`。接手 head 为
+`5793a5251fc37d2acb9476449560adf34c9d91fc`，fetch 后 main 为
+`2eb94a5bbb4c87e6b8f8f5004683b0245c47ee91`；目标工作区干净，未观察到指向该工作区的旧实施进程。
+主 clone 的既有用户改动保留。本次合入 main 保留 query/cursor workspace 租约、通知路径的既有有界恢复、Host 呈现状态与清表代际失效，以及 S24/S32/S33/S34 场景；能力索引由原生成器重建。
+
+原 CI run `34472509787` / job `102859813157` 的失败为
+`GridRequestControllerTests.DispatchAsync_PreservesCompleteGridStateWireShape` /
+`Sequence contains no elements`。原 head 定向测试本机单次通过，不能据此否定失败。
+main 的 #334 已将该测试改为 `ManualTimeProvider`：原先等待 600ms 与保存 timer 回调之间没有完成顺序保证。
+本次以原测试的完整断言和受控延迟保存回调取得同一 `Single` 空集合 RED（EXIT1），
+移除临时诊断后原正式测试 GREEN（EXIT0，1 passed），相关 Host 查询/生命周期 87 passed。
+未更改生产 debounce、扩大等待、撤回租约或删除断言。原 CI 未记录调度轨迹；受控复现证明该竞态，不声称已观测其具体线程交错。
+诊断日志保留在 ignored `.ai-flow/runtime/s24-save-timer-{red,green}.log`。
+
+首次完整 `uv run --frozen --no-sync python scripts/automation_project.py quality` 为 EXIT1：
+2010 passed / 1 skipped / 1 error，后端覆盖率 91.90%；错误是 PDF 夹具捕获 .NET 输出时使用本机 GBK 解码触发
+`UnicodeDecodeError`。后续使用仓库 CI 既有 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`，不改测试或依赖。
+首轮 Go 定向集 conflict/replica/snapshot 通过；workspacev2 的 offline runtime 和 Windows storage-key 测试出现
+TempDir 删除 coordination 目录失败。两次有界聚焦复验均通过，关闭顺序包含 worker drain；原现场随后已无文件。
+尚未确认此清理失败根因，不将聚焦通过或空目录解释为已修复，不新增删除重试。
+
+本节只记录接手、整合与诊断。当前组合的完整质量、最终包/S24、fresh required、独立审阅以及人工合并后主干资格，
+以 Task #342 / PR #333 的后续实际源码与报告记录为准；此前候选资格仍只属于各自源码。

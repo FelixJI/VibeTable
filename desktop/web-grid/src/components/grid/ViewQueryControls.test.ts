@@ -12,6 +12,24 @@ const columns = [
 describe("ViewQueryControls", () => {
   afterEach(() => { document.body.innerHTML = ""; });
 
+  it("provides real record search, density and column freeze controls", async () => {
+    const wrapper = mount(ViewQueryControls, { attachTo: document.body, props: {
+      columns, filters: [], groups: [], summaries: [], visibleFields: ["status", "amount"],
+      keyword: "", density: "comfortable", frozenFields: [],
+    } });
+    await wrapper.get('[data-testid="view-keyword"] input').setValue("two words");
+    expect(wrapper.emitted("keywordChange")?.at(-1)).toEqual(["two words"]);
+    const density = wrapper.findAllComponents(NSelect).find(component => component.attributes("data-testid") === "view-density")!;
+    density.vm.$emit("update:value", "compact");
+    expect(wrapper.emitted("densityChange")).toEqual([["compact"]]);
+    await wrapper.get('[data-testid="view-hidden-trigger"]').trigger("click");
+    await flushPromises();
+    const freeze = document.querySelector<HTMLElement>('[data-testid="view-freeze-status"]');
+    expect(freeze).not.toBeNull(); freeze!.click(); await flushPromises();
+    expect(wrapper.emitted("freeze")).toEqual([["status", true]]);
+    wrapper.unmount();
+  });
+
   it("exposes filter, ordinary grouping, summary and per-view hiding entrances", () => {
     const wrapper = mount(ViewQueryControls, {
       attachTo: document.body,

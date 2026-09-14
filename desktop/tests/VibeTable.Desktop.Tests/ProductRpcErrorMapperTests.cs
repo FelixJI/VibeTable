@@ -7,6 +7,17 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRpcErrorMapperTests
 {
     [TestMethod]
+    public void WorkCalendarUnknownDomainCodesAreRejectedAtBothSeams()
+    {
+        const string unknown = "settings.calendar.internal_details";
+        Assert.IsFalse(WorkCalendarErrorPolicy.Accepts(unknown));
+        Assert.IsFalse(ProductRpcErrorMapper.TryMap(JsonSerializer.SerializeToElement(new
+        {
+            code = unknown, path = "", message = "private storage exception",
+        }), out _));
+    }
+
+    [TestMethod]
     public void MapsFieldPathAndDropsProviderSecrets()
     {
         JsonElement source = JsonDocument.Parse(

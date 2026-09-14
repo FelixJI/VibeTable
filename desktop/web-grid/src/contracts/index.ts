@@ -1,3 +1,8 @@
+import type { WorkCalendarOverride } from "@/calendar/workCalendar";
+
+export interface SharedWorkCalendarResult { readonly overrides: WorkCalendarOverride[]; readonly revision: string }
+export interface SharedWorkCalendarCommit { readonly overrides: WorkCalendarOverride[]; readonly expectedRevision: string; readonly idempotencyKey: string }
+
 import type { RelationInspectionRequest, RelationInspectionReport } from "@/relation-inspection/type";
 import type {
   LookupListResult,
@@ -522,7 +527,9 @@ export interface ColumnState {
 export interface GridState {
   readonly columns?: readonly ColumnState[];
   readonly sorts?: readonly SortCondition[];
-  readonly filters?: readonly FilterCondition[];
+  readonly filters?: readonly FilterExpression[];
+  readonly presetId?: string | null;
+  readonly presetRevision?: string | null;
   readonly keyword?: string | null;
   readonly density?: "compact" | "comfortable" | "cozy";
   readonly forcedRemote?: boolean;
@@ -1407,6 +1414,8 @@ export type WebMessageType =
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
+  | "settings.readWorkCalendar"
+  | "settings.commitWorkCalendar"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1420,6 +1429,8 @@ export type WebMessageType =
   | "table.queryRequested"
   | "table.cursorRequested"
   | "gridState.saveRequested"
+  | "gridState.get"
+  | "gridState.save"
   // B2 paste preview + apply requests.
   | "table.previewPasteRequested"
   | "table.applyPasteRequested"
@@ -1482,6 +1493,8 @@ export type WebMessageType =
  * Unknown inbound types are dropped after a diagnostic callback.
  */
 export type HostMessageType =
+  | "gridState.get"
+  | "gridState.save"
   | "host.startupStateChanged"
   | "database.opened"
   | "database.openCancelled"
@@ -1547,6 +1560,8 @@ export type HostMessageType =
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
+  | "settings.readWorkCalendar"
+  | "settings.commitWorkCalendar"
   | "preset.list"
   | "preset.save"
   | "preset.delete"
@@ -1801,6 +1816,8 @@ export interface BridgeMessage<P = unknown> {
 
 /** Map of (inbound) message type -> resolved payload type, for typed handlers. */
 export interface HostPayloadMap {
+  "gridState.get": GridStateResult;
+  "gridState.save": GridStateResult;
   "host.startupStateChanged": StartupStatePayload;
   "database.opened": DatabaseOpenedPayload;
   "database.openCancelled": { readonly openId: string; readonly reason: string };
@@ -1866,6 +1883,8 @@ export interface HostPayloadMap {
   "lookup.list": LookupListResult;
   "lookup.query": LookupQueryResult;
 	"lookup.valuePage": LookupCellValue;
+  "settings.readWorkCalendar": SharedWorkCalendarResult;
+  "settings.commitWorkCalendar": SharedWorkCalendarResult;
   "preset.list": PresetsResult;
   "preset.save": PresetEntry;
   "preset.delete": DeletePresetVersionResult;
@@ -1990,6 +2009,8 @@ export interface WebPayloadMap {
   "lookup.list": { readonly collection: string };
   "lookup.query": LookupQueryParams;
 	"lookup.valuePage": LookupValuePageParams;
+  "settings.readWorkCalendar": Record<string, never>;
+  "settings.commitWorkCalendar": SharedWorkCalendarCommit;
   "preset.list": { readonly collection: string };
   "preset.save": {
     readonly collection: string;
@@ -2042,6 +2063,8 @@ export interface WebPayloadMap {
   "table.queryRequested": TableQueryRequestedPayload;
   "table.cursorRequested": TableCursorRequestedPayload;
   "gridState.saveRequested": GridStateSaveRequestedPayload;
+  "gridState.get": { readonly table: string };
+  "gridState.save": { readonly table: string; readonly state: GridState; readonly revision: string };
   // B2 paste preview + apply requests.
   "table.previewPasteRequested": PreviewPasteRequestedPayload;
   "table.applyPasteRequested": ApplyPasteRequestedPayload;

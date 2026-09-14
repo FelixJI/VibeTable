@@ -16,6 +16,8 @@ Web layer never submits a raw path and only ever holds grant ids.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import Any
 
 from backend.application.path_grant import PathGrantError, SessionPathGrantStore
@@ -109,6 +111,10 @@ class TaskService:
     def resolve_path(self, grant_id: str, *, purpose: str, direction: str) -> str:
         """Broker-internal: resolve a grant to its canonical path."""
         return self._grants.resolve(grant_id, purpose=purpose, direction=direction)
+
+    def reserve_import_grant(self, grant_id: str) -> AbstractContextManager[Callable[[], None]]:
+        """Broker-internal: admit and settle one confirmed import."""
+        return self._grants.reserve(grant_id, purpose="import_source", direction="read")
 
     def consume_grant(self, grant_id: str) -> None:
         """Broker-internal: mark a grant consumed (single-use import sources)."""

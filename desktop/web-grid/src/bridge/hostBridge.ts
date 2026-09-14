@@ -29,6 +29,7 @@
  * (no args) binds to `window.chrome.webview` if present.
  */
 
+import { GridStateNumberError, parseGridStateJson } from "@/contracts/gridStateJson";
 import type {
   BridgeMessage,
   HostMessageType as SharedHostMessageType,
@@ -284,6 +285,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "lookup.list",
   "lookup.query",
 	"lookup.valuePage",
+  "settings.readWorkCalendar",
+  "settings.commitWorkCalendar",
   "preset.list",
   "preset.save",
   "preset.delete",
@@ -293,6 +296,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "version.compare",
   "version.promote",
   "version.delete",
+  "gridState.get",
+  "gridState.save",
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
@@ -395,6 +400,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "lookup.list",
   "lookup.query",
 	"lookup.valuePage",
+  "settings.readWorkCalendar",
+  "settings.commitWorkCalendar",
   "preset.list",
   "preset.save",
   "preset.delete",
@@ -413,6 +420,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "table.queryRequested",
   "table.cursorRequested",
   "gridState.saveRequested",
+  "gridState.get",
+  "gridState.save",
   // B2 paste preview + apply requests.
   "table.previewPasteRequested",
   "table.applyPasteRequested",
@@ -747,10 +756,22 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       let parsed: unknown;
       try {
         parsed = JSON.parse(data);
-      } catch {
+        if (isPlainObject(parsed) && (parsed.type === "gridState.get" || parsed.type === "gridState.save")) {
+          parsed = parseGridStateJson(data);
+        }
+      } catch (error) {
+        if (error instanceof GridStateNumberError && isPlainObject(parsed)
+          && typeof parsed.requestId === "string") {
+          const entry = pending.get(parsed.requestId);
+          if (entry?.responseTypes.has(parsed.type as HostMessageType)) {
+            clearPendingTimer(entry);
+            pending.delete(parsed.requestId);
+            entry.reject(error);
+          }
+        }
         onDiagnostic({
           kind: "malformed",
-          reason: "inbound message string is not valid JSON",
+          reason: error instanceof GridStateNumberError ? error.message : "inbound message string is not valid JSON",
           raw: data,
         });
         return;

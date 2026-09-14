@@ -1026,6 +1026,7 @@ describe("WorkspaceView", () => {
   });
 
   it("manages persisted views through create, duplicate, rename, default, switch, save, and delete", async () => {
+    configureWorkspaceEpochPair();
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -1063,6 +1064,8 @@ describe("WorkspaceView", () => {
     });
     await flushPromises();
     const listRequest = [...posted].reverse().find((item) => item.type === "preset.list")!;
+    const layoutRequest = [...posted].reverse().find((item) => item.type === "gridState.get")!;
+    emit({ type: "gridState.get", requestId: layoutRequest.requestId, payload: { state: {}, revision: "layout-1", conflict: false } });
     const first = entry("view-1", "默认", true);
     const second = entry("view-2", "备选");
     emit({ type: "preset.list", requestId: listRequest.requestId, payload: { collection: "orders", presets: [first, second] } });
@@ -1110,6 +1113,7 @@ describe("WorkspaceView", () => {
     await answerSave({ ...first, view: { ...first.view, isDefault: false } }, "view-1");
     await vi.waitFor(() => expect(presets.activePresetId).toBe("view-4"));
 
+    presets.markDirty();
     bar.vm.$emit("switch", second);
     await answerSave(promoted, "view-4");
     await vi.waitFor(() => expect(presets.activePresetId).toBe("view-2"));
@@ -2255,12 +2259,21 @@ describe("WorkspaceView", () => {
   });
 
   it("routes grid sort/filter/group intent to the standard full-dataset table query", async () => {
-    const { bridge, posted } = makeRecordingBridge();
+    configureWorkspaceEpochPair();
+    const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
     workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
     const wrapper = mountView();
+    await flushPromises();
+    workspace.selectTable("orders");
+    useTableStore().schema = ["status", "contract_price", "customer"].map(name => ({ name, title: name, dataType: "text", editable: false, nullable: true }));
+    await flushPromises();
+    const presetRequest = [...posted].reverse().find(item => item.type === "preset.list")!;
+    const layoutRequest = [...posted].reverse().find(item => item.type === "gridState.get")!;
+    emit({ type: "preset.list", requestId: presetRequest.requestId, payload: { collection: "orders", presets: [] } });
+    emit({ type: "gridState.get", requestId: layoutRequest.requestId, payload: { state: {}, revision: "layout-1", conflict: false } });
     await flushPromises();
     posted.length = 0;
 

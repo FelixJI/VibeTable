@@ -48,7 +48,7 @@ public sealed class WebMessageRouter
     /// The Phase A + B1 + B3 web request types (verbatim from
     /// <c>desktop/web-grid/src/contracts.ts</c>). B3 adds
     /// <c>table.queryRequested</c> (debounced remote query) and
-    /// <c>gridState.saveRequested</c> (debounced state save).
+    /// <c>gridState.get</c> / <c>gridState.save</c> (Host-owned presentation).
     /// </summary>
     private static readonly HashSet<string> WebRequestWhitelist = new(StringComparer.Ordinal)
     {
@@ -63,7 +63,8 @@ public sealed class WebMessageRouter
         "table.deleteRowsRequested",
         // B3 query + state requests.
         "table.queryRequested",
-        "gridState.saveRequested",
+        "gridState.get",
+        "gridState.save",
         // B2 paste preview + apply requests.
         "table.previewPasteRequested",
         "table.applyPasteRequested",
@@ -174,6 +175,8 @@ public sealed class WebMessageRouter
         "plugin.projectContext.unavailable",
         "table.pageLoaded",
         "table.datasetReady",
+        "gridState.get",
+        "gridState.save",
         "operation.failed",
         // B1 mutation notifications.
         "table.editSchemaLoaded",
@@ -399,6 +402,16 @@ public sealed class WebMessageRouter
                     "CAPABILITY_NOT_PUBLIC");
             }
 
+            if (GridPresentationRequestController.Handles(type)
+                && (!_productRpcCapabilities.TryGet(type, out ProductRpcCapability? gridCapability)
+                    || gridCapability.Owner != "wpfHost"
+                    || gridCapability.Scope != "workspace"
+                    || gridCapability.Audience != "rendererPublic"))
+            {
+                return BuildOperationFailed(requestId,
+                    "Grid presentation capability is unavailable.", "CAPABILITY_NOT_PUBLIC");
+            }
+
             ProductRpcRoute? productRoute = null;
             ProductRpcCapability? productCapability = null;
             bool productCatalogRequest = IsProductCatalogTypedRequest(type);
@@ -449,6 +462,9 @@ public sealed class WebMessageRouter
                         "BAD_WORKSPACE_SCOPE");
                 }
             }
+            if (GridPresentationRequestController.Handles(type) && scope is null)
+                return BuildOperationFailed(requestId,
+                    "Grid presentation requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
             if (productRoute == ProductRpcRoute.GoSidecar)
             {
                 if (productCapability?.Scope != "workspace")

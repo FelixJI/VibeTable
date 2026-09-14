@@ -1,0 +1,12 @@
+{
+  "targets": [
+    {"id": "a5target0000001", "code": "C-001", "label": "中文标签"},
+    {"id": "a5target0000002", "code": "C-002", "label": "=文本"}
+  ],
+  "rows": [
+    {"name": "matched", "code": "C-001", "targetId": "a5target0000001", "label": "中文标签"},
+    {"name": "formula-text", "code": "C-002", "targetId": "a5target0000002", "label": "=文本"},
+    {"name": "blank", "code": "", "targetId": null, "label": ""}
+  ],
+  "missingCode": "C-MISSING"
+}

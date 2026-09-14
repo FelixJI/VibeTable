@@ -26,7 +26,7 @@ import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
-import { TABULATOR_INJECTION_KEY } from "./tabulatorInjection";
+import { TABULATOR_INJECTION_KEY, GRID_PRESENTATION_KEY } from "./tabulatorInjection";
 import LoadingOverlay from "@/components/feedback/LoadingOverlay.vue";
 import ErrorOverlay from "@/components/feedback/ErrorOverlay.vue";
 import LookupGroupPanel from "@/components/grid/LookupGroupPanel.vue";
@@ -77,7 +77,10 @@ const store = useTableStore();
 const ui = useUiStore();
 const relationLookup = useRelationLookupStore();
 const tabulator = inject<Ref<TabulatorFull | null>>(TABULATOR_INJECTION_KEY);
+const presentation = inject(GRID_PRESENTATION_KEY, null);
 const { dataApplying } = useTabulator(gridEl, {
+  onPresentationRestore: () => presentation?.restoreGrid() ?? Promise.resolve(),
+  onPresentationChanged: () => presentation?.changed(),
   onCellEdited: props.onCellEdited,
   onRangeSelectionChanged: ({ rowKeys, fields }) => {
     const dataFields = fields.filter((field) => field !== ROW_NUMBER_FIELD);

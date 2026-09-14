@@ -51,6 +51,13 @@ function samplePage(): TablePage {
   };
 }
 
+it("allows actual column reordering while retaining authoritative remote queries", () => {
+  const options = buildOptions(samplePage());
+  expect(options.movableColumns).toBe(true);
+  expect(options.sortMode).toBe("remote");
+  expect(options.filterMode).toBe("remote");
+});
+
 describe("buildColumns (read-only Tabulator column defs)", () => {
   it.each([
     ["updating", "计算中"],

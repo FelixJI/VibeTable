@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：30
-- 唯一能力：48
-- 场景—能力关联：66
+- 场景：33
+- 唯一能力：52
+- 场景—能力关联：70
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -34,11 +34,13 @@
 | `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（空表转换与非空迁移故障回滚） |
 | `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
+| `grid.state` | <code>33-host-grid-presentation</code>（Host 网格呈现保存与恢复） |
 | `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `kanban.lifecycle` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化） |
 | `lookup.definition-read` | <code>26-lookup-definition-read</code>（Lookup 持久定义读取） |
+| `lookup.export` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出） |
 | `lookup.source-pagination` | <code>29-lookup-source-pagination</code>（Lookup 来源分页读取） |
 | `mutation.authority` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化）、<code>21-calendar-date-move</code>（Calendar 日期拖动持久化）、<code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
@@ -48,6 +50,7 @@
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
+| `relation.import` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出） |
 | `relation.integrity-inspection` | <code>31-relation-pair-inspection</code>（关系完整性只读分页检查） |
 | `relation.pair-edit` | <code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
 | `relation.preview` | <code>28-relation-delta-preview</code>（多值关系预览与取消） |
@@ -62,6 +65,7 @@
 | `timeline.lifecycle` | <code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
 | `workspace-search.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
 | `workspace-search.rebuild` | <code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
+| `workspace.calendar` | <code>32-shared-work-calendar</code>（工作区共享工作日历） |
 | `workspace.lifecycle` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>10-sse-reconnect</code>（SSE 断线重连且不重复应用）、<code>15-workspace-snapshot-package</code>（工作区切换与快照包）、<code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复） |
 | `workspace.protection` | <code>13-protection-policy</code>（工作区保护策略与仓库验证）、<code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复）、<code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
 
@@ -84,7 +88,7 @@
 | <code>13-protection-policy</code> | 工作区保护策略与仓库验证 | 通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup，并仅在计划确认为零删除时一次性执行 retention.apply；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，Apply 必须返回零删除数与零回收字节数。 | `workspace.protection` |
 | <code>14-document-diff</code> | 真实文件历史版本比较 | 通过 host-only picker 导入真实 TXT 历史版本，以真实 restore revision 建立当前版本后，从 FileRevisionTree 的“与当前版本比较”执行 closed document.diffRequested；验证本地化 identical 结果、两阶段 effective CAS 的 stale 失败，以及 renderer 原始 fileHistory.materializeDiffPair 请求被拒绝。 | `file-history.diff` |
 | <code>15-workspace-snapshot-package</code> | 工作区切换与快照包 | 通过真实 Workspace Center 创建并打开第二个工作区，再由 switcher 完成工作区切换并拒绝旧 session epoch；通过真实 Snapshot UI 创建、open-as-new、导出与导入快照包，损坏快照包必须稳定失败。 | `workspace.lifecycle`、`snapshot.package` |
-| <code>16-dashboard-lifecycle</code> | Dashboard 可视化、筛选与冲突闭环 | 通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision。 | `dashboard.lifecycle`、`dashboard.visualization`、`dashboard.filtering`、`dashboard.drilldown`、`dashboard.conflict`、`release.smoke` |
+| <code>16-dashboard-lifecycle</code> | Dashboard 可视化、筛选与冲突闭环 | 通过真实 Dashboard UI 创建并保存四类面板，验证键盘布局；配置仅绑定记录面板的枚举全局筛选，重开后由公开读取契约确认定义与字段绑定持久化，再经真实 FilterBar 筛选和清空；图表选择继续驱动联动筛选与钻取，竞争公开写入产生可见 CAS 冲突并显式重载权威 revision；随后真实重启 sidecar，fresh 公开 list/workspace 验证完整面板、配置、绑定与 revision 持久，源记录保持不变。 | `dashboard.lifecycle`、`dashboard.visualization`、`dashboard.filtering`、`dashboard.drilldown`、`dashboard.conflict`、`release.smoke` |
 | <code>17-interface-lifecycle</code> | Interface 构建、运行、重启与删除 | 通过真实 Interface UI 创建空白界面、添加元素、修改内容、保存、切换页面后重开并进入运行模式，并验证插件动作的确认、拒绝与取消，精确重启 sidecar 后以 fresh list/load 验证完整定义和 revision 持久，最后真实 UI 删除并验证 list 缺失与 load not_found；证明构建器和运行时消费同一原子定义及既有插件任务生命周期。 | `interface.lifecycle`、`interface.runtime`、`plugin.action.lifecycle` |
 | <code>18-workspace-search</code> | 内容、文件关联与统一搜索闭环 | 通过真实内容 UI 配置并编辑 ContentProfile 记录，经 host picker 导入 Markdown/JSON 文件并验证 FileDocument 元数据 AND/OR；建立显式 RecordDocumentLink，unlink 后显示 broken 并修复到另一文档，精确重启 sidecar 后重开仍一致；统一搜索重建后由键盘查询 records/files/attachments、metadata/content/current/history，并对 stale open 显式重解析。 | `workspace-search.query`、`workspace-search.rebuild`、`content.record`、`file-history.query`、`record-document-link.lifecycle`、`attachment.search` |
 | <code>19-gallery-lifecycle</code> | Gallery 创建、重开与冲突恢复 | 通过真实 Tables UI 创建并配置 Gallery，展示两条权威记录与空封面占位；离开后重新进入并选择持久视图；竞争保存造成 preset CAS 冲突，显式重载后采用权威获胜 revision 且仍保持 Gallery。 | `gallery.lifecycle`、`preset.conflict` |
@@ -99,3 +103,6 @@
 | <code>29-lookup-source-pagination</code> | Lookup 来源分页读取 | 通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。 | `lookup.source-pagination` |
 | <code>30-query-snapshot-validation</code> | 查询快照只读校验 | 真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。 | `schema.query` |
 | <code>31-relation-pair-inspection</code> | 关系完整性只读分页检查 | 通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。 | `relation.integrity-inspection` |
+| <code>32-shared-work-calendar</code> | 工作区共享工作日历 | 通过真实设置页保存工作区假日，首页和实际网格日期编辑器显示相同已确认规则；创建并打开B证明隔离，再正常重开A证明PB持久化，清除规则仍推进revision。S24目录副本消费证据待独立实现合入后追加。 | `workspace.calendar` |
+| <code>33-host-grid-presentation</code> | Host 网格呈现保存与恢复 | 第一真实 Host 通过关键词、密度、列宽拖动、排序、冻结、隐藏和完整 OR/空值过滤控件保存，经正常退出后第二真实 Host 使用相同 local-data 与 workspace UUID 从既有工作区卡片选择原表；两阶段分别保留 CDP、control、readiness 和 lifecycle 证据，并由 Host get 与真实 UI 核对完整呈现状态恢复。 | `grid.state` |
+| <code>34-relation-lookup-data-io</code> | Relation 导入与 Lookup 文本导出 | 复用固定 corpus，通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。当前 UI 尚无匹配配置和 Lookup 导出选列，本场景验证打包协议。 | `relation.import`、`lookup.export` |

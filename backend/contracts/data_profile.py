@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
+_PUBLIC_RELATION_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\.fld_[A-Za-z0-9_-]{8,}$")
 
 RelationKind = Literal["m2o", "o2m", "m2m"]
 RelationPreset = Literal["standard", "file", "files", "translations"]
@@ -41,7 +42,6 @@ class RelationProfile(BaseModel):
     diagnostics: list[str] = Field(default_factory=list, max_length=32)
 
     @field_validator(
-        "relation_id",
         "field",
         "related_collection",
         "many_field",
@@ -51,6 +51,16 @@ class RelationProfile(BaseModel):
     def validate_identifier(cls, value: str | None) -> str | None:
         if value is not None and not _IDENTIFIER.fullmatch(value):
             raise ValueError("product identifier is invalid")
+        return value
+
+    @field_validator("relation_id")
+    @classmethod
+    def validate_relation_id(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) > 128
+            or not (_IDENTIFIER.fullmatch(value) or _PUBLIC_RELATION_ID.fullmatch(value))
+        ):
+            raise ValueError("product relation identifier is invalid")
         return value
 
     @field_validator("display_fields")
@@ -222,7 +232,7 @@ def collection_profile_from_definition(
                     delete_policy = "restrict"
                 relations.append(
                     RelationProfile(
-                        relation_id=field_id,
+                        relation_id=f"{collection}.{field_id}",
                         field=name,
                         kind=("m2m" if relation.get("cardinality") == "many" else "m2o"),
                         related_collection=target,

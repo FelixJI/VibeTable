@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCalendarDateEditor } from "./calendarDateEditor";
-import { WORK_CALENDAR_STORAGE_KEY } from "@/stores/workCalendarStore";
+
 
 describe("calendarDateEditor", () => {
   beforeEach(() => {
@@ -10,11 +10,11 @@ describe("calendarDateEditor", () => {
   afterEach(() => document.querySelectorAll(".work-date-popup").forEach((node) => node.remove()));
 
   it("shows shared holiday markers and commits a selected date", () => {
-    localStorage.setItem(WORK_CALENDAR_STORAGE_KEY, JSON.stringify([
-      { date: "2026-07-20", kind: "holiday", name: "公司假日" },
-    ]));
+
     const success = vi.fn();
-    const input = createCalendarDateEditor("date")(
+    const input = createCalendarDateEditor("date", () => [
+      { date: "2026-07-20", kind: "holiday", name: "公司假日" },
+    ])(
       { getValue: () => "2026-07-01" },
       (callback) => callback(),
       success,

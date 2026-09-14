@@ -28,7 +28,17 @@ from backend.contracts.data_io import (
     ImportPlan,
     TemplateResult,
 )
-from backend.contracts.grid_state import GridStateResult
+from backend.contracts.grid_state import (
+    HostGridStateResult,
+    HostGridStateGetParams,
+    HostGridStateSaveParams,
+)
+from backend.contracts.work_calendar import (
+    ReadWorkCalendarParams,
+    CommitWorkCalendarParams,
+    WorkCalendarResult,
+    WorkCalendarReceipt,
+)
 from backend.contracts.generated_workbench import (
     RecordDocumentLinkDeleteRequest,
     RecordDocumentLinkRepairRequest,
@@ -107,7 +117,6 @@ from backend.contracts.settings_commands import (
     LaunchActionResult,
     ListCommandsParams,
     SaveDeviceSettingsParams,
-    SharedSettingsResult,
     ShortcutEntry,
     ShortcutsResult,
 )
@@ -285,6 +294,25 @@ def _model_payload(
                 "complete": True,
             }
         ).model_dump(mode="json", by_alias=True)
+    if model.__module__ == "backend.contracts.work_calendar":
+        samples = {
+            "WorkCalendarOverride": {"date": "2026-09-10", "kind": "holiday", "name": "公司假日"},
+            "ReadWorkCalendarParams": {},
+            "CommitWorkCalendarParams": {
+                "overrides": [],
+                "expectedRevision": "",
+                "idempotencyKey": "calendar-example",
+            },
+            "WorkCalendarResult": {"overrides": [], "revision": ""},
+            "WorkCalendarReceipt": {
+                "overrides": [],
+                "revision": "sha256:example",
+                "status": "applied",
+                "changeSetId": "changeSet_example",
+                "emittedEvents": [],
+            },
+        }
+        return model.model_validate(samples[model.__name__]).model_dump(mode="json", by_alias=True)
     model_stack = (*model_stack, model)
     if issubclass(model, ProductParams):
         return _product_payload(model)
@@ -322,6 +350,10 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 call.args[2].id,
             )
     from backend.contracts.presets_versions_dashboards import (
+        DashboardWorkspaceParams,
+        ExecuteDashboardQueryParams,
+        ListDashboardsParams,
+        SaveDashboardDraftParams,
         ListPresetsParams,
         SavePresetParams,
         DeletePresetParams,
@@ -329,6 +361,13 @@ def _registered_models() -> dict[str, type[BaseModel]]:
 
     result.update(
         {
+            "insights.listDashboards": ListDashboardsParams,
+            "insights.readDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.saveDashboardDraft": SaveDashboardDraftParams,
+            "insights.deleteDashboardWorkspace": DashboardWorkspaceParams,
+            "insights.executeDashboardQuery": ExecuteDashboardQueryParams,
+            "insights.dashboardQueryLimits": ListDashboardsParams,
+            "insights.panelManifest": ListDashboardsParams,
             "preset.list": ListPresetsParams,
             "preset.save": SavePresetParams,
             "preset.delete": DeletePresetParams,
@@ -356,6 +395,10 @@ def _registered_models() -> dict[str, type[BaseModel]]:
     # their Python dispatcher registrations are removed.
     result.update(
         {
+            "gridState.get": HostGridStateGetParams,
+            "gridState.save": HostGridStateSaveParams,
+            "settings.readWorkCalendar": ReadWorkCalendarParams,
+            "settings.commitWorkCalendar": CommitWorkCalendarParams,
             "settings.readDevice": ListCommandsParams,
             "settings.saveDevice": SaveDeviceSettingsParams,
         }
@@ -570,8 +613,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
                 ]
             },
         ),
-        "gridState.get": _typed(GridStateResult),
-        "gridState.save": _typed(GridStateResult),
+        "gridState.get": _typed(HostGridStateResult),
+        "gridState.save": _typed(HostGridStateResult),
         "history.applyRestore": _typed(RestoreResult),
         "history.previewRestore": _typed(RestorePreview),
         "history.read": _typed(HistoryPage),
@@ -762,7 +805,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             },
         ),
         "settings.readDevice": _typed(DeviceSettings),
-        "settings.readShared": _typed(SharedSettingsResult),
+        "settings.readWorkCalendar": _typed(WorkCalendarResult),
+        "settings.commitWorkCalendar": _typed(WorkCalendarReceipt),
         "settings.saveDevice": _typed(DeviceSettings),
         "shortcut.delete": _manual(
             "DeleteShortcutResult",

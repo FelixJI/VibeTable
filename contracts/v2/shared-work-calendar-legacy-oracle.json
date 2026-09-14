@@ -1,0 +1,850 @@
+{
+  "producerCommit": "9fa626a13840830037bcb82eaddc0adf8617075b",
+  "python": [
+    {
+      "name": "default-empty",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "default-empty",
+        "method": "settings.readShared",
+        "params": {}
+      },
+      "authority": {
+        "items": []
+      },
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "default-empty",
+        "result": {
+          "settings": [],
+          "cachedOn": "2026-09-10T00:00:00Z",
+          "fresh": true
+        }
+      }
+    },
+    {
+      "name": "default-scope-sort",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "default-scope-sort",
+        "method": "settings.readShared",
+        "params": {}
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "default-scope-sort",
+        "result": {
+          "settings": [
+            {
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            },
+            {
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          ],
+          "cachedOn": "2026-09-10T00:00:00Z",
+          "fresh": true
+        }
+      }
+    },
+    {
+      "name": "selected-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "selected-key",
+        "method": "settings.readShared",
+        "params": {
+          "keys": [
+            "z"
+          ]
+        }
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "selected-key",
+        "result": {
+          "settings": [
+            {
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          ],
+          "cachedOn": "2026-09-10T00:00:00Z",
+          "fresh": true
+        }
+      }
+    },
+    {
+      "name": "other-scope",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "other-scope",
+        "method": "settings.readShared",
+        "params": {
+          "collection": "another"
+        }
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "other-scope",
+        "result": {
+          "settings": [
+            {
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          ],
+          "cachedOn": "2026-09-10T00:00:00Z",
+          "fresh": true
+        }
+      }
+    },
+    {
+      "name": "unknown-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "unknown-key",
+        "method": "settings.readShared",
+        "params": {
+          "keys": [
+            "missing"
+          ]
+        }
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "unknown-key",
+        "result": {
+          "settings": [],
+          "cachedOn": "2026-09-10T00:00:00Z",
+          "fresh": true
+        }
+      }
+    },
+    {
+      "name": "offline",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "offline",
+        "method": "settings.readShared",
+        "params": {}
+      },
+      "authority": "offline",
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "offline",
+        "result": {
+          "settings": [],
+          "cachedOn": "",
+          "fresh": false
+        }
+      }
+    },
+    {
+      "name": "malformed-authority",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "malformed-authority",
+        "method": "settings.readShared",
+        "params": {}
+      },
+      "authority": {
+        "items": "invalid"
+      },
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "malformed-authority",
+        "result": {
+          "settings": [],
+          "cachedOn": "",
+          "fresh": false
+        }
+      }
+    },
+    {
+      "name": "extra-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "extra-field",
+        "method": "settings.readShared",
+        "params": {
+          "unexpected": true
+        }
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "extra-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "empty-collection",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "empty-collection",
+        "method": "settings.readShared",
+        "params": {
+          "collection": ""
+        }
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "empty-collection",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "key-budget",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "key-budget",
+        "method": "settings.readShared",
+        "params": {
+          "keys": [
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x",
+            "x"
+          ]
+        }
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "key-budget",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "duplicate-keys",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-keys",
+        "method": "settings.readShared",
+        "params": {
+          "keys": [
+            "z",
+            "z"
+          ]
+        }
+      },
+      "authority": {
+        "items": [
+          {
+            "logicalId": "z",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "a",
+            "revision": "r1",
+            "payload": {
+              "scope": "vibetable_settings",
+              "key": "a",
+              "value": null,
+              "updatedOn": "2026-09-01"
+            }
+          },
+          {
+            "logicalId": "other",
+            "revision": "r1",
+            "payload": {
+              "scope": "another",
+              "key": "other",
+              "value": true,
+              "updatedOn": "2026-09-01"
+            }
+          }
+        ]
+      },
+      "authorityRequests": [
+        "shared_settings"
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "duplicate-keys",
+        "result": {
+          "settings": [
+            {
+              "key": "z",
+              "value": {
+                "n": 9007199254740993
+              },
+              "updatedOn": "2026-09-01"
+            }
+          ],
+          "cachedOn": "2026-09-10T00:00:00Z",
+          "fresh": true
+        }
+      }
+    }
+  ],
+  "calendar": [
+    {
+      "name": "non-array",
+      "input": null,
+      "output": []
+    },
+    {
+      "name": "invalid-date",
+      "input": [
+        {
+          "date": "2026-02-29",
+          "kind": "holiday",
+          "name": "bad"
+        }
+      ],
+      "output": []
+    },
+    {
+      "name": "leap-day",
+      "input": [
+        {
+          "date": "2024-02-29",
+          "kind": "holiday",
+          "name": " 闰日 "
+        }
+      ],
+      "output": [
+        {
+          "date": "2024-02-29",
+          "kind": "holiday",
+          "name": "闰日"
+        }
+      ]
+    },
+    {
+      "name": "duplicate-last-wins",
+      "input": [
+        {
+          "date": "2026-09-12",
+          "kind": "holiday",
+          "name": "a"
+        },
+        {
+          "date": "2026-09-12",
+          "kind": "workday",
+          "name": "b"
+        }
+      ],
+      "output": [
+        {
+          "date": "2026-09-12",
+          "kind": "workday",
+          "name": "b"
+        }
+      ]
+    },
+    {
+      "name": "sort-and-trim",
+      "input": [
+        {
+          "date": "2026-09-12",
+          "kind": "workday",
+          "name": " 加班 "
+        },
+        {
+          "date": "2026-09-10",
+          "kind": "holiday",
+          "name": "休"
+        }
+      ],
+      "output": [
+        {
+          "date": "2026-09-10",
+          "kind": "holiday",
+          "name": "休"
+        },
+        {
+          "date": "2026-09-12",
+          "kind": "workday",
+          "name": "加班"
+        }
+      ]
+    },
+    {
+      "name": "invalid-kind",
+      "input": [
+        {
+          "date": "2026-09-10",
+          "kind": "weekend",
+          "name": "bad"
+        }
+      ],
+      "output": []
+    },
+    {
+      "name": "name-truncate",
+      "input": [
+        {
+          "date": "2026-09-10",
+          "kind": "holiday",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "output": [
+        {
+          "date": "2026-09-10",
+          "kind": "holiday",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ]
+    },
+    {
+      "name": "extra-field",
+      "input": [
+        {
+          "date": "2026-09-10",
+          "kind": "holiday",
+          "name": "休",
+          "unexpected": true
+        }
+      ],
+      "output": [
+        {
+          "date": "2026-09-10",
+          "kind": "holiday",
+          "name": "休"
+        }
+      ]
+    },
+    {
+      "name": "weekday",
+      "date": "2026-09-10",
+      "overrides": [],
+      "output": {
+        "date": "2026-09-10",
+        "day": 10,
+        "inCurrentMonth": true,
+        "isToday": true,
+        "kind": "weekday",
+        "isWorkingDay": true,
+        "marker": "",
+        "name": "",
+        "overridden": false
+      }
+    },
+    {
+      "name": "weekend",
+      "date": "2026-09-12",
+      "overrides": [],
+      "output": {
+        "date": "2026-09-12",
+        "day": 12,
+        "inCurrentMonth": true,
+        "isToday": false,
+        "kind": "weekend",
+        "isWorkingDay": false,
+        "marker": "休",
+        "name": "",
+        "overridden": false
+      }
+    },
+    {
+      "name": "holiday",
+      "date": "2026-09-10",
+      "overrides": [
+        {
+          "date": "2026-09-10",
+          "kind": "holiday",
+          "name": "公司假日"
+        }
+      ],
+      "output": {
+        "date": "2026-09-10",
+        "day": 10,
+        "inCurrentMonth": true,
+        "isToday": true,
+        "kind": "holiday",
+        "isWorkingDay": false,
+        "marker": "休",
+        "name": "公司假日",
+        "overridden": true
+      }
+    },
+    {
+      "name": "workday",
+      "date": "2026-09-12",
+      "overrides": [
+        {
+          "date": "2026-09-12",
+          "kind": "workday",
+          "name": "调休"
+        }
+      ],
+      "output": {
+        "date": "2026-09-12",
+        "day": 12,
+        "inCurrentMonth": true,
+        "isToday": false,
+        "kind": "workday",
+        "isWorkingDay": true,
+        "marker": "班",
+        "name": "调休",
+        "overridden": true
+      }
+    }
+  ]
+}

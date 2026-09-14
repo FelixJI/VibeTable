@@ -70,7 +70,6 @@ async def test_device_routes_are_removed_while_command_shortcut_routes_remain() 
     dispatcher = RpcDispatcher()
     _register_settings_methods(dispatcher, _service(transport))
     assert set(dispatcher.registered_methods) == {
-        "settings.readShared",
         "command.list",
         "command.run",
         "shortcut.list",
@@ -78,7 +77,7 @@ async def test_device_routes_are_removed_while_command_shortcut_routes_remain() 
         "shortcut.delete",
         "shortcut.launch",
     }
-    for method in ("settings.readDevice", "settings.saveDevice"):
+    for method in ("settings.readDevice", "settings.saveDevice", "settings.readShared"):
         response = await dispatcher.dispatch(
             {"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}
         )

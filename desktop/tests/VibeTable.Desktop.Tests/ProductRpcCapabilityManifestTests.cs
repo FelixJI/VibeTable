@@ -59,6 +59,13 @@ public sealed class ProductRpcCapabilityManifestTests
                 "history.applyRestore:workspace",
                 "history.previewRestore:workspace",
                 "history.read:workspace",
+                "insights.dashboardQueryLimits:workspace",
+                "insights.deleteDashboardWorkspace:workspace",
+                "insights.executeDashboardQuery:workspace",
+                "insights.listDashboards:workspace",
+                "insights.panelManifest:workspace",
+                "insights.readDashboardWorkspace:workspace",
+                "insights.saveDashboardDraft:workspace",
                 "interface.commit:workspace",
                 "interface.delete:workspace",
                 "interface.list:workspace",
@@ -88,6 +95,8 @@ public sealed class ProductRpcCapabilityManifestTests
                 "schema.describe:workspace",
                 "schema.getTable:workspace",
                 "schema.list:workspace",
+                "settings.commitWorkCalendar:workspace",
+                "settings.readWorkCalendar:workspace",
             },
             manifest.GetProductSidecarRegistrations()
                 .Select(item => $"{item.Method}:{item.Scope}").ToArray());

@@ -1,7 +1,7 @@
 # A6 自有 PDF 决策语料 v1
 
-`pdf_qualification_corpus.json` 冻结 23 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
-`generate_pdf_qualification_corpus.py` 仅用标准库构造 PDF 对象，不复制字体或第三方文件。
+`pdf_qualification_corpus.json` 冻结 38 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
+`generate_pdf_qualification_corpus.py` 用标准库构造结构样本并读取固定的自有生产者 fixtures，不复制字体或外部文档。
 
 ```text
 uv run --frozen --no-sync python tests/contract/generate_pdf_qualification_corpus.py
@@ -76,3 +76,49 @@ indexed、53 code points、无错误码或 token 差距。完整 25 项仍有原
 完整 26 项仍有原 9 项不匹配并 exit 1。该项只补充输入精确边界，输出精确值、deadline/取消、外部生产者
 及其他 `remainingCoverage` 继续待完成。证据为 `build/qa/pdf-qualification/input-exact-poppler.jsonl`
 和 `build/qa/pdf-qualification/current-go-26.json`，未改变生产提取器、预算或 ADR 提议状态。
+
+## 隔离 PdfPig 候选与后续页验证
+
+资格工具和复现命令见 [PDF 候选运行记录](../../docs/research/2026-09-10-pdf-adapter-runtime-qualification.md)。
+新增 `output-limit-later-valid-page.pdf` / `output-limit-later-invalid-page.pdf` 共用含 2,000,500 个 B 的首页，
+第二页只有 zlib Adler 校验字节不同。正常样本必须截断到精确 2,000,000 个 B；损坏样本必须拒绝且正文为空。
+输出预算耗尽不能停止验证后续可达页。保留的旧原型在损坏样本上返回 truncated、无 warning，构成回归反证。
+
+新增 `--observations <manifest> <observations>` 入口只替换观察来源，复用原报告器的状态、token、错误码、
+字符及拒绝正文断言；要求精确样本集合、预算一致、有限非负测量和所有进程退出。原产品提取器入口不变。
+2026-09-10 的隔离候选在显式 1 GiB Job commit 预算下，28 项比较零差异；该实验预算不是产品默认值，
+也不关闭独立生产者、对象流/predictor、加密或产品 generation 等剩余资格。
+
+## 独立生产者及 AES 加密对照
+
+`pdf_producer_fixtures/` 的四份自有小文档由 `generate_pdf_producer_fixtures.py` 生成：
+ReportLab 4.4.9 普通页和 ASCII85Decode + FlateDecode 压缩页，以及 pypdf 6.10.0 / cryptography 50.0.1
+生成的两类 AES-256 加密页。正文只有自有 ASCII token，使用 Base14 字体，无嵌入字体或外部内容。
+普通生成与 CI 不需要这些生产者包，只读取四份固定 fixtures；重新生成需要符合脚本版本检查的资格工具环境。
+密文包含正常随机性，可重放的是语义与预期，不承诺重新生成后字节一致。
+
+两个普通样本是 MUST indexed 且保留 token；两个加密样本必须 passwordProtected / extract.password_required、
+零正文，包括空 user password 但非空 owner password。旧候选在后一项返回 indexed，修复后在页面读取前检查
+PdfDocument.IsEncrypted。最终 fixtures 的普通正文由 PDFium 核对，加密正文通过已知测试密码验证。
+
+2026-09-10 的独立生产者增量为 32 项、比较 failed=0、exit0，原 28 项预期未改；该历史结果不替代真实复杂生产者、
+其他 security handler、对象流/predictor 及产品 generation 事务资格。
+
+## 结构 DISCOVERY 增量
+
+在 32 项历史语料基础上，标准库生成器新增六个自有结构样本，总数为 38：type-2 xref 指向 ObjStm 压缩的
+Pages/Page/Font、合法和坏 filter 的 PNG Up Predictor 12 xref、显式 Predictor=1 identity xref、64 层有限页树，
+以及仅改最后一条 Kids edge 的 64 节点页树 cycle。它们不带外部内容或 oracle/CLI 实验框架。
+
+合法的四项是 DISCOVERY `indexed`（必须保留 `A6 STRUCTURE VISIBLE`）或显式 `unsupported`；全部必须排除
+`A6 UNREACHABLE POISON`。坏 filter 与 cycle 只允许 `failed`、`unsupported` 或 `resourceLimited`，正文必须为空，
+不允许把已知坏结构归类为 `noTextLayer`。这是一组有限构造事实，不代表一般 ObjStm、Predictor 或深图支持。
+
+当前隔离候选的 38 项比较为 failed=0、exit 0。六项中 ObjStm 和有限深链 indexed（各 20 code points）；三个
+Predictor 样本均为 `unsupported / extract.unsupported`、零正文；cycle 为 `failed / extract.pdf_invalid`、零正文。
+所有 worker 都 `Succeeded` 且确认无存活进程。四个合法结构样本另经 PDFium 与 pypdf 核对 token、页数和 poison 排除，
+报告为 PASS；旧候选对两份合法 predictor 样本的预期不匹配记录仍保留为反证。实测只记录本机一次的 wall/CPU/Job commit/worker working set，
+不构成性能或资源覆盖声明。
+
+结构 DISCOVERY 仍只覆盖这六份自有小样本。复杂真实生产者组合、一般 Predictor 支持与 warning 分类校准，以及产品
+adapter、generation 事务和发布集成仍开放，不能因为本比较为零差异而关闭。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from backend.adapters.pocketbase.data_io import (
     PocketBasePasteReadPort,
@@ -8,6 +9,7 @@ from backend.adapters.pocketbase.data_io import (
 )
 from backend.application.paste_service import PasteError
 from backend.application.revisioned_metadata_port import JsonObject, json_object
+from backend.contracts.data_profile import RelationProfile
 from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
@@ -32,6 +34,55 @@ def test_profile_projects_live_schema_revision_and_writable_fields() -> None:
     assert profile.update_fields == ["f_title000", "f_amount00", "f_status00"]
     assert profile.archive_field == "f_status00"
     assert profile.date_updated_field is None
+
+
+def test_profile_projects_public_relation_identity() -> None:
+    profile = collection_profile_from_definition(
+        snapshot_v2("orders", [field_v2("customer", "relation")], revision="schema_7")
+    )
+    assert profile.relations[0].relation_id == "orders.fld_customer"
+    assert profile.relations[0].field == "f_customer"
+
+
+@pytest.mark.parametrize(
+    "relation_id",
+    [None, "rel_customer", "orders.fld_customer", "orders.fld_customer-1", "t.fld_" + "a" * 122],
+)
+def test_relation_profile_accepts_public_identity(relation_id: str | None) -> None:
+    profile = RelationProfile(
+        relation_id=relation_id, field="customer", kind="m2o", related_collection="customers"
+    )
+    assert profile.relation_id == relation_id
+
+
+@pytest.mark.parametrize(
+    "relation_id",
+    [
+        "",
+        ".field",
+        "table.",
+        "table.field.extra",
+        "table..field",
+        "table/field",
+        "table.fld_short",
+        "table.fld_bad/name",
+        "table.fld_bad name",
+        "t.fld_" + "a" * 123,
+    ],
+)
+def test_relation_profile_rejects_malformed_public_identity(relation_id: str) -> None:
+    with pytest.raises(ValidationError):
+        RelationProfile(
+            relation_id=relation_id, field="customer", kind="m2o", related_collection="customers"
+        )
+
+
+@pytest.mark.parametrize("field", ["field", "related_collection", "many_field", "one_field"])
+def test_relation_profile_other_identifiers_still_reject_dots(field: str) -> None:
+    values = {"field": "customer", "kind": "m2o", "related_collection": "customers"}
+    values[field] = "table.field"
+    with pytest.raises(ValidationError):
+        RelationProfile.model_validate(values)
 
 
 class _Client:

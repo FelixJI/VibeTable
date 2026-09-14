@@ -9,6 +9,7 @@ export function installBridgeDiagnosticsInPage() {
     roundTrips: [],
     recentCompleted: [],
     failures: [],
+    inboundRevisions: [],
     diagnosticCursor: 0,
     pending: {},
     workspaceSession: null,
@@ -90,6 +91,7 @@ export function installBridgeDiagnosticsInPage() {
     "DOCUMENT_LIST_FAILED",
     "DOCUMENT_LIST_INVALID",
     "PRODUCT_DATA_FAILED",
+    "realtime.stopped",
     "SCHEMA_LIFECYCLE_CANCELLED",
     "SCHEMA_LIFECYCLE_TIMEOUT",
     "UNKNOWN_TYPE",
@@ -109,6 +111,24 @@ export function installBridgeDiagnosticsInPage() {
     "workspace.session_stale",
   ]);
   const stableCode = (value) => diagnosticCodes.has(value) ? value : null;
+  // Bounded host-side failure classifier (for example the exception type behind
+  // realtime.stopped) so failure artifacts stay diagnosable without accepting
+  // arbitrary host strings into artifacts.
+  const boundedDetail = (value) => typeof value === "string"
+    && value.length > 0
+    && value.length <= 64
+    ? value
+    : null;
+  // Mutation outcomes carry a closed kind vocabulary (grid query paths plus
+  // the shared error kinds); gate recordings to it like diagnosticCodes.
+  const mutationKinds = new Set([
+    "query",
+    "query.cursor",
+    "backend_unavailable",
+    "cancelled",
+    "unknown",
+  ]);
+  const stableMutationKind = (value) => mutationKinds.has(value) ? value : null;
   // The outbound bridge is the authority for request type names. Reuse the
   // bounded, sanitized observation ledger as a dynamic closed catalog so new
   // protocol operations remain diagnosable without accepting arbitrary host
@@ -224,6 +244,31 @@ export function installBridgeDiagnosticsInPage() {
       || message?.ok === false
       || message?.payload?.ok === false;
     if (!request) {
+      // Host-driven dataset/schema notifications decide revision-floor
+      // acceptance in the renderer; record their protocol revisions (same
+      // trust level as request ids) so stale-snapshot loops stay diagnosable.
+      const revisionPayload = message?.payload?.revision;
+      if (typeof message?.type === "string"
+        && (message.type.startsWith("table.")
+          || message.type === "data.changed"
+          || message.type === "realtime.recovered")) {
+        pushBounded(diagnostics.inboundRevisions, {
+          type: message.type,
+          at: new Date().toISOString(),
+          schemaRevision: typeof revisionPayload?.schemaRevision === "string"
+            ? revisionPayload.schemaRevision.slice(0, 64) : null,
+          dataRevision: typeof revisionPayload?.dataRevision === "number"
+            ? revisionPayload.dataRevision
+            : (typeof revisionPayload?.dataRevision === "string"
+              ? revisionPayload.dataRevision.slice(0, 32) : null),
+          sessionTail: typeof revisionPayload?.databaseSessionId === "string"
+            ? revisionPayload.databaseSessionId.slice(-12) : null,
+          columns: Array.isArray(message.payload?.columns)
+            ? message.payload.columns.length : null,
+          table: typeof message.payload?.table === "string"
+            ? message.payload.table.slice(0, 64) : null,
+        });
+      }
       if (isFailure) {
         let completedRequest = null;
         for (let index = diagnostics.recentCompleted.length - 1; index >= 0; index -= 1) {
@@ -246,6 +291,9 @@ export function installBridgeDiagnosticsInPage() {
             ?? message?.error?.code
             ?? null),
           messageLength: messageLength(rawMessage),
+          detail: boundedDetail(message?.payload?.detail ?? message?.error?.detail ?? null),
+          mutationKind: stableMutationKind(
+            message?.payload?.mutationResult?.kind ?? message?.payload?.error?.kind ?? null),
           operation: stableOperation(message?.payload?.operation),
           startedAt: completedRequest?.startedAt ?? null,
           finishedAt: new Date().toISOString(),
@@ -306,6 +354,7 @@ export function readBridgeDiagnosticsInPage() {
     })),
     roundTrips: diagnostics.roundTrips,
     failures: diagnostics.failures,
+    inboundRevisions: diagnostics.inboundRevisions,
     acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
     pending: Object.values(diagnostics.pending).map((request) => ({
       requestId: request.requestId,

@@ -8,6 +8,7 @@ import { computed, type Ref } from "vue";
 import type { TabulatorFull } from "tabulator-tables";
 import { ROW_NUMBER_FIELD } from "./createGrid";
 import { headerFilterConditions } from "./viewQuery";
+import { orderSavedColumns } from "./gridState";
 
 interface DataSourceViewState {
   readonly columns?: readonly ColumnState[];
@@ -27,58 +28,83 @@ interface ViewColumn {
   getDefinition?(): { frozen?: boolean };
 }
 
+interface GridPresentation {
+  readonly columns: readonly {
+    field: string;
+    width?: number;
+    visible: boolean;
+    frozen: boolean;
+  }[];
+  readonly sorters: readonly { column: string; dir: "asc" | "desc" }[];
+  readonly headerFilters: readonly { field: string; value: unknown }[];
+}
+
 export interface DataSourceViewGrid {
   readonly initialized?: boolean;
   getColumns(): readonly ViewColumn[];
   getSorters?(): readonly { field: string; dir: "asc" | "desc" }[];
   getHeaderFilters?(): readonly { field: string; value: unknown }[];
-  setColumnLayout?(layout: readonly {
-    field: string;
-    width?: number;
-    visible: boolean;
-    frozen: boolean;
-  }[]): void | Promise<void>;
-  setSort?(sorters: readonly { field: string; dir: "asc" | "desc" }[]): void | Promise<void>;
-  clearHeaderFilter?(): void;
-  setHeaderFilterValue?(field: string, value: unknown): void;
+  applyPresentation?(presentation: GridPresentation): void | Promise<void>;
 }
 
 export interface DataSourceViewGridSource {
   readonly current: Readonly<Ref<DataSourceViewGrid | null>>;
 }
 
-function isObject(value: unknown): value is Record<PropertyKey, unknown> {
-  return typeof value === "object" && value !== null;
+interface TabulatorViewGrid {
+  readonly initialized?: boolean;
+  getColumns(): readonly (ViewColumn & { getDefinition(): Record<string, unknown> })[];
+  getData(): Record<string, unknown>[];
+  getSorters(): readonly { field: string; dir: "asc" | "desc" }[];
+  getHeaderFilters(): readonly { field: string; value: unknown }[];
+  setColumns(columns: unknown[]): void;
+  setSort(sorters: GridPresentation["sorters"]): void;
+  clearHeaderFilter(): void;
+  setHeaderFilterValue(field: string, value: unknown): void;
+  replaceData(rows: readonly Record<string, unknown>[]): Promise<void>;
 }
 
-function hasOptionalFunction(
-  value: Record<PropertyKey, unknown>,
-  property: PropertyKey,
-): boolean {
-  return value[property] === undefined || typeof value[property] === "function";
-}
-
-function isDataSourceViewGrid(value: unknown): value is DataSourceViewGrid {
-  if (!isObject(value) || typeof value.getColumns !== "function") return false;
+function isTabulatorViewGrid(value: unknown): value is TabulatorViewGrid {
+  if (typeof value !== "object" || value === null
+    || typeof Reflect.get(value, "getColumns") !== "function") return false;
   return [
-    "getSorters",
-    "getHeaderFilters",
-    "setColumnLayout",
-    "setSort",
-    "clearHeaderFilter",
-    "setHeaderFilterValue",
-  ].every(property => hasOptionalFunction(value, property));
+    "getColumns", "getData", "getSorters", "getHeaderFilters", "setColumns",
+    "setSort", "clearHeaderFilter", "setHeaderFilterValue", "replaceData",
+  ].every(property => typeof Reflect.get(value, property) === "function"
+    || (Reflect.get(value, "initialized") === false && Reflect.get(value, property) === undefined));
 }
 
-/**
- * Isolates Tabulator's incomplete declarations from the stable view-state seam.
- * Runtime capability checks keep the assertion at one verified composition boundary.
- */
+/** Keeps runtime column bindings and host-owned rows outside saved presentation. */
 export function createTabulatorDataSourceViewAdapter(
-  grid: TabulatorFull | null,
+  table: TabulatorFull | null,
 ): DataSourceViewGrid | null {
-  const candidate: unknown = grid;
-  return isDataSourceViewGrid(candidate) ? candidate : null;
+  const grid: unknown = table;
+  if (!isTabulatorViewGrid(grid)) return null;
+  return {
+    get initialized() { return grid.initialized; },
+    getColumns: () => grid.getColumns(),
+    getSorters: () => grid.getSorters(),
+    getHeaderFilters: () => grid.getHeaderFilters(),
+    applyPresentation({ columns, sorters, headerFilters }) {
+      const current = grid.getColumns();
+      const definitions = new Map(current.map(column => [column.getField(), column.getDefinition()]));
+      const next = [
+        ...current.filter(column => !isDataField(column.getField())).map(column => column.getDefinition()),
+        ...columns.map(column => ({ ...definitions.get(column.field), ...column })),
+      ];
+      const rows = grid.getData();
+      // setColumnLayout merges INITIAL options.columns, undoing later schema/editor
+      // updates. Rebuild from current definitions and overlay only saved layout.
+      grid.setColumns(next);
+      // This product has no Tabulator Ajax data source. In remote mode these APIs
+      // synchronously reload null as []; restore the host-fed rows in the same turn,
+      // before a newer authoritative dataset can arrive. Do not change query modes.
+      grid.setSort(sorters);
+      grid.clearHeaderFilter();
+      for (const filter of headerFilters) grid.setHeaderFilterValue(filter.field, filter.value);
+      return grid.replaceData(rows);
+    },
+  };
 }
 
 export function createTabulatorDataSourceViewSource(
@@ -99,13 +125,18 @@ export function captureDataSourceView(
     ? grid.getColumns()
     : [];
   const columns: ColumnState[] = gridColumns
-    .map((column, order) => ({
-      name: column.getField(),
-      order,
-      width: column.getWidth?.() ?? null,
-      visible: column.isVisible?.() ?? true,
-      frozen: column.getDefinition?.().frozen ?? false,
-    }))
+    .map((column, order) => {
+      const width = column.getWidth?.();
+      return {
+        name: column.getField(),
+        order,
+        // fitColumns can assign a subpixel remainder to the final column.
+        // Persist layout in the whole CSS pixels required by ColumnState.
+        width: width == null ? null : Math.round(width),
+        visible: column.isVisible?.() ?? true,
+        frozen: column.getDefinition?.().frozen ?? false,
+      };
+    })
     .filter((column) => isDataField(column.name));
   const canReadRuntimeState = grid?.initialized !== false;
   const sorts = (canReadRuntimeState ? grid?.getSorters?.() ?? [] : [])
@@ -141,10 +172,14 @@ export async function applyDataSourceView(
       order,
     }))
     .filter(({ field }) => isDataField(field));
+  // A presentation overlay requires live data columns to lay out. Applying
+  // onto a grid that has not built its schema columns yet would pass an empty
+  // (or stale) column set to setColumns and strip the upcoming schema build,
+  // leaving the grid headerless; defer to the default column build instead.
+  if (currentColumns.length === 0) return;
   const currentFields = new Set(currentColumns.map(({ field }) => field));
-  const savedColumns = [...view.columns]
-    .filter((column) => currentFields.has(column.name))
-    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+  const savedColumns = orderSavedColumns(view.columns
+    .filter((column) => currentFields.has(column.name)));
   const savedFields = new Set(savedColumns.map((column) => column.name));
   const columns = savedColumns.length
     ? [
@@ -166,24 +201,20 @@ export async function applyDataSourceView(
         visible: column.isVisible?.() ?? true,
         frozen: column.getDefinition?.().frozen ?? false,
       }));
-  if (columns.length && grid.setColumnLayout) {
-    await grid.setColumnLayout(columns.map((column) => ({
+  const sorters: GridPresentation["sorters"] = view.sorts.map((sort) => ({
+    column: typeof sort.field === "string" ? sort.field : "",
+    dir: sort.direction === "desc" ? "desc" as const : "asc" as const,
+  })).filter((sort) => currentFields.has(sort.column));
+  await grid.applyPresentation?.({
+    columns: columns.map((column) => ({
       field: column.name,
       ...(column.width != null ? { width: column.width } : {}),
       visible: column.visible ?? true,
       frozen: column.frozen ?? false,
-    })));
-  }
-  const sorters: Array<{ field: string; dir: "asc" | "desc" }> = view.sorts.map((sort) => ({
-    field: typeof sort.field === "string" ? sort.field : "",
-    dir: sort.direction === "desc" ? "desc" as const : "asc" as const,
-  })).filter((sort) => currentFields.has(sort.field));
-  await grid.setSort?.(sorters);
-  grid.clearHeaderFilter?.();
-  for (const filter of headerFilterConditions(view.filters)) {
-    const field = filter.field;
-    if (currentFields.has(field)) {
-      grid.setHeaderFilterValue?.(field, filter.value);
-    }
-  }
+    })),
+    sorters,
+    headerFilters: headerFilterConditions(view.filters)
+      .filter(filter => currentFields.has(filter.field))
+      .map(({ field, value }) => ({ field, value })),
+  });
 }

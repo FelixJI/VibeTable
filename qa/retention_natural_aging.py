@@ -46,14 +46,19 @@ def load_resume_state(
         raise NaturalAgingStateError("natural-aging state is not mature")
 
     root = state_path.resolve().parent
-    workspace = _fixed_path(state.get("workspaceRoot"), root / "workspace", "workspace root")
-    local_data = _fixed_path(state.get("localData"), root / "host" / "local-data", "local data")
+    local_data = _fixed_path(state.get("localData"), (root / "host" / "local-data",), "local data")
     workspace_id = _uuid(state.get("workspaceId"), "workspace UUID")
+    workspace = _fixed_path(
+        state.get("workspaceRoot"),
+        (root / "workspace", local_data / "workspaces" / workspace_id),
+        "workspace root",
+    )
     _uuid(state.get("olderSnapshotId"), "older snapshot ID")
     _uuid(state.get("newerSnapshotId"), "newer snapshot ID")
-    if not product_e2e_runner._natural_aging_workspace_matches(
+    resolved_workspace = product_e2e_runner._resolve_persistent_workspace_root(
         workspace, local_data.parent, workspace_id
-    ):
+    )
+    if resolved_workspace != workspace:
         raise NaturalAgingStateError("workspace identity does not match the seed")
     return state
 
@@ -83,18 +88,18 @@ def _utc_timestamp(value: object, name: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _fixed_path(value: object, expected: Path, name: str) -> Path:
+def _fixed_path(value: object, allowed: tuple[Path, ...], name: str) -> Path:
     if not isinstance(value, str) or not value:
         raise NaturalAgingStateError(f"{name} is invalid")
     candidate = Path(value)
     if not candidate.is_absolute():
         raise NaturalAgingStateError(f"{name} is outside the seed state")
     resolved = candidate.resolve()
-    if resolved != expected.resolve():
+    if resolved not in {path.resolve() for path in allowed}:
         raise NaturalAgingStateError(f"{name} is outside the seed state")
-    if not expected.exists():
+    if not resolved.exists():
         raise NaturalAgingStateError(f"{name} is unavailable")
-    return expected.resolve()
+    return resolved
 
 
 def _uuid(value: object, name: str) -> str:

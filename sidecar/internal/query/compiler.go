@@ -463,7 +463,7 @@ func CompileAggregate(
 	}
 	if len(groups) > 0 {
 		sql += " GROUP BY " + strings.Join(groups, ", ")
-		orderBy := make([]string, 0, len(groupOutputNames)+1)
+		var orderBy []string
 		if input.TopN > 0 {
 			orderBy = append(orderBy, quote(input.Metrics[0].Alias)+" DESC")
 		}
@@ -1626,7 +1626,7 @@ func (c *compiler) computedWireSQL(
 }
 
 func (c *compiler) compileSorts(sorts []SortCondition) (string, error) {
-	parts := make([]string, 0, len(sorts)*2+1)
+	var parts []string
 	seen := make(map[string]struct{})
 	for index, sortCondition := range sorts {
 		if _, ok := seen[sortCondition.Field]; ok {

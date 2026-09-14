@@ -537,6 +537,13 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"history.applyRestore",
 		"history.previewRestore",
 		"history.read",
+		"insights.dashboardQueryLimits",
+		"insights.deleteDashboardWorkspace",
+		"insights.executeDashboardQuery",
+		"insights.listDashboards",
+		"insights.panelManifest",
+		"insights.readDashboardWorkspace",
+		"insights.saveDashboardDraft",
 		"interface.commit",
 		"interface.delete",
 		"interface.list",
@@ -566,6 +573,8 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"schema.describe",
 		"schema.getTable",
 		"schema.list",
+		"settings.commitWorkCalendar",
+		"settings.readWorkCalendar",
 	}
 	if productCapabilities.ContractVersion != "2.0" ||
 		productCapabilities.WorkspaceID != env[config.WorkspaceIDEnv] ||

@@ -23,7 +23,7 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 	if !HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
 		t.Fatal("L3A must route schema.getTable through goSidecar")
 	}
-	for _, method := range []string{"settings.readDevice", "settings.saveDevice"} {
+	for _, method := range []string{"gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"} {
 		if HasCurrentOwnerRPCMethod(PythonBff, method) {
 			t.Fatalf("%s must not remain on pythonBff after L6", method)
 		}
@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 104 {
-		t.Fatalf("RPCDescriptors length = %d, want 104", len(descriptors))
+	if len(descriptors) != 105 {
+		t.Fatalf("RPCDescriptors length = %d, want 105", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 38 {
+	if len(allGo) != 47 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	otherGo := []RPCDescriptor{}
@@ -100,19 +100,30 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 			t.Fatalf("content descriptor = %#v", descriptor)
 		}
 	}
-	if got := otherGo; len(got) != 31 ||
+	if got := otherGo; len(got) != 40 ||
 		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
 		got[3] != (RPCDescriptor{Method: "history.applyRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: WriteEffect}) || got[4] != (RPCDescriptor{Method: "history.previewRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect}) || got[5] != (RPCDescriptor{
 		Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
 		CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
-	}) || got[6] != (RPCDescriptor{Method: "interface.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[7] != (RPCDescriptor{Method: "interface.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[8] != (RPCDescriptor{Method: "interface.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[9] != (RPCDescriptor{Method: "interface.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[10].Method != "lookup.list" || got[11] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[12] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[13] != (RPCDescriptor{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: WriteEffect}) || got[14] != (RPCDescriptor{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: ReadEffect}) || got[15].Method != "preset.delete" || got[16].Method != "preset.list" || got[17].Method != "preset.save" || got[18].Method != "query.cursorFetch" || got[19].Method != "query.cursorOpen" || got[20].Method != "query.page" || got[21].Method != "query.readRows" ||
-		got[22].Method != "query.selectionOpen" || got[23] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[24].Method != "query.view" || got[25] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[26].Method != "relation.previewDelta" || got[27] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[28].Method != "schema.describe" ||
-		got[29].Method != "schema.getTable" || got[30].Method != "schema.list" {
+	}) || got[6] != (RPCDescriptor{Method: "insights.dashboardQueryLimits", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[7] != (RPCDescriptor{Method: "insights.deleteDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[8] != (RPCDescriptor{Method: "insights.executeDashboardQuery", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[9] != (RPCDescriptor{Method: "insights.listDashboards", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[10] != (RPCDescriptor{Method: "insights.panelManifest", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[11] != (RPCDescriptor{Method: "insights.readDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[12] != (RPCDescriptor{Method: "insights.saveDashboardDraft", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[13] != (RPCDescriptor{Method: "interface.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[14] != (RPCDescriptor{Method: "interface.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[15] != (RPCDescriptor{Method: "interface.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[16] != (RPCDescriptor{Method: "interface.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[17].Method != "lookup.list" || got[18] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[19] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[20] != (RPCDescriptor{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: WriteEffect}) || got[21] != (RPCDescriptor{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[22].Method != "preset.delete" || got[23].Method != "preset.list" || got[24].Method != "preset.save" || got[25].Method != "query.cursorFetch" || got[26].Method != "query.cursorOpen" || got[27].Method != "query.page" || got[28].Method != "query.readRows" ||
+		got[29].Method != "query.selectionOpen" || got[30] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[31].Method != "query.view" || got[32] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[33] != (RPCDescriptor{Method: "relation.previewDelta", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[34] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[35].Method != "schema.describe" ||
+		got[36].Method != "schema.getTable" || got[37].Method != "schema.list" ||
+		got[38] != (RPCDescriptor{Method: "settings.commitWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[39] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
-	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 2 ||
-		got[0].Method != "settings.readDevice" || got[1].Method != "settings.saveDevice" {
-		t.Fatalf("wpfHost descriptors = %#v, want settings.readDevice and settings.saveDevice", got)
+	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 4 ||
+		got[0].Method != "gridState.get" || got[1].Method != "gridState.save" ||
+		got[2].Method != "settings.readDevice" || got[3].Method != "settings.saveDevice" {
+		t.Fatalf("wpfHost descriptors = %#v, want gridState.get, gridState.save, settings.readDevice and settings.saveDevice", got)
 	}
 
 	descriptors[0].Method = "mutated"

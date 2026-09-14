@@ -75,6 +75,13 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "history.applyRestore",
         "history.previewRestore",
         "history.read",
+        "insights.dashboardQueryLimits",
+        "insights.deleteDashboardWorkspace",
+        "insights.executeDashboardQuery",
+        "insights.listDashboards",
+        "insights.panelManifest",
+        "insights.readDashboardWorkspace",
+        "insights.saveDashboardDraft",
         "interface.commit",
         "interface.delete",
         "interface.list",
@@ -104,6 +111,8 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "settings.commitWorkCalendar",
+        "settings.readWorkCalendar",
     }
     query_page = inventory.require("rpc", "query.page")
     assert query_page.group_id == "rpc.query-page"
@@ -118,7 +127,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     assert snapshot.cancellation == "cooperative"
     assert {
         record.name for record in inventory.rpc_methods if record.current_route == "wpfHost"
-    } == {"settings.readDevice", "settings.saveDevice"}
+    } == {"gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"}
     device_settings = inventory.require("rpc", "settings.readDevice")
     assert device_settings.group_id == "rpc.device-settings"
     assert device_settings.current_path == ("renderer", "wpfHost")

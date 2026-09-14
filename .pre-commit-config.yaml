@@ -30,3 +30,10 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: ai-flow-artifact-hygiene
+        name: ai-flow-artifact-hygiene
+        entry: uv run --frozen --no-sync python .ai-flow/scripts/hygiene.py --staged
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -27,6 +27,7 @@ import hashlib
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
@@ -317,6 +318,7 @@ class _StoredImportPlan:
         "collection",
         "consumed",
         "expires_at",
+        "grant_id",
         "idempotency_prefix",
         "mode",
         "rows",
@@ -329,6 +331,7 @@ class _StoredImportPlan:
         self,
         *,
         collection: str,
+        grant_id: str,
         schema_revision: str,
         capability_hash: str,
         source_hash: str,
@@ -338,6 +341,7 @@ class _StoredImportPlan:
         expires_at: float,
     ) -> None:
         self.collection = collection
+        self.grant_id = grant_id
         self.schema_revision = schema_revision
         self.capability_hash = capability_hash
         self.source_hash = source_hash
@@ -360,7 +364,7 @@ class ImportService:
         bulk: ImportMutationPort,
         profiles: dict[str, CollectionProfile],
         resolve_path: Callable[..., str],
-        consume_grant: Callable[[str], None],
+        reserve_grant: Callable[[str], AbstractContextManager[Callable[[], None]]],
         relation_provider: RelationImportProvider | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -369,7 +373,7 @@ class ImportService:
         self._bulk = bulk
         self._profiles = profiles
         self._resolve_path = resolve_path
-        self._consume_grant = consume_grant
+        self._reserve_grant = reserve_grant
         self._relation_provider = relation_provider
         self._clock = clock
         self._plans: dict[str, _StoredImportPlan] = {}
@@ -598,6 +602,7 @@ class ImportService:
         )
         token = self._mint_plan(
             collection=params.collection,
+            grant_id=params.grant_id,
             schema_revision=params.schema_revision,
             capability_hash=profile.capability_hash,
             source_hash=source_hash,
@@ -645,8 +650,31 @@ class ImportService:
             raise ImportFlowError("import token expired", code="import_token_expired")
         if stored.consumed:
             raise ImportFlowError("import token already used", code="import_token_consumed")
+        if stored.grant_id != params.grant_id:
+            raise ImportFlowError(
+                "import token belongs to another grant", code="import_grant_mismatch"
+            )
+        if stored.collection != params.collection or stored.mode != params.mode:
+            raise ImportFlowError(
+                "import target or mode changed since preview", code="import_plan_mismatch"
+            )
         if stored.capability_hash != profile.capability_hash:
             raise ImportFlowError("schema changed since preview", code="schema_mismatch")
+        with self._reserve_grant(params.grant_id) as commit_grant:
+            return await self._apply_reserved(
+                params, stored, profile, commit_grant, progress=progress, cancelled=cancelled
+            )
+
+    async def _apply_reserved(
+        self,
+        params: ApplyImportParams,
+        stored: _StoredImportPlan,
+        profile: CollectionProfile,
+        commit_grant: Callable[[], None],
+        *,
+        progress: Callable[[int, int, str], Awaitable[None]] | None,
+        cancelled: Callable[[], bool] | None,
+    ) -> ApplyImportResult:
         valid_rows = [
             r for r in stored.rows if not any(d.severity == "error" for d in r.diagnostics)
         ]
@@ -744,10 +772,10 @@ class ImportService:
             failed_rows=[],
             idempotency_key=idempotency_key,
         )
+        commit_grant()
+        stored.consumed = True
         if progress:
             await progress(total, total, "atomic import committed")
-        stored.consumed = True
-        self._consume_grant(params.grant_id)
         return ApplyImportResult(
             collection=params.collection,
             created_count=len(created_keys),
@@ -774,6 +802,7 @@ class ImportService:
         self,
         *,
         collection: str,
+        grant_id: str,
         schema_revision: str,
         capability_hash: str,
         source_hash: str,
@@ -784,6 +813,7 @@ class ImportService:
         token = f"imp-{uuid.uuid4().hex[:24]}"
         self._plans[token] = _StoredImportPlan(
             collection=collection,
+            grant_id=grant_id,
             schema_revision=schema_revision,
             capability_hash=capability_hash,
             source_hash=source_hash,
