@@ -94,8 +94,9 @@ AI 编程任务先读 `.ai-flow/AGENTS.md`、`.ai-flow/AI_CODING_PLAYBOOK.md`、
 一句话模板见 `.ai-flow/docs/ONE_SENTENCE_PROMPTS.md`。
 
 - 启用 Issue-first、balanced：网页版规划并写入 GitHub Issues；Codex 负责技术判断、复杂调查/实施、结果接收和工程把关；zcode/pi 只施工已明确的当前范围。
+- 同一执行主体、同一角色/会话在当前授权范围内连续完成调查、实施、测试、修复与证据更新；`next_actor == current_actor` 时不 self-handoff，不生成重启自己的提示词，不因内部 checkpoint/阶段结束而停止。只有切换执行者/独立角色、外部条件真正阻塞、用户决策/授权或人工合并边界才交还用户；Codex 主执行与独立 reviewer 属于不同 actor。
 - 用户手工启动每个工具和独立会话。需施工时 Codex 写回 Issue 交接单，输出已填实际编号的施工、收尾汇报、阻碍汇报三句后停止；施工者完成或受阻后主动给出返回 Codex 的一句话。
-- 不通过 CLI/API/MCP、子代理、后台任务或自动唤醒调用任何其他 Agent。本模式不采用通用 CI/CD 监控子代理规则；当前会话只读查询一次，未完成则记录 WAITING_CI 和恢复短句后结束，由用户手工续办。
+- 不通过 CLI/API/MCP、子代理、后台任务或自动唤醒调用任何其他 Agent。本模式不采用通用 CI/CD 监控子代理规则；当前会话只读查询一次，不轮询；CI 未完成时先继续不依赖其结果的已授权工作，只有后续真正受阻才记录 WAITING_CI 和恢复短句后结束，由用户手工续办。
 - 所有变更需用户另开独立 Codex 会话审阅，绑定实际 base/head SHA；自检不能代替独立审阅，新提交需增量复核。只报告 MERGE_READY，人工合并，不自动合并或发布。
 - 保留上文全部业务、验证、hooks、分支/worktree、六仓共享文件与发布不变量；AI Flow 不改登录、模型、CI/CD 配置或远端保护，也不改变已有 release PR 人工合并后的流水线语义。重试上限不是自动重试授权，仍须先诊断。
 - 一个仓库只保留一位实施写入者，保留用户改动。任务合同和交接存 Issue，代码/验证/审阅证据存 PR；本机报告、日志、临时状态只放 ignored `.ai-flow/runtime/`，不提交。
