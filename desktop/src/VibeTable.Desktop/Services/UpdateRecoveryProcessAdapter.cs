@@ -598,7 +598,7 @@ internal sealed class WindowsUpdateRecoveryProcessAdapter(
         protected override bool ReleaseHandle() => CloseHandle(handle);
     }
 
-    private sealed class WindowsExactProcessProbe : IUpdateExactProcessProbe
+    internal sealed class WindowsExactProcessProbe : IUpdateExactProcessProbe
     {
         public IUpdateExactProcess Open(int processId) =>
             new WindowsExactProcess(Process.GetProcessById(processId));
@@ -606,9 +606,16 @@ internal sealed class WindowsUpdateRecoveryProcessAdapter(
 
     private sealed class WindowsExactProcess(Process process) : IUpdateExactProcess
     {
-        public DateTimeOffset StartedAtUtc => new(
-            process.StartTime.ToUniversalTime(),
-            TimeSpan.Zero);
+        public DateTimeOffset StartedAtUtc
+        {
+            get
+            {
+                // Retain the same native process handle from identity validation through exit-code read.
+                // GetProcessById alone does not retain a handle after reading StartTime.
+                _ = process.SafeHandle;
+                return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            }
+        }
 
         public int ExitCode => process.ExitCode;
 
