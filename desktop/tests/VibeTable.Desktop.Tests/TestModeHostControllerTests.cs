@@ -30,6 +30,71 @@ public sealed class TestModeHostControllerTests
     }
 
     [TestMethod]
+    public async Task ReaderDoesNotLoseCompletedWorkspaceState()
+    {
+        using var fixture = new Fixture();
+        fixture.Controller.ReportStartupVisibility(startHidden: false);
+        using var reader = File.Open(
+            Path.Combine(fixture.Root, "host-lifecycle-state.json"),
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read);
+        var blocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Host.OnTrace = message =>
+        {
+            if (!message.StartsWith("TestModeHostController: state write", StringComparison.Ordinal))
+                return;
+            // Release only after publication actually collides with this reader.
+            reader.Dispose();
+            blocked.TrySetResult();
+        };
+        Guid workspaceId = Guid.NewGuid();
+        fixture.Host.Open = (id, _) =>
+        {
+            fixture.Host.Session = OpenSession(id, 31);
+            return Task.CompletedTask;
+        };
+        File.WriteAllText(
+            Path.Combine(fixture.Root, "host-open-workspace.request"),
+            workspaceId.ToString("D"));
+
+        await blocked.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        JsonElement state = await fixture.WaitForStateAsync("workspace-opened");
+
+        Assert.AreEqual(workspaceId, state.GetProperty("workspaceId").GetGuid());
+        Assert.AreEqual(31UL, state.GetProperty("sessionEpoch").GetUInt64());
+        Assert.AreEqual(1, fixture.Host.ScheduleCalls);
+    }
+
+    [TestMethod]
+    public async Task PersistentReaderReportsFailureWithoutRepeatingWorkspaceOpen()
+    {
+        using var fixture = new Fixture();
+        fixture.Controller.ReportStartupVisibility(startHidden: false);
+        using var reader = File.Open(
+            Path.Combine(fixture.Root, "host-lifecycle-state.json"),
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read);
+        var rejected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Host.OnTrace = message =>
+        {
+            if (message.StartsWith("TestModeHostController: state write rejected:", StringComparison.Ordinal))
+                rejected.TrySetResult();
+        };
+        File.WriteAllText(
+            Path.Combine(fixture.Root, "host-open-workspace.request"),
+            Guid.NewGuid().ToString("D"));
+
+        await rejected.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.AreEqual(1, fixture.Host.ScheduleCalls);
+        Assert.AreEqual(0, Directory.GetFiles(fixture.Root, "*.tmp").Length);
+        JsonElement state = await fixture.WaitForStateAsync("visible-startup");
+        Assert.IsNull(state.GetProperty("workspaceId").GetString());
+    }
+
+    [TestMethod]
     public async Task InvalidOpenControlFailsClosedWithoutCallingWorkspacePort()
     {
         using var fixture = new Fixture();
@@ -165,6 +230,7 @@ public sealed class TestModeHostControllerTests
         }
 
         public TestModeHostState CaptureState() => new(false, false, Session);
-        public void Trace(string message) { }
+        public Action<string> OnTrace { get; set; } = _ => { };
+        public void Trace(string message) => OnTrace(message);
     }
 }

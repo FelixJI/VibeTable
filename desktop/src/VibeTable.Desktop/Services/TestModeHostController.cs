@@ -223,7 +223,26 @@ public sealed class TestModeHostController : IDisposable
             File.WriteAllText(
                 temporary,
                 JsonSerializer.Serialize(payload, WorkspaceV2Json.StrictOptions));
-            File.Move(temporary, destination, overwrite: true);
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(temporary, destination, overwrite: true);
+                    break;
+                }
+                catch (Exception exception) when (
+                    attempt < 19
+                    && exception is IOException or UnauthorizedAccessException
+                    && (exception.HResult & 0xffff) is 5 or 32 or 33)
+                {
+                    // Windows readers (including Python's read_text) do not share
+                    // delete access. Keep the completed snapshot until the short
+                    // read closes; never repeat the workspace operation itself.
+                    if (attempt == 0)
+                        _host.Trace("TestModeHostController: state write temporarily blocked; retrying");
+                    Thread.Sleep(10);
+                }
+            }
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
