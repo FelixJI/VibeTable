@@ -87,17 +87,18 @@
 - 公共 core 修改必须六仓同步；workflow 可按本仓瓶颈差异化，但不得改变统一质量与发布不变量。VibeTable 发版不触发其他仓库版本或 CD。
 
 <!-- AI-FLOW-V4:START -->
-## AI Flow v4.0：人工交接
+## AI Flow v4.0：人工跨工具交接
 
 AI 编程任务先读 `.ai-flow/AGENTS.md`、`.ai-flow/AI_CODING_PLAYBOOK.md`、
 `.ai-flow/project.json`；日常入口为 `.ai-flow/prompts/08-codex-entry.md`，
 一句话模板见 `.ai-flow/docs/ONE_SENTENCE_PROMPTS.md`。
 
-- 启用 Issue-first、balanced：网页版规划并写入 GitHub Issues；Codex 负责技术判断、复杂调查/实施、结果接收和工程把关；zcode/pi 只施工已明确的当前范围。
-- 同一执行主体、同一角色/会话在当前授权范围内连续完成调查、实施、测试、修复与证据更新；`next_actor == current_actor` 时不 self-handoff，不生成重启自己的提示词，不因内部 checkpoint/阶段结束而停止。只有切换执行者/独立角色、外部条件真正阻塞、用户决策/授权或人工合并边界才交还用户；Codex 主执行与独立 reviewer 属于不同 actor。
-- 用户手工启动每个工具和独立会话。需施工时 Codex 写回 Issue 交接单，输出已填实际编号的施工、收尾汇报、阻碍汇报三句后停止；施工者完成或受阻后主动给出返回 Codex 的一句话。
-- 不通过 CLI/API/MCP、子代理、后台任务或自动唤醒调用任何其他 Agent。本模式不采用通用 CI/CD 监控子代理规则；当前会话只读查询一次，不轮询；CI 未完成时先继续不依赖其结果的已授权工作，只有后续真正受阻才记录 WAITING_CI 和恢复短句后结束，由用户手工续办。
-- 所有变更需用户另开独立 Codex 会话审阅，绑定实际 base/head SHA；自检不能代替独立审阅，新提交需增量复核。只报告 MERGE_READY，人工合并，不自动合并或发布。
+- 启用 Issue-first、balanced：网页版规划并写入 GitHub Issues。Task 明确 Difficulty、Risk、Recommended implementer、Execution mode 和理由，Goal 汇总分工表；建议实施者仅 Codex / GLM / Codex-first → GLM。Codex 按真实仓库重新校准，负责技术判断、复杂调查/实施、结果接收和工程把关；GLM 只施工已明确的当前范围。
+- 同一执行主体在当前授权范围内连续完成调查、实施、测试、修复与证据更新；`next_actor == current_actor` 时不 self-handoff，不生成重启自己的提示词，不因内部 checkpoint/阶段结束而停止。只有 Codex ↔ GLM 跨工具切换、外部条件真正阻塞、用户决策/授权或人工合并边界才交还用户；内部 reviewer 的启动和返回不要求人工交接。
+- 用户手工控制 Codex ↔ GLM 启动、外部等待恢复和最终合并。确需 GLM 施工时 Codex 写回 Issue 交接单，输出已填实际编号的施工、收尾汇报、阻碍汇报三句后停止；GLM 完成或受阻后主动给出返回 Codex 的一句话。
+- 禁止通过 CLI/API/MCP、后台任务或自动唤醒实现 Codex ↔ GLM 互调、回调、轮询或自动恢复。正式审阅是本 Flow 授权的唯一内部代理调用：实现/验证达到 REVIEW_READY 后，Codex 自动启动新的只读 reviewer 子代理，独立读取合同、PR、最新 base/head、diff、代码和证据；reviewer 不改实现、不调用 GLM、不合并，结果直接返回主 Codex。不可用时标记 REVIEW_BLOCKED，不以自检替代。
+- 所有变更需正式审阅，绑定实际 base/head SHA；新提交由新的 reviewer 增量复核。CHANGES_REQUIRED 时主 Codex 继续整改；PASS 后继续核对平台门禁，只报告 MERGE_READY，最终由用户决定合并，不自动合并或发布。
+- CI/CD 状态监控遵循本次会话适用的上级仓库指令；本 Flow 不额外授权代理编排。外部条件未完成时先继续不依赖其结果的已授权工作，只有后续真正受阻才记录 WAITING_CI 和恢复短句后结束，由用户手工续办。
 - 保留上文全部业务、验证、hooks、分支/worktree、六仓共享文件与发布不变量；AI Flow 不改登录、模型、CI/CD 配置或远端保护，也不改变已有 release PR 人工合并后的流水线语义。重试上限不是自动重试授权，仍须先诊断。
 - 一个仓库只保留一位实施写入者，保留用户改动。任务合同和交接存 Issue，代码/验证/审阅证据存 PR；本机报告、日志、临时状态只放 ignored `.ai-flow/runtime/`，不提交。
 - Python 命令统一在仓库根目录使用 `uv run python ...`；包外安装器和测试用 `uv run --project <目标仓库> python ...`。提交前运行 `uv run python .ai-flow/scripts/hygiene.py --staged`，沿用现有 hooks。
