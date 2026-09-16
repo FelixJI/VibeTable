@@ -368,7 +368,13 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     if (session.capabilities.includes("repository.settings.v2")) {
       protection.setStorage(bootstrap.storage);
     }
-    if (session.conflictEnabled) protection.setConflicts(bootstrap.conflicts);
+    // The host publisher never queries business conflict details, so a
+    // same-session bootstrap re-publish carries only a placeholder empty
+    // list. Projecting it would drop inspected details, user choices, and
+    // valid plans; conflict.list stays the authoritative removal path.
+    if (session.conflictEnabled && bootstrap.conflicts.length > 0) {
+      protection.setConflicts(bootstrap.conflicts);
+    }
     if (session.fileHistoryEnabled) {
       for (const tree of bootstrap.fileTrees) protection.setFileTree(tree);
     }

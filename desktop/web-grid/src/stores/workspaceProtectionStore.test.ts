@@ -44,3 +44,55 @@ describe("workspaceProtectionStore operation lease", () => {
     expect(protection.busyOperation).toBeNull();
   });
 });
+
+describe("workspaceProtectionStore conflict projections", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function conflictItem(itemId: string, selected: "local" | "replica" | null) {
+    return {
+      conflictId: "conflict-1",
+      itemId,
+      path: "orders",
+      kind: "table" as const,
+      state: "pending" as const,
+      localSummary: "local",
+      replicaSummary: "replica",
+      baseSummary: "base",
+      dependencies: [],
+      selected,
+    };
+  }
+
+  it("keeps setConflicts an authoritative full replacement, including empty inspections", () => {
+    const protection = useWorkspaceProtectionStore();
+    protection.setConflictSets([{
+      conflictId: "conflict-1",
+      state: "pending",
+      createdAt: "2026-07-28T09:00:00Z",
+      itemCount: 1,
+    }]);
+    protection.setConflicts([conflictItem("item-1", "local")]);
+    expect(protection.conflicts).toHaveLength(1);
+
+    // conflict.inspect may legitimately replace the details with an empty set;
+    // the summary list survives only because emptiness there is not authority.
+    protection.setConflicts([]);
+    expect(protection.conflicts).toEqual([]);
+    expect(protection.conflictSets).toHaveLength(1);
+  });
+
+  it("drops inspected details when conflict.list removes the owning set", () => {
+    const protection = useWorkspaceProtectionStore();
+    protection.setConflictSets([{
+      conflictId: "conflict-1",
+      state: "pending",
+      createdAt: "2026-07-28T09:00:00Z",
+      itemCount: 1,
+    }]);
+    protection.setConflicts([conflictItem("item-1", "local")]);
+
+    protection.setConflictSets([]);
+    expect(protection.conflictSets).toEqual([]);
+    expect(protection.conflicts).toEqual([]);
+  });
+});

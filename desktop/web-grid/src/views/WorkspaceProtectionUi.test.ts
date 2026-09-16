@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { DOMWrapper, mount } from "@vue/test-utils";
+import { NRadioGroup } from "naive-ui";
 import SettingsView from "./SettingsView.vue";
 import WorkspaceCenter from "@/components/workspace/WorkspaceCenter.vue";
 import WorkspaceProtectionSettings from "@/components/settings/WorkspaceProtectionSettings.vue";
@@ -1484,5 +1485,43 @@ describe("workspace protection UI capability gates", () => {
         choices: [{ itemId, kind: "file", side: "both" }],
       },
     });
+  });
+
+  it("invalidates a valid conflict plan when the user re-chooses a side", async () => {
+    const protection = useWorkspaceProtectionStore();
+    const conflictId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const itemId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    protection.setConflictSets([{
+      conflictId,
+      state: "pending",
+      createdAt: "2026-07-28T09:00:00Z",
+      itemCount: 1,
+    }]);
+    protection.setConflicts([{
+      conflictId,
+      itemId,
+      path: "Projects",
+      kind: "table",
+      state: "pending",
+      localSummary: "Local table",
+      replicaSummary: "Replica table",
+      baseSummary: "Base table",
+      dependencies: [],
+      selected: "local",
+    }]);
+    protection.setConflictPlan(conflictId, {
+      planId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      diagnostics: [],
+      valid: true,
+    });
+    const conflicts = mount(ConflictCenterView);
+    expect(conflicts.get('[data-testid="conflict-apply"]').attributes("disabled"))
+      .toBeUndefined();
+
+    conflicts.getComponent(NRadioGroup).vm.$emit("update:value", "replica");
+    await conflicts.vm.$nextTick();
+    expect(protection.conflictPlans[conflictId]).toBeUndefined();
+    expect(conflicts.get('[data-testid="conflict-apply"]').attributes("disabled"))
+      .toBeDefined();
   });
 });

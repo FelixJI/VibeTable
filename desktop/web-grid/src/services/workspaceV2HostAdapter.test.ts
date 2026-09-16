@@ -1,3 +1,6 @@
+import { mount } from "@vue/test-utils";
+import { nextTick } from "vue";
+import ConflictCenterView from "@/views/ConflictCenterView.vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { HostBridge } from "@/bridge/hostBridge";
@@ -361,6 +364,95 @@ describe("workspace v2 production host adapter", () => {
     publish(ready);
     await Promise.resolve();
     expect(fake.request).toHaveBeenCalledTimes(6);
+  });
+
+  it("retains the inspected conflict apply action across same-session host bootstrap", async () => {
+    const conflict = {
+      conflictId: "conflict-1", itemId: "item-1", path: "orders", kind: "table",
+      state: "pending", localSummary: "local", replicaSummary: "replica",
+      baseSummary: "base", dependencies: [], selected: null,
+    } as const;
+    const fake = fakeBridge((payload) => {
+      switch (payload.method) {
+        case "conflict.list": return { conflicts: [{ conflictId: "conflict-1",
+          state: "pending", createdAt: "2026-09-16T00:00:00Z", itemCount: 1 }], nextCursor: null };
+        case "conflict.inspect": return { conflictId: "conflict-1", state: "pending", items: [conflict] };
+        case "conflict.preview": return { planId: "plan-conflict", diagnostics: [], valid: true };
+        default: throw new Error(`unexpected ${payload.method}`);
+      }
+    });
+    const adapter = createWorkspaceV2HostAdapter(fake.bridge);
+    const ready = { ...bootstrap(), capabilities: ["workspace.session.v2", "conflict.center.v2"] };
+    const publish = fake.handlers.get("workspace.v2.bootstrap")!;
+    publish(ready);
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(1));
+    await adapter.port.request({ method: "conflict.inspect", params: { conflictId: "conflict-1" } });
+    const protection = useWorkspaceProtectionStore();
+    protection.chooseConflict("conflict-1", "item-1", "replica");
+    await adapter.port.request({ method: "conflict.preview", params: {
+      conflictId: "conflict-1", choices: [{ itemId: "item-1", kind: "table", side: "replica" }],
+    } });
+    const view = mount(ConflictCenterView);
+    try {
+      expect(view.get('[data-testid="conflict-apply"]').attributes("disabled")).toBeUndefined();
+      publish(ready);
+      await nextTick();
+      expect(view.get('[data-testid="conflict-apply"]').attributes("disabled")).toBeUndefined();
+      expect(protection.conflicts[0]?.selected).toBe("replica");
+      expect(protection.conflictPlans["conflict-1"]?.planId).toBe("plan-conflict");
+      await view.get('[data-testid="conflict-apply"]').trigger("click");
+      expect(view.emitted("action")?.at(-1)?.[0]).toEqual({
+        method: "conflict.apply",
+        params: { planId: "plan-conflict" },
+      });
+    } finally {
+      view.unmount();
+      adapter.dispose();
+    }
+  });
+
+  it("clears inspected conflict state on epoch rotation and rejects the stale bootstrap", async () => {
+    const conflict = {
+      conflictId: "conflict-1", itemId: "item-1", path: "orders", kind: "table",
+      state: "pending", localSummary: "local", replicaSummary: "replica",
+      baseSummary: "base", dependencies: [], selected: null,
+    } as const;
+    let listConflicts = [{ conflictId: "conflict-1",
+      state: "pending", createdAt: "2026-09-16T00:00:00Z", itemCount: 1 }];
+    const fake = fakeBridge((payload) => {
+      switch (payload.method) {
+        case "conflict.list": return { conflicts: listConflicts, nextCursor: null };
+        case "conflict.inspect": return { conflictId: "conflict-1", state: "pending", items: [conflict] };
+        case "conflict.preview": return { planId: "plan-conflict", diagnostics: [], valid: true };
+        default: throw new Error(`unexpected ${payload.method}`);
+      }
+    });
+    const adapter = createWorkspaceV2HostAdapter(fake.bridge);
+    const ready = { ...bootstrap(), capabilities: ["workspace.session.v2", "conflict.center.v2"] };
+    const publish = fake.handlers.get("workspace.v2.bootstrap")!;
+    publish(ready);
+    await vi.waitFor(() => expect(fake.request).toHaveBeenCalledTimes(1));
+    await adapter.port.request({ method: "conflict.inspect", params: { conflictId: "conflict-1" } });
+    const protection = useWorkspaceProtectionStore();
+    protection.chooseConflict("conflict-1", "item-1", "replica");
+    await adapter.port.request({ method: "conflict.preview", params: {
+      conflictId: "conflict-1", choices: [{ itemId: "item-1", kind: "table", side: "replica" }],
+    } });
+    expect(protection.conflicts).toHaveLength(1);
+    expect(protection.conflictPlans["conflict-1"]?.planId).toBe("plan-conflict");
+
+    listConflicts = [];
+    publish({ ...ready, session: { ...ready.session, sessionEpoch: 8 } });
+    expect(protection.conflicts).toEqual([]);
+    expect(protection.conflictSets).toEqual([]);
+    expect(protection.conflictPlans).toEqual({});
+
+    publish(ready);
+    await Promise.resolve();
+    expect(protection.conflicts).toEqual([]);
+    expect(protection.conflictSets).toEqual([]);
+    expect(protection.conflictPlans).toEqual({});
+    adapter.dispose();
   });
 
   it("binds the closed host topics and strictly projects bootstrap state", () => {
