@@ -417,6 +417,59 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CalendarReadRetiresWithoutReplyBeforeRuntimeDrain(bool lateResult)
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("Calendar A", "CalendarA");
+        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("Calendar B", "CalendarB");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(first.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ProductSidecarForwardResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sidecar = new ControlledProductSidecarForwarder(async (call, token) =>
+        {
+            using var registration = token.Register(() =>
+            {
+                cancelled.TrySetResult();
+                if (!lateResult) response.TrySetCanceled(token);
+            });
+            started.TrySetResult();
+            return await response.Task;
+        });
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
+        controller.SetProductSidecarForwarder(sidecar);
+        RoutedWebRequest request = GoQueryRequest("calendar-retired", ScopeFor(opened, 1)) with
+        {
+            Type = "settings.readWorkCalendar",
+            Payload = JsonSerializer.SerializeToElement(new { }),
+        };
+        Task dispatch = controller.DispatchAsync(request);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        response.TrySetResult(new ProductSidecarSuccess(request.Wire.Clone(),
+            JsonSerializer.SerializeToElement(new { overrides = Array.Empty<object>(), revision = "old" })));
+        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        WorkspaceSessionV2 current = await switching.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.AreEqual(0, sink.Replies.Count);
+        controller.SetProductSidecarForwarder(new ControlledProductSidecarForwarder((call, _) =>
+            Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(call.Wire.Clone(),
+                JsonSerializer.SerializeToElement(new { overrides = Array.Empty<object>(), revision = "current" })))));
+        await controller.DispatchAsync(GoQueryRequest("calendar-current", ScopeFor(current, 1)) with
+        {
+            Type = "settings.readWorkCalendar",
+            Payload = request.Payload,
+        });
+        Assert.AreEqual("settings.readWorkCalendar", sink.Replies.Single().Type);
+    }
+
+    [TestMethod]
     public async Task FailedSwitchCancelsOldLeaseAndAcceptsRolledBackEpoch()
     {
         using var fixture = new SessionFixture();

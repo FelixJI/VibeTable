@@ -106,12 +106,13 @@ describe("HostBridge", () => {
     const requests = [
       bridge.request("dashboard.listRequested", {}),
       bridge.request("dashboard.manifestRequested", {}),
+      bridge.request("settings.readWorkCalendar", {}),
     ].map(promise => promise.catch(error => error));
     session.closeSession();
     await Promise.resolve();
     expect(vi.getTimerCount()).toBe(0);
     for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-    expect(retired).toHaveBeenCalledTimes(2);
+    expect(retired).toHaveBeenCalledTimes(3);
     await vi.advanceTimersByTimeAsync(1001);
     window.removeEventListener("vibetable:bridge-request-retired", retired);
     bridge.stop();
