@@ -34,6 +34,7 @@ export interface AuthoritativeLookupDependencies {
   readonly loadedRows: () => readonly Record<string, unknown>[];
   readonly columns: () => readonly ColumnSchema[] | null;
   readonly datasetReady: () => boolean;
+  readonly pageGeneration: () => number;
   readonly schemaRevision: () => string | null;
   readonly dataRevision: () => number | null;
   readonly contextGeneration: () => number;
@@ -91,6 +92,7 @@ export function createAuthoritativeLookupController(
       () => dependencies.relationSchema()?.lookupRevision,
       () => dependencies.capabilities()?.lookupQueryV1,
       dependencies.datasetReady,
+      dependencies.pageGeneration,
       dependencies.dataRevision,
     ],
     () => { void refresh(); },

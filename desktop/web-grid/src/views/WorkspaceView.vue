@@ -411,6 +411,7 @@ const authoritativeLookups = createAuthoritativeLookupController({
   loadedRows: () => tableStore.allRows,
   columns: () => tableStore.schema,
   datasetReady: () => tableStore.datasetReady,
+  pageGeneration: () => tableStore.pageGeneration,
   schemaRevision: () => tableStore.revision?.schemaRevision ?? null,
   dataRevision: () => tableStore.revision?.dataRevision ?? null,
   contextGeneration: () => relationLookup.generation,
