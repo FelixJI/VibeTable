@@ -286,6 +286,7 @@ public sealed class HostProductRpcCompositionTests
         HostProductRpcBinding? binding = fixture.Factory.CaptureHostProductRpcBinding(fixture.Session);
         Assert.IsNotNull(binding);
         Assert.AreSame(fixture.Backend.Client, binding.Client);
+        Assert.IsTrue(binding.Matches(fixture.Factory.CaptureProductSidecarGeneration()!));
         Assert.IsTrue(binding.Matches(fixture.Factory.CaptureHostProductRpcBinding()!));
         using var gateway = binding.CreateGateway(fixture.Leases, fixture.Http);
         JsonElement result = await gateway.ListTablesAsync(Json("{}"), CancellationToken.None);
@@ -370,6 +371,7 @@ public sealed class HostProductRpcCompositionTests
     {
         await using var fixture = await Fixture.OpenAsync();
         HostProductRpcBinding old = fixture.Factory.CaptureHostProductRpcBinding()!;
+        ProductSidecarGenerationSnapshot readySnapshot = fixture.Factory.CaptureProductSidecarGeneration()!;
         using var gateway = old.CreateGateway(fixture.Leases, fixture.Http);
         using var releaseReady = new ManualResetEventSlim();
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -394,6 +396,8 @@ public sealed class HostProductRpcCompositionTests
             await ready.Task.WaitAsync(TimeSpan.FromSeconds(5));
             HostProductRpcBinding current = fixture.Factory.CaptureHostProductRpcBinding()!;
             Assert.AreSame(old.Client, current.Client);
+            Assert.IsFalse(current.Matches(readySnapshot), "A retired handshake must not configure the replacement generation");
+            Assert.IsTrue(current.Matches(fixture.Factory.CaptureProductSidecarGeneration()!));
             Assert.IsFalse(old.Matches(current));
             fixture.Http.ReplyGate?.TrySetResult();
             await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
