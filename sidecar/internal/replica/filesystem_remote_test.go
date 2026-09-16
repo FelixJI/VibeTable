@@ -158,6 +158,34 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	); !errors.Is(err, ErrVerificationInvalid) {
 		t.Fatalf("unpublished recovery error = %v", err)
 	}
+	// Resume after a process stopped between the immutable checkpoint write and publication.
+	beforeRetry, err := os.ReadFile(remote.checkpointPath(checkpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err = OpenFilesystemRemote(ctx, selectedRoot, workspaceID, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote.now = func() time.Time { return replication.CommittedAt.Add(time.Minute) }
+	retried, err := remote.ReplicateCheckpoint(ctx, checkpoint)
+	if err != nil || retried != replication {
+		t.Fatalf("resume unpublished checkpoint: receipt=%#v want=%#v err=%v", retried, replication, err)
+	}
+	afterRetry, err := os.ReadFile(remote.checkpointPath(checkpoint))
+	if err != nil || string(afterRetry) != string(beforeRetry) {
+		t.Fatalf("retry changed the immutable checkpoint: %v", err)
+	}
+	conflicting := checkpoint
+	conflicting.Manifests = append([]objectrepo.ManifestRecord(nil), checkpoint.Manifests...)
+	conflicting.Manifests[0], conflicting.Manifests[1] = conflicting.Manifests[1], conflicting.Manifests[0]
+	if _, err := remote.ReplicateCheckpoint(ctx, conflicting); err == nil {
+		t.Fatal("a different checkpoint at the same immutable path was accepted")
+	}
+	unchanged, err := os.ReadFile(remote.checkpointPath(checkpoint))
+	if err != nil || string(unchanged) != string(beforeRetry) {
+		t.Fatalf("conflicting retry changed the immutable checkpoint: %v", err)
+	}
 	publicationNow := time.Date(2026, 7, 28, 12, 1, 0, 0, time.UTC)
 	publication, err := SealPublication(Publication{
 		WorkspaceID: workspaceID,

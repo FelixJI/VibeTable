@@ -281,7 +281,16 @@ func (remote *FilesystemRemote) ReplicateCheckpoint(
 		return ReplicationReceipt{}, err
 	}
 	if err := writeImmutable(remote.checkpointPath(checkpoint), raw); err != nil {
-		return ReplicationReceipt{}, err
+		// A previous attempt may have committed the checkpoint but stopped before
+		// publication. Preserve its timestamp and bytes after independently checking
+		// the stored checkpoint and recovery closure, including concurrent writers.
+		_, stored, readErr := remote.recoverCheckpoint(
+			ctx, checkpoint.SnapshotID, checkpoint.CatalogRevision,
+		)
+		if readErr != nil || stored.CheckpointID != checkpointID || stored.CommittedAt.IsZero() {
+			return ReplicationReceipt{}, err
+		}
+		committedAt = stored.CommittedAt
 	}
 	return ReplicationReceipt{
 		WorkspaceID:     checkpoint.WorkspaceID,
