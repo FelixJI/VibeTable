@@ -1,8 +1,9 @@
-import { effectScope, ref } from "vue";
+import { effectScope, nextTick, ref } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LookupDefinition, LookupQueryResult, TablePage } from "@/contracts";
+import { lookupFormatter } from "@/grid/relationLookupRenderer";
 import { useTableStore } from "@/stores/tableStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import {
@@ -142,7 +143,7 @@ describe("authoritativeLookupController", () => {
         { name: "customer", title: "Customer", fieldId: "orders.customer", kind: "relation", dataType: "text", editable: true, nullable: true },
         { name: "price", title: "Price", fieldId: "orders.price", dataType: "decimal", editable: false, nullable: true },
       ],
-      datasetReady: () => true,
+      datasetReady: () => true, pageGeneration: () => 0,
       schemaRevision: () => "schema-1",
       dataRevision: () => 1,
       contextGeneration: () => 1,
@@ -231,7 +232,7 @@ describe("authoritativeLookupController", () => {
         editable: true,
         nullable: true,
       }],
-      datasetReady: () => true,
+      datasetReady: () => true, pageGeneration: () => 0,
       schemaRevision: () => "schema-1",
       dataRevision: () => 1,
       contextGeneration: () => 1,
@@ -312,7 +313,7 @@ describe("authoritativeLookupController", () => {
         editable: false,
         nullable: true,
       }],
-      datasetReady: () => true,
+      datasetReady: () => true, pageGeneration: () => 0,
       schemaRevision: () => "schema-1",
       dataRevision: () => dataRevision,
       contextGeneration: () => 1,
@@ -376,7 +377,7 @@ describe("authoritativeLookupController", () => {
         editable: true,
         nullable: true,
       }],
-      datasetReady: () => true,
+      datasetReady: () => true, pageGeneration: () => 0,
       schemaRevision: () => "schema-1",
       dataRevision: () => 1,
       contextGeneration: () => 1,
@@ -436,7 +437,7 @@ it.each(["applied", "rejected", "context", "table-aba", "dispose"] as const)(
     const dependencies: AuthoritativeLookupDependencies = {
       currentTable: () => collection.value, tablePage: () => page, loadedRows: () => rows,
       columns: () => [{ name: "customer", title: "Customer", kind: "relation", dataType: "text", editable: true, nullable: true }],
-      datasetReady: () => true, schemaRevision: () => "schema-1", dataRevision: () => 1,
+      datasetReady: () => true, pageGeneration: () => 0, schemaRevision: () => "schema-1", dataRevision: () => 1,
       contextGeneration: () => contextGeneration,
       relationSchema: () => ({ collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [], schemaRevision: "schema-1", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l" }),
       capabilities: () => ({ contract: "vibetable.relation-capabilities.v1", relationReadV1: true, relationEditV1: true, lookupQueryV1: true }),
@@ -530,6 +531,7 @@ function receiptHarness(labelsOnly = false) {
     loadedRows: () => table.allRows,
     columns: () => table.schema,
     datasetReady: () => table.datasetReady,
+    pageGeneration: () => table.pageGeneration,
     schemaRevision: () => table.revision?.schemaRevision ?? null,
     dataRevision: () => table.revision?.dataRevision ?? null,
     contextGeneration: () => relations.generation,
@@ -545,3 +547,45 @@ function receiptHarness(labelsOnly = false) {
   }))!;
   return { scope, controller, table, relations, collection, pending, queryLookups, reportError };
 }
+
+it.each(["dataset", "page"] as const)("restores source actions after a same-revision raw %s replaces the projection", async (kind) => {
+  const h = receiptHarness();
+  try {
+    const raw = h.table.pages[0]!;
+    const value = {
+      state: "ok", value: [99],
+      provenance: [{ collection: "customers", collectionLabel: "Customers", itemId: "c1", recordLabel: "C1", fieldId: "price", fieldLabel: "Price", value: 99 }],
+      provenanceTotal: 101, provenanceTotalKnown: true,
+      provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: true,
+    };
+    const refresh = h.controller.refresh();
+    h.pending.resolve({ ...result(h.relations.generation), rows: [{ rowKey: "original", price: value }] });
+    await expect(refresh).resolves.toBe(true);
+    const sourceButton = () => lookupFormatter(lookup, true)({
+      getValue: () => h.table.allRows[0]?.price,
+    }).querySelector(".vt-lookup-source-more");
+    expect(sourceButton()?.textContent).toBe("+98");
+    if (kind === "dataset") h.table.setDatasetReady({ ...raw, mode: "remote" });
+    else h.table.appendPage({ ...raw });
+    await vi.waitFor(() => expect(sourceButton()?.textContent).toBe("+98"));
+    expect(h.queryLookups).toHaveBeenCalledTimes(2);
+  } finally { h.scope.stop(); }
+});
+it("keeps appended cursor windows instead of refreshing and replacing only the first window", async () => {
+  const h = receiptHarness();
+  try {
+    const first = { ...h.table.pages[0]!, querySnapshot: result(1).snapshot, nextCursor: "second", hasMore: true };
+    h.table.setDatasetReady({ ...first, mode: "remote" });
+    h.pending.resolve({ ...result(h.relations.generation), rows: [{ rowKey: "original", price: 99 }] });
+    await vi.waitFor(() => expect(h.table.allRows[0]?.price).toBe(99));
+    const calls = h.queryLookups.mock.calls.length;
+    expect(h.table.appendWindow({ ...first, offset: 500, rows: [{ rowKey: "second", price: 100 }], nextCursor: "third" })).toBe(true);
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+    expect(h.table.allRows.map(row => row.rowKey)).toEqual(["original", "second"]);
+    expect(h.table.pages).toHaveLength(2);
+    expect(h.table.nextCursor).toBe("third");
+    expect(h.queryLookups).toHaveBeenCalledTimes(calls);
+  } finally { h.scope.stop(); }
+});

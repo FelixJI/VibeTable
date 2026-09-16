@@ -51,6 +51,7 @@ public partial class MainWindow : Window
     private readonly WorkspaceRequestDispatcher _dispatcher;
     private readonly IProductSidecarGatewayLifecycle _productSidecarGatewayLifecycle;
     private readonly ProductRealtimeSession _productRealtime;
+    private HostProductRpcBinding? _configuredProductBinding;
     private readonly PluginProjectContextBindingRegistry _databaseOpens;
     private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
@@ -356,7 +357,7 @@ public partial class MainWindow : Window
             _coordinator,
             () => _router.IsReady,
             () => Volatile.Read(ref _closing) != 0,
-            () => _productGateway is not null,
+            HasCurrentProductGateways,
             message => _readiness?.Trace(message),
             typeof(MainWindow).Assembly.GetName().Version?.ToString()
                 ?? "unknown",
@@ -542,7 +543,6 @@ public partial class MainWindow : Window
             _ = TryReplaceProductSidecarGatewayAsync(
                 productSidecarGeneration);
         }
-        _ = ConfigureRpcGatewaysAsync();
     }
 
     private async Task TryReplaceProductSidecarGatewayAsync(
@@ -550,10 +550,9 @@ public partial class MainWindow : Window
     {
         try
         {
-            _ = await _productSidecarGatewayLifecycle.TryReplaceAsync(
-                    snapshot,
-                    _session.Token)
-                .ConfigureAwait(true);
+            await CompleteProductGatewayBindingAsync(
+                _productSidecarGatewayLifecycle.TryReplaceAsync(snapshot, _session.Token),
+                () => ConfigureRpcGatewaysAsync(snapshot)).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (
             _session.IsCancellationRequested
@@ -570,17 +569,30 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task ConfigureRpcGatewaysAsync()
+    internal static async Task CompleteProductGatewayBindingAsync(
+        Task<bool> sidecarBinding,
+        Func<Task> configure)
+    {
+        // Keep database.opened behind the Product Sidecar capability handshake.
+        if (await sidecarBinding.ConfigureAwait(true))
+            await configure().ConfigureAwait(true);
+    }
+
+    private bool HasCurrentProductGateways()
+        => _productGateway is not null
+            && _configuredProductBinding is { } configured
+            && _runtime.CaptureHostProductRpcBinding() is { } current
+            && configured.Matches(current);
+
+    private async Task ConfigureRpcGatewaysAsync(ProductSidecarGenerationSnapshot snapshot)
     {
         if (Volatile.Read(ref _closing) != 0) return;
         try
         {
-            bool configured = await Dispatcher.InvokeAsync(TryConfigureRpcGateways)
+            bool configured = await Dispatcher.InvokeAsync(() => TryConfigureRpcGateways(snapshot))
                 .Task
                 .ConfigureAwait(true);
-            if (!configured)
-                throw new InvalidOperationException(
-                    "ClientReady was published without a backend client.");
+            if (!configured) return; // This ready continuation belongs to a retired generation.
         }
         catch (Exception exception)
         {
@@ -590,14 +602,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private bool TryConfigureRpcGateways()
+    private bool TryConfigureRpcGateways(ProductSidecarGenerationSnapshot snapshot)
     {
         HostProductRpcBinding? binding = _runtime.CaptureHostProductRpcBinding();
-        if (binding is null)
-        {
-            _tableGateway.Unbind();
-            return false;
-        }
+        if (binding is null || !binding.Matches(snapshot)) return false;
         ConfigureRpcGateways(binding);
         return true;
     }
@@ -643,6 +651,7 @@ public partial class MainWindow : Window
             new OpenXmlDocumentDiffEngine(),
             Path.Combine(_productDataRoot, "document-diff"));
         _dispatcher.SetDocumentWorkspace(_documentWorkspace);
+        _configuredProductBinding = binding;
         _authorityTransition.Transition(
             PluginProjectContext.FromSession(_workspaceSessions.Current),
             _session.Token);

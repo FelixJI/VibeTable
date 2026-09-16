@@ -7,6 +7,40 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductSidecarGatewayLifecycleTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(2);
+    [TestMethod]
+    [DataRow("ready")]
+    [DataRow("retired")]
+    [DataRow("failed")]
+    public async Task HostProjectionWaitsForSuccessfulSidecarBinding(string outcome)
+    {
+        var authority = new ControlledGenerationAuthority();
+        var binding = new ControlledSidecarBinding();
+        var candidate = new ControlledGatewayCandidate();
+        ProductSidecarGenerationSnapshot snapshot = Snapshot();
+        authority.SetCurrent(snapshot);
+        using var lifecycle = new ProductSidecarGatewayLifecycle(authority, binding, _ => candidate);
+        int projections = 0;
+        Task completion = MainWindow.CompleteProductGatewayBindingAsync(
+            lifecycle.TryReplaceAsync(snapshot, default),
+            () =>
+            {
+                Assert.AreSame(candidate, binding.Current,
+                    "database.opened must not expose an unbound Product route");
+                projections++;
+                return Task.CompletedTask;
+            });
+        await candidate.HandshakeStarted.Task.WaitAsync(TestTimeout);
+        bool wasPending = !completion.IsCompleted;
+        if (outcome == "retired") authority.SetCurrent(null);
+        if (outcome == "failed") candidate.FailHandshake(new InvalidOperationException("handshake failed"));
+        else candidate.CompleteHandshake();
+        if (outcome == "failed")
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => completion.WaitAsync(TestTimeout));
+        else
+            await completion.WaitAsync(TestTimeout);
+        Assert.IsTrue(wasPending, "Host readiness escaped the pending capability handshake");
+        Assert.AreEqual(outcome == "ready" ? 1 : 0, projections);
+    }
 
     [TestMethod]
     public async Task NewerAttemptSupersedesPendingCandidateAndLateCompletionCannotPublish()

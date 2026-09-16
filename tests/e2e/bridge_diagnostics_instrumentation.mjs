@@ -11,6 +11,7 @@ export function installBridgeDiagnosticsInPage() {
     failures: [],
     retiredRequests: [],
     inboundRevisions: [],
+    replicaObservations: [],
     diagnosticCursor: 0,
     pending: {},
     workspaceSession: null,
@@ -200,7 +201,8 @@ export function installBridgeDiagnosticsInPage() {
           ? message.payload.method
           : message.type,
         payloadShape,
-        ...((message.type === "dashboard.listRequested" || message.type === "dashboard.manifestRequested")
+        ...((message.type === "dashboard.listRequested" || message.type === "dashboard.manifestRequested"
+          || message.type === "settings.readWorkCalendar")
           && message.scope?.scope === "workspace" ? {
             retirementScope: {
               workspaceId: message.scope.workspaceId,
@@ -256,6 +258,23 @@ export function installBridgeDiagnosticsInPage() {
               sessionEpoch: session.sessionEpoch,
             }
           : null;
+    }
+    const replicaEvent = message?.type === "workspace.v2.event"
+      && message.payload?.topic === "replica.changed";
+    const replicaReply = message?.type === "workspace.v2.response"
+      && message.payload?.method === "replica.status" && message.payload?.ok === true;
+    if (replicaEvent || replicaReply) {
+      const value = replicaEvent ? message.payload.payload : message.payload.result;
+      const wire = message.payload.wire;
+      pushBounded(diagnostics.replicaObservations, {
+        at: new Date().toISOString(),
+        source: replicaEvent ? "replica.changed" : "replica.status",
+        workspaceId: typeof wire?.workspaceId === "string" ? wire.workspaceId.slice(0, 64) : null,
+        sessionEpoch: Number.isSafeInteger(wire?.sessionEpoch) ? wire.sessionEpoch : null,
+        syncState: ["localOnly", "pending", "syncing", "replicated", "failed"].includes(value?.syncState)
+          ? value.syncState : null,
+        pendingSync: typeof value?.pendingSync === "boolean" ? value.pendingSync : null,
+      });
     }
     const rawRequestId = typeof message?.requestId === "string"
       ? message.requestId
@@ -379,6 +398,7 @@ export function readBridgeDiagnosticsInPage() {
     roundTrips: diagnostics.roundTrips,
     failures: diagnostics.failures,
     inboundRevisions: diagnostics.inboundRevisions,
+    replicaObservations: diagnostics.replicaObservations ?? [],
     acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
     retiredRequests: diagnostics.retiredRequests ?? [],
     pending: Object.values(diagnostics.pending).map((request) => ({

@@ -1,4 +1,5 @@
 import { watch } from "vue";
+import { getActivePinia } from "pinia";
 /**
  * HostBridge — a typed, whitelist-only bridge over `window.chrome.webview`.
  *
@@ -896,6 +897,13 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
       return;
     }
 
+    // A queued projection can arrive after the renderer has begun draining
+    // its workspace. It must not restart consumers against that retiring epoch.
+    if (type === "database.opened" && getActivePinia()) {
+      const session = useWorkspaceSessionStore();
+      if (session.enabled && session.isTransitioning) return;
+    }
+
     // --- Fan out to typed handlers ---------------------------------------
     const set = handlers.get(type as HostMessageType);
     if (set) {
@@ -1073,7 +1081,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
             }
           }, requestTimeoutMs);
       pending.set(requestId, {
-        retirementScope: (type === "dashboard.listRequested" || type === "dashboard.manifestRequested")
+        retirementScope: (type === "dashboard.listRequested" || type === "dashboard.manifestRequested"
+          || type === "settings.readWorkCalendar")
           && env.scope ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
           : undefined,
         messageType: type,

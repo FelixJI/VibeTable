@@ -66,6 +66,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
   const provisional = ref(false);
   const errorCode = ref<string | null>(null);
   const targetWorkspaceId = ref<string | null>(null);
+  let switchOrigin: { readonly writable: boolean; readonly provisional: boolean } | null = null;
   const lastSequence = ref(0);
   const acceptedSequences = new Set<number>();
   const deletePlan = ref<WorkspaceDeletePlan | null>(null);
@@ -120,6 +121,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     if (!enabled.value || isTransitioning.value || workspaceId === activeWorkspaceId.value) {
       return false;
     }
+    switchOrigin = { writable: writable.value, provisional: provisional.value };
     targetWorkspaceId.value = workspaceId;
     sessionState.value = "switching";
     sessionPhase.value = "protecting";
@@ -138,6 +140,17 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     // from the previously active workspace must never rotate the renderer
     // back to an older authority after a create/switch/restore completed.
     if (next.sessionEpoch < sessionEpoch.value) {
+      return false;
+    }
+
+    // Local activation owns the transition until its reply commits a new
+    // epoch or failSwitch explicitly restores the old session. A queued ready
+    // bootstrap for the draining epoch cannot reopen admission meanwhile.
+    const retainsSwitchTarget = targetWorkspaceId.value !== null
+      && next.workspaceId === activeWorkspaceId.value
+      && next.sessionEpoch === sessionEpoch.value;
+    if (retainsSwitchTarget && next.phase === "idle"
+      && ["openedWritable", "openedProvisional", "openedReadOnly"].includes(next.state)) {
       return false;
     }
 
@@ -162,11 +175,26 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     writable.value = next.writable;
     provisional.value = next.provisional;
     errorCode.value = next.errorCode;
-    targetWorkspaceId.value = null;
+    if (!retainsSwitchTarget || next.state === "failed" || next.state === "closed") {
+      targetWorkspaceId.value = null;
+      switchOrigin = null;
+    }
     return true;
   }
 
   function failSwitch(code: string): void {
+    if (sessionState.value === "failed" || sessionState.value === "closed") {
+      switchOrigin = null;
+      targetWorkspaceId.value = null;
+      errorCode.value ??= code;
+      sessionPhase.value = "idle";
+      return;
+    }
+    if (switchOrigin) {
+      writable.value = switchOrigin.writable;
+      provisional.value = switchOrigin.provisional;
+      switchOrigin = null;
+    }
     errorCode.value = code;
     targetWorkspaceId.value = null;
     sessionState.value = activeWorkspaceId.value
@@ -208,6 +236,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
         nextSessionEpoch: 0,
       });
     }
+    switchOrigin = null;
     activeWorkspaceId.value = null;
     sessionEpoch.value = 0;
     sessionState.value = "closed";

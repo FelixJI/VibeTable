@@ -111,6 +111,7 @@ describe("HomeView", () => {
     setHostBridgeForTesting({ request: vi.fn(async (type, payload) => type === "settings.readWorkCalendar" ? { overrides: [], revision: "" } : { ...payload, revision: "saved" }) } as unknown as HostBridge);
     useWorkspaceStore().phase = "opened";
     useWorkspaceSessionStore().activeWorkspaceId = "calendar-workspace";
+    useWorkspaceSessionStore().sessionState = "openedWritable";
     useWorkspaceSessionStore().writable = true;
     const calendar = useWorkCalendarStore();
     await flushPromises();

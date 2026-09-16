@@ -106,14 +106,35 @@ describe("HostBridge", () => {
     const requests = [
       bridge.request("dashboard.listRequested", {}),
       bridge.request("dashboard.manifestRequested", {}),
+      bridge.request("settings.readWorkCalendar", {}),
     ].map(promise => promise.catch(error => error));
     session.closeSession();
     await Promise.resolve();
     expect(vi.getTimerCount()).toBe(0);
     for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-    expect(retired).toHaveBeenCalledTimes(2);
+    expect(retired).toHaveBeenCalledTimes(3);
     await vi.advanceTimersByTimeAsync(1001);
     window.removeEventListener("vibetable:bridge-request-retired", retired);
+    bridge.stop();
+  });
+
+  it("does not fan out a late database projection while its workspace is switching", () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.activeWorkspaceId = "workspace-a";
+    session.sessionEpoch = 2;
+    session.sessionState = "openedWritable";
+    const bridge = createHostBridge({ webview });
+    bridge.start();
+    const opened = vi.fn();
+    bridge.on("database.opened", opened);
+    expect(session.beginSwitch("workspace-b")).toBe(true);
+    webview.emit({ type: "database.opened", payload: { tables: [], views: [] } });
+    expect(opened).not.toHaveBeenCalled();
+    session.sessionState = "openedWritable";
+    session.sessionPhase = "idle";
+    webview.emit({ type: "database.opened", payload: { tables: ["current"], views: [] } });
+    expect(opened).toHaveBeenCalledExactlyOnceWith({ tables: ["current"], views: [] });
     bridge.stop();
   });
 

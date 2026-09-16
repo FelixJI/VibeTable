@@ -50,7 +50,9 @@ export const useWorkCalendarStore = defineStore("work-calendar", () => {
     error.value = value instanceof Error ? value.message : "Shared work calendar unavailable";
   }
   async function load(): Promise<void> {
-    if (!session.activeWorkspaceId || workspace.phase !== "opened" || status.value === "saving") return;
+    if (!session.activeWorkspaceId || session.isTransitioning
+      || !["openedWritable", "openedProvisional", "openedReadOnly"].includes(session.sessionState)
+      || workspace.phase !== "opened" || status.value === "saving") return;
     const current = ++generation;
     status.value = "loading";
     error.value = "";
@@ -81,6 +83,6 @@ export const useWorkCalendarStore = defineStore("work-calendar", () => {
   }
   function getOverride(date: string): WorkCalendarOverride | undefined { return draft.value.find(item => item.date === date); }
   function day(date: string) { return resolveWorkCalendarDay(date, overrides.value); }
-  watch(() => [session.activeWorkspaceId, session.sessionEpoch, workspace.phase] as const, () => { reset(); void load(); }, { immediate: true, flush: "post" });
+  watch(() => [session.activeWorkspaceId, session.sessionEpoch, session.sessionState, session.isTransitioning, workspace.phase] as const, () => { reset(); void load(); }, { immediate: true, flush: "post" });
   return { overrides, draft, revision, status, error, available, editable, dirty, overrideCount, setOverride, clearOverride, getOverride, day, load, save };
 });

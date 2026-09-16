@@ -112,6 +112,13 @@ func (dag *AdvisoryDAG) PublishContext(ctx context.Context, publication Publicat
 	return nil
 }
 
+// publication returns a record from the fully verified remote DAG.
+func (dag *AdvisoryDAG) publication(id string) (Publication, bool) {
+	dag.mu.Lock()
+	defer dag.mu.Unlock()
+	publication, found := dag.publications[id]
+	return publication, found
+}
 func (dag *AdvisoryDAG) Heads() ([]Publication, error) {
 	return dag.HeadsContext(context.Background())
 }

@@ -8236,9 +8236,21 @@ async function waitForPublishedReplicaUi(page, recorder) {
   // The existing replica.changed event enables this control only for verified,
   // non-pending replicas. Observe readiness without requesting cache release.
   await page.getByTestId("workspace-storage-release-cache-preview").waitFor({ state: "visible" });
-  await page.waitForFunction(() => document.querySelector(
-    '[data-testid="workspace-storage-release-cache-preview"]',
-  )?.disabled === false, null, { timeout: 60_000 });
+  try {
+    await page.waitForFunction(() => document.querySelector(
+      '[data-testid="workspace-storage-release-cache-preview"]',
+    )?.disabled === false, null, { timeout: 60_000 });
+  } catch (error) {
+    // Read only after the readiness gate failed; preserve its original failure.
+    try {
+      const status = await rawWorkspaceV2Request(page, "replica.status", {});
+      const snapshots = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+      error.message += ` replicaReadiness=${JSON.stringify({ status: status.result, snapshots: snapshots.result })}`;
+    } catch (diagnosticError) {
+      error.message += ` replicaReadinessReadFailed=${String(diagnosticError).slice(0, 300)}`;
+    }
+    throw error;
+  }
   const replica = await rawWorkspaceV2Request(page, "replica.status", {});
   recorder.check("replicated UI readiness agrees with one exact public status checkpoint",
     replica.result?.coordinationStrength === "advisory"

@@ -488,6 +488,9 @@ public sealed class ProductDataRequestController
 
     private void PostRetiredRequest(RoutedWebRequest request)
     {
+        // The renderer settles this automatic read with its scoped retirement
+        // lease, like Dashboard metadata. Keep mutation and admission failures.
+        if (request.Type == "settings.readWorkCalendar") return;
         if (string.IsNullOrWhiteSpace(request.RequestId)) return;
         _reply.PostOperationFailed(
             request.RequestId,

@@ -23,6 +23,9 @@ internal sealed class HostProductRpcBinding(
             && ReferenceEquals(Client, other.Client)
             && ReferenceEquals(_snapshot, other._snapshot);
 
+    internal bool Matches(ProductSidecarGenerationSnapshot other)
+        => ReferenceEquals(_snapshot, other);
+
     internal JsonRpcProductDataGateway CreateGateway(
         IWorkspaceHostEpochLeaseSource leases, HttpMessageHandler? handler = null)
         => new(new HostProductRpcInvoker(Client, _snapshot, leases,

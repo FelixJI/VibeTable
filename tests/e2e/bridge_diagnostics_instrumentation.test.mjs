@@ -681,9 +681,10 @@ test("records document operation failure notifications without retaining private
   }
 });
 
-test("retirement only settles the observed request with matching type and epoch", () => {
+for (const method of ["dashboard.listRequested", "settings.readWorkCalendar"]) {
+test(`retirement only settles ${method} with matching type and epoch`, () => {
   const listeners = new Map();
-  const webview = { postMessage() {}, addEventListener() {} };
+  const webview = { postMessage() {}, addEventListener(type, listener) { listeners.set(type, listener); } };
   globalThis.window = {
     chrome: { webview },
     addEventListener(type, listener) { listeners.set(type, listener); },
@@ -691,12 +692,12 @@ test("retirement only settles the observed request with matching type and epoch"
   try {
     installBridgeDiagnosticsInPage();
     webview.postMessage({
-      type: "dashboard.listRequested", requestId: "old-list", payload: {},
+      type: method, requestId: "old-list", payload: {},
       scope: { scope: "workspace", workspaceId: "workspace-a", sessionEpoch: 7, sequence: 1 },
     });
     const retire = listeners.get("vibetable:bridge-request-retired");
     const detail = {
-      requestId: "old-list", requestType: "dashboard.listRequested",
+      requestId: "old-list", requestType: method,
       workspaceId: "workspace-a", sessionEpoch: 7,
     };
     for (const mismatch of [
@@ -712,7 +713,42 @@ test("retirement only settles the observed request with matching type and epoch"
     assert.equal(result.failures.length, 0);
     assert.equal(result.retiredRequests.length, 1);
     assert.equal(result.retiredRequests[0].requestId, "old-list");
+    listeners.get("message")({ data: {
+      type: "operation.failed", requestId: "old-list", payload: { code: "UNEXPECTED", message: "late failure" },
+    } });
+    assert.equal(readBridgeDiagnosticsInPage().failures.length, 1);
   } finally {
     delete globalThis.window;
   }
+});
+}
+
+test("replica observations retain bounded public state without response contents", () => {
+  const listeners = [];
+  globalThis.window = { chrome: { webview: {
+    postMessage() {},
+    addEventListener(type, listener) { if (type === "message") listeners.push(listener); },
+  } } };
+  try {
+    installBridgeDiagnosticsInPage();
+    for (let index = 0; index < 205; index += 1) {
+      listeners[0]({ data: { type: "workspace.v2.event", payload: {
+        topic: "replica.changed", wire: { workspaceId: "workspace-1", sessionEpoch: 5 },
+        payload: { syncState: "pending", pendingSync: true, path: "private-path" },
+      } } });
+    }
+    listeners[0]({ data: { type: "workspace.v2.response", payload: {
+      method: "replica.status", ok: true,
+      wire: { workspaceId: "workspace-1", sessionEpoch: 5 },
+      result: { syncState: "replicated", pendingSync: false, secret: "private-value" },
+    } } });
+    const observations = readBridgeDiagnosticsInPage().replicaObservations;
+    assert.equal(observations.length, 200);
+    assert.equal(observations[0].source, "replica.changed");
+    assert.deepEqual({ ...observations.at(-1), at: null }, {
+      at: null, source: "replica.status", workspaceId: "workspace-1", sessionEpoch: 5,
+      syncState: "replicated", pendingSync: false,
+    });
+    assert.equal(JSON.stringify(observations).includes("private"), false);
+  } finally { delete globalThis.window; }
 });

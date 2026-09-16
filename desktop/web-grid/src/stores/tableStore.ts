@@ -63,6 +63,8 @@ export const useTableStore = defineStore("table", () => {
    */
   const loadGeneration = ref(0);
   /** Authoritative group nodes returned by the server-side Lookup executor. */
+  // Advances only for raw page replacements, never for projections or cursor appends.
+  const pageGeneration = ref(0);
   const lookupGroups = ref<LookupQueryResult["groups"]>([]);
   /** Independently paged group combinations from the authoritative ViewQuery. */
   const viewGroups = ref<ViewGroupRow[]>([]);
@@ -102,6 +104,7 @@ export const useTableStore = defineStore("table", () => {
     const incoming = page.revision;
     if (isBelowRevisionFloor(incoming)) return false;
     pages.value = [page];
+    pageGeneration.value += 1;
     if (page.columns.length > 0) {
       schema.value = page.columns;
     }
@@ -129,6 +132,7 @@ export const useTableStore = defineStore("table", () => {
       return false;
     }
     pages.value = [payload];
+    pageGeneration.value += 1;
     if (payload.groupRows) {
       viewGroups.value = (payload.groupOffset ?? 0) > 0
         ? [...viewGroups.value, ...payload.groupRows]
@@ -533,6 +537,7 @@ export const useTableStore = defineStore("table", () => {
     revision,
     schemaRevision,
     loadGeneration,
+    pageGeneration,
     lookupGroups,
     viewGroups,
     hasMoreViewGroups,

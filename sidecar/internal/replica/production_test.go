@@ -728,3 +728,71 @@ func TestConflictDependencyScanUsesProvenRelationAutomationAndPluginClosure(t *t
 		t.Fatalf("scanner closure was not preserved: %#v", graph)
 	}
 }
+
+func TestProductionSyncResumesAfterPublicationBeforeLocalAcknowledgement(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	options, repository, _ := productionManagerFixture(t, &productionRemote{}, now)
+	options.Now = func() time.Time { return now }
+	selected := t.TempDir()
+	writeMirroredManifest(t, selected, options.WorkspaceID)
+	remote, err := CreateFilesystemRemote(ctx, selected, options.WorkspaceID, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote.now = options.Now
+	options.Remote = remote
+	acceptor := &productionProvisionalAcceptor{err: context.Canceled}
+	options.ProvisionalAcceptor = acceptor
+	manager, err := OpenManager(ctx, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if manager != nil {
+			_ = manager.Close()
+		}
+	}()
+	manager.queue.now = options.Now
+	if err := manager.Synchronize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	published, err := remote.ListPublications(ctx, options.WorkspaceID)
+	if err != nil || len(published) != 1 {
+		t.Fatalf("publication before interruption: %#v, %v", published, err)
+	}
+	tasks, err := manager.queue.List(ctx)
+	if err != nil || len(tasks) != 1 || tasks[0].Completed {
+		t.Fatalf("interrupted queue: %#v, %v", tasks, err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manager = nil
+	now = now.Add(time.Minute)
+	acceptor.err = nil
+	manager, err = OpenManager(ctx, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.queue.now = options.Now
+	if err := manager.Synchronize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err = manager.queue.List(ctx)
+	if err != nil || len(tasks) != 1 || !tasks[0].Completed {
+		t.Fatalf("publication retry did not complete: %#v, %v", tasks, err)
+	}
+	conflicting := ReplicationReceipt{CheckpointID: "sha256:" + strings.Repeat("d", 64)}
+	if err := manager.publishAdvisory(ctx, options.Catalog.(productionCatalog).records[0],
+		options.Authority.CurrentAuthority(), conflicting); !errors.Is(err, ErrPublicationExists) {
+		t.Fatalf("different checkpoint reused an existing publication: %v", err)
+	}
+	resumed, err := remote.ListPublications(ctx, options.WorkspaceID)
+	if err != nil || len(resumed) != 1 || resumed[0] != published[0] {
+		t.Fatalf("immutable publication changed: %#v, %v", resumed, err)
+	}
+	if _, pending, err := manager.state.pendingPin(ctx, tasks[0].TaskID); err != nil || pending {
+		t.Fatalf("pending pin leaked: %v, %v", pending, err)
+	}
+}
