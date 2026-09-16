@@ -160,23 +160,31 @@ public sealed class GridStateCoordinator
         ScheduleQuery(table, query, null, CancellationToken.None);
     }
 
-    /// <summary>Completes one correlated query without broadcasting its result.</summary>
+    /// <summary>
+    /// Completes one correlated query without broadcasting its result.
+    /// Notify-path callers set <paramref name="notifyRecovery"/> to run the
+    /// same bounded transient recovery as direct notifications; terminal
+    /// failures still fault the returned task instead of broadcasting, so the
+    /// caller keeps ownership of the reply.
+    /// </summary>
     public Task<TablePage> RequestQueryAsync(
-        string table, JsonElement query, CancellationToken cancellationToken)
+        string table, JsonElement query, CancellationToken cancellationToken,
+        bool notifyRecovery = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(table);
         if (query.ValueKind != JsonValueKind.Object)
             throw new ArgumentException("Expected a canonical query object.", nameof(query));
         var completion = new TaskCompletionSource<TablePage>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        CancellationToken token = ScheduleQuery(table, query, completion, cancellationToken);
+        CancellationToken token = ScheduleQuery(
+            table, query, completion, cancellationToken, notifyRecovery);
         // A superseded debounce may never run; its caller must still complete.
         return completion.Task.WaitAsync(token);
     }
 
     private CancellationToken ScheduleQuery(
         string table, JsonElement query, TaskCompletionSource<TablePage>? completion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool notifyRecovery = false)
     {
         _currentTable = table;
         int generation = Interlocked.Increment(ref _generation);
@@ -185,19 +193,25 @@ public sealed class GridStateCoordinator
         var token = _queryCts.Token;
         _queryDebounce?.Dispose();
         JsonElement stableQuery = query.Clone();
-        var state = (table, stableQuery, generation, token, completion);
+        var state = (table, stableQuery, generation, token, completion, notifyRecovery);
         _queryDebounce = _timeProvider.CreateTimer(
             _ => _ = ExecuteRawQueryAsync(
-                state.table, state.stableQuery, state.generation, state.token, state.completion),
+                state.table, state.stableQuery, state.generation, state.token,
+                state.completion, state.notifyRecovery),
             null,
             TimeSpan.FromMilliseconds(QueryDebounceMs),
             Timeout.InfiniteTimeSpan);
         return token;
     }
 
-    /// <summary>Completes one cursor read without broadcasting its result.</summary>
+    /// <summary>
+    /// Completes one cursor read without broadcasting its result.
+    /// Notify-path callers set <paramref name="notifyRecovery"/> to run the
+    /// same bounded transient recovery as direct notifications; terminal
+    /// failures still fault the returned task instead of broadcasting.
+    /// </summary>
     public async Task<TablePage?> RequestNextWindowAsync(
-        string cursor, CancellationToken cancellationToken)
+        string cursor, CancellationToken cancellationToken, bool notifyRecovery = false)
     {
         if (string.IsNullOrWhiteSpace(cursor) || _cursorFetchInFlight || _queryCts is null)
             return null;
@@ -206,7 +220,8 @@ public sealed class GridStateCoordinator
             _queryCts.Token, cancellationToken);
         var completion = new TaskCompletionSource<TablePage>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        await FetchNextWindowAsync(cursor, _generation, lifetime.Token, completion)
+        await FetchNextWindowAsync(
+            cursor, _generation, lifetime.Token, completion, notifyRecovery)
             .ConfigureAwait(false);
         return await completion.Task.ConfigureAwait(false);
     }
@@ -326,7 +341,7 @@ public sealed class GridStateCoordinator
 
     private async Task ExecuteRawQueryAsync(
         string table, JsonElement query, int generation, CancellationToken token,
-        TaskCompletionSource<TablePage>? completion)
+        TaskCompletionSource<TablePage>? completion, bool notifyRecovery = false)
     {
         TablePage? page;
         if (completion is null)
@@ -346,7 +361,14 @@ public sealed class GridStateCoordinator
         {
             try
             {
-                page = await FetchQueryPageAsync(table, query, token).ConfigureAwait(true);
+                // Awaiting notify reads keep the recovery window, but their
+                // terminal failures still fault the completion so the caller
+                // that owns the reply surfaces them exactly once.
+                page = notifyRecovery
+                    ? await ReadWithNotifyRecoveryAsync(
+                        readToken => FetchQueryPageAsync(table, query, readToken),
+                        generation, token).ConfigureAwait(true)
+                    : await FetchQueryPageAsync(table, query, token).ConfigureAwait(true);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -384,6 +406,40 @@ public sealed class GridStateCoordinator
     }
 
     /// <summary>
+    /// Runs one read with the shared bounded notify recovery window, retrying
+    /// transient transport failures. A terminal failure or cancellation is
+    /// rethrown; the caller decides whether and how to surface it.
+    /// </summary>
+    private async Task<TablePage> ReadWithNotifyRecoveryAsync(
+        Func<CancellationToken, Task<TablePage>> read,
+        int generation,
+        CancellationToken token)
+    {
+        DateTimeOffset deadline = _timeProvider.GetUtcNow() + NotifyRecoveryWindow;
+        while (true)
+        {
+            try
+            {
+                return await read(token).ConfigureAwait(true);
+            }
+            catch (Exception ex) when (IsRecoverableNotifyFailure(
+                ex, generation, token, deadline))
+            {
+                await Task.Delay(NotifyRecoveryRetryDelay, _timeProvider, token)
+                    .ConfigureAwait(true);
+            }
+        }
+    }
+
+    private bool IsRecoverableNotifyFailure(
+        Exception exception, int generation, CancellationToken token,
+        DateTimeOffset deadline)
+        => IsTransientTransportFailure(exception)
+            && !IsStale(generation)
+            && !token.IsCancellationRequested
+            && _timeProvider.GetUtcNow() + NotifyRecoveryRetryDelay <= deadline;
+
+    /// <summary>
     /// Runs the notify-path query with a bounded transient recovery window.
     /// Returns the loaded page, or null when the load was superseded or has
     /// already surfaced as operation.failed.
@@ -391,40 +447,29 @@ public sealed class GridStateCoordinator
     private async Task<TablePage?> TryFetchNotifyPageAsync(
         string table, JsonElement query, int generation, CancellationToken token)
     {
-        DateTimeOffset deadline = _timeProvider.GetUtcNow() + NotifyRecoveryWindow;
-        while (true)
+        try
         {
-            try
-            {
-                return await FetchQueryPageAsync(table, query, token)
-                    .ConfigureAwait(true);
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            return await ReadWithNotifyRecoveryAsync(
+                readToken => FetchQueryPageAsync(table, query, readToken),
+                generation, token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (IsStale(generation) || token.IsCancellationRequested)
             {
                 return null;
             }
-            catch (Exception ex) when (IsTransientTransportFailure(ex)
-                && !IsStale(generation)
-                && !token.IsCancellationRequested
-                && _timeProvider.GetUtcNow() + NotifyRecoveryRetryDelay <= deadline)
+            _notify(new TableNotification
             {
-                await Task.Delay(NotifyRecoveryRetryDelay, _timeProvider, token)
-                    .ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                if (IsStale(generation) || token.IsCancellationRequested)
-                {
-                    return null;
-                }
-                _notify(new TableNotification
-                {
-                    Type = "operation.failed",
-                    MutationResult = new MutationOutcome(
-                        "query", false, MutationErrorMapper.Map(ex), null),
-                });
-                return null;
-            }
+                Type = "operation.failed",
+                MutationResult = new MutationOutcome(
+                    "query", false, MutationErrorMapper.Map(ex), null),
+            });
+            return null;
         }
     }
 
@@ -457,14 +502,23 @@ public sealed class GridStateCoordinator
 
     private async Task FetchNextWindowAsync(
         string cursor, int generation, CancellationToken token,
-        TaskCompletionSource<TablePage>? completion = null)
+        TaskCompletionSource<TablePage>? completion = null,
+        bool notifyRecovery = false)
     {
         try
         {
             token.ThrowIfCancellationRequested();
-            TablePage? page = completion is null
-                ? await TryFetchNotifyWindowAsync(cursor, generation, token).ConfigureAwait(true)
-                : await _gateway.FetchTableCursorAsync(cursor, token).ConfigureAwait(true);
+            TablePage? page;
+            if (completion is null)
+                page = await TryFetchNotifyWindowAsync(cursor, generation, token)
+                    .ConfigureAwait(true);
+            else if (notifyRecovery)
+                page = await ReadWithNotifyRecoveryAsync(
+                    readToken => _gateway.FetchTableCursorAsync(cursor, readToken),
+                    generation, token).ConfigureAwait(true);
+            else
+                page = await _gateway.FetchTableCursorAsync(cursor, token)
+                    .ConfigureAwait(true);
             if (page is null || IsStale(generation) || token.IsCancellationRequested)
             {
                 completion?.TrySetCanceled(token);
@@ -515,40 +569,29 @@ public sealed class GridStateCoordinator
     private async Task<TablePage?> TryFetchNotifyWindowAsync(
         string cursor, int generation, CancellationToken token)
     {
-        DateTimeOffset deadline = _timeProvider.GetUtcNow() + NotifyRecoveryWindow;
-        while (true)
+        try
         {
-            try
+            return await ReadWithNotifyRecoveryAsync(
+                readToken => _gateway.FetchTableCursorAsync(cursor, readToken),
+                generation, token).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (IsStale(generation) || token.IsCancellationRequested)
             {
-                return await _gateway.FetchTableCursorAsync(cursor, token)
-                    .ConfigureAwait(true);
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex) when (IsTransientTransportFailure(ex)
-                && !IsStale(generation)
-                && !token.IsCancellationRequested
-                && _timeProvider.GetUtcNow() + NotifyRecoveryRetryDelay <= deadline)
-            {
-                await Task.Delay(NotifyRecoveryRetryDelay, _timeProvider, token)
-                    .ConfigureAwait(true);
-            }
-            catch (Exception ex)
-            {
-                if (IsStale(generation) || token.IsCancellationRequested)
-                {
-                    return null;
-                }
-                _notify(new TableNotification
-                {
-                    Type = "operation.failed",
-                    MutationResult = new MutationOutcome(
-                        "query.cursor", false, MutationErrorMapper.Map(ex), null),
-                });
                 return null;
             }
+            _notify(new TableNotification
+            {
+                Type = "operation.failed",
+                MutationResult = new MutationOutcome(
+                    "query.cursor", false, MutationErrorMapper.Map(ex), null),
+            });
+            return null;
         }
     }
 

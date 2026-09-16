@@ -51,6 +51,46 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
+    public async Task DrainRetiresRecoveringUncorrelatedQueryWithoutLateDelivery()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 entry = fixture.AddWorkspace("查询", "Query");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(entry.WorkspaceId, WorkspaceOpenMode.Writable);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var page = new TablePage("records", [], [], 0, 100, 0, "remote");
+        int calls = 0;
+        var gateway = new FakeTableRpcGateway
+        {
+            CursorOpenOverride = (_, _, _) => ++calls == 1
+                ? Task.FromException<TablePage>(new BackendUnavailableException(
+                    "The host Product RPC binding is no longer current."))
+                : Task.FromResult(page),
+        };
+        var time = new ManualTimeProvider();
+        var notifications = new List<TableNotification>();
+        var sink = new FakeWebReplySink();
+        using var dispatcher = new WorkspaceRequestDispatcher(
+            new TableWorkspaceService(gateway), new FakeDatabasePicker(null), sink,
+            new GridStateCoordinator(gateway, notifications.Add, time), sessionEnvelopeFilter: filter);
+        using var payload = JsonDocument.Parse("""{"table":"records","query":{}}""");
+        Task request = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "table.queryRequested", null, payload.RootElement, string.Empty,
+            ScopeFor(opened, sequence: 3)));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        Assert.AreEqual(1, gateway.QueryWindowCalls.Count);
+
+        Task drain = filter.DrainAsync(entry.WorkspaceId, opened.SessionEpoch, CancellationToken.None);
+        await request.WaitAsync(TimeSpan.FromSeconds(2));
+        await drain.WaitAsync(TimeSpan.FromSeconds(2));
+        time.Advance(TimeSpan.FromMilliseconds(250));
+
+        Assert.AreEqual(1, calls,
+            "A retired epoch must not retry the recovering notify read.");
+        Assert.AreEqual(0, sink.Replies.Count, "No late success may be delivered.");
+        Assert.AreEqual(0, notifications.Count, "No late failure may be delivered.");
+    }
+
+    [TestMethod]
     public async Task HostAdmissionAtomicallyReservesSequenceAndEpochLease()
     {
         using var fixture = new SessionFixture();

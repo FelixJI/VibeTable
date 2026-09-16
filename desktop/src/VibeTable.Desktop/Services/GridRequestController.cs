@@ -79,9 +79,13 @@ public sealed class GridRequestController
                 "QUERY_INVALID");
         }
 
+        // Uncorrelated renderer queries keep the notify-path transient
+        // recovery under the waitable lease; correlated requests stay
+        // single-read with exactly one correlated reply.
         return CompleteReadAsync(
             request,
-            async token => await _coordinator.RequestQueryAsync(table, query, token)
+            async token => await _coordinator.RequestQueryAsync(
+                table, query, token, notifyRecovery: request.RequestId is null)
                 .ConfigureAwait(false),
             "table.datasetReady", "query", correlate: true);
     }
@@ -155,9 +159,11 @@ public sealed class GridRequestController
                 _coordinator is null ? "NOT_CONFIGURED" : "QUERY_INVALID");
         }
 
+        // Cursor reads always serve the renderer notification semantics, so
+        // they keep the notify-path transient recovery while staying waitable.
         return CompleteReadAsync(
             request,
-            token => _coordinator.RequestNextWindowAsync(cursor, token),
+            token => _coordinator.RequestNextWindowAsync(cursor, token, notifyRecovery: true),
             "table.windowLoaded", "query.cursor", correlate: false);
     }
 
