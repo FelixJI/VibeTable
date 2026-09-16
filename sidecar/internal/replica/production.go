@@ -1257,6 +1257,19 @@ func (manager *Manager) publishAdvisory(
 	if err != nil {
 		return err
 	}
+	// Publication may already be durable even when local acknowledgement was
+	// interrupted. Reuse that verified record, including its original parent
+	// and lease times, rather than creating a conflicting self-successor.
+	if existing, found := manager.advisory.publication(publication.PublicationID); found {
+		if existing.CheckpointID != publication.CheckpointID ||
+			existing.Claim.DeviceID != publication.Claim.DeviceID ||
+			existing.Claim.FenceEpoch != publication.Claim.FenceEpoch ||
+			existing.Claim.Mode != publication.Claim.Mode ||
+			existing.Claim.Strength != publication.Claim.Strength {
+			return ErrPublicationExists
+		}
+		publication = existing
+	}
 	if err := manager.remote.AppendPublication(ctx, publication); err != nil {
 		return err
 	}
