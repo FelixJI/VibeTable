@@ -1,6 +1,6 @@
 # S24 目录副本冲突资格
 
-当前状态：固定源码 `c2b7c2eaedf11b0be5b58a08ce2704c0228e64b0` 完整发布构建与同包 S24 均 EXIT0，84 条断言通过，8 个 Host 生命周期正常退出并清理。源码修复均已有作者外 Standards／Spec 审查；远端 fresh CI、严格同步、squash merge 及合并后 CI/CD 尚未完成，不声明已进入可信 main。历史失败及其修复证据完整保留于下文。
+当前资格以 [PR #333](https://github.com/FelixJI/VibeTable/pull/333) 最新 head 的验收记录和 required 为准。下文各 SHA 的构建、S24 与审阅结果是历史固定源码证据，不能替代后续组合或合并后 main 的资格。历史失败及其修复证据保留。
 
 ## 完整意图与来源
 

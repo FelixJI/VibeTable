@@ -680,3 +680,39 @@ test("records document operation failure notifications without retaining private
     delete globalThis.window;
   }
 });
+
+test("retirement only settles the observed request with matching type and epoch", () => {
+  const listeners = new Map();
+  const webview = { postMessage() {}, addEventListener() {} };
+  globalThis.window = {
+    chrome: { webview },
+    addEventListener(type, listener) { listeners.set(type, listener); },
+  };
+  try {
+    installBridgeDiagnosticsInPage();
+    webview.postMessage({
+      type: "dashboard.listRequested", requestId: "old-list", payload: {},
+      scope: { scope: "workspace", workspaceId: "workspace-a", sessionEpoch: 7, sequence: 1 },
+    });
+    const retire = listeners.get("vibetable:bridge-request-retired");
+    const detail = {
+      requestId: "old-list", requestType: "dashboard.listRequested",
+      workspaceId: "workspace-a", sessionEpoch: 7,
+    };
+    for (const mismatch of [
+      { sessionEpoch: 8 }, { workspaceId: "workspace-b" },
+      { requestId: "unknown" }, { requestType: "interface.listRequested" },
+    ]) {
+      retire({ detail: { ...detail, ...mismatch } });
+      assert.equal(readBridgeDiagnosticsInPage().pending.length, 1);
+    }
+    retire({ detail });
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.pending.length, 0);
+    assert.equal(result.failures.length, 0);
+    assert.equal(result.retiredRequests.length, 1);
+    assert.equal(result.retiredRequests[0].requestId, "old-list");
+  } finally {
+    delete globalThis.window;
+  }
+});

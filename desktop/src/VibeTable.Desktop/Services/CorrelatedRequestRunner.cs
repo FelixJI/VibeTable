@@ -61,7 +61,7 @@ internal sealed class CorrelatedRequestRunner<TGateway>
         if (!_requests.TryGetValue(requestId, out RequestState? state)) return;
         state.MarkCancelledByRenderer();
         state.TryCancel();
-        if (state.TryMarkCancellationReply())
+        if (state.IsCurrent() && state.TryMarkCancellationReply())
         {
             _reply.PostOperationFailed(
                 requestId,
@@ -74,7 +74,8 @@ internal sealed class CorrelatedRequestRunner<TGateway>
         RoutedWebRequest request,
         string responseType,
         Func<TGateway, CancellationToken, Task<TResult>> operation,
-        SemaphoreSlim? concurrencyGate = null)
+        SemaphoreSlim? concurrencyGate = null,
+        WorkspaceSessionEnvelopeFilter? sessions = null)
     {
         TGateway? gateway = Volatile.Read(ref _gateway);
         if (gateway is null)
@@ -94,12 +95,20 @@ internal sealed class CorrelatedRequestRunner<TGateway>
             return;
         }
 
+        WorkspaceRequestEpochLease? captured = null;
+        if (sessions is not null && !sessions.TryCapture(request.Scope, out captured))
+        {
+            _reply.PostOperationFailed(request.RequestId,
+                "Workspace request belongs to a stale session.", "BAD_WORKSPACE_SCOPE");
+            return;
+        }
+        using var lease = captured;
+        bool IsCurrent() => sessions is null || sessions.IsCurrent(lease);
         CancellationToken sessionToken = _sessionToken();
-        using var cancellation = sessionToken.CanBeCanceled
-            ? CancellationTokenSource.CreateLinkedTokenSource(sessionToken)
-            : new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            sessionToken, lease?.CancellationToken ?? CancellationToken.None);
         cancellation.CancelAfter(_timeout);
-        var state = new RequestState(cancellation);
+        var state = new RequestState(cancellation, IsCurrent);
         if (!_requests.TryAdd(request.RequestId, state))
         {
             _reply.PostOperationFailed(
@@ -119,7 +128,7 @@ internal sealed class CorrelatedRequestRunner<TGateway>
             }
             TResult result = await operation(gateway, cancellation.Token)
                 .ConfigureAwait(false);
-            if (!cancellation.IsCancellationRequested
+            if (state.IsCurrent() && !cancellation.IsCancellationRequested
                 && _requests.TryGetValue(request.RequestId, out RequestState? current)
                 && ReferenceEquals(current, state))
             {
@@ -132,6 +141,7 @@ internal sealed class CorrelatedRequestRunner<TGateway>
         }
         catch (Exception exception)
         {
+            if (!state.IsCurrent()) return;
             if (state.CancelledByRenderer || cancellation.IsCancellationRequested)
             {
                 PostCancellation(request.RequestId, state, sessionToken);
@@ -153,7 +163,9 @@ internal sealed class CorrelatedRequestRunner<TGateway>
         RequestState state,
         CancellationToken sessionToken)
     {
-        if (!state.TryMarkCancellationReply()) return;
+        // Workspace drain retires the renderer epoch; its bridge rejects pending
+        // calls locally. Do not turn that retirement into a timeout in the new UI.
+        if (!state.IsCurrent() || !state.TryMarkCancellationReply()) return;
         bool timeout = !state.CancelledByRenderer && !sessionToken.IsCancellationRequested;
         _reply.PostOperationFailed(
             requestId,
@@ -161,10 +173,12 @@ internal sealed class CorrelatedRequestRunner<TGateway>
             timeout ? _policy.TimeoutCode : _policy.CancelledCode);
     }
 
-    private sealed class RequestState(CancellationTokenSource cancellation)
+    private sealed class RequestState(CancellationTokenSource cancellation, Func<bool> isCurrent)
     {
         private int _cancelledByRenderer;
         private int _cancellationReplyPosted;
+
+        public bool IsCurrent() => isCurrent();
 
         public bool CancelledByRenderer => Volatile.Read(ref _cancelledByRenderer) != 0;
 

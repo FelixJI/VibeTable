@@ -1,3 +1,4 @@
+import { watch } from "vue";
 /**
  * HostBridge — a typed, whitelist-only bridge over `window.chrome.webview`.
  *
@@ -198,6 +199,11 @@ export class BridgeTimeoutError extends Error {
     this.requestId = requestId;
     this.messageType = messageType;
   }
+}
+
+/** Local settlement of a read owned by a draining workspace. */
+export class BridgeRequestRetiredError extends DOMException {
+  public constructor() { super("Workspace request retired.", "AbortError"); }
 }
 
 /** Error thrown when the host replies with `operation.failed`. */
@@ -483,6 +489,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
 // ---------------------------------------------------------------------------
 
 interface Pending {
+  readonly retirementScope?: { readonly workspaceId: string; readonly sessionEpoch: number };
   readonly messageType: WebMessageType;
   readonly responseTypes: ReadonlySet<HostMessageType>;
   readonly resolve: (value: unknown) => void;
@@ -726,6 +733,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
 
   let boundListener: ((event: { readonly data: unknown }) => void) | null = null;
   let started = false;
+  let unregisterEpochReset: (() => void) | null = null;
 
   const webview: () => WebViewLike = () => {
     if (options.webview) return options.webview;
@@ -919,11 +927,40 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     started = true;
   }
 
+  function observeWorkspaceRetirement(): void {
+    if (unregisterEpochReset) return;
+    const session = useWorkspaceSessionStore();
+    unregisterEpochReset = watch(
+      () => [session.activeWorkspaceId, session.sessionEpoch, session.isTransitioning, session.sessionState],
+      () => {
+        for (const [requestId, entry] of pending) {
+          const scope = entry.retirementScope;
+          if (!scope) continue;
+          if (scope.workspaceId === session.activeWorkspaceId
+            && scope.sessionEpoch === session.sessionEpoch
+            && !session.isTransitioning
+            && session.sessionState !== "closed" && session.sessionState !== "failed") continue;
+          pending.delete(requestId);
+          clearPendingTimer(entry);
+          entry.reject(new BridgeRequestRetiredError());
+          // Only protocol identity is exposed; diagnostics retain this actual
+          // local settlement rather than inferring success from a missing reply.
+          window.dispatchEvent(new CustomEvent("vibetable:bridge-request-retired", {
+            detail: { requestId, requestType: entry.messageType, ...scope },
+          }));
+        }
+      },
+      { flush: "sync" },
+    );
+  }
+
   function stop(): void {
     if (!started || !boundListener) return;
     webview().removeEventListener("message", boundListener);
     boundListener = null;
     started = false;
+    unregisterEpochReset?.();
+    unregisterEpochReset = null;
     // Reject any still-pending requests so callers don't hang forever.
     for (const entry of pending.values()) {
       clearPendingTimer(entry);
@@ -974,7 +1011,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     payload: unknown,
     requestId?: string,
     nativeObjects?: true,
-  ): BridgeMessage {
+  ): BridgeMessage & { readonly scope?: ReturnType<typeof nextWorkspaceWire> } {
     if (type === "workspace.v2.request") {
       return {
         type,
@@ -1036,12 +1073,16 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
             }
           }, requestTimeoutMs);
       pending.set(requestId, {
+        retirementScope: (type === "dashboard.listRequested" || type === "dashboard.manifestRequested")
+          && env.scope ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
+          : undefined,
         messageType: type,
         responseTypes: responseTypesFor(type),
         resolve,
         reject,
         timer,
       });
+      if (pending.get(requestId)?.retirementScope) observeWorkspaceRetirement();
       try {
         postEnvelope(env);
       } catch (err) {

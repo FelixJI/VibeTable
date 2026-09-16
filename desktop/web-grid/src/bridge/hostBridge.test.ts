@@ -70,6 +70,53 @@ describe("HostBridge", () => {
     vi.useRealTimers();
   });
 
+  it("settles scoped controller requests on epoch retirement without waiting for timeout", async () => {
+    vi.useFakeTimers();
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.setWorkspaces([{
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "E2E",
+      selectedRoot: "D:\\E2E",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    }]);
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+    bridge.start();
+    const retired = vi.fn();
+    window.addEventListener("vibetable:bridge-request-retired", retired);
+    const requests = [
+      bridge.request("dashboard.listRequested", {}),
+      bridge.request("dashboard.manifestRequested", {}),
+    ].map(promise => promise.catch(error => error));
+    session.closeSession();
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(0);
+    for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
+    expect(retired).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1001);
+    window.removeEventListener("vibetable:bridge-request-retired", retired);
+    bridge.stop();
+  });
+
   it("posts a request envelope with a unique requestId and resolves on the matching response", async () => {
     const bridge = createHostBridge({
       webview,

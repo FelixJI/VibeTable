@@ -52,6 +52,39 @@ public sealed class HostProductRpcInvokerTests
     }
 
     [TestMethod]
+    [DataRow("dashboard.listRequested")]
+    [DataRow("dashboard.manifestRequested")]
+    public async Task WorkspaceCloseRetiresCorrelatedReadsWithoutFalseTimeout(string requestType)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.BeforeHandshake = token => Task.Delay(Timeout.Infinite, token);
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        var sink = new FakeWebReplySink();
+        using var dispatcher = fixture.Dispatcher(sink);
+        // This is the host lifetime, not the shorter workspace epoch lifetime.
+        using var hostLifetime = new CancellationTokenSource();
+        dispatcher.SetDashboardGateway(new JsonRpcDashboardGateway(gateway), hostLifetime.Token);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace",
+            WorkspaceId = fixture.Session.WorkspaceId!.Value,
+            SessionEpoch = fixture.Session.SessionEpoch,
+            OperationId = Guid.NewGuid(),
+            Sequence = 1,
+        };
+        Task request = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            requestType, "closing-read", Json("{}"), "", scope));
+        await fixture.Http.HandshakeEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await fixture.CloseAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        await request.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsFalse(hostLifetime.IsCancellationRequested);
+        string evidence = string.Join(", ", sink.Replies.Select(reply =>
+            JsonSerializer.Serialize(reply.Payload)));
+        Assert.AreEqual(0, sink.Replies.Count, evidence);
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task WorkspaceCloseRetiresDebouncedGridQueryWithoutFailure(bool correlated)
@@ -686,13 +719,21 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }
 
         internal PocketBaseTableGateway TableGateway() => new(
             Gateway(useGeneratedPolicy: true), new JsonRpcWorkspaceSupportGateway(_client));
+
+        internal WorkspaceRequestDispatcher Dispatcher(IWebReplySink sink)
+        {
+            var tables = new FakeTableRpcGateway();
+            return new WorkspaceRequestDispatcher(
+                new TableWorkspaceService(tables), new FakeDatabasePicker(null), sink,
+                new GridStateCoordinator(tables, _ => { }), sessionEnvelopeFilter: _leases);
+        }
 
         internal GridRequestController GridController(GridStateCoordinator coordinator, IWebReplySink sink)
             => new(coordinator, sink, sessions: _leases);

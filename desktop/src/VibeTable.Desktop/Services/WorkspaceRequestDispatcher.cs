@@ -155,7 +155,8 @@ public sealed class WorkspaceRequestDispatcher :
         _dashboardController = new DashboardRequestController(
             _reply,
             correlatedRequestTimeout,
-            () => _workspaceSessionToken);
+            () => _workspaceSessionToken,
+            sessionEnvelopeFilter);
         _surfaceController = new SurfaceRequestController(
             _reply,
             correlatedRequestTimeout,

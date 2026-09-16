@@ -1,4 +1,4 @@
-import { BridgeOperationError } from "@/bridge/hostBridge";
+import { BridgeOperationError, BridgeRequestRetiredError } from "@/bridge/hostBridge";
 import {
   BindingRuntime,
   enforceManifestMinimum,
@@ -55,6 +55,7 @@ export function useDashboardService() {
   const schemaCatalog = new DashboardSchemaCatalog(bridge);
   const bindingRuntime = new BindingRuntime(schemaCatalog, new DashboardQueryExecutor(bridge));
   let generation = 0;
+  let workspaceGeneration = 0;
   let refreshTimer: number | null = null;
   let realtimeTimer: number | null = null;
   let disposed = false;
@@ -71,6 +72,7 @@ export function useDashboardService() {
 
   function init(): void {
     unsubscribe.push(bridge.on("database.opened", () => {
+      workspaceGeneration += 1;
       schemaCatalog.invalidate();
       store.reset();
       void loadManifest();
@@ -111,14 +113,19 @@ export function useDashboardService() {
   }
 
   async function listWithReceipt(isCurrent: () => boolean = () => true): Promise<boolean> {
+    const requestWorkspaceGeneration = workspaceGeneration;
     store.beginList();
     try {
       const result = await bridge.request("dashboard.listRequested", {});
-      if (disposed || !isCurrent()) return false;
+      if (disposed || requestWorkspaceGeneration !== workspaceGeneration || !isCurrent()) return false;
       store.receiveList(result);
       return true;
     } catch (error) {
-      if (disposed || !isCurrent()) return false;
+      if (disposed || requestWorkspaceGeneration !== workspaceGeneration || !isCurrent()) return false;
+      if (error instanceof BridgeRequestRetiredError) {
+        if (store.phase === "loading-list") store.phase = store.current ? "ready" : "idle";
+        return false;
+      }
       store.fail(errorMessage(error));
       return false;
     }
@@ -129,13 +136,18 @@ export function useDashboardService() {
   }
 
   async function loadManifestWithReceipt(isCurrent: () => boolean = () => true): Promise<boolean> {
+    const requestWorkspaceGeneration = workspaceGeneration;
     try {
       const result = await bridge.request("dashboard.manifestRequested", {});
-      if (disposed || !isCurrent()) return false;
+      if (disposed || requestWorkspaceGeneration !== workspaceGeneration || !isCurrent()) return false;
       store.receiveManifest(result);
       return true;
     } catch (error) {
-      if (disposed || !isCurrent()) return false;
+      if (disposed || requestWorkspaceGeneration !== workspaceGeneration || !isCurrent()) return false;
+      if (error instanceof BridgeRequestRetiredError) {
+        if (store.phase === "loading-list") store.phase = store.current ? "ready" : "idle";
+        return false;
+      }
       store.fail(errorMessage(error));
       return false;
     }
@@ -273,6 +285,7 @@ export function useDashboardService() {
 
   /** Retire renderer-local recovery reads when WorkspaceView rotates epoch. */
   function retireRecovery(): void {
+    workspaceGeneration += 1;
     const ticket = recoveryGeneration;
     settleRetiredRecoveryPhase(ticket);
     recoveryGeneration += 1;

@@ -9,6 +9,7 @@ export function installBridgeDiagnosticsInPage() {
     roundTrips: [],
     recentCompleted: [],
     failures: [],
+    retiredRequests: [],
     inboundRevisions: [],
     diagnosticCursor: 0,
     pending: {},
@@ -34,6 +35,22 @@ export function installBridgeDiagnosticsInPage() {
       ...value,
     });
   };
+  window.addEventListener?.("vibetable:bridge-request-retired", event => {
+    const detail = event?.detail;
+    const request = diagnostics.pending[detail?.requestId];
+    if (!request || !request.retirementScope
+      || request.requestType !== detail.requestType
+      || request.retirementScope.workspaceId !== detail.workspaceId
+      || request.retirementScope.sessionEpoch !== detail.sessionEpoch) return;
+    delete diagnostics.pending[detail.requestId];
+    pushDiagnostic(diagnostics.retiredRequests, {
+      requestId: detail.requestId,
+      requestType: detail.requestType,
+      workspaceId: detail.workspaceId,
+      sessionEpoch: detail.sessionEpoch,
+      outcome: "workspace-retired",
+    });
+  });
   const dialogFocusTargets = new Set(["attachment", "json"]);
   const dialogFocusPendingReasons = new Set(["grid", "row", "cell", "focus-rejected"]);
   const dialogFocusCancellationReasons = new Set([
@@ -183,6 +200,13 @@ export function installBridgeDiagnosticsInPage() {
           ? message.payload.method
           : message.type,
         payloadShape,
+        ...((message.type === "dashboard.listRequested" || message.type === "dashboard.manifestRequested")
+          && message.scope?.scope === "workspace" ? {
+            retirementScope: {
+              workspaceId: message.scope.workspaceId,
+              sessionEpoch: message.scope.sessionEpoch,
+            },
+          } : {}),
         startedAt: new Date().toISOString(),
         startedMonotonicMs: performance.now(),
       };
@@ -356,6 +380,7 @@ export function readBridgeDiagnosticsInPage() {
     failures: diagnostics.failures,
     inboundRevisions: diagnostics.inboundRevisions,
     acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
+    retiredRequests: diagnostics.retiredRequests ?? [],
     pending: Object.values(diagnostics.pending).map((request) => ({
       requestId: request.requestId,
       requestType: request.requestType,
