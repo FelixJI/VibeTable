@@ -129,6 +129,66 @@ public sealed class UpdateRecoveryProcessAdapterTests
         Assert.IsFalse(exit.IdentityMatched);
     }
 
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(17)]
+    public async Task ExitBetweenIdentityReadAndWaitPreservesExactExitCode(int exitCode)
+    {
+        using Process child = Process.Start(new ProcessStartInfo(
+            Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe")
+        {
+            Arguments = $"/d /c set /p update_test_input= & exit /b {exitCode}",
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        })!;
+        try
+        {
+            var expected = new UpdateProcessIdentity(
+                child.Id, new DateTimeOffset(child.StartTime.ToUniversalTime(), TimeSpan.Zero));
+            var adapter = new WindowsUpdateRecoveryProcessAdapter(
+                processProbe: new ExitBeforeWaitProbe(child));
+
+            ExactProcessExit result = await adapter.WaitForExactExitAsync(
+                expected, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+            Assert.IsTrue(result.Exited);
+            Assert.IsTrue(result.IdentityMatched);
+            Assert.AreEqual(exitCode, result.ExitCode);
+        }
+        finally
+        {
+            if (!child.HasExited)
+            {
+                child.Kill();
+                await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+    }
+
+    private sealed class ExitBeforeWaitProbe(Process child) : IUpdateExactProcessProbe
+    {
+        public IUpdateExactProcess Open(int processId) => new ExitBeforeWaitProcess(
+            new WindowsUpdateRecoveryProcessAdapter.WindowsExactProcessProbe().Open(processId),
+            child);
+    }
+
+    private sealed class ExitBeforeWaitProcess(IUpdateExactProcess exact, Process child)
+        : IUpdateExactProcess
+    {
+        public DateTimeOffset StartedAtUtc => exact.StartedAtUtc;
+        public int ExitCode => exact.ExitCode;
+
+        public async Task WaitForExitAsync(CancellationToken cancellationToken)
+        {
+            child.StandardInput.Close();
+            await child.WaitForExitAsync(cancellationToken).WaitAsync(TimeSpan.FromSeconds(5));
+            await exact.WaitForExitAsync(cancellationToken);
+        }
+
+        public void Dispose() => exact.Dispose();
+    }
+
     private static UpdateUpdatedPackageLaunch LongRunningCommand()
     {
         string command = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe";

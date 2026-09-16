@@ -76,6 +76,9 @@ type CaptureRequest struct {
 	Authority   objectrepo.Authority
 	Trigger     Trigger
 	Pinned      bool
+
+	LocalRecovery            bool
+	RecoverySourceManifestID string
 }
 
 type AuditAnchor struct {
@@ -159,6 +162,35 @@ type Record struct {
 	InventoryRevision       uint64                         `json:"inventoryRevision"`
 	SourceWorkspaceID       string                         `json:"sourceWorkspaceId,omitempty"`
 	SourceSnapshotID        string                         `json:"sourceSnapshotId,omitempty"`
+
+	// LocalRecovery is catalog metadata: an imported conflict source is publicly
+	// restorable, but is never the local working head or a new replica publication.
+	LocalRecovery            bool   `json:"localRecovery,omitempty"`
+	RecoverySourceManifestID string `json:"recoverySourceManifestId,omitempty"`
+}
+
+// LatestLocalRecord is the single head-selection rule shared by capture,
+// startup, and replication. Recovery records remain in List for restore/retention.
+func LatestLocalRecord(records []Record) (Record, bool) {
+	var latest Record
+	found := false
+	for _, record := range records {
+		if record.IsLocalHead() && (!found || record.SnapshotSequence > latest.SnapshotSequence) {
+			latest, found = record, true
+		}
+	}
+	return latest, found
+}
+
+func (record Record) IsLocalHead() bool { return !record.LocalRecovery }
+
+func (record Record) validRecoveryMetadata() bool {
+	if !record.LocalRecovery {
+		return record.RecoverySourceManifestID == ""
+	}
+	return record.Trigger == TriggerProtection &&
+		record.SourceWorkspaceID == record.WorkspaceID &&
+		record.SourceSnapshotID != "" && record.RecoverySourceManifestID != ""
 }
 
 type Catalog interface {
@@ -205,6 +237,11 @@ func (coordinator *Coordinator) Capture(
 		return Record{}, false, err
 	}
 	defer release()
+	if request.LocalRecovery && (!request.Pinned || request.Trigger != TriggerProtection ||
+		view.SourceWorkspaceID != request.WorkspaceID || view.SourceSnapshotID == "" ||
+		request.RecoverySourceManifestID == "") {
+		return Record{}, false, errors.New("snapshot.recovery_source_invalid")
+	}
 	if view.SnapshotSequence == 0 {
 		return Record{}, false, errors.New("snapshot.sequence_invalid")
 	}
@@ -373,6 +410,9 @@ func (coordinator *Coordinator) Capture(
 		InventoryRevision:     inventory.RepositoryRevision,
 		SourceWorkspaceID:     view.SourceWorkspaceID,
 		SourceSnapshotID:      view.SourceSnapshotID,
+
+		LocalRecovery:            request.LocalRecovery,
+		RecoverySourceManifestID: request.RecoverySourceManifestID,
 	}
 	var publishErr error
 	if builder, requested := operationReceiptBuilder(ctx); requested {
@@ -651,10 +691,8 @@ func (catalog *MemoryCatalog) Last(
 	catalog.mu.RLock()
 	defer catalog.mu.RUnlock()
 	records := catalog.records[workspaceID]
-	if len(records) == 0 {
-		return Record{}, false, nil
-	}
-	return cloneRecord(records[len(records)-1]), true, nil
+	record, found := LatestLocalRecord(records)
+	return cloneRecord(record), found, nil
 }
 
 func (catalog *MemoryCatalog) Publish(_ context.Context, record Record) error {

@@ -453,9 +453,12 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
             $"fake: no atomic selection projection for '{table}'");
     }
 
+    public Func<string, CancellationToken, Task<TablePage>>? CursorFetchOverride { get; set; }
+
     public Task<TablePage> FetchTableCursorAsync(string cursor, CancellationToken token)
     {
         CursorFetchCalls.Add(cursor);
+        if (CursorFetchOverride is { } scripted) return scripted(cursor, token);
         if (CursorPageResults.TryGetValue(cursor, out var page))
         {
             return Task.FromResult(page);

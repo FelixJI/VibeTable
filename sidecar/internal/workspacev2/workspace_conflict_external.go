@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -84,7 +83,7 @@ func (appender *workspaceConflictAppender) stageConflictTable(
 		return workspaceConflictTableStage{}, err
 	}
 	projected, exists := projection.Tables[chosen.TableID]
-	if !exists || !reflect.DeepEqual(projected, chosen) {
+	if !exists || !conflictresolution.EqualTableContent(projected, chosen) {
 		return workspaceConflictTableStage{},
 			conflictresolution.ErrApplyUnproven
 	}
@@ -369,8 +368,7 @@ func (appender *workspaceConflictAppender) validateExternalChosen(
 					Deleted: true,
 				}
 			}
-			current.DatabaseObjectID = table.Chosen.DatabaseObjectID
-			if !reflect.DeepEqual(current, table.Chosen) {
+			if !conflictresolution.EqualTableContent(current, table.Chosen) {
 				return conflictresolution.ErrApplyUnproven
 			}
 		}
@@ -455,8 +453,7 @@ func (appender *workspaceConflictAppender) validateExternalExpected(
 					Deleted: true,
 				}
 			}
-			current.DatabaseObjectID = table.Expected.DatabaseObjectID
-			if !reflect.DeepEqual(current, table.Expected) {
+			if !conflictresolution.EqualTableContent(current, table.Expected) {
 				return conflictresolution.ErrStalePlan
 			}
 		}
@@ -792,8 +789,7 @@ func (appender *workspaceConflictAppender) validateMixedCandidate(
 				TableID: table.TableID, Deleted: true,
 			}
 		}
-		current.DatabaseObjectID = table.Chosen.DatabaseObjectID
-		if !reflect.DeepEqual(current, table.Chosen) {
+		if !conflictresolution.EqualTableContent(current, table.Chosen) {
 			return conflictresolution.ErrApplyUnproven
 		}
 	}
@@ -898,6 +894,21 @@ func applyConflictTables(
 	if len(configs) != 0 {
 		if err := txApp.ImportCollections(configs, true); err != nil {
 			return err
+		}
+		// PocketBase updates collection timestamps while importing. Preserve
+		// the selected immutable schema (and untouched local schemas), so
+		// import itself cannot change the candidate's schema component.
+		for _, config := range configs {
+			result, err := txApp.DB().NewQuery(`UPDATE _collections
+				SET created={:created}, updated={:updated} WHERE id={:id}`).
+				Bind(map[string]any{"id": config["id"], "created": config["created"], "updated": config["updated"]}).Execute()
+			if err != nil {
+				return err
+			}
+			count, err := result.RowsAffected()
+			if err != nil || count != 1 {
+				return errors.Join(conflictresolution.ErrApplyUnproven, err)
+			}
 		}
 	} else {
 		for _, table := range sorted {

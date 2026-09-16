@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -579,6 +579,225 @@ def test_self_update_activation_pointer_accepts_exact_schema_v2_prepared_identit
                 updater_process_id=654,
                 timeout_seconds=0.1,
             )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows atomic journal replacement contract")
+def test_self_update_journal_reads_allow_atomic_replacement(tmp_path: Path) -> None:
+    """The smoke observer's read must not block the updater's ReplaceFileW."""
+    import ctypes
+    from ctypes import wintypes
+
+    target = tmp_path / "VibeTable.Next"
+    stage = tmp_path / ".VibeTable.Next.update-smoke"
+    pointer = tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER
+    replacement = tmp_path / "replacement.json"
+    token = "e" * 64
+    original_payload = {
+        "schemaVersion": 1,
+        "state": "prepared",
+        "targetRoot": str(target),
+        "stagingRoot": str(stage),
+        "currentVersion": "1.0.0",
+        "targetVersion": "1.0.1",
+        "token": token,
+        "smokeTest": True,
+        "updaterProcessId": 900,
+        "updaterStartedAtUtc": "2026-09-15T04:00:00+00:00",
+        "createdAtUtc": "2026-09-15T04:00:01+00:00",
+        "confirmedAt": None,
+    }
+    replacement_payload = {**original_payload, "createdAtUtc": "2026-09-15T04:00:02+00:00"}
+    pointer.write_text(json.dumps(original_payload), encoding="utf-8")
+    replacement.write_text(json.dumps(replacement_payload), encoding="utf-8")
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.ReplaceFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+    kernel.ReplaceFileW.restype = wintypes.BOOL
+    observed: list[dict[str, object]] = []
+    reads: list[object] = []
+    attempted = False
+
+    class _InterleavedReader:
+        def __init__(self, stream: object) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            self.stream.close()
+
+        def read(self, count: int = -1) -> object:
+            nonlocal attempted
+            if not attempted:
+                attempted = True
+                ok = kernel.ReplaceFileW(str(pointer), str(replacement), None, 2, None, None)
+                observed.append(
+                    {
+                        "replaceSucceeded": bool(ok),
+                        "winError": 0 if ok else ctypes.get_last_error(),
+                    }
+                )
+            data = self.stream.read(count)
+            reads.append(data)
+            return data
+
+    original_open = Path.open
+    original_fdopen = os.fdopen
+
+    def opened(path: Path, *args: object, **kwargs: object) -> object:
+        stream = original_open(path, *args, **kwargs)
+        return _InterleavedReader(stream) if path == pointer else stream
+
+    def fdopened(*args: object, **kwargs: object) -> object:
+        stream = original_fdopen(*args, **kwargs)
+        return _InterleavedReader(stream) if not attempted else stream
+
+    with patch.object(Path, "open", opened), patch.object(os, "fdopen", fdopened):
+        build_next.wait_for_self_update_activation_pointer(
+            pointer,
+            target=target,
+            stage=stage,
+            token=token,
+            updater_process_id=900,
+            timeout_seconds=0.5,
+        )
+
+    assert len(observed) == 1
+    assert observed[0] == {"replaceSucceeded": True, "winError": 0}
+    # The already-open reader kept the stable previous journal version...
+    assert reads
+    assert json.loads(reads[0]) == original_payload
+    # ...while later readers observe the atomically replaced journal.
+    assert json.loads(pointer.read_text(encoding="utf-8")) == replacement_payload
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows atomic journal replacement contract")
+def test_self_update_rollback_journal_bounded_read_allows_atomic_replacement(
+    tmp_path: Path,
+) -> None:
+    """The bounded rollback-journal read must survive ReplaceFileW while open."""
+    import ctypes
+    from ctypes import wintypes
+
+    pointer = tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER
+    replacement = tmp_path / "replacement.json"
+    pointer.write_text("{}", encoding="utf-8")
+    replacement.write_text('{"journal": "replaced"}', encoding="utf-8")
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.ReplaceFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+    kernel.ReplaceFileW.restype = wintypes.BOOL
+    observed: list[dict[str, object]] = []
+    reads: list[object] = []
+    attempted = False
+
+    class _InterleavedReader:
+        def __init__(self, stream: object) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            self.stream.close()
+
+        def read(self, count: int = -1) -> object:
+            nonlocal attempted
+            if not attempted:
+                attempted = True
+                ok = kernel.ReplaceFileW(str(pointer), str(replacement), None, 2, None, None)
+                observed.append(
+                    {
+                        "replaceSucceeded": bool(ok),
+                        "winError": 0 if ok else ctypes.get_last_error(),
+                    }
+                )
+            data = self.stream.read(count)
+            reads.append(data)
+            return data
+
+    original_open = Path.open
+    original_fdopen = os.fdopen
+
+    def opened(path: Path, *args: object, **kwargs: object) -> object:
+        stream = original_open(path, *args, **kwargs)
+        return _InterleavedReader(stream) if path == pointer else stream
+
+    def fdopened(*args: object, **kwargs: object) -> object:
+        stream = original_fdopen(*args, **kwargs)
+        return _InterleavedReader(stream) if not attempted else stream
+
+    with (
+        patch.object(Path, "open", opened),
+        patch.object(os, "fdopen", fdopened),
+        pytest.raises(build_next.BuildError, match="rollback did not complete"),
+    ):
+        build_next._wait_for_self_update_rollback(
+            tmp_path,
+            process_scope=cast(WindowsProcessScope, SimpleNamespace()),
+            target=tmp_path / "target",
+            stage=tmp_path / "stage",
+            token="f" * 64,
+            updater_process_id=1,
+            updated_process_id=2,
+            scenario_slug="health-failure",
+            expected_failure_code="workspaceHealthProbeFailed",
+            health_failure_readiness=None,
+            consumed_request=None,
+            timeout_seconds=0.01,
+        )
+
+    assert len(observed) == 1
+    assert observed[0] == {"replaceSucceeded": True, "winError": 0}
+    assert reads
+    assert json.loads(reads[0]) == {}
+    assert json.loads(pointer.read_text(encoding="utf-8")) == {"journal": "replaced"}
+
+
+def test_updater_journal_reader_preserves_release_and_failure_contracts(
+    tmp_path: Path,
+) -> None:
+    pointer = tmp_path / build_next.PENDING_UPDATE_ACTIVATION_POINTER
+
+    with pytest.raises(FileNotFoundError):
+        build_next._open_updater_journal(pointer)
+
+    pointer.write_text("{}", encoding="utf-8")
+    with build_next._open_updater_journal(pointer) as stream:
+        assert stream.read() == b"{}"
+    pointer.unlink()
+
+    pointer.write_text('{"pad": "%s"}' % ("x" * (16 * 1024 + 1)), encoding="utf-8")
+    with pytest.raises(build_next.BuildError, match="rollback did not complete"):
+        build_next._wait_for_self_update_rollback(
+            tmp_path,
+            process_scope=cast(WindowsProcessScope, SimpleNamespace()),
+            target=tmp_path / "target",
+            stage=tmp_path / "stage",
+            token="a" * 64,
+            updater_process_id=1,
+            updated_process_id=2,
+            scenario_slug="health-failure",
+            expected_failure_code="workspaceHealthProbeFailed",
+            health_failure_readiness=None,
+            consumed_request=None,
+            timeout_seconds=0.01,
+        )
 
 
 def _write_strict_self_update_rollback_fixture(

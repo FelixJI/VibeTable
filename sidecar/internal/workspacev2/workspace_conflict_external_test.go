@@ -15,6 +15,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/protocolv2"
+	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
@@ -148,6 +149,21 @@ func TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision(
 	replicaID := commitConflictTestObject(
 		t, runtime, "restart-replica-settings", replicaSettings,
 	)
+	// Public apply requires both actual protected snapshots, even when this
+	// fixture's fault is injected later at the PB/filehistory commit boundary.
+	capture := func(settings []byte) snapshot.Record {
+		t.Helper()
+		applyConflictTestSettings(t, runtime, settings)
+		token, _ := runtime.coordinator.Current()
+		record, created, err := runtime.snapshots.Capture(ctx, snapshot.CaptureRequest{WorkspaceID: testWorkspaceID, Authority: token.Authority(), Trigger: snapshot.TriggerProtection, Pinned: true})
+		if err != nil || !created {
+			t.Fatalf("recovery capture: %v", err)
+		}
+		return record
+	}
+	localSnapshot := capture(local)
+	replicaSnapshot := capture(replicaSettings)
+	applyConflictTestSettings(t, runtime, local)
 	conflictPath := joinCoordination(runtime.paths, "conflicts.db")
 	engine, err := conflictresolution.OpenEngine(conflictPath)
 	if err != nil {
@@ -165,14 +181,14 @@ func TestRuntimeReopensAndResumesConflictAtPocketBaseReceiptRevision(
 			Files: map[string]conflictresolution.FileState{},
 		},
 		Local: conflictresolution.Candidate{
-			SnapshotID: "local",
+			SnapshotID: localSnapshot.SnapshotID,
 			Settings: conflictresolution.SettingsState{
 				ObjectID: string(localID),
 			},
 			Files: map[string]conflictresolution.FileState{},
 		},
 		Replica: conflictresolution.Candidate{
-			SnapshotID: "replica",
+			SnapshotID: replicaSnapshot.SnapshotID,
 			Settings: conflictresolution.SettingsState{
 				ObjectID: string(replicaID),
 			},

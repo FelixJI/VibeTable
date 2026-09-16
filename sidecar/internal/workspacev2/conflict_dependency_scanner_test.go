@@ -30,7 +30,9 @@ func TestProductionConflictDependencyScannerIncludesIsolatedFileTableAndSettings
 			fields JSON NOT NULL
 		);
 		INSERT INTO _collections(id,name,type,system,fields)
-		VALUES ('notes','notes','base',0,'[]');
+		VALUES ('notes','notes','base',0,'[]'), ('definitions','vibetable_tables','base',0,'[]');
+		CREATE TABLE vibetable_tables (table_id TEXT, collection_id TEXT, physical_name TEXT, display_name TEXT);
+		INSERT INTO vibetable_tables VALUES ('tbl_notes','notes','notes','Notes');
 		CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT);
 		INSERT INTO notes VALUES ('n1','One');
 	`); err != nil {
@@ -87,7 +89,7 @@ func TestProductionConflictDependencyScannerIncludesIsolatedFileTableAndSettings
 				ContentID:  "sha256:content",
 			},
 		},
-		Tables: projection.Tables,
+		Tables: projection.Candidates,
 	}
 	graph, err := (productionConflictDependencyScanner{
 		repository: repository,
@@ -104,7 +106,14 @@ func TestProductionConflictDependencyScannerIncludesIsolatedFileTableAndSettings
 		if !ok {
 			t.Fatalf("missing graph node %q: %#v", itemID, graph.Edges)
 		}
-		if len(dependencies) != 0 {
+		expected := 0
+		if itemID == "notes" {
+			expected = 1
+			if len(dependencies) != 1 || dependencies[0] != "definitions" {
+				t.Fatalf("table schema dependency = %#v", dependencies)
+			}
+		}
+		if len(dependencies) != expected {
 			t.Fatalf("isolated node %q = %#v", itemID, dependencies)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"reflect"
 	"sort"
 )
@@ -41,6 +42,10 @@ type FileState struct {
 // separate so a dependency scanner can prove that schema, records, views and
 // in-table attachments all came from the same frozen candidate.
 type TableState struct {
+	// ItemID/Kind identify the public choice; TableID remains the physical
+	// PocketBase collection address used only by whole-table recovery.
+	ItemID              string            `json:"itemId,omitempty"`
+	Kind                ItemKind          `json:"kind,omitempty"`
 	TableID             string            `json:"tableId"`
 	DisplayName         string            `json:"displayName"`
 	DatabaseObjectID    string            `json:"databaseObjectId"`
@@ -170,9 +175,9 @@ func BuildPlan(base, local, replica Candidate) Plan {
 		b := stateForTable(base, id)
 		l := stateForTable(local, id)
 		r := stateForTable(replica, id)
-		localChanged := !reflect.DeepEqual(l, b)
-		replicaChanged := !reflect.DeepEqual(r, b)
-		if localChanged && replicaChanged && !reflect.DeepEqual(l, r) {
+		localChanged := !EqualTableContent(l, b)
+		replicaChanged := !EqualTableContent(r, b)
+		if localChanged && replicaChanged && !EqualTableContent(l, r) {
 			tableConflicts = append(tableConflicts, TableConflict{
 				TableID: id, Base: b, Local: l, Replica: r,
 			})
@@ -309,13 +314,15 @@ func ResolveChanges(
 		})
 	}
 	for _, state := range plan.AutomaticTables {
+		_, kind := state.PublicItem()
 		changes = append(changes, ResolvedChange{
-			Kind: TableItem, ItemID: state.TableID,
+			Kind: kind, ItemID: state.TableID,
 			TablePrevious: stateForTable(currentLocal, state.TableID),
 			TableChosen:   state, Reason: "replica-only",
 		})
 	}
 	for _, conflict := range plan.Tables {
+		_, kind := conflict.PublicItem()
 		side, ok := resolution.Choices[conflict.TableID]
 		if !ok || side == Both {
 			return nil, errors.New("conflict.choice_invalid")
@@ -327,7 +334,7 @@ func ResolveChanges(
 			return nil, errors.New("conflict.choice_invalid")
 		}
 		changes = append(changes, ResolvedChange{
-			Kind: TableItem, ItemID: conflict.TableID,
+			Kind: kind, ItemID: conflict.TableID,
 			TablePrevious: conflict.Local, TableChosen: chosen,
 			Reason: "user-choice",
 		})
@@ -450,4 +457,67 @@ func planHash(plan Plan) string {
 	raw, _ := json.Marshal(plan)
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// EqualTableContent compares the frozen table components, not the snapshot
+// database that stores them. The chosen state still retains its recovery source.
+func EqualTableContent(left, right TableState) bool {
+	left.DatabaseObjectID, right.DatabaseObjectID = "", ""
+	if !maps.Equal(left.AttachmentObjects, right.AttachmentObjects) {
+		return false
+	}
+	left.AttachmentObjects, right.AttachmentObjects = nil, nil
+	return reflect.DeepEqual(left, right)
+}
+
+// EquivalentDiscovery preserves a source pairing across another snapshot of the
+// same local content. It never folds distinct base/remote snapshots or edits.
+func EquivalentDiscovery(existing, incoming Set) bool {
+	if existing.ReplanRequired || existing.WorkspaceID != incoming.WorkspaceID ||
+		existing.Base.SnapshotID != incoming.Base.SnapshotID ||
+		existing.Replica.SnapshotID != incoming.Replica.SnapshotID ||
+		existing.Base.Revision != incoming.Base.Revision ||
+		existing.Replica.Revision != incoming.Replica.Revision ||
+		existing.Base.BusinessDatabaseObjectID != incoming.Base.BusinessDatabaseObjectID ||
+		existing.Replica.BusinessDatabaseObjectID != incoming.Replica.BusinessDatabaseObjectID ||
+		!equalCandidateContent(existing.Base, incoming.Base) ||
+		!equalCandidateContent(existing.Replica, incoming.Replica) {
+		return false
+	}
+	return equalCandidateContent(existing.Local, incoming.Local)
+}
+
+func equalCandidateContent(left, right Candidate) bool {
+	if left.Settings != right.Settings || !maps.Equal(left.Files, right.Files) ||
+		!maps.Equal(left.AttachmentObjects, right.AttachmentObjects) || len(left.Tables) != len(right.Tables) {
+		return false
+	}
+	for id, table := range left.Tables {
+		other, exists := right.Tables[id]
+		if !exists || !EqualTableContent(table, other) {
+			return false
+		}
+	}
+	// A candidate without projected tables must not silently hide database edits.
+	return len(left.Tables) > 0 || left.BusinessDatabaseObjectID == right.BusinessDatabaseObjectID
+}
+
+// PublicItem keeps the immutable PocketBase restore address private.
+func (table TableState) PublicItem() (string, ItemKind) {
+	id, kind := table.ItemID, table.Kind
+	if id == "" {
+		id = table.TableID
+	}
+	if kind == "" {
+		kind = TableItem
+	}
+	return id, kind
+}
+func (item TableConflict) PublicItem() (string, ItemKind) {
+	for _, table := range []TableState{item.Local, item.Replica, item.Base} {
+		if table.TableID != "" && !table.Deleted {
+			return table.PublicItem()
+		}
+	}
+	return item.TableID, TableItem
 }

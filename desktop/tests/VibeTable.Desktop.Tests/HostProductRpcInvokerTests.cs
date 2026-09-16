@@ -51,6 +51,189 @@ public sealed class HostProductRpcInvokerTests
         Assert.AreEqual("file.list", fixture.Http.Calls.Single().GetProperty("method").GetString());
     }
 
+    [TestMethod]
+    [DataRow("dashboard.listRequested")]
+    [DataRow("dashboard.manifestRequested")]
+    public async Task WorkspaceCloseRetiresCorrelatedReadsWithoutFalseTimeout(string requestType)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.BeforeHandshake = token => Task.Delay(Timeout.Infinite, token);
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        var sink = new FakeWebReplySink();
+        using var dispatcher = fixture.Dispatcher(sink);
+        // This is the host lifetime, not the shorter workspace epoch lifetime.
+        using var hostLifetime = new CancellationTokenSource();
+        dispatcher.SetDashboardGateway(new JsonRpcDashboardGateway(gateway), hostLifetime.Token);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace",
+            WorkspaceId = fixture.Session.WorkspaceId!.Value,
+            SessionEpoch = fixture.Session.SessionEpoch,
+            OperationId = Guid.NewGuid(),
+            Sequence = 1,
+        };
+        Task request = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            requestType, "closing-read", Json("{}"), "", scope));
+        await fixture.Http.HandshakeEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await fixture.CloseAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        await request.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsFalse(hostLifetime.IsCancellationRequested);
+        string evidence = string.Join(", ", sink.Replies.Select(reply =>
+            JsonSerializer.Serialize(reply.Payload)));
+        Assert.AreEqual(0, sink.Replies.Count, evidence);
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task WorkspaceCloseRetiresDebouncedGridQueryWithoutFailure(bool correlated)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        using PocketBaseTableGateway tableGateway = fixture.TableGateway();
+        var time = new ManualTimeProvider();
+        var sink = new FakeWebReplySink();
+        var coordinator = new GridStateCoordinator(
+            tableGateway, notification => TableNotificationPresenter.Post(sink, notification), time);
+        var controller = fixture.GridController(coordinator, sink);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace",
+            WorkspaceId = fixture.Session.WorkspaceId!.Value,
+            SessionEpoch = fixture.Session.SessionEpoch,
+            OperationId = Guid.NewGuid(),
+            Sequence = 1,
+        };
+        Task query = controller.DispatchAsync(new RoutedWebRequest(
+            "table.queryRequested", correlated ? "diagnostic-query" : null,
+            Json("""{"table":"orders","query":{}}"""), "", scope));
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+        await fixture.CloseAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await query.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(0, fixture.Http.Handshakes);
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        var failures = sink.Replies.Where(reply => reply.Type == "operation.failed").ToList();
+        string evidence = string.Join(", ", failures.Select(reply =>
+        {
+            JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+            return $"requestId={reply.RequestId ?? "null"}; " +
+                $"operation={payload.GetProperty("operation").GetString()}; " +
+                $"messageLength={payload.GetProperty("message").GetString()?.Length}; " +
+                $"code={payload.GetProperty("code").GetString() ?? "null"}";
+        }));
+        Assert.AreEqual(0, failures.Count, evidence);
+    }
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task CurrentGridReadsKeepSuccessAndFailureNotifications(bool cursor, bool fails)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        var time = new ManualTimeProvider();
+        var sink = new FakeWebReplySink();
+        var page = GridPage();
+        var gateway = new FakeTableRpcGateway();
+        gateway.CursorOpenResults["orders"] = page;
+        var coordinator = new GridStateCoordinator(gateway,
+            notification => TableNotificationPresenter.Post(sink, notification), time);
+        // Establish the active query needed by cursor appends before observing the request.
+        Task<TablePage> initial = coordinator.RequestQueryAsync("orders", Json("{}"), default);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await initial;
+        gateway.CursorOpenOverride = (_, _, _) => fails
+            ? Task.FromException<TablePage>(new InvalidOperationException("current read failed"))
+            : Task.FromResult(page);
+        gateway.CursorFetchOverride = (_, _) => fails
+            ? Task.FromException<TablePage>(new InvalidOperationException("current read failed"))
+            : Task.FromResult(page);
+        var controller = fixture.GridController(coordinator, sink);
+        Task request = controller.DispatchAsync(GridRequest(fixture.Session, cursor, 1));
+        if (!cursor) time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await request.WaitAsync(TimeSpan.FromSeconds(3));
+
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.IsNull(reply.RequestId);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        if (fails)
+        {
+            Assert.AreEqual("operation.failed", reply.Type);
+            Assert.AreEqual(cursor ? "query.cursor" : "query", payload.GetProperty("operation").GetString());
+            Assert.AreEqual("current read failed", payload.GetProperty("message").GetString());
+        }
+        else
+        {
+            Assert.AreEqual(cursor ? "table.windowLoaded" : "table.datasetReady", reply.Type);
+            Assert.AreEqual("orders", payload.GetProperty("table").GetString());
+            Assert.AreEqual("cursor-next", payload.GetProperty("nextCursor").GetString());
+            Assert.IsTrue(payload.GetProperty("hasMore").GetBoolean());
+            Assert.AreEqual(7, payload.GetProperty("querySnapshot").GetProperty("dataRevision").GetInt32());
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task RetiredGridReadsCannotPublishLateFailureOrPage(bool cursor, bool close)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        var time = new ManualTimeProvider();
+        var sink = new FakeWebReplySink();
+        var page = GridPage();
+        var gateway = new FakeTableRpcGateway();
+        gateway.CursorOpenResults["orders"] = page;
+        var coordinator = new GridStateCoordinator(gateway,
+            notification => TableNotificationPresenter.Post(sink, notification), time);
+        Task<TablePage> initial = coordinator.RequestQueryAsync("orders", Json("{}"), default);
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await initial;
+        var pending = new TaskCompletionSource<TablePage>();
+        CancellationToken readToken = default;
+        gateway.CursorOpenOverride = (_, _, token) => { readToken = token; return pending.Task; };
+        gateway.CursorFetchOverride = (_, token) => { readToken = token; return pending.Task; };
+        var controller = fixture.GridController(coordinator, sink);
+        Task request = controller.DispatchAsync(GridRequest(fixture.Session, cursor, 1));
+        if (!cursor) time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        Assert.IsFalse(readToken.IsCancellationRequested);
+        Task closeTask = close ? fixture.CloseAsync() : Task.CompletedTask;
+        Task<TablePage>? replacement = null;
+        if (!close)
+        {
+            gateway.CursorOpenOverride = (_, _, _) => Task.FromResult(page);
+            replacement = coordinator.RequestQueryAsync("orders", Json("{}"), default);
+        }
+        Assert.IsTrue(readToken.IsCancellationRequested);
+        if (close)
+            pending.SetException(new InvalidOperationException("retired read failed"));
+        else
+            pending.SetResult(page);
+        await Task.WhenAll(request, closeTask).WaitAsync(TimeSpan.FromSeconds(3));
+        if (replacement is not null)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+            Assert.AreSame(page, await replacement.WaitAsync(TimeSpan.FromSeconds(3)));
+        }
+        Assert.AreEqual(0, sink.Replies.Count);
+    }
+
+    private static TablePage GridPage() => new("orders", [], [], 0, 100, 1000, "remote",
+        QuerySnapshot: new QuerySnapshot("snapshot", "digest", "database", "orders", "schema_1", 7,
+            new Dictionary<string, object?>()), NextCursor: "cursor-next", HasMore: true);
+
+    private static RoutedWebRequest GridRequest(WorkspaceSessionV2 session, bool cursor, ulong sequence)
+        => new(cursor ? "table.cursorRequested" : "table.queryRequested", null,
+            cursor ? Json("""{"cursor":"cursor-next"}""") : Json("""{"table":"orders","query":{}}"""), "",
+            new WorkspaceWireScope
+            {
+                Scope = "workspace", WorkspaceId = session.WorkspaceId!.Value,
+                SessionEpoch = session.SessionEpoch, OperationId = Guid.NewGuid(), Sequence = sequence,
+            });
     private static JsonElement Json(string text)
     {
         using JsonDocument document = JsonDocument.Parse(text);
@@ -536,11 +719,24 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }
 
+        internal PocketBaseTableGateway TableGateway() => new(
+            Gateway(useGeneratedPolicy: true), new JsonRpcWorkspaceSupportGateway(_client));
+
+        internal WorkspaceRequestDispatcher Dispatcher(IWebReplySink sink)
+        {
+            var tables = new FakeTableRpcGateway();
+            return new WorkspaceRequestDispatcher(
+                new TableWorkspaceService(tables), new FakeDatabasePicker(null), sink,
+                new GridStateCoordinator(tables, _ => { }), sessionEnvelopeFilter: _leases);
+        }
+
+        internal GridRequestController GridController(GridStateCoordinator coordinator, IWebReplySink sink)
+            => new(coordinator, sink, sessions: _leases);
         internal JsonRpcProductDataGateway Gateway(bool useGeneratedPolicy = false) => new(
             new HostProductRpcInvoker(_client, _snapshot, _leases,
                 action => Current && action(),

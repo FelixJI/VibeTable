@@ -449,24 +449,12 @@ func (catalog *DurableCatalog) Last(
 	ctx context.Context,
 	workspaceID string,
 ) (Record, bool, error) {
-	if catalog == nil || catalog.db == nil {
-		return Record{}, false, errors.New("snapshot.catalog_closed")
-	}
-	var raw []byte
-	err := catalog.db.QueryRowContext(ctx, `
-		SELECT record_json FROM snapshot_catalog
-		WHERE workspace_id = ?
-		ORDER BY snapshot_sequence DESC LIMIT 1`,
-		workspaceID,
-	).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Record{}, false, nil
-	}
+	records, err := catalog.List(ctx, workspaceID)
 	if err != nil {
 		return Record{}, false, err
 	}
-	record, err := decodeCatalogRecord(raw)
-	return record, err == nil, err
+	record, found := LatestLocalRecord(records)
+	return record, found, nil
 }
 
 func (catalog *DurableCatalog) List(
@@ -516,7 +504,7 @@ func decodeCatalogRecord(raw []byte) (Record, error) {
 }
 
 func validateCatalogRecord(record Record) error {
-	if record.SnapshotID == "" ||
+	if !record.validRecoveryMetadata() || record.SnapshotID == "" ||
 		record.WorkspaceID == "" ||
 		record.SnapshotSequence == 0 ||
 		record.ManifestID == "" ||

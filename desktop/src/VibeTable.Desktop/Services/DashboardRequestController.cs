@@ -19,13 +19,16 @@ public sealed class DashboardRequestController
     private readonly CorrelatedRequestRunner<IDashboardRpcGateway> _runner;
     private readonly SemaphoreSlim _queryGate = new(6, 6);
     private CancellationToken _sessionToken;
+    private readonly WorkspaceSessionEnvelopeFilter? _sessions;
 
     public DashboardRequestController(
         IWebReplySink reply,
         TimeSpan requestTimeout,
-        Func<CancellationToken>? sessionToken = null)
+        Func<CancellationToken>? sessionToken = null,
+        WorkspaceSessionEnvelopeFilter? sessions = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
+        _sessions = sessions;
         _runner = new CorrelatedRequestRunner<IDashboardRpcGateway>(
             _reply,
             requestTimeout,
@@ -163,7 +166,9 @@ public sealed class DashboardRequestController
             request,
             responseType,
             operation,
-            isQuery ? _queryGate : null).ConfigureAwait(false);
+            isQuery ? _queryGate : null,
+            request.Type is "dashboard.listRequested" or "dashboard.manifestRequested"
+                ? _sessions : null).ConfigureAwait(false);
 
     private static async Task<DashboardManifestBundle> LoadManifestAsync(
         IDashboardRpcGateway gateway,

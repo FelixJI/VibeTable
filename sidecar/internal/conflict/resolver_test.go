@@ -210,3 +210,34 @@ func TestBuildPlanFreezesWholeTableCandidates(t *testing.T) {
 		t.Fatalf("table keep-both accepted: %v", err)
 	}
 }
+
+func TestBuildPlanComparesTableContentNotDatabaseLocation(t *testing.T) {
+	baseTable := TableState{TableID: "table-a", DisplayName: "Orders", DatabaseObjectID: "db-base", SchemaObjectID: "schema", RecordsObjectID: "rows", ViewsObjectID: "views", AttachmentsObjectID: "attachments"}
+	localTable, remoteTable := baseTable, baseTable
+	localTable.DatabaseObjectID = "db-local"
+	remoteTable.DatabaseObjectID = "db-remote"
+	candidate := func(table TableState) Candidate { return Candidate{Tables: map[string]TableState{"table-a": table}} }
+	if plan := BuildPlan(candidate(baseTable), candidate(localTable), candidate(remoteTable)); len(plan.Tables) != 0 || len(plan.AutomaticTables) != 0 {
+		t.Fatalf("database location manufactured table changes: %#v", plan)
+	}
+	for _, change := range []struct {
+		name   string
+		change func(*TableState)
+	}{
+		{"schema", func(s *TableState) { s.SchemaObjectID = "changed" }},
+		{"records", func(s *TableState) { s.RecordsObjectID = "changed" }},
+		{"views", func(s *TableState) { s.ViewsObjectID = "changed" }},
+		{"attachments", func(s *TableState) { s.AttachmentsObjectID = "changed" }},
+		{"deleted", func(s *TableState) { s.Deleted = true }},
+		{"identity", func(s *TableState) { s.TableID = "changed" }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			remote := remoteTable
+			change.change(&remote)
+			plan := BuildPlan(candidate(baseTable), candidate(localTable), candidate(remote))
+			if len(plan.Tables) != 0 || len(plan.AutomaticTables) != 1 || plan.AutomaticTables[0].DatabaseObjectID != "db-remote" {
+				t.Fatalf("lost actual content change or restore location: %#v", plan)
+			}
+		})
+	}
+}

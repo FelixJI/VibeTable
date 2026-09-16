@@ -200,14 +200,16 @@ def _launch_host(
     *,
     autostart: bool,
     tray_lifecycle: bool,
+    evidence_root: Path | None = None,
     extra_environment: dict[str, str] | None = None,
     before_process_create: Callable[[], None] | None = None,
 ) -> tuple[WindowsProcessScope, int, Path, ExitStack]:
     host = _host_executable(package_root)
     readiness_dir = runtime_root / "host"
-    controls_dir = runtime_root / "controls"
+    invocation_root = runtime_root if evidence_root is None else evidence_root
+    controls_dir = invocation_root / "controls"
     readiness_dir.mkdir(parents=True, exist_ok=True)
-    controls_dir.mkdir(exist_ok=True)
+    controls_dir.mkdir(parents=True, exist_ok=True)
     port = product_runner._reserve_port()
     environment = os.environ.copy()
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
@@ -229,8 +231,8 @@ def _launch_host(
         command.append("--test-mode-tray-lifecycle")
     if autostart:
         command.append("--autostart")
-    runtime_root.mkdir(exist_ok=True)
-    (runtime_root / "launch.json").write_text(
+    invocation_root.mkdir(parents=True, exist_ok=True)
+    (invocation_root / "launch.json").write_text(
         json.dumps(
             {
                 "command": command,
@@ -246,8 +248,8 @@ def _launch_host(
     )
     streams = ExitStack()
     try:
-        stdout = streams.enter_context((runtime_root / "host-stdout.log").open("wb"))
-        stderr = streams.enter_context((runtime_root / "host-stderr.log").open("wb"))
+        stdout = streams.enter_context((invocation_root / "host-stdout.log").open("wb"))
+        stderr = streams.enter_context((invocation_root / "host-stderr.log").open("wb"))
         scope = product_runner._launch_host_process(
             command,
             cwd=package_root,

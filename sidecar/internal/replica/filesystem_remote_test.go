@@ -242,6 +242,12 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	); err != nil {
 		t.Fatalf("second catalog revision missing: %v", err)
 	}
+	candidate, err := (&Manager{repository: repository}).snapshotConflictCandidate(ctx, record)
+	file := candidate.Files["66666666-6666-4666-8666-666666666666"]
+	if err != nil || len(candidate.Files) != 1 || file.Path != "table.csv" ||
+		file.ContentID != string(childID) || file.MimeType != "text/csv" || file.Deleted {
+		t.Fatalf("manager nonempty history candidate = %#v, %v", candidate, err)
+	}
 	if err := os.RemoveAll(localRepositoryRoot); err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +271,12 @@ func TestFilesystemRemoteReplicatesAndIndependentlyReopensRoots(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("remote-only recovery failed: %v", err)
+	}
+	candidate, err = filesystemConflictCandidate(bundle)
+	file = candidate.Files["66666666-6666-4666-8666-666666666666"]
+	if err != nil || len(candidate.Files) != 1 || file.Path != "table.csv" ||
+		file.ContentID != string(childID) || file.MimeType != "text/csv" || file.Deleted {
+		t.Fatalf("remote nonempty history candidate = %#v, %v", candidate, err)
 	}
 	if _, err := reopened.RecoverCheckpoint(
 		ctx,

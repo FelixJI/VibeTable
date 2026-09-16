@@ -1171,6 +1171,97 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
 
 
+def test_product_e2e_failure_evidence_retains_replica_host_phases(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260910T091449Z"
+    scenario_id = "24-directory-replica-conflict"
+    scenario_root = run_root / scenario_id
+    run_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "scenarios": [
+                    {"scenario": scenario_id, "status": "failed"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    expected = (
+        f"{scenario_id}-result.json",
+        f"{scenario_id}-trace.zip",
+        f"{scenario_id}.png",
+        "lifecycle.json",
+        "readiness.json",
+        "runner-stderr.log",
+        "stage-result.json",
+    )
+    for phase in ("seed", "fork", "resolve", "reopen"):
+        for host in ("left", "right"):
+            phase_root = scenario_root / phase / "hosts" / host
+            phase_root.mkdir(parents=True)
+            for filename in expected:
+                (phase_root / filename).write_text(filename, encoding="utf-8")
+            (phase_root / "workspace.db").write_text("private", encoding="utf-8")
+            (phase_root / "controls").mkdir()
+            (phase_root / "controls" / "workspace-root.txt").write_text("private", encoding="utf-8")
+    for host in ("left", "right"):
+        runtime = run_root / "_runtime" / "24" / host / "host"
+        runtime.mkdir(parents=True)
+        (runtime / "vibetable-trace.log").write_text("host trace", encoding="utf-8")
+        logs = (
+            runtime / "local-data" / "workspaces" / "workspace-id" / ".vibetable" / "temp" / "logs"
+        )
+        logs.mkdir(parents=True)
+        (logs / "backend.log").write_text("backend", encoding="utf-8")
+        (logs / "pocketbase.log").write_text("pocketbase", encoding="utf-8")
+        (runtime / "local-data" / "workspaces" / "workspace-id" / "workspace.db").write_text(
+            "private", encoding="utf-8"
+        )
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+    assert destination is not None
+    for phase in ("seed", "fork", "resolve", "reopen"):
+        for host in ("left", "right"):
+            retained = destination / scenario_id / phase / "hosts" / host
+            assert sorted(path.name for path in retained.iterdir()) == sorted(expected)
+            assert not (retained / "workspace.db").exists()
+            assert not (retained / "controls").exists()
+    for host in ("left", "right"):
+        runtime = destination / "_runtime" / "24" / host / "host"
+        assert (runtime / "vibetable-trace.log").is_file()
+        assert (runtime / "workspace-logs" / "workspace-id" / "backend.log").is_file()
+        assert (runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
+        assert not (runtime / "local-data").exists()
+
+
+def test_product_e2e_failure_evidence_does_not_copy_replica_layout_for_other_scenarios(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260910T091449Z"
+    scenario_id = "17-interface-lifecycle"
+    scenario_root = run_root / scenario_id
+    phase_root = scenario_root / "fork" / "hosts" / "left"
+    phase_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": scenario_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    (phase_root / "stage-result.json").write_text("stage", encoding="utf-8")
+    runtime = run_root / "_runtime" / "17" / "left" / "host"
+    runtime.mkdir(parents=True)
+    (runtime / "vibetable-trace.log").write_text("trace", encoding="utf-8")
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    assert not (destination / scenario_id / "fork").exists()
+    assert not (destination / "_runtime" / "17" / "left").exists()
+
+
 def test_product_e2e_failure_evidence_finds_nested_fault_injection_run(
     tmp_path: Path,
 ) -> None:

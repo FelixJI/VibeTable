@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useDashboardService } from "./dashboardService";
 import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardStore";
 
@@ -98,6 +99,69 @@ describe("dashboardService", () => {
   afterEach(() => {
     vi.useRealTimers();
     setHostBridgeForTesting(null);
+  });
+
+  it.each([false, true])("retires bootstrap reads when close protection fails=%s", async (protectionFails) => {
+    vi.useFakeTimers();
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.setWorkspaces([{
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "E2E",
+      selectedRoot: "D:\\E2E",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    }]);
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    const h = harness(); setHostBridgeForTesting(h.bridge);
+    const service = useDashboardService();
+    const store = useDashboardStore();
+    service.init();
+    h.emit("database.opened", { tables: [], views: [] });
+    if (protectionFails) {
+      session.applySession({
+        contractVersion: "2.0", workspaceId: "11111111-1111-4111-8111-111111111111",
+        sessionEpoch: 7, state: "switching", openMode: "writable",
+        writable: false, provisional: false, phase: "draining", errorCode: null,
+      });
+    } else {
+      service.retireRecovery();
+      session.closeSession();
+      store.reset();
+    }
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(0);
+    await Promise.resolve();
+    expect(store.error).toBeNull();
+    session.applySession({
+      contractVersion: "2.0", workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: protectionFails ? 7 : 8, state: "openedWritable", openMode: "writable",
+      writable: true, provisional: false, phase: "idle", errorCode: null,
+    });
+    const current = service.list();
+    reply(h, "dashboard.listRequested", "dashboard.listLoaded", { dashboards: [] });
+    await current;
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(store.error).toBeNull();
+    expect(store.phase).toBe("idle");
+    service.dispose(); h.bridge.stop();
   });
 
   it("loads the completed Dashboard surface without a runtime feature flag", async () => {

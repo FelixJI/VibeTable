@@ -17,8 +17,9 @@ import {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function preset(
@@ -63,6 +64,60 @@ function dependencies(service: PresetViewDependencies["service"]) {
 
 describe("presetViewController", () => {
   beforeEach(() => setActivePinia(createPinia()));
+
+  it.each([null, "customers", "orders"])("关闭或切表至 %s 后旧列表错误不污染当前呈现", async (nextTable) => {
+    const oldList = deferred<PresetsResult>();
+    const currentList = deferred<PresetsResult>();
+    const service: PresetServicePort = {
+      listPresets: vi.fn().mockReturnValueOnce(oldList.promise).mockReturnValue(currentList.promise),
+      savePreset: vi.fn(async () => { throw new Error("unexpected save"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const fail = vi.spyOn(deps.presets, "fail");
+    const scope = effectScope();
+    scope.run(() => createPresetViewController(deps));
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    deps.workspace.currentTable = null;
+    await flushPromises();
+    if (nextTable) {
+      deps.workspace.selectTable(nextTable);
+      await flushPromises();
+    }
+    oldList.reject(new Error("retired request"));
+    await flushPromises();
+    expect(fail).not.toHaveBeenCalled();
+    expect(deps.reportError).not.toHaveBeenCalled();
+    expect(deps.presets.collection).toBe(nextTable ?? "");
+    if (nextTable) {
+      currentList.resolve({ collection: nextTable, presets: [preset("current", nextTable)] });
+      await flushPromises();
+      expect(deps.presets.presets.map(item => item.id)).toEqual(["current"]);
+    }
+    scope.stop();
+  });
+
+  it("当前列表的真实错误仍显示", async () => {
+    const request = deferred<PresetsResult>();
+    const service: PresetServicePort = {
+      listPresets: vi.fn(() => request.promise),
+      savePreset: vi.fn(async () => { throw new Error("unexpected save"); }),
+      deletePreset: vi.fn(async () => undefined),
+    };
+    const deps = dependencies(service);
+    const fail = vi.spyOn(deps.presets, "fail");
+    const scope = effectScope();
+    scope.run(() => createPresetViewController(deps));
+    deps.workspace.selectTable("orders");
+    await flushPromises();
+    const error = new Error("current list failed");
+    request.reject(error);
+    await flushPromises();
+    expect(fail).toHaveBeenCalledWith(error);
+    expect(deps.reportError).toHaveBeenCalledWith(error);
+    scope.stop();
+  });
 
   it("丢弃切表前尚未完成的预设列表响应", async () => {
     const orders = deferred<PresetsResult>();

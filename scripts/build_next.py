@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PureWindowsPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 try:
     from scripts._host_paths import host_assembly_name
@@ -1754,6 +1754,78 @@ def _request_self_update_crash_exit(process_id: int, started: str, request: Path
         kernel.CloseHandle(handle)
 
 
+_GENERIC_READ = 0x80000000
+_FILE_SHARE_READ_WRITE_DELETE = 0x7
+_OPEN_EXISTING = 3
+_FILE_ATTRIBUTE_NORMAL = 0x80
+
+if os.name == "nt":
+    # Bind the real kernel32 at import time: tests monkeypatch ctypes.WinDLL
+    # to fake the crash-observer process contract, and the journal reader must
+    # keep using the real file APIs either way.
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    _KERNEL32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    _KERNEL32.CreateFileW.restype = wintypes.HANDLE
+    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _KERNEL32.CloseHandle.restype = wintypes.BOOL
+else:
+    _KERNEL32 = None
+    _INVALID_HANDLE_VALUE = None
+
+
+def _open_updater_journal(path: Path) -> BinaryIO:
+    """Open the live activation journal without blocking its atomic replacement.
+
+    The updater replaces the journal with ReplaceFileW while this smoke observer
+    may still be reading it, so the handle must share read/write/delete access;
+    a plain open() would make the updater's atomic replacement fail with a
+    sharing violation. The open handle keeps reading the already-open version.
+    """
+    if _KERNEL32 is None:
+        return path.open("rb")
+    handle = _KERNEL32.CreateFileW(
+        str(path),
+        _GENERIC_READ,
+        _FILE_SHARE_READ_WRITE_DELETE,
+        None,
+        _OPEN_EXISTING,
+        _FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if not handle or handle == _INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # open_osfhandle transfers handle ownership to the descriptor; closing
+        # the descriptor (or its file object) closes the handle.
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        _KERNEL32.CloseHandle(handle)
+        raise
+    try:
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_updater_journal(path: Path) -> str:
+    with _open_updater_journal(path) as stream:
+        return stream.read().decode("utf-8")
+
+
 def trigger_self_update_crash(
     root: Path,
     *,
@@ -1776,7 +1848,7 @@ def trigger_self_update_crash(
     process_id = read_self_update_process_evidence(
         process_file, token=token, target_version="1.0.1"
     )
-    pointer = json.loads((root / PENDING_UPDATE_ACTIVATION_POINTER).read_text(encoding="utf-8"))
+    pointer = json.loads(_read_updater_journal(root / PENDING_UPDATE_ACTIVATION_POINTER))
     if not isinstance(pointer, dict) or any(
         pointer.get(key) != value
         for key, value in {
@@ -1845,7 +1917,7 @@ def _wait_for_self_update_rollback(
         try:
             # Journal replacement is atomic; an absent pointer can mean receipt finalization.
             # Read only the bounded journal, never exception messages or worker arguments.
-            with pointer_path.open("rb") as stream:
+            with _open_updater_journal(pointer_path) as stream:
                 pointer_bytes = stream.read(16 * 1024 + 1)
             pointer = json.loads(pointer_bytes) if len(pointer_bytes) <= 16 * 1024 else None
         except (OSError, ValueError):
@@ -2062,7 +2134,7 @@ def wait_for_self_update_activation_pointer(
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(_read_updater_journal(path))
             schema_version = payload.get("schemaVersion")
             expected_fields = (
                 {

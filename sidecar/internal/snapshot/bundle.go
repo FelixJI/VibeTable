@@ -242,7 +242,7 @@ func ValidateSnapshotBundleData(
 		return err
 	}
 	record := bundle.Record
-	if record.SnapshotID == "" ||
+	if !record.validRecoveryMetadata() || record.SnapshotID == "" ||
 		record.WorkspaceID == "" ||
 		record.ManifestID == "" ||
 		record.SealID == "" ||

@@ -87,6 +87,12 @@ type VerifiedRemote interface {
 	ListPublications(context.Context, string) ([]Publication, error)
 }
 
+// RecoveryPublisher durably publishes a verified foreign source in the local
+// snapshot authority before a conflict can outlive its temporary protection.
+type RecoveryPublisher interface {
+	PreserveRecoverySnapshot(context.Context, snapshot.Record) error
+}
+
 type SnapshotCatalog interface {
 	List(context.Context, string) ([]snapshot.Record, error)
 }
@@ -115,6 +121,7 @@ type ConflictRemote interface {
 }
 
 type ConflictSink interface {
+	List(context.Context, string, *string, int) ([]conflictresolution.Set, *string, error)
 	Add(context.Context, conflictresolution.Set) error
 	Inspect(context.Context, string) (conflictresolution.Set, error)
 }
@@ -156,6 +163,7 @@ type ManagerOptions struct {
 	StatePath           string
 	Remote              VerifiedRemote
 	Catalog             SnapshotCatalog
+	RecoveryPublisher   RecoveryPublisher
 	Repository          objectrepo.Repository
 	Authority           AuthorityTransfer
 	ProvisionalAcceptor ProvisionalPublicationAcceptor
@@ -178,6 +186,7 @@ type Manager struct {
 	identity            RemoteIdentity
 	remote              VerifiedRemote
 	catalog             SnapshotCatalog
+	recoveryPublisher   RecoveryPublisher
 	repository          objectrepo.Repository
 	authority           AuthorityTransfer
 	provisionalAcceptor ProvisionalPublicationAcceptor
@@ -223,6 +232,7 @@ func OpenManager(ctx context.Context, options ManagerOptions) (_ *Manager, err e
 		identity:            identity,
 		remote:              options.Remote,
 		catalog:             options.Catalog,
+		recoveryPublisher:   options.RecoveryPublisher,
 		repository:          options.Repository,
 		authority:           options.Authority,
 		provisionalAcceptor: options.ProvisionalAcceptor,
@@ -343,6 +353,9 @@ func (manager *Manager) queuePublishedSnapshots(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
+		if !record.IsLocalHead() {
+			continue
+		}
 		synced, err := manager.state.isVerified(
 			ctx, record.SnapshotID, record.CatalogRevision,
 		)
@@ -425,14 +438,10 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(records) == 0 {
+	local, found := snapshot.LatestLocalRecord(records)
+	if !found {
 		return nil
 	}
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].SnapshotSequence <
-			records[j].SnapshotSequence
-	})
-	local := records[len(records)-1]
 	incoming, err := manager.conflictRemote.DiscoverConflicts(
 		ctx,
 		ConflictScan{
@@ -518,6 +527,13 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 				rootsDigest(sortedRoots(candidate.Roots)) {
 			return ErrVerificationInvalid
 		}
+		duplicate, err := manager.hasEquivalentConflict(ctx, set)
+		if err != nil {
+			return err
+		}
+		if duplicate {
+			continue
+		}
 		existing, err := manager.conflicts.Inspect(
 			ctx, set.ConflictID,
 		)
@@ -549,6 +565,15 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 			candidate.Roots,
 		); err != nil {
 			return err
+		}
+		if manager.recoveryPublisher != nil {
+			for _, source := range []snapshot.Record{local, candidate.ReplicaSnapshot} {
+				if err := manager.recoveryPublisher.PreserveRecoverySnapshot(ctx, source); err != nil {
+					return err
+				}
+			}
+		} else if _, localSource := known[candidate.ReplicaSnapshot.SnapshotID]; !localSource {
+			return errors.New("replica.recovery_publisher_required")
 		}
 		baseRoots, err := snapshot.ReachabilityObjectIDs(
 			ctx,
@@ -606,12 +631,33 @@ func (manager *Manager) discoverConflicts(ctx context.Context) error {
 			append(set.RootPinIDs, pin.PinID),
 		)
 		if err := manager.conflicts.Add(ctx, set); err != nil {
-			// The published recovery snapshot owns the same pin, so retain
-			// it on conflict-store failure rather than risking data loss.
+			// Retain the temporary pin on an uncertain conflict-store failure;
+			// the independently published recovery snapshot has its own pin.
 			return err
 		}
 	}
 	return nil
+}
+
+// Discovery is serialized by the manager. Reuse before allocating another pin;
+// leave the original set, prepared plan and terminal receipt completely intact.
+func (manager *Manager) hasEquivalentConflict(ctx context.Context, incoming conflictresolution.Set) (bool, error) {
+	var cursor *string
+	for {
+		sets, next, err := manager.conflicts.List(ctx, manager.workspace, cursor, 200)
+		if err != nil {
+			return false, err
+		}
+		for _, existing := range sets {
+			if conflictresolution.EquivalentDiscovery(existing, incoming) {
+				return true, nil
+			}
+		}
+		if next == nil {
+			return false, nil
+		}
+		cursor = next
+	}
 }
 
 func (manager *Manager) scanConflictDependencies(
@@ -738,19 +784,19 @@ func (manager *Manager) snapshotConflictCandidate(
 	if err != nil {
 		return conflictresolution.Candidate{}, err
 	}
-	var reference struct {
-		HistoryRoot objectrepo.ManifestID `json:"historyRoot"`
-	}
-	if err := json.Unmarshal(fileHead.Payload, &reference); err != nil ||
-		reference.HistoryRoot == "" {
-		return conflictresolution.Candidate{}, ErrVerificationInvalid
-	}
-	history, err := manager.repository.GetManifest(
-		ctx,
-		reference.HistoryRoot,
-	)
+	historyID, err := conflictFileHistoryReference(fileHead, record)
 	if err != nil {
 		return conflictresolution.Candidate{}, err
+	}
+	manifests := map[objectrepo.ManifestID]objectrepo.ManifestRecord{
+		fileHead.ID: fileHead,
+	}
+	if historyID != "" {
+		history, err := manager.repository.GetManifest(ctx, historyID)
+		if err != nil {
+			return conflictresolution.Candidate{}, err
+		}
+		manifests[history.ID] = history
 	}
 	objects := make(map[objectrepo.ObjectID][]byte, 3)
 	for _, name := range []string{
@@ -794,11 +840,9 @@ func (manager *Manager) snapshotConflictCandidate(
 		objects[id] = content
 	}
 	return filesystemConflictCandidate(FilesystemRecoveryBundle{
-		Snapshot: record,
-		Objects:  objects,
-		Manifests: map[objectrepo.ManifestID]objectrepo.ManifestRecord{
-			history.ID: history,
-		},
+		Snapshot:  record,
+		Objects:   objects,
+		Manifests: manifests,
 	})
 }
 
@@ -830,6 +874,9 @@ func (manager *Manager) Sync(ctx context.Context, task SyncTask) error {
 	record, err := manager.snapshot(ctx, task.SnapshotID)
 	if err != nil {
 		return err
+	}
+	if !record.IsLocalHead() {
+		return errors.New("replica.recovery_snapshot_not_publishable")
 	}
 	if err := validateSnapshotClosure(
 		ctx,
