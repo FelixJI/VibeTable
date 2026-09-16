@@ -92,6 +92,44 @@ describe("workspaceSessionStore", () => {
     expect(store.sessionEpoch).toBe(8);
   });
 
+  it.each(["complete", "fail"])("retains switch ownership through late same-epoch bootstrap until %s", (outcome) => {
+    const store = useWorkspaceSessionStore();
+    store.configureCapabilities(["workspace.session.v2"]);
+    const old = session(workspaceA.workspaceId, 7);
+    store.applySession(old);
+    expect(store.beginSwitch("workspace-b")).toBe(true);
+    store.applySession({ ...old, state: "switching", phase: "draining", writable: false });
+    expect(store.applySession(old)).toBe(false);
+    expect(store.isTransitioning).toBe(true);
+    expect(store.targetWorkspaceId).toBe("workspace-b");
+    if (outcome === "complete") {
+      expect(store.applySession(session("workspace-b", 8))).toBe(true);
+      expect(store.activeWorkspaceId).toBe("workspace-b");
+    } else {
+      store.failSwitch("protection_failed");
+      expect(store.activeWorkspaceId).toBe(workspaceA.workspaceId);
+      expect(store.writable).toBe(true);
+      expect(store.sessionState).toBe("openedWritable");
+    }
+    expect(store.isTransitioning).toBe(false);
+    expect(store.targetWorkspaceId).toBeNull();
+  });
+
+  it.each(["failed", "closed"] as const)("does not reopen authoritative %s after a switch error", (state) => {
+    const store = useWorkspaceSessionStore();
+    store.configureCapabilities(["workspace.session.v2"]);
+    const old = session(workspaceA.workspaceId, 7);
+    store.applySession(old);
+    store.beginSwitch("workspace-b");
+    store.applySession({ ...old, state, phase: "rollingBack", writable: false, errorCode: "workspace.rollback_failed" });
+    store.failSwitch("workspace.rollback_failed");
+    expect(store.sessionState).toBe(state);
+    expect(store.writable).toBe(false);
+    expect(store.targetWorkspaceId).toBeNull();
+    expect(store.isTransitioning).toBe(false);
+    expect(store.beginSwitch("workspace-c")).toBe(true);
+  });
+
   it("accepts bounded out-of-order envelopes but rejects duplicates and stale epochs", () => {
     const store = useWorkspaceSessionStore();
     store.configureCapabilities(["workspace.session.v2"]);

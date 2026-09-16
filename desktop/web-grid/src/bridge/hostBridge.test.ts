@@ -117,6 +117,26 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("does not fan out a late database projection while its workspace is switching", () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.activeWorkspaceId = "workspace-a";
+    session.sessionEpoch = 2;
+    session.sessionState = "openedWritable";
+    const bridge = createHostBridge({ webview });
+    bridge.start();
+    const opened = vi.fn();
+    bridge.on("database.opened", opened);
+    expect(session.beginSwitch("workspace-b")).toBe(true);
+    webview.emit({ type: "database.opened", payload: { tables: [], views: [] } });
+    expect(opened).not.toHaveBeenCalled();
+    session.sessionState = "openedWritable";
+    session.sessionPhase = "idle";
+    webview.emit({ type: "database.opened", payload: { tables: ["current"], views: [] } });
+    expect(opened).toHaveBeenCalledExactlyOnceWith({ tables: ["current"], views: [] });
+    bridge.stop();
+  });
+
   it("posts a request envelope with a unique requestId and resolves on the matching response", async () => {
     const bridge = createHostBridge({
       webview,

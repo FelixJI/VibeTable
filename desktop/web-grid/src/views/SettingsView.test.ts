@@ -22,6 +22,7 @@ describe("SettingsView", () => {
     setActivePinia(createPinia());
     useWorkspaceStore().phase = "opened";
     useWorkspaceSessionStore().activeWorkspaceId = "calendar-workspace";
+    useWorkspaceSessionStore().sessionState = "openedWritable";
     useWorkspaceSessionStore().writable = true;
     backupRequest.mockReset();
     let appPreferences = {

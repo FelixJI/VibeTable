@@ -362,7 +362,7 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     const bootstrap = parseWorkspaceV2Bootstrap(raw);
     session.configureCapabilities(bootstrap.capabilities);
     session.setWorkspaces(bootstrap.workspaces);
-    session.applySession(bootstrap.session);
+    if (!session.applySession(bootstrap.session)) return;
     configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
     if (session.snapshotEnabled) protection.setSnapshots(bootstrap.snapshots);
     if (session.capabilities.includes("repository.settings.v2")) {

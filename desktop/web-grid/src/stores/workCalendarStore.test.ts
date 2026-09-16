@@ -17,7 +17,40 @@ describe("workCalendarStore", () => {
     request.mockResolvedValue({ overrides: [], revision: "" });
     const session = useWorkspaceSessionStore();
     session.activeWorkspaceId = "workspace-a";
+    session.sessionState = "openedWritable";
     session.writable = true;
+  });
+
+  it("does not reload a late database projection during workspace retirement", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.sessionState = "openedWritable";
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    request.mockClear();
+    expect(session.beginSwitch("workspace-b")).toBe(true);
+    useWorkspaceStore().phase = "opening";
+    await flushPromises();
+    useWorkspaceStore().phase = "opened";
+    await flushPromises();
+    await store.load();
+    expect(request).not.toHaveBeenCalled();
+    session.sessionState = "openedWritable";
+    session.sessionPhase = "idle";
+    await flushPromises();
+    expect(request).toHaveBeenCalledExactlyOnceWith("settings.readWorkCalendar", {});
+    expect(store.status).toBe("ready");
+  });
+
+  it.each(["failed", "closed"] as const)("does not read the calendar from a %s session", async (state) => {
+    const store = useWorkCalendarStore();
+    await flushPromises();
+    request.mockClear();
+    useWorkspaceSessionStore().sessionState = state;
+    await flushPromises();
+    await store.load();
+    expect(request).not.toHaveBeenCalled();
+    expect(store.status).toBe("unavailable");
   });
 
   it("persists confirmed overrides and restores the default rule through the authority", async () => {
