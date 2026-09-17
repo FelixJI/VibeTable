@@ -5,15 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
 from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseTransport
 from backend.contracts.product_rpc import JsonObject, JsonValue, ProductParams
-
-_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 ProductRpcHandler = Callable[[ProductParams], Awaitable[JsonObject]]
 
@@ -117,12 +114,6 @@ def _integer(value: JsonObject, name: str, default: int | None = None) -> int:
     if isinstance(result, bool) or not isinstance(result, int):
         raise ValueError(f"{name} must be an integer")
     return result
-
-
-def _path_segment(value: str) -> str:
-    if not _PATH_SEGMENT.fullmatch(value):
-        raise ValueError("table id is invalid")
-    return value
 
 
 def _stable_hash(value: JsonValue) -> str:

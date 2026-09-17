@@ -82,6 +82,46 @@
       "effect": "read"
     },
     {
+      "method": "field.change.apply",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.definition",
+      "owner": "goSidecar",
+      "effect": "write"
+    },
+    {
+      "method": "field.change.cancel",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.definition",
+      "owner": "goSidecar",
+      "effect": "write"
+    },
+    {
+      "method": "field.change.plan",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.definition",
+      "owner": "goSidecar",
+      "effect": "write"
+    },
+    {
+      "method": "field.change.status",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
+      "method": "field.recycleBin.list",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "schema.query",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
       "method": "field.settings.describe",
       "scope": "workspace",
       "audience": "rendererPublic",
@@ -646,7 +686,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "schema.definition",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -678,7 +718,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "schema.definition",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {

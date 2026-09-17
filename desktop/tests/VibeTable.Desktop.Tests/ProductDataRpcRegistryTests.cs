@@ -114,6 +114,11 @@ public sealed class ProductDataRpcRegistryTests
         Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.change.cancel", out var cancel));
         Assert.IsTrue(ProductDataRpcRegistry.TryGet("field.recycleBin.list", out var recycleBin));
 
+        foreach (var endpoint in new[] { describe, plan, apply, status, cancel, recycleBin })
+        {
+            Assert.AreEqual(ProductRpcCapabilityCatalog.Product, endpoint.CapabilityCatalog);
+        }
+
         Assert.IsTrue(describe.IsValidPayload(
             JsonDocument.Parse("""{"tableId":"tbl_orders","fieldId":"fld_status"}""").RootElement));
         Assert.IsFalse(describe.IsValidPayload(

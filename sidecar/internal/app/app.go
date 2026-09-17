@@ -430,12 +430,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			contentMetadata := metadata.NewContentService(pb, querySource)
 			presets := metadata.NewPreset(pb)
 			surfaces := metadata.NewSurface(pb)
-			productDispatcher, err := productrpc.New(productrpc.Identity{
-				WorkspaceID:  capabilities.WorkspaceID,
-				SessionEpoch: capabilities.SessionEpoch,
-				FenceEpoch:   capabilities.FenceEpoch,
-				ClaimID:      capabilities.ClaimID,
-			},
+			productRegistrations := []productrpc.Registration{
 				dashboardRegistration("insights.dashboardQueryLimits", dashboardService, businessGate),
 				dashboardRegistration("insights.deleteDashboardWorkspace", dashboardService, businessGate),
 				dashboardRegistration("insights.executeDashboardQuery", dashboardService, businessGate),
@@ -483,7 +478,16 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				workCalendarReadRegistration(metadata.New(pb)),
 				workCalendarCommitRegistration(metadata.New(pb), businessGate),
 				relationPreviewDeltaRegistration(relationService),
+			}
+			productRegistrations = append(
+				productRegistrations, schemaFieldChangeRegistrations(fieldSettings, schemaCatalog)...,
 			)
+			productDispatcher, err := productrpc.New(productrpc.Identity{
+				WorkspaceID:  capabilities.WorkspaceID,
+				SessionEpoch: capabilities.SessionEpoch,
+				FenceEpoch:   capabilities.FenceEpoch,
+				ClaimID:      capabilities.ClaimID,
+			}, productRegistrations...)
 			if err != nil {
 				_ = rawListener.Close()
 				return fmt.Errorf("compose Product RPC dispatcher: %w", err)

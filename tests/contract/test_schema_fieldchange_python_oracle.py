@@ -1,4 +1,4 @@
-"""Verify the frozen seven-method Python oracle against the live capture."""
+"""Verify the retained seven-method Python oracle without live capture."""
 
 from __future__ import annotations
 
@@ -66,13 +66,26 @@ def captured() -> dict:
 
 
 @pytest.mark.parametrize("arguments", [[], ["--check"]])
-def test_check_recomputes_the_live_capture_without_writing(
+def test_check_validates_retained_inputs_without_capture(
     monkeypatch: pytest.MonkeyPatch, arguments: list[str]
 ) -> None:
+    def forbidden_capture(*args, **kwargs):
+        pytest.fail("retired check must not execute Python capture")
+
     retained = oracle.OUTPUT.read_text(encoding="utf-8")
+    monkeypatch.setattr(oracle, "capture", forbidden_capture)
+    monkeypatch.setattr(oracle, "capture_case", forbidden_capture)
     monkeypatch.setattr("sys.argv", ["oracle", *arguments])
     assert oracle.main() == 0
     assert oracle.OUTPUT.read_text(encoding="utf-8") == retained
+
+
+@pytest.mark.asyncio
+async def test_capture_is_retired() -> None:
+    with pytest.raises(RuntimeError, match="capture is retired"):
+        await oracle.capture_case(oracle.cases()[0])
+    with pytest.raises(RuntimeError, match="capture is retired"):
+        await oracle.capture()
 
 
 def test_frozen_oracle_covers_every_method_once(captured: dict) -> None:
@@ -215,17 +228,21 @@ def test_authority_failure_public_wire_is_frozen(captured: dict, name: str, erro
     assert entry["response"]["error"] == error
 
 
-def test_write_never_overwrites_the_existing_original(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("exists", [False, True])
+def test_write_is_retired_without_creating_or_replacing_original(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exists: bool
 ) -> None:
     target = tmp_path / "original.json"
-    target.write_text("retained", encoding="utf-8")
+    if exists:
+        target.write_text("retained", encoding="utf-8")
     monkeypatch.setattr(oracle, "OUTPUT", target)
     monkeypatch.setattr("sys.argv", ["oracle", "--write"])
     with pytest.raises(SystemExit) as failure:
         oracle.main()
     assert failure.value.code == 2
-    assert target.read_text(encoding="utf-8") == "retained"
+    assert target.exists() is exists
+    if exists:
+        assert target.read_text(encoding="utf-8") == "retained"
 
 
 @pytest.mark.parametrize(

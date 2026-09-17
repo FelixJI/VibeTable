@@ -1,13 +1,10 @@
-"""Query, schema, mutation, formula, and reconciliation product RPC module."""
+"""Formula product RPC module; schema and field-change routes are Go-owned."""
 
 from __future__ import annotations
 
 from backend.adapters.pocketbase.product_rpc_support import (
     PocketBaseProductContext,
     ProductRpcHandler,
-    _path_segment,
-    _result_object,
-    _text,
 )
 from backend.contracts.product_rpc import JsonObject, ProductParams
 from backend.contracts.schema_v2 import (
@@ -17,18 +14,11 @@ from backend.contracts.schema_v2 import (
 
 
 class ProductQuerySchemaRpc:
-    """Owns query/schema request interpretation and sidecar projections."""
+    """Owns formula request interpretation and sidecar projections."""
 
     def __init__(self, context: PocketBaseProductContext) -> None:
         self._context = context
         self._handlers: dict[str, ProductRpcHandler] = {
-            "field.change.plan": self._plan_field_change,
-            "field.change.apply": self._apply_field_change,
-            "field.change.status": self._field_change_status,
-            "field.change.cancel": self._cancel_field_change,
-            "field.recycleBin.list": self._list_recycled_fields,
-            "schema.table.create": self._create_schema_table,
-            "schema.delete": self._delete_schema,
             "formula.validate": self._validate_formula,
             "formula.draft.validate": self._validate_formula_draft,
             "formula.preview": self._preview_formula,
@@ -42,47 +32,6 @@ class ProductQuerySchemaRpc:
             raise ValueError(f"unknown query/schema RPC method: {method}") from exc
         return await handler(params)
 
-    async def _create_schema_table(self, params: ProductParams) -> JsonObject:
-        return await self._context.post("/api/vibetable/v2/schema/tables", params.root)
-
-    async def _delete_schema(self, params: ProductParams) -> JsonObject:
-        return await self._context.post("/api/vibetable/v1/schema/delete", params.root)
-
-    async def _plan_field_change(self, params: ProductParams) -> JsonObject:
-        return await self._context.post("/api/vibetable/v2/field-change/plan", params.root)
-
-    async def _apply_field_change(self, params: ProductParams) -> JsonObject:
-        return await self._context.post("/api/vibetable/v2/field-change/apply", params.root)
-
-    async def _field_change_status(self, params: ProductParams) -> JsonObject:
-        job_id = _path_segment(_text(params.root, "jobId"))
-        return _result_object(
-            await self._context.transport.request(
-                "GET",
-                f"/api/vibetable/v2/field-change/status/{job_id}",
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
-        )
-
-    async def _cancel_field_change(self, params: ProductParams) -> JsonObject:
-        job_id = _path_segment(_text(params.root, "jobId"))
-        return await self._context.post(
-            f"/api/vibetable/v2/field-change/cancel/{job_id}",
-            {},
-        )
-
-    async def _list_recycled_fields(self, params: ProductParams) -> JsonObject:
-        table_id = _path_segment(_text(params.root, "tableId"))
-        return _result_object(
-            await self._context.transport.request(
-                "GET",
-                f"/api/vibetable/v2/field-recycle-bin/{table_id}",
-                headers=dict(self._context.headers),
-                expected_status=(200,),
-            )
-        )
-
     async def _validate_formula(self, params: ProductParams) -> JsonObject:
         FormulaValidateRequestV2.model_validate(params.root)
         return await self._context.post("/api/vibetable/v1/formulas/validate", params.root)
@@ -93,10 +42,6 @@ class ProductQuerySchemaRpc:
     async def _preview_formula(self, params: ProductParams) -> JsonObject:
         FormulaPreviewRequestV2.model_validate(params.root)
         return await self._context.post("/api/vibetable/v1/formulas/preview", params.root)
-
-
-_JSON_FILTER_OPERATORS = ("contains",)
-_NULL_FILTER_OPERATORS = ("is_null", "is_not_null")
 
 
 __all__ = ["ProductQuerySchemaRpc"]

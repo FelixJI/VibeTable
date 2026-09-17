@@ -1,30 +1,20 @@
-"""Freeze the Python wire of the seven schema/field-change product methods.
+"""Check retained schema/field-change wire after closing the Python capture.
 
-The capture dispatches through the real RpcDispatcher, Product parameter DTOs,
-PocketBaseProductRpc and the registered product errors; only the loopback HTTP
-end is scripted. The recorded responses are therefore Python forwarding and
-error-boundary evidence, never Go domain execution or product qualification.
+The frozen original captured the real RpcDispatcher, Product parameter DTOs,
+PocketBaseProductRpc and the registered product errors with only the loopback
+HTTP end scripted. The seven forwarding handlers are retired, so the capture
+stays closed and only the retained inputs and public wire are validated against
+the frozen original; nothing is replayed through Python or regenerated from Go.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import inspect
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-
-from backend.__main__ import _register_pocketbase_product_methods
-from backend.adapters.pocketbase.client import PocketBaseClient
-from backend.adapters.pocketbase.product_query_schema_rpc import ProductQuerySchemaRpc
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.contracts.product_rpc import JsonObject, JsonValue
-from backend.rpc.dispatcher import RpcDispatcher
 
 PRODUCER_COMMIT = "98829eb9d7fdddf78afce396fb274f8468210ca8"
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -37,6 +27,7 @@ BOUNDARY = (
     "errors; only the loopback HTTP end is scripted, so responses are Python "
     "forwarding and error-boundary evidence, not Go domain execution"
 )
+CAPTURE_CLOSED = "Python schema/field-change capture is retired; preserve the frozen producer"
 METHODS = (
     "schema.table.create",
     "schema.delete",
@@ -325,108 +316,202 @@ def cases() -> tuple[Case, ...]:
     )
 
 
-class ScriptedLoopback(httpx.AsyncBaseTransport):
-    """Records production requests; replays one frozen authority script."""
-
-    def __init__(self, authority: Authority) -> None:
-        self._authority = authority
-        self.requests: list[JsonValue] = []
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        raw = request.content
-        # Credentials ride in headers and are deliberately not recorded.
-        self.requests.append(
-            {
-                "method": request.method,
-                "path": request.url.path,
-                "body": json.loads(raw) if raw else None,
-            }
-        )
-        if self._authority.failure == "transport":
-            raise httpx.ConnectError("scripted sidecar outage", request=request)
-        content = (
-            b""
-            if self._authority.body is None
-            else json.dumps(self._authority.body, ensure_ascii=False).encode("utf-8")
-        )
-        return httpx.Response(
-            self._authority.status,
-            content=content,
-            headers={"Content-Type": "application/json"},
-            request=request,
-        )
-
-
-def check_producer() -> None:
-    sources = {
-        _register_pocketbase_product_methods: "backend/__main__.py",
-        PocketBaseProductRpc: "backend/adapters/pocketbase/product_rpc.py",
-        ProductQuerySchemaRpc: "backend/adapters/pocketbase/product_query_schema_rpc.py",
-        RpcDispatcher: "backend/rpc/dispatcher.py",
+CAPTURED_ROUTES = {
+    "schema.table.create": ("POST", "/api/vibetable/v2/schema/tables"),
+    "schema.delete": ("POST", "/api/vibetable/v1/schema/delete"),
+    "field.change.plan": ("POST", "/api/vibetable/v2/field-change/plan"),
+    "field.change.apply": ("POST", "/api/vibetable/v2/field-change/apply"),
+    "field.change.status": ("GET", "/api/vibetable/v2/field-change/status/{id}"),
+    "field.change.cancel": ("POST", "/api/vibetable/v2/field-change/cancel/{id}"),
+    "field.recycleBin.list": ("GET", "/api/vibetable/v2/field-recycle-bin/{id}"),
+}
+PATH_KEYS = {
+    "field.change.status": "jobId",
+    "field.change.cancel": "jobId",
+    "field.recycleBin.list": "tableId",
+}
+PARAM_REJECTIONS = frozenset(
+    {
+        "schema.table.create:unknown-param",
+        "schema.table.create:missing-required-actor",
+        "schema.table.create:actor-type",
+        "schema.table.create:nested-credential",
+        "schema.delete:missing-required-revision",
+        "field.change.plan:unknown-param",
+        "field.change.plan:missing-required-revision",
+        "field.change.plan:draft-type",
+        "field.change.plan:depth-budget",
+        "field.change.apply:nested-actor-empty-id",
+        "field.change.apply:nested-confirmation-type",
+        "field.change.apply:unknown-param",
+        "field.change.status:missing-job-id",
+        "field.change.status:numeric-job-id",
+        "field.change.cancel:empty-job-id",
+        "field.recycleBin.list:null-table-id",
     }
-    for symbol, relative in sources.items():
-        if Path(inspect.getfile(symbol)).resolve() != REPOSITORY / relative:
-            raise RuntimeError("Schema/field-change capture imported a different Python producer")
-
-
-def check_producer_commit() -> None:
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=REPOSITORY,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    if head != PRODUCER_COMMIT:
-        raise RuntimeError(f"capture requires producer {PRODUCER_COMMIT}, found {head}")
+)
+ENVELOPE_REJECTIONS = frozenset({"field.change.status:envelope-nonobject-params"})
+HANDLER_REJECTIONS = frozenset(
+    {
+        "field.change.status:invalid-job-path",
+        "field.change.cancel:invalid-job-path",
+        "field.change.cancel:oversized-job-path",
+        "field.recycleBin.list:invalid-table-path",
+    }
+)
+INVALID_RESPONSES = frozenset(
+    {
+        "schema.table.create:scalar-response",
+        "field.change.status:array-response",
+        "field.change.status:empty-body-response",
+    }
+)
+# Fixed assertions over the original capture, never regenerated output.
+PUBLIC_ERROR_DATA = {
+    "schema.delete:revision-conflict": {
+        "kind": "product_data_error",
+        "message": "schema revision is stale",
+        "code": "schema.revision_conflict",
+        "path": "expectedRevision",
+        "details": {},
+        "retryable": False,
+    },
+    "schema.delete:transport-failure": {
+        "kind": "product_data_unavailable",
+        "message": "PocketBase sidecar is unavailable",
+        "code": "sidecar.unavailable",
+    },
+    "field.change.plan:schema-conflict": {
+        "kind": "product_data_error",
+        "message": "schema revision changed",
+        "code": "field.change.schema_conflict",
+        "path": "expectedSchemaRevision",
+        "details": {},
+        "retryable": False,
+    },
+    "field.change.apply:plan-expired": {
+        "kind": "product_data_error",
+        "message": "field change plan expired",
+        "code": "field.change.plan_expired",
+        "path": "planId",
+        "details": {},
+        "retryable": False,
+    },
+    "field.change.status:migration-not-found": {
+        "kind": "product_data_error",
+        "message": "field migration job was not found",
+        "code": "field.migration.not_found",
+        "path": "jobId",
+        "details": {},
+        "retryable": False,
+    },
+}
 
 
 async def capture_case(case: Case) -> JsonObject:
-    loopback = ScriptedLoopback(case.authority)
-    transport = StdlibPocketBaseTransport(
-        PocketBaseConfig(base_url=BASE_URL, session_secret=SESSION_SECRET),
-        http_transport=loopback,
-    )
-    client = PocketBaseClient(transport=transport, session_secret=SESSION_SECRET)
-    service = PocketBaseProductRpc(
-        client=client, transport=transport, session_secret=SESSION_SECRET
-    )
-    dispatcher = RpcDispatcher()
-    _register_pocketbase_product_methods(dispatcher, service)
-    assert set(dispatcher.registered_methods) >= set(METHODS)
-    response = await dispatcher.dispatch(
-        {
-            "jsonrpc": "2.0",
-            "id": case.name,
-            "method": case.method,
-            "params": case.params,
-        }
-    )
-    return {
-        "name": case.name,
-        "request": {
-            "jsonrpc": "2.0",
-            "id": case.name,
-            "method": case.method,
-            "params": case.params,
-        },
-        "authorityFixture": {
-            "status": case.authority.status,
-            "body": case.authority.body,
-            "failure": case.authority.failure,
-        },
-        "authorityRequests": loopback.requests,
-        "response": response,
-    }
+    raise RuntimeError(CAPTURE_CLOSED)
 
 
 async def capture() -> JsonObject:
-    check_producer()
-    return {
-        "producerCommit": PRODUCER_COMMIT,
-        "boundary": BOUNDARY,
-        "cases": [await capture_case(case) for case in cases()],
-    }
+    raise RuntimeError(CAPTURE_CLOSED)
+
+
+def _authority_attempts(case: Case) -> list[JsonValue]:
+    if (
+        case.name in PARAM_REJECTIONS
+        or case.name in ENVELOPE_REJECTIONS
+        or case.name in HANDLER_REJECTIONS
+    ):
+        return []
+    verb, route = CAPTURED_ROUTES[case.method]
+    key = PATH_KEYS.get(case.method)
+    if key is None:
+        path, body = route, case.params
+    else:
+        identifier = case.params[key] if isinstance(case.params, dict) else None
+        path, body = route.format(id=identifier), None if verb == "GET" else {}
+    return [{"method": verb, "path": path, "body": body}]
+
+
+def validate_frozen_inputs() -> None:
+    """Check historical inputs and wire invariants, not current Python or Go parity."""
+    frozen: JsonObject = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    if not isinstance(frozen, dict) or frozen.get("producerCommit") != PRODUCER_COMMIT:
+        raise ValueError("Frozen schema/field-change producer changed")
+    if frozen.get("boundary") != BOUNDARY:
+        raise ValueError("Frozen schema/field-change boundary changed")
+    if set(frozen) != {"producerCommit", "boundary", "cases"}:
+        raise ValueError("Frozen schema/field-change metadata changed")
+    entries = frozen.get("cases")
+    inputs = cases()
+    if not isinstance(entries, list) or len(entries) != len(inputs) or len(inputs) != 38:
+        raise ValueError("Frozen schema/field-change case inventory changed")
+    for entry, case in zip(entries, inputs, strict=True):
+        if not isinstance(entry, dict) or set(entry) != {
+            "name",
+            "request",
+            "authorityFixture",
+            "authorityRequests",
+            "response",
+        }:
+            raise ValueError("Invalid frozen schema/field-change entry")
+        expected: JsonObject = {
+            "name": case.name,
+            "request": {
+                "jsonrpc": "2.0",
+                "id": case.name,
+                "method": case.method,
+                "params": case.params,
+            },
+            "authorityFixture": {
+                "status": case.authority.status,
+                "body": case.authority.body,
+                "failure": case.authority.failure,
+            },
+            "authorityRequests": _authority_attempts(case),
+        }
+        actual = {key: entry[key] for key in expected}
+        if render(actual) != render(expected):
+            raise ValueError(f"Frozen schema/field-change inputs or attempts changed: {case.name}")
+        response = entry["response"]
+        if (
+            not isinstance(response, dict)
+            or response.get("jsonrpc") != "2.0"
+            or response.get("id") != case.name
+        ):
+            raise ValueError(f"Frozen schema/field-change response envelope changed: {case.name}")
+        if case.name in PUBLIC_ERROR_DATA:
+            error = response.get("error")
+            if (
+                set(response) != {"jsonrpc", "id", "error"}
+                or not isinstance(error, dict)
+                or set(error) != {"code", "message", "data"}
+                or error.get("code") != -32150
+                or error.get("message") not in {"Product data error", "Product data unavailable"}
+                or error.get("data") != PUBLIC_ERROR_DATA[case.name]
+            ):
+                raise ValueError(f"Frozen schema/field-change public error changed: {case.name}")
+            continue
+        code, message = (
+            (-32602, "Invalid params")
+            if case.name in PARAM_REJECTIONS
+            else (-32600, "Invalid Request")
+            if case.name in ENVELOPE_REJECTIONS
+            else (-32603, "Internal error")
+            if case.name in HANDLER_REJECTIONS or case.name in INVALID_RESPONSES
+            else (None, None)
+        )
+        if code is None:
+            if set(response) != {"jsonrpc", "id", "result"} or render(response["result"]) != render(
+                case.authority.body
+            ):
+                raise ValueError(f"Frozen schema/field-change result changed: {case.name}")
+            continue
+        if set(response) != {"jsonrpc", "id", "error"} or response.get("error") != {
+            "code": code,
+            "message": message,
+        }:
+            raise ValueError(f"Frozen schema/field-change error envelope changed: {case.name}")
 
 
 def render(value: object) -> str:
@@ -436,22 +521,16 @@ def render(value: object) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--write", action="store_true", help="Create the original once")
-    modes.add_argument("--check", action="store_true", help="Recompute and compare (default)")
+    modes.add_argument("--write", action="store_true", help="Retired; always rejected")
+    modes.add_argument(
+        "--check", action="store_true", help="Validate retained inputs and wire (default)"
+    )
     args = parser.parse_args()
+    if args.write:
+        parser.error(CAPTURE_CLOSED)
     try:
-        if args.write:
-            if OUTPUT.exists():
-                parser.error("oracle original already exists; --write never overwrites")
-            check_producer_commit()
-            rendered = render(asyncio.run(capture()))
-            with OUTPUT.open("x", encoding="utf-8", newline="\n") as output:
-                output.write(rendered)
-        else:
-            frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
-            if render(frozen) != render(asyncio.run(capture())):
-                raise ValueError("frozen oracle does not match the current capture")
-    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+        validate_frozen_inputs()
+    except (ValueError, OSError) as error:
         parser.error(str(error))
     return 0
 

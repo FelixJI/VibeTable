@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 105
+    assert len(manifest["rpcMethods"]) == 110
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -58,6 +58,11 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "contentProfile.delete",
         "contentProfile.load",
         "events.reconcile",
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
         "field.settings.describe",
         "file.list",
         "gridState.get",
@@ -98,9 +103,11 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
+        "schema.delete",
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "schema.table.create",
         "settings.commitWorkCalendar",
         "settings.readWorkCalendar",
         "settings.readDevice",
@@ -201,13 +208,18 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 54
+    assert len(methods) == 52
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
         "contentProfile.delete",
         "contentProfile.load",
         "events.reconcile",
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
         "field.settings.describe",
         "file.list",
         "history.applyRestore",
@@ -246,9 +258,11 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "relation.inspectPair",
         "relation.previewDelta",
         "relation.searchTargets",
+        "schema.delete",
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "schema.table.create",
         "settings.commitWorkCalendar",
         "settings.readWorkCalendar",
     )
@@ -282,28 +296,41 @@ def test_generated_manifest_validates_against_its_closed_schema() -> None:
     _validate(manifest, schema, schema)
 
 
-def test_field_settings_go_owner_keeps_legacy_routes() -> None:
-    from backend.contracts.product_rpc import (
-        PYTHON_PRODUCT_RPC_REGISTRY,
-        WORKSPACE_CATALOG_METHODS,
-    )
+def test_schema_field_change_go_owner_retires_python_routes() -> None:
+    from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 
-    method = "field.settings.describe"
-    entry = next(item for item in build_manifest()["rpcMethods"] if item["method"] == method)
-    assert entry == {
-        "method": method,
-        "scope": "workspace",
-        "audience": "rendererPublic",
-        "capabilityId": "schema.query",
-        "owner": "goSidecar",
-        "effect": "read",
-    }
-    assert method not in PYTHON_PRODUCT_RPC_REGISTRY
-    assert {
+    seven = {
         "field.change.apply",
         "field.change.cancel",
         "field.change.plan",
         "field.change.status",
         "field.recycleBin.list",
-    } == WORKSPACE_CATALOG_METHODS
-    assert PYTHON_PRODUCT_RPC_REGISTRY.keys() >= WORKSPACE_CATALOG_METHODS
+        "schema.table.create",
+        "schema.delete",
+    }
+    for method in sorted(seven):
+        entry = next(item for item in build_manifest()["rpcMethods"] if item["method"] == method)
+        expected_capability = (
+            "schema.definition"
+            if method
+            in {
+                "field.change.apply",
+                "field.change.cancel",
+                "field.change.plan",
+                "schema.table.create",
+                "schema.delete",
+            }
+            else "schema.query"
+        )
+        expected_effect = (
+            "read" if method in {"field.change.status", "field.recycleBin.list"} else "write"
+        )
+        assert entry == {
+            "method": method,
+            "scope": "workspace",
+            "audience": "rendererPublic",
+            "capabilityId": expected_capability,
+            "owner": "goSidecar",
+            "effect": expected_effect,
+        }
+    assert not (set(PYTHON_PRODUCT_RPC_REGISTRY) & seven)

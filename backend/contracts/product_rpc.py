@@ -598,31 +598,18 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
 }
 
 
-# Legacy typed Host entries excluded from Product; these are not members of the
-# generated workspace.v2 catalog. Each admission removes only its own exception.
-WORKSPACE_CATALOG_METHODS = frozenset(
-    {
-        "field.change.apply",
-        "field.change.cancel",
-        "field.change.plan",
-        "field.change.status",
-        "field.recycleBin.list",
-    }
-)
-
-
 def _current_python_registry(
     models: dict[str, type[ProductParams]],
 ) -> dict[str, type[ProductParams]]:
     catalog = frozenset(
         method for methods in PRODUCT_RPC_METHODS_BY_CURRENT_OWNER.values() for method in methods
     )
-    if models.keys() - catalog != WORKSPACE_CATALOG_METHODS:
+    if models.keys() - catalog:
         raise RuntimeError("product parameter registry has undeclared non-Product methods")
     return {
         method: model
         for method, model in models.items()
-        if method in WORKSPACE_CATALOG_METHODS or method in current_owner_methods("pythonBff")
+        if method in current_owner_methods("pythonBff")
     }
 
 
@@ -648,7 +635,6 @@ def _validate_value(value: object, depth: int) -> None:
 __all__ = [
     "PRODUCT_RPC_REGISTRY",
     "PYTHON_PRODUCT_RPC_REGISTRY",
-    "WORKSPACE_CATALOG_METHODS",
     "FieldChangeApplyParams",
     "FieldChangePlanParams",
     "JsonObject",
