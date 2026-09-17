@@ -2577,6 +2577,69 @@ async function scenario05(page, recorder, _network, runtime) {
       && rollbackRows.payload?.rows?.[0]?.[rollbackTable.field.physicalName] === "42",
     { rollbackPlan, faultedApply, rollbackStatus, rollbackAfter, rollbackRows },
   );
+
+  const cancellationPlan = await rawBridgeRequest(page, "field.change.plan", {
+    ...rollbackPlan.payload.intent,
+    expectedSchemaRevision: rollbackAfter.payload.schemaRevision,
+    expectedDataRevision: rollbackAfter.payload.dataRevision,
+  });
+  const holdFile = path.join(runtime.controlsDir, "migration-fault.phase");
+  await fs.writeFile(holdFile, "hold:copying\n", "utf8");
+  let cancellationApply;
+  try {
+    cancellationApply = await rawBridgeRequest(page, "field.change.apply", {
+      planId: cancellationPlan.payload.planId,
+      planHash: cancellationPlan.payload.planHash,
+      operationId: `op_e2e_cancel_${Date.now()}`,
+      actor: { id: "product-e2e", kind: "user" },
+      confirmations: [...(cancellationPlan.payload.confirmations ?? [])],
+    });
+    const jobId = cancellationApply.payload.migrationJobId;
+    let running;
+    const deadline = performance.now() + 15_000;
+    do {
+      running = await rawBridgeRequest(page, "field.change.status", { jobId });
+      if (running.payload?.phase === "copying") break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (performance.now() < deadline);
+    recorder.check("the real packaged migration pauses in a cancellable phase",
+      running?.payload?.phase === "copying" && running.payload.canCancel === true,
+      { cancellationApply, running });
+    const cancelled = await rawBridgeRequest(page, "field.change.cancel", { jobId });
+    recorder.check("Host routes a running migration cancellation to the Go authority",
+      cancelled.type === "field.change.cancel" && cancelled.payload?.jobId === jobId
+        && cancelled.payload.canCancel === false, { cancelled });
+  } finally {
+    await fs.rm(holdFile, { force: true });
+  }
+  const cancelledStatus = await waitForFieldMigration(page, cancellationApply.payload.migrationJobId);
+  recorder.check("the packaged migration persists cancellation before switching authority",
+    cancelledStatus.payload?.phase === "cancelled", { cancelledStatus });
+
+  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  const closed = await rawLifecycleWorkspaceV2Request(page, "workspace.close", { reason: "user" }, 60_000);
+  recorder.check("schema lifecycle closes the actual workspace", closed.result?.state === "closed", { closed });
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  const persistedStatus = await rawBridgeRequest(page, "field.change.status", {
+    jobId: cancellationApply.payload.migrationJobId,
+  });
+  const persistedDefinition = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: rollbackTable.tableId, fieldId: rollbackTable.field.fieldId,
+  });
+  const persistedRows = await rawBridgeRequest(page, "query.page", {
+    tableId: rollbackTable.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("workspace reopen retains the cancelled job, schema and original data in a new epoch",
+    reopened.payload.session.workspaceId === originalSession.workspaceId
+      && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
+      && persistedStatus.payload?.phase === "cancelled"
+      && persistedDefinition.payload?.definition?.logicalType === "text"
+      && persistedDefinition.payload?.definition?.identity?.fieldId === rollbackTable.field.fieldId
+      && persistedRows.payload?.rows?.[0]?.[rollbackTable.field.physicalName] === "42",
+    { originalSession, reopened, persistedStatus, persistedDefinition, persistedRows });
   return;
 }
 
