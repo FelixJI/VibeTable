@@ -280,6 +280,43 @@ public sealed class HostProductRpcInvokerTests
     }
 
     [TestMethod]
+    [DataRow("schema.table.create", false)]
+    [DataRow("schema.delete", false)]
+    [DataRow("field.change.plan", false)]
+    [DataRow("field.change.apply", false)]
+    [DataRow("field.change.status", false)]
+    [DataRow("field.change.cancel", false)]
+    [DataRow("field.recycleBin.list", false)]
+    [DataRow("field.change.apply", true)]
+    public async Task MigratedSchemaCallsDiscardRetiredGenerationReplies(string method, bool remoteError)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        fixture.Http.BeforeReply = (_, _) =>
+        {
+            fixture.Current = false;
+            return Task.CompletedTask;
+        };
+        fixture.Http.Error = remoteError ? Json("""{"code":-32150,"message":"Product data error"}""") : null;
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        // Transport completion must be retired before typed result parsing or
+        // publication, including remote failures. Domain validation is covered
+        // by the real Product HTTP lifecycle tests.
+        Task<JsonElement> Call() => method switch
+        {
+            "schema.table.create" => gateway.CreateTableAsync(Json("{}"), CancellationToken.None),
+            "schema.delete" => gateway.DeleteSchemaAsync(Json("{}"), CancellationToken.None),
+            "field.change.plan" => gateway.PlanFieldChangeAsync(Json("{}"), CancellationToken.None),
+            "field.change.apply" => gateway.ApplyFieldChangeAsync(Json("{}"), CancellationToken.None),
+            "field.change.status" => gateway.GetFieldChangeStatusAsync(Json("{}"), CancellationToken.None),
+            "field.change.cancel" => gateway.CancelFieldChangeAsync(Json("{}"), CancellationToken.None),
+            _ => gateway.ListRecycledFieldsAsync(Json("{}"), CancellationToken.None),
+        };
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(Call);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        Assert.AreEqual(method, fixture.Http.Calls.Single().GetProperty("method").GetString());
+    }
+
+    [TestMethod]
     public async Task CallerCancellationDoesNotCancelAnotherCallsSharedHandshake()
     {
         await using var fixture = await HostFixture.OpenAsync();
@@ -418,22 +455,17 @@ public sealed class HostProductRpcInvokerTests
     }
 
     [TestMethod]
-    public async Task WorkspaceCatalogKeepsPythonAndMissingProductOwnerFailsClosed()
+    public async Task MissingProductOwnersFailClosedWithoutPythonFallback()
     {
-        JsonElement expected = Json("""{"contract":"vibetable.schema.v2","fields":[]}""");
-        await using var fixture = await HostFixture.OpenAsync(id =>
-            JsonSerializer.SerializeToElement(new { jsonrpc = "2.0", id, result = expected }));
+        await using var fixture = await HostFixture.OpenAsync();
         using JsonRpcProductDataGateway gateway = fixture.Gateway();
-        JsonElement recycled = await gateway.ListRecycledFieldsAsync(
-            Json("""{"tableId":"orders"}"""), CancellationToken.None);
-        Assert.IsTrue(JsonElement.DeepEquals(expected, recycled));
-        Assert.AreEqual(1, fixture.Python.WriteCount);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            gateway.ListRecycledFieldsAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.DescribeFieldSettingsAsync(Json("""{"tableId":"orders"}"""), CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.QueryPageAsync(Json("{}"), CancellationToken.None));
-
-        Assert.AreEqual(1, fixture.Python.WriteCount);
+        Assert.AreEqual(0, fixture.Python.WriteCount);
         Assert.AreEqual(0, fixture.Http.Handshakes);
     }
 
@@ -719,7 +751,7 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace")]);
+                [new("field.change.apply", "workspace"), new("field.change.cancel", "workspace"), new("field.change.plan", "workspace"), new("field.change.status", "workspace"), new("field.recycleBin.list", "workspace"), new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.delete", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace"), new("schema.table.create", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }

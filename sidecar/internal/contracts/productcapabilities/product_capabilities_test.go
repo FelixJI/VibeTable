@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 105 {
-		t.Fatalf("RPCDescriptors length = %d, want 105", len(descriptors))
+	if len(descriptors) != 110 {
+		t.Fatalf("RPCDescriptors length = %d, want 110", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -83,11 +83,28 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 47 {
+	if len(allGo) != 54 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
+	}
+	schemaMethods := map[string]Effect{
+		"schema.table.create": WriteEffect, "schema.delete": WriteEffect,
+		"field.change.plan": WriteEffect, "field.change.apply": WriteEffect,
+		"field.change.cancel": WriteEffect, "field.change.status": ReadEffect,
+		"field.recycleBin.list": ReadEffect,
 	}
 	otherGo := []RPCDescriptor{}
 	for _, descriptor := range allGo {
+		if effect, migrated := schemaMethods[descriptor.Method]; migrated {
+			capability := "schema.definition"
+			if effect == ReadEffect {
+				capability = "schema.query"
+			}
+			if descriptor.Owner != GoSidecar || descriptor.Scope != WorkspaceScope || descriptor.Audience != RendererPublic || descriptor.CapabilityID != capability || descriptor.Effect != effect {
+				t.Fatalf("schema/field descriptor = %#v", descriptor)
+			}
+			delete(schemaMethods, descriptor.Method)
+			continue
+		}
 		if !contentMethods[descriptor.Method] {
 			otherGo = append(otherGo, descriptor)
 			continue
@@ -99,6 +116,9 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		if descriptor.Owner != GoSidecar || descriptor.Scope != WorkspaceScope || descriptor.Audience != RendererPublic || descriptor.CapabilityID != "content.model" || descriptor.Effect != effect {
 			t.Fatalf("content descriptor = %#v", descriptor)
 		}
+	}
+	if len(schemaMethods) != 0 {
+		t.Fatalf("missing migrated descriptors: %v", schemaMethods)
 	}
 	if got := otherGo; len(got) != 40 ||
 		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||

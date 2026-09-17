@@ -673,6 +673,13 @@ func assertSchemaCapabilityModelDumpDefaults(t *testing.T, rawCapabilities any) 
 func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	t.Helper()
 	catalog := schemaapi.New(pb)
+	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
+		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
+	})
+	migration := fieldchange.NewMigrationService(pb, nil)
+	t.Cleanup(migration.Shutdown)
+	domain := registerFieldRoutes(r, pb, migration, nil, nil, nil)
+
 	contentSource, err := queryschema.New(pb.DataDir())
 	if err != nil {
 		t.Fatal(err)
@@ -729,14 +736,10 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
-		}, unrelatedSchemaFieldChangeRegistrations(t)...)...)
+		}, schemaFieldChangeRegistrations(domain, catalog)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
-		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
-	})
-	registerFieldRoutes(r, pb, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
 	registerRelationRoutes(r, relation.New(pb, nil, nil))
 	registerRealtimeRoutes(r, nil, catalog)
