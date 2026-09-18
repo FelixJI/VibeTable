@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { activateWorkspaceAndWaitForDatabaseOpened } from "./workspace_activation_readiness.mjs";
 
 import {
   beginWorkspaceActivationCapture,
@@ -723,6 +725,94 @@ test("fails closed when a later outbound reuses the owner requestId for another 
       capture.wait(),
       /CAPTURE_OUTBOUND_IDENTITY_MISMATCH: workspace activation requestId changed method/,
     );
+    assert.equal(bridge.listenerCount(), 0);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+
+test("S32 waits for each switched workspace database before reading its calendar", { timeout: 2000 }, async () => {
+  // Execute the actual S32 switch/read sequence against the real capture. Delaying
+  // only database.opened models the capability handshake after an opened bootstrap.
+  const source = await readFile(new URL("./webview_product_scenarios.mjs", import.meta.url), "utf8");
+  const scenario = source.slice(source.indexOf("async function scenario32("));
+  const start = scenario.indexOf('  const target = page.getByTestId("workspace-center")');
+  const end = scenario.indexOf('  await page.getByTestId("nav-settings")', start);
+  assert.ok(start >= 0 && end > start);
+  const compile = (name, dependencies) => {
+    const begin = source.indexOf(`async function ${name}(`);
+    if (begin < 0) return undefined;
+    const next = source.indexOf("\nasync function ", begin + 1);
+    return new Function(...Object.keys(dependencies),
+      `${source.slice(begin, next)}; return ${name};`)(...Object.values(dependencies));
+  };
+  const bridge = makeWebView();
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  let transitions = 0;
+  const reads = [];
+  const pending = [];
+  const never = new Promise(() => {});
+  const click = async () => {
+    transitions += 1;
+    const request = ownerRequest();
+    request.payload.method = "workspace.switch";
+    bridge.webview.postMessage(request);
+    const terminal = ownerTerminal();
+    terminal.payload.method = "workspace.switch";
+    bridge.dispatch(terminal);
+    bridge.dispatch(writableBootstrap());
+  };
+  const locator = {
+    locator: () => locator, getByRole: () => locator, filter: () => locator,
+    click,
+    waitFor: async () => {},
+  };
+  const page = {
+    ...makeInPageBrowser(bridge.webview),
+    getByTestId: (id) => id === "workspace-operation-error"
+      ? { waitFor: () => never }
+      : id === "workspace-switcher"
+        ? { locator: () => ({ click: async () => {} }) }
+        : locator,
+    locator: () => locator,
+    waitForFunction: (predicate, argument) => predicate(argument)
+      ? Promise.resolve()
+      : new Promise(resolve => pending.push(() => {
+        if (predicate(argument)) resolve();
+      })),
+  };
+  const dependencies = { beginWorkspaceActivationCapture, waitForCapturedBridgeMessage,
+    activateWorkspaceAndWaitForDatabaseOpened };
+  dependencies.beginWritableWorkspaceBootstrapCapture = compile(
+    "beginWritableWorkspaceBootstrapCapture", dependencies);
+  dependencies.switchWorkspaceByName = compile("switchWorkspaceByName", dependencies);
+  dependencies.activateWorkspaceThroughUi = compile("activateWorkspaceThroughUi", dependencies);
+  const confirmed = { payload: { overrides: [{ name: "A holiday" }], revision: "revision-a" } };
+  const rawBridgeRequest = async (_page, method) => {
+    reads.push(method);
+    return reads.length === 1 ? { payload: { overrides: [], revision: "" } } : confirmed;
+  };
+  const recorder = { check: (_name, passed) => assert.ok(passed) };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const run = new AsyncFunction("page", "recorder", "originalSession", "confirmed",
+    "rawBridgeRequest", ...Object.keys(dependencies), scenario.slice(start, end));
+  const result = run(page, recorder, { sessionEpoch: 6 }, confirmed,
+    rawBridgeRequest, ...Object.values(dependencies));
+  result.catch(() => {});
+  try {
+    await new Promise(setImmediate);
+    assert.equal(transitions, 1, "B uses the real workspace.switch action");
+    assert.equal(reads.length, 0, "bootstrap and terminal alone cannot release B read");
+    bridge.dispatch(databaseOpened());
+    pending.splice(0).forEach(wake => wake());
+    await new Promise(setImmediate);
+    assert.equal(transitions, 2);
+    assert.equal(reads.length, 1, "A read must await its own database.opened");
+    bridge.dispatch(databaseOpened());
+    pending.splice(0).forEach(wake => wake());
+    await result;
+    assert.deepEqual(reads, ["settings.readWorkCalendar", "settings.readWorkCalendar"]);
     assert.equal(bridge.listenerCount(), 0);
   } finally {
     delete globalThis.window;

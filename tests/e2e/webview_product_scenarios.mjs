@@ -8048,11 +8048,11 @@ function hasExactWorkspaceWire(message) {
     && outerKeys.every((key, index) => key === innerKeys[index] && outer[key] === inner[key]);
 }
 
-async function activateDirectoryReplicaWorkspace(page, { method, activate }) {
+async function activateWorkspaceThroughUi(page, { method, activate, waitForHydration = false }) {
   const workspaceCenter = page.getByTestId("workspace-center");
   const databaseOpened = await activateWorkspaceAndWaitForDatabaseOpened({
     beginCapture: (expectation) => beginWorkspaceActivationCapture(page, {
-      ...expectation, waitForHydration: true,
+      ...expectation, waitForHydration,
     }),
     activate,
     waitForActivation: (timeoutMs) => Promise.race([
@@ -8123,7 +8123,8 @@ async function scenario23(page, recorder, _network, runtime) {
   });
   await card.waitFor({ state: "visible", timeout: 60_000 });
 
-  const initial = await activateDirectoryReplicaWorkspace(page, {
+  const initial = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.switch",
     activate: () => card.click(),
   });
@@ -8233,7 +8234,8 @@ async function scenario23(page, recorder, _network, runtime) {
   const workspaceCenter = page.getByTestId("workspace-center");
   await workspaceCenter.waitFor({ state: "visible", timeout: 60_000 });
   const reopenCard = workspaceCenter.getByRole("button", { name: new RegExp(workspaceName) });
-  const reopened = await activateDirectoryReplicaWorkspace(page, {
+  const reopened = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.open",
     activate: () => reopenCard.click(),
   });
@@ -8427,7 +8429,8 @@ async function replicaEditRow(page, recorder, state, value, session) {
   recorder.check("public workspace close completes protection for the provisional session",
     closed.result.state === "closed" && closed.result.workspaceId === null
       && closed.result.sessionEpoch === session.sessionEpoch, { closed });
-  const reopened = await activateDirectoryReplicaWorkspace(page, {
+  const reopened = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.open",
     activate: () => center.getByRole("button", { name: new RegExp(state.workspaceName) }).click(),
   });
@@ -8541,7 +8544,8 @@ async function scenario24(page, recorder, _network, runtime) {
         && closed.result.state === "closed" && closed.result.workspaceId === null
         && closed.result.sessionEpoch === closed.request.wire.sessionEpoch, { closed });
   }
-  const opened = await activateDirectoryReplicaWorkspace(page, {
+  const opened = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.open",
     activate: () => center.getByRole("button", { name: new RegExp(state.workspaceName) }).click(),
   });
@@ -8655,7 +8659,6 @@ async function scenario24(page, recorder, _network, runtime) {
 async function scenario32(page, recorder) {
   await waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-tables").click();
-  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession);
   const today = await page.evaluate(() => {
     const date = new Date();
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -8699,12 +8702,18 @@ async function scenario32(page, recorder) {
   await page.getByTestId("workspace-flow-confirm").click();
   const target = page.getByTestId("workspace-center").getByRole("button", { name: /Calendar Workspace B/ });
   await target.waitFor({ state: "visible", timeout: 60_000 });
-  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
-  await target.click();
-  const opened = await waitForCapturedBridgeMessage(page, 60_000);
+  await activateWorkspaceThroughUi(page, {
+    method: "workspace.switch", activate: () => target.click(),
+  });
   const isolated = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
   recorder.check("workspace B has no A calendar rules", isolated.payload?.overrides?.length === 0 && isolated.payload?.revision === "", { isolated });
-  await switchWorkspaceByName(page, "E2E Product Workspace", opened.payload.session.sessionEpoch);
+  await activateWorkspaceThroughUi(page, {
+    method: "workspace.switch",
+    activate: async () => {
+      await page.getByTestId("workspace-switcher").locator(".switcher-trigger").click();
+      await page.locator(".n-dropdown-option").filter({ hasText: "E2E Product Workspace" }).click();
+    },
+  });
   const reopened = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
   recorder.check("reopening A reloads its persistent calendar revision", reopened.payload?.revision === confirmed.payload?.revision && JSON.stringify(reopened.payload?.overrides) === JSON.stringify(confirmed.payload?.overrides), { reopened });
   await page.getByTestId("nav-settings").click();

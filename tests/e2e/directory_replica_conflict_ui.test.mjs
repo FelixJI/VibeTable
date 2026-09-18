@@ -163,7 +163,7 @@ for (const stage of ["seed", "fork-left", "fork-right", "resolve", "verify-resol
         return { request: { wire: { workspaceId: "seed-id", sessionEpoch: 7 } },
           result: { state: "closed", workspaceId: null, sessionEpoch: 7 } };
       },
-      async activateDirectoryReplicaWorkspace(_page, options) { await options.activate(); },
+      async activateWorkspaceThroughUi(_page, options) { await options.activate(); },
     });
     await assert.rejects(scenario(page, { check(_message, condition) { assert.equal(condition, true); } }, null,
       { replicaStage: stage, replicaState: "saved-state" }),
