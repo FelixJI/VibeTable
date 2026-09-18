@@ -6271,8 +6271,24 @@ async function scenario16(page, recorder, _network, runtime) {
     x: await layoutItem.getAttribute("gs-x"),
     height: await layoutItem.getAttribute("gs-h"),
   };
+  const layoutPanelId = await layoutItem.getAttribute("data-panel-id");
+  if (!layoutPanelId) throw new Error("Dashboard layout panel id is unavailable");
   await layoutItem.press("Alt+ArrowRight");
+  // Observe each user action before issuing the next one: the grid update and
+  // Vue's canonical panel projection do not share Playwright's keyup boundary.
+  await page.waitForFunction(({ panelId, beforeX }) => {
+    const item = document.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`);
+    return item && Number(item.getAttribute("gs-x") ?? 0) === Number(beforeX ?? 0) + 1;
+  }, { panelId: layoutPanelId, beforeX: layoutBefore.x }, { timeout: 20_000 });
+  const movedX = await layoutItem.getAttribute("gs-x");
   await layoutItem.press("Alt+Shift+ArrowDown");
+  await page.waitForFunction(({ panelId, expectedX, beforeHeight }) => {
+    const item = document.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`);
+    return item && item.getAttribute("gs-x") === expectedX
+      && Number(item.getAttribute("gs-h")) === Number(beforeHeight) + 1;
+  }, {
+    panelId: layoutPanelId, expectedX: movedX, beforeHeight: layoutBefore.height,
+  }, { timeout: 20_000 });
   const layoutAfter = {
     x: await layoutItem.getAttribute("gs-x"),
     height: await layoutItem.getAttribute("gs-h"),
