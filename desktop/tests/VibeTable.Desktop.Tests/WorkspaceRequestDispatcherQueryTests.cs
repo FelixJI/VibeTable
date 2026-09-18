@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Rpc;
@@ -1386,38 +1385,48 @@ public sealed class WorkspaceRequestDispatcherQueryTests
     }
 
     [TestMethod]
-    public async Task ProductWrite_IsNotRetriedWhenGatewayWasDisposed()
+    public async Task ProductWrite_IsNotRetriedWhenGoOwnerWasDisposed()
     {
-        var transport = new CountingQueryTransport();
-        await using var staleClient = new JsonRpcClient(transport);
-        using var staleGateway = new JsonRpcProductDataGateway(staleClient);
+        var python = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(python);
+        using var gateway = new JsonRpcProductDataGateway(client);
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(sink);
-        controller.SetGateway(staleGateway);
-        staleGateway.Dispose();
-
-        using var document = JsonDocument.Parse(
-            """
+        controller.SetGateway(gateway);
+        var replacement = new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("Disposed writes must not be replayed"));
+        var disposed = new ControlledProductSidecarForwarder((_, _) =>
+        {
+            controller.SetProductSidecarForwarder(replacement);
+            throw new ObjectDisposedException(nameof(ProductSidecarHttpGateway));
+        });
+        controller.SetProductSidecarForwarder(disposed);
+        RoutedWebRequest request = GoPageRequest("unsafe-write") with
+        {
+            Type = "field.change.apply",
+            Payload = JsonSerializer.SerializeToElement(new
             {
-              "planId": "plan-1",
-              "planHash": "hash-1",
-              "operationId": "operation-1",
-              "actor": {"id": "tester", "kind": "user"},
-              "confirmations": []
-            }
-            """);
-        await controller.DispatchAsync(new RoutedWebRequest(
-            "field.change.apply",
-            "unsafe-write",
-            document.RootElement.Clone(),
-            string.Empty));
+                planId = "plan-1",
+                planHash = "hash-1",
+                operationId = "operation-1",
+                actor = new { id = "tester", kind = "user" },
+                confirmations = Array.Empty<string>(),
+            }),
+        };
+
+        await controller.DispatchAsync(request);
 
         FakeWebReplySink.Reply failure = sink.Replies.Single();
         Assert.AreEqual("operation.failed", failure.Type);
         Assert.AreEqual("unsafe-write", failure.RequestId);
         Assert.AreEqual("BACKEND_UNAVAILABLE",
             JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
-        Assert.AreEqual(0, transport.WriteCount);
+        Assert.AreEqual(1, disposed.CallCount);
+        Assert.AreEqual("field.change.apply", disposed.Calls.Single().Method);
+        Assert.IsTrue(JsonElement.DeepEquals(request.Wire, disposed.Calls.Single().Wire));
+        Assert.IsTrue(JsonElement.DeepEquals(request.Payload, disposed.Calls.Single().Parameters));
+        Assert.AreEqual(0, replacement.CallCount);
+        Assert.AreEqual(0, python.WriteCount);
     }
 
     [TestMethod]
@@ -1467,31 +1476,49 @@ public sealed class WorkspaceRequestDispatcherQueryTests
     {
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(sink);
-        await using var client = new JsonRpcClient(new QueryTransport());
+        var python = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(python);
         using var gateway = new JsonRpcProductDataGateway(client);
         controller.SetGateway(gateway);
-        using var document = JsonDocument.Parse(
-            """
+        var sidecar = new ControlledProductSidecarForwarder((call, _) =>
+            Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                call.Wire.Clone(),
+                JsonSerializer.SerializeToElement(new
+                {
+                    contract = SchemaV2Contract.Name,
+                    operationId = "operation-1",
+                    planId = "plan-1",
+                    action = "update",
+                    tableId = "tbl_records",
+                    fieldId = "fld_title",
+                    schemaRevision = "schema_0002",
+                    definition = (object?)null,
+                    migrationJobId = "",
+                }))));
+        controller.SetProductSidecarForwarder(sidecar);
+        RoutedWebRequest request = GoPageRequest("field-apply-1") with
+        {
+            Type = "field.change.apply",
+            Payload = JsonSerializer.SerializeToElement(new
             {
-              "planId": "plan-1",
-              "planHash": "hash-1",
-              "operationId": "operation-1",
-              "actor": {"id": "tester", "kind": "user"},
-              "confirmations": []
-            }
-            """);
+                planId = "plan-1",
+                planHash = "hash-1",
+                operationId = "operation-1",
+                actor = new { id = "tester", kind = "user" },
+                confirmations = Array.Empty<string>(),
+            }),
+        };
 
-        await controller.DispatchAsync(new RoutedWebRequest(
-            "field.change.apply",
-            "field-apply-1",
-            document.RootElement.Clone(),
-            string.Empty));
+        await controller.DispatchAsync(request);
 
         FakeWebReplySink.Reply[] terminalReplies = sink.Replies
             .Where(reply => reply.RequestId == "field-apply-1")
             .ToArray();
         Assert.HasCount(1, terminalReplies);
         Assert.AreEqual("field.change.apply", terminalReplies[0].Type);
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.AreEqual("field.change.apply", sidecar.Calls.Single().Method);
+        Assert.AreEqual(0, python.WriteCount);
     }
 
     private static RoutedWebRequest GoPageRequest(string requestId)
@@ -1516,53 +1543,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             "query.page", requestId,
             JsonSerializer.SerializeToElement(new { tableId = "tbl_records", query = new { limit = 100 } }),
             string.Empty, scope, wire);
-    }
-
-    private sealed class QueryTransport : IJsonLineTransport
-    {
-        private readonly Channel<JsonElement?> _incoming =
-            Channel.CreateUnbounded<JsonElement?>();
-
-        public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
-            => _incoming.Reader.ReadAsync(cancellationToken).AsTask();
-
-        public Task WriteAsync(string line, CancellationToken cancellationToken)
-        {
-            using var request = JsonDocument.Parse(line);
-            string id = request.RootElement.GetProperty("id").GetString()!;
-            string method = request.RootElement.GetProperty("method").GetString()!;
-            string result = method == "field.change.apply"
-                ? """
-                  {
-                    "contract": "vibetable.schema.v2",
-                    "operationId": "operation-1",
-                    "planId": "plan-1",
-                    "action": "update",
-                    "tableId": "tbl_records",
-                    "fieldId": "fld_title",
-                    "schemaRevision": "schema_0002",
-                    "definition": null,
-                    "migrationJobId": ""
-                  }
-                  """
-                : throw new InvalidOperationException($"Unexpected test RPC: {method}");
-            using var response = JsonDocument.Parse(
-                $$"""
-                {
-                  "jsonrpc": "2.0",
-                  "id": "{{id}}",
-                  "result": {{result}}
-                }
-                """);
-            _incoming.Writer.TryWrite(response.RootElement.Clone());
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            _incoming.Writer.TryComplete();
-            return ValueTask.CompletedTask;
-        }
     }
 
     private static TablePage EmptyPage(string table)

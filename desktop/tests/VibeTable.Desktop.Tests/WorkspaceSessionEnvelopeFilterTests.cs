@@ -252,7 +252,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
-    public async Task PythonFieldRecycleBinResponseSettlesAsStaleAfterWorkspaceSwitch()
+    public async Task FieldRecycleBinResponseSettlesAsStaleAfterWorkspaceSwitch()
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -267,23 +267,40 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var sink = new FakeWebReplySink();
         var dispatcher = CreateDispatcher(sink, filter);
         dispatcher.SetProductDataGateway(gateway);
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ProductSidecarForwardResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ProductSidecarForwardCall? forwarded = null;
+        var sidecar = new ControlledProductSidecarForwarder((call, _) =>
+        {
+            forwarded = call;
+            started.TrySetResult();
+            return response.Task;
+        });
+        dispatcher.SetProductSidecarForwarder(sidecar);
 
         using var settingsParams = JsonDocument.Parse(
             """{"tableId":"tbl_records"}""");
+        WorkspaceWireScope scope = ScopeFor(opened, 1);
         dispatcher.Dispatch(new RoutedWebRequest(
             "field.recycleBin.list", "old-response", settingsParams.RootElement.Clone(), string.Empty,
-            ScopeFor(opened, 1)));
-        await transport.WaitForWriteAsync();
+            scope, WireFor(scope)));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await fixture.Manager.SwitchAsync(
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
-        transport.CompleteResponse(JsonSerializer.SerializeToElement(new
-        {
-            contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
-        }));
+        response.SetResult(new ProductSidecarSuccess(
+            forwarded!.Wire.Clone(),
+            JsonSerializer.SerializeToElement(new
+            {
+                contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
+            })));
         await sink.WaitForFailedAsync();
 
         AssertRetiredReply(sink, "old-response");
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.AreEqual(0, transport.WriteCount);
     }
 
     [TestMethod]
@@ -611,28 +628,27 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await using FieldProtectionHarness fixture =
             await FieldProtectionHarness.CreateAsync();
 
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.plan",
             "ordinary-plan",
             FieldPlanRequest("update", backupReceipt: "renderer-forged"),
-            string.Empty,
             ScopeFor(fixture.Opened, 1)));
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
             "ordinary-apply",
             FieldApplyRequest(
                 confirmations: ["backupReceipt"],
                 protectionSnapshotId: "renderer-forged"),
-            string.Empty,
             ScopeFor(fixture.Opened, 2)));
 
         Assert.AreEqual(0, fixture.Protection.CallCount);
+        Assert.AreEqual(0, fixture.PythonWriteCount);
         Assert.AreEqual(
             string.Empty,
-            fixture.Transport.ParametersFor("field.change.plan")
+            fixture.ParametersFor("field.change.plan")
                 .GetProperty("backupReceipt").GetString());
         Assert.IsFalse(
-            fixture.Transport.ParametersFor("field.change.apply")
+            fixture.ParametersFor("field.change.apply")
                 .TryGetProperty("protectionSnapshotId", out _));
     }
 
@@ -642,32 +658,31 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await using FieldProtectionHarness fixture =
             await FieldProtectionHarness.CreateAsync();
 
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.plan",
             "purge-plan",
             FieldPlanRequest("purge", backupReceipt: "renderer-forged"),
-            string.Empty,
             ScopeFor(fixture.Opened, 1)));
         Assert.AreEqual(1, fixture.Protection.CallCount);
         Assert.AreEqual(
             fixture.Protection.LastReceipt!.SnapshotId.ToString("D"),
-            fixture.Transport.ParametersFor("field.change.plan")
+            fixture.ParametersFor("field.change.plan")
                 .GetProperty("backupReceipt").GetString());
 
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
             "purge-apply",
             FieldApplyRequest(
                 confirmations: ["backupReceipt", "fieldName"],
                 protectionSnapshotId: "renderer-forged"),
-            string.Empty,
             ScopeFor(fixture.Opened, 2)));
 
         Assert.AreEqual(2, fixture.Protection.CallCount);
         Assert.AreEqual(
             fixture.Protection.LastReceipt!.SnapshotId.ToString("D"),
-            fixture.Transport.ParametersFor("field.change.apply")
+            fixture.ParametersFor("field.change.apply")
                 .GetProperty("protectionSnapshotId").GetString());
+        Assert.AreEqual(0, fixture.PythonWriteCount);
     }
 
     [TestMethod]
@@ -676,18 +691,18 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await using FieldProtectionHarness fixture =
             await FieldProtectionHarness.CreateAsync();
 
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
             "unknown-apply",
             FieldApplyRequest(confirmations: []),
-            string.Empty,
             ScopeFor(fixture.Opened, 1)));
 
         Assert.AreEqual(1, fixture.Protection.CallCount);
         Assert.AreEqual(
             fixture.Protection.LastReceipt!.SnapshotId.ToString("D"),
-            fixture.Transport.ParametersFor("field.change.apply")
+            fixture.ParametersFor("field.change.apply")
                 .GetProperty("protectionSnapshotId").GetString());
+        Assert.AreEqual(0, fixture.PythonWriteCount);
     }
 
     [TestMethod]
@@ -695,27 +710,33 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     {
         await using FieldProtectionHarness fixture =
             await FieldProtectionHarness.CreateAsync();
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.plan",
             "gateway-plan",
             FieldPlanRequest("update"),
-            string.Empty,
             ScopeFor(fixture.Opened, 1)));
 
-        var replacementTransport = new FieldChangeTransport();
+        var replacementTransport = new ControlledQueryTransport();
         await using var replacementClient = new JsonRpcClient(replacementTransport);
         using var replacementGateway = new JsonRpcProductDataGateway(replacementClient);
+        var replacementForwarder = new ControlledProductSidecarForwarder((call, _) =>
+            Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                call.Wire.Clone(),
+                FieldChangeOwnerResponses.Apply(call.Parameters))));
         fixture.Controller.SetGateway(replacementGateway);
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        fixture.Controller.SetProductSidecarForwarder(replacementForwarder);
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
             "gateway-apply",
             FieldApplyRequest(confirmations: []),
-            string.Empty,
             ScopeFor(fixture.Opened, 2)));
 
         Assert.AreEqual(1, fixture.Protection.CallCount);
-        Assert.IsTrue(replacementTransport.ParametersFor("field.change.apply")
-            .TryGetProperty("protectionSnapshotId", out _));
+        Assert.IsTrue(replacementForwarder.Calls
+            .Single(call => call.Method == "field.change.apply")
+            .Parameters.TryGetProperty("protectionSnapshotId", out _));
+        Assert.AreEqual(0, fixture.PythonWriteCount);
+        Assert.AreEqual(0, replacementTransport.WriteCount);
     }
 
     [TestMethod]
@@ -724,30 +745,36 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await using FieldProtectionHarness fixture =
             await FieldProtectionHarness.CreateAsync(holdPlanResponse: true);
 
-        Task latePlan = fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        Task latePlan = fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.plan",
             "late-gateway-plan",
             FieldPlanRequest("update"),
-            string.Empty,
             ScopeFor(fixture.Opened, 1)));
-        await fixture.Transport.PlanWritten;
+        await fixture.PlanForwarded.WaitAsync(TimeSpan.FromSeconds(2));
 
-        var replacementTransport = new FieldChangeTransport();
+        var replacementTransport = new ControlledQueryTransport();
         await using var replacementClient = new JsonRpcClient(replacementTransport);
         using var replacementGateway = new JsonRpcProductDataGateway(replacementClient);
+        var replacementForwarder = new ControlledProductSidecarForwarder((call, _) =>
+            Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                call.Wire.Clone(),
+                FieldChangeOwnerResponses.Apply(call.Parameters))));
         fixture.Controller.SetGateway(replacementGateway);
-        fixture.Transport.ReleasePlan();
-        await latePlan;
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        fixture.Controller.SetProductSidecarForwarder(replacementForwarder);
+        fixture.ReleasePlan();
+        await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
             "late-gateway-apply",
             FieldApplyRequest(confirmations: []),
-            string.Empty,
             ScopeFor(fixture.Opened, 2)));
 
         Assert.AreEqual(1, fixture.Protection.CallCount);
-        Assert.IsTrue(replacementTransport.ParametersFor("field.change.apply")
-            .TryGetProperty("protectionSnapshotId", out _));
+        Assert.IsTrue(replacementForwarder.Calls
+            .Single(call => call.Method == "field.change.apply")
+            .Parameters.TryGetProperty("protectionSnapshotId", out _));
+        Assert.AreEqual(0, fixture.PythonWriteCount);
+        Assert.AreEqual(0, replacementTransport.WriteCount);
     }
 
     [TestMethod]
@@ -756,22 +783,20 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await using FieldProtectionHarness fixture =
             await FieldProtectionHarness.CreateAsync();
         WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("Other", "Other");
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.plan",
             "workspace-plan",
             FieldPlanRequest("update"),
-            string.Empty,
             ScopeFor(fixture.Opened, 1)));
 
         WorkspaceSessionV2 switched = await fixture.Manager.SwitchAsync(
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
         int protectionCallsAfterSwitch = fixture.Protection.CallCount;
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
             "workspace-apply",
             FieldApplyRequest(confirmations: []),
-            string.Empty,
             ScopeFor(switched, 1)));
 
         Assert.AreEqual(
@@ -786,31 +811,29 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             await FieldProtectionHarness.CreateAsync(holdPlanResponse: true);
         WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("Other", "Other");
 
-        Task latePlan = fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        Task latePlan = fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.plan",
             "late-workspace-plan",
             FieldPlanRequest("update"),
-            string.Empty,
             ScopeFor(fixture.Opened, 1)));
-        await fixture.Transport.PlanWritten;
+        await fixture.PlanForwarded.WaitAsync(TimeSpan.FromSeconds(2));
         WorkspaceSessionV2 switched = await fixture.Manager.SwitchAsync(
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
         int protectionCallsAfterSwitch = fixture.Protection.CallCount;
 
-        fixture.Transport.ReleasePlan();
-        await latePlan;
-        await fixture.Controller.DispatchAsync(new RoutedWebRequest(
+        fixture.ReleasePlan();
+        await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+        await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
             "late-workspace-apply",
             FieldApplyRequest(confirmations: []),
-            string.Empty,
             ScopeFor(switched, 1)));
 
         Assert.AreEqual(
             protectionCallsAfterSwitch + 1,
             fixture.Protection.CallCount);
-        Assert.IsTrue(fixture.Transport.ParametersFor("field.change.apply")
+        Assert.IsTrue(fixture.ParametersFor("field.change.apply")
             .TryGetProperty("protectionSnapshotId", out _));
     }
 
@@ -837,7 +860,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             ScopeFor(fixture.Opened, 1)));
 
         Assert.AreEqual(0, fixture.Protection.CallCount);
-        Assert.AreEqual(0, fixture.Transport.WriteCount);
+        Assert.AreEqual(0, fixture.PythonWriteCount);
+        Assert.AreEqual(0, fixture.Forwarder.CallCount);
         FakeWebReplySink.Reply? failure = await fixture.Sink.WaitForFailedAsync();
         Assert.IsNotNull(failure);
         StringAssert.Contains(
@@ -939,49 +963,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
     [TestMethod]
     [DataRow("field.change.status", "{\"jobId\":\"job-retired\"}")]
-    public async Task PythonReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
-    {
-        using var fixture = new SessionFixture();
-        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
-        WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
-        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
-            first.WorkspaceId, WorkspaceOpenMode.Writable);
-        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
-        fixture.Manager.SetRequestDrainHook(filter);
-        var transport = new ControlledQueryTransport();
-        await using var client = new JsonRpcClient(transport);
-        using var gateway = new JsonRpcProductDataGateway(client);
-        var sink = new FakeWebReplySink();
-        var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
-        controller.SetGateway(gateway);
-        using var document = JsonDocument.Parse(payload);
-        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
-            type, "relation-retired", document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
-        await transport.WaitForWriteAsync();
-
-        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
-            second.WorkspaceId, WorkspaceOpenMode.Writable);
-        try
-        {
-            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
-            await switching.WaitAsync(TimeSpan.FromSeconds(2));
-        }
-        finally
-        {
-            transport.CompleteResponse();
-        }
-
-        FakeWebReplySink.Reply reply = sink.Replies.Single();
-        Assert.AreEqual("relation-retired", reply.RequestId);
-        Assert.AreEqual("operation.failed", reply.Type);
-        JsonElement result = JsonSerializer.SerializeToElement(reply.Payload);
-        Assert.AreEqual("workspace.session_stale", result.GetProperty("code").GetString());
-        Assert.AreEqual(1, transport.WriteCount);
-    }
-
-    [TestMethod]
     [DataRow("field.recycleBin.list", "{\"tableId\":\"tbl_records\"}")]
-    public async Task PythonFieldReadSettlesBeforeRetiredRuntimeDrains(string type, string payload)
+    public async Task GoFieldReadSettlesBeforeRetiredRuntimeDrains(
+        string type, string payload)
     {
         using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
@@ -996,10 +980,22 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(sink, sessionEnvelopeFilter: filter);
         controller.SetGateway(gateway);
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<ProductSidecarForwardResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        ProductSidecarForwardCall? forwarded = null;
+        var sidecar = new ControlledProductSidecarForwarder((call, token) =>
+        {
+            forwarded = call;
+            started.TrySetResult();
+            return response.Task.WaitAsync(token);
+        });
+        controller.SetProductSidecarForwarder(sidecar);
         using var document = JsonDocument.Parse(payload);
-        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
-            type, "relation-retired", document.RootElement.Clone(), string.Empty, ScopeFor(opened, 1)));
-        await transport.WaitForWriteAsync();
+        Task dispatch = controller.DispatchAsync(FieldRequest(
+            type, "relation-retired", document.RootElement.Clone(), ScopeFor(opened, 1)));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
             second.WorkspaceId, WorkspaceOpenMode.Writable);
@@ -1010,10 +1006,14 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         }
         finally
         {
-            transport.CompleteResponse(JsonSerializer.SerializeToElement(new
-            {
-                contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
-            }));
+            response.TrySetResult(new ProductSidecarSuccess(
+                forwarded!.Wire.Clone(),
+                type == "field.recycleBin.list"
+                    ? JsonSerializer.SerializeToElement(new
+                    {
+                        contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
+                    })
+                    : JsonSerializer.SerializeToElement(new { status = "running" })));
         }
 
         FakeWebReplySink.Reply reply = sink.Replies.Single();
@@ -1021,7 +1021,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual("operation.failed", reply.Type);
         JsonElement result = JsonSerializer.SerializeToElement(reply.Payload);
         Assert.AreEqual("workspace.session_stale", result.GetProperty("code").GetString());
-        Assert.AreEqual(1, transport.WriteCount);
+        Assert.AreEqual(1, sidecar.CallCount);
+        Assert.AreEqual(0, transport.WriteCount);
     }
 
     [TestMethod]
@@ -1107,8 +1108,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     {
         var payload = new JsonObject
         {
-            ["planId"] = FieldChangeTransport.PlanId,
-            ["planHash"] = FieldChangeTransport.PlanHash,
+            ["planId"] = FieldChangeOwnerResponses.PlanId,
+            ["planHash"] = FieldChangeOwnerResponses.PlanHash,
             ["operationId"] = "operation-1",
             ["actor"] = new JsonObject
             {
@@ -1140,8 +1141,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         {
             string apply = FieldApplyRequest(confirmations: []).GetRawText()
                 .Replace(
-                    $"\"planId\":\"{FieldChangeTransport.PlanId}\"",
-                    $"\"planId\":\"forged\",\"planId\":\"{FieldChangeTransport.PlanId}\"",
+                    $"\"planId\":\"{FieldChangeOwnerResponses.PlanId}\"",
+                    $"\"planId\":\"forged\",\"planId\":\"{FieldChangeOwnerResponses.PlanId}\"",
                     StringComparison.Ordinal);
             return ("field.change.apply", ParseClone(apply));
         }
@@ -1274,6 +1275,29 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     private static ProductRpcRouteSelector GoQuerySelector()
         => new(ProductRpcCapabilityManifest.Default);
 
+    private static JsonElement WireFor(WorkspaceWireScope scope)
+        => JsonSerializer.SerializeToElement(new
+        {
+            scope = scope.Scope,
+            workspaceId = scope.WorkspaceId,
+            sessionEpoch = scope.SessionEpoch,
+            operationId = scope.OperationId,
+            sequence = scope.Sequence,
+        });
+
+    private static RoutedWebRequest FieldRequest(
+        string type,
+        string requestId,
+        JsonElement payload,
+        WorkspaceWireScope scope)
+        => new(
+            type,
+            requestId,
+            payload,
+            string.Empty,
+            scope,
+            WireFor(scope));
+
     private static WorkspaceWireScope ScopeFor(
         WorkspaceSessionV2 session,
         ulong sequence)
@@ -1290,35 +1314,52 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     {
         private readonly SessionFixture _session;
         private readonly WorkspaceSessionEnvelopeFilter _filter;
+        private readonly ControlledQueryTransport _python;
         private readonly JsonRpcClient _client;
         private readonly JsonRpcProductDataGateway _gateway;
+        private readonly ControlledProductSidecarForwarder _forwarder;
+        private readonly TaskCompletionSource<bool> _planForwarded;
+        private readonly TaskCompletionSource<bool> _releasePlan;
 
         private FieldProtectionHarness(
             SessionFixture session,
             WorkspaceSessionV2 opened,
             WorkspaceSessionEnvelopeFilter filter,
-            FieldChangeTransport transport,
+            ControlledQueryTransport python,
             JsonRpcClient client,
             JsonRpcProductDataGateway gateway,
+            ControlledProductSidecarForwarder forwarder,
+            TaskCompletionSource<bool> planForwarded,
+            TaskCompletionSource<bool> releasePlan,
             FakeWebReplySink sink,
             ProductDataRequestController controller)
         {
             _session = session;
             Opened = opened;
             _filter = filter;
-            Transport = transport;
+            _python = python;
             _client = client;
             _gateway = gateway;
+            _forwarder = forwarder;
+            _planForwarded = planForwarded;
+            _releasePlan = releasePlan;
             Sink = sink;
             Controller = controller;
         }
 
         public WorkspaceSessionV2 Opened { get; }
-        public FieldChangeTransport Transport { get; }
+        public ControlledProductSidecarForwarder Forwarder => _forwarder;
         public FakeWebReplySink Sink { get; }
         public ProductDataRequestController Controller { get; }
         public BlockingProtectionHook Protection => _session.Protection;
         public WorkspaceSessionManager Manager => _session.Manager;
+        public int PythonWriteCount => _python.WriteCount;
+        public Task PlanForwarded => _planForwarded.Task;
+
+        public void ReleasePlan() => _releasePlan.TrySetResult(true);
+
+        public JsonElement ParametersFor(string method)
+            => _forwarder.Calls.Last(call => call.Method == method).Parameters;
 
         public static async Task<FieldProtectionHarness> CreateAsync(
             bool holdPlanResponse = false)
@@ -1329,21 +1370,48 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                 first.WorkspaceId,
                 WorkspaceOpenMode.Writable);
             var filter = new WorkspaceSessionEnvelopeFilter(session.Manager);
-            var transport = new FieldChangeTransport(holdPlanResponse);
-            var client = new JsonRpcClient(transport);
+            var python = new ControlledQueryTransport();
+            var client = new JsonRpcClient(python);
             var gateway = new JsonRpcProductDataGateway(client);
             var sink = new FakeWebReplySink();
             var controller = new ProductDataRequestController(
                 sink,
                 sessionEnvelopeFilter: filter);
             controller.SetGateway(gateway);
+            var planForwarded = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var releasePlan = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var forwarder = new ControlledProductSidecarForwarder(async (call, _) =>
+            {
+                if (call.Method == "field.change.plan")
+                {
+                    planForwarded.TrySetResult(true);
+                    // The held plan answer must ignore the epoch token so the
+                    // late response, not a cancellation, exercises the ledger.
+                    if (holdPlanResponse)
+                        await releasePlan.Task.ConfigureAwait(false);
+                    return new ProductSidecarSuccess(
+                        call.Wire.Clone(),
+                        FieldChangeOwnerResponses.Plan(call.Parameters));
+                }
+                return new ProductSidecarSuccess(
+                    call.Wire.Clone(),
+                    call.Method == "field.change.apply"
+                        ? FieldChangeOwnerResponses.Apply(call.Parameters)
+                        : JsonSerializer.SerializeToElement(new { }));
+            });
+            controller.SetProductSidecarForwarder(forwarder);
             return new FieldProtectionHarness(
                 session,
                 opened,
                 filter,
-                transport,
+                python,
                 client,
                 gateway,
+                forwarder,
+                planForwarded,
+                releasePlan,
                 sink,
                 controller);
         }
@@ -1362,78 +1430,12 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         }
     }
 
-    private sealed class FieldChangeTransport(bool holdPlanResponse = false)
-        : IJsonLineTransport
+    private static class FieldChangeOwnerResponses
     {
-        public const string PlanId = "plan-field-protection";
-        public const string PlanHash = "sha256:field-protection";
-        private readonly Channel<JsonElement?> _incoming =
-            Channel.CreateUnbounded<JsonElement?>();
-        private readonly object _gate = new();
-        private readonly List<(string Method, JsonElement Parameters)> _requests = [];
-        private readonly TaskCompletionSource<bool> _planWritten =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource<bool> _releasePlan =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal const string PlanId = "plan-field-protection";
+        internal const string PlanHash = "sha256:field-protection";
 
-        public Task PlanWritten => _planWritten.Task;
-
-        public void ReleasePlan() => _releasePlan.TrySetResult(true);
-
-        public int WriteCount
-        {
-            get
-            {
-                lock (_gate)
-                    return _requests.Count;
-            }
-        }
-
-        public JsonElement ParametersFor(string method)
-        {
-            lock (_gate)
-                return _requests.Last(request => request.Method == method).Parameters;
-        }
-
-        public Task<JsonElement?> ReadAsync(CancellationToken cancellationToken)
-            => _incoming.Reader.ReadAsync(cancellationToken).AsTask();
-
-        public async Task WriteAsync(string line, CancellationToken cancellationToken)
-        {
-            using var request = JsonDocument.Parse(line);
-            string id = request.RootElement.GetProperty("id").GetString()!;
-            string method = request.RootElement.GetProperty("method").GetString()!;
-            JsonElement parameters = request.RootElement.GetProperty("params").Clone();
-            lock (_gate)
-                _requests.Add((method, parameters));
-            if (method == "field.change.plan")
-            {
-                _planWritten.TrySetResult(true);
-                if (holdPlanResponse)
-                    await _releasePlan.Task.ConfigureAwait(false);
-            }
-            JsonElement result = method switch
-            {
-                "field.change.plan" => PlanResult(parameters),
-                "field.change.apply" => ApplyResult(parameters),
-                _ => JsonSerializer.SerializeToElement(new { }),
-            };
-            JsonElement response = JsonSerializer.SerializeToElement(new
-            {
-                jsonrpc = "2.0",
-                id,
-                result,
-            });
-            _incoming.Writer.TryWrite(response);
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            _incoming.Writer.TryComplete();
-            return ValueTask.CompletedTask;
-        }
-
-        private static JsonElement PlanResult(JsonElement parameters)
+        internal static JsonElement Plan(JsonElement parameters)
         {
             string action = parameters.GetProperty("action").GetString()!;
             string[] confirmations = action == "purge"
@@ -1469,7 +1471,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             });
         }
 
-        private static JsonElement ApplyResult(JsonElement parameters)
+        internal static JsonElement Apply(JsonElement parameters)
             => JsonSerializer.SerializeToElement(new
             {
                 contract = SchemaV2Contract.Name,
