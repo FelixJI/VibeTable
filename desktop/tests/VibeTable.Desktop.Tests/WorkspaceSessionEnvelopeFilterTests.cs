@@ -393,12 +393,12 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var response = new TaskCompletionSource<ProductSidecarForwardResult>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var sidecar = new ControlledProductSidecarForwarder(async (_, token) =>
+        CancellationTokenRegistration registration = default;
+        var sidecar = new ControlledProductSidecarForwarder((_, token) =>
         {
-            using CancellationTokenRegistration registration = token.Register(
-                () => cancelled.TrySetResult());
+            registration = token.Register(() => cancelled.TrySetResult());
             started.TrySetResult();
-            return await response.Task;
+            return response.Task;
         });
         var sink = new FakeWebReplySink();
         var controller = new ProductDataRequestController(
@@ -409,40 +409,56 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         RoutedWebRequest request = GoReadRequest(
             method, "go-late",
             ScopeFor(opened, 1));
-        Task dispatch = controller.DispatchAsync(request);
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Task<WorkspaceSessionV2> switching = fixture.Manager.SwitchAsync(
-            second.WorkspaceId,
-            WorkspaceOpenMode.Writable);
-        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        response.SetResult(new ProductSidecarSuccess(
+        var lateSuccess = new ProductSidecarSuccess(
             request.Wire.Clone(),
             method == "field.settings.describe"
                 ? ProductDataSidecarRoutingTests.FieldSettingsResult()
-                : JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() })));
-        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
-        await switching.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Assert.AreEqual(1, sidecar.CallCount);
-        AssertRetiredReply(sink, "go-late");
-        if (method == "query.validateSnapshot")
+                : JsonSerializer.SerializeToElement(new { rows = Array.Empty<object>() }));
+        Task dispatch = controller.DispatchAsync(request);
+        Task<WorkspaceSessionV2>? switching = null;
+        try
         {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            switching = fixture.Manager.SwitchAsync(
+                second.WorkspaceId,
+                WorkspaceOpenMode.Writable);
+            await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(switching.IsCompleted,
+                "The late reply must settle while the retired epoch still blocks the switch.");
+            response.SetResult(lateSuccess);
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
             WorkspaceSessionV2 current = await switching;
-            var replacement = new ControlledProductSidecarForwarder((call, _) =>
-                Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
-                    call.Wire.Clone(), JsonSerializer.SerializeToElement(new
-                    {
-                        valid = true, currentDataRevision = 7, currentSchemaRevision = "schema-1",
-                    }))));
-            controller.SetProductSidecarForwarder(replacement);
-            await controller.DispatchAsync(GoReadRequest(method, "snapshot-current", ScopeFor(current, 1)));
-            Assert.AreEqual(1, replacement.CallCount);
+
             Assert.AreEqual(1, sidecar.CallCount);
-            FakeWebReplySink.Reply currentReply = sink.Replies.Single(reply => reply.RequestId == "snapshot-current");
-            Assert.AreEqual(method, currentReply.Type);
-            Assert.IsTrue(JsonSerializer.SerializeToElement(currentReply.Payload).GetProperty("valid").GetBoolean());
             AssertRetiredReply(sink, "go-late");
+            if (method == "query.validateSnapshot")
+            {
+                var replacement = new ControlledProductSidecarForwarder((call, _) =>
+                    Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                        call.Wire.Clone(), JsonSerializer.SerializeToElement(new
+                        {
+                            valid = true, currentDataRevision = 7, currentSchemaRevision = "schema-1",
+                        }))));
+                controller.SetProductSidecarForwarder(replacement);
+                await controller.DispatchAsync(GoReadRequest(method, "snapshot-current", ScopeFor(current, 1)));
+                Assert.AreEqual(1, replacement.CallCount);
+                Assert.AreEqual(1, sidecar.CallCount);
+                FakeWebReplySink.Reply currentReply = sink.Replies.Single(reply => reply.RequestId == "snapshot-current");
+                Assert.AreEqual(method, currentReply.Type);
+                Assert.IsTrue(JsonSerializer.SerializeToElement(currentReply.Payload).GetProperty("valid").GetBoolean());
+                AssertRetiredReply(sink, "go-late");
+            }
+        }
+        finally
+        {
+            response.TrySetResult(lateSuccess);
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+            if (switching is not null)
+            {
+                await switching.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            registration.Dispose();
         }
     }
 
