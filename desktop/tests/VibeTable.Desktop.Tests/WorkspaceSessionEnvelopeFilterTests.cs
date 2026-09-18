@@ -283,24 +283,37 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         using var settingsParams = JsonDocument.Parse(
             """{"tableId":"tbl_records"}""");
         WorkspaceWireScope scope = ScopeFor(opened, 1);
-        dispatcher.Dispatch(new RoutedWebRequest(
+        Task dispatch = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
             "field.recycleBin.list", "old-response", settingsParams.RootElement.Clone(), string.Empty,
             scope, WireFor(scope)));
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Manager.SwitchAsync(
-            second.WorkspaceId,
-            WorkspaceOpenMode.Writable);
-        response.SetResult(new ProductSidecarSuccess(
-            forwarded!.Wire.Clone(),
-            JsonSerializer.SerializeToElement(new
-            {
-                contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
-            })));
-        await sink.WaitForFailedAsync();
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await fixture.Manager.SwitchAsync(
+                second.WorkspaceId,
+                WorkspaceOpenMode.Writable);
+            response.SetResult(new ProductSidecarSuccess(
+                forwarded!.Wire.Clone(),
+                JsonSerializer.SerializeToElement(new
+                {
+                    contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
+                })));
+            await sink.WaitForFailedAsync();
 
-        AssertRetiredReply(sink, "old-response");
-        Assert.AreEqual(1, sidecar.CallCount);
-        Assert.AreEqual(0, transport.WriteCount);
+            AssertRetiredReply(sink, "old-response");
+            Assert.AreEqual(1, sidecar.CallCount);
+            Assert.AreEqual(0, transport.WriteCount);
+        }
+        finally
+        {
+            response.TrySetResult(new ProductSidecarSuccess(
+                WireFor(scope),
+                JsonSerializer.SerializeToElement(new
+                {
+                    contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
+                })));
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        }
     }
 
     [TestMethod]
@@ -750,31 +763,39 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             "late-gateway-plan",
             FieldPlanRequest("update"),
             ScopeFor(fixture.Opened, 1)));
-        await fixture.PlanForwarded.WaitAsync(TimeSpan.FromSeconds(2));
+        try
+        {
+            await fixture.PlanForwarded.WaitAsync(TimeSpan.FromSeconds(2));
 
-        var replacementTransport = new ControlledQueryTransport();
-        await using var replacementClient = new JsonRpcClient(replacementTransport);
-        using var replacementGateway = new JsonRpcProductDataGateway(replacementClient);
-        var replacementForwarder = new ControlledProductSidecarForwarder((call, _) =>
-            Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
-                call.Wire.Clone(),
-                FieldChangeOwnerResponses.Apply(call.Parameters))));
-        fixture.Controller.SetGateway(replacementGateway);
-        fixture.Controller.SetProductSidecarForwarder(replacementForwarder);
-        fixture.ReleasePlan();
-        await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Controller.DispatchAsync(FieldRequest(
-            "field.change.apply",
-            "late-gateway-apply",
-            FieldApplyRequest(confirmations: []),
-            ScopeFor(fixture.Opened, 2)));
+            var replacementTransport = new ControlledQueryTransport();
+            await using var replacementClient = new JsonRpcClient(replacementTransport);
+            using var replacementGateway = new JsonRpcProductDataGateway(replacementClient);
+            var replacementForwarder = new ControlledProductSidecarForwarder((call, _) =>
+                Task.FromResult<ProductSidecarForwardResult>(new ProductSidecarSuccess(
+                    call.Wire.Clone(),
+                    FieldChangeOwnerResponses.Apply(call.Parameters))));
+            fixture.Controller.SetGateway(replacementGateway);
+            fixture.Controller.SetProductSidecarForwarder(replacementForwarder);
+            fixture.ReleasePlan();
+            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+            await fixture.Controller.DispatchAsync(FieldRequest(
+                "field.change.apply",
+                "late-gateway-apply",
+                FieldApplyRequest(confirmations: []),
+                ScopeFor(fixture.Opened, 2)));
 
-        Assert.AreEqual(1, fixture.Protection.CallCount);
-        Assert.IsTrue(replacementForwarder.Calls
-            .Single(call => call.Method == "field.change.apply")
-            .Parameters.TryGetProperty("protectionSnapshotId", out _));
-        Assert.AreEqual(0, fixture.PythonWriteCount);
-        Assert.AreEqual(0, replacementTransport.WriteCount);
+            Assert.AreEqual(1, fixture.Protection.CallCount);
+            Assert.IsTrue(replacementForwarder.Calls
+                .Single(call => call.Method == "field.change.apply")
+                .Parameters.TryGetProperty("protectionSnapshotId", out _));
+            Assert.AreEqual(0, fixture.PythonWriteCount);
+            Assert.AreEqual(0, replacementTransport.WriteCount);
+        }
+        finally
+        {
+            fixture.ReleasePlan();
+            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+        }
     }
 
     [TestMethod]
@@ -816,25 +837,33 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             "late-workspace-plan",
             FieldPlanRequest("update"),
             ScopeFor(fixture.Opened, 1)));
-        await fixture.PlanForwarded.WaitAsync(TimeSpan.FromSeconds(2));
-        WorkspaceSessionV2 switched = await fixture.Manager.SwitchAsync(
-            second.WorkspaceId,
-            WorkspaceOpenMode.Writable);
-        int protectionCallsAfterSwitch = fixture.Protection.CallCount;
+        try
+        {
+            await fixture.PlanForwarded.WaitAsync(TimeSpan.FromSeconds(2));
+            WorkspaceSessionV2 switched = await fixture.Manager.SwitchAsync(
+                second.WorkspaceId,
+                WorkspaceOpenMode.Writable);
+            int protectionCallsAfterSwitch = fixture.Protection.CallCount;
 
-        fixture.ReleasePlan();
-        await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
-        await fixture.Controller.DispatchAsync(FieldRequest(
-            "field.change.apply",
-            "late-workspace-apply",
-            FieldApplyRequest(confirmations: []),
-            ScopeFor(switched, 1)));
+            fixture.ReleasePlan();
+            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+            await fixture.Controller.DispatchAsync(FieldRequest(
+                "field.change.apply",
+                "late-workspace-apply",
+                FieldApplyRequest(confirmations: []),
+                ScopeFor(switched, 1)));
 
-        Assert.AreEqual(
-            protectionCallsAfterSwitch + 1,
-            fixture.Protection.CallCount);
-        Assert.IsTrue(fixture.ParametersFor("field.change.apply")
-            .TryGetProperty("protectionSnapshotId", out _));
+            Assert.AreEqual(
+                protectionCallsAfterSwitch + 1,
+                fixture.Protection.CallCount);
+            Assert.IsTrue(fixture.ParametersFor("field.change.apply")
+                .TryGetProperty("protectionSnapshotId", out _));
+        }
+        finally
+        {
+            fixture.ReleasePlan();
+            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+        }
     }
 
     [TestMethod]
