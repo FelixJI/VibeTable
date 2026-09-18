@@ -1406,6 +1406,64 @@ def test_product_e2e_evidence_rejects_failed_report_when_passing_is_required(
         )
 
 
+def test_product_e2e_evidence_persists_interrupted_report_and_required_gate_rejects_it(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260918T081855Z"
+    in_progress_id = "12-backup-consistency"
+    not_started_id = "13-protection-policy"
+    in_progress_root = run_root / in_progress_id
+    in_progress_root.mkdir(parents=True)
+    interrupted_report = {
+        "status": "failed",
+        "scenarios": [
+            {"scenario": "01-offline-first-start", "status": "passed"},
+            {
+                "scenario": in_progress_id,
+                "status": "failed",
+                "error": {
+                    "code": "SCENARIO_IN_PROGRESS",
+                    "message": "Runner was interrupted while this scenario was executing.",
+                },
+            },
+            {
+                "scenario": not_started_id,
+                "status": "failed",
+                "error": {
+                    "code": "SCENARIO_NOT_STARTED",
+                    "message": "Runner did not start this scenario.",
+                },
+            },
+        ],
+    }
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(interrupted_report),
+        encoding="utf-8",
+    )
+    for filename in (f"{in_progress_id}-result.json", "runner-stdout.log"):
+        (in_progress_root / filename).write_text(filename, encoding="utf-8")
+
+    destination = next_gate.persist_product_e2e_evidence(
+        source_root,
+        tmp_path / "destination",
+    )
+
+    assert destination == tmp_path / "destination" / run_root.name
+    persisted = json.loads((destination / "product-e2e-report.json").read_text(encoding="utf-8"))
+    assert persisted == interrupted_report
+    assert (destination / in_progress_id / f"{in_progress_id}-result.json").is_file()
+    assert (destination / in_progress_id / "runner-stdout.log").is_file()
+    assert not (destination / not_started_id).exists()
+
+    with pytest.raises(ValueError, match="passing report"):
+        next_gate.persist_product_e2e_evidence(
+            source_root,
+            tmp_path / "required-destination",
+            require_passing_report=True,
+        )
+
+
 def test_product_e2e_evidence_fails_when_report_copy_is_lost(
     monkeypatch,
     tmp_path: Path,

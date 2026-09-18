@@ -4764,6 +4764,30 @@ async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000)
   return waitForWorkspaceSearchRebuildTerminal(page, accepted, timeout);
 }
 
+// The restored-search attachment miss has been intermittent in packaged runs.
+// Capture one bounded, read-only snapshot of the restored attachment, target
+// record, and index state so a failure report can separate derived indexing
+// from actual data loss. It never rebuilds or retries the search, and a
+// diagnostic that cannot be collected becomes an explicit gap instead of
+// replacing the original search failure.
+async function collectRestoredSearchDiagnostics(page, attachmentParams, tableId) {
+  const diagnostics = { attachmentList: null, targetRecord: null, searchIndex: null, gaps: [] };
+  const collect = async (key, request) => {
+    try {
+      diagnostics[key] = await request();
+    } catch (error) {
+      diagnostics.gaps.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  await collect("attachmentList", () => rawBridgeRequest(page, "file.list", attachmentParams));
+  await collect("targetRecord", () => rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }));
+  await collect("searchIndex", () => rawWorkspaceV2Request(page, "workspaceSearch.status", {}));
+  return diagnostics;
+}
+
 async function scenario12(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -5093,17 +5117,23 @@ async function scenario12(page, recorder, _network, runtime) {
     "workspaceSearch.status",
     {},
   );
+  const restoredSearchCheckPassed = ["building", "degraded", "ready"].includes(
+      postRestoreInitialSearch.result?.state,
+    )
+    && restoredSearchState === "ready"
+    && restoredSearchStatus.result?.generation
+      > beforeSnapshotSearchStatus.result?.generation
+    && restoredSearch.hits.some((hit) => hit.kind === "attachment");
+  const restoredSearchDiagnostics = restoredSearchCheckPassed ? null
+    : await collectRestoredSearchDiagnostics(page, attachmentParams, tableId);
   recorder.check("snapshot restore invalidates derived search and rebuilds a newer usable generation",
-    ["building", "degraded", "ready"].includes(postRestoreInitialSearch.result?.state)
-      && restoredSearchState === "ready"
-      && restoredSearchStatus.result?.generation
-        > beforeSnapshotSearchStatus.result?.generation
-      && restoredSearch.hits.some((hit) => hit.kind === "attachment"),
+    restoredSearchCheckPassed,
   {
     postRestoreInitialSearch: postRestoreInitialSearch.result,
     beforeSnapshotSearchStatus: beforeSnapshotSearchStatus.result,
     restoredSearchStatus: restoredSearchStatus.result,
     restoredSearch,
+    restoredSearchDiagnostics,
   });
 
   await page.getByTestId("nav-tables").click();
