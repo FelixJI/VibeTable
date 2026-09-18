@@ -428,7 +428,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                 "The late reply must settle while the retired epoch still blocks the switch.");
             response.SetResult(lateSuccess);
             await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
-            WorkspaceSessionV2 current = await switching;
+            WorkspaceSessionV2 current = await switching.WaitAsync(TimeSpan.FromSeconds(2));
 
             Assert.AreEqual(1, sidecar.CallCount);
             AssertRetiredReply(sink, "go-late");
@@ -452,13 +452,25 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         }
         finally
         {
-            response.TrySetResult(lateSuccess);
-            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
-            if (switching is not null)
+            try
             {
-                await switching.WaitAsync(TimeSpan.FromSeconds(2));
+                response.TrySetResult(lateSuccess);
+                try
+                {
+                    await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+                }
+                finally
+                {
+                    if (switching is not null)
+                    {
+                        await switching.WaitAsync(TimeSpan.FromSeconds(2));
+                    }
+                }
             }
-            registration.Dispose();
+            finally
+            {
+                registration.Dispose();
+            }
         }
     }
 
