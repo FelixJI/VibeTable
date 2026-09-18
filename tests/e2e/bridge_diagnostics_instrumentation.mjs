@@ -10,6 +10,10 @@ export function installBridgeDiagnosticsInPage() {
     recentCompleted: [],
     failures: [],
     retiredRequests: [],
+    // Redacted identity for retired requests so a late terminal still reports
+    // which request failed; shares the retirement ledger bound so eviction
+    // stays fail closed instead of retaining identity indefinitely.
+    retiredAssociations: [],
     inboundRevisions: [],
     replicaObservations: [],
     diagnosticCursor: 0,
@@ -50,6 +54,13 @@ export function installBridgeDiagnosticsInPage() {
       workspaceId: detail.workspaceId,
       sessionEpoch: detail.sessionEpoch,
       outcome: "workspace-retired",
+    });
+    pushBounded(diagnostics.retiredAssociations, {
+      requestId: request.requestId,
+      requestType: request.requestType,
+      payloadShape: request.payloadShape,
+      startedAt: request.startedAt,
+      startedMonotonicMs: request.startedMonotonicMs,
     });
   });
   const dialogFocusTargets = new Set(["attachment", "json"]);
@@ -103,6 +114,7 @@ export function installBridgeDiagnosticsInPage() {
   const diagnosticCodes = new Set([
     "BACKEND_UNAVAILABLE",
     "BAD_PAYLOAD",
+    "BAD_WORKSPACE_SCOPE",
     "CANCELLED",
     "CAPABILITY_NOT_PUBLIC",
     "DASHBOARD_CANCELLED",
@@ -320,14 +332,24 @@ export function installBridgeDiagnosticsInPage() {
             break;
           }
         }
+        let retiredRequest = null;
+        if (completedRequest === null) {
+          for (let index = diagnostics.retiredAssociations.length - 1; index >= 0; index -= 1) {
+            if (diagnostics.retiredAssociations[index].requestId === rawRequestId) {
+              retiredRequest = diagnostics.retiredAssociations[index];
+              break;
+            }
+          }
+        }
+        const associatedRequest = completedRequest ?? retiredRequest;
         const rawMessage = message?.payload?.message
           ?? message?.payload?.error?.message
           ?? message?.error?.message
           ?? null;
         pushDiagnostic(diagnostics.failures, {
           requestId: rawRequestId,
-          requestType: completedRequest?.requestType ?? null,
-          payloadShape: completedRequest?.payloadShape ?? null,
+          requestType: associatedRequest?.requestType ?? null,
+          payloadShape: associatedRequest?.payloadShape ?? null,
           responseType: message?.type ?? null,
           code: stableCode(message?.payload?.code
             ?? message?.payload?.error?.code
@@ -338,11 +360,11 @@ export function installBridgeDiagnosticsInPage() {
           mutationKind: stableMutationKind(
             message?.payload?.mutationResult?.kind ?? message?.payload?.error?.kind ?? null),
           operation: stableOperation(message?.payload?.operation),
-          startedAt: completedRequest?.startedAt ?? null,
+          startedAt: associatedRequest?.startedAt ?? null,
           finishedAt: new Date().toISOString(),
-          durationMs: completedRequest === null
+          durationMs: associatedRequest === null
             ? null
-            : Math.round((performance.now() - completedRequest.startedMonotonicMs) * 100) / 100,
+            : Math.round((performance.now() - associatedRequest.startedMonotonicMs) * 100) / 100,
         });
       }
       return;
