@@ -8,6 +8,7 @@ import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/in
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
   beginSidecarRecoveryNotificationFailureWindowInPage,
+  pythonRecoveryReadinessMethod,
   releaseSidecarRecoveryNotificationFailureWindowInPage,
   settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
@@ -4047,7 +4048,7 @@ async function waitForTableRecovery(
           }
           const recoveredCount = await page.locator(".tabulator-row").count();
           if (recoveredCount === expectedRows) {
-            // Go page reads can recover before the Python write gateway.
+            // Go page/schema reads can recover before the fixed Host/Python binding.
             // Keep this read under the same deadline and terminal ownership window.
             if (Date.now() >= deadline) {
               throw new SidecarRecoveryContractError("sidecar recovery deadline expired");
@@ -4058,7 +4059,20 @@ async function waitForTableRecovery(
             recoveryReads.own(fieldRequestId, "field.recycleBin.list");
             const fields = await recoveryReads.observe(fieldRequestId);
             if (fields?.type !== "field.recycleBin.list") {
-              lastError = new Error("Python field recycle-bin read did not recover");
+              lastError = new Error("Go field recycle-bin read did not recover");
+              continue;
+            }
+            // Recycle-bin moved to Go in #343, so it no longer proves that
+            // the rotated Python client and native Host gateways are current.
+            // Validate a constant draft through the retained read-only Python
+            // route, under the existing absolute deadline and request ownership.
+            const pythonRequestId = await beginRawBridgeRequest(
+              page, pythonRecoveryReadinessMethod, { tableId, displaySource: "1" },
+            );
+            recoveryReads.own(pythonRequestId, pythonRecoveryReadinessMethod);
+            const pythonReady = await recoveryReads.observe(pythonRequestId);
+            if (pythonReady?.type !== pythonRecoveryReadinessMethod) {
+              lastError = new Error("Host/Python binding did not recover");
               continue;
             }
             await recoveryReads.settle();
@@ -4197,10 +4211,10 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       lastResponse = await rawBridgeRequest(
-        page, "field.recycleBin.list", { tableId }, Math.min(20_000, remainingMs),
+        page, pythonRecoveryReadinessMethod, { tableId, displaySource: "1" }, Math.min(20_000, remainingMs),
       );
       if (Date.now() >= deadline) break;
-      if (lastResponse.type === "field.recycleBin.list") {
+      if (lastResponse.type === pythonRecoveryReadinessMethod) {
         return recoveredPage;
       }
     }

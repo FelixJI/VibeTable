@@ -5,6 +5,7 @@ import {
   acknowledgeExpectedSidecarRecoveryFailure,
   beginSidecarRecoveryNotificationFailureWindowInPage,
   isExpectedSidecarRecoveryFailure,
+  pythonRecoveryReadinessMethod,
   releaseSidecarRecoveryNotificationFailureWindowInPage,
   settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
@@ -374,7 +375,7 @@ test("owns a late recovery failure after the first observation expires", async (
   ]);
 });
 
-test("settles page and Python readiness reads in the same recovery window", async () => {
+test("settles Go page and schema reads in the same recovery window", async () => {
   let now = 0;
   const observations = [];
   const acknowledged = [];
@@ -432,7 +433,7 @@ test("Python readiness keeps exact request identity, terminal type and failure c
       acknowledge: async response => acknowledged.push(response),
     });
     assert.throws(() => window.own("preview", "file.previewRequested"), SidecarRecoveryContractError);
-    window.own("fields", "field.recycleBin.list");
+    window.own("fields", pythonRecoveryReadinessMethod);
     await assert.rejects(window.observe("fields"), SidecarRecoveryContractError);
     await window.close();
     assert.deepEqual(released, ["fields"]);
@@ -450,12 +451,12 @@ test("Python readiness success at the recovery deadline cannot pass", async () =
     observeTerminal: async (requestId, timeoutMs) => {
       assert.equal(timeoutMs, 1);
       now = 6_000;
-      return { type: "field.recycleBin.list", requestId };
+      return { type: pythonRecoveryReadinessMethod, requestId };
     },
     releaseRequest: async requestId => released.push(requestId),
     acknowledge: async response => acknowledged.push(response),
   });
-  window.own("fields", "field.recycleBin.list");
+  window.own("fields", pythonRecoveryReadinessMethod);
   await assert.rejects(window.observe("fields"), /recovery deadline expired/);
   await window.close();
   assert.deepEqual(released, ["fields"]);
@@ -867,4 +868,42 @@ test("close reuses a failed release attempt instead of retrying it", async () =>
   await assert.rejects(window.close(), SidecarRecoveryContractError);
 
   assert.equal(releaseAttempts, 1);
+});
+
+
+test("Go readiness cannot complete an owned Python binding probe", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const manifest = JSON.parse(await readFile(new URL("../../contracts/v2/product-rpc-capability-manifest.json", import.meta.url), "utf8"));
+  const descriptor = manifest.rpcMethods.find(item => item.method === pythonRecoveryReadinessMethod);
+  assert.equal(descriptor?.owner, "pythonBff", "replace the readiness probe if this route migrates");
+  assert.equal(descriptor.effect, "read");
+  assert.equal(descriptor.scope, "workspace");
+  let first = true;
+  let releasePython;
+  const pythonTerminal = new Promise(resolve => { releasePython = resolve; });
+  const released = [];
+  const window = new SidecarRecoveryReadWindow({
+    deadlineAt: 60_000,
+    now: () => 0,
+    observeTerminal: async requestId => {
+      if (requestId === "go") return { type: "field.recycleBin.list", requestId };
+      if (first) { first = false; return null; }
+      return pythonTerminal;
+    },
+    releaseRequest: async requestId => released.push(requestId),
+    acknowledge: async () => assert.fail("no failure should be acknowledged"),
+  });
+  window.own("go", "field.recycleBin.list");
+  await window.observe("go");
+  window.own("python", pythonRecoveryReadinessMethod);
+  assert.equal(await window.observe("python"), null);
+  let settled = false;
+  const pending = window.settle().then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.deepEqual(released, ["go"]);
+  releasePython({ type: pythonRecoveryReadinessMethod, requestId: "python" });
+  await pending;
+  await window.close();
+  assert.deepEqual(released, ["go", "python"]);
 });
