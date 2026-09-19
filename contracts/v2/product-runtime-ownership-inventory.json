@@ -1262,12 +1262,11 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
-      "classification": "TEMPORARY_BFF",
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
       "effects": {
@@ -1303,12 +1302,11 @@
       ],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Go owns formula computation and every schema or mutation write invariant, and Python validation, projection, and duplicate error mapping are removed.",
+      "deleteWhen": "Go owns formula validation, draft inspection and preview admission; the Python forwarding handlers are removed.",
       "evidence": [
-        "backend/adapters/pocketbase/product_query_schema_rpc.py",
+        "sidecar/internal/app/formula_product_rpc.go",
         "sidecar/internal/app/formula_routes.go",
-        "sidecar/internal/app/mutation_routes.go",
-        "sidecar/internal/app/schema_routes.go",
+        "desktop/src/VibeTable.Desktop/Services/HostProductRpcInvoker.cs",
         "tests/e2e/pocketbase_product_scenarios.json"
       ]
     },

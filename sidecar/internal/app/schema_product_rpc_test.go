@@ -19,6 +19,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
@@ -685,6 +686,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		t.Fatal(err)
 	}
 	contentMetadata := metadata.NewContentService(pb, contentSource)
+	formulaCompiler := formula.NewAppCompiler(pb)
 	dispatcher, err := productrpc.New(productrpc.Identity{
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -736,11 +738,15 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
-		}, schemaFieldChangeRegistrations(domain, catalog)...)...)
+		}, append(schemaFieldChangeRegistrations(domain, catalog),
+			formulaProductRegistrations(
+				formulaDomain{app: pb, compiler: formulaCompiler},
+			)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	registerSchemaRoutes(r, catalog, nil)
+	registerFormulaRoutes(r, pb, formulaCompiler)
 	registerRelationRoutes(r, relation.New(pb, nil, nil))
 	registerRealtimeRoutes(r, nil, catalog)
 	registerProductRoutes(r, dispatcher)

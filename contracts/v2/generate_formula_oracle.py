@@ -1,30 +1,27 @@
-"""Capture Formula Python wire before migration; the HTTP authority is scripted.
+"""Check retained Formula wire after closing the Python capture.
 
-This freezes adapter validation and error projection, not formula-domain truth.
-The three original handlers must still be present when capture/check runs.
+The frozen original captured the real RpcDispatcher, Product parameter DTOs,
+PocketBaseProductRpc and the registered product errors with only the loopback
+HTTP end scripted. The three forwarding handlers are retired, so the capture
+stays closed and only the retained inputs and public wire are validated
+against the frozen original; nothing is replayed through Python or regenerated
+from Go.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-
-from backend.adapters.pocketbase.client import PocketBaseClient
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, JsonValue, ProductParams
-from backend.rpc.dispatcher import RpcDispatcher
-from backend.rpc.product_errors import register_product_rpc_errors
+from backend.contracts.product_rpc import JsonObject, JsonValue
 
 PRODUCER_COMMIT = "2c8eb476078eafe06a31484814e17b1bc999e340"
 OUTPUT = Path(__file__).with_name("formula-python-oracle.json")
 BOUNDARY = "Real Python dispatcher/DTO/adapter/HTTP error projection; scripted HTTP authority, not Go domain execution"
+CAPTURE_CLOSED = "Formula Python capture is retired; preserve the frozen producer"
 METHODS = ("formula.validate", "formula.draft.validate", "formula.preview")
 ROUTES = ("validate", "draft/validate", "preview")
 
@@ -175,81 +172,179 @@ def cases() -> list[Case]:
     return result
 
 
+PARAM_REJECTIONS = frozenset(
+    {
+        "unknown-param",
+        "revision-is-not-a-public-param",
+        "missing-table",
+        "null-table",
+        "empty-table",
+        "wrong-table-type",
+        "empty-source",
+        "null-source",
+        "missing-source",
+        "missing-field",
+        "null-field",
+        "credential-rejected",
+        "missing-row",
+        "null-row",
+        "missing-changed",
+        "null-changed",
+    }
+)
+ENVELOPE_REJECTIONS = frozenset({"nonobject-params"})
+HANDLER_REJECTIONS = frozenset(
+    {
+        "incomplete-field-handler-error",
+        "nested-unknown-handler-error",
+        "nested-language-handler-error",
+        "nested-empty-source-handler-error",
+        "empty-changed-id-handler-error",
+        "numeric-changed-id-handler-error",
+    }
+)
+INVALID_RESPONSES = frozenset({"scalar-response"})
+# Fixed assertions over the original capture, never regenerated output.
+PUBLIC_ERROR_DATA = {
+    "domain-error-projection": {
+        "kind": "product_data_error",
+        "message": "unknown field",
+        "code": "formula.dependency",
+        "path": "field.formula.source",
+        "details": {"fieldId": "missing"},
+        "retryable": False,
+    },
+    "transport-failure": {
+        "kind": "product_data_unavailable",
+        "message": "PocketBase sidecar is unavailable",
+        "code": "sidecar.unavailable",
+    },
+}
+
+
 async def capture_case(case: Case) -> JsonObject:
-    attempts: list[JsonValue] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        attempts.append(
-            {
-                "method": request.method,
-                "path": request.url.path,
-                "body": json.loads(request.content),
-            }
-        )
-        if case.transport_failure:
-            raise httpx.ConnectError("scripted offline", request=request)
-        return httpx.Response(case.status, json=case.body)
-
-    secret = "a" * 64
-    transport = StdlibPocketBaseTransport(
-        PocketBaseConfig("http://127.0.0.1:8090", secret),
-        http_transport=httpx.MockTransport(respond),
-    )
-    service = PocketBaseProductRpc(
-        client=PocketBaseClient(transport=transport, session_secret=secret),
-        transport=transport,
-        session_secret=secret,
-    )
-    dispatcher = RpcDispatcher()
-    register_product_rpc_errors()
-
-    async def invoke(params: ProductParams) -> JsonObject:
-        return await service.invoke(case.method, params)
-
-    dispatcher.register(case.method, invoke, PRODUCT_RPC_REGISTRY[case.method])
-    request: JsonObject = {
-        "jsonrpc": "2.0",
-        "id": case.name,
-        "method": case.method,
-        "params": case.params,
-    }
-    response = await dispatcher.dispatch(request)
-    assert response is not None
-    return {
-        "name": case.name,
-        "request": request,
-        "authorityFixture": {
-            "status": case.status,
-            "body": case.body,
-            "transportFailure": case.transport_failure,
-        },
-        "authorityRequests": attempts,
-        "response": response,
-    }
+    raise RuntimeError(CAPTURE_CLOSED)
 
 
 async def capture() -> JsonObject:
-    return {
-        "producerCommit": PRODUCER_COMMIT,
-        "boundary": BOUNDARY,
-        "cases": [await capture_case(case) for case in cases()],
-    }
+    raise RuntimeError(CAPTURE_CLOSED)
+
+
+def _authority_attempts(case: Case) -> list[JsonValue]:
+    kind = case.name.split(":", 1)[1]
+    if kind in PARAM_REJECTIONS or kind in ENVELOPE_REJECTIONS or kind in HANDLER_REJECTIONS:
+        return []
+    route = ROUTES[METHODS.index(case.method)]
+    return [
+        {
+            "method": "POST",
+            "path": f"/api/vibetable/v1/formulas/{route}",
+            "body": case.params,
+        }
+    ]
+
+
+def validate_frozen_inputs() -> None:
+    """Check historical inputs and wire invariants, not current Python or Go parity."""
+    frozen: JsonObject = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    if not isinstance(frozen, dict) or frozen.get("producerCommit") != PRODUCER_COMMIT:
+        raise ValueError("Frozen Formula producer changed")
+    if frozen.get("boundary") != BOUNDARY:
+        raise ValueError("Frozen Formula boundary changed")
+    if set(frozen) != {"producerCommit", "boundary", "cases"}:
+        raise ValueError("Frozen Formula metadata changed")
+    entries = frozen.get("cases")
+    inputs = cases()
+    if not isinstance(entries, list) or len(entries) != len(inputs) or len(inputs) != 63:
+        raise ValueError("Frozen Formula case inventory changed")
+    for entry, case in zip(entries, inputs, strict=True):
+        if not isinstance(entry, dict) or set(entry) != {
+            "name",
+            "request",
+            "authorityFixture",
+            "authorityRequests",
+            "response",
+        }:
+            raise ValueError("Invalid frozen Formula entry")
+        expected: JsonObject = {
+            "name": case.name,
+            "request": {
+                "jsonrpc": "2.0",
+                "id": case.name,
+                "method": case.method,
+                "params": case.params,
+            },
+            "authorityFixture": {
+                "status": case.status,
+                "body": case.body,
+                "transportFailure": case.transport_failure,
+            },
+            "authorityRequests": _authority_attempts(case),
+        }
+        actual = {key: entry[key] for key in expected}
+        if render(actual) != render(expected):
+            raise ValueError(f"Frozen Formula inputs or attempts changed: {case.name}")
+        response = entry["response"]
+        if (
+            not isinstance(response, dict)
+            or response.get("jsonrpc") != "2.0"
+            or response.get("id") != case.name
+        ):
+            raise ValueError(f"Frozen Formula response envelope changed: {case.name}")
+        kind = case.name.split(":", 1)[1]
+        if kind in PUBLIC_ERROR_DATA:
+            error = response.get("error")
+            if (
+                set(response) != {"jsonrpc", "id", "error"}
+                or not isinstance(error, dict)
+                or set(error) != {"code", "message", "data"}
+                or error.get("code") != -32150
+                or error.get("message") not in {"Product data error", "Product data unavailable"}
+                or error.get("data") != PUBLIC_ERROR_DATA[kind]
+            ):
+                raise ValueError(f"Frozen Formula public error changed: {case.name}")
+            continue
+        code, message = (
+            (-32602, "Invalid params")
+            if kind in PARAM_REJECTIONS
+            else (-32600, "Invalid Request")
+            if kind in ENVELOPE_REJECTIONS
+            else (-32603, "Internal error")
+            if kind in HANDLER_REJECTIONS or kind in INVALID_RESPONSES
+            else (None, None)
+        )
+        if code is None:
+            if set(response) != {"jsonrpc", "id", "result"} or render(response["result"]) != render(
+                case.body
+            ):
+                raise ValueError(f"Frozen Formula result changed: {case.name}")
+            continue
+        if set(response) != {"jsonrpc", "id", "error"} or response.get("error") != {
+            "code": code,
+            "message": message,
+        }:
+            raise ValueError(f"Frozen Formula error envelope changed: {case.name}")
+
+
+def render(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--write", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--write", action="store_true", help="Retired; always rejected")
+    modes.add_argument(
+        "--check", action="store_true", help="Validate retained inputs and wire (default)"
+    )
     args = parser.parse_args()
-    captured = asyncio.run(capture())
     if args.write:
-        OUTPUT.write_text(
-            json.dumps(captured, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-    elif json.loads(OUTPUT.read_text(encoding="utf-8")) != captured:
-        raise SystemExit(
-            "Formula Python oracle differs; investigate, do not update expectations to pass"
-        )
-    print(f"Formula Python oracle: {len(cases())} cases")
+        parser.error(CAPTURE_CLOSED)
+    try:
+        validate_frozen_inputs()
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
+    print(f"Formula Python oracle: {len(cases())} retained cases")
     return 0
 
 

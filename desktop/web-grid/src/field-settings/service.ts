@@ -513,11 +513,17 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       store.result?.definition ?? null,
       store.draft?.displayName ?? "公式预览",
     );
+    const sourceSchema = store.formulaSourceSchema;
+    // The grid adds a primary-key column that is not a Schema V2 formula input.
+    // Keep declared system fields such as AutoDate in the preview activation.
     const physicalNames = new Set(
-      store.formulaSourceSchema?.columns.map(item => item.name) ?? [],
+      sourceSchema?.columns
+        .filter(item => item.name !== sourceSchema.primaryKey)
+        .map(item => item.name) ?? [],
     );
     const sample = Object.fromEntries(
-      Object.entries(row).filter(([key]) => physicalNames.has(key) || key === "id"),
+      // Formula inputs are Schema V2 physical fields, not renderer row identity.
+      Object.entries(row).filter(([key]) => physicalNames.has(key)),
     ) as Readonly<Record<string, JsonValueV2>>;
     store.beginFormulaPreview();
     formulaPreview.schedule({

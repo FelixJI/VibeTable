@@ -72,7 +72,8 @@ func queryPageHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration prod
 			historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
-		}, unrelatedSchemaFieldChangeRegistrations(t)...)...)
+		}, append(unrelatedSchemaFieldChangeRegistrations(t),
+			unrelatedFormulaProductRegistrations(t)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

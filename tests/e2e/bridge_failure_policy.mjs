@@ -111,7 +111,7 @@ export function releaseSidecarRecoveryNotificationFailureWindowInPage({ ownerTok
 }
 
 const recoveryObservationMs = 5_000;
-export const pythonRecoveryReadinessMethod = "formula.draft.validate";
+export const pythonRecoveryReadinessMethod = "version.list";
 const recoveryRequestTypes = new Set(["query.page", "field.recycleBin.list", pythonRecoveryReadinessMethod]);
 
 export class SidecarRecoveryContractError extends Error {
@@ -122,7 +122,7 @@ export class SidecarRecoveryContractError extends Error {
 }
 
 /**
- * Owns correlated Go page/schema and Python formula readiness reads during one deliberate sidecar
+ * Owns correlated Go page/schema and Python read-probe readiness reads during one deliberate sidecar
  * recovery window. The five-second observation is not a terminal timeout:
  * requests remain owned until settle() observes their real terminal within the
  * caller's absolute recovery deadline.

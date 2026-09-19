@@ -84,7 +84,8 @@ func presetProductMux(t *testing.T, pb *pocketbase.PocketBase, gates ...business
 			historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
-		}, unrelatedSchemaFieldChangeRegistrations(t)...)...)
+		}, append(unrelatedSchemaFieldChangeRegistrations(t),
+			unrelatedFormulaProductRegistrations(t)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

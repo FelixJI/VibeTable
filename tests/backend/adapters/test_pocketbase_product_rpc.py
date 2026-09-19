@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,8 @@ from pydantic import ValidationError
 
 from backend.adapters.pocketbase import product_rpc
 from backend.adapters.pocketbase.client import PocketBaseClient
-from backend.adapters.pocketbase.product_query_schema_rpc import (
-    ProductQuerySchemaRpc,
+from backend.adapters.pocketbase.product_relation_lookup_file_rpc import (
+    ProductRelationLookupFileRpc,
 )
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
@@ -75,12 +76,12 @@ def test_root_adapter_exposes_only_the_closed_invoke_interface() -> None:
 
 
 def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    class MissingRouteModule(ProductQuerySchemaRpc):
+    class MissingRouteModule(ProductRelationLookupFileRpc):
         def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
             super().__init__(context)
-            self.methods = self.methods - {"formula.validate"}
+            self.methods = self.methods - {"file.token"}
 
-    monkeypatch.setattr(product_rpc, "ProductQuerySchemaRpc", MissingRouteModule)
+    monkeypatch.setattr(product_rpc, "ProductRelationLookupFileRpc", MissingRouteModule)
     with pytest.raises(RuntimeError, match="routes do not match the contract registry"):
         _service([])
 
@@ -277,32 +278,27 @@ def test_retired_schema_methods_keep_their_full_public_parameter_models() -> Non
 
 
 @pytest.mark.asyncio
-async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
-    service, transport = _service(
-        [
-            {
-                "canonicalSource": 'relationSum(f_lines, "f_amount")',
-                "resultType": "number",
-                "dependencies": [],
-                "relationAggregatePaths": ["f_lines.f_amount"],
-            },
-            {"values": {"subtotal": 12}},
-            {"contractVersion": "2.0", "downloadCapability": "cap"},
-        ]
-    )
+async def test_go_owned_formula_routes_have_no_python_transport() -> None:
+    service, transport = _service([])
 
-    inspected = await service.invoke(
-        "formula.draft.validate",
-        PRODUCT_RPC_REGISTRY["formula.draft.validate"].model_validate(
-            {"tableId": "orders", "displaySource": "SUM({明细}.{金额})"}
+    for method, params in [
+        ("formula.validate", {"tableId": "orders", "field": _formula_v2_field()}),
+        ("formula.draft.validate", {"tableId": "orders", "displaySource": "SUM({明细}.{金额})"}),
+        (
+            "formula.preview",
+            {"tableId": "orders", "field": _formula_v2_field(), "row": {}, "changedFieldIds": []},
         ),
-    )
-    await service.invoke(
-        "formula.preview",
-        ProductParams.model_validate(
-            {"tableId": "orders", "field": _formula_v2_field(), "row": {}, "changedFieldIds": []}
-        ),
-    )
+    ]:
+        with pytest.raises(ValueError, match=rf"unknown product RPC method: {re.escape(method)}"):
+            await service.invoke(method, PRODUCT_RPC_REGISTRY[method].model_validate(params))
+
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_file_token_uses_only_its_fixed_route() -> None:
+    service, transport = _service([{"contractVersion": "2.0", "downloadCapability": "cap"}])
+
     token = await service.invoke(
         "file.token",
         ProductParams.model_validate(
@@ -316,10 +312,7 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     )
 
     assert token["downloadCapability"] == "cap"
-    assert inspected["resultType"] == "number"
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/formulas/draft/validate",
-        "/api/vibetable/v1/formulas/preview",
         "/api/vibetable/v1/files/token",
     ]
     assert all(

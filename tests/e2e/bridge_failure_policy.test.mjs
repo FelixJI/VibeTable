@@ -907,3 +907,28 @@ test("Go readiness cannot complete an owned Python binding probe", async () => {
   await window.close();
   assert.deepEqual(released, ["go", "python"]);
 });
+
+test("active-table recovery sends a valid retained Python read after Go readiness", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const scenarios = await readFile(new URL("./webview_product_scenarios.mjs", import.meta.url), "utf8");
+  const start = scenarios.indexOf("async function waitForActiveTableBackend(");
+  const end = scenarios.indexOf("\nasync function scenario09(", start);
+  assert.ok(start >= 0 && end > start);
+  const calls = [];
+  const recoveredPage = { rows: [{ id: "row-a" }], snapshot: { schemaRevision: "schema-a" } };
+  const run = new Function(
+    "rawBridgeRequest", "pythonRecoveryReadinessMethod",
+    "acknowledgeExpectedSidecarRecoveryFailure", "acknowledgeExpectedBridgeFailure",
+    `${scenarios.slice(start, end)}\nreturn waitForActiveTableBackend;`,
+  )(async (_page, method, params) => {
+    calls.push({ method, params });
+    if (method === "query.page") return { type: method, payload: recoveredPage };
+    // The retained Version list reads metadata through Python's current PB
+    // binding without requiring an attachment or changing business state.
+    assert.equal(method, "version.list");
+    assert.deepEqual(params, { collection: "orders", itemId: "__recovery_probe__" });
+    return { type: method, payload: { ...params, versions: [] } };
+  }, pythonRecoveryReadinessMethod, async () => assert.fail("unexpected failure"), async () => {});
+  assert.equal(await run({ waitForTimeout: async () => assert.fail("unexpected retry") }, "orders", 1), recoveredPage);
+  assert.deepEqual(calls.map(call => call.method), ["query.page", "version.list"]);
+});

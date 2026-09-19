@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseTransport
-from backend.adapters.pocketbase.product_query_schema_rpc import ProductQuerySchemaRpc
 from backend.adapters.pocketbase.product_relation_lookup_file_rpc import (
     ProductRelationLookupFileRpc,
 )
@@ -32,10 +31,7 @@ class PocketBaseProductRpc(ProductRpc):
             transport=transport,
             headers={"X-VibeTable-Session": session_secret},
         )
-        modules: tuple[ProductRpcModule, ...] = (
-            ProductQuerySchemaRpc(context),
-            ProductRelationLookupFileRpc(context),
-        )
+        modules: tuple[ProductRpcModule, ...] = (ProductRelationLookupFileRpc(context),)
         module_by_method: dict[str, ProductRpcModule] = {}
         for module in modules:
             for method in module.methods:

@@ -1004,6 +1004,85 @@ async function scenario02(page, recorder, _network, runtime) {
     { rowsAfterUndo, computedAfterUndo },
   );
 
+  // The formula workbench must run its draft validation, error feedback, and
+  // sample preview against the Go owner. Drive the real editor and prove the
+  // failing drafts never touch the committed schema or business rows.
+  const formulaField = created.find((field) => field.definition?.logicalType === "formula");
+  const amountField = created.find((field) => field.definition?.logicalType === "number");
+  const amountSeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 21 },
+  }], "e2e-formula-preview-seed");
+  if (amountSeed.payload?.status !== "applied") {
+    throw new Error(`formula preview seed was not committed: ${JSON.stringify(amountSeed)}`);
+  }
+  await waitForQueryPage(
+    page,
+    { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.length === 1 && String(payload.rows[0]?.[amountField.physicalName]) === "21",
+  );
+  // The editor preview samples the renderer's first row, not the authority:
+  // wait until the grid itself shows the seeded value.
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(
+      `.tabulator-cell[tabulator-field="${field}"]`,
+    )?.textContent?.includes("21"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  const formulaHeader = page.locator(`.tabulator-col[tabulator-field="${formulaField.physicalName}"]`);
+  await formulaHeader.waitFor({ state: "visible" });
+  await formulaHeader.locator(".tabulator-col-title").click({ button: "right" });
+  await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+  await page.getByTestId("field-display-name").waitFor();
+  const formulaWorkbench = page.getByTestId("formula-field-editor");
+  await formulaWorkbench.waitFor({ state: "visible" });
+  await page.getByTestId("formula-editor-entry").click();
+  const editorError = formulaWorkbench.getByRole("alert").filter({
+    hasText: "formula could not be parsed",
+  });
+  const editorSuccess = formulaWorkbench.getByRole("alert").filter({ hasText: "公式有效" });
+  await fillNInput(page, "formula-source", "upper({Title}");
+  await editorError.first().waitFor({ timeout: 30_000 });
+  recorder.check(
+    "an invalid draft reports the Go validation error in the editor",
+    (await editorError.first().innerText()).length > 0,
+  );
+  await fillNInput(page, "formula-source", "{Amount} * 2");
+  await editorSuccess.first().waitFor({ timeout: 30_000 });
+  const samplePreview = page.getByTestId("formula-preview-value");
+  await samplePreview.filter({ hasText: "样例结果：42" }).waitFor({ timeout: 30_000 });
+  recorder.check(
+    "a valid draft shows the inferred type and a real sample preview row",
+    /公式有效/u.test(await editorSuccess.first().innerText())
+      && (await samplePreview.innerText()).includes("42"),
+  );
+  await fillNInput(page, "formula-source", "{不存在的字段}");
+  await formulaWorkbench.getByRole("alert").filter({
+    hasText: "field display name was not found",
+  }).waitFor({ timeout: 30_000 });
+  const afterFailedDrafts = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId,
+    fieldId: formulaField.fieldId,
+  });
+  const rowsAfterDrafts = await rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check(
+    "failed drafts keep the committed formula source and business data intact",
+    afterFailedDrafts.payload?.definition?.formula?.source
+      === formulaField.definition?.formula?.source
+      && String(rowsAfterDrafts.payload?.rows?.[0]?.[amountField.physicalName]) === "21",
+    {
+      committedSource: afterFailedDrafts.payload?.definition?.formula?.source,
+      previewSource: formulaField.definition?.formula?.source,
+    },
+  );
+  await page.getByTestId("formula-editor-cancel").click();
+  await closeFieldSettingsDrawer(page);
+
   // The remaining assertions intentionally mutate this table through raw
   // bridge requests. Keep the visible grid on a different table so it cannot
   // issue Lookup reads between an out-of-band schema apply and its UI refresh.
@@ -4064,10 +4143,10 @@ async function waitForTableRecovery(
             }
             // Recycle-bin moved to Go in #343, so it no longer proves that
             // the rotated Python client and native Host gateways are current.
-            // Validate a constant draft through the retained read-only Python
-            // route, under the existing absolute deadline and request ownership.
+            // Read an empty metadata scope through the retained Python Version
+            // list, under the same absolute deadline and request ownership.
             const pythonRequestId = await beginRawBridgeRequest(
-              page, pythonRecoveryReadinessMethod, { tableId, displaySource: "1" },
+              page, pythonRecoveryReadinessMethod, { collection: tableId, itemId: "__recovery_probe__" },
             );
             recoveryReads.own(pythonRequestId, pythonRecoveryReadinessMethod);
             const pythonReady = await recoveryReads.observe(pythonRequestId);
@@ -4211,7 +4290,7 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       lastResponse = await rawBridgeRequest(
-        page, pythonRecoveryReadinessMethod, { tableId, displaySource: "1" }, Math.min(20_000, remainingMs),
+        page, pythonRecoveryReadinessMethod, { collection: tableId, itemId: "__recovery_probe__" }, Math.min(20_000, remainingMs),
       );
       if (Date.now() >= deadline) break;
       if (lastResponse.type === pythonRecoveryReadinessMethod) {

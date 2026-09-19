@@ -133,7 +133,8 @@ func cursorProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interfac
 			historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
-		}, unrelatedSchemaFieldChangeRegistrations(t)...)...)
+		}, append(unrelatedSchemaFieldChangeRegistrations(t),
+			unrelatedFormulaProductRegistrations(t)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

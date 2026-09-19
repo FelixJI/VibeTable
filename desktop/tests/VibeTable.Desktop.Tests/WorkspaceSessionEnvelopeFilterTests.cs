@@ -1021,6 +1021,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [TestMethod]
     [DataRow("field.change.status", "{\"jobId\":\"job-retired\"}")]
     [DataRow("field.recycleBin.list", "{\"tableId\":\"tbl_records\"}")]
+    [DataRow("formula.draft.validate", "{\"tableId\":\"tbl_records\",\"displaySource\":\"1 + 1\"}")]
     public async Task GoFieldReadSettlesBeforeRetiredRuntimeDrains(
         string type, string payload)
     {
@@ -1070,7 +1071,14 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                     {
                         contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
                     })
-                    : JsonSerializer.SerializeToElement(new { status = "running" })));
+                    : type == "formula.draft.validate"
+                        ? JsonSerializer.SerializeToElement(new
+                        {
+                            canonicalSource = "1 + 1", resultType = "number",
+                            dependencies = Array.Empty<string>(),
+                            relationAggregatePaths = Array.Empty<string>(),
+                        })
+                        : JsonSerializer.SerializeToElement(new { status = "running" })));
         }
 
         FakeWebReplySink.Reply reply = sink.Replies.Single();
