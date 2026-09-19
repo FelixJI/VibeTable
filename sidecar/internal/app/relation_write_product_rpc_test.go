@@ -3,11 +3,11 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"reflect"
 	"testing"
 
+	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 )
@@ -22,14 +22,18 @@ type relationWriteOraclePort struct {
 func (p *relationWriteOraclePort) call(method, path string, body any, out any) error {
 	p.t.Helper()
 	p.calls = append(p.calls, map[string]any{"method": method, "path": path, "body": body, "query": map[string]any{}})
-	if p.status != 200 {
-		return relationRequestError("wrong target")
-	}
 	if len(p.bodies) == 0 {
 		p.t.Fatal("unexpected authority call")
 	}
 	raw := p.bodies[0]
 	p.bodies = p.bodies[1:]
+	if p.status != 200 {
+		var failure mutation.ProductError
+		if err := json.Unmarshal(raw, &failure); err != nil {
+			p.t.Fatal(err)
+		}
+		return &failure
+	}
 	return json.Unmarshal(raw, out)
 }
 func (p *relationWriteOraclePort) Describe(ctx context.Context, table string) (relation.CatalogResult, error) {
@@ -74,9 +78,7 @@ func TestRelationWriteOriginalPythonOracle(t *testing.T) {
 			Requests []json.RawMessage `json:"authorityRequests"`
 			Response struct {
 				Result json.RawMessage `json:"result"`
-				Error  *struct {
-					Code int `json:"code"`
-				} `json:"error"`
+				Error  json.RawMessage `json:"error"`
 			} `json:"response"`
 		} `json:"cases"`
 	}
@@ -89,45 +91,32 @@ func TestRelationWriteOriginalPythonOracle(t *testing.T) {
 	for _, sample := range oracle.Cases {
 		t.Run(sample.Name, func(t *testing.T) {
 			port := &relationWriteOraclePort{t: t, bodies: sample.Fixture, status: sample.Status}
-			var registration productrpc.Registration
+			methods := map[string]productrpc.Registration{}
 			for _, reg := range relationWriteRegistrations(port, port) {
-				if reg.Method == sample.Request.Method {
-					registration = reg
-				}
+				methods[reg.Method] = reg
 			}
-			if sample.Response.Error != nil && sample.Response.Error.Code == -32600 {
-				if json.Valid(sample.Request.Params) && len(sample.Request.Params) > 0 && sample.Request.Params[0] == '[' {
-					return
-				}
-				t.Fatal("unexpected envelope fixture")
+			dispatcher := relationWriteDispatcher(t, methods)
+			request, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": sample.Name, "method": sample.Request.Method, "params": sample.Request.Params, "wire": json.RawMessage(schemaListWire)})
+			if err != nil {
+				t.Fatal(err)
 			}
-			if err := registration.ValidateParams(sample.Request.Params); err != nil {
-				if sample.Response.Error == nil || sample.Response.Error.Code != -32602 {
-					t.Fatalf("unexpected params rejection: %v", err)
-				}
-				if len(port.calls) != 0 {
-					t.Fatal("invalid params reached authority")
-				}
-				return
-			}
-			result, err := registration.Handler(context.Background(), sample.Request.Params)
-			if sample.Response.Error != nil {
-				if err == nil {
+			response := dispatcher.Dispatch(context.Background(), request)
+			if len(sample.Response.Error) != 0 {
+				if response.Error == nil {
 					t.Fatal("expected error")
 				}
-				var public *productrpc.PublicError
-				publicError := errors.As(err, &public)
-				if (sample.Response.Error.Code == -32150) != publicError {
-					t.Fatalf("wrong error boundary: %v", err)
+				actual, err := json.Marshal(response.Error)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(viewWireJSON(t, actual), viewWireJSON(t, sample.Response.Error)) {
+					t.Fatalf("error got=%s want=%s", actual, sample.Response.Error)
 				}
 			} else {
-				if err != nil {
-					t.Fatal(err)
+				if response.Error != nil {
+					t.Fatalf("unexpected error: %+v", response.Error)
 				}
-				encoded, err := json.Marshal(result)
-				if err != nil {
-					t.Fatal(err)
-				}
+				encoded := response.Result
 				got, want := viewWireJSON(t, encoded), viewWireJSON(t, sample.Response.Result)
 				// The scripted Python receipt contains only two fields. Typed Go receipt
 				// always emits its declared fields; real producer tests cover that shape.
@@ -156,7 +145,6 @@ func TestRelationWriteOriginalPythonOracle(t *testing.T) {
 				got := viewWireJSON(t, gotRaw)
 				want := viewWireJSON(t, sample.Requests[i])
 				// Typed domain requests omit nullable optional fields and actor displayName.
-
 				for _, object := range []map[string]any{got, want} {
 					if body, ok := object["body"].(map[string]any); ok {
 						delete(body, "expectedDigest")

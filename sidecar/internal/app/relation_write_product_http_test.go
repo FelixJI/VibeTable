@@ -14,11 +14,11 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 )
 
-func relationWriteMux(t *testing.T, fixture relationWriteFixture) http.Handler {
+func relationWriteDispatcher(t *testing.T, methods map[string]productrpc.Registration) *productrpc.Dispatcher {
 	t.Helper()
 	registrations := []productrpc.Registration{}
 	for _, descriptor := range productcapabilities.CurrentOwnerRPCDescriptors(productcapabilities.GoSidecar) {
-		registration, found := fixture.registrations[descriptor.Method]
+		registration, found := methods[descriptor.Method]
 		if !found {
 			method := descriptor.Method
 			registration = productrpc.Registration{Method: method, Scope: descriptor.Scope, ValidateParams: func(json.RawMessage) error { t.Fatalf("unrelated validator %s", method); return nil }, Handler: func(context.Context, json.RawMessage) (any, error) {
@@ -32,6 +32,12 @@ func relationWriteMux(t *testing.T, fixture relationWriteFixture) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return dispatcher
+}
+
+func relationWriteMux(t *testing.T, fixture relationWriteFixture) http.Handler {
+	t.Helper()
+	dispatcher := relationWriteDispatcher(t, fixture.registrations)
 	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
 		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
 	})
