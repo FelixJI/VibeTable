@@ -373,7 +373,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 		}, append(unrelatedSchemaFieldChangeRegistrations(t),
-			unrelatedFormulaProductRegistrations(t)...)...)...)
+			append(unrelatedFormulaProductRegistrations(t), unrelatedRelationWriteRegistrations(t)...)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

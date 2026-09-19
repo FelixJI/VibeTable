@@ -3,19 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 from copy import deepcopy
 from pathlib import Path
 
-import httpx
-
-from backend.adapters.pocketbase.client import PocketBaseClient
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, JsonObject, JsonValue, ProductParams
-from backend.rpc.dispatcher import RpcDispatcher
-from backend.rpc.product_errors import register_product_rpc_errors
+from backend.contracts.product_rpc import JsonObject, JsonValue
 
 PRODUCER_COMMIT = "55e0bfa41bbbf6d2f4129227d29a085e6c599a87"
 OUTPUT = Path(__file__).with_name("relation-write-python-oracle.json")
@@ -170,83 +162,30 @@ def cases() -> list[JsonObject]:
 
 
 async def capture_case(case: JsonObject) -> JsonObject:
-    attempts: list[JsonValue] = []
-    bodies = deepcopy(case["bodies"])
-    assert isinstance(bodies, list)
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        attempts.append(
-            {
-                "method": request.method,
-                "path": request.url.path,
-                "query": dict(request.url.params),
-                "body": json.loads(request.content) if request.content else None,
-            }
-        )
-        body = bodies.pop(0) if bodies else None
-        status = case["status"]
-        assert isinstance(status, int)
-        return httpx.Response(status, json=body)
-
-    secret = "a" * 64
-    transport = StdlibPocketBaseTransport(
-        PocketBaseConfig("http://127.0.0.1:8090", secret),
-        http_transport=httpx.MockTransport(respond),
-    )
-    service = PocketBaseProductRpc(
-        client=PocketBaseClient(transport=transport, session_secret=secret),
-        transport=transport,
-        session_secret=secret,
-    )
-    dispatcher = RpcDispatcher()
-    register_product_rpc_errors()
-    method = case["method"]
-    assert isinstance(method, str)
-
-    async def invoke(params: ProductParams) -> JsonObject:
-        return await service.invoke(method, params)
-
-    dispatcher.register(method, invoke, PRODUCT_RPC_REGISTRY[method])
-    request: JsonObject = {
-        "jsonrpc": "2.0",
-        "id": case["name"],
-        "method": method,
-        "params": case["params"],
-    }
-    response = await dispatcher.dispatch(request)
-    assert response is not None
-    return {
-        "name": case["name"],
-        "request": request,
-        "authorityFixture": case["bodies"],
-        "authorityStatus": case["status"],
-        "authorityRequests": attempts,
-        "response": response,
-    }
+    raise RuntimeError("Relation write Python capture is retired; preserve the original producer")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--write", action="store_true")
-    args = parser.parse_args()
-
-    async def capture() -> JsonObject:
-        return {
-            "producerCommit": PRODUCER_COMMIT,
-            "boundary": BOUNDARY,
-            "cases": [await capture_case(case) for case in cases()],
+    parser.add_argument("--check", action="store_true")
+    parser.parse_args()
+    frozen = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    assert frozen["producerCommit"] == PRODUCER_COMMIT
+    assert frozen["boundary"] == BOUNDARY
+    expected = cases()
+    assert len(frozen["cases"]) == len(expected)
+    for entry, case in zip(frozen["cases"], expected, strict=True):
+        assert entry["name"] == case["name"]
+        assert entry["request"] == {
+            "jsonrpc": "2.0",
+            "id": case["name"],
+            "method": case["method"],
+            "params": case["params"],
         }
-
-    captured = asyncio.run(capture())
-    if args.write:
-        OUTPUT.write_text(
-            json.dumps(captured, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-    elif json.loads(OUTPUT.read_text(encoding="utf-8")) != captured:
-        raise SystemExit(
-            "Relation write Python oracle differs; investigate before changing expectations"
-        )
-    print(f"Relation write Python oracle: {len(cases())} cases")
+        assert entry["authorityFixture"] == case["bodies"]
+        assert entry["authorityStatus"] == case["status"]
+        assert entry["response"]["id"] == case["name"]
+    print(f"Retained Relation write Python oracle: {len(expected)} cases")
     return 0
 
 

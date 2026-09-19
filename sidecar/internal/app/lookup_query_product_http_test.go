@@ -82,7 +82,7 @@ func lookupQueryHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration pr
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 		}, append(unrelatedSchemaFieldChangeRegistrations(t),
-			unrelatedFormulaProductRegistrations(t)...)...)...)
+			append(unrelatedFormulaProductRegistrations(t), unrelatedRelationWriteRegistrations(t)...)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
