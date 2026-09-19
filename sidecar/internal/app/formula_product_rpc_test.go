@@ -475,3 +475,56 @@ func TestFormulaProductSupplementalDTOBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestFormulaProductCompactsFormerRESTBodyBeforeDecode(t *testing.T) {
+	pb := schemaProductStore(t)
+	table, amount, formulaField := createFormulaProductTable(t, pb)
+	textField := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "Text", "formula-large-text")
+	domain := formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)}
+	registrations := formulaProductRegistrations(domain)
+	for _, method := range []string{"formula.validate", "formula.preview"} {
+		t.Run(method, func(t *testing.T) {
+			params := map[string]any{"tableId": table.TableID, "field": formulaTestWireField(t, formulaField)}
+			if method == "formula.preview" {
+				params["row"] = map[string]any{
+					amount.Identity.PhysicalName:               7,
+					textField.Definition.Identity.PhysicalName: strings.Repeat("中", 200_000),
+				}
+				params["changedFieldIds"] = []any{}
+			}
+			compact, err := json.Marshal(params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Default Host JSON serialization escapes non-ASCII strings. The
+			// retired Python HTTP transport forwarded compact UTF-8 instead.
+			expanded := strings.ReplaceAll(string(compact), "中", `\u4e2d`)
+			if method == "formula.validate" {
+				expanded = strings.Repeat(" ", maxSchemaRequestBytes) + expanded
+			}
+			if len(compact) >= maxSchemaRequestBytes || len(expanded) <= maxSchemaRequestBytes {
+				t.Fatalf("fixture does not cross raw-only size boundary: compact=%d expanded=%d", len(compact), len(expanded))
+			}
+			registration := formulaRegistrationFor(registrations, method)
+			var baseline []byte
+			for index, raw := range []json.RawMessage{compact, []byte(expanded)} {
+				if err := registration.ValidateParams(raw); err != nil {
+					t.Fatal(err)
+				}
+				result, err := registration.Handler(context.Background(), raw)
+				if err != nil {
+					t.Fatalf("wire %d failed: %v", index, err)
+				}
+				encoded, err := json.Marshal(result)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if index == 0 {
+					baseline = encoded
+				} else if !bytes.Equal(baseline, encoded) {
+					t.Fatalf("same parameters produced different results: compact=%s expanded=%s", baseline, encoded)
+				}
+			}
+		})
+	}
+}

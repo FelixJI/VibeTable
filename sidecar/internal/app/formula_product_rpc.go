@@ -48,16 +48,21 @@ func formulaProductRegistrations(domain formulaDomain) []productrpc.Registration
 					if err = validateFormulaNestedParams(method, object); err != nil {
 						return nil, err
 					}
-					// Keep decoding the original wire so snake_case spellings
-					// the DTO tolerated are still rejected by the domain decoder.
+					// Python forwarded compact UTF-8 JSON. Host escaping and
+					// insignificant whitespace must not consume the REST body budget.
+					// Keep original keys: tolerated DTO aliases still reach rejection.
+					var body strings.Builder
+					if err = appendDescribeRevision(&body, object); err != nil {
+						return nil, err
+					}
 					if method == "formula.validate" {
 						var input schemav2wire.FormulaValidateRequest
-						if err = decodeFormulaRequest(bytes.NewReader(raw), &input); err == nil {
+						if err = decodeFormulaRequest(strings.NewReader(body.String()), &input); err == nil {
 							result, err = domain.validate(ctx, input.TableId, input.Field)
 						}
 					} else {
 						var input schemav2wire.FormulaPreviewRequest
-						if err = decodeFormulaRequest(bytes.NewReader(raw), &input); err == nil {
+						if err = decodeFormulaRequest(strings.NewReader(body.String()), &input); err == nil {
 							result, err = domain.preview(ctx, input)
 						}
 					}
