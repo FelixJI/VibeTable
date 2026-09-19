@@ -24,7 +24,7 @@ func calendarRuntimeServer(t *testing.T, f *surfaceRuntimeFixture) *httptest.Ser
 		registrations = append(registrations, productrpc.Registration{Method: method, Scope: productcapabilities.WorkspaceScope, ValidateParams: func(json.RawMessage) error { t.Fatal("unrelated validator"); return nil }, Handler: func(context.Context, json.RawMessage) (any, error) { t.Fatal("unrelated handler"); return nil, nil }})
 	}
 	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, append(append(registrations, unrelatedSchemaFieldChangeRegistrations(t)...),
-		unrelatedFormulaProductRegistrations(t)...)...)
+		append(unrelatedFormulaProductRegistrations(t), unrelatedRelationWriteRegistrations(t)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

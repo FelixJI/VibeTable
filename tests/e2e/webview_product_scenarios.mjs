@@ -3168,6 +3168,82 @@ async function scenario28(page, recorder) {
     (await relationCell.locator(".vt-relation-token").innerText()) === "AUTHOR-UPDATED"
       && refreshedSource.dataRevision === afterSource.dataRevision
       && JSON.stringify(refreshedSource.rows[0][relation.physicalName]) === JSON.stringify([targetId]));
+
+  // Commit through the real picker after proving the cancelled draft was read-only.
+  await relationCell.dblclick();
+  await panel.waitFor();
+  await panel.locator(".relation-editor__selected-row").getByRole("button", { name: /^(移除关系|Remove relation)$/u }).click();
+  await panel.locator(".relation-editor__candidate").filter({ hasText: "候选作者" }).click();
+  await panel.getByRole("button", { name: /^(应用 1 项|Apply 1 items)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const manyCommitted = await read(articleTableId);
+  recorder.check("many relation picker commits adds and removes using stable target IDs",
+    JSON.stringify(manyCommitted.rows[0][relation.physicalName]) === JSON.stringify([extraId]),
+    { manyCommitted });
+
+  const single = await createV2Field(page, articleTableId, "Primary author", "relation", (draft) => {
+    draft.relation.targetTableId = authors.tableId;
+    draft.relation.displayFieldId = authors.field.fieldId;
+    draft.relation.cardinality = "one";
+    return draft;
+  });
+  const singleLookup = await createV2Field(page, articleTableId, "Primary author name", "lookup", (draft) => {
+    draft.lookup = { path: [{ relationFieldId: single.fieldId }], targetFieldId: authors.field.fieldId };
+    return draft;
+  });
+  await selectTable(page, "Preview Articles");
+  await waitForVisibleRowCount(page, 1);
+  const openSingle = async () => {
+    await page.locator(`.grid-wrapper[aria-busy="false"] .tabulator-cell.vt-relation-cell--editable[tabulator-field="${single.physicalName}"]`).first().dblclick();
+    await panel.waitFor();
+  };
+  for (const [label, expectedId] of [["候选作者", extraId], ["已有作者", targetId]]) {
+    await openSingle();
+    await panel.locator(".relation-editor__candidate").filter({ hasText: label }).click();
+    await panel.waitFor({ state: "hidden" });
+    const changed = await read(articleTableId);
+    recorder.check(`single relation picker selects ${expectedId} without using its label as identity`,
+      changed.rows[0][single.physicalName] === expectedId, { changed });
+  }
+  await openSingle();
+  await panel.locator(".relation-editor__selected-row").getByRole("button", { name: /^(移除关系|Remove relation)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const cleared = await read(articleTableId);
+  recorder.check("single relation picker clears the authoritative target",
+    cleared.rows[0][single.physicalName] === null || cleared.rows[0][single.physicalName] === "", { cleared });
+  await openSingle();
+  const createdLabel = "新建关系目标 中文";
+  await panel.getByRole("textbox", { name: /^(搜索目标记录|Search target records)$/u }).fill(createdLabel);
+  await panel.getByTestId("relation-create-target").click();
+  await panel.waitFor({ state: "hidden" });
+  const createdTargets = await read(authors.tableId);
+  const newTarget = createdTargets.rows.find(row => row[authors.field.physicalName] === createdLabel);
+  const linked = await read(articleTableId);
+  recorder.check("picker creates and attaches exactly one canonical target",
+    newTarget?.id && createdTargets.rows.filter(row => row[authors.field.physicalName] === createdLabel).length === 1
+      && linked.rows[0][single.physicalName] === newTarget.id, { createdTargets, linked });
+  await page.waitForFunction(({ field, label }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes(label)
+  ), { field: singleLookup.physicalName, label: createdLabel });
+  recorder.check("Lookup renders the committed target through the live refresh path", true);
+
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
+  const closed = await rawLifecycleWorkspaceV2Request(page, "workspace.close", { reason: "user" }, 60_000);
+  if (closed.result?.state !== "closed") throw new Error(`relation workspace close failed: ${JSON.stringify(closed)}`);
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  const persisted = await read(articleTableId);
+  const persistedTargets = await read(authors.tableId);
+  recorder.check("workspace reopen preserves relation IDs and target values in a fresh epoch",
+    reopened.payload.session.workspaceId === session.workspaceId
+      && reopened.payload.session.sessionEpoch > session.sessionEpoch
+      && persisted.rows[0][single.physicalName] === newTarget.id
+      && JSON.stringify(persisted.rows[0][relation.physicalName]) === JSON.stringify([extraId])
+      && persistedTargets.rows.some(row => row.id === newTarget.id && row[authors.field.physicalName] === createdLabel),
+    { reopened, persisted, persistedTargets });
+
 }
 
 async function scenario29(page, recorder) {

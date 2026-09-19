@@ -739,9 +739,9 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 		}, append(schemaFieldChangeRegistrations(domain, catalog),
-			formulaProductRegistrations(
+			append(formulaProductRegistrations(
 				formulaDomain{app: pb, compiler: formulaCompiler},
-			)...)...)...)
+			), unrelatedRelationWriteRegistrations(t)...)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

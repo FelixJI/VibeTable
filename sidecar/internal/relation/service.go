@@ -16,6 +16,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 type MutationKernel interface {
@@ -298,7 +299,7 @@ func (service *Service) CreateTarget(
 			)
 		}
 	}
-	receipt, err := service.kernel.Apply(ctx, mutation.Request{
+	receipt, err := service.kernel.Apply(mutation.WithBusinessReplay(ctx, "relation.create-target"), mutation.Request{
 		ContractVersion: mutation.ContractVersion,
 		RequestID:       request.RequestID,
 		IdempotencyKey:  request.IdempotencyKey,
@@ -310,6 +311,9 @@ func (service *Service) CreateTarget(
 		}},
 		Actor: request.Actor,
 	})
+	if err == writecoordinator.ErrBusinessReplay {
+		return CreateTargetResult{}, relationError("relation.target_create_pending", "target record creation has not committed")
+	}
 	if err != nil {
 		return CreateTargetResult{}, err
 	}
@@ -370,12 +374,12 @@ func (service *Service) ApplyDelta(
 		return DeltaResult{}, err
 	}
 	receipt, err := service.kernel.Apply(
-		ctx, service.deltaMutation(request, resolved, result),
+		mutation.WithBusinessReplay(ctx, "relation.apply-delta"), service.deltaMutation(request, resolved, result),
 	)
-	if err != nil {
+	if err != nil && err != writecoordinator.ErrBusinessReplay {
 		return DeltaResult{}, err
 	}
-	return DeltaResult{Current: result, Receipt: receipt}, nil
+	return DeltaResult{Current: result, Receipt: receipt}, err
 }
 
 func (service *Service) QueryLookups(

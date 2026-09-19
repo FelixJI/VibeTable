@@ -79,7 +79,7 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 		}, append(unrelatedSchemaFieldChangeRegistrations(t),
-			unrelatedFormulaProductRegistrations(t)...)...)...)
+			append(unrelatedFormulaProductRegistrations(t), unrelatedRelationWriteRegistrations(t)...)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

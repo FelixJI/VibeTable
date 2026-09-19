@@ -242,14 +242,6 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
         [
             {"downloadCapability": "opaque", "contractVersion": "2.0"},
             {"status": "applied"},
-            {
-                "target": {
-                    "tableId": "customers",
-                    "recordId": "c-2",
-                    "label": "Grace",
-                }
-            },
-            {"current": [{"tableId": "customers", "recordId": "c-1", "label": "Ada"}]},
         ]
     )
 
@@ -299,44 +291,6 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
     )
     assert removed["status"] == "applied"
 
-    created = await service.invoke(
-        "relation.createTarget",
-        PRODUCT_RPC_REGISTRY["relation.createTarget"].model_validate(
-            {
-                "relationId": "orders.customer",
-                "label": "Grace",
-                "idempotencyKey": "create-customer-1",
-            }
-        ),
-    )
-    assert created == {
-        "outcome": "committed",
-        "target": {
-            "collection": "customers",
-            "itemId": "c-2",
-            "label": "Grace",
-            "secondaryLabel": None,
-        },
-        "requestId": "create-customer-1",
-    }
-    assert transport.requests[-1]["path"] == "/api/vibetable/v1/relations/create-target"
-    assert "targetTableId" not in transport.requests[-1]["json_body"]
-    applied = await service.invoke(
-        "relation.applyDelta",
-        ProductParams.model_validate(
-            {
-                "relationId": "orders.customer",
-                "sourceItemId": "row-1",
-                "expectedSchemaRevision": "schema_3",
-                "adds": [{"collection": "customers", "itemId": "c-1"}],
-                "removes": [],
-                "updates": [],
-                "idempotencyKey": "relation-op-1",
-            }
-        ),
-    )
-    assert applied["outcome"] == "committed"
-    assert applied["current"][0]["itemId"] == "c-1"
     assert transport.responses == []
 
 
@@ -417,56 +371,14 @@ async def test_route_validation_rejects_bad_rows_attachments_files_and_history()
 
 
 @pytest.mark.asyncio
-async def test_single_relation_update_translates_current_and_desired_targets() -> None:
-    descriptor = {
-        "relationId": "orders.customer",
-        "sourceTableId": "orders",
-        "sourceFieldId": "customer",
-        "physicalName": "customer_id",
-        "targetTableId": "customers",
-        "cardinality": "one",
-        "deletePolicy": "setNull",
-    }
-    service, transport = service_with(
-        [
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_3",
-                "relations": [descriptor],
-                "lookups": [],
-            },
-            {"rows": [{"id": "o-1", "customer_id": "c-old"}]},
-            {"receipt": {"changeSetId": "change-1"}},
-        ]
-    )
-
-    result = await service.invoke(
-        "relation.updateSingle",
-        ProductParams.model_validate(
-            {
-                "relationId": "orders.customer",
-                "sourceItemId": "o-1",
-                "target": {
-                    "collection": "customers",
-                    "itemId": "c-new",
-                    "label": "New customer",
-                },
-                "expectedSchemaRevision": "schema_3",
-                "idempotencyKey": "single-relation-1",
-                "expectedDigest": "sha256:" + "b" * 64,
-            }
-        ),
-    )
-
-    assert result["outcome"] == "committed"
-    assert result["current"]["itemId"] == "c-new"
-    mutation = transport.requests[2]["json_body"]
-    assert mutation["adds"] == [
-        {"tableId": "customers", "recordId": "c-new", "label": "New customer"}
-    ]
-    assert mutation["removes"] == [{"tableId": "customers", "recordId": "c-old", "label": "c-old"}]
-    assert mutation["actor"]["id"] == "local-user"
-    assert transport.responses == []
+@pytest.mark.parametrize(
+    "method", ["relation.createTarget", "relation.updateSingle", "relation.applyDelta"]
+)
+async def test_migrated_relation_writes_have_no_python_fallback(method: str) -> None:
+    service, transport = service_with([])
+    with pytest.raises(ValueError, match="unknown product RPC method"):
+        await service.invoke(method, ProductParams.model_validate({}))
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio
