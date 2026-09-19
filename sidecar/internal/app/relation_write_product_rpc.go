@@ -279,7 +279,7 @@ func translateRelationSingle(ctx context.Context, original map[string]any, port 
 	}
 	source, err := rows.ReadRows(ctx, descriptor.SourceTableID, []string{original["sourceItemId"].(string)})
 	if err != nil {
-		return nil, publicSchemaDescribeCatalogError(err)
+		return nil, publicQueryPageError(err)
 	}
 	if len(source) != 1 {
 		return nil, errors.New("relation source record was not found")

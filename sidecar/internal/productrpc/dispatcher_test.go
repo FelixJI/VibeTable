@@ -471,7 +471,7 @@ func TestNewRequiresRegistrationsToExactlyMatchGeneratedGoSidecarPolicy(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedMethods := []string{"contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.change.apply", "field.change.cancel", "field.change.plan", "field.change.status", "field.recycleBin.list", "field.settings.describe", "file.list", "formula.draft.validate", "formula.preview", "formula.validate", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "schema.delete", "schema.describe", "schema.getTable", "schema.list", "schema.table.create", "settings.commitWorkCalendar", "settings.readWorkCalendar"}
+	expectedMethods := []string{"contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.change.apply", "field.change.cancel", "field.change.plan", "field.change.status", "field.recycleBin.list", "field.settings.describe", "file.list", "formula.draft.validate", "formula.preview", "formula.validate", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.applyDelta", "relation.createTarget", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "relation.updateSingle", "schema.delete", "schema.describe", "schema.getTable", "schema.list", "schema.table.create", "settings.commitWorkCalendar", "settings.readWorkCalendar"}
 	if methods := dispatcher.Methods(); len(methods) != len(expectedMethods) {
 		t.Fatalf("production registrations = %#v", methods)
 	} else {
@@ -645,6 +645,9 @@ func generatedGoSidecarRegistrations() []Registration {
 			Method: "query.view", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,
 		},
+		{Method: "relation.applyDelta", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "relation.createTarget", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
+		{Method: "relation.updateSingle", Scope: productcapabilities.WorkspaceScope, ValidateParams: validator, Handler: handler},
 		{
 			Method: "relation.inspectPair", Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: validator, Handler: handler,

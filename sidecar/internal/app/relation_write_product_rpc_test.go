@@ -9,6 +9,7 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
+	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 )
 
@@ -158,5 +159,33 @@ func TestRelationWriteOriginalPythonOracle(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type relationWriteErrorRows struct{ failure error }
+
+func (r relationWriteErrorRows) ReadRows(context.Context, string, []string) ([]map[string]any, error) {
+	return nil, r.failure
+}
+
+func TestRelationWriteSourceQueryErrorKeepsPublicFields(t *testing.T) {
+	port := &relationWriteOraclePort{t: t, status: 200, bodies: []json.RawMessage{json.RawMessage(`{"relations":[{"relationId":"orders.author","sourceTableId":"orders","targetTableId":"authors","physicalName":"author_id","cardinality":"one"}]}`)}}
+	rows := relationWriteErrorRows{failure: &query.ProductError{Code: "query.schema.unavailable", Path: "tableId", Message: "source schema unavailable", Details: map[string]any{"reason": "retired"}, Retryable: true}}
+	methods := map[string]productrpc.Registration{}
+	for _, reg := range relationWriteRegistrations(port, rows) {
+		methods[reg.Method] = reg
+	}
+	dispatcher := relationWriteDispatcher(t, methods)
+	response := dispatcher.Dispatch(context.Background(), []byte(`{"jsonrpc":"2.0","id":"query-error","method":"relation.updateSingle","wire":`+schemaListWire+`,"params":{"relationId":"orders.author","sourceItemId":"source","target":null,"expectedSchemaRevision":"schema","idempotencyKey":"error"}}`))
+	encoded, err := json.Marshal(response.Error)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte(`{"code":-32150,"message":"Product data error","data":{"kind":"product_data_error","code":"query.schema.unavailable","path":"tableId","message":"source schema unavailable","details":{"reason":"retired"},"retryable":true}}`)
+	if !reflect.DeepEqual(viewWireJSON(t, encoded), viewWireJSON(t, want)) {
+		t.Fatalf("query error got=%s want=%s", encoded, want)
+	}
+	if len(port.calls) != 1 {
+		t.Fatal("failed read reached mutation")
 	}
 }

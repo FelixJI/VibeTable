@@ -18,6 +18,12 @@ public sealed class ProductDataSidecarRoutingTests
         """;
 
     [TestMethod]
+    [DataRow("relation.createTarget", true)]
+    [DataRow("relation.createTarget", false)]
+    [DataRow("relation.updateSingle", true)]
+    [DataRow("relation.updateSingle", false)]
+    [DataRow("relation.applyDelta", true)]
+    [DataRow("relation.applyDelta", false)]
     [DataRow("schema.describe", true)]
     [DataRow("schema.describe", false)]
     [DataRow("lookup.list", true)]
@@ -32,7 +38,7 @@ public sealed class ProductDataSidecarRoutingTests
     [DataRow("relation.previewDelta", false)]
     [DataRow("lookup.query", true)]
     [DataRow("lookup.query", false)]
-    public async Task CatalogReadUsesGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
+    public async Task ProductMethodsUseGeneratedGoOwnerWithoutPythonFallback(string method, bool bound)
     {
         var sink = new FakeWebReplySink();
         var sidecar = method == "field.settings.describe"
@@ -49,7 +55,13 @@ public sealed class ProductDataSidecarRoutingTests
         RoutedWebRequest request = QueryRequest("describe-go") with
         {
             Type = method,
-            Payload = method == "field.settings.describe"
+            Payload = method == "relation.createTarget"
+                ? JsonSerializer.SerializeToElement(new { relationId = "records.owner", label = "New target", idempotencyKey = "create" })
+                : method == "relation.updateSingle"
+                ? JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1", target = (object?)null, expectedSchemaRevision = "schema-1", idempotencyKey = "clear" })
+                : method == "relation.applyDelta"
+                ? JsonSerializer.SerializeToElement(new { relationId = "records.owner", sourceItemId = "record-1", expectedSchemaRevision = "schema-1", adds = Array.Empty<object>(), removes = Array.Empty<object>(), idempotencyKey = "delta" })
+                : method == "field.settings.describe"
                 ? FieldSettingsParameters()
                 : method == "lookup.query"
                 ? JsonSerializer.Deserialize<JsonElement>(LookupQueryPayload)
